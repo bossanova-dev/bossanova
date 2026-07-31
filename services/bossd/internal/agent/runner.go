@@ -85,6 +85,13 @@ type HeadlessCapabilityProfileDispatcher interface {
 	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
 }
 
+// AgentNameResolver is implemented by dispatchers that can report which
+// agent name a launch will actually route to, including the empty-name
+// fallbacks (single loaded runner, else the configured default agent).
+type AgentNameResolver interface {
+	ResolveAgentName(agentName string) string
+}
+
 // HeadlessCapabilityProfilePreflightDispatcher validates a required profile
 // through explicit by-agent routing before lifecycle worktree side effects.
 // Keeping it optional preserves AgentDispatcher compatibility for all

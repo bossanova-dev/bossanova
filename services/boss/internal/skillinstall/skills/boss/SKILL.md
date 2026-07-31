@@ -773,6 +773,8 @@ boss mcp start
 
 Show MCP server status
 
+Reports the MCP service state (installed/running) plus the instances: inventory of every boss-mcp process owned by the current user (service, stray HTTP, session-owned, and orphaned counts).
+
 ```bash
 boss mcp status
 ```
@@ -781,7 +783,7 @@ boss mcp status
 
 Stop the MCP server
 
-Stops the running MCP server, leaving its service file in place. Idempotent.
+Stops the managed MCP service (leaving its service file in place) and also terminates stray `--http` daemons and orphaned session MCP servers owned by the current user, while leaving live session-owned servers running since each exits with its own chat. Idempotent.
 
 ```bash
 boss mcp stop

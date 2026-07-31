@@ -355,6 +355,18 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	if resumable {
 		respawn.ResumeAgentSessionID = resumeID
 	}
+	// Switching keeps the session's unattended provenance even though the
+	// replacement run is tmux-hosted. Repair chats also carry an explicit
+	// autonomous-run requirement independently of their parent session: a repair
+	// can belong to an otherwise interactive session, but it still needs the
+	// target account's CODEX_HOME preflight before its respawn.
+	respawnOpts := StartSessionOpts{IsTmuxUnattended: isUnattendedSession(session)}
+	resolvedProvider := l.resolveAgentName(provider)
+	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
+	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
+		resolvedProvider == agentNameCodex && IsRepairChatTitle(chat.Title) {
+		capabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency
 	// check. The switch already killed the targeted pane and rebound the session;
 	// this respawn must bring THAT chat back up. Without the bypass, a session with
@@ -362,7 +374,10 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// sibling's pane and return AlreadyExists instead of respawning the just-killed
 	// target, leaving a multi-chat session on the new account with the selected
 	// chat stopped/failed.
-	if _, err := l.StartTmuxChat(ctx, p.SessionID, respawn, chat.Title, HookOpts{AllowSiblingChat: true}); err != nil {
+	if _, err := l.StartTmuxChat(ctx, p.SessionID, respawn, chat.Title, HookOpts{
+		AllowSiblingChat:          true,
+		HeadlessCapabilityProfile: capabilityProfile,
+	}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, "respawn after switch failed: "+err.Error())
 		return SwitchAccountResult{}, fmt.Errorf("respawn chat after switch: %w", err)
 	}

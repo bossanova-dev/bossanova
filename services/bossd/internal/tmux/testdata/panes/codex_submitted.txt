@@ -1,0 +1,60 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                               │
+│                                                          │
+│ model:     gpt-5.6-terra high   /model to change         │
+│ directory: ~/.bossanova/worktrees/…/dave/…-composer-only │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: Switch models or reasoning effort quickly with /model.
+
+• You have 2 usage limit resets available. Run /usage to use one.
+
+
+› write a haiku about autumn leaves
+
+
+⚠ Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+
+• Working (0s • esc to interrupt)
+
+
+› Improve documentation in @filename
+
+  gpt-5.6-terra high · ~/.bossanova/worktrees/bossanova/dave/bos-597-resolve-the-submit-verifier-against-the-live-composer-only · Context 100% left
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

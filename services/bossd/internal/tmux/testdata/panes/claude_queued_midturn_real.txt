@@ -1,0 +1,50 @@
+  improved durability, portability, and the ability to consult a passage without unrolling the entire work. But it did nothing to solve the fundamental constraint: every copy required a human being to
+  write it out.
+
+  In medieval Europe, that labor was concentrated in monastic scriptoria. A single large Bible might occupy a scribe for a year or more, consume the skins of hundreds of animals for parchment, and
+  require additional specialists for rubrication, illumination, and binding. Books were correspondingly rare and expensive — assets recorded in wills, chained to lectern desks in libraries, and owned
+  mostly by institutions rather than individuals. Errors compounded across generations of copies; a text that had been transmitted through many hands could drift substantially from its original.
+
+  Two developments in the later Middle Ages began to loosen this bottleneck. The first was paper. Invented in China and traditionally attributed to Cai Lun in the early second century CE, papermaking
+  spread westward through the Islamic world — Samarkand, Baghdad, Damascus, Cairo, and then North Africa and Islamic Spain — reaching Christian Europe by the twelfth and thirteenth centuries. Paper
+  mills appeared in Italy (notably Fabriano) and later Germany and France. Paper was dramatically cheaper than parchment, and by the fifteenth century a European printer could count on a reliable
+  supply of it. Without paper, movable type would have been an interesting curiosity rather than an economic revolution.
+
+  The second was demand. The rise of universities at Bologna, Paris, Oxford, and elsewhere created a large secular readership needing textbooks, legal commentaries, and reference works. Urban merchant
+  classes needed account books, contracts, and vernacular devotional literature. Commercial scriptoria emerged, using the pecia system — dividing an exemplar into sections that could be copied
+  simultaneously by different scribes — to raise throughput. By the fifteenth century, Europe wanted more books than hands could produce.
+
+  East Asian Printing: The Deeper Origins
+
+  It is a persistent Western misconception that printing was invented in Europe. In fact, the essential techniques were developed in East Asia centuries earlier.
+
+  Woodblock printing — carving an entire page of text and image in relief on a wooden block, inking it, and pressing paper against it — was in use in Tang dynasty China by the seventh century. The
+  oldest surviving dated printed book is the Diamond Sutra, produced in China in 868 CE, a scroll of remarkable technical sophistication whose colophon records both its date and its patron. In Korea,
+  block printing reached extraordinary scale with the Tripitaka Koreana, a Buddhist canon carved onto more than 80,000 wooden blocks in the thirteenth century and still preserved at Haeinsa temple. In
+  Japan, the Hyakumantō Darani — a million printed Buddhist charms commissioned by Empress Shōtoku in the eighth century — represents one of the earliest mass-production printing projects anywhere.
+
+  Movable type also appeared first in East Asia. Around 1040, the Chinese artisan Bi Sheng created type from fired clay, as described by the polymath Shen Kuo in his Dream Pool Essays. Wooden movable
+  type followed, and by the thirteenth and fourteenth centuries the official Wang Zhen had developed rotating type cases to make composition practical. Most impressively, Korea under the Goryeo
+  dynasty developed metal movable type; the Jikji, a Buddhist anthology printed at Heungdeok Temple in 1377, predates Gutenberg's Bible by roughly seventy-five years and survives today at the
+  Bibliothèque nationale de France. In the fifteenth century, King Sejong's promulgation of the Hangul alphabet was in part an effort to make literacy — and printing — more tractable.
+
+  Why, then, did movable type not transform East Asia the way it transformed Europe? The usual explanation is the writing system. A Chinese printing office needed thousands of distinct characters,
+  making a full font of type an enormous capital investment and composition a slow business of searching through vast type cases. For many purposes, carving a woodblock for a page remained more
+  economical, and woodblock printing continued to dominate East Asian book production for centuries. An alphabetic script with a few dozen characters, by contrast, made movable type overwhelmingly
+  efficient. The technology was not superior in Europe; the fit between technology and script was.
+
+  Whether knowledge of East Asian printing reached Europe along the trade routes remains debated. There is no documentary evidence that Gutenberg knew of Bi Sheng or the Jikji. What is certain is that
+  block printing of playing cards, devotional images, and short "block books" was already present in fifteenth-century Europe, so the general idea of impressing inked relief onto paper was in the
+  air.
+
+  Gutenberg and the Mainz Invention
+
+  Johannes Gensfleisch zur Laden zum Gutenberg was born in Mainz around 1400 into a patrician family with connections to the archiepiscopal mint — a detail that matters, because the decisive
+  ❯ also update the changelog
+  ❯ also update the changelog
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5 (1M context) | Context: 94% remaining | /private/tmp/bos599-capture
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

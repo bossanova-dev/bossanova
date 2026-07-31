@@ -1686,7 +1686,11 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		Delivery:             session.DeliverySubmit,
 		ResumeAgentSessionID: req.GetResumeAgentSessionId(),
 	}
-	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
+	hookOpts := session.HookOpts{Token: token}
+	if sess.AgentName == "codex" {
+		hookOpts.HeadlessCapabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+	}
+	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID
 		if blockingAgentSessionID == "" {
@@ -1697,7 +1701,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 				return nil, replaceErr
 			}
 			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
-			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
+			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 		}
 	}
 	if err != nil {

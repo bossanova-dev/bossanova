@@ -52,7 +52,9 @@ fi
 ```
 
 A candidate is verified only when its chat and repository identities are non-empty and its repository
-is exactly the child PR repository. A matching orchestrator wins; otherwise a matching child is used.
+matches the child PR repository after both identities are normalized to a lowercased `owner/repo`
+slug (so a canonical origin URL, an `scp`-like `git@host:owner/repo.git`, a trailing `.git` or `/`,
+and mixed case all compare equal). A matching orchestrator wins; otherwise a matching child is used.
 `BOSS_SESSION_ID` alone never verifies a target, so an unrelated managed chat cannot receive an epic
 callback. If there is no verified target, skip callback registration, re-arm, list, and cleanup, and
 retain the existing cron/poll reconciliation for that child. The bridge emits JSON, reads the selected

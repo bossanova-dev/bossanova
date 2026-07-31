@@ -714,6 +714,83 @@ func TestHasQuestionPrompt(t *testing.T) {
 					got, tt.want, len(clean), string(clean), len(tail), string(tail),
 					selectorRe.Match(tail), len(optionRe.FindAll(tail, -1)))
 			}
+			// Subset invariant, asserted across every fixture in this table
+			// rather than in one hand-picked case: a modal is always also a
+			// question. The reverse must NOT hold, which is the whole point of
+			// the split -- see TestHasModalPrompt.
+			if HasModalPrompt([]byte(tt.data)) && !got {
+				t.Errorf("HasModalPrompt() = true while HasQuestionPrompt() = false; the modal set must be a subset")
+			}
+		})
+	}
+}
+
+// TestHasModalPrompt pins the split BOS-600 depends on: a pane can be waiting
+// on the user (notify) while still being perfectly safe to type into (deliver).
+// Gating delivery on HasQuestionPrompt refused every pane in the "live composer"
+// group below -- which is to say, it refused to answer the question Claude had
+// just asked.
+func TestHasModalPrompt(t *testing.T) {
+	tests := []struct {
+		name         string
+		data         string
+		wantQuestion bool
+		wantModal    bool
+	}{
+		{
+			// THE regression. Claude asks in prose and leaves the composer
+			// drawn and empty; typing an answer is exactly the right move.
+			name:         "conversational question with a live composer",
+			data:         "⏺ I've updated the client. Want me to run the tests now?\n\n❯ \n  claude-opus-4 · ~/code/bossanova · ready\n",
+			wantQuestion: true,
+			wantModal:    false,
+		},
+		{
+			// Pattern 4: the same shape with the ⏺ marker scrolled out of the
+			// 30-line tail. Still a live composer, still safe to type into.
+			name:         "trailing question mark with the response marker out of the tail",
+			data:         strings.Repeat("some earlier output line\n", 40) + "Should I open the PR now?\n\n❯ \n",
+			wantQuestion: true,
+			wantModal:    false,
+		},
+		{
+			name:         "idle composer with no question at all",
+			data:         "⏺ Done. The tests pass.\n\n❯ \n",
+			wantQuestion: false,
+			wantModal:    false,
+		},
+		{
+			// Pattern 1: selector + options. The composer is gone; Enter picks.
+			name:         "permission prompt selector",
+			data:         "  Claude wants to run a command. Allow?\n\n  ❯ Allow\n    Allow once\n    Deny\n",
+			wantQuestion: true,
+			wantModal:    true,
+		},
+		{
+			// Pattern 2: ☐ card detected structurally, no selector cursor.
+			name:         "AskUserQuestion card without a selector cursor",
+			data:         " ☐ Test prompt\n\nWhich approach should we take?\n\n  1. Option A\n     First option\n  2. Option B\n     Second option\n",
+			wantQuestion: true,
+			wantModal:    true,
+		},
+		{
+			// Pattern 0: footer fast-path, question text already scrolled off.
+			name:         "AskUserQuestion footer with the question scrolled off",
+			data:         "  1. Option A\n  2. Option B\n  4. Type something.\n  5. Chat about this\n",
+			wantQuestion: true,
+			wantModal:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasQuestionPrompt([]byte(tt.data)); got != tt.wantQuestion {
+				t.Errorf("HasQuestionPrompt() = %v, want %v", got, tt.wantQuestion)
+			}
+			if got := HasModalPrompt([]byte(tt.data)); got != tt.wantModal {
+				t.Errorf("HasModalPrompt() = %v, want %v -- a delivery gate reading this would %s",
+					got, tt.wantModal,
+					map[bool]string{true: "refuse a pane it can safely type into", false: "type into a menu"}[got])
+			}
 		})
 	}
 }

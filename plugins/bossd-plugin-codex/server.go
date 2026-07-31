@@ -99,15 +99,35 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 	}, nil
 }
 
+// runtimeTarget describes the Codex runtime a capability-profile check should
+// inspect. Both the pre-worktree PreflightHeadlessRun and the real StartRun
+// build their target here, so for the same request inputs the early check
+// profiles the same runtime the real run launches: the model follows the same
+// per-request-wins/env-fallback rule as the launch argv (resolveCodexModel),
+// because the operation registry passes it to `codex app-server` as
+// `-c model="…"` and a different model can expose a different operation
+// surface. Keeping this in one place means a field added to
+// codexRuntimeTarget cannot be populated on only one of the two paths.
+//
+// Scope: this reconciles only what the two requests carry. The daemon may
+// still hand the two RPCs different ExtraEnv — the preflight runs before the
+// worktree exists, so StartRun's env is additionally dotenv-overlaid from the
+// worktree (see services/bossd/internal/session/lifecycle.go) — and that
+// divergence is created above this helper and is not resolvable here.
+func (s *Server) runtimeTarget(reqModel string, extraEnv map[string]string) codexRuntimeTarget {
+	home, _ := codexConfigDirForEnv(extraEnv)
+	return codexRuntimeTarget{
+		Home:     home,
+		Model:    resolveCodexModel(reqModel, s.runner.model),
+		ExtraEnv: extraEnv,
+	}
+}
+
 func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
 	return s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		codexRuntimeTarget{
-			Home:     req.GetExtraEnv()["CODEX_HOME"],
-			Model:    req.GetModel(),
-			ExtraEnv: req.GetExtraEnv(),
-		},
+		s.runtimeTarget(req.GetModel(), req.GetExtraEnv()),
 	)
 }
 
@@ -115,11 +135,7 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	if _, err := s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		codexRuntimeTarget{
-			Home:     req.GetExtraEnv()["CODEX_HOME"],
-			Model:    resolveCodexModel(req.GetModel(), s.runner.model),
-			ExtraEnv: req.GetExtraEnv(),
-		},
+		s.runtimeTarget(req.GetModel(), req.GetExtraEnv()),
 	); err != nil {
 		return nil, err
 	}
@@ -477,9 +493,19 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // and activity-bullet lines, refuses to fire while the working spinner is
 // visible, and matches against the codex approval-menu grammar captured in
 // the Lane 0 spike.
+// blocks_input runs the SAME grammar over the tail of the pane rather than all
+// of it (hasCodexModalPrompt). Codex has no conversational-question pattern, so
+// unlike claude there is no shape here that is a question without being a
+// selection UI — the two answers differ only in WHERE they look, and that is the
+// whole difference. has_prompt asks "has this chat asked something?", which is
+// worth surfacing wherever in the buffer it appears; blocks_input asks "is the
+// composer taken right now?", and a capture carries up to 1000 lines of
+// scrollback in which a long-answered approval footer still sits. Reading that
+// pane-wide would wedge delivery to an idle chat forever (BOS-600).
 func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{
-		HasPrompt: hasCodexQuestionPrompt(req.PaneContent),
+		HasPrompt:   hasCodexQuestionPrompt(req.PaneContent),
+		BlocksInput: hasCodexModalPrompt(req.PaneContent),
 	}, nil
 }
 

@@ -2046,6 +2046,24 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	}
 }
 
+func TestStartChatRun_ProfilesAutonomousCodexLaunch(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-codex"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", AgentName: "codex", WorktreePath: "/tmp/wt"})
+	srv.agentClients["codex"] = newFakeAgentClient()
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "Repair: sess-1",
+	}); err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+
+	if got := lc.lastReq.hookOpts.HeadlessCapabilityProfile; got != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Errorf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got)
+	}
+}
+
 func TestStartChatRun_CommandPath(t *testing.T) {
 	lc := &fakeChatLifecycle{startResp: "agent-abc"}
 	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})

@@ -13,6 +13,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // fakeTmuxClient lets us assert which Command was passed without exec'ing tmux.
@@ -45,6 +46,20 @@ type sentMessage struct {
 	text        string
 	submit      bool
 	readyMarker string
+	// There is deliberately no working-probe field here. BOS-599's first pass
+	// threaded one through this seam so the verifier could ask the agent whether
+	// it was mid-turn; real pane captures showed that signal both absent from the
+	// panes it would classify and pointed the wrong way, so delivery no longer
+	// depends on it and the parameter is gone. The queued verdict is now read
+	// from the pane, and is asserted where the panes are:
+	// send_chat_message_queued_test.go at this layer, and the tmux package's
+	// tmux_submit_verify_queued_test.go against the real captures.
+
+	// modal is the per-agent modal detector the caller routed with this send. It
+	// is recorded rather than called so a test can assert the send path resolved
+	// a detector at all — nil here means the readiness gate would have run with
+	// the modal check disabled (BOS-600).
+	modal tmux.ModalDetector
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -69,13 +84,19 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	f.hasSession = true
 	return nil
 }
-func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string) error {
+func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendMessageErr != nil {
 		return f.sendMessageErr
 	}
-	f.sentMessages = append(f.sentMessages, sentMessage{sessionName: sessionName, text: text, submit: submit, readyMarker: readyMarker})
+	f.sentMessages = append(f.sentMessages, sentMessage{
+		sessionName: sessionName,
+		text:        text,
+		submit:      submit,
+		readyMarker: readyMarker,
+		modal:       modal,
+	})
 	return nil
 }
 

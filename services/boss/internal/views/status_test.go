@@ -1161,7 +1161,7 @@ func TestSessionEndpointLabels(t *testing.T) {
 				{Port: 3000, Url: "http://localhost:3000"},
 				{Port: 5173, Url: "https://localhost:5173"},
 			}},
-			want: ":3000 · :5173",
+			want: ":3000 :5173",
 		},
 		{
 			name: "invalid url still labelled",
@@ -1218,13 +1218,13 @@ func TestRenderSessionEndpoints_ExactEscapes(t *testing.T) {
 			want: "\x1b]8;;http://localhost:3000\x1b\\" + mutedLink + ":3000" + mutedLinkX + "\x1b]8;;\x1b\\",
 		},
 		{
-			name: "two endpoints joined by a muted separator",
+			name: "two endpoints joined by a muted space",
 			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
 				{Port: 3000, Url: "http://localhost:3000"},
 				{Port: 5173, Url: "https://127.0.0.1:5173"},
 			}},
 			want: "\x1b]8;;http://localhost:3000\x1b\\" + mutedLink + ":3000" + mutedLinkX + "\x1b]8;;\x1b\\" +
-				mutedOpen + " · " + mutedClose +
+				mutedOpen + " " + mutedClose +
 				"\x1b]8;;https://127.0.0.1:5173\x1b\\" + mutedLink + ":5173" + mutedLinkX + "\x1b]8;;\x1b\\",
 		},
 		{

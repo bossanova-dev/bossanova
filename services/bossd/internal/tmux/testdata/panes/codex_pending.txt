@@ -1,0 +1,60 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                               │
+│                                                          │
+│ model:     gpt-5.6-terra high   /model to change         │
+│ directory: ~/.bossanova/worktrees/…/dave/…-composer-only │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: Switch models or reasoning effort quickly with /model.
+
+• You have 2 usage limit resets available. Run /usage to use one.
+
+
+› write a haiku about autumn leaves
+
+  gpt-5.6-terra high · ~/.bossanova/worktrees/bossanova/dave/bos-597-resolve-the-submit-verifier-against-the-live-composer-only · Context 100% left
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

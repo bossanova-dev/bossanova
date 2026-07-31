@@ -32,13 +32,13 @@ boss repair doctor                 # health-check the auto-repair pipeline
 
 Manage the local MCP server that exposes Bossanova to AI agents.
 
-| Subcommand           | Description                                                   |
-| -------------------- | ------------------------------------------------------------- |
-| `boss mcp install`   | Install and start the local MCP service (`--port`, `--force`) |
-| `boss mcp status`    | Show whether the service is installed / running               |
-| `boss mcp start`     | Start or restart the installed service                        |
-| `boss mcp stop`      | Stop the service, leaving the service file in place           |
-| `boss mcp uninstall` | Stop and remove the service file                              |
+| Subcommand           | Description                                                                                     |
+| -------------------- | ----------------------------------------------------------------------------------------------- |
+| `boss mcp install`   | Install and start the local MCP service (`--port`, `--force`)                                   |
+| `boss mcp status`    | Show whether the service is installed / running, plus the instance inventory                    |
+| `boss mcp start`     | Start or restart the installed service                                                          |
+| `boss mcp stop`      | Stop the managed service, sweep stray/orphaned instances, leave live session-owned ones running |
+| `boss mcp uninstall` | Stop and remove the service file                                                                |
 
 See the [MCP guide](/guides/mcp) for agent wiring and the tool catalog.
 

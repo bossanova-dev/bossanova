@@ -26,6 +26,18 @@ func (s *smokeCreds) Save(accountID string, blob []byte) error {
 	return nil
 }
 
+type lockingSmokeCreds struct {
+	smokeCreds
+	lockAccount string
+	lockCalls   int
+}
+
+func (s *lockingSmokeCreds) WithCredentialLock(accountID string, fn func() error) error {
+	s.lockAccount = accountID
+	s.lockCalls++
+	return fn()
+}
+
 type smokeClient struct {
 	agent.AgentRunnerClient
 	startReqs []*bossanovav1.StartAgentRunRequest
@@ -51,6 +63,26 @@ func (c *smokeClient) ExitStatus(context.Context, *bossanovav1.AgentExitStatusRe
 func (c *smokeClient) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
 	c.stopReqs = append(c.stopReqs, req)
 	return &bossanovav1.StopAgentRunResponse{}, nil
+}
+
+func TestCredentialStoreAdapterForwardsCredentialLock(t *testing.T) {
+	store := &lockingSmokeCreds{}
+	adapter := credentialStoreAdapter{store: store}
+
+	called := false
+	if err := adapter.WithCredentialLock("acct-codex", func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatalf("WithCredentialLock: %v", err)
+	}
+
+	if !called {
+		t.Fatal("lock callback was not called")
+	}
+	if store.lockCalls != 1 || store.lockAccount != "acct-codex" {
+		t.Fatalf("lock calls/account = %d/%q, want 1/%q", store.lockCalls, store.lockAccount, "acct-codex")
+	}
 }
 
 func TestSmokeRunnerClaudeStartsLiveRunWithAccountEnv(t *testing.T) {

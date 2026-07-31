@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -595,6 +597,79 @@ func TestHasQuestionPromptReturnsFalseForPlainText(t *testing.T) {
 	}
 	if resp.HasPrompt {
 		t.Error("expected has_prompt=false for plain text")
+	}
+	if resp.BlocksInput {
+		t.Error("expected blocks_input=false for plain text")
+	}
+}
+
+// TestHasQuestionPromptSplitsNotifyFromBlocking is the claude leg of the
+// BOS-600 delivery-gate proof. The daemon refuses to deliver on blocks_input,
+// so what has to be true HERE is that the two fields are different predicates:
+// a conversational question must set has_prompt (the human is still worth
+// notifying) while leaving blocks_input false (the composer is live and the
+// message is the answer). The daemon's own tests prove it gates on the field;
+// this proves the field carries the right verdict for real Claude panes.
+func TestHasQuestionPromptSplitsNotifyFromBlocking(t *testing.T) {
+	modal, err := os.ReadFile(filepath.Join("testdata", "panes", "limit_decision_modal.txt"))
+	if err != nil {
+		t.Fatalf("read modal fixture: %v (services/bossd/internal/tmux copies this file; do not delete it)", err)
+	}
+	// services/bossd/internal/tmux keeps a byte copy of this capture
+	// (testdata/panes/claude_question_modal.txt) and proves "this pane is
+	// refused with no keystroke sent" against it, while this test proves the
+	// real grammar sets blocks_input on it. That composition holds only while
+	// both sides read the same bytes, and the module boundary forbids reading
+	// across it — so each side hashes its own copy against its own literal.
+	// That is a tripwire, not a proof: nothing compares the two files, so
+	// re-pinning both literals would let them diverge green. What it does buy is
+	// that divergence cannot happen QUIETLY — edit one copy and that side reddens
+	// with the other file named in the failure.
+	const modalFixtureDigest = "121503714e4e93e248124b8542828eed52656f727af770592c445f8f34778d29"
+	if got := fmt.Sprintf("%x", sha256.Sum256(modal)); got != modalFixtureDigest {
+		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/tmux/testdata/panes/claude_question_modal.txt "+
+			"must stay byte-identical and asserts against the same digest", got, modalFixtureDigest)
+	}
+
+	tests := []struct {
+		name         string
+		pane         []byte
+		wantPrompt   bool
+		wantBlocking bool
+	}{
+		{
+			name:         "conversational question with a live composer",
+			pane:         []byte("⏺ I've updated the client. Want me to run the tests now?\n\n❯ \n  claude-opus-4 · ~/code/bossanova · ready\n"),
+			wantPrompt:   true,
+			wantBlocking: false,
+		},
+		{
+			// The real capture the tmux gate uses as its claude fixture: a
+			// weekly-limit decision menu whose ❯ leads an option row, not a
+			// composer. Refusing here is the entire point of BOS-600.
+			name:         "captured limit-decision modal",
+			pane:         modal,
+			wantPrompt:   true,
+			wantBlocking: true,
+		},
+	}
+	s := newServer(nil, zerolog.Nop())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := s.HasQuestionPrompt(context.Background(),
+				&bossanovav1.HasQuestionPromptRequest{PaneContent: tt.pane})
+			if err != nil {
+				t.Fatalf("HasQuestionPrompt: %v", err)
+			}
+			if resp.GetHasPrompt() != tt.wantPrompt {
+				t.Errorf("has_prompt = %v, want %v", resp.GetHasPrompt(), tt.wantPrompt)
+			}
+			if resp.GetBlocksInput() != tt.wantBlocking {
+				t.Errorf("blocks_input = %v, want %v; the daemon would %s this pane",
+					resp.GetBlocksInput(), tt.wantBlocking,
+					map[bool]string{true: "refuse delivery into", false: "type into"}[resp.GetBlocksInput()])
+			}
+		})
 	}
 }
 

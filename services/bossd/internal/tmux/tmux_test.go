@@ -2,9 +2,11 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2906,5 +2908,1293 @@ func TestSendMessage_EmptySessionName_Error(t *testing.T) {
 	err := c.SendMessage(context.Background(), "", "hello", true, "❯")
 	if err == nil {
 		t.Fatal("expected error for empty session name")
+	}
+}
+
+// TestWillSubmit pins the routing predicate SendMessage dispatches on, which is
+// also what the SendChatMessage RPC asks to decide whether the delivery it just
+// made was a submit (and so whether delivery_state may claim SUBMITTED). Both
+// callers must agree: a whitespace-only body with submit=true is delivered as a
+// PREFILL — no Enter, no verification — so reporting it as submitted would be a
+// false success of exactly the kind BOS-598 exists to remove.
+func TestWillSubmit(t *testing.T) {
+	tests := []struct {
+		name   string
+		submit bool
+		text   string
+		want   bool
+	}{
+		{name: "submit with text", submit: true, text: "hello", want: true},
+		{name: "submit with surrounding whitespace", submit: true, text: "  hello\n", want: true},
+		{name: "submit with multi-line text", submit: true, text: "line one\nline two", want: true},
+		{name: "submit with empty text", submit: true, text: "", want: false},
+		{name: "submit with whitespace-only text", submit: true, text: " \n\t ", want: false},
+		{name: "prefill with text", submit: false, text: "hello", want: false},
+		{name: "prefill with empty text", submit: false, text: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := WillSubmit(tt.submit, tt.text); got != tt.want {
+				t.Errorf("WillSubmit(%v, %q) = %v, want %v", tt.submit, tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+// sendKeysKind classifies a recorded `tmux send-keys` argv into the three
+// shapes the submit path emits, so a test can assert their ORDER without
+// re-encoding the full argv of each one.
+func sendKeysKind(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	switch args[len(args)-1] {
+	case "Enter":
+		return "enter"
+	case "C-u":
+		return "clear"
+	}
+	for _, a := range args {
+		if a == "-l" {
+			return "literal"
+		}
+	}
+	return "other"
+}
+
+// composerPane is a stateful tmux fake that MODELS the composer the submit path
+// manipulates, rather than replaying a canned capture sequence keyed on an Enter
+// counter. The retry now reads the pane back after its clear (C-u is
+// kill-to-start-of-line, not a guaranteed whole-composer empty, so the
+// postcondition is checked), which a counter-keyed fake cannot represent: it
+// would report the composer as still holding the payload no matter what
+// keystroke was sent, and no argv ordering asserted against it would be earned.
+//
+// Delivery (send-keys -l, or paste-buffer) fills the composer, C-u empties it,
+// and Enter submits whatever it holds — except the first Enter when
+// swallowFirstEnter is set, which models the TUI dropping a keystroke that
+// arrived before the input box settled. That is the exact condition the retry
+// exists for.
+type composerPane struct {
+	mu sync.Mutex
+	// pasted is what the paste path (load-buffer/paste-buffer) puts in the
+	// composer; the literal path uses the argv it was given.
+	pasted string
+	// deliverKeepsBytes models a DELIVERY that lands only the first N bytes, so
+	// the composer holds a truncated payload before the verifier has pressed a
+	// single key. The retry's per-press comparisons can only establish that
+	// nothing CHANGED, so a composer that starts out wrong is the one shape they
+	// cannot speak to on their own.
+	deliverKeepsBytes int
+	// swallowFirstEnter drops the first Enter, forcing the retry path.
+	swallowFirstEnter bool
+	// clearIsNoop models a composer that survives C-u untouched — the payload is
+	// still intact, so the bare Enter that follows is the recovery the retry
+	// exists for.
+	clearIsNoop bool
+	// clearKeepsBytes models C-u as the line-scoped kill it actually is: it leaves
+	// the first N bytes of the payload behind. What survives is MUTILATED user
+	// text, so it must never be submitted — but a second press finishes the job,
+	// which is the convergence the retry depends on.
+	clearKeepsBytes int
+	// clearDropsOneByte models a composer that NEVER converges: every press takes
+	// one more byte and always leaves a fragment behind.
+	clearDropsOneByte bool
+	// markerGoneAfterClear models the input box disappearing after the clear (the
+	// agent accepted the payload and went full-screen), which must NOT be read as
+	// a cleared composer to type into.
+	markerGoneAfterClear bool
+	// activityAfterClear renders an agent-activity row BELOW the input box from
+	// the clear onwards while the composer keeps holding the payload. C-u cannot
+	// submit anything, so activity there is never evidence the clear worked.
+	activityAfterClear bool
+	// staleCaptures models a composer that has already changed but has not
+	// repainted: the next N capture-pane calls after each clear keep replaying the
+	// PRE-clear screen, whatever the composer now actually holds. Counting
+	// captures rather than milliseconds is what makes the tests that depend on it
+	// deterministic — the submit path's poll windows take a fixed number of
+	// captures each (their budget is well under one tick), so which capture first
+	// sees the truth is a property of the code under test, not of the load on the
+	// machine running it.
+	staleCaptures int
+	// markerlessCaptureNo makes ONE capture, counted from the first capture-pane
+	// call of the run, render no input box at all. A repainting composer really
+	// does produce such a frame: the box is redrawn rather than moved, so a
+	// capture can land between the erase and the draw. It says nothing about what
+	// the composer holds.
+	markerlessCaptureNo int
+	// markerlessFromCaptureNo makes EVERY capture from the Nth onwards render no
+	// input box, modelling a pane that stays unreadable rather than one frame that
+	// is — a full-screen overlay, a redraw storm, an agent that repaints the box
+	// away. No amount of looking again resolves it, so nothing the composer holds
+	// can be established from it.
+	markerlessFromCaptureNo int
+	// paneWidth models a pane NARROWER than the payload: a held line longer than
+	// this many columns is rendered across as many physical rows as it takes,
+	// which is what a terminal actually does and what capture-pane therefore
+	// returns. Unset (0) means "infinitely wide" — one row per held line — which
+	// is what every other test here models.
+	//
+	// This exists because a one-row composer cannot express the shape the submit
+	// verifier's baseline logic exists to defend. A payload line wider than the
+	// pane occupies several rows, so a C-u that kills only the tail leaves the
+	// MARKER row byte-identical and changes only the rows below it. A fake that
+	// never wraps renders that mutilation as a changed marker row, i.e. as the
+	// easy case that every predicate here already catches — so the hard case
+	// silently cannot fail a test, and a wrong fix passes the suite.
+	paneWidth int
+
+	held          string
+	markerGone    bool
+	activityShown bool
+	stalePane     string
+	staleLeft     int
+	captures      int
+	enters        int
+	submitted     bool
+	calls         []sendPlanCall
+}
+
+// deliver is what a delivery actually lands in the composer: the whole text,
+// or — with deliverKeepsBytes set — only its first N bytes.
+func (p *composerPane) deliver(text string) string {
+	if p.deliverKeepsBytes > 0 && len(text) > p.deliverKeepsBytes {
+		return text[:p.deliverKeepsBytes]
+	}
+	return text
+}
+
+// composerRows renders the physical rows the live input box occupies: the
+// marker row, then one row per wrapped continuation. The glyph sits on the first
+// row only; the terminal indents the continuations under it, which is why the
+// submit verifier trims a row before judging it.
+func (p *composerPane) composerRows() []string {
+	var rows []string
+	for _, line := range strings.Split(p.held, "\n") {
+		rows = append(rows, wrapComposerLine(line, p.paneWidth)...)
+	}
+	rows[0] = "› " + rows[0]
+	for i := 1; i < len(rows); i++ {
+		rows[i] = "  " + rows[i]
+	}
+	return rows
+}
+
+// wrapComposerLine splits one composer line the way a terminal of the given
+// width does: hard-wrapped at the column boundary, never at a word boundary. A
+// width of zero or less models a pane wide enough to never wrap.
+func wrapComposerLine(line string, width int) []string {
+	runes := []rune(line)
+	if width <= 0 || len(runes) <= width {
+		return []string{line}
+	}
+	var rows []string
+	for len(runes) > width {
+		rows = append(rows, string(runes[:width]))
+		runes = runes[width:]
+	}
+	if len(runes) > 0 {
+		rows = append(rows, string(runes))
+	}
+	return rows
+}
+
+// paneNow renders the composer as it currently IS.
+func (p *composerPane) paneNow() string {
+	pane := "ready\n"
+	if !p.markerGone {
+		pane += strings.Join(p.composerRows(), "\n") + "\n"
+	}
+	if p.activityShown {
+		pane += "· thinking\n"
+	}
+	if p.submitted {
+		pane += "⏺ working\n"
+	}
+	return pane
+}
+
+// capture renders what capture-pane sees: the pre-clear screen while a repaint
+// is still owed, otherwise the live pane.
+func (p *composerPane) capture() string {
+	p.captures++
+	if p.captures == p.markerlessCaptureNo {
+		return "ready\n"
+	}
+	if p.markerlessFromCaptureNo > 0 && p.captures >= p.markerlessFromCaptureNo {
+		return "ready\n"
+	}
+	if p.staleLeft > 0 {
+		p.staleLeft--
+		return p.stalePane
+	}
+	return p.paneNow()
+}
+
+func (p *composerPane) factory(ctx context.Context, _ string, args ...string) *exec.Cmd {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	subcommand := ""
+	if len(args) > 0 {
+		subcommand = args[0]
+	}
+	p.calls = append(p.calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+	switch subcommand {
+	case "capture-pane":
+		return exec.CommandContext(ctx, "printf", "%s", p.capture())
+	case "paste-buffer":
+		p.held = p.deliver(p.pasted)
+	case "send-keys":
+		switch sendKeysKind(args[1:]) {
+		case "literal":
+			p.held = p.deliver(args[len(args)-1])
+		case "clear":
+			if p.staleCaptures > 0 {
+				p.stalePane, p.staleLeft = p.paneNow(), p.staleCaptures
+			}
+			switch {
+			case p.clearDropsOneByte && len(p.held) > 1:
+				p.held = p.held[:len(p.held)-1]
+			case p.clearKeepsBytes > 0 && len(p.held) > p.clearKeepsBytes:
+				p.held = p.held[:p.clearKeepsBytes]
+			case p.clearIsNoop:
+			default:
+				p.held = ""
+			}
+			if p.markerGoneAfterClear {
+				p.markerGone = true
+			}
+			if p.activityAfterClear {
+				p.activityShown = true
+			}
+		case "enter":
+			p.enters++
+			if p.enters == 1 && p.swallowFirstEnter {
+				break
+			}
+			if p.held != "" {
+				p.submitted = true
+			}
+			p.held = ""
+		}
+	}
+	return exec.CommandContext(ctx, "true")
+}
+
+// submitSteps renders the recorded calls as the ordered delivery/keystroke steps
+// the submit path emitted, so a test can assert their ORDER across both delivery
+// shapes (literal typing and bracketed paste) without re-encoding each argv.
+func (p *composerPane) submitSteps() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var steps []string
+	for _, call := range p.calls {
+		switch call.subcommand {
+		case "paste-buffer":
+			steps = append(steps, "paste")
+		case "send-keys":
+			if kind := sendKeysKind(call.args); kind != "other" {
+				steps = append(steps, kind)
+			}
+		}
+	}
+	return steps
+}
+
+// stepsFromFirstClear is submitSteps with the capture-pane calls left IN, from
+// the first clear onwards. The captures are the only place a test can see HOW
+// the submit path decided what the composer held — how many times it looked, and
+// at what point in the keystroke sequence — which is what separates a decision
+// taken on one reading from one taken on a second, later reading of the same
+// composer.
+func (p *composerPane) stepsFromFirstClear() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var steps []string
+	for _, call := range p.calls {
+		switch call.subcommand {
+		case "capture-pane":
+			steps = append(steps, "capture")
+		case "paste-buffer":
+			steps = append(steps, "paste")
+		case "send-keys":
+			if kind := sendKeysKind(call.args); kind != "other" {
+				steps = append(steps, kind)
+			}
+		}
+	}
+	if i := slices.Index(steps, "clear"); i >= 0 {
+		return steps[i:]
+	}
+	return nil
+}
+
+// didSubmit reports whether the composer ever handed a payload to the agent —
+// the fake's own record of what actually left the input box, independent of the
+// argv the submit path emitted.
+func (p *composerPane) didSubmit() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.submitted
+}
+
+func (p *composerPane) argvOfKind(kind string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, call := range p.calls {
+		if call.subcommand == "send-keys" && sendKeysKind(call.args) == kind {
+			return call.args
+		}
+	}
+	return nil
+}
+
+// TestSendLine_RetryClearsComposerBeforeSecondEnter is the BOS-598 idempotency
+// guard (acceptance criterion 4). Before this change the retry fired a bare
+// second Enter: if the FIRST Enter had in fact been accepted and the verifier
+// simply could not see it yet, that stray Enter landed in a freshly-emptied
+// composer — and if the composer still held the payload, a re-delivery without
+// clearing would double-type it. The retry must therefore clear the composer
+// (send-keys C-u) and re-deliver the payload before its second Enter.
+//
+// The assertion is against the recorded tmux argv, which is the only place the
+// ordering is observable: send-keys -l (deliver) → Enter → C-u (clear) →
+// send-keys -l (re-deliver) → Enter.
+func TestSendLine_RetryClearsComposerBeforeSecondEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error: %v", err)
+	}
+
+	want := []string{"literal", "enter", "clear", "literal", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v", got, want)
+	}
+
+	// The clear must be targeted at the session under test, not a bare global
+	// keystroke that could land in whatever pane tmux considers current.
+	clearArgs := pane.argvOfKind("clear")
+	if len(clearArgs) < 3 || clearArgs[0] != "-t" || clearArgs[1] != "boss-test-sess" {
+		t.Fatalf("clear argv = %v, want it targeted at -t boss-test-sess", clearArgs)
+	}
+}
+
+// TestSendPlan_MultiLineRetryClearsComposerBeforeSecondEnter is the multi-line
+// analogue, and covers the riskier of the two delivery shapes: a swallowed Enter
+// on a pasted plan used to be retried with a bare Enter, and re-delivering
+// without a clear would concatenate a second copy of the WHOLE plan. The paste
+// path must show the same clear-then-re-deliver ordering as the literal one.
+func TestSendPlan_MultiLineRetryClearsComposerBeforeSecondEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	const plan = "line one\nline two"
+	pane := &composerPane{pasted: plan, swallowFirstEnter: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendPlan(context.Background(), "boss-test-sess", plan, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendPlan multi-line retry: unexpected error: %v", err)
+	}
+
+	want := []string{"paste", "enter", "clear", "paste", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v", got, want)
+	}
+}
+
+// TestSendLine_RetryNoOpClearSubmitsTheIntactPayloadOnce pins the benign half of
+// the clear postcondition. C-u is kill-to-start-of-LINE and nothing in this repo
+// demonstrates that either the Claude or the Codex composer empties on one press,
+// so the composer surviving is expected, not exceptional. When it survives
+// UNCHANGED the keystroke was a no-op and the held payload is intact, so the
+// retry must NOT re-deliver — typing a second copy on top of the first would
+// submit both concatenated. It presses Enter on what is already there, exactly
+// once, and succeeds.
+func TestSendLine_RetryNoOpClearSubmitsTheIntactPayloadOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearIsNoop: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error for a no-op clear: %v", err)
+	}
+
+	// One delivery only: the second Enter lands on the copy already held.
+	want := []string{"literal", "enter", "clear", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no second copy typed onto an intact payload)", got, want)
+	}
+}
+
+// TestSendLine_RetryTreatsAnUnreadableSnapshotAsNoEvidence pins the cost of
+// getting the UNREADABLE capture wrong. composerFootprint returns "" for a pane
+// that drew no input box, and a repainting composer really does produce such a
+// frame — the box is erased and redrawn, so a capture can land in between. That
+// frame says nothing about what the composer holds, in EITHER direction: reading
+// it as a cut latches mutilation, a one-way door that forbids every later Enter
+// and fails a healthy delivery loudly as NOT_SUBMITTED with the payload sitting
+// intact in the box.
+//
+// So the baseline is polled rather than sampled: the retry looks again until the
+// box is readable, and only what it reads there licenses anything. The composer
+// here survives C-u untouched, exactly as in the no-op case above, and only the
+// first look is blank — the retry must still recover: one Enter onto the intact
+// payload, no second copy typed.
+func TestSendLine_RetryTreatsAnUnreadableSnapshotAsNoEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	// Capture 3 is the baseline poll's FIRST look: the ready-marker wait takes
+	// capture 1 and the first submission verify takes capture 2, each of those
+	// windows taking exactly one capture because its budget is well under the
+	// pollers' default tick. Any other capture landing on it changes the outcome,
+	// so a mis-count fails this test rather than passing it vacuously.
+	pane := &composerPane{swallowFirstEnter: true, clearIsNoop: true, markerlessCaptureNo: 3}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error when only the pre-clear snapshot was unreadable: %v", err)
+	}
+
+	want := []string{"literal", "enter", "clear", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (a blank snapshot is not proof the clear cut into the payload)", got, want)
+	}
+}
+
+// TestSendLine_RetryUnreadableSnapshotIsNotALicenceToEnterATruncatedPayload is
+// the twin of the test above, and the reason the two must be pinned together:
+// the SAME unreadable frame that must not be read as a cut must equally not be
+// read as proof of an intact payload. Whichever way an absent footprint is
+// resolved by default, one of these two deliveries is wrong — so neither may be
+// decided from it, and the composer must be read again until it is legible.
+//
+// Here the pane is unreadable exactly when the clear truncates the payload, and
+// then holds the fragment. Reading "no evidence of a cut" as "safe to Enter"
+// submits the fragment, which leaves the composer, which the verifier reads as
+// submitted — delivered=true for corrupted user text, silently, with every test
+// green. Nothing is ever Entered onto a payload that could not be shown intact.
+func TestSendLine_RetryUnreadableSnapshotIsNotALicenceToEnterATruncatedPayload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	// Capture 3 is the retry's first look at the composer (see the capture count
+	// above), and the press that follows it takes all but the first 9 bytes of the
+	// payload; clearIsNoop then holds the fragment there, so the run can only end
+	// loudly or by submitting mutilated text.
+	pane := &composerPane{
+		swallowFirstEnter:   true,
+		markerlessCaptureNo: 3,
+		clearKeepsBytes:     len("$boss-rep"),
+		clearIsNoop:         true,
+	}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the clear truncated the payload behind an unreadable frame, got nil (mutilated text was submitted and reported as success)")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	if steps := pane.stepsFromFirstClear(); slices.Contains(steps, "enter") {
+		t.Fatalf("steps from the clear = %v, want no enter (the composer held a truncated payload)", steps)
+	}
+}
+
+// TestSendLine_RetryPressesNoKeyWhileTheComposerStaysUnreadable pins the floor
+// under the two tests above. They both rest on there being a readable reading of
+// the composer to judge later ones against; this is the case where there is
+// none — the box never renders inside the retry's budget.
+//
+// Every key available here is unsafe without one. Enter would submit whatever
+// the invisible box holds, which may already be a fragment, and C-u would keep
+// cutting into a payload no one can see. The only correct move is to press
+// nothing and say so loudly: the payload is confirmed still pending (the caller
+// proved that before the retry began, and no key has been sent since), so the
+// operator gets an accurate NOT_SUBMITTED they can retry rather than a silent
+// corruption or a "may already have been submitted" they cannot act on.
+func TestSendLine_RetryPressesNoKeyWhileTheComposerStaysUnreadable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	// Captures 1 and 2 are the ready-marker wait and the first submission verify,
+	// which must see the payload sitting in the composer for the retry to run at
+	// all; the box is gone from capture 3 on, so every look the retry takes is
+	// unreadable.
+	pane := &composerPane{swallowFirstEnter: true, markerlessFromCaptureNo: 3}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the composer never became readable, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (nothing was pressed, so nothing was submitted)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	// The literal and the swallowed Enter are the original delivery; the retry
+	// itself adds nothing — not even the C-u it would otherwise open with.
+	want := []string{"literal", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no key may be pressed into a composer that cannot be read)", got, want)
+	}
+}
+
+// TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload pins the
+// dominant hostile case. C-u is a line-scoped kill, so against a composer whose
+// payload spans more than one rendered row it leaves a TRUNCATED copy behind,
+// and the pane predicates are prefix-based (wrapping immunity, BOS-489) so they
+// read that fragment as "still holds the payload" — indistinguishable from the
+// intact case on content alone. Pressing Enter there would submit mangled user
+// text and report success. What separates the two is whether a press CHANGES the
+// composer: a shrinking footprint proves the kill is landing, so the retry keeps
+// pressing (bounded) until the composer is provably empty, and only then
+// re-delivers and submits.
+func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep")}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: want the second clear to converge and submit, got %v", err)
+	}
+	// Two clears: the first truncates, the second empties. Only once the
+	// composer is provably empty is the payload re-typed and submitted — the
+	// mutilated fragment is never what gets Entered.
+	want := []string{"literal", "enter", "clear", "clear", "literal", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (clear until empty, then re-deliver)", got, want)
+	}
+}
+
+// TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges pins the surrender
+// branch. A composer that gives up one byte per press is still CHANGING, so the
+// no-op shortcut never fires and the payload is never intact — but it also never
+// empties. The retry must not press forever, and it must never Enter onto the
+// surviving fragment: after a bounded number of presses it fails loudly as
+// NOT_SUBMITTED, which is precisely true.
+func TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearDropsOneByte: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the clear never converges, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	// Bounded presses, and no Enter after any of them: nothing is typed into,
+	// and nothing is submitted from, a composer whose contents cannot be
+	// trusted. The absent trailing Enter is what proves the fragment never
+	// submitted.
+	want := []string{"literal", "enter", "clear", "clear", "clear"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no Enter onto a mutilated payload)", got, want)
+	}
+}
+
+// TestSendLine_RetryFailsLoudlyWhenAPartialClearThenStalls pins the interaction
+// between the two clear outcomes, which is where the unchanged-footprint
+// shortcut is unsound unless the mutilation is LATCHED. C-u is line-scoped, so
+// press 1 can kill only part of the payload (footprint changes, so the loop
+// correctly presses again) and press 2 can then be a genuine no-op (footprint
+// unchanged). Reading that second press as "the press did nothing, so the held
+// payload is intact" is false — the payload was already cut — and Entering the
+// remainder would submit mangled user text AND report success, because the
+// mutilated text leaving the composer is exactly what the verifier reads as
+// submitted. Once anything has been killed, an unchanged footprint means STUCK,
+// not intact: the same loud not-submitted failure as the press cap, with no
+// Enter.
+//
+// clearKeepsBytes plus clearIsNoop models that composer directly: the first
+// press truncates to the kept prefix, and every later press finds nothing more
+// to kill on that line.
+func TestSendLine_RetryFailsLoudlyWhenAPartialClearThenStalls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep"), clearIsNoop: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when a partial clear stalls, got nil (a mutilated payload was submitted and reported as success)")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	// The absent trailing Enter is the assertion that matters: the truncated
+	// payload is never submitted.
+	want := []string{"literal", "enter", "clear", "clear"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no Enter onto a mutilated payload)", got, want)
+	}
+}
+
+// TestSendLine_RetryNeverSubmitsAWrappedPayloadTheClearTruncated is the
+// wrapped-geometry twin of the stall test above, and the regression guard for
+// the defect that survived three fix rounds of BOS-598 with a green suite each
+// time.
+//
+// A payload line WIDER than the pane occupies several physical rows. C-u is
+// line-scoped, so it can kill the tail of that line and leave the MARKER row
+// byte-identical — every visible difference lands on the continuation rows
+// below it. A footprint that reads only the marker row, or that admits a
+// below-marker row only when it exactly equals a whole payload line, therefore
+// sees NOTHING change across the clear. That reads as "the press did nothing,
+// so the box still holds the payload intact", the bare Enter fires on the
+// fragment, and the RPC answers delivered=true / DELIVERY_STATE_SUBMITTED for
+// silently truncated user text — falsifying acceptance criterion 3 on the exact
+// path the retry exists to serve. Over-wide lines are the normal case for the
+// multi-line payloads that path carries, not a corner.
+//
+// The composer must instead see the continuation rows change, latch mutilated,
+// and fail loudly with no Enter at all.
+func TestSendLine_RetryNeverSubmitsAWrappedPayloadTheClearTruncated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	// Deliberately free of the prompt-marker glyphs, so no wrapped continuation
+	// row can be mistaken for the marker row itself.
+	const wide = "$boss-repair fix the failing check on pull request 1754 and push the result"
+	const paneWidth = 24
+	const keepBytes = 40
+
+	// The geometry IS the test: unless the kept prefix outruns the marker row,
+	// the truncation shows up on the marker row and this degenerates into the
+	// easy case the existing tests already cover.
+	if keepBytes <= paneWidth || keepBytes >= len(wide) {
+		t.Fatalf("test geometry is wrong: need paneWidth(%d) < keepBytes(%d) < len(payload)(%d), so the clear leaves the marker row identical and cuts only the rows below it", paneWidth, keepBytes, len(wide))
+	}
+
+	pane := &composerPane{
+		swallowFirstEnter: true,
+		paneWidth:         paneWidth,
+		clearKeepsBytes:   keepBytes,
+		clearIsNoop:       true,
+	}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", wide, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the clear truncates a WRAPPED payload, got nil (a truncated payload was submitted and reported as delivered)")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	// The absent trailing Enter is the assertion that matters: the truncated
+	// payload is never submitted.
+	want := []string{"literal", "enter", "clear", "clear"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no Enter onto a truncated wrapped payload)", got, want)
+	}
+	// And the composer itself agrees: nothing was ever handed to the agent after
+	// the swallowed first Enter.
+	if pane.didSubmit() {
+		t.Fatal("the composer submitted a payload: the truncated fragment reached the agent")
+	}
+}
+
+// TestSendLine_RetrySubmitsAnIntactWrappedPayloadInPlace is the counterweight
+// to the truncation guard above, and the test that isolates the FOOTPRINT fix
+// from the baseline one.
+//
+// The two guards can mask each other. Refusing to Enter a wrapped payload is
+// trivially achievable by refusing to Enter EVERY wrapped payload — and since
+// an over-wide line is the normal case for the payloads this retry serves, that
+// would turn the dominant healthy send into a permanent loud failure while the
+// truncation test still passed. So this pins the other side: an over-wide
+// payload that survives its C-u INTACT must still be recovered in place by the
+// bare Enter, with no re-delivery (a second copy would concatenate).
+//
+// It fails unless composerFootprint reads the wrapped continuation rows: with a
+// footprint that stops at the marker row, the baseline never accounts for the
+// whole payload, the mutilation guard latches before a single key is pressed,
+// and this healthy send is rejected as not-submitted.
+func TestSendLine_RetrySubmitsAnIntactWrappedPayloadInPlace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	const wide = "$boss-repair fix the failing check on pull request 1754 and push the result"
+	pane := &composerPane{
+		swallowFirstEnter: true,
+		paneWidth:         24,
+		clearIsNoop:       true,
+	}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", wide, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: want an INTACT wrapped payload to be recovered by the bare Enter, got %v", err)
+	}
+	// No second delivery: the box still holds the payload, so it is submitted
+	// where it sits.
+	want := []string{"literal", "enter", "clear", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (submit the intact wrapped payload in place)", got, want)
+	}
+	if !pane.didSubmit() {
+		t.Fatal("the composer never submitted: the intact wrapped payload was not delivered")
+	}
+}
+
+// TestSendLine_RetryNeverSubmitsAPayloadThatArrivedTruncated pins the OTHER
+// direction the baseline can be wrong, and isolates the baseline fix from the
+// footprint one by staying on a single unwrapped row throughout.
+//
+// Every mutilation decision in the retry is taken by comparing a post-clear
+// reading against the baseline, which can only ever establish that nothing
+// CHANGED. A composer that was ALREADY holding a truncated payload when the
+// retry first looked at it is therefore the one shape those comparisons cannot
+// speak to: the reading is perfectly stable across a no-op C-u, no press is at
+// fault, and the bare Enter fires on the fragment — reporting delivered=true for
+// user text the agent never fully received. The content predicates cannot catch
+// it either, being prefix-based for wrapping immunity (BOS-489).
+//
+// So the baseline must be checked against the payload itself, not merely
+// re-read: a reading that does not account for the whole payload is not
+// evidence the box holds it.
+func TestSendLine_RetryNeverSubmitsAPayloadThatArrivedTruncated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	const payload = "$boss-repair"
+	pane := &composerPane{
+		swallowFirstEnter: true,
+		deliverKeepsBytes: len("$boss-rep"),
+		clearIsNoop:       true,
+	}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", payload, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the composer already held a truncated payload, got nil (the fragment was submitted and reported as delivered)")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	if pane.didSubmit() {
+		t.Fatal("the composer submitted a payload: the truncated fragment reached the agent")
+	}
+}
+
+// TestSendPlan_MultiLineRetryConvergesWhenTheClearIsPartial is the multi-line
+// twin of the convergence test. A multi-line payload is exactly where a
+// line-scoped kill leaves a fragment, so the paste path must reach the same
+// place: clear until empty, then re-PASTE (not re-type) and submit once.
+func TestSendPlan_MultiLineRetryConvergesWhenTheClearIsPartial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	const plan = "line one\nline two"
+	pane := &composerPane{pasted: plan, swallowFirstEnter: true, clearKeepsBytes: len("line one")}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendPlan(context.Background(), "boss-test-sess", plan, sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendPlan retry: want the second clear to converge and submit, got %v", err)
+	}
+	want := []string{"paste", "enter", "clear", "clear", "paste", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (clear until empty, then re-paste)", got, want)
+	}
+}
+
+// TestSendLine_RetryAgentActivityIsNotEvidenceTheClearWorked pins the boundary
+// between the two questions the retry asks. "Was this submitted?" is satisfied
+// by agent activity below the input box; "is the composer empty?" is not, because
+// C-u cannot make an agent respond. Answering the second with the first meant a
+// pane that demonstrably STILL held the payload, but happened to render an
+// activity glyph below the marker, classified as a cleared composer — the one
+// state that licenses the retry to re-type and press Enter, submitting two
+// concatenated copies of the user's message.
+//
+// The composer here survives C-u intact and shows activity from the clear
+// onwards, so the recorded argv must show exactly one delivery: the retry
+// presses Enter on the copy already held and never types a second.
+func TestSendLine_RetryAgentActivityIsNotEvidenceTheClearWorked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearIsNoop: true, activityAfterClear: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error: %v", err)
+	}
+
+	want := []string{"literal", "enter", "clear", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (activity below the marker is not a cleared composer, so nothing is re-typed)", got, want)
+	}
+}
+
+// TestSendLine_RetryReReadsThePaneBeforeABareEnter pins the loss mode hiding
+// inside the unchanged-footprint shortcut. "The two captures agree" is what a
+// no-op C-u looks like — and equally what a composer that DID empty looks like
+// before it repaints, since both captures are taken inside one clear slice. On
+// the second reading a bare Enter lands in an empty box, and waitForSubmission
+// then reads that cleared composer as "submitted": delivered=true for a payload
+// that was silently discarded.
+//
+// So an unchanged footprint may not be acted on blind. A second, later reading
+// separates the two: if the box is in fact empty the retry must re-deliver
+// before its Enter, exactly as it does when the clear is observed to take.
+//
+// The pane owes exactly ONE repaint (staleCaptures: 1), and the sequence rather
+// than the clock is what makes this deterministic: submitVerifyTick is left zero
+// so each poll window's budget (submitVerifyWait/3, ~10ms) is far under the
+// pollers' 100ms default tick, and every window therefore takes exactly one
+// capture. Capture 1 after the clear is the stale one the clear-verify window
+// sees; capture 2 is the re-read, and the first sight of the truth.
+func TestSendLine_RetryReReadsThePaneBeforeABareEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, staleCaptures: 1}
+	c := NewClient(WithCommandFactory(pane.factory))
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sendLine retry: unexpected error for a slow-repainting composer: %v", err)
+	}
+
+	// The re-delivery between the clear and the final Enter is half the
+	// assertion: a bare Enter there would submit an empty composer and the
+	// verifier would report that as success. The other half is the SECOND capture
+	// before it — the re-read this test exists for. A retry that decided on the
+	// clear-verify window's reading alone reaches the same keystrokes as the
+	// ordinary observed-clear path (TestSendLine_RetryClearsComposerBeforeSecondEnter),
+	// so the keystrokes alone cannot tell the two apart; the extra look can.
+	want := []string{"clear", "capture", "capture", "literal", "enter", "capture"}
+	if got := pane.stepsFromFirstClear(); !slices.Equal(got, want) {
+		t.Fatalf("steps from the clear = %v, want %v (look again before acting on an unchanged composer, then re-deliver into it)", got, want)
+	}
+}
+
+// TestSendLine_RetryLooksAgainBeforeEnteringAMutilatedRemainder pins the loss
+// mode the re-read itself can introduce. The re-read exists because an unchanged
+// footprint may be a stale screen rather than a no-op C-u — but "the pane
+// repainted" and "the payload is intact" are different claims. C-u is
+// line-scoped, so the repaint can reveal a TRUNCATED payload, and the content
+// predicates are prefix-based (BOS-489) so the fragment still reads as "the
+// composer holds the payload". Acting on that reading alone sends a bare Enter
+// onto mutilated user text; the fragment then leaves the composer, which
+// waitForSubmission reads as submitted, and the RPC reports delivered=true for
+// corrupted text.
+//
+// The second reading must therefore be compared against the baseline exactly as
+// the first one is: a footprint that is anything OTHER than what the box held
+// before a key was pressed is a cut, so mutilation latches and the loop presses
+// again instead of Entering the remainder. Here the composer truncates on press
+// 1 and then survives every later press, so the run ends where a stuck partial
+// clear must — loudly, with no Enter.
+func TestSendLine_RetryLooksAgainBeforeEnteringAMutilatedRemainder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{
+		swallowFirstEnter: true,
+		clearKeepsBytes:   len("$boss-rep"),
+		clearIsNoop:       true,
+		staleCaptures:     1,
+	}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want a loud error when the repaint reveals a truncated payload, got nil (mutilated text was submitted and reported as success)")
+	}
+	if got := OutcomeOf(err); got != OutcomeNotSubmitted {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload provably never left the composer)", got, OutcomeNotSubmitted)
+	}
+	if !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, want it to carry errSubmissionPending", err)
+	}
+	// No Enter after any clear: the truncated payload is never submitted. Each
+	// press costs its post-clear window plus the re-read; the reading they are
+	// judged against is the ONE baseline taken before the first clear, so no press
+	// pays for a pre-clear capture of its own.
+	want := []string{"clear", "capture", "capture", "clear", "capture", "capture"}
+	if got := pane.stepsFromFirstClear(); !slices.Equal(got, want) {
+		t.Fatalf("steps from the clear = %v, want %v (no Enter onto a mutilated payload)", got, want)
+	}
+}
+
+// TestSendLine_RetryComposerVanishingOnTheReReadIsUnconfirmed is the vanishing
+// twin of the re-read. The box can disappear on the repaint the re-read is there
+// to wait for — the agent accepted the payload after all and went full-screen —
+// and the second reading must classify that exactly as the first one does. A
+// pane with no input box is unknowable, not cleared: re-delivering into it
+// submits the message twice, and Entering into it is the same double-submit.
+func TestSendLine_RetryComposerVanishingOnTheReReadIsUnconfirmed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, markerGoneAfterClear: true, staleCaptures: 1}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want an error when the composer vanishes on the re-read, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeUnconfirmed {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload may have been accepted)", got, OutcomeUnconfirmed)
+	}
+	if errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, must NOT claim the payload is confirmed pending", err)
+	}
+	// The stale capture hides the vanishing from the clear-verify window, so the
+	// re-read is the capture that sees it: two looks, then a stop.
+	want := []string{"clear", "capture", "capture"}
+	if got := pane.stepsFromFirstClear(); !slices.Equal(got, want) {
+		t.Fatalf("steps from the clear = %v, want %v (no keystroke into a pane with no input box)", got, want)
+	}
+}
+
+// TestSendLine_RetryComposerVanishingAfterClearIsUnconfirmed pins the other way
+// "the composer is not holding the payload" can arise. classifyComposerAfterClear
+// must not read a pane with NO input box as a cleared composer: the box can
+// disappear because the agent accepted the payload after all and went
+// full-screen, and re-delivering into that submits the message twice — the exact
+// double-submit this change exists to prevent. It is unknowable, not cleared.
+func TestSendLine_RetryComposerVanishingAfterClearIsUnconfirmed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, markerGoneAfterClear: true}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("sendLine retry: want an error when the composer vanishes after the clear, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeUnconfirmed {
+		t.Fatalf("OutcomeOf(err) = %v, want %v (the payload may have been accepted)", got, OutcomeUnconfirmed)
+	}
+	if errors.Is(err, errSubmissionPending) {
+		t.Fatalf("err = %v, must NOT claim the payload is confirmed pending", err)
+	}
+
+	want := []string{"literal", "enter", "clear"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no re-delivery into a pane with no input box)", got, want)
+	}
+}
+
+// TestSendPlan_MultiLineNoComposerDrawnIsUnconfirmed pins the classification
+// asymmetry the clear is gated on. The two submission predicates disagree about
+// a pane with NO prompt marker: lineStillAtPrompt reads it as submitted (the
+// agent is working full-screen), while multiLineSubmitted fails toward "still
+// pending". A multi-line plan pasted into a booting agent or behind a
+// full-screen overlay therefore reaches the verify deadline as "pending" without
+// a single positive observation — and calling that a confirmed not-submitted
+// would license C-u plus a full re-paste into a pane the verifier cannot see.
+//
+// It must classify as UNCONFIRMED and send no recovery keystrokes at all.
+func TestSendPlan_MultiLineNoComposerDrawnIsUnconfirmed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	var mu sync.Mutex
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		if subcommand == "capture-pane" {
+			// Satisfies the ready-marker wait, but never draws an input box:
+			// no prompt-marker row appears at any point.
+			return exec.CommandContext(ctx, "printf", "%s", "ready\nbooting the agent\n")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendPlan(context.Background(), "boss-test-sess", "line one\nline two", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected an error when no composer is ever drawn, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeUnconfirmed {
+		t.Fatalf("OutcomeOf(err) = %v, want %v", got, OutcomeUnconfirmed)
+	}
+	if errors.Is(err, errSubmissionPending) {
+		t.Fatal("an unconfirmed result must not carry errSubmissionPending: that sentinel is what gates the composer clear")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, call := range calls {
+		if call.subcommand == "send-keys" && sendKeysKind(call.args) == "clear" {
+			t.Fatalf("sent C-u into a pane with no composer drawn, calls = %+v", calls)
+		}
+	}
+}
+
+// TestUnconfirmedErrorsStateTheObservationNotTheVerdict pins what an UNCONFIRMED
+// error is for. The verdict already travels beside it — OutcomeUnconfirmed here,
+// delivery_state on the wire — and every surface that renders one labels the
+// state itself before printing this text ("delivery unconfirmed: …" in the CLI).
+// An error that also opens with its own verdict therefore makes the operator
+// read the same fact twice in one line, pushing the part only this text knows
+// (which pane, and what was actually seen) past where it is skimmed.
+//
+// So each of these must name its pane and describe what was observed, and must
+// not re-state that submission could not be verified.
+func TestUnconfirmedErrorsStateTheObservationNotTheVerdict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// send provokes one of the UNCONFIRMED exits against session "boss-test-sess".
+		send func() error
+		// observed is the thing only this error knows.
+		observed string
+	}{
+		{
+			name: "the composer vanished after the clear",
+			send: func() error {
+				pane := &composerPane{swallowFirstEnter: true, markerGoneAfterClear: true}
+				return NewClient(WithCommandFactory(pane.factory)).sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+					readyMarker:      "ready",
+					submitVerifyWait: 20 * time.Millisecond,
+					submitVerifyTick: time.Millisecond,
+				})
+			},
+			observed: "disappeared after the composer clear",
+		},
+		{
+			name: "no composer was ever drawn",
+			send: func() error {
+				factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+					if len(args) > 0 && args[0] == "capture-pane" {
+						// Satisfies the ready-marker wait, never draws an input box.
+						return exec.CommandContext(ctx, "printf", "%s", "ready\nbooting the agent\n")
+					}
+					return exec.CommandContext(ctx, "true")
+				}
+				return NewClient(WithCommandFactory(factory)).sendPlan(context.Background(), "boss-test-sess", "line one\nline two", sendPlanOpts{
+					readyMarker:      "ready",
+					submitVerifyWait: 20 * time.Millisecond,
+					submitVerifyTick: time.Millisecond,
+				})
+			},
+			observed: "no live composer was drawn",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.send()
+			if err == nil {
+				t.Fatal("want an unconfirmed error, got nil")
+			}
+			if got := OutcomeOf(err); got != OutcomeUnconfirmed {
+				t.Fatalf("OutcomeOf(err) = %v, want %v", got, OutcomeUnconfirmed)
+			}
+			text := err.Error()
+			if !strings.Contains(text, "boss-test-sess") {
+				t.Fatalf("err = %q, want it to name the pane the operator has to go and look at", text)
+			}
+			if !strings.Contains(text, tc.observed) {
+				t.Fatalf("err = %q, want it to carry the observation %q", text, tc.observed)
+			}
+			if !strings.Contains(text, "the payload's state is unknown") {
+				t.Fatalf("err = %q, want it to say what the observation means for the payload", text)
+			}
+			for _, verdict := range []string{"could not be verified", "unconfirmed"} {
+				if strings.Contains(text, verdict) {
+					t.Fatalf("err = %q re-states the verdict %q that every surface prefixes for itself", text, verdict)
+				}
+			}
+		})
+	}
+}
+
+// TestSendLine_UnconfirmedCaptureFailureSkipsRetry proves the composer clear is
+// gated on a CONFIRMED-pending verdict. A capture failure leaves the pane state
+// unknown, so firing C-u (and an Enter) into it could clobber whatever the user
+// is actually looking at. The verifier must classify that as unconfirmed and
+// send no recovery keystrokes at all.
+func TestSendLine_UnconfirmedCaptureFailureSkipsRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	var mu sync.Mutex
+	captureCount := 0
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		if subcommand == "capture-pane" {
+			captureCount++
+			// The first capture satisfies the ready-marker wait; every capture
+			// after it (i.e. the verification polls) fails.
+			if captureCount == 1 {
+				return exec.CommandContext(ctx, "printf", "%s", "ready\n› \n")
+			}
+			return exec.CommandContext(ctx, "false")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected an error when verification cannot resolve, got nil")
+	}
+	if got := OutcomeOf(err); got != OutcomeUnconfirmed {
+		t.Fatalf("OutcomeOf(err) = %v, want %v", got, OutcomeUnconfirmed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var kinds []string
+	for _, call := range calls {
+		if call.subcommand == "send-keys" {
+			kinds = append(kinds, sendKeysKind(call.args))
+		}
+	}
+	want := []string{"literal", "enter"}
+	if len(kinds) != len(want) || kinds[0] != want[0] || kinds[1] != want[1] {
+		t.Fatalf("send-keys sequence = %v, want %v (no clear, no retry Enter)", kinds, want)
 	}
 }

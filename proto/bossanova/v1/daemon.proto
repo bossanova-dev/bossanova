@@ -806,10 +806,42 @@ message SendChatMessageResponse {
   // notice_text carries a user-facing outcome summary for a message that bossd
   // handled mechanically instead of delivering to the agent — today, a
   // single-line "/boss switch" account switch intercepted before the tmux paste
-  // (credit-free manual switch). On that path delivered is false and no LLM call
-  // is made, so callers keying on delivered to mean "handled" MUST also read
-  // notice_text. Empty for an ordinary delivered message.
+  // (credit-free manual switch), or a submit whose outcome could not be
+  // confirmed (delivery_state UNCONFIRMED). On those paths delivered is false, so
+  // callers keying on delivered to mean "handled" MUST also read notice_text.
+  // Empty for an ordinary delivered message.
   string notice_text = 3;
+
+  // DeliveryState reports what the submit verifier actually observed, so a caller
+  // can tell "confirmed not submitted" (retrying is safe and necessary) from
+  // "could not confirm" (retrying may double-type) without scraping tmux.
+  enum DeliveryState {
+    // Unset: the request did not submit (prefill-only), or bossd handled the
+    // message mechanically without ever reaching the composer.
+    DELIVERY_STATE_UNSPECIFIED = 0;
+    // A positive signal confirmed the payload left the composer.
+    DELIVERY_STATE_SUBMITTED = 1;
+    // The verify budget elapsed with the payload still in the live composer.
+    // Returned as an error, not a response — see the SendChatMessage RPC.
+    DELIVERY_STATE_NOT_SUBMITTED = 2;
+    // Verification itself failed (pane capture error or cancelled context), so
+    // the pane state is unknown: the payload may or may not have been submitted.
+    DELIVERY_STATE_UNCONFIRMED = 3;
+    // The verify budget elapsed with the payload still rendered in the live
+    // composer, AND the chat's agent reported it is mid-turn — so the agent
+    // accepted the message into its queue and will consume it when the running
+    // turn ends. A DELIVERED outcome despite the payload still being on screen:
+    // a caller MUST NOT retry it, because the message is not lost and a resend
+    // would queue a second copy.
+    DELIVERY_STATE_QUEUED = 4;
+  }
+  // delivery_state is UNSPECIFIED on every path that does not run the submit
+  // verifier, SUBMITTED alongside delivered=true, QUEUED alongside
+  // delivered=true when the agent queued the message behind a running turn, and
+  // UNCONFIRMED alongside delivered=false when verification could not resolve.
+  // NOT_SUBMITTED never appears on a response (that outcome is an error whose
+  // message names it).
+  DeliveryState delivery_state = 4;
 }
 
 // --- Chat Status (cross-client heartbeat sharing) ---

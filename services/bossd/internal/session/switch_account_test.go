@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
@@ -374,6 +375,63 @@ func TestSwitchAccount_CrossAgentChatSucceeds(t *testing.T) {
 	}
 	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
 		t.Errorf("session AccountID = %v, want nil (session binding untouched)", got)
+	}
+}
+
+// TestSwitchAccount_UnattendedCodexRespawnPreservesCapabilityProfile proves an
+// account switch retains the original unattended launch's capability gate. The
+// respawn is tmux-hosted, but its persisted session provenance still requires
+// validating the target account's CODEX_HOME before it can start.
+func TestSwitchAccount_UnattendedCodexRespawnPreservesCapabilityProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	h.sessions.sessions["sess-1"].IsTmuxUnattended = true
+	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+	}}
+
+	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	}); err != nil {
+		t.Fatalf("SwitchAccount: %v", err)
+	}
+	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each", h.agentRun.preflightCalls, len(h.agentRun.preflights))
+	}
+	if got := h.agentRun.preflights[0]; got.agentName != "codex" || got.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("preflight = %+v, want codex with tracker-plan-attachment-v1", got)
+	}
+}
+
+// TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile proves a
+// repair chat's autonomous capability requirement survives account rotation
+// even when its parent session is otherwise interactive.
+func TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t)
+	h.chats.chatsBySession["sess-1"][0].Title = "Repair: interactive session"
+	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+	}}
+
+	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	}); err != nil {
+		t.Fatalf("SwitchAccount: %v", err)
+	}
+	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each", h.agentRun.preflightCalls, len(h.agentRun.preflights))
+	}
+	if got := h.agentRun.preflights[0]; got.agentName != "codex" || got.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("preflight = %+v, want codex with tracker-plan-attachment-v1", got)
 	}
 }
 

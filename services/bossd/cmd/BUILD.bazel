@@ -15,6 +15,7 @@ go_library(
     deps = [
         "//lib/bossalib/apiversion",
         "//lib/bossalib/buildinfo",
+        "//lib/bossalib/chatdelivery",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/errortrack",

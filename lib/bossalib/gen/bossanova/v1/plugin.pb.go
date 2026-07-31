@@ -4380,8 +4380,18 @@ func (x *HasQuestionPromptRequest) GetPaneContent() []byte {
 }
 
 type HasQuestionPromptResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	HasPrompt     bool                   `protobuf:"varint,1,opt,name=has_prompt,json=hasPrompt,proto3" json:"has_prompt,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The pane is waiting on the user: notify a human. True for a modal AND for
+	// a conversational question asked with a live composer.
+	HasPrompt bool `protobuf:"varint,1,opt,name=has_prompt,json=hasPrompt,proto3" json:"has_prompt,omitempty"`
+	// The prompt is MODAL: a selection UI has taken over the composer, so a
+	// keystroke is consumed as a choice rather than typed as text. Strict subset
+	// of has_prompt. Callers gating whether it is safe to DELIVER input must read
+	// this field, never has_prompt -- a conversational question sets has_prompt
+	// with the composer live, and refusing there would drop the answer (BOS-600).
+	// Plugins predating this field leave it false, which fails open to the
+	// pre-BOS-600 behaviour rather than refusing every send.
+	BlocksInput   bool `protobuf:"varint,2,opt,name=blocks_input,json=blocksInput,proto3" json:"blocks_input,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4419,6 +4429,13 @@ func (*HasQuestionPromptResponse) Descriptor() ([]byte, []int) {
 func (x *HasQuestionPromptResponse) GetHasPrompt() bool {
 	if x != nil {
 		return x.HasPrompt
+	}
+	return false
+}
+
+func (x *HasQuestionPromptResponse) GetBlocksInput() bool {
+	if x != nil {
+		return x.BlocksInput
 	}
 	return false
 }
@@ -5741,10 +5758,11 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"=\n" +
 	"\x18HasQuestionPromptRequest\x12!\n" +
-	"\fpane_content\x18\x01 \x01(\fR\vpaneContent\":\n" +
+	"\fpane_content\x18\x01 \x01(\fR\vpaneContent\"]\n" +
 	"\x19HasQuestionPromptResponse\x12\x1d\n" +
 	"\n" +
-	"has_prompt\x18\x01 \x01(\bR\thasPrompt\"<\n" +
+	"has_prompt\x18\x01 \x01(\bR\thasPrompt\x12!\n" +
+	"\fblocks_input\x18\x02 \x01(\bR\vblocksInput\"<\n" +
 	"\x17DetectUsageLimitRequest\x12!\n" +
 	"\fpane_content\x18\x01 \x01(\fR\vpaneContent\"}\n" +
 	"\x18DetectUsageLimitResponse\x12\x18\n" +

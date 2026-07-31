@@ -79,8 +79,16 @@ type tmuxSpawner interface {
 	// SendMessage delivers text into a live chat composer. submit routes the
 	// single-line verified-submit vs. paste-only-prefill behavior (BOS-242 Gap
 	// 1); readyMarker is the agent's input-box prompt glyph the submit path waits
-	// for before delivering.
-	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error
+	// for before delivering. A payload the agent accepts into its queue behind a
+	// running turn is recognised by the verifier from the pane itself (BOS-599),
+	// so no working-state probe is threaded through here.
+	//
+	// modal is the chat agent's "is this pane a menu?" grammar, consulted by the
+	// readiness gate before anything is typed; a pane showing one is refused
+	// rather than delivered into (BOS-600). It is passed per call because it
+	// varies per agent while the underlying client is shared by every chat. A nil
+	// detector disables the check.
+	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error
 	// PanePID returns the login-shell PID of the named session's first pane, so
 	// the codex provider-session resolver can bind a chat to the rollout its own
 	// process holds open (BOS-290). Errors are non-fatal to the caller, which
@@ -341,9 +349,10 @@ func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir st
 }
 
 // SendMessage delivers text into a live chat composer, routing on submit intent
-// (verified single-line submit vs. paste-only prefill) and payload shape.
-func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error {
-	return l.c.SendMessage(ctx, sessionName, text, submit, readyMarker)
+// (verified single-line submit vs. paste-only prefill) and payload shape, and
+// refusing to deliver at all when modal reports the pane is showing a menu.
+func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error {
+	return l.c.SendMessageWithModal(ctx, sessionName, text, submit, readyMarker, modal)
 }
 
 // PanePID returns the first pane's login-shell pid for the named session.

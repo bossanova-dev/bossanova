@@ -731,9 +731,19 @@ const (
 	mutedTextClose      = "\x1b[39m"
 	mutedUnderlineOpen  = "\x1b[38;2;98;98;98;58;2;98;98;98;4m"
 	mutedUnderlineClose = "\x1b[39;59;24m"
-	// endpointSeparator joins multiple endpoint labels. Rendered muted so the
-	// clickable ":port" labels remain the only emphasized tokens.
-	endpointSeparator = " · "
+	// endpointSeparator joins multiple endpoint labels with a single space.
+	// BOS-616 removed the middot that used to sit between them; the single
+	// column is the requested rendering, so do not "restore consistency" with
+	// the wider separators elsewhere in this package by reinstating a glyph.
+	//
+	// renderSessionEndpoints deliberately still writes it inside the
+	// mutedTextOpen … mutedTextClose envelope. Those bytes are inert today — a
+	// space paints no foreground, and each label already closes its own SGR
+	// state — but keeping them leaves the builder loop, and with it the OSC 8 /
+	// URL-validation branch, byte-untouched, and a glyph separator would need
+	// the muted foreground back, so re-widening stays a one-character edit. The
+	// exact bytes are pinned by TestRenderSessionEndpoints_ExactEscapes.
+	endpointSeparator = " "
 )
 
 // renderableEndpoints returns the session's HTTP endpoints that have something
@@ -769,7 +779,7 @@ func sessionHasEndpointRow(sess *pb.Session) bool {
 }
 
 // sessionEndpointLabels returns the VISIBLE (unstyled) endpoint text, e.g.
-// ":3000 · :5173", or "" when the session has no renderable endpoints. Used for
+// ":3000 :5173", or "" when the session has no renderable endpoints. Used for
 // column-width measurement, where styling bytes must not be counted — NOT for
 // deciding whether the endpoint row exists (see sessionHasEndpointRow).
 func sessionEndpointLabels(sess *pb.Session) string {
@@ -790,12 +800,12 @@ func endpointLabel(ep *pb.HttpEndpoint) string {
 }
 
 // renderSessionEndpoints returns the muted, individually clickable endpoint
-// labels for a session, joined by a muted " · ", or "" when there is nothing to
-// render. Each label is underlined and wrapped in an OSC 8 hyperlink ONLY when
-// its URL passes isHTTPEndpointURL; an endpoint whose URL is missing, non-HTTP,
-// or otherwise unsafe still shows its port, plainly muted and not underlined,
-// so the operator sees the port without the TUI emitting an escape envelope
-// around an untrusted target.
+// labels for a session, joined by a single space, or "" when there is nothing
+// to render. Each label is underlined and wrapped in an OSC 8 hyperlink ONLY
+// when its URL passes isHTTPEndpointURL; an endpoint whose URL is missing,
+// non-HTTP, or otherwise unsafe still shows its port, plainly muted and not
+// underlined, so the operator sees the port without the TUI emitting an escape
+// envelope around an untrusted target.
 func renderSessionEndpoints(sess *pb.Session) string {
 	eps := renderableEndpoints(sess)
 	if len(eps) == 0 {

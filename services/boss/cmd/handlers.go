@@ -2010,9 +2010,7 @@ func bossdPluginProcessMatcher(plugins []config.PluginConfig) func(string) bool 
 }
 
 func commandLineStartsWithExecutable(commandLine, executable string) bool {
-	commandLine = strings.TrimSpace(commandLine)
-	executable = filepath.Clean(executable)
-	return commandLine == executable || strings.HasPrefix(commandLine, executable+" ")
+	return daemon.CommandLineStartsWithExecutable(commandLine, executable)
 }
 
 func commandLineStartsWithBossdPluginExecutable(commandLine string) bool {

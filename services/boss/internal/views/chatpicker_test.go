@@ -2147,8 +2147,14 @@ func TestChatPicker_HTTPLineRendersAboveTable(t *testing.T) {
 	if tableIdx != httpIdx+1 {
 		t.Errorf("HTTP line at %d, table header at %d: want the table on the immediately following line (no blank line)", httpIdx, tableIdx)
 	}
-	if got := lines[httpIdx]; !strings.Contains(got, ":3000") || !strings.Contains(got, ":5173") || !strings.Contains(got, "·") {
-		t.Errorf("HTTP line = %q, want it to contain :3000 · :5173", got)
+	// BOS-616: the ports are joined by a single space, so assert on the visible
+	// text (OSC 8 envelopes stripped) and pin the removal of the old middot.
+	visibleHTTP := visibleRowText(lines[httpIdx])
+	if !strings.Contains(visibleHTTP, ":3000 :5173") {
+		t.Errorf("HTTP line = %q, want it to contain %q", visibleHTTP, ":3000 :5173")
+	}
+	if strings.Contains(visibleHTTP, "·") {
+		t.Errorf("HTTP line = %q, want no separator glyph between the ports", visibleHTTP)
 	}
 	if got := m.httpLineHeight(); got != 1 {
 		t.Errorf("httpLineHeight() = %d, want 1", got)
@@ -2208,7 +2214,7 @@ func TestChatPicker_HTTPLinkSurvivesViewRender(t *testing.T) {
 			t.Errorf("rendered chat-picker view lost the hyperlink %q:\n%q", want, content)
 		}
 	}
-	if !strings.Contains(visibleRowText(content), "HTTP  :3000 · :5173") {
+	if !strings.Contains(visibleRowText(content), "HTTP  :3000 :5173") {
 		t.Errorf("rendered chat-picker view lost the visible HTTP line:\n%q", content)
 	}
 }

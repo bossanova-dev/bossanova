@@ -585,9 +585,9 @@ func ErroredStatusWorld() World {
 // HTTPEndpointsSessions returns the BOS-474 dataset: one session running a dev
 // server (:3000) and a Vite server (:5173) on loopback, plus a plain neighbour
 // with no listeners. The pair proves both halves of the change — the endpoint
-// session grows a ":3000 · :5173" auxiliary row while the neighbour's rendering
-// is untouched — and the two ports prove the " · " separator and per-port
-// hyperlinks.
+// session grows a ":3000 :5173" auxiliary row while the neighbour's rendering
+// is untouched — and the two ports prove the single-space join (BOS-616) and
+// the per-port hyperlinks.
 func HTTPEndpointsSessions() []*pb.Session {
 	return []*pb.Session{
 		{

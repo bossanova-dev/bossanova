@@ -4,6 +4,9 @@ go_library(
     name = "credmaterialize",
     srcs = [
         "credmaterialize.go",
+        "hardlinks_other.go",
+        "hardlinks_unix.go",
+        "hardlinks_windows.go",
         "keyedmutex.go",
         "merge.go",
     ],

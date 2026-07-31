@@ -376,24 +376,42 @@ func trackerPlanAttachmentRequirements() []string {
 }
 
 type requiredOperation struct {
-	name    string
-	aliases []string
+	// name is the workflow capability reported in the missing/provided
+	// diagnostic; operation is the single real connector tool that satisfies it.
+	name      string
+	operation string
 }
 
 // trackerPlanAttachmentOperationContract is intentionally a small exact-name
-// allowlist. These are operation names from the Linear runtime surface, not
-// words to be searched for in arbitrary tool names. save_issue/update_issue
-// each carry the connector's field, state, and metadata mutation surface.
+// allowlist. Each requirement names exactly one tool the Linear connector
+// really exposes — the same tools buildLinearOperationMap in
+// skills-toolbox/tracker/linear.mjs declares — never a word to be searched
+// for in arbitrary tool names, and never a plausible-sounding synonym. A
+// synonym cannot be matched by any real runtime, so it buys no tolerance and
+// only risks green-lighting a runtime the adapter cannot actually drive.
+// save_issue carries the connector's field, state, and metadata mutation
+// surface, which is why three requirements share it.
+//
+// Attachment enumeration is deliberately absent: it is not a runtime
+// operation of its own, because the connector's get_issue payload already
+// carries the issue's attachments, so ticket_read.named_issue already covers
+// it. Markdown upload is deliberately absent too: the supported upload is a
+// raw signed HTTP PUT performed between
+// plan_publication.prepare_markdown_attachment (prepare_attachment_upload)
+// and plan_publication.finalize_markdown_attachment
+// (create_attachment_from_upload), so it is not an MCP call at all. The
+// connector's deprecated base64 create_attachment tool nominally uploads a
+// file, but it is not the path the plan-attachment flow takes and is
+// deliberately not accepted as a substitute for the prepare/PUT/finalize
+// sequence.
 var trackerPlanAttachmentOperationContract = []requiredOperation{
-	{name: "ticket_read.named_issue", aliases: []string{"get_issue", "read_issue"}},
-	{name: "plan_retrieval.enumerate_attachment", aliases: []string{"list_attachments", "list_issue_attachments"}},
-	{name: "plan_retrieval.download_attachment", aliases: []string{"get_attachment", "read_attachment", "download_attachment"}},
-	{name: "plan_publication.prepare_markdown_attachment", aliases: []string{"prepare_attachment_upload"}},
-	{name: "plan_publication.upload_markdown_attachment", aliases: []string{"upload_attachment"}},
-	{name: "plan_publication.finalize_markdown_attachment", aliases: []string{"create_attachment_from_upload", "finalize_attachment_upload"}},
-	{name: "ticket_mutation.update_issue_fields", aliases: []string{"save_issue", "update_issue"}},
-	{name: "ticket_mutation.update_issue_state", aliases: []string{"save_issue", "update_issue"}},
-	{name: "ticket_mutation.update_issue_metadata", aliases: []string{"save_issue", "update_issue"}},
+	{name: "ticket_read.named_issue", operation: "get_issue"},
+	{name: "plan_retrieval.download_attachment", operation: "get_attachment"},
+	{name: "plan_publication.prepare_markdown_attachment", operation: "prepare_attachment_upload"},
+	{name: "plan_publication.finalize_markdown_attachment", operation: "create_attachment_from_upload"},
+	{name: "ticket_mutation.update_issue_fields", operation: "save_issue"},
+	{name: "ticket_mutation.update_issue_state", operation: "save_issue"},
+	{name: "ticket_mutation.update_issue_metadata", operation: "save_issue"},
 }
 
 func trackerPlanAttachmentMatrix(operations []string) ([]string, []string) {
@@ -404,14 +422,7 @@ func trackerPlanAttachmentMatrix(operations []string) ([]string, []string) {
 	provided := make([]string, 0, len(trackerPlanAttachmentOperationContract))
 	missing := make([]string, 0, len(trackerPlanAttachmentOperationContract))
 	for _, requirement := range trackerPlanAttachmentOperationContract {
-		matched := false
-		for _, alias := range requirement.aliases {
-			if _, ok := available[alias]; ok {
-				matched = true
-				break
-			}
-		}
-		if matched {
+		if _, ok := available[requirement.operation]; ok {
 			provided = append(provided, requirement.name)
 		} else {
 			missing = append(missing, requirement.name)

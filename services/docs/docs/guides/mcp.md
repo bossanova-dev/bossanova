@@ -27,16 +27,22 @@ make build-mcp          # produces bin/mcp
 That binary is all you need to wire up a stdio MCP host such as Claude Code or
 Claude Desktop — those hosts spawn `bin/mcp` themselves over stdio (see
 [Connect an agent](#connect-an-agent) below), so they do **not** require the
-service install.
+service install below.
 
-Optionally, register `bin/mcp` as an always-on local **HTTP daemon** — useful
-for HTTP-capable MCP clients, `curl`, or a browser-based inspector:
+### Optional: run `bin/mcp` as a standalone HTTP daemon
+
+:::note Optional — most users can skip this
+Stdio MCP hosts (Claude Code, Claude Desktop) spawn `bin/mcp` themselves and
+never need this. Install the HTTP daemon only if you want an always-on
+`bin/mcp` reachable over HTTP — for HTTP-capable MCP clients, `curl`, or a
+browser-based inspector.
+:::
 
 ```bash
 boss mcp install        # install and start the local MCP HTTP daemon
-boss mcp status         # show whether the service is installed / running
+boss mcp status         # show whether the service is installed / running, plus the instance inventory
 boss mcp start          # start or restart the installed service
-boss mcp stop           # stop the service (leaves the service file in place)
+boss mcp stop           # stop the managed service and sweep stray/orphaned boss-mcp processes
 boss mcp uninstall      # stop and remove the service file
 ```
 
@@ -45,6 +51,44 @@ platform user service manager — launchd (`~/Library/LaunchAgents/com.bossanova
 on macOS, or systemd (`~/.config/systemd/user/bossanova-mcp.service`) on Linux.
 It accepts `--port <n>` (default 8765) and `--force` (overwrite an existing
 service file).
+
+#### What `boss mcp stop` owns, and what it leaves alone
+
+`boss mcp stop` only touches the service manager when the service is actually
+installed — so on a machine that never ran `boss mcp install` it does nothing
+there — and its "Idempotent." guarantee is now a verified end state, not just
+the service manager's exit code. Beyond the managed service, it also sweeps
+every other `boss-mcp` process owned by the current user (bossd writes one
+into each agent's per-chat MCP config), classifying each of them:
+
+| class                                                            | what `stop` does                                                                                                                             |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| the managed service                                              | stopped through the service manager only — never signalled, since its plist/unit sets `KeepAlive`/`Restart=always` and would just respawn it |
+| stray HTTP daemon (`--http`, not the managed one)                | terminated                                                                                                                                   |
+| orphaned session server (its MCP host died)                      | terminated                                                                                                                                   |
+| live **session-owned** server (still attached to a running chat) | left running, deliberately                                                                                                                   |
+
+In one edge case a fifth class appears: if the service is installed but the
+service manager will not report its PID (a systemd unit mid-`activating`, or a
+loaded launchd job between `KeepAlive` respawns), an `--http` process cannot be
+distinguished from the managed instance. Those are reported as
+`unattributable HTTP` and left running, rather than risk signalling a service
+that is configured to respawn.
+
+There is one known gap in the other direction, and it applies on both
+platforms: if the service _file_ is deleted while the launchd job or systemd
+unit is still loaded, the service reads as not installed, so `stop` neither
+stops it through the service manager nor treats the managed `--http` row as
+unattributable — it sweeps it as stray, and `KeepAlive` / `Restart=always`
+respawns it under a new PID. Recover by re-creating the service file and
+re-loading it: `boss mcp install --force` (which may report the job as already
+loaded), then `boss mcp start`.
+
+A live session-owned server is left alone on purpose: an MCP host does not
+respawn a dead stdio server mid-session, so killing one would silently strip
+the `mcp__boss__*` tools from a running chat. Each exits with its own chat
+when that chat ends. `boss mcp status` reports this same inventory on its
+`instances:` line.
 
 ## Connect an agent
 

@@ -1,7 +1,10 @@
 package credmaterialize
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,7 +64,66 @@ func (f *fakeStore) setBlob(b []byte) {
 	f.blob = append([]byte(nil), b...)
 }
 
+// setSaveErr makes every subsequent SaveCredential fail, simulating a keyring
+// that became unwritable between two materializations.
+func (f *fakeStore) setSaveErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saveErr = err
+}
+
 func (f *fakeStore) saveCount() int64 { return atomic.LoadInt64(&f.saveCalls) }
+
+// currentBlob returns what the store holds now, which is what a test asserting
+// that a credential was left ALONE needs: savedTokens only ever sees the last
+// blob handed to SaveCredential, and there is no such blob when nothing saved.
+func (f *fakeStore) currentBlob() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]byte(nil), f.blob...)
+}
+
+// serializedStore lets the reconciliation test stop exactly after its load
+// snapshot. Its WithCredentialLock is the same optional lock production uses
+// for an operator refresh, so the test can prove the entire load-merge-save
+// sequence — not only the final save — is serialized.
+type serializedStore struct {
+	mu             sync.Mutex
+	credentialMu   sync.Mutex
+	blob           []byte
+	loadedSnapshot chan struct{}
+	releaseLoad    chan struct{}
+	lockEntered    chan struct{}
+}
+
+func (s *serializedStore) LoadCredential(_ context.Context, _ string) ([]byte, error) {
+	s.mu.Lock()
+	snapshot := append([]byte(nil), s.blob...)
+	s.mu.Unlock()
+	close(s.loadedSnapshot)
+	<-s.releaseLoad
+	return snapshot, nil
+}
+
+func (s *serializedStore) SaveCredential(_ context.Context, _ string, blob []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blob = append([]byte(nil), blob...)
+	return nil
+}
+
+func (s *serializedStore) WithCredentialLock(_ string, fn func() error) error {
+	s.lockEntered <- struct{}{}
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	return fn()
+}
+
+func (s *serializedStore) storedBlob() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.blob...)
+}
 
 func newTestMaterializer(t *testing.T, store CredentialStore) *Materializer {
 	return newTestMaterializerWithCodexHome(t, store, t.TempDir())
@@ -94,6 +156,24 @@ func codexBlob(t *testing.T, access, id, refresh string) []byte {
 			"account_id":    fakeAccount,
 		},
 	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal codex blob: %v", err)
+	}
+	return raw
+}
+
+// codexBlobAt builds a codex auth blob that also carries "last_refresh", the
+// generation marker codex stamps on every token rotation. codexBlob omits it on
+// purpose: most reconcile tests want the UNORDERED case, where neither blob can
+// be placed after the other and the fold-back applies.
+func codexBlobAt(t *testing.T, access, id, refresh, lastRefresh string) []byte {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(codexBlob(t, access, id, refresh), &doc); err != nil {
+		t.Fatalf("unmarshal codex blob: %v", err)
+	}
+	doc[authGenerationKey] = lastRefresh
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal codex blob: %v", err)
@@ -189,6 +269,132 @@ func TestMaterializeCodexProjectsBaseHomeAndKeepsLocalAuth(t *testing.T) {
 	}
 	if authInfo.Mode()&os.ModeSymlink != 0 {
 		t.Fatal("account auth.json must not be a symlink")
+	}
+}
+
+// TestMaterializeCodexKeepsLocalAuthWriteRecord asserts the account's auth.json
+// write record is account-local like auth.json itself: an entry of that name in
+// the inherited codex home is never projected over it. Projection insists on
+// owning every name it links, so a projected record would not merely leak one
+// account's state into another — it would make the FIRST materialization write the
+// sidecar and every later one fail permanently on the existing non-symlink.
+func TestMaterializeCodexKeepsLocalAuthWriteRecord(t *testing.T) {
+	baseHome := t.TempDir()
+	t.Setenv("CODEX_HOME", baseHome)
+	if err := os.WriteFile(filepath.Join(baseHome, authHashFileName), []byte("base-record"), 0o600); err != nil {
+		t.Fatalf("write base write-record fixture: %v", err)
+	}
+
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	// The second materialization is the one that regresses: the first writes the
+	// sidecar, so a projection attempt afterwards finds a non-symlink in the way.
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	recordPath := filepath.Join(res.HomeDir, authHashFileName)
+	info, err := os.Lstat(recordPath)
+	if err != nil {
+		t.Fatalf("lstat account write record: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("account auth.json write record must not be a symlink to the base home")
+	}
+	if _, ok := m.lastAuthWrite(filepath.Join(res.HomeDir, authFileName)); !ok {
+		t.Fatal("account write record is not readable; the base-home entry displaced it")
+	}
+}
+
+// TestMaterializeCodexReconcileIgnoresCorruptWriteRecord pins that a record which
+// is not a hash reads as absent. It is right-length but non-hex, the shape a
+// length-only check would accept: it would then compare unequal to the file's real
+// hash and be read as an agent-side rotation, folding whatever is on disk over the
+// stored credential.
+func TestMaterializeCodexReconcileIgnoresCorruptWriteRecord(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, "", "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	corrupt := strings.Repeat("z", hex.EncodedLen(sha256.Size))
+	if err := os.WriteFile(authHashPath(authPath), []byte(corrupt), 0o600); err != nil {
+		t.Fatalf("corrupt write record: %v", err)
+	}
+	if _, ok := m.lastAuthWrite(authPath); ok {
+		t.Fatal("lastAuthWrite accepted a non-hex record; a corrupt record must read as absent")
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+	if store.saveCount() != 0 {
+		t.Fatalf("SaveCredential calls = %d; want 0: an unusable record must not drive a fold-back", store.saveCount())
+	}
+	if got := onDiskTokens(t, authPath).RefreshToken; got != fakeRefresh {
+		t.Fatalf("on-disk refresh_token = %q; want the stored credential restored", got)
+	}
+}
+
+// TestMaterializeCodexReconcileMatchesCaseMangledWriteRecord pins that a record
+// comparison is a comparison of hashes, not of their encodings. Hex decoding
+// accepts either case, so an upper-cased record is still a perfectly usable
+// digest of the untouched file; comparing it as text instead would make it match
+// nothing, read as an agent-side rotation, and fold the unchanged on-disk bytes
+// over a stored credential an operator may just have refreshed.
+func TestMaterializeCodexReconcileMatchesCaseMangledWriteRecord(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	// auth.json is left exactly as bossd wrote it: only the record's case changes.
+	recordPath := authHashPath(authPath)
+	raw, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("read write record: %v", err)
+	}
+	if err := os.WriteFile(recordPath, []byte(strings.ToUpper(strings.TrimSpace(string(raw)))), 0o600); err != nil {
+		t.Fatalf("upper-case write record: %v", err)
+	}
+
+	onDisk, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	recorded, ok := m.lastAuthWrite(authPath)
+	if !ok {
+		t.Fatal("lastAuthWrite rejected an upper-case hex record; either case is a usable digest")
+	}
+	if recorded != sha256.Sum256(onDisk) {
+		t.Fatal("an upper-case record did not match the untouched file's hash; the comparison is encoding-sensitive")
+	}
+
+	// End-to-end, through the reconcile: the operator re-authenticates, so the
+	// stored credential no longer equals the file and the digest gate is the thing
+	// that decides. An encoding-sensitive comparison reads the untouched file as an
+	// agent rotation here and folds it over the refresh.
+	store.setBlob(codexBlob(t, "FAKE-ACCESS-2", "FAKE-ID-2", "FAKE-REFRESH-2"))
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+	if store.saveCount() != 0 {
+		t.Fatalf("SaveCredential calls = %d; want 0: an untouched file must not drive a fold-back", store.saveCount())
+	}
+	if got := onDiskTokens(t, authPath); got.RefreshToken != "FAKE-REFRESH-2" || got.IDToken != "FAKE-ID-2" {
+		t.Fatalf("auth.json tokens = %+v; want the operator-refreshed credential", got)
 	}
 }
 
@@ -689,6 +895,41 @@ func TestPersistBackChanged(t *testing.T) {
 	}
 }
 
+// TestPersistBackRecordsWriteSoNextMaterializeSkipsRefold covers the handoff
+// between the two fold-back paths. PersistBack saves the refreshed auth.json to
+// the store but never rewrites the file, so unless it also advances the durable
+// write record the next spawn sees a file that differs from BOTH the store and
+// our last recorded write, and folds the very same tokens back a second time.
+// Harmless in value, wasteful in keyring writes — and it makes the record's
+// meaning drift from "the bytes on disk that are known to be reconciled".
+func TestPersistBackRecordsWriteSoNextMaterializeSkipsRefold(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, persist, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	// An agent-side refresh that drops id_token, so the merged blob the store
+	// receives is NOT byte-equal to the file persist-back read.
+	if err := os.WriteFile(filepath.Join(res.HomeDir, authFileName), codexBlob(t, "FAKE-ACCESS-2", "", "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	if err := persist(context.Background()); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1 (the persist-back)", got)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1: bytes already persisted must not be folded again", got)
+	}
+}
+
 // TestPersistBackMergesAgainstCurrentStore proves persist-back reloads the
 // current stored blob as the merge baseline (not the stale materialize-time
 // snapshot), so a newer id_token persisted by another session is never rolled
@@ -733,14 +974,913 @@ func TestPersistBackMergesAgainstCurrentStore(t *testing.T) {
 	}
 }
 
+// TestPersistBackSerializesWithOperatorRefresh reproduces the P1 window
+// deterministically at the production entry point: persist-back has already
+// read the agent-refreshed auth.json when an explicit RefreshAccount wants to
+// save a replacement. The shared store lock must make the replacement run after
+// the persisted save, so the explicit refresh remains authoritative.
+//
+// It also pins the durable hash record inside that same transaction. persistBack
+// records the hash of the bytes it just folded into the store; if that record
+// landed after the lock was released, a peer materializer holding the lock could
+// write its own auth.json in between and have its record clobbered by this stale
+// one. The sidecar would then describe bytes no longer on disk, and the next
+// reconcile would misread a bossd write as an agent rotation. Asserting the
+// record from inside the operator's lock body is what proves it happened before
+// the lock changed hands. m.locks cannot substitute: production builds a
+// Materializer per account source, so two of them share no local lock map.
+func TestPersistBackSerializesWithOperatorRefresh(t *testing.T) {
+	store := &serializedStore{
+		blob:           codexBlob(t, "A1", "ID-OLD", "R1"),
+		loadedSnapshot: make(chan struct{}),
+		releaseLoad:    make(chan struct{}),
+		lockEntered:    make(chan struct{}, 2),
+	}
+	m := newTestMaterializer(t, store)
+
+	// auth.json as the agent left it, with a recorded hash of some earlier
+	// bossd write so persistBack's unchanged gate sees a real agent-side change.
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	refreshedByAgent := codexBlob(t, "A2", "", "R2")
+	if err := os.WriteFile(authPath, refreshedByAgent, 0o600); err != nil {
+		t.Fatalf("seed auth.json: %v", err)
+	}
+	wantRecord := sha256.Sum256(refreshedByAgent)
+	recorded := sha256.Sum256(store.blob)
+
+	persistDone := make(chan error, 1)
+	go func() {
+		persistDone <- m.persistBack(context.Background(), "acct-1", authPath, &recorded)
+	}()
+	releasedLoad := false
+	defer func() {
+		if !releasedLoad {
+			close(store.releaseLoad)
+		}
+	}()
+
+	// The materializer must have entered the shared lock before loading its
+	// snapshot. Waiting for it here makes the ordering independent of scheduler
+	// timing and fails if the RMW is not entirely inside the lock.
+	waitForSignal(t, store.loadedSnapshot, "materializer load snapshot")
+	waitForSignal(t, store.lockEntered, "materializer credential lock")
+
+	operatorCredential := codexBlob(t, "OPERATOR-ACCESS", "OPERATOR-ID", "OPERATOR-REFRESH")
+	operatorDone := make(chan error, 1)
+	recordAtHandover := make(chan [sha256.Size]byte, 1)
+	go func() {
+		operatorDone <- store.WithCredentialLock("acct-1", func() error {
+			// Runs the instant the materializer releases the lock: whatever the
+			// sidecar holds now is what persistBack committed inside its
+			// transaction.
+			got, ok := m.lastAuthWrite(authPath)
+			if !ok {
+				close(recordAtHandover)
+			} else {
+				recordAtHandover <- got
+			}
+			return store.SaveCredential(context.Background(), "acct-1", operatorCredential)
+		})
+	}()
+	// The operator has attempted the same lock and must be waiting behind the
+	// materializer's in-flight RMW.
+	waitForSignal(t, store.lockEntered, "operator credential lock attempt")
+	close(store.releaseLoad)
+	releasedLoad = true
+
+	if err := <-persistDone; err != nil {
+		t.Fatalf("persistBack: %v", err)
+	}
+	if err := <-operatorDone; err != nil {
+		t.Fatalf("operator refresh save: %v", err)
+	}
+	gotRecord, ok := <-recordAtHandover
+	if !ok {
+		t.Fatal("no durable auth-write record when the lock changed hands; persistBack recorded it outside its transaction")
+	}
+	if gotRecord != wantRecord {
+		t.Fatalf("durable auth-write record at lock handover = %x; want the persisted auth.json hash %x", gotRecord, wantRecord)
+	}
+	if recorded != wantRecord {
+		t.Fatalf("in-memory recorded hash = %x; want %x", recorded, wantRecord)
+	}
+	got := decodeTokens(t, store.storedBlob())
+	if got.AccessToken != "OPERATOR-ACCESS" || got.IDToken != "OPERATOR-ID" || got.RefreshToken != "OPERATOR-REFRESH" {
+		t.Fatalf("stored tokens = %+v; want explicit operator refresh", got)
+	}
+}
+
+// TestMaterializeCodexSerializesLoadAndWriteWithOperatorRefresh proves a
+// materialization cannot write a credential snapshot after RefreshAccount has
+// saved a newer one. The shared store lock must cover the initial load through
+// the auth.json write, not only reconciliation's later merge/save.
+func TestMaterializeCodexSerializesLoadAndWriteWithOperatorRefresh(t *testing.T) {
+	materialized := codexBlob(t, "A1", "ID-OLD", "R1")
+	store := &serializedStore{
+		blob:           materialized,
+		loadedSnapshot: make(chan struct{}),
+		releaseLoad:    make(chan struct{}),
+		lockEntered:    make(chan struct{}, 2),
+	}
+	m := newTestMaterializer(t, store)
+	materializeDone := make(chan struct {
+		result Materialized
+		err    error
+	}, 1)
+	go func() {
+		result, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+		materializeDone <- struct {
+			result Materialized
+			err    error
+		}{result, err}
+	}()
+
+	// MaterializeCodex must own the shared lock before it reads the credential.
+	waitForSignal(t, store.lockEntered, "materializer credential lock")
+	waitForSignal(t, store.loadedSnapshot, "materializer load snapshot")
+
+	operatorCredential := codexBlob(t, "OPERATOR-ACCESS", "OPERATOR-ID", "OPERATOR-REFRESH")
+	operatorDone := make(chan error, 1)
+	go func() {
+		operatorDone <- store.WithCredentialLock("acct-1", func() error {
+			return store.SaveCredential(context.Background(), "acct-1", operatorCredential)
+		})
+	}()
+	waitForSignal(t, store.lockEntered, "operator credential lock attempt")
+
+	select {
+	case err := <-operatorDone:
+		t.Fatalf("operator refresh completed before materialization wrote auth.json: %v", err)
+	default:
+	}
+	close(store.releaseLoad)
+
+	mat := <-materializeDone
+	if mat.err != nil {
+		t.Fatalf("MaterializeCodex: %v", mat.err)
+	}
+	written, err := os.ReadFile(filepath.Join(mat.result.HomeDir, authFileName))
+	if err != nil {
+		t.Fatalf("read materialized auth.json: %v", err)
+	}
+	if !bytes.Equal(written, materialized) {
+		t.Fatal("auth.json did not contain the credential loaded by the serialized materialization")
+	}
+	if err := <-operatorDone; err != nil {
+		t.Fatalf("operator refresh save: %v", err)
+	}
+	got := decodeTokens(t, store.storedBlob())
+	if got.AccessToken != "OPERATOR-ACCESS" || got.IDToken != "OPERATOR-ID" || got.RefreshToken != "OPERATOR-REFRESH" {
+		t.Fatalf("stored tokens = %+v; want explicit operator refresh", got)
+	}
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// decodeTokens decodes the codex "tokens" object out of a credential blob. Only
+// the obviously-fake test constants ever flow through it, and callers compare
+// against those constants rather than dumping whole blobs.
+func decodeTokens(t *testing.T, blob []byte) tokenFields {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &top); err != nil {
+		t.Fatalf("blob is not a JSON object: %v", err)
+	}
+	var toks tokenFields
+	if err := json.Unmarshal(top["tokens"], &toks); err != nil {
+		t.Fatalf("tokens is not a JSON object: %v", err)
+	}
+	return toks
+}
+
+// onDiskTokens decodes the tokens object of the auth.json at path.
+func onDiskTokens(t *testing.T, path string) tokenFields {
+	t.Helper()
+	// #nosec G304 -- test-local temp-dir auth path; owner=@recurser review-by=2027-01-18 issue=BOS-621
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	return decodeTokens(t, raw)
+}
+
+// savedTokens decodes the tokens object of the last blob handed to the store.
+func savedTokens(t *testing.T, store *fakeStore) tokenFields {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastSaved == nil {
+		t.Fatal("SaveCredential was never called")
+	}
+	return decodeTokens(t, store.lastSaved)
+}
+
+// TestMaterializeCodexPersistsAgentRefreshBeforeOverwrite is the BOS-621
+// regression. The spawn seam drops the PersistBack closure, so a refresh codex
+// wrote into auth.json mid-run only reaches the store when the NEXT
+// materialization reconciles it. Without that reconcile the second materialize
+// restores the stale stored token and invalidates the account.
+func TestMaterializeCodexPersistsAgentRefreshBeforeOverwrite(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	// Agent-side rotation: codex writes a new refresh token into auth.json.
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	if got := onDiskTokens(t, authPath).RefreshToken; got != "FAKE-REFRESH-2" {
+		t.Fatalf("auth.json refresh_token = %q; want the agent-refreshed FAKE-REFRESH-2", got)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1 (the reconcile)", got)
+	}
+	if got := savedTokens(t, store).RefreshToken; got != "FAKE-REFRESH-2" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-2", got)
+	}
+}
+
+// TestMaterializeCodexReconcileConvergesAfterFoldBack pins the steady state the
+// reconcile leaves behind, which no single-fold test reaches. A fold-back saves
+// the merged blob and then re-materializes it, so the third spawn compares a file
+// derived from the merged blob against the merged blob itself. If that round trip
+// were not the identity — or if the write record were not advanced with it — every
+// later spawn would re-fold the same tokens and write the keyring once per spawn
+// forever: silently converging on the right value while doing unbounded work.
+func TestMaterializeCodexReconcileConvergesAfterFoldBack(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times after the fold-back; want 1", got)
+	}
+	afterFold, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json after the fold-back: %v", err)
+	}
+
+	// A third spawn with nothing changed on either side.
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (3rd): %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1: the folded bytes must not be folded again", got)
+	}
+	steady, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json at the steady state: %v", err)
+	}
+	if !bytes.Equal(steady, afterFold) {
+		// Compare bytes only; the contents are credentials and are never logged.
+		t.Fatal("auth.json changed on a no-op materialization; the fold-back did not converge")
+	}
+	if got := savedTokens(t, store).RefreshToken; got != "FAKE-REFRESH-2" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-2 preserved", got)
+	}
+}
+
+// TestMaterializeCodexTwiceWithoutAgentChangeSkipsStoreWrite proves the
+// reconcile is byte-gated: a spawn that finds exactly the auth.json it last
+// wrote must not touch the keyring.
+func TestMaterializeCodexTwiceWithoutAgentChangeSkipsStoreWrite(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	for i := 1; i <= 2; i++ {
+		if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+			t.Fatalf("MaterializeCodex (%d): %v", i, err)
+		}
+	}
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times; want 0 (no keyring write per spawn)", got)
+	}
+}
+
+// TestMaterializeCodexFirstMaterializationSkipsReconcile covers the absent
+// auth.json case. The store is primed to fail every save, so a materialization
+// that succeeded proves no reconcile was attempted.
+func TestMaterializeCodexFirstMaterializationSkipsReconcile(t *testing.T) {
+	store := &fakeStore{
+		blob:    codexBlob(t, fakeAccess, fakeID, fakeRefresh),
+		saveErr: errors.New("store write failed"),
+	}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times on first materialization; want 0", got)
+	}
+	if got := onDiskTokens(t, filepath.Join(res.HomeDir, authFileName)).RefreshToken; got != fakeRefresh {
+		t.Fatalf("auth.json refresh_token = %q; want the stored value", got)
+	}
+}
+
+// TestMaterializeCodexReconcileKeepsNewerStoredIDToken proves the reconcile runs
+// through mergePreservingIDToken semantics: an id_token another session already
+// persisted is not rolled back by an on-disk file that dropped it.
+func TestMaterializeCodexReconcileKeepsNewerStoredIDToken(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, "FAKE-ID-OLD", fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	// Our agent rotates the refresh token and drops id_token entirely.
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, "", "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	// Meanwhile another session persists a NEWER id_token for the same account.
+	store.setBlob(codexBlob(t, fakeAccess, "FAKE-ID-NEW", fakeRefresh))
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	saved := savedTokens(t, store)
+	if saved.IDToken != "FAKE-ID-NEW" {
+		t.Fatalf("stored id_token = %q; want current-store FAKE-ID-NEW (no rollback)", saved.IDToken)
+	}
+	if saved.RefreshToken != "FAKE-REFRESH-2" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-2", saved.RefreshToken)
+	}
+	onDisk := onDiskTokens(t, authPath)
+	if onDisk.IDToken != "FAKE-ID-NEW" || onDisk.RefreshToken != "FAKE-REFRESH-2" {
+		t.Fatalf("auth.json tokens = %+v; want the reconciled pair", onDisk)
+	}
+}
+
+// TestMaterializeCodexReconcileKeepsLaterOperatorRefresh covers the other half
+// of the both-sides-moved case: the agent rotated auth.json AND the store moved,
+// but the store moved second. The hash record cannot tell those apart — it only
+// proves the file changed — so the credential's own "last_refresh" marker orders
+// them, and the later operator refresh stays authoritative instead of being
+// overwritten by the older on-disk tokens.
+func TestMaterializeCodexReconcileKeepsLaterOperatorRefresh(t *testing.T) {
+	store := &fakeStore{blob: codexBlobAt(t, fakeAccess, fakeID, fakeRefresh, "2026-01-01T00:00:00Z")}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	// Codex rotates the tokens in auth.json mid-session, so the file no longer
+	// matches the hash bossd recorded for its own last write.
+	agentBlob := codexBlobAt(t, "FAKE-ACCESS-AGENT", fakeID, "FAKE-REFRESH-AGENT", "2026-01-01T01:00:00Z")
+	if err := os.WriteFile(authPath, agentBlob, 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	// AFTERWARDS an operator completes RefreshAccount, which saves a brand-new
+	// credential to the store and never touches auth.json or the write record.
+	store.setBlob(codexBlobAt(t, "FAKE-ACCESS-OP", "FAKE-ID-OP", "FAKE-REFRESH-OP", "2026-01-01T02:00:00Z"))
+	savesBefore := store.saveCount()
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	if got := store.saveCount(); got != savesBefore {
+		t.Fatalf("SaveCredential calls = %d; want %d (the operator credential must not be merged over)", got, savesBefore)
+	}
+	stored := decodeTokens(t, store.currentBlob())
+	if stored.AccessToken != "FAKE-ACCESS-OP" || stored.IDToken != "FAKE-ID-OP" || stored.RefreshToken != "FAKE-REFRESH-OP" {
+		t.Fatalf("stored tokens = %+v; want the operator credential untouched", stored)
+	}
+	onDisk := onDiskTokens(t, authPath)
+	if onDisk.AccessToken != "FAKE-ACCESS-OP" || onDisk.IDToken != "FAKE-ID-OP" || onDisk.RefreshToken != "FAKE-REFRESH-OP" {
+		t.Fatalf("auth.json tokens = %+v; want the operator credential materialized", onDisk)
+	}
+}
+
+// TestMaterializeCodexReconcileFoldsBackWhenOnDiskRefreshIsLater is the mirror
+// of the test above: same both-sides-moved shape, but the FILE carries the later
+// marker, so the fold-back still runs and the agent's refresh token reaches the
+// store. Ordering must decide the direction, not merely suppress the fold.
+func TestMaterializeCodexReconcileFoldsBackWhenOnDiskRefreshIsLater(t *testing.T) {
+	store := &fakeStore{blob: codexBlobAt(t, fakeAccess, fakeID, fakeRefresh, "2026-01-01T00:00:00Z")}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	store.setBlob(codexBlobAt(t, fakeAccess, "FAKE-ID-PEER", fakeRefresh, "2026-01-01T01:00:00Z"))
+	agentBlob := codexBlobAt(t, "FAKE-ACCESS-AGENT", "", "FAKE-REFRESH-AGENT", "2026-01-01T02:00:00Z")
+	if err := os.WriteFile(authPath, agentBlob, 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	saved := savedTokens(t, store)
+	if saved.RefreshToken != "FAKE-REFRESH-AGENT" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-AGENT", saved.RefreshToken)
+	}
+	if saved.IDToken != "FAKE-ID-PEER" {
+		t.Fatalf("stored id_token = %q; want the store-only FAKE-ID-PEER to survive the merge", saved.IDToken)
+	}
+}
+
+func TestStoredCredentialIsNewer(t *testing.T) {
+	const (
+		early = "2026-01-01T00:00:00Z"
+		late  = "2026-01-01T01:00:00Z"
+	)
+	withStamp := func(stamp string) []byte {
+		return codexBlobAt(t, fakeAccess, fakeID, fakeRefresh, stamp)
+	}
+	noStamp := codexBlob(t, fakeAccess, fakeID, fakeRefresh)
+
+	for _, tc := range []struct {
+		name           string
+		stored, onDisk []byte
+		want           bool
+	}{
+		{name: "store rotated later", stored: withStamp(late), onDisk: withStamp(early), want: true},
+		{name: "file rotated later", stored: withStamp(early), onDisk: withStamp(late)},
+		{name: "same generation", stored: withStamp(early), onDisk: withStamp(early)},
+		// Unordered pairs must all report false: without a marker on both sides
+		// there is no proof the store moved second, and the fold-back is what
+		// preserves an agent-rotated refresh token.
+		{name: "store has no marker", stored: noStamp, onDisk: withStamp(early)},
+		{name: "file has no marker", stored: withStamp(late), onDisk: noStamp},
+		{name: "neither has a marker", stored: noStamp, onDisk: noStamp},
+		{name: "store marker is not a timestamp", stored: withStamp("whenever"), onDisk: withStamp(early)},
+		{name: "store marker is empty", stored: withStamp(""), onDisk: withStamp(early)},
+		{name: "store is not JSON", stored: []byte("not json"), onDisk: withStamp(early)},
+		{name: "file is not JSON", stored: withStamp(late), onDisk: []byte("not json")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := storedCredentialIsNewer(tc.stored, tc.onDisk); got != tc.want {
+				t.Fatalf("storedCredentialIsNewer = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaterializeCodexReconcileStoreErrorLeavesAuthFileIntact asserts the
+// fail-closed contract: a reconcile that cannot reach the store aborts
+// materialization rather than overwriting a possibly-valid refreshed token.
+func TestMaterializeCodexReconcileStoreErrorLeavesAuthFileIntact(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	rotated := codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-2")
+	if err := os.WriteFile(authPath, rotated, 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	store.setSaveErr(errors.New("store write failed"))
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex succeeded despite a failing reconcile save")
+	}
+	// #nosec G304 -- test-local temp-dir auth path; owner=@recurser review-by=2027-01-18 issue=BOS-621
+	after, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if string(after) != string(rotated) {
+		t.Fatal("MaterializeCodex modified the refreshed auth.json after a reconcile failure")
+	}
+}
+
+// TestMaterializeCodexReconcileUnusableAuthFileSelfHeals pins resilience the
+// reconcile must not cost us. Before it existed MaterializeCodex overwrote
+// auth.json unconditionally, so a file truncated by a killed codex healed on the
+// next spawn. Bytes that are not a usable credential object hold no refreshed
+// token to preserve, so the reconcile must skip them — folding them into the
+// store would be wrong, and aborting would fail this materialization and every
+// later one identically, since nothing else ever rewrites auth.json.
+func TestMaterializeCodexReconcileUnusableAuthFileSelfHeals(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	for _, unusable := range []string{
+		"",                             // zero-byte file
+		`{"tokens":{"access_token":"F`, // truncated mid-write
+		`{"tokens":"not-an-object"}`,   // parses as an object, tokens is not one
+		`["not-an-object"]`,            // parses as JSON, not as an object
+	} {
+		if err := os.WriteFile(authPath, []byte(unusable), 0o600); err != nil {
+			t.Fatalf("write unusable auth.json: %v", err)
+		}
+		before := store.saveCount()
+		if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+			t.Fatalf("MaterializeCodex over an unusable auth.json (%d bytes): %v", len(unusable), err)
+		}
+		if got := onDiskTokens(t, authPath); got.RefreshToken != fakeRefresh || got.IDToken != fakeID {
+			t.Fatal("MaterializeCodex did not replace the unusable auth.json with the stored credential")
+		}
+		if extra := store.saveCount() - before; extra != 0 {
+			t.Fatalf("SaveCredential calls = %d; want 0: unusable bytes must never reach the store", extra)
+		}
+	}
+}
+
+// TestMaterializeCodexReconcileIgnoresNonRegularAuthFile pins the leaf guard.
+// assertNoSymlinkChain covers directory components only, and before the reconcile
+// existed the leaf was merely rename-replaced, which never follows a symlink.
+// Reading it blind would fold a FOREIGN credential into this account's store
+// entry; the same guard keeps a FIFO from blocking ReadFile forever while the
+// per-account lock is held.
+func TestMaterializeCodexReconcileIgnoresNonRegularAuthFile(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	// A credential belonging to some other account, outside this account's tree and
+	// reachable only by following the symlink.
+	foreignBlob := codexBlob(t, "FAKE-FOREIGN-ACCESS", "FAKE-FOREIGN-ID", "FAKE-FOREIGN-REFRESH")
+	foreignPath := filepath.Join(t.TempDir(), "foreign-auth.json")
+	if err := os.WriteFile(foreignPath, foreignBlob, 0o600); err != nil {
+		t.Fatalf("write foreign credential: %v", err)
+	}
+	if err := os.Remove(authPath); err != nil {
+		t.Fatalf("remove auth.json: %v", err)
+	}
+	if err := os.Symlink(foreignPath, authPath); err != nil {
+		t.Fatalf("symlink auth.json: %v", err)
+	}
+
+	before := store.saveCount()
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex over a symlinked auth.json: %v", err)
+	}
+	if extra := store.saveCount() - before; extra != 0 {
+		t.Fatalf("SaveCredential calls = %d; want 0: a symlink target must never be folded into the account", extra)
+	}
+	info, err := os.Lstat(authPath)
+	if err != nil {
+		t.Fatalf("lstat auth.json: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatal("MaterializeCodex left auth.json a symlink instead of replacing it with a regular file")
+	}
+	if got := onDiskTokens(t, authPath); got.RefreshToken != fakeRefresh {
+		t.Fatal("auth.json does not hold the stored credential after the symlink was replaced")
+	}
+	// The atomic write renames over the link, so the foreign file is untouched.
+	// #nosec G304 -- test-local temp-dir path; owner=@recurser review-by=2027-01-18 issue=BOS-621
+	afterForeign, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatalf("read foreign credential: %v", err)
+	}
+	if string(afterForeign) != string(foreignBlob) {
+		t.Fatal("MaterializeCodex wrote through the symlink instead of replacing it")
+	}
+}
+
+// TestMaterializeCodexReconcileIgnoresHardLinkedAuthFile prevents a restored
+// account tree from folding a foreign credential into this account's store. A
+// hard link is regular, so Lstat alone cannot distinguish it from an
+// account-local auth.json; atomicWriteFile must replace only this directory
+// entry, leaving the foreign credential untouched.
+func TestMaterializeCodexReconcileIgnoresHardLinkedAuthFile(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	foreignBlob := codexBlob(t, "FAKE-FOREIGN-ACCESS", "FAKE-FOREIGN-ID", "FAKE-FOREIGN-REFRESH")
+	foreignPath := filepath.Join(t.TempDir(), "foreign-auth.json")
+	if err := os.WriteFile(foreignPath, foreignBlob, 0o600); err != nil {
+		t.Fatalf("write foreign credential: %v", err)
+	}
+	if err := os.Remove(authPath); err != nil {
+		t.Fatalf("remove auth.json: %v", err)
+	}
+	if err := os.Link(foreignPath, authPath); err != nil {
+		t.Skipf("hard links unavailable in test filesystem: %v", err)
+	}
+
+	before := store.saveCount()
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex over a hard-linked auth.json: %v", err)
+	}
+	if extra := store.saveCount() - before; extra != 0 {
+		t.Fatalf("SaveCredential calls = %d; want 0: a hard-linked credential must never be folded into the account", extra)
+	}
+	if got := onDiskTokens(t, authPath); got.RefreshToken != fakeRefresh {
+		t.Fatal("auth.json does not hold the stored credential after the hard link was replaced")
+	}
+
+	// The atomic write renames over this link only, preserving the foreign file.
+	// #nosec G304 -- test-local temp-dir path; owner=@recurser review-by=2027-01-18 issue=BOS-621
+	afterForeign, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatalf("read foreign credential: %v", err)
+	}
+	if string(afterForeign) != string(foreignBlob) {
+		t.Fatal("MaterializeCodex modified the foreign credential through the hard link")
+	}
+	foreignInfo, err := os.Stat(foreignPath)
+	if err != nil {
+		t.Fatalf("stat foreign credential: %v", err)
+	}
+	authInfo, err := os.Stat(authPath)
+	if err != nil {
+		t.Fatalf("stat auth.json: %v", err)
+	}
+	if os.SameFile(authInfo, foreignInfo) {
+		t.Fatal("MaterializeCodex left auth.json hard-linked to the foreign credential")
+	}
+}
+
+// TestMaterializeCodexReconcileKeepsOperatorRefreshedCredential is the inverse
+// of the BOS-621 regression, and the reason the reconcile cannot key on "the
+// file differs from the store". An operator refresh (server.RefreshAccount)
+// saves a new blob and nothing invalidates the already-materialized auth.json,
+// so the next materialization finds a file that differs from the store while
+// holding the tokens the operator just replaced. Folding it back would save
+// those stale tokens over the fresh credential and defeat every later refresh
+// identically.
+func TestMaterializeCodexReconcileKeepsOperatorRefreshedCredential(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+
+	// The operator re-authenticates: a wholly new credential lands in the store
+	// while auth.json still holds exactly what bossd last wrote.
+	store.setBlob(codexBlob(t, "FAKE-ACCESS-2", "FAKE-ID-2", "FAKE-REFRESH-2"))
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times; want 0: the stale auth.json must not be folded over an operator refresh", got)
+	}
+	if got := onDiskTokens(t, authPath); got.RefreshToken != "FAKE-REFRESH-2" || got.IDToken != "FAKE-ID-2" {
+		t.Fatalf("auth.json tokens = %+v; want the operator-refreshed credential", got)
+	}
+}
+
+// TestMaterializeCodexReconcileWithoutWriteRecordOverwritesFromStore pins the
+// fallback for an account materialized before the write record existed (or whose
+// sidecar could not be written). Nothing on disk can then say whether the file or
+// the store moved, so the reconcile must behave as this package did before it
+// existed — overwrite from the store — and re-record the hash so the very next
+// materialization can tell the two apart again.
+func TestMaterializeCodexReconcileWithoutWriteRecordOverwritesFromStore(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	hashPath := filepath.Join(res.HomeDir, authHashFileName)
+
+	if runtime.GOOS != "windows" {
+		info, statErr := os.Stat(hashPath)
+		if statErr != nil {
+			t.Fatalf("stat write record: %v", statErr)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("write record perm = %o; want 0600", perm)
+		}
+	}
+
+	// A pre-sidecar account: auth.json rotated by the agent, no record of our write.
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+	if err := os.Remove(hashPath); err != nil {
+		t.Fatalf("remove write record: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (2nd): %v", err)
+	}
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times; want 0 without a write record", got)
+	}
+	if got := onDiskTokens(t, authPath).RefreshToken; got != fakeRefresh {
+		t.Fatalf("auth.json refresh_token = %q; want the stored value", got)
+	}
+
+	// Recorded again, so an agent rotation from here IS reconciled.
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-3"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json (2nd): %v", err)
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex (3rd): %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1 once the write record is back", got)
+	}
+	if got := savedTokens(t, store).RefreshToken; got != "FAKE-REFRESH-3" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-3", got)
+	}
+}
+
+// TestMaterializeCodexReconcileIgnoresNonRegularWriteRecord keeps the sidecar
+// read on the same footing as the auth.json leaf: it is only ever
+// rename-written, so a non-regular entry is not ours, and reading one blind
+// could block forever on a writerless FIFO while the account lock is held.
+// Refusing it degrades to the no-record path, which never folds anything back.
+func TestMaterializeCodexReconcileIgnoresNonRegularWriteRecord(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	hashPath := filepath.Join(res.HomeDir, authHashFileName)
+
+	// A record that is a directory: not a regular file, and not readable as one.
+	if err := os.Remove(hashPath); err != nil {
+		t.Fatalf("remove write record: %v", err)
+	}
+	if err := os.Mkdir(hashPath, 0o700); err != nil {
+		t.Fatalf("mkdir over write record: %v", err)
+	}
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex over a non-regular write record: %v", err)
+	}
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times; want 0 for an unusable write record", got)
+	}
+
+	// Degrading to the no-record path must not be permanent. A rename cannot
+	// replace the directory, so that materialization has to clear it and record
+	// the write it just made; leaving the sidecar absent would strand the account
+	// on the no-record path, where the NEXT agent rotation is overwritten from the
+	// store — the loss this record exists to prevent.
+	info, err := os.Lstat(hashPath)
+	if err != nil {
+		t.Fatalf("lstat write record after a non-regular one: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("write record mode = %v; want a regular file restored over the directory", info.Mode())
+	}
+
+	// Prove it by rotating auth.json once more: with a usable record again, the
+	// refresh folds back instead of being overwritten.
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, fakeID, "FAKE-REFRESH-3"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json after the record was restored: %v", err)
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex after the write record was restored: %v", err)
+	}
+	if got := store.saveCount(); got != 1 {
+		t.Fatalf("SaveCredential called %d times; want 1 once the record was restored", got)
+	}
+	if got := savedTokens(t, store).RefreshToken; got != "FAKE-REFRESH-3" {
+		t.Fatalf("stored refresh_token = %q; want the agent-refreshed FAKE-REFRESH-3", got)
+	}
+}
+
+// TestMaterializeCodexReconcileIgnoresHardLinkedWriteRecord prevents a restored
+// account tree from trusting another account's last-write digest. A hard link is
+// regular, but its digest must be treated as absent: otherwise a foreign digest
+// that differs from the account auth.json reads as an agent-side refresh and
+// folds that credential into the current account's store.
+func TestMaterializeCodexReconcileIgnoresHardLinkedWriteRecord(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	hashPath := authHashPath(authPath)
+	if err := os.WriteFile(authPath, codexBlob(t, fakeAccess, "", "FAKE-REFRESH-2"), 0o600); err != nil {
+		t.Fatalf("rewrite auth.json: %v", err)
+	}
+
+	foreignRecord := filepath.Join(t.TempDir(), authHashFileName)
+	foreignDigest := sha256.Sum256([]byte("foreign auth.json"))
+	if err := os.WriteFile(foreignRecord, []byte(hex.EncodeToString(foreignDigest[:])), 0o600); err != nil {
+		t.Fatalf("write foreign write record: %v", err)
+	}
+	if err := os.Remove(hashPath); err != nil {
+		t.Fatalf("remove account write record: %v", err)
+	}
+	if err := os.Link(foreignRecord, hashPath); err != nil {
+		t.Skipf("hard links unavailable in test filesystem: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex over a hard-linked write record: %v", err)
+	}
+	if got := store.saveCount(); got != 0 {
+		t.Fatalf("SaveCredential called %d times; want 0: a hard-linked write record must not drive a fold-back", got)
+	}
+	if got := onDiskTokens(t, authPath).RefreshToken; got != fakeRefresh {
+		t.Fatalf("on-disk refresh_token = %q; want the stored credential restored", got)
+	}
+
+	// The atomic write replaces only the local sidecar entry, preserving the
+	// foreign record and removing the hard-link alias.
+	afterForeign, err := os.ReadFile(foreignRecord)
+	if err != nil {
+		t.Fatalf("read foreign write record: %v", err)
+	}
+	if string(afterForeign) != hex.EncodeToString(foreignDigest[:]) {
+		t.Fatal("MaterializeCodex modified the foreign write record through the hard link")
+	}
+	foreignInfo, err := os.Stat(foreignRecord)
+	if err != nil {
+		t.Fatalf("stat foreign write record: %v", err)
+	}
+	hashInfo, err := os.Stat(hashPath)
+	if err != nil {
+		t.Fatalf("stat account write record: %v", err)
+	}
+	if os.SameFile(hashInfo, foreignInfo) {
+		t.Fatal("MaterializeCodex left the write record hard-linked to the foreign record")
+	}
+}
+
 func TestMergePreservingIDToken(t *testing.T) {
 	tests := []struct {
-		name     string
-		prev     string
-		next     string
-		wantTok  map[string]string
-		wantTop  map[string]string // extra top-level string fields expected
-		wantsErr bool
+		name    string
+		prev    string
+		next    string
+		wantTok map[string]string
+		wantTop map[string]string // extra top-level string fields expected
+		// wantsErr expects a merge failure; wantIncoming then asserts which SIDE the
+		// failure is attributed to via errIncomingUnusable. That attribution is what
+		// makes reconcileRefreshedAuth safe to continue past a garbage auth.json
+		// while still aborting on a corrupt stored blob, so it is pinned in both
+		// directions: a mis-wrap either way silently turns one behavior into the
+		// other, and no other test would notice.
+		wantsErr     bool
+		wantIncoming bool
 	}{
 		{
 			name:    "next lacks id_token keeps prev",
@@ -819,16 +1959,35 @@ func TestMergePreservingIDToken(t *testing.T) {
 			wantTok: map[string]string{"id_token": "FAKE-ID-2", "access_token": "A1", "refresh_token": "R1", "account_id": "ACC1"},
 		},
 		{
+			// Attributed to the STORE: a caller that read next off disk must abort
+			// rather than treat this as "the file is garbage" and overwrite the only
+			// valid credential left in the system.
 			name:     "invalid prev JSON errors",
 			prev:     `not json`,
 			next:     `{"tokens":{}}`,
 			wantsErr: true,
 		},
 		{
-			name:     "invalid next JSON errors",
-			prev:     `{"tokens":{}}`,
-			next:     `not json`,
+			name:         "invalid next JSON errors",
+			prev:         `{"tokens":{}}`,
+			next:         `not json`,
+			wantsErr:     true,
+			wantIncoming: true,
+		},
+		{
+			// The second prev-side path: a non-object tokens with no top-level
+			// secrets to rebuild it from, so normalization leaves the array in place.
+			name:     "non-object prev tokens errors",
+			prev:     `{"tokens":[1,2,3]}`,
+			next:     `{"tokens":{}}`,
 			wantsErr: true,
+		},
+		{
+			name:         "non-object next tokens errors",
+			prev:         `{"tokens":{}}`,
+			next:         `{"tokens":[1,2,3]}`,
+			wantsErr:     true,
+			wantIncoming: true,
 		},
 	}
 	for _, tc := range tests {
@@ -837,6 +1996,9 @@ func TestMergePreservingIDToken(t *testing.T) {
 			if tc.wantsErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
+				}
+				if got := errors.Is(err, errIncomingUnusable); got != tc.wantIncoming {
+					t.Fatalf("errors.Is(err, errIncomingUnusable) = %t; want %t: the failure is attributed to the wrong blob", got, tc.wantIncoming)
 				}
 				return
 			}
@@ -1034,6 +2196,39 @@ func TestRemoveAccount(t *testing.T) {
 	// claude is a no-op.
 	if err := m.RemoveAccount(context.Background(), providerClaude, "acct-1"); err != nil {
 		t.Fatalf("RemoveAccount claude: %v", err)
+	}
+}
+
+// End-to-end-ish purge assertion for the account-removal path (BOS-622): after
+// materialize → remove, the per-account dir and the plaintext auth.json in it are
+// absent, while the shared accounts tree (and its CACHEDIR.TAG) survives — the
+// purge is scoped to the one account the materializer derived, nothing wider.
+func TestRemoveAccountPurgesMaterializedAuthFile(t *testing.T) {
+	store := &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}
+	m := newTestMaterializer(t, store)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	authPath := filepath.Join(res.HomeDir, authFileName)
+	if _, err := os.Stat(authPath); err != nil {
+		t.Fatalf("auth.json missing before removal: %v", err)
+	}
+
+	if err := m.RemoveAccount(context.Background(), providerCodex, "acct-1"); err != nil {
+		t.Fatalf("RemoveAccount: %v", err)
+	}
+	if _, err := os.Stat(authPath); !os.IsNotExist(err) {
+		t.Fatalf("auth.json survived removal: %v", err)
+	}
+	if _, err := os.Stat(res.HomeDir); !os.IsNotExist(err) {
+		t.Fatalf("codex account dir survived removal: %v", err)
+	}
+	for _, keep := range []string{m.accountsRoot(), filepath.Join(m.accountsRoot(), cacheDirTagName)} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("removal widened past the account dir and deleted %q: %v", keep, err)
+		}
 	}
 }
 
@@ -1399,5 +2594,319 @@ func TestMaterializeRejectsTraversalAccountID(t *testing.T) {
 	// The accounts root must never have been created by a rejected call.
 	if _, err := os.Stat(m.accountsRoot()); !os.IsNotExist(err) {
 		t.Fatalf("accounts root created by a rejected traversal id: %v", err)
+	}
+}
+
+// projectedOnce materializes acct-1 once against baseHome and returns the
+// materializer plus the account home, asserting name was projected as a symlink.
+// It is the shared setup for the became-unsafe cases below: the projection must
+// exist before the base entry turns unsafe, or the test would pass vacuously.
+func projectedOnce(t *testing.T, baseHome, name string) (*Materializer, string) {
+	t.Helper()
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("first MaterializeCodex: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(res.HomeDir, name))
+	if err != nil {
+		t.Fatalf("lstat initial projection %q: %v", name, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("initial projection %q is not a symlink", name)
+	}
+	return m, res.HomeDir
+}
+
+func TestRemoveStaleProjectionContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	t.Run("absent is a no-op", func(t *testing.T) {
+		if err := removeStaleProjection(filepath.Join(t.TempDir(), "skills"), t.TempDir()); err != nil {
+			t.Fatalf("removeStaleProjection on absent path: %v", err)
+		}
+	})
+	t.Run("symlink is unlinked without following it", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		link := filepath.Join(dir, "skills")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("create link: %v", err)
+		}
+		if err := removeStaleProjection(link, dir); err != nil {
+			t.Fatalf("removeStaleProjection: %v", err)
+		}
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Fatalf("projection still present: %v", err)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("link target was followed and removed: %v", err)
+		}
+	})
+	t.Run("foreign non-symlink state is refused, never deleted", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, tc := range []struct {
+			name  string
+			setup func(path string)
+		}{
+			{"regular file", func(path string) {
+				if err := os.WriteFile(path, []byte("foreign"), 0o600); err != nil {
+					t.Fatalf("write foreign file: %v", err)
+				}
+			}},
+			{"real directory", func(path string) {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatalf("mkdir foreign dir: %v", err)
+				}
+			}},
+		} {
+			path := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
+			tc.setup(path)
+			if err := removeStaleProjection(path, dir); err == nil {
+				t.Fatalf("%s: removeStaleProjection accepted foreign state", tc.name)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("%s: foreign state was deleted: %v", tc.name, err)
+			}
+		}
+	})
+	t.Run("auth.json is refused by name", func(t *testing.T) {
+		dir := t.TempDir()
+		// Refused whether it is the account-local credential or a symlink: the
+		// account credential is never a projection, so the helper never unlinks it.
+		authPath := filepath.Join(dir, authFileName)
+		if err := os.WriteFile(authPath, []byte("local-auth"), 0o600); err != nil {
+			t.Fatalf("write account auth: %v", err)
+		}
+		if err := removeStaleProjection(authPath, dir); err == nil {
+			t.Fatal("removeStaleProjection accepted account auth.json")
+		}
+		if _, err := os.Lstat(authPath); err != nil {
+			t.Fatalf("account auth.json was deleted: %v", err)
+		}
+
+		linkDir := t.TempDir()
+		linkedAuth := filepath.Join(linkDir, authFileName)
+		if err := os.Symlink(authPath, linkedAuth); err != nil {
+			t.Fatalf("create auth symlink: %v", err)
+		}
+		if err := removeStaleProjection(linkedAuth, linkDir); err == nil {
+			t.Fatal("removeStaleProjection accepted a symlinked auth.json")
+		}
+		if _, err := os.Lstat(linkedAuth); err != nil {
+			t.Fatalf("symlinked auth.json was deleted: %v", err)
+		}
+	})
+	t.Run("a symlink this package did not create is refused, never deleted", func(t *testing.T) {
+		// ensureProjectedSymlink already refuses to retarget a link pointing outside
+		// the base home; withdrawal holds the same line, so an operator's own
+		// account-home symlink is never collateral damage of a stale base entry.
+		base := t.TempDir()
+		accountHome := t.TempDir()
+		elsewhere := t.TempDir()
+		for _, tc := range []struct {
+			name   string
+			target string
+		}{
+			{"absolute target outside the base home", elsewhere},
+			{"relative link text", "../elsewhere"},
+		} {
+			link := filepath.Join(accountHome, strings.ReplaceAll(tc.name, " ", "-"))
+			if err := os.Symlink(tc.target, link); err != nil {
+				t.Fatalf("%s: create foreign link: %v", tc.name, err)
+			}
+			if err := removeStaleProjection(link, base); err == nil {
+				t.Fatalf("%s: removeStaleProjection accepted a foreign symlink", tc.name)
+			}
+			if _, err := os.Lstat(link); err != nil {
+				t.Fatalf("%s: foreign symlink was deleted: %v", tc.name, err)
+			}
+		}
+	})
+	t.Run("a dangling in-base projection is still withdrawn", func(t *testing.T) {
+		// The base entry disappearing is precisely when withdrawal must happen, so
+		// provenance is proved from link text alone rather than by resolving it.
+		base := t.TempDir()
+		link := filepath.Join(t.TempDir(), "skills")
+		if err := os.Symlink(filepath.Join(base, "skills"), link); err != nil {
+			t.Fatalf("create dangling link: %v", err)
+		}
+		if err := removeStaleProjection(link, base); err != nil {
+			t.Fatalf("removeStaleProjection on dangling projection: %v", err)
+		}
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Fatalf("dangling projection still present: %v", err)
+		}
+	})
+}
+
+// TestMaterializeCodexRemovesProjectionWhenOptionalBaseEntryBecomesExternalSymlink
+// is the regression: a safe entry is projected, its base-home entry is then
+// replaced with a symlink outside the base home (the !projectable branch), and
+// the next materialization must withdraw the projection instead of leaving the
+// account home resolving through it.
+func TestMaterializeCodexRemovesProjectionWhenOptionalBaseEntryBecomesExternalSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	skillsPath := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(skillsPath, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	m, accountHome := projectedOnce(t, baseHome, "skills")
+
+	external := t.TempDir()
+	if err := os.RemoveAll(skillsPath); err != nil {
+		t.Fatalf("remove safe base skills: %v", err)
+	}
+	if err := os.Symlink(external, skillsPath); err != nil {
+		t.Fatalf("replace base skills with external symlink: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(accountHome, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("stale projection survived a base entry that became external: %v", err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("external base target was removed through the projection: %v", err)
+	}
+	authInfo, err := os.Lstat(filepath.Join(accountHome, authFileName))
+	if err != nil {
+		t.Fatalf("lstat account auth: %v", err)
+	}
+	if authInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("account auth.json must remain local after withdrawing a projection")
+	}
+}
+
+// TestMaterializeCodexRemovesProjectionWhenOptionalBaseEntryTargetDisappears
+// covers the other half of the !projectable branch: the base entry is still
+// listed by os.ReadDir but no longer resolves, so it is not projectable.
+func TestMaterializeCodexRemovesProjectionWhenOptionalBaseEntryTargetDisappears(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	target := filepath.Join(baseHome, "skills-v1")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("mkdir base skills target: %v", err)
+	}
+	if err := os.Symlink("skills-v1", filepath.Join(baseHome, "skills")); err != nil {
+		t.Fatalf("create base skills symlink: %v", err)
+	}
+	m, accountHome := projectedOnce(t, baseHome, "skills")
+
+	if err := os.RemoveAll(target); err != nil {
+		t.Fatalf("delete base skills target: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(accountHome, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("stale projection survived a base entry that stopped resolving: %v", err)
+	}
+}
+
+// TestMaterializeCodexRemovesProjectionWhenNestedOptionalSymlinkBecomesExternal
+// covers the second skipping branch: the entry itself still resolves inside the
+// base home, but a nested symlink now leaves it (errSymlinkOutsideBase).
+func TestMaterializeCodexRemovesProjectionWhenNestedOptionalSymlinkBecomesExternal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	skillsPath := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(skillsPath, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	m, accountHome := projectedOnce(t, baseHome, "skills")
+
+	if err := os.Symlink(t.TempDir(), filepath.Join(skillsPath, "external-skill")); err != nil {
+		t.Fatalf("add nested external skills symlink: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(accountHome, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("stale projection survived a nested symlink leaving the base home: %v", err)
+	}
+}
+
+// TestMaterializeCodexKeepsFailingClosedWhenRequiredBaseEntryBecomesUnsafe
+// pins the unchanged behaviour for non-optional entries: they fail
+// materialization rather than being withdrawn.
+func TestMaterializeCodexKeepsFailingClosedWhenRequiredBaseEntryBecomesUnsafe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	for _, name := range []string{"config.toml", "plugins"} {
+		t.Run(name, func(t *testing.T) {
+			baseHome := t.TempDir()
+			entryPath := filepath.Join(baseHome, name)
+			if err := os.MkdirAll(entryPath, 0o700); err != nil {
+				t.Fatalf("mkdir base %q: %v", name, err)
+			}
+			m, accountHome := projectedOnce(t, baseHome, name)
+
+			if err := os.RemoveAll(entryPath); err != nil {
+				t.Fatalf("remove safe base %q: %v", name, err)
+			}
+			if err := os.Symlink(t.TempDir(), entryPath); err != nil {
+				t.Fatalf("replace base %q with external symlink: %v", name, err)
+			}
+
+			if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+				t.Fatalf("MaterializeCodex accepted an unsafe required entry %q", name)
+			}
+			if _, err := os.Lstat(filepath.Join(accountHome, name)); err != nil {
+				t.Fatalf("required entry %q was withdrawn instead of failing closed: %v", name, err)
+			}
+		})
+	}
+}
+
+// TestMaterializeCodexRefusesToRemoveForeignAccountEntry proves the safety
+// property: real state at a projected name is not something this package
+// created, so an unsafe base entry fails materialization rather than deleting it.
+func TestMaterializeCodexRefusesToRemoveForeignAccountEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	skillsPath := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(skillsPath, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	m, accountHome := projectedOnce(t, baseHome, "skills")
+
+	accountSkills := filepath.Join(accountHome, "skills")
+	if err := os.Remove(accountSkills); err != nil {
+		t.Fatalf("remove account projection: %v", err)
+	}
+	if err := os.WriteFile(accountSkills, []byte("foreign"), 0o600); err != nil {
+		t.Fatalf("write foreign account entry: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(skillsPath, "external-skill")); err != nil {
+		t.Fatalf("add nested external skills symlink: %v", err)
+	}
+
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
+		t.Fatal("MaterializeCodex accepted foreign account state at a projected name")
+	}
+	got, err := os.ReadFile(accountSkills)
+	if err != nil {
+		t.Fatalf("foreign account entry was deleted: %v", err)
+	}
+	if string(got) != "foreign" {
+		t.Fatalf("foreign account entry content changed: %q", got)
 	}
 }

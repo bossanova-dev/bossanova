@@ -370,9 +370,16 @@ func looksLikeTitleCommentary(line string) bool {
 // Code question prompt (AskUserQuestion / permission UI / conversational ?).
 // Delegates to bossalib/statusdetect, which is shared between the daemon's
 // tmux poller and the client-side PTY monitor.
+//
+// The two fields are NOT the same predicate. has_prompt is the notify signal
+// and includes a conversational "…?" asked with a live composer; blocks_input
+// is the modal subset, and is the only one safe to gate delivery on — a caller
+// that refused on has_prompt would refuse to answer the very question Claude
+// just asked (BOS-600).
 func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{
-		HasPrompt: statusdetect.HasQuestionPrompt(req.PaneContent),
+		HasPrompt:   statusdetect.HasQuestionPrompt(req.PaneContent),
+		BlocksInput: statusdetect.HasModalPrompt(req.PaneContent),
 	}, nil
 }
 

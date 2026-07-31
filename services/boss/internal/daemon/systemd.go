@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+	"time"
 )
 
 var validUsernameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -19,6 +20,19 @@ var validUsernameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 func isValidUsername(name string) bool {
 	return len(name) > 0 && len(name) <= 256 && validUsernameRe.MatchString(name)
 }
+
+// runSystemctl invokes systemctl and returns its combined output. It is a
+// package var so tests can inject a fake without a real systemd user session.
+var runSystemctl = func(args ...string) ([]byte, error) {
+	// #nosec G204 -- systemctl; const argv verbs plus derived unit names; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	return exec.Command("systemctl", args...).CombinedOutput()
+}
+
+// mcpStopVerifyTimeout bounds the post-stop re-probe. systemctl can return
+// before the unit has finished stopping, so a single read can still see it
+// active; polling avoids reporting a spurious failure.
+var mcpStopVerifyTimeout = 2 * time.Second
 
 const (
 	// ServiceName is the systemd unit name.
@@ -162,12 +176,12 @@ func platformInstall(bossdPath string, force bool) error {
 	}
 
 	// Reload systemd daemon.
-	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+	if out, err := runSystemctl("--user", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	// Enable and start the service.
-	if out, err := exec.Command("systemctl", "--user", "enable", "--now", ServiceName).CombinedOutput(); err != nil {
+	if out, err := runSystemctl("--user", "enable", "--now", ServiceName); err != nil {
 		return fmt.Errorf("systemctl enable --now: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
@@ -199,7 +213,7 @@ func platformUninstall() error {
 
 	// Stop and disable the service (ignore errors if not running/enabled).
 	if !skipLaunchctl() {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", ServiceName).Run()
+		_, _ = runSystemctl("--user", "disable", "--now", ServiceName)
 	}
 
 	// Remove the unit file.
@@ -209,7 +223,7 @@ func platformUninstall() error {
 
 	// Reload systemd daemon.
 	if !skipLaunchctl() {
-		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+		_, _ = runSystemctl("--user", "daemon-reload")
 	}
 
 	return nil
@@ -220,8 +234,8 @@ func platformRestart() error {
 		return nil
 	}
 
-	cmd := exec.Command("systemctl", "--user", "restart", ServiceName)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runSystemctl("--user", "restart", ServiceName)
+	if err != nil {
 		return fmt.Errorf("systemctl --user restart %s: %w: %s", ServiceName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -235,8 +249,8 @@ func platformStop() error {
 		return nil
 	}
 
-	cmd := exec.Command("systemctl", "--user", "stop", ServiceName)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runSystemctl("--user", "stop", ServiceName)
+	if err != nil {
 		return fmt.Errorf("systemctl --user stop %s: %w: %s", ServiceName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -265,16 +279,14 @@ func platformGetStatus() (*Status, error) {
 	}
 
 	// Check if service is active.
-	cmd := exec.Command("systemctl", "--user", "is-active", ServiceName)
-	out, err := cmd.Output()
+	out, err := runSystemctl("--user", "is-active", ServiceName)
 	if err == nil && strings.TrimSpace(string(out)) == "active" {
 		st.Running = true
 	}
 
 	// Get PID if running.
 	if st.Running {
-		cmd := exec.Command("systemctl", "--user", "show", "--property=MainPID", ServiceName)
-		out, err := cmd.Output()
+		out, err := runSystemctl("--user", "show", "--property=MainPID", ServiceName)
 		if err == nil {
 			// Output format: "MainPID=12345"
 			line := strings.TrimSpace(string(out))
@@ -352,10 +364,10 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 		return nil
 	}
 
-	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+	if out, err := runSystemctl("--user", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("systemctl", "--user", "enable", "--now", McpServiceName).CombinedOutput(); err != nil {
+	if out, err := runSystemctl("--user", "enable", "--now", McpServiceName); err != nil {
 		return fmt.Errorf("systemctl enable --now: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -368,13 +380,13 @@ func platformMcpUninstall() error {
 	}
 
 	if !skipLaunchctl() {
-		_ = exec.Command("systemctl", "--user", "disable", "--now", McpServiceName).Run()
+		_, _ = runSystemctl("--user", "disable", "--now", McpServiceName)
 	}
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove unit file: %w", err)
 	}
 	if !skipLaunchctl() {
-		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+		_, _ = runSystemctl("--user", "daemon-reload")
 	}
 	return nil
 }
@@ -383,18 +395,93 @@ func platformMcpStart() error {
 	if skipLaunchctl() {
 		return nil
 	}
-	if out, err := exec.Command("systemctl", "--user", "restart", McpServiceName).CombinedOutput(); err != nil {
+	out, err := runSystemctl("--user", "restart", McpServiceName)
+	if err != nil {
 		return fmt.Errorf("systemctl --user restart %s: %w: %s", McpServiceName, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
+// mcpUnitActiveState returns the systemd ActiveState word `systemctl --user
+// is-active` reported for the MCP unit, or "" when systemctl gave no
+// recognizable state at all.
+//
+// The exit code cannot be used to tell "the unit is stopped" apart from "the
+// probe itself failed": is-active exits NON-ZERO for every not-active state
+// (3 for inactive/failed/activating). The reported STATE WORD can, though --
+// systemd prints one of a known ActiveState set, whereas a probe failure (no
+// user bus reachable, systemctl absent) prints a diagnostic instead. Because
+// runSystemctl uses CombinedOutput, that diagnostic can arrive on either
+// stream, so this matches against the known set rather than assuming the
+// output is a state word.
+func mcpUnitActiveState() string {
+	out, _ := runSystemctl("--user", "is-active", McpServiceName)
+	switch state := strings.TrimSpace(string(out)); state {
+	case "active", "reloading", "activating", "deactivating", "inactive", "failed":
+		return state
+	}
+	return ""
+}
+
+// isMcpUnitActive reports whether systemctl currently considers the MCP unit
+// active. Used by platformMcpGetStatus, where an unreadable probe must not be
+// reported as running.
+func isMcpUnitActive() bool {
+	return mcpUnitActiveState() == "active"
+}
+
+// mcpUnitStillRunning is platformMcpStop's post-stop verification probe. Unlike
+// isMcpUnitActive it fails CLOSED, mirroring launchd's mcpStillRunningProbe
+// (launchd.go): a state systemd did not report is "cannot tell", not "stopped",
+// and accepting it as stopped would turn an unverifiable end state into a
+// silent success after a `stop` that genuinely failed.
+//
+// `inactive` and `failed` are real stopped states and are reported as such, so
+// the ordinary already-stopped case still verifies cleanly and the BOS-627 bug
+// (`stop` erroring when there is nothing to stop) does not return on Linux.
+func mcpUnitStillRunning() bool {
+	switch mcpUnitActiveState() {
+	case "inactive", "failed":
+		return false
+	default:
+		// "" (unreadable probe), plus active/reloading/activating/deactivating.
+		return true
+	}
+}
+
+// platformMcpStop stops the MCP systemd user unit and treats a verified
+// stopped end state as success, rather than trusting systemctl's exit code
+// alone.
+//
+// BOS-627: the prior body returned an error for any non-zero `systemctl
+// --user stop` exit, including the routine case where the unit was never
+// installed (no unit file) — there being nothing to stop is not a failure,
+// so that case now short-circuits before systemctl is invoked at all. When
+// the unit is installed, `stop` is attempted; systemctl can report before
+// the unit has actually finished stopping, so any error from `stop` is
+// followed by polling the unit state (via mcpUnitStillRunning, which fails
+// closed on an unreadable probe) for up to mcpStopVerifyTimeout before the
+// failure is treated as real and reported.
 func platformMcpStop() error {
 	if skipLaunchctl() {
 		return nil
 	}
-	if out, err := exec.Command("systemctl", "--user", "stop", McpServiceName).CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl --user stop %s: %w: %s", McpServiceName, err, strings.TrimSpace(string(out)))
+
+	if st, err := platformMcpGetStatus(); err == nil && !st.Installed {
+		return nil
+	}
+
+	out, err := runSystemctl("--user", "stop", McpServiceName)
+	if err == nil {
+		return nil
+	}
+
+	deadline := time.Now().Add(mcpStopVerifyTimeout)
+	for mcpUnitStillRunning() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("systemctl --user stop %s: %w: %s", McpServiceName, err, strings.TrimSpace(string(out)))
+		}
+		time.Sleep(LifecyclePollInterval)
 	}
 	return nil
 }
@@ -419,12 +506,9 @@ func platformMcpGetStatus() (*Status, error) {
 		return st, nil
 	}
 
-	out, err := exec.Command("systemctl", "--user", "is-active", McpServiceName).Output()
-	if err == nil && strings.TrimSpace(string(out)) == "active" {
-		st.Running = true
-	}
+	st.Running = isMcpUnitActive()
 	if st.Running {
-		out, err := exec.Command("systemctl", "--user", "show", "--property=MainPID", McpServiceName).Output()
+		out, err := runSystemctl("--user", "show", "--property=MainPID", McpServiceName)
 		if err == nil {
 			line := strings.TrimSpace(string(out))
 			if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
@@ -448,7 +532,7 @@ func platformEnsureRunning(socketPath string) error {
 	// Try the systemd service first (if installed).
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
-		if cmd := exec.Command("systemctl", "--user", "start", ServiceName); cmd.Run() == nil {
+		if _, err := runSystemctl("--user", "start", ServiceName); err == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
 			}

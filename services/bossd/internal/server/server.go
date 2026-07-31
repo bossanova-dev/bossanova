@@ -121,9 +121,13 @@ type Server struct {
 	addAccountMu           sync.Mutex
 	accountSmoke           AccountSmokeRunner
 	usageProbe             UsageProbeRecorder
-	checkSnapshots         db.CheckSnapshotStore
-	rotationEvents         db.RotationEventStore
-	cronScheduler          *cron.Scheduler
+	// accountMaterializations purges an account's on-disk credential
+	// materialization. Optional, may be nil — RemoveAccount then behaves as it
+	// did before the capability existed.
+	accountMaterializations AccountMaterializations
+	checkSnapshots          db.CheckSnapshotStore
+	rotationEvents          db.RotationEventStore
+	cronScheduler           *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
 	// (RUNNING only when the last-run agent is actively working). Shares the
 	// same instance as the scheduler's overlap check (cmd/main.go). Optional,
@@ -268,8 +272,12 @@ type Config struct {
 	AccountSmokeRunner AccountSmokeRunner
 	// UsageProbe refreshes cached account usage metadata for list refreshes.
 	// Optional, may be nil; refresh then falls back to cached values.
-	UsageProbe     UsageProbeRecorder
-	CheckSnapshots db.CheckSnapshotStore
+	UsageProbe UsageProbeRecorder
+	// AccountMaterializations purges an account's on-disk credential
+	// materialization on removal. Optional, may be nil; RemoveAccount then
+	// leaves the materialized tree alone, exactly as it did before.
+	AccountMaterializations AccountMaterializations
+	CheckSnapshots          db.CheckSnapshotStore
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents db.RotationEventStore
@@ -372,6 +380,14 @@ type AccountCredentialStore interface {
 	Delete(accountID string) error
 }
 
+// accountCredentialLocker is implemented by accountcred.Store. It is kept
+// optional so custom credential stores and existing test fakes do not need to
+// provide locking, while production refreshes share the materializer's
+// per-account load-merge-save lock.
+type accountCredentialLocker interface {
+	WithCredentialLock(accountID string, fn func() error) error
+}
+
 // AccountSmokeRunner runs a trivial live provider invocation to prove a
 // credential works (claude -p "ok" / codex equivalent). It is injected and
 // nil-safe: when absent, TestAccount records an unavailable smoke result.
@@ -383,6 +399,15 @@ type AccountSmokeRunner interface {
 // fail-soft at call sites: refresh errors never make ListAccounts fail.
 type UsageProbeRecorder interface {
 	RecordUsageProbe(ctx context.Context, accountID string) error
+}
+
+// AccountMaterializations purges the on-disk credential materialization for one
+// account (the plaintext tree an agent runner reads, e.g. codex's auth.json).
+// Optional: a nil capability leaves RemoveAccount behaving as before. The
+// implementation is provider-aware — the RPC always calls it and lets the
+// adapter no-op for providers that materialize nothing.
+type AccountMaterializations interface {
+	RemoveMaterialization(ctx context.Context, provider, accountID string) error
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
@@ -404,12 +429,14 @@ func New(cfg Config) *Server {
 		notes:                  cfg.Notes,
 		broadcastSubscriptions: cfg.BroadcastSubscriptions,
 
-		accounts:       cfg.Accounts,
-		rotationEngine: cfg.RotationEngine,
-		resolver:       cfg.Resolver,
-		accountCreds:   cfg.AccountCredentials,
-		accountSmoke:   cfg.AccountSmokeRunner,
-		usageProbe:     cfg.UsageProbe,
+		accounts:                cfg.Accounts,
+		rotationEngine:          cfg.RotationEngine,
+		resolver:                cfg.Resolver,
+		accountCreds:            cfg.AccountCredentials,
+		accountSmoke:            cfg.AccountSmokeRunner,
+		usageProbe:              cfg.UsageProbe,
+		accountMaterializations: cfg.AccountMaterializations,
+
 		checkSnapshots: cfg.CheckSnapshots,
 		rotationEvents: cfg.RotationEvents,
 		cronScheduler:  cfg.CronScheduler,

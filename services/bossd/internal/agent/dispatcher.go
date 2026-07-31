@@ -14,6 +14,7 @@ var (
 	_ AgentRunner                                  = (*Dispatcher)(nil)
 	_ AgentDispatcher                              = (*Dispatcher)(nil)
 	_ HeadlessCapabilityProfilePreflightDispatcher = (*Dispatcher)(nil)
+	_ AgentNameResolver                            = (*Dispatcher)(nil)
 )
 
 // ErrAgentNotLoaded is returned by Dispatcher methods when the resolved
@@ -175,6 +176,17 @@ func (d *Dispatcher) resolveByName(agentName string) (AgentRunner, string) {
 		agentName = d.defaultAgent
 	}
 	return d.runners[agentName], agentName
+}
+
+// ResolveAgentName reports the agent name a by-agent launch would route to,
+// without touching the registry entry or starting anything. It exists so
+// callers that hold the dispatcher behind an interface (e.g. the session
+// lifecycle deciding agent-keyed launch policy) resolve the name exactly the
+// way routing will, including the empty-name fallbacks. The returned name may
+// be unknown to the registry — the launch call itself surfaces "not loaded".
+func (d *Dispatcher) ResolveAgentName(agentName string) string {
+	_, name := d.resolveByName(agentName)
+	return name
 }
 
 // StartByAgent routes Start to the named agent runner, decoupling routing

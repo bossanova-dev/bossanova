@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -178,15 +180,31 @@ func TestQuestionPromptIgnoresActivityBullets(t *testing.T) {
 	}
 }
 
-// TestQuestionPromptRealPaneFixture is opt-in: when an operator drops a
-// real codex pane capture into testdata/panes/question.txt the test
-// verifies the detector fires on production output. Lane 0 didn't capture
-// a pane fixture, so the file is absent on a fresh checkout — we skip
-// rather than fail.
+// realPaneFixtureDigest pins testdata/panes/question.txt, which is no longer
+// only this module's business: services/bossd/internal/tmux keeps a byte copy
+// (testdata/panes/codex_approval_menu.txt) and proves "this pane is refused
+// with no keystroke sent" against it, while the test below proves "the real
+// codex grammar calls this pane a modal". BOS-600's headline claim is the
+// composition of the two, and it holds only while both sides read the same
+// bytes. The module boundary forbids reading across it, so each side hashes
+// its own copy against its own literal — a tripwire, not a proof: nothing here
+// compares the two files, so a change that re-pins both literals would let them
+// diverge green. What it buys is that divergence cannot happen QUIETLY: edit one
+// copy and that side reddens, naming the other file in the failure.
+const realPaneFixtureDigest = "82bc86a3bc9ff3425b94eee793731a34e70a4b5f8d5afc228ea7e7b5fe620c33"
+
+// TestQuestionPromptRealPaneFixture verifies the detector fires on production
+// output. It used to skip when the capture was absent — that was correct while
+// nothing depended on the file, and wrong now: a missing or altered fixture
+// would turn half of BOS-600's proof into a green skip. It fails instead.
 func TestQuestionPromptRealPaneFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/panes/question.txt")
 	if err != nil {
-		t.Skip("no testdata/panes/question.txt fixture; skipping real-pane assertion")
+		t.Fatalf("read real codex pane fixture: %v (services/bossd/internal/tmux copies this file; do not delete it)", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != realPaneFixtureDigest {
+		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/tmux/testdata/panes/codex_approval_menu.txt "+
+			"must stay byte-identical and asserts against the same digest", got, realPaneFixtureDigest)
 	}
 	if !hasCodexQuestionPrompt(data) {
 		t.Errorf("expected has_prompt=true on real codex pane fixture (%d bytes)", len(data))

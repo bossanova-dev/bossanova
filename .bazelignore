@@ -26,3 +26,15 @@ lib/ui-tokens/node_modules
 services/web/node_modules
 services/marketing/node_modules
 services/docs/node_modules
+
+# Worktree-local `.config` tree. `make setup-worktree` copies the gitignored
+# `/.config/` dir (see .gitignore) into EVERY worktree, including agent and cron
+# ones, and it holds materialized agent homes under `.config/accounts/`. A
+# projected codex home ships the `Codex Computer Use.app` bundle, whose
+# `Contents/Resources/BUILD.bazel` loads `@build_bazel_rules_swift` — a repo we
+# do not depend on. `bazel //...` therefore aborts while LOADING packages
+# ("could not be resolved: No repository visible as '@build_bazel_rules_swift'"),
+# which red-lights `make test` and `make build-drift-check` on every worktree
+# with a codex account projected while CI (no `.config`) stays green. Safe to
+# ignore: the tree is gitignored local state and owns no repo build targets.
+.config

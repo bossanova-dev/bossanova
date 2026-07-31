@@ -22,6 +22,7 @@ import (
 
 	"github.com/recurser/bossalib/apiversion"
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/chatdelivery"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	"github.com/recurser/bossalib/errortrack"
@@ -128,6 +129,27 @@ type chatMessageSender interface {
 
 // deliverChatMessage sends a message through the wake-and-submit path and only
 // reports success after bossd confirms that the message reached its target.
+//
+// An undelivered result stays an error, so all three workers that share this
+// primitive (callback delivery, transient resume, broadcast delivery) keep
+// scheduling their capped-backoff retry exactly as before. What changed with
+// BOS-598 is where the reason lives: an unconfirmed submit used to arrive as a
+// CodeInternal error whose message the `err != nil` branch wrapped and logged,
+// and it now arrives as a successful RPC carrying delivered=false. Reporting
+// that as a bare "not delivered" would drop the diagnosis on the floor for
+// precisely the case that is hardest to diagnose, so the delivery state and the
+// server's notice are folded into the error the worker logs.
+//
+// Retrying an UNCONFIRMED result can therefore double-deliver, which is a real
+// cost and a deliberate one: these three workers are unattended, and the
+// alternative — treating "could not verify" as delivered — silently DROPS a
+// callback, a resume prompt, or a broadcast with nobody watching. A duplicate
+// prompt is recoverable by a human reading the pane; a dropped one is invisible.
+// Suppressing the retry for this state is a behavior change these workers'
+// callers have not asked for, so it stays a follow-up rather than a smuggled-in
+// side effect of the BOS-598 outcome plumbing. The interactive path makes the
+// opposite trade (boss chat send reports UNCONFIRMED and does not resend),
+// because there a human is present to look.
 func deliverChatMessage(ctx context.Context, sender chatMessageSender, agentSessionID, message string) error {
 	resp, err := sender.SendChatMessage(ctx, connect.NewRequest(&bossanovav1.SendChatMessageRequest{
 		AgentSessionId: agentSessionID,
@@ -145,9 +167,49 @@ func deliverChatMessage(ctx context.Context, sender chatMessageSender, agentSess
 		return errors.New("send chat message: nil response message")
 	}
 	if !resp.Msg.GetDelivered() {
-		return errors.New("send chat message: not delivered")
+		return fmt.Errorf("send chat message: %s", undeliveredReason(resp.Msg))
 	}
 	return nil
+}
+
+// undeliveredReason renders why a SendChatMessage response reported
+// delivered=false, naming the structured delivery state and appending the
+// server's human-readable notice when it carried one.
+func undeliveredReason(msg *bossanovav1.SendChatMessageResponse) string {
+	reason := "not delivered"
+	// guidance is the one fact an unconfirmed delivery adds: the retry these
+	// workers schedule can double-deliver. The server's notice_text already ends
+	// with it, so it is appended below only when the notice did not carry it —
+	// stating it twice in one line is noise, not emphasis. That dedupe is a
+	// SUBSTRING match against the daemon's own sentence, which is why this takes
+	// the shared constant rather than a retyped near-copy: a paraphrase here
+	// would still read as absent and print both.
+	guidance := ""
+	switch msg.GetDeliveryState() {
+	case bossanovav1.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED:
+		// The message MAY already be running in the pane: the verifier could not
+		// read the pane, not that it read an unsubmitted one.
+		reason = "delivery unconfirmed"
+		guidance = chatdelivery.ResendGuidance
+	case bossanovav1.SendChatMessageResponse_DELIVERY_STATE_NOT_SUBMITTED:
+		reason = "not submitted (payload still at the prompt)"
+	case bossanovav1.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED,
+		bossanovav1.SendChatMessageResponse_DELIVERY_STATE_QUEUED,
+		bossanovav1.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED:
+		// delivered=false with any of these is not a state the server produces;
+		// keep the generic reason rather than asserting a diagnosis. QUEUED
+		// belongs here rather than beside UNCONFIRMED precisely because it is a
+		// DELIVERED state: the agent has the message and will run it when its
+		// turn ends, so this function — reached only when delivered=false — must
+		// never attach its "do not resend" guidance to a genuine failure.
+	}
+	if notice := strings.TrimSpace(msg.GetNoticeText()); notice != "" {
+		reason += ": " + notice
+	}
+	if guidance != "" && !strings.Contains(reason, guidance) {
+		reason += " (" + guidance + ")"
+	}
+	return reason
 }
 
 func probeUsageSnapshotForRotation(
@@ -1338,6 +1400,9 @@ func run(opts runOpts) error {
 	// server (creation-time default policy) and both spawn seams below.
 	accountMaterializer := accountwiring.NewMaterializer(agentClients, accounts, accountCreds, log.Logger)
 	accountUsageProbe, _ := accountMaterializer.(server.UsageProbeRecorder)
+	// Optional too: without it RemoveAccount cannot purge the on-disk credential
+	// materialization, so it keeps its pre-purge behavior (keyring + row only).
+	accountMaterializations, _ := accountMaterializer.(server.AccountMaterializations)
 	accountResolver := account.NewResolver(
 		accountwiring.NewRegistry(accounts),
 		accountMaterializer,
@@ -2451,27 +2516,28 @@ func run(opts runOpts) error {
 		DaemonID:        persistedDaemonID,
 		// The RPC surface gets create/read/cancel only; firing stays with the
 		// evaluator wired into the session store above.
-		BroadcastSubscriptions: broadcastSubscriptions,
-		Accounts:               accounts,
-		RotationEngine:         rotationEngine,
-		Resolver:               accountResolver,
-		AccountCredentials:     accountCreds,
-		AccountSmokeRunner:     accountSmoke,
-		UsageProbe:             accountUsageProbe,
-		CheckSnapshots:         checkSnapshots,
-		RotationEvents:         rotationEvents,
-		CronScheduler:          cronScheduler,
-		CronActivity:           cronActivity,
-		ChatStatus:             chatStatusTracker,
-		DisplayTracker:         displayTracker,
-		PRRefresher:            displayPoller,
-		RepairLease:            repairLease,
-		TmuxPoller:             tmuxStatusPoller,
-		Lifecycle:              lifecycle,
-		Agent:                  agentRunner,
-		AgentClients:           agentClients,
-		Worktrees:              worktrees,
-		Provider:               ghProvider,
+		BroadcastSubscriptions:  broadcastSubscriptions,
+		Accounts:                accounts,
+		RotationEngine:          rotationEngine,
+		Resolver:                accountResolver,
+		AccountCredentials:      accountCreds,
+		AccountSmokeRunner:      accountSmoke,
+		UsageProbe:              accountUsageProbe,
+		AccountMaterializations: accountMaterializations,
+		CheckSnapshots:          checkSnapshots,
+		RotationEvents:          rotationEvents,
+		CronScheduler:           cronScheduler,
+		CronActivity:            cronActivity,
+		ChatStatus:              chatStatusTracker,
+		DisplayTracker:          displayTracker,
+		PRRefresher:             displayPoller,
+		RepairLease:             repairLease,
+		TmuxPoller:              tmuxStatusPoller,
+		Lifecycle:               lifecycle,
+		Agent:                   agentRunner,
+		AgentClients:            agentClients,
+		Worktrees:               worktrees,
+		Provider:                ghProvider,
 
 		PRResolver:         prAssociationResolver,
 		PluginHost:         pluginHost,

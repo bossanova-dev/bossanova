@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -810,6 +811,196 @@ func TestHasQuestionPromptDelegatesToDetector(t *testing.T) {
 	}
 	if respIdle.HasPrompt {
 		t.Error("HasPrompt = true for idle pane, want false")
+	}
+}
+
+// TestBlocksInputIgnoresScrolledOffApproval is the regression BOS-600's delivery
+// gate depends on. blocks_input is what the daemon refuses a send on, and the
+// pane it hands us is captured WITH scrollback — so the question cannot be "does
+// an approval footer appear anywhere in this buffer?" An approval the user
+// answered long ago is still in the buffer; answering yes to that would refuse
+// every subsequent delivery to a chat that is sitting idle at its composer.
+//
+// The fixture is the real captured approval pane (testdata/panes/question.txt),
+// scrolled up by appending plain output rows — the same thing the TUI does when
+// the agent keeps going after an approval is answered. Nothing about the
+// approval text is edited, so this cannot pass by weakening the grammar.
+func TestBlocksInputIgnoresScrolledOffApproval(t *testing.T) {
+	s := newTestServer(t)
+
+	live, err := os.ReadFile("testdata/panes/question.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	resp, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: live})
+	if err != nil {
+		t.Fatalf("HasQuestionPrompt(live): %v", err)
+	}
+	if !resp.BlocksInput {
+		t.Fatal("BlocksInput = false while the approval menu is on screen; the delivery gate would type into it")
+	}
+
+	scrolled := append(bytes.Clone(live), []byte(strings.Repeat("  wrote /tmp/codex-approval-test.txt\n", 40))...)
+	respScrolled, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: scrolled})
+	if err != nil {
+		t.Fatalf("HasQuestionPrompt(scrolled): %v", err)
+	}
+	if respScrolled.BlocksInput {
+		t.Error("BlocksInput = true for an approval that has scrolled out of view; delivery to this chat would be refused forever")
+	}
+}
+
+// TestBlocksInputSurvivesPanePadding is the other half of the tail bound, and
+// the half that fails open. `tmux capture-pane` emits every row of the pane, so
+// a capture carries as many trailing blank rows as the conversation is short —
+// and codex draws its menu under the last output line, not at the pane bottom.
+// A window counted from the raw end of the buffer is therefore spent on padding
+// before it reaches the menu: the real 60-row fixture below has its approval
+// footer on row 35, so four more blank rows would have hidden it. Hiding it
+// means blocks_input goes false and the daemon types the payload plus Enter
+// into a live approval menu — precisely the incident this branch exists to
+// stop, reintroduced by the fix for the opposite one.
+//
+// The fixture text is again untouched; only the padding grows.
+func TestBlocksInputSurvivesPanePadding(t *testing.T) {
+	s := newTestServer(t)
+
+	live, err := os.ReadFile("testdata/panes/question.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	for _, blankRows := range []int{4, 12, 40, 200} {
+		padded := append(bytes.Clone(live), []byte(strings.Repeat("\n", blankRows))...)
+		resp, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: padded})
+		if err != nil {
+			t.Fatalf("HasQuestionPrompt(padded %d): %v", blankRows, err)
+		}
+		if !resp.BlocksInput {
+			t.Errorf("BlocksInput = false with %d blank pane rows below an on-screen approval menu; the delivery gate would type into it", blankRows)
+		}
+	}
+}
+
+// TestBlocksInputMatchesTallRequestUserInputCard pins the one modal whose
+// grammar spans more than its footer: the request_user_input picker is matched
+// from a "Question N/M (K unanswered)" header down to its footer, so a card
+// taller than the modal window would lose the header to the slice and read as
+// "no modal" while filling the screen. The card is matched against the whole
+// active pane once its footer proves it reaches the bottom; a card whose footer
+// has scrolled away is stale and must still be ignored.
+func TestBlocksInputMatchesTallRequestUserInputCard(t *testing.T) {
+	s := newTestServer(t)
+
+	card := "  Question 1/2 (2 unanswered)\n" +
+		strings.Repeat("  ▌ some long question body line\n", 40) +
+		"  tab to add notes | enter to submit answer | esc to interrupt\n"
+
+	onScreen := card + strings.Repeat("\n", 8)
+	resp, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: []byte(onScreen)})
+	if err != nil {
+		t.Fatalf("HasQuestionPrompt(on-screen card): %v", err)
+	}
+	if !resp.BlocksInput {
+		t.Error("BlocksInput = false for a request_user_input card taller than the modal window; the delivery gate would type into it")
+	}
+
+	scrolled := card + strings.Repeat("  wrote /tmp/codex-answer.txt\n", 40)
+	respScrolled, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: []byte(scrolled)})
+	if err != nil {
+		t.Fatalf("HasQuestionPrompt(scrolled card): %v", err)
+	}
+	if respScrolled.BlocksInput {
+		t.Error("BlocksInput = true for a request_user_input card that has scrolled out of view; delivery to this chat would be refused forever")
+	}
+}
+
+// TestTallCardEvidenceStaysScopedToTheWindow guards the two ways the tall-card
+// path — the one branch allowed to read above the modal window — can be talked
+// out of its answer by scrollback. Both directions are failures the window
+// bound exists to prevent, so widening the header search must not drag the rest
+// of the decision up with it.
+func TestTallCardEvidenceStaysScopedToTheWindow(t *testing.T) {
+	s := newTestServer(t)
+
+	body := strings.Repeat("  ▌ some long question body line\n", 40)
+	footer := "  tab to add notes | enter to submit answer | esc to interrupt\n"
+	padding := strings.Repeat("\n", 6)
+
+	tests := []struct {
+		name string
+		pane string
+		want bool
+		why  string
+	}{
+		{
+			name: "stale working spinner above the card",
+			// A spinner from an earlier turn stays in the buffer until
+			// "• Session Complete", which a long chat may never print. Vetoing
+			// pane-wide on it would switch the tall card's only defence off.
+			pane: "• Working (7s • esc to interrupt)\n" +
+				"  Question 1/2 (2 unanswered)\n" + body + footer + padding,
+			want: true,
+			why:  "a spinner from an earlier turn must not unblock a card that is on screen now",
+		},
+		{
+			name: "working spinner inside the window below the footer",
+			// The other half of the veto's job: a spinner drawn under the footer
+			// is codex saying the picker is finished and the turn has resumed,
+			// so the composer is free even though the card is still on screen.
+			pane: "  Question 1/2 (2 unanswered)\n" + body + footer +
+				"  wrote /tmp/codex-answer.txt\n" +
+				"• Working (7s • esc to interrupt)\n" + padding,
+			want: false,
+			why:  "a spinner under the footer means the picker is done; blocking here refuses a ready pane",
+		},
+		{
+			name: "card body quoting a header does not relocate the card",
+			// Card bodies are free-form agent prose and routinely quote earlier
+			// terminal output. A quoted header must not pose as the start of the
+			// bottom-most card, or a live picker reads as unblocked.
+			pane: "  Question 1/1 (1 unanswered)\n" + body +
+				"  ▌ should I keep the state where Question 3/3 (0 unanswered) is shown?\n" +
+				body + footer + padding,
+			want: true,
+			why:  "a header quoted inside a card body must not be mistaken for a real card header",
+		},
+		{
+			name: "header rendered but its footer not yet drawn",
+			// A capture can land between the header row and the footer row of a
+			// re-render. The previous frame's footer is still on screen, so the
+			// picker still owns the composer; treating the footerless newest
+			// header as "no card" would fail open on that frame.
+			pane: "  Question 1/2 (2 unanswered)\n" + body + footer +
+				"  Question 2/2 (1 unanswered)\n" +
+				strings.Repeat("  ▌ some long question body line\n", 3) + padding,
+			want: true,
+			why:  "a half-drawn re-render must not read as an idle composer",
+		},
+		{
+			name: "answered bottom card under an unanswered older one",
+			// The bottom card owns the composer; it is fully answered, so the
+			// picker is done. An older card's counter must not vouch for it, or
+			// delivery is refused for the rest of the session.
+			pane: "  Question 1/3 (2 unanswered)\n" + body + footer +
+				strings.Repeat("  wrote /tmp/codex-answer.txt\n", 50) +
+				"  Question 3/3 (0 unanswered)\n" + body + footer + padding,
+			want: false,
+			why:  "an older card's unanswered counter must not keep a finished picker blocking",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := s.HasQuestionPrompt(context.Background(), &bossanovav1.HasQuestionPromptRequest{PaneContent: []byte(tc.pane)})
+			if err != nil {
+				t.Fatalf("HasQuestionPrompt: %v", err)
+			}
+			if resp.BlocksInput != tc.want {
+				t.Errorf("BlocksInput = %v, want %v: %s", resp.BlocksInput, tc.want, tc.why)
+			}
+		})
 	}
 }
 

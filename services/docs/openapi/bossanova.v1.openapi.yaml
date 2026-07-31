@@ -6521,6 +6521,20 @@ components:
         hasPrompt:
           type: boolean
           title: has_prompt
+          description: |-
+            The pane is waiting on the user: notify a human. True for a modal AND for
+             a conversational question asked with a live composer.
+        blocksInput:
+          type: boolean
+          title: blocks_input
+          description: |-
+            The prompt is MODAL: a selection UI has taken over the composer, so a
+             keystroke is consumed as a choice rather than typed as text. Strict subset
+             of has_prompt. Callers gating whether it is safe to DELIVER input must read
+             this field, never has_prompt -- a conversational question sets has_prompt
+             with the composer live, and refusing there would drop the answer (BOS-600).
+             Plugins predating this field leave it false, which fails open to the
+             pre-BOS-600 behaviour rather than refusing every send.
       title: HasQuestionPromptResponse
       additionalProperties: false
     bossanova.v1.HasWorkingIndicatorRequest:
@@ -11822,11 +11836,35 @@ components:
             notice_text carries a user-facing outcome summary for a message that bossd
              handled mechanically instead of delivering to the agent — today, a
              single-line "/boss switch" account switch intercepted before the tmux paste
-             (credit-free manual switch). On that path delivered is false and no LLM call
-             is made, so callers keying on delivered to mean "handled" MUST also read
-             notice_text. Empty for an ordinary delivered message.
+             (credit-free manual switch), or a submit whose outcome could not be
+             confirmed (delivery_state UNCONFIRMED). On those paths delivered is false, so
+             callers keying on delivered to mean "handled" MUST also read notice_text.
+             Empty for an ordinary delivered message.
+        deliveryState:
+          title: delivery_state
+          description: |-
+            delivery_state is UNSPECIFIED on every path that does not run the submit
+             verifier, SUBMITTED alongside delivered=true, QUEUED alongside
+             delivered=true when the agent queued the message behind a running turn, and
+             UNCONFIRMED alongside delivered=false when verification could not resolve.
+             NOT_SUBMITTED never appears on a response (that outcome is an error whose
+             message names it).
+          $ref: '#/components/schemas/bossanova.v1.SendChatMessageResponse.DeliveryState'
       title: SendChatMessageResponse
       additionalProperties: false
+    bossanova.v1.SendChatMessageResponse.DeliveryState:
+      type: string
+      title: DeliveryState
+      enum:
+        - DELIVERY_STATE_UNSPECIFIED
+        - DELIVERY_STATE_SUBMITTED
+        - DELIVERY_STATE_NOT_SUBMITTED
+        - DELIVERY_STATE_UNCONFIRMED
+        - DELIVERY_STATE_QUEUED
+      description: |-
+        DeliveryState reports what the submit verifier actually observed, so a caller
+         can tell "confirmed not submitted" (retrying is safe and necessary) from
+         "could not confirm" (retrying may double-type) without scraping tmux.
     bossanova.v1.Session:
       type: object
       properties:

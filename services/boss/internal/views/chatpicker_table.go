@@ -147,7 +147,7 @@ func (m ChatPickerModel) tableHeight() int {
 	return clampedTableHeight(len(m.chats), m.height, overhead)
 }
 
-// httpEndpointLine returns the muted "HTTP  :3000 · :5173" line for the
+// httpEndpointLine returns the muted "HTTP  :3000 :5173" line for the
 // session's verified machine-local HTTP endpoints (BOS-474), or "" when the
 // session has none. Each ":port" is independently clickable; see
 // renderSessionEndpoints for the OSC 8 / URL-validation rules.

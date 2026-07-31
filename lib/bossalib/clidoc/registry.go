@@ -401,13 +401,14 @@ func newRegistry() map[string]Prose {
 			Examples: []Example{{Command: "boss mcp uninstall"}},
 		},
 		"boss mcp status": {
+			Long:     "Reports the MCP service state (installed/running) plus the instances: inventory of every boss-mcp process owned by the current user (service, stray HTTP, session-owned, and orphaned counts).",
 			Examples: []Example{{Command: "boss mcp status"}},
 		},
 		"boss mcp start": {
 			Examples: []Example{{Command: "boss mcp start"}},
 		},
 		"boss mcp stop": {
-			Long:     "Stops the running MCP server, leaving its service file in place. Idempotent.",
+			Long:     "Stops the managed MCP service (leaving its service file in place) and also terminates stray `--http` daemons and orphaned session MCP servers owned by the current user, while leaving live session-owned servers running since each exits with its own chat. Idempotent.",
 			Examples: []Example{{Command: "boss mcp stop"}},
 		},
 

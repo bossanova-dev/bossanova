@@ -4,18 +4,138 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/recurser/bossalib/chatdelivery"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
+// unconfirmedResendGuidance is the one action an UNCONFIRMED delivery calls for.
+// It is appended to notice_text rather than left to the surfaces that render
+// delivery_state, because notice_text is the only field that survives every
+// converter between here and a caller.
+//
+// It comes from bossalib rather than being spelled out here because the CLI
+// MATCHES on this sentence to recognise an unconfirmed delivery whose
+// delivery_state the proxy dropped: reworded here alone, that recognition fails
+// silently. Shared, the two cannot drift.
+const unconfirmedResendGuidance = chatdelivery.ResendGuidance
+
+// queuedGuidance is the counterpart for a QUEUED delivery, and it says the
+// opposite: the agent has the message, so resending queues a second copy that
+// runs twice. It comes from the same package for the same reason — surfaces
+// match on the sentence to recover a delivery_state the proxy dropped.
+const queuedGuidance = chatdelivery.QueuedGuidance
+
+// modalDetectorFor returns the "is this pane showing a menu rather than a
+// composer?" check for one agent, or nil when it cannot be answered.
+//
+// It routes to the agent's plugin over AgentRunnerService.HasQuestionPrompt
+// rather than matching glyphs here, because each agent's modal grammar belongs
+// to that agent: codex's approval and request_user_input footers live in the
+// codex plugin, Claude's in bossalib/statusdetect. Recognising them here would
+// fork two grammars that already exist and drift from them silently — and
+// reaching into the plugin packages directly would cross a module boundary.
+// It reads blocks_input, NOT has_prompt. The two are different predicates with
+// opposite failure costs: has_prompt is the notify signal the status poller
+// uses, and it fires for a conversational "…?" asked with a live, empty
+// composer. Gating delivery on that would refuse to answer the very question
+// the agent just asked — the commonest reason anyone sends a chat message —
+// and broadcast fan-out and GitHub callbacks, which deliver through this same
+// RPC, would inherit the failure. blocks_input is the strict modal subset: the
+// composer is gone and a keystroke selects.
+//
+// A missing client returns nil, which disables the check. That is deliberate
+// fail-open, mirroring the poller: an unloaded plugin must never become a new
+// reason delivery fails. It costs at most one plugin round-trip per readiness
+// wait — the gate probes only the capture that resolved a composer row, or the
+// last capture on the deadline path — not one per poll tick.
+func (s *Server) modalDetectorFor(agentName string) tmux.ModalDetector {
+	client, ok := s.agentClients[agentName]
+	if !ok {
+		return nil
+	}
+	// The readiness gate treats a detector error as "not a modal", so a wedged or
+	// version-skewed plugin cannot become a new reason delivery stops. That
+	// fail-open is deliberate but it is also INVISIBLE: a permanently failing
+	// HasQuestionPrompt silently restores the pre-BOS-600 behaviour with no signal
+	// anywhere, and the next Enter into a menu would look like an unexplained
+	// regression. Report the first failure of each send — the detector is built
+	// once per SendChatMessage, so this is one line per degraded send even if the
+	// gate's probe budget is ever widened.
+	var reportOnce sync.Once
+	return func(ctx context.Context, pane []byte) (bool, error) {
+		resp, err := client.HasQuestionPrompt(ctx, &pb.HasQuestionPromptRequest{PaneContent: pane})
+		if err != nil {
+			reportOnce.Do(func() {
+				s.logger.Warn().Err(err).Str("agent", agentName).
+					Msg("modal check unavailable; delivering without the BOS-600 modal gate")
+			})
+			return false, err
+		}
+		return resp.GetBlocksInput(), nil
+	}
+}
+
 // SendChatMessage delivers a user message into a chat's live agent, optionally
 // waking an asleep session first.
+//
+// BOS-598 moved one failure off the error channel: an UNCONFIRMED submit (the
+// verifier could not read the pane, so the payload may or may not be running)
+// used to be a CodeInternal error and is now a SUCCESSFUL response carrying
+// delivered=false, delivery_state=UNCONFIRMED and a human-readable notice_text.
+// Every caller was audited for that move, because a caller that reads only err
+// would silently turn a failure into a success:
+//
+//   - services/boss/internal/client/local.go, services/mcp/internal/
+//     socketbackend, services/bossd/internal/upstream/adapters.go — pass-through
+//     wrappers returning the whole resp.Msg, so both new signals survive intact.
+//   - services/boss/internal/client/remote.go — the ONE caller that rebuilds the
+//     response field by field (from ProxySendChatMessageResponse), so it is where
+//     a new signal can be dropped silently. It carries notice_text; it cannot
+//     carry delivery_state, because the proxy response has no mirror of it (see
+//     the deferral below). A cloud caller therefore sees delivered=false plus the
+//     notice rather than a distinct UNCONFIRMED state.
+//   - services/bossd/internal/upstream/command_dispatcher.go — forwards the whole
+//     message as CommandResult{send_chat_message} with ok=true; bosso's
+//     ProxySendChatMessage maps it onto ProxySendChatMessageResponse, which
+//     carries notice_text (the delivery_state mirror is deliberately deferred:
+//     orchestrator.proto is an observable surface and would force an apiversion
+//     bump).
+//   - services/mcp-gateway/internal/proxybackend — remote MCP; carries
+//     notice_text, which on that path is the only reason a caller can see.
+//   - lib/bossalib/bossmcp/tools_mutating.go (send_chat_message) — renders the
+//     whole response as JSON, so a driver sees delivered=false plus the notice.
+//   - services/boss/cmd/chat.go — reportChatSendOutcome renders UNCONFIRMED
+//     distinctly and tells the operator to check the pane before resending;
+//     exit status stays 0 because the message may in fact be running.
+//   - services/bossd/cmd/main.go deliverChatMessage — the shared primitive for
+//     callback delivery, transient resume, and broadcast delivery. Undelivered
+//     stays an error there, so all three keep their capped-backoff retry, and
+//     the delivery state plus notice are folded into what they log.
+//
+// The move is visible one hop further out, on bossanova.v1: an unconfirmed
+// submit used to reach ProxySendChatMessage as a failed CommandResult (a Connect
+// error) and now arrives as ok=true with delivered=false. No apiversion bump
+// accompanies it, deliberately. The versioning mechanism down-converts response
+// VALUES (VersionChange.TransformResponse mutates a response message in place),
+// and this produces no value a Baseline client was not already built for:
+// delivered=false plus notice_text is the pre-existing, proto-documented shape
+// for "bossd handled this and did not deliver it; read notice_text" (the
+// intercepted "/boss switch" path). What widened is the set of conditions that
+// produce that shape. A transform therefore has nothing to rewrite — the only
+// down-convert would be to synthesize the old error for older clients, which the
+// interface cannot express and which would be actively harmful: it would restore
+// exactly the "it failed, retry it" reading whose retry double-types into the
+// agent's composer, i.e. the bug this change exists to remove. Adding
+// delivery_state to ProxySendChatMessageResponse WOULD put a new value on that
+// wire and would need a bump; that is the deferral recorded above.
 func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
 	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.GetAgentSessionId())
 	if err != nil || chat == nil {
@@ -111,13 +231,100 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// silent false "submitted". The ready marker is resolved from the chat's
 	// agent so the submit path waits for the correct composer glyph (claude
 	// "❯", codex "›").
-	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send message: %w", err))
+	//
+	// The modal detector is resolved from the same agent, so the readiness gate
+	// can tell that agent's approval menu / question picker from its composer and
+	// refuse rather than fire an Enter into it (BOS-600).
+	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName)); err != nil {
+		// Three outcomes, three answers (BOS-598). Only the verifier classifies an
+		// error; everything else (ready-marker timeout, a tmux command that failed
+		// to run) stays OutcomeUnclassified and keeps the pre-existing CodeInternal.
+		switch tmux.OutcomeOf(err) {
+		case tmux.OutcomeUnconfirmed:
+			// Verification could not resolve, so the payload MAY have been submitted.
+			// Returning an error here reads to a caller as "it failed" and invites a
+			// retry that double-types into the agent's composer. Report it as a
+			// response instead, with delivered=false so every existing caller keying
+			// on delivered still fails closed, and delivery_state carrying the reason
+			// a caller needs to decide whether retrying is safe.
+			//
+			// The retry guidance lives in notice_text, not only in the surfaces that
+			// read delivery_state: notice_text is the ONE field every hand-rolled
+			// converter forwards (services/boss/internal/client/remote.go and
+			// services/mcp-gateway/internal/proxybackend/proxybackend.go both drop
+			// delivery_state), so a caller reached over the proxy would otherwise be
+			// told delivery is unconfirmed without being told that resending may
+			// double-type into the composer.
+			return connect.NewResponse(&pb.SendChatMessageResponse{
+				TmuxSessionName: tmuxName,
+				Delivered:       false,
+				DeliveryState:   pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED,
+				// No verdict lead-in: delivery_state above already says the submit is
+				// unconfirmed, and the verifier's error states the observation that
+				// makes it so ("no live composer was drawn on tmux session <name>
+				// …"). Prefixing a second "could not be confirmed" here would make
+				// every surface state the same fact twice — the CLI, which labels the
+				// line "delivery unconfirmed" itself, twice over. Carry the
+				// observation and the guidance, once each.
+				NoticeText: fmt.Sprintf("%v; %s", err, unconfirmedResendGuidance),
+			}), nil
+		case tmux.OutcomeQueued:
+			// The payload left the composer into the agent's own visible message
+			// queue, so it will run when the current turn ends. That IS delivery —
+			// a more precise SUBMITTED rather than a softened failure — and it is
+			// the outcome where a retry is actively harmful, since the agent
+			// already holds the message and resending queues a second copy.
+			//
+			// It is a response, not an error, for the same reason UNCONFIRMED is:
+			// an error reads to every caller as "it failed" and invites exactly
+			// that retry. notice_text carries the guidance because it is the ONE
+			// field the hand-rolled converters forward (remote.go and
+			// proxybackend.go both drop delivery_state), so a proxied caller is
+			// still told not to resend.
+			return connect.NewResponse(&pb.SendChatMessageResponse{
+				TmuxSessionName: tmuxName,
+				Delivered:       true,
+				DeliveryState:   pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED,
+				NoticeText:      fmt.Sprintf("%v; %s", err, queuedGuidance),
+			}), nil
+		case tmux.OutcomeBlockedByModal:
+			// The pane was showing a modal, so nothing was typed and no Enter was
+			// sent. FailedPrecondition, not Internal: the daemon is healthy and the
+			// caller's request was well-formed — the *pane* is in the wrong state,
+			// and it takes a human (or the agent finishing its prompt) to leave that
+			// state. Resending changes nothing until it does, which is exactly what
+			// separates this from OutcomeNotSubmitted's safe retry. The state is
+			// named in the message so the distinction survives the error-only
+			// proxied surface that drops delivery_state (BOS-600).
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("send message (delivery state: %s): %w", tmux.OutcomeBlockedByModal, err))
+		case tmux.OutcomeNotSubmitted:
+			// The payload is confirmed still sitting in the composer: a genuine
+			// failure, and one a caller can safely retry. Keep it loud, and name the
+			// state in the message so the distinction survives an error-only surface
+			// (the proxied bossanova.v1 path, which does not carry delivery_state).
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("send message (delivery state: %s): %w", tmux.OutcomeNotSubmitted, err))
+		default:
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send message: %w", err))
+		}
 	}
 
+	// delivery_state stays UNSPECIFIED for a prefill: nothing was submitted and
+	// nothing was verified, so claiming SUBMITTED would be exactly the lie this
+	// field exists to remove. It asks tmux.WillSubmit — the same predicate
+	// tmux.Client.SendMessage routes on — rather than submit alone, because a
+	// whitespace-only or empty body has nothing to submit and is routed to the
+	// PREFILL path there (no Enter, no verification) even with submit=true. It
+	// reads the rendered `message`, which is what is actually delivered.
+	deliveryState := pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED
+	if tmux.WillSubmit(req.Msg.GetSubmit(), message) {
+		deliveryState = pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED
+	}
 	return connect.NewResponse(&pb.SendChatMessageResponse{
 		TmuxSessionName: tmuxName,
 		Delivered:       true,
+		DeliveryState:   deliveryState,
 	}), nil
 }
 

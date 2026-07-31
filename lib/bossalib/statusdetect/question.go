@@ -408,11 +408,46 @@ func countConsecutiveOptionLines(data []byte) (count int, brokenByMarker bool) {
 //  3. Conversational question: Claude response ending with ?
 //  4. Fallback: trailing "?" in recent output when response marker is outside the tail
 //
+// Patterns 0-2 are MODAL (the composer is gone, keystrokes select); 3 and 4 are
+// conversational (the composer is live). Callers deciding whether input is
+// SAFE TO DELIVER want HasModalPrompt, not this.
+//
 // Patterns 1-4 require a "?" somewhere in the cleaned tail. Pattern 0 is the
 // fast-path for new long-body AskUserQuestion layouts where the question is
 // embedded in the ☐ header title and the body (ELI10/Stakes/Pros&cons) has
 // pushed both the header and any literal "?" outside the 30-line tail.
 func HasQuestionPrompt(data []byte) bool {
+	return hasQuestionPrompt(data, false)
+}
+
+// HasModalPrompt reports whether the pane is showing a MODAL prompt: a
+// selection UI (AskUserQuestion card, permission prompt, option picker) that
+// has taken over the composer, so a keystroke is consumed as a choice rather
+// than typed as text.
+//
+// It is the strict subset of HasQuestionPrompt covering patterns 0, 0b, 1 and
+// 2, and deliberately EXCLUDES patterns 3 and 4 (a Claude turn ending in "?").
+// Those describe a conversational question asked with a live, empty composer --
+// the pane is idle and typing into it is exactly the right thing to do.
+//
+// The distinction exists because the two predicates answer questions with
+// opposite failure costs. HasQuestionPrompt decides whether to NOTIFY a human,
+// where a false positive costs a spurious ping; HasModalPrompt decides whether
+// to REFUSE DELIVERY (BOS-600), where a false positive costs the message --
+// and would break the commonest case of all, answering a question the agent
+// just asked. Callers gating input MUST use this one.
+//
+// Both predicates run the same scan in the same order and split at one early
+// return, so the modal subset cannot drift away from the superset by
+// construction: any change to the shared prep or to patterns 0-2 moves both.
+func HasModalPrompt(data []byte) bool {
+	return hasQuestionPrompt(data, true)
+}
+
+// hasQuestionPrompt implements both predicates. modalOnly stops the scan after
+// the modal patterns (0, 0b, 1, 2) instead of falling through to the
+// conversational ones (3, 4).
+func hasQuestionPrompt(data []byte, modalOnly bool) bool {
 	if len(data) == 0 {
 		return false
 	}
@@ -547,6 +582,21 @@ func HasQuestionPrompt(data []byte) bool {
 				}
 			}
 		}
+	}
+
+	// Everything below describes a CONVERSATIONAL question -- Claude's turn
+	// ended with a "?" while the composer stayed live and empty. That is a
+	// reason to notify a human, and emphatically not a reason to refuse input:
+	// the pane is waiting to be typed into. A caller gating delivery stops here.
+	//
+	// This single early return is the ONLY thing separating the two predicates,
+	// which is deliberate: it is what makes the modal set a subset of the notify
+	// set by construction rather than by two grammars agreeing to stay in step.
+	// Splitting them into separate scans would silently break BOS-600's delivery
+	// gate, which refuses a send only for the modal set. TestHasQuestionPrompt
+	// asserts the subset relation over every fixture in this package's table.
+	if modalOnly {
+		return false
 	}
 
 	// Pattern 3: Claude response ending with a question mark.

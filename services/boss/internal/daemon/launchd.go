@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 )
 
 const (
@@ -94,6 +95,68 @@ const (
 </plist>
 `
 )
+
+// runLaunchctl invokes launchctl and returns its combined output. It is a
+// package var so tests can inject a fake without a real launchd domain (CI has
+// none, and BOSS_DAEMON_SKIP_LAUNCHCTL short-circuits the code under test).
+var runLaunchctl = func(args ...string) ([]byte, error) {
+	// #nosec G204 -- launchctl; const argv verbs plus derived $HOME plist paths and int uid targets; no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	return exec.Command("launchctl", args...).CombinedOutput()
+}
+
+// bootoutVerifyTimeout bounds the post-bootout re-probe. Deliberately short:
+// this is the error path, and a service that is still loaded after this long is
+// a real failure worth reporting.
+var bootoutVerifyTimeout = 2 * time.Second
+
+// bootoutLaunchdService bootouts a launchd service by label and verifies the
+// job is actually gone before reporting an error, rather than trusting
+// launchctl's exit code alone.
+//
+// BOS-627: on this macOS build, `launchctl bootout gui/<uid>/<label>` exits 3
+// ("No such process") when the service is already unloaded, and a separate,
+// unrelated `launchctl list <label>` exits 113 ("Could not find service").
+// bootout never returns 113. The prior code special-cased only 113, so every
+// bootout of an already-stopped service (which returns 3, or sometimes 5)
+// fell through to a hard error. 3 and 113 (kept defensively across macOS
+// versions) are treated as already-stopped. Any other non-zero exit —
+// notably 5, a generic EIO that can also mean "the job exists but could not
+// be removed" — is not trusted at face value: launchd can return before it
+// has finished tearing the job down, so stillRunning is polled until it
+// reports false or bootoutVerifyTimeout elapses.
+func bootoutLaunchdService(label string, stillRunning func() bool) error {
+	target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + label
+	out, err := runLaunchctl("bootout", target)
+	if err == nil {
+		return nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 3, 113:
+			return nil
+		}
+	}
+
+	// M7: no production caller passes a nil probe. Without one there is no way
+	// to verify the job is actually gone, so fail closed -- surface the
+	// launchctl error rather than silently reporting success for an exit code
+	// (e.g. 5, a generic EIO) that can also mean the job still exists.
+	if stillRunning == nil {
+		return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	deadline := time.Now().Add(bootoutVerifyTimeout)
+	for stillRunning() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		time.Sleep(LifecyclePollInterval)
+	}
+	return nil
+}
 
 type plistData struct {
 	Label     string
@@ -243,10 +306,8 @@ func platformMcpInstall(mcpBinPath string, port int, force bool) error {
 		return nil
 	}
 
-	// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("launchctl", "load", plistPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runLaunchctl("load", plistPath)
+	if err != nil {
 		return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -260,9 +321,7 @@ func platformMcpUninstall() error {
 	}
 
 	if !skipLaunchctl() {
-		// #nosec G204 -- launchctl unload; const argv, derived $HOME plist path; no shell
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		_ = exec.Command("launchctl", "unload", plistPath).Run()
+		_, _ = runLaunchctl("unload", plistPath)
 	}
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
@@ -282,45 +341,55 @@ func platformMcpStart() error {
 		return err
 	}
 
-	target := "gui/" + strconv.Itoa(os.Getuid())
-	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
+	domainTarget := "gui/" + strconv.Itoa(os.Getuid())
+	// Best-effort clear of any stale load before bootstrapping; errors are
+	// ignored since bootstrap below surfaces any real problem. Uses the label
+	// form (BOS-627), matching the other bootout call sites.
+	_, _ = runLaunchctl("bootout", domainTarget+"/"+McpLabel)
 
-	// #nosec G204 -- launchctl bootstrap; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runLaunchctl("bootstrap", domainTarget, plistPath)
+	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// platformMcpStop bootouts the MCP LaunchAgent, leaving the plist in place. It is
-// idempotent: launchctl exits 113 when the service isn't loaded, which we treat
-// as the desired end state.
+// platformMcpStop bootouts the MCP LaunchAgent, leaving the plist in place,
+// and verifies the launchd job is actually gone before returning success.
+//
+// BOS-627: launchctl bootout exits 3 ("No such process") for an
+// already-unloaded label — not 113, which belongs to `launchctl list` and is
+// never returned by bootout at all. The previous exit-113-only check was
+// therefore vacuous and every already-stopped `boss mcp stop` returned a
+// hard error. This build also observed bootout exit 5 (a generic EIO) for
+// the same already-stopped case, indistinguishable by exit code alone from a
+// job that genuinely failed to unload, so 5 is verified against actual
+// status via bootoutLaunchdService rather than trusted or rejected outright.
 func platformMcpStop() error {
 	if skipLaunchctl() {
 		return nil
 	}
+	return bootoutLaunchdService(McpLabel, mcpStillRunningProbe)
+}
 
-	plistPath, err := mcpServicePath()
+// mcpStillRunningProbe / bossdStillRunningProbe are the stillRunning callbacks
+// bootoutLaunchdService polls after a non-{0,3,113} bootout exit.
+//
+// They fail CLOSED on a probe error, for the same reason bootoutLaunchdService
+// rejects a nil probe: a status read that itself failed (e.g. os.Stat on
+// ~/Library/LaunchAgents returning something other than ENOENT) is "cannot
+// tell", not "stopped". Reporting "not running" there would turn an
+// unverifiable end state into a success and hand `boss mcp stop` /
+// `boss daemon stop` a silent false pass after a bootout that actually failed.
+// Note a NOT-loaded label is not an error on this path: platformGetStatus
+// swallows launchctl list's non-zero exit and returns (st, nil) with
+// Running=false, so the ordinary already-stopped case still verifies cleanly.
+func mcpStillRunningProbe() bool {
+	st, err := platformMcpGetStatus()
 	if err != nil {
-		return err
+		return true
 	}
-
-	target := "gui/" + strconv.Itoa(os.Getuid())
-	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 113 {
-		return nil
-	}
-	return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+	return st.Running
 }
 
 // platformMcpGetStatus returns the current MCP LaunchAgent status.
@@ -344,7 +413,7 @@ func platformMcpGetStatus() (*Status, error) {
 		return st, nil
 	}
 
-	out, err := exec.Command("launchctl", "list", McpLabel).Output()
+	out, err := runLaunchctl("list", McpLabel)
 	if err != nil {
 		return st, nil
 	}
@@ -406,10 +475,8 @@ func platformInstall(bossdPath string, force bool) error {
 	}
 
 	// Load the agent.
-	// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("launchctl", "load", plistPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runLaunchctl("load", plistPath)
+	if err != nil {
 		return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
@@ -425,10 +492,7 @@ func platformUninstall() error {
 
 	// Unload the agent (ignore error if not loaded).
 	if !skipLaunchctl() {
-		// #nosec G204 -- launchctl unload; const argv, derived $HOME plist path; no shell
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		cmd := exec.Command("launchctl", "unload", plistPath)
-		_ = cmd.Run()
+		_, _ = runLaunchctl("unload", plistPath)
 	}
 
 	// Remove the plist file.
@@ -449,49 +513,47 @@ func platformRestart() error {
 		return err
 	}
 
-	target := "gui/" + strconv.Itoa(os.Getuid())
-	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
+	domainTarget := "gui/" + strconv.Itoa(os.Getuid())
+	// Best-effort clear of any stale load before bootstrapping; errors are
+	// ignored since bootstrap below surfaces any real problem. Uses the label
+	// form (BOS-627), matching the other bootout call sites.
+	_, _ = runLaunchctl("bootout", domainTarget+"/"+Label)
 
-	// #nosec G204 -- launchctl bootstrap; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runLaunchctl("bootstrap", domainTarget, plistPath)
+	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 // platformStop bootouts the LaunchAgent so the running bossd terminates but
-// the plist is left in place. A subsequent `start` (or restart) re-bootstraps
-// it. bootout exits non-zero when the agent isn't loaded; we treat that as
-// the desired end state and return nil.
+// the plist is left in place, and verifies the launchd job is actually gone
+// before returning success. A subsequent `start` (or restart) re-bootstraps
+// it.
+//
+// BOS-627: launchctl bootout exits 3 ("No such process") for an
+// already-unloaded label — not 113, which belongs to `launchctl list` and is
+// never returned by bootout at all. The previous exit-113-only check was
+// therefore vacuous and every already-stopped `boss stop` returned a hard
+// error. This build also observed bootout exit 5 (a generic EIO) for the
+// same already-stopped case, indistinguishable by exit code alone from a job
+// that genuinely failed to unload, so 5 is verified against actual status
+// via bootoutLaunchdService rather than trusted or rejected outright.
 func platformStop() error {
 	if skipLaunchctl() {
 		return nil
 	}
+	return bootoutLaunchdService(Label, bossdStillRunningProbe)
+}
 
-	plistPath, err := platformServicePath()
+// bossdStillRunningProbe is platformStop's stillRunning callback. See
+// mcpStillRunningProbe for why a probe error means "still running".
+func bossdStillRunningProbe() bool {
+	st, err := platformGetStatus()
 	if err != nil {
-		return err
+		return true
 	}
-
-	target := "gui/" + strconv.Itoa(os.Getuid())
-	// #nosec G204 -- launchctl bootout; const argv, derived $HOME plist path, int uid target; no shell
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	// launchctl exits 113 when the specified service isn't loaded. Treat as a
-	// no-op so `stop` is idempotent. Match on exit code rather than message
-	// text, which varies across macOS versions and locales.
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 113 {
-		return nil
-	}
-	return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+	return st.Running
 }
 
 // platformGetStatus returns the current daemon status.
@@ -517,8 +579,7 @@ func platformGetStatus() (*Status, error) {
 		return st, nil
 	}
 
-	cmd := exec.Command("launchctl", "list", Label)
-	out, err := cmd.Output()
+	out, err := runLaunchctl("list", Label)
 	if err != nil {
 		// Not loaded / not running.
 		return st, nil
@@ -564,9 +625,7 @@ func platformEnsureRunning(socketPath string) error {
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
 		plistPath, _ := platformServicePath()
-		// #nosec G204 -- launchctl load; const argv, derived $HOME plist path; no shell
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		if cmd := exec.Command("launchctl", "load", plistPath); cmd.Run() == nil {
+		if _, err := runLaunchctl("load", plistPath); err == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
 			}

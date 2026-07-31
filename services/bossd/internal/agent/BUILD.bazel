@@ -30,6 +30,7 @@ go_test(
         "plugin_runner_test.go",
         "poll_fallback_test.go",
         "registry_error_test.go",
+        "resolve_agent_name_test.go",
         "runner_test.go",
     ],
     data = glob(["testdata/**"]),

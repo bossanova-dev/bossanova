@@ -561,6 +561,86 @@ func TestStartTmuxChat_SendsModel(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChat_CapabilityPreflightFailureIsTyped covers the authoritative
+// capability probe, which runs here — after StartSession has already persisted
+// the worktree and branch. StartSession keys its rollback off the error type, so
+// this probe's rejection must arrive as capabilityPreflightError; otherwise the
+// worktree and branch are stranded for the next attempt to collide with. The
+// message must survive the wrapper verbatim, since it is what callers log.
+func TestStartTmuxChat_CapabilityPreflightFailureIsTyped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentRun.preflightErr = grpcstatus.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{
+		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	})
+	if err == nil {
+		t.Fatal("StartTmuxChat succeeded, want capability preflight rejection")
+	}
+	var preflightErr capabilityPreflightError
+	if !errors.As(err, &preflightErr) {
+		t.Fatalf("StartTmuxChat error = %v, want capabilityPreflightError so StartSession rolls back", err)
+	}
+	if !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+		t.Fatalf("StartTmuxChat error = %q, want the runner's message preserved verbatim", err)
+	}
+	if h.agentRun.preflightCalls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", h.agentRun.preflightCalls)
+	}
+	// A rejected launch must not leave a tmux session behind.
+	if call := h.findCall("new-session"); call != nil {
+		t.Fatal("tmux new-session ran despite a rejected capability preflight")
+	}
+}
+
+// TestStartTmuxChat_UnspecifiedProfileSkipsPreflight pins the gate: a launch
+// that requires no profile must not consult the dispatcher at all, so a runner
+// that would reject the probe cannot fail an unprofiled (interactive, or
+// non-Codex) launch that never asked for the capability.
+func TestStartTmuxChat_UnspecifiedProfileSkipsPreflight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentRun.preflightErr = grpcstatus.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat with an unspecified profile: %v", err)
+	}
+	if h.agentRun.preflightCalls != 0 {
+		t.Fatalf("preflight calls = %d, want 0 for an unspecified profile", h.agentRun.preflightCalls)
+	}
+}
+
+// TestStartTmuxChat_NonPreflightFailureIsNotTyped scopes the wrapper. Every
+// other StartTmuxChat failure keeps its existing no-rollback behavior, so an
+// unrelated error must not match capabilityPreflightError — otherwise
+// StartSession would archive a worktree over failures that never touched the
+// capability probe.
+func TestStartTmuxChat_NonPreflightFailureIsNotTyped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-missing", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{
+		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	})
+	if err == nil {
+		t.Fatal("StartTmuxChat succeeded for an unknown session, want an error")
+	}
+	var preflightErr capabilityPreflightError
+	if errors.As(err, &preflightErr) {
+		t.Fatalf("StartTmuxChat error = %v, want an untyped failure (no rollback)", err)
+	}
+}
+
 // TestEffectiveSpawnSession_ReSourcesFromPrimaryChat proves restart/rotation
 // spawn paths (which hold only a session) read provider/account/model from the
 // session's primary chat (BOS-381), and fall back to the session unchanged when

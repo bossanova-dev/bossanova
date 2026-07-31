@@ -89,6 +89,17 @@
       "viewport": { "width": 390, "height": 844 }
     },
     {
+      "id": "web-chat-terminal-stop-icon",
+      "surface": "web",
+      "title": "Web Chat Terminal (stop icon)",
+      "description": "Desktop-width top strip of the chat terminal, sliced down to just below the chat top bar: the danger Stop-chat control shows the plain lucide square glyph (a bare outlined square, no surrounding circle), beside the session breadcrumb and the Ctrl X 'to detach' hint. Width is 1024 on purpose: above 640px so the hint is not display:none, and no wider than the judge's 1024px long-edge cap so the 14px glyph is never downscaled (BOS-628).",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/sessions/sess-e2e-1/chats/claude-1",
+      "cropToSelector": "[data-testid='chat-terminal-top-bar']",
+      "viewport": { "width": 1024, "height": 1000 }
+    },
+    {
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
@@ -802,6 +813,7 @@
         "web-account",
         "web-chat-terminal",
         "web-chat-terminal-reconnecting",
+        "web-chat-terminal-stop-icon",
         "web-new-session-flow",
         "web-new-chat",
         "web-new-chat-back",

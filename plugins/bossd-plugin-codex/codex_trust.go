@@ -74,12 +74,32 @@ func unlockCodexConfig(lockFile *os.File) {
 }
 
 func codexConfigDir() (string, error) {
-	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+	return codexConfigDirForEnv(nil)
+}
+
+// codexConfigDirForEnv resolves Codex's config directory after applying the
+// supplied process-environment overlay. A missing overlay key inherits the
+// daemon environment; an empty key deliberately falls through to Codex's
+// ~/.codex default, matching the environment passed to a spawned process.
+func codexConfigDirForEnv(extraEnv map[string]string) (string, error) {
+	codexHome, projected := extraEnv["CODEX_HOME"]
+	if !projected {
+		codexHome = os.Getenv("CODEX_HOME")
+	}
+	if codexHome = strings.TrimSpace(codexHome); codexHome != "" {
 		return codexHome, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
+
+	home, projected := extraEnv["HOME"]
+	if !projected {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+	}
+	if home = strings.TrimSpace(home); home == "" {
+		return "", fmt.Errorf("resolve home dir: empty")
 	}
 	return filepath.Join(home, ".codex"), nil
 }

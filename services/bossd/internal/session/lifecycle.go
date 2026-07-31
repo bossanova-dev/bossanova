@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,6 +44,11 @@ var (
 	conventionalCommitPrefixRE = regexp.MustCompile(`^[[:alpha:]][[:alnum:]-]*(\([^)]*\))?!?:[[:space:]]+`)
 	prNumberPrefixRE           = regexp.MustCompile(`^\[#[0-9]+\][[:space:]]+`)
 )
+
+// preflightRollbackTimeout bounds cleanup after a post-setup capability check
+// fails. The request may already be canceled, but its unrecorded worktree and
+// branch still need to be removed before a retry can safely create them again.
+const preflightRollbackTimeout = 30 * time.Second
 
 // settingUpTracker is the narrow slice of *status.DisplayTracker the
 // lifecycle needs to drive the transient "initializing" and "archiving"
@@ -1230,21 +1236,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		return fmt.Errorf("get repo: %w", err)
 	}
 
-	if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
-		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
-		if !ok {
-			return fmt.Errorf("headless capability profile %s requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile)
-		}
-		preflightEnv := mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv())
-		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
-			ctx, session.AgentName, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
-		); err != nil {
-			return fmt.Errorf("preflight headless capabilities: %w", err)
-		}
+	// Derive the headless operation surface this launch requires, unless the
+	// caller demanded one explicitly (an explicit value always wins untouched).
+	// Applying the policy here — the single seam every launch passes through —
+	// covers both production callers at once and keeps a future third caller
+	// correct by construction, without adding a client-settable RPC field.
+	// opts is a by-value copy, so this mutation is local to this launch.
+	resolvedAgentName := l.resolveAgentName(session.AgentName)
+	if opts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		opts.HeadlessCapabilityProfile = headlessCapabilityProfileFor(resolvedAgentName, opts)
 	}
-
-	// Initialize state machine at CreatingWorktree.
-	sm := machine.New(machine.CreatingWorktree)
 
 	// A `boss new --detach` run is hosted in a durable tmux pane when tmux is
 	// available, so it survives a daemon restart and is re-monitored on boot
@@ -1255,6 +1256,9 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// durable-tmux provenance for the routing/hook/liveness decisions below.
 	detachViaTmux := opts.Detach && l.tmux != nil && l.tmux.Available(ctx)
 	tmuxHosted := opts.CronJobID != "" || opts.IsTmuxUnattended || detachViaTmux
+
+	// Initialize state machine at CreatingWorktree.
+	sm := machine.New(machine.CreatingWorktree)
 
 	// Update session state to CreatingWorktree and stamp the cron_job_id
 	// when the cron scheduler spawned us. The cron linkage is set here
@@ -1317,6 +1321,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// Create worktree: existing branch (PR) or new branch.
 	worktreeStarted := time.Now()
 	worktreeResult := "created_fresh"
+	createdFreshBranch := !opts.ZeroOutput && existingBranch == ""
 	var result *gitpkg.CreateResult
 	if opts.ZeroOutput {
 		worktreeResult = "zero_output"
@@ -1342,6 +1347,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				Err(err).
 				Msg("existing branch checkout failed; creating fresh branch")
 			worktreeResult = "created_fresh_after_existing_checkout_error"
+			createdFreshBranch = true
 			result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
 				RepoPath:          repo.LocalPath,
 				BaseBranch:        session.BaseBranch,
@@ -1396,6 +1402,45 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Msg("setup script failed; starting session in a degraded state")
 		if setupOutput != nil {
 			_, _ = fmt.Fprintf(setupOutput, "\n⚠ setup script failed; the session was created anyway:\n%s\n", setupErrStr)
+		}
+	}
+
+	// Undo the artifacts this call created when a capability preflight rejects
+	// the launch, so a rejected session leaves no worktree or branch behind for
+	// the next attempt to collide with. Used by the post-setup probe below and
+	// again for the authoritative probe inside startTmuxChat, which runs after
+	// the worktree and branch have been persisted.
+	rollbackPreflightFailure := func(preflightErr error) error {
+		if opts.ZeroOutput {
+			return preflightErr
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
+		defer cleanupCancel()
+		if archiveErr := l.worktrees.Archive(cleanupCtx, result.WorktreePath); archiveErr != nil {
+			return fmt.Errorf("%w; rollback worktree %q: %v", preflightErr, result.WorktreePath, archiveErr)
+		}
+		if createdFreshBranch {
+			if branchErr := l.worktrees.DeleteLocalBranch(cleanupCtx, repo.LocalPath, result.BranchName); branchErr != nil {
+				return fmt.Errorf("%w; rollback local branch %q: %v", preflightErr, result.BranchName, branchErr)
+			}
+		}
+		return preflightErr
+	}
+
+	// Validate after setup against the environment this launch will inherit. A
+	// target branch or setup script may create or replace .env (including
+	// CODEX_HOME / HOME), so the registered checkout is not authoritative.
+	// Roll the unrecorded worktree back if preflight fails.
+	if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
+		if !ok {
+			return rollbackPreflightFailure(fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName))
+		}
+		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
+			ctx, session.AgentName, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
+		); err != nil {
+			return rollbackPreflightFailure(fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err))
 		}
 	}
 
@@ -1492,6 +1537,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	case tmuxHosted:
 		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
 		if err != nil {
+			// startTmuxChat runs the authoritative capability preflight, which
+			// can reject a launch the post-setup probe accepted. That happens
+			// after the worktree and branch are persisted, and the cron caller
+			// only drops the session row on error, so roll them back here as
+			// the post-setup probe does. Scoped to preflight rejections: every
+			// other failure below keeps its existing no-rollback behavior.
+			var preflightErr capabilityPreflightError
+			if errors.As(err, &preflightErr) {
+				err = rollbackPreflightFailure(err)
+			}
 			return fmt.Errorf("start tmux chat: %w", err)
 		}
 	case !opts.Detach:
@@ -1513,7 +1568,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// stored LINEAR_API_KEY / SENTRY_* secrets are filled beneath the
 		// worktree .env (OverlayWithRepo) so the run authenticates to its own
 		// repo's Linear workspace, not the daemon's ambient one.
-		headlessEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo)
+		headlessEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
 		// Hand the run the loopback question-signal context (BOS-486). The
 		// token is minted BEFORE the spawn — it has to be in the child's env —
 		// and bound to the agent session id the plugin resolves AFTER it, which
@@ -1527,7 +1582,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		} else {
 			profiledRunner, ok := l.agentRunner.(agent.HeadlessCapabilityProfileDispatcher)
 			if !ok {
-				return fmt.Errorf("headless capability profile %s requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile)
+				return fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName)
 			}
 			claudeSessionID, err = profiledRunner.StartByAgentWithHeadlessCapabilityProfile(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, opts.HeadlessCapabilityProfile)
 		}
@@ -1678,6 +1733,17 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Msg("session started, implementing plan")
 
 	return nil
+}
+
+// resolveWorktreeRelativeHomes makes preflight observe HOME and CODEX_HOME as
+// the launched agent will: relative values are interpreted from its worktree.
+func resolveWorktreeRelativeHomes(env map[string]string, worktreePath string) map[string]string {
+	for _, key := range []string{"CODEX_HOME", "HOME"} {
+		if value := env[key]; value != "" && !filepath.IsAbs(value) {
+			env[key] = filepath.Join(worktreePath, value)
+		}
+	}
+	return env
 }
 
 // StartQuickChatSession starts a Claude process directly in the repo's base

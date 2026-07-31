@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -794,6 +796,8 @@ type mockWorktreeManager struct {
 	archived                    []string
 	archiveErr                  error  // if set, Archive returns this error
 	archiveHook                 func() // if set, invoked inside Archive() mid-run (used to observe transient flags)
+	archiveCtx                  context.Context
+	archiveCtxLive              bool
 	resurrected                 []gitpkg.ResurrectOpts
 	pushed                      []string
 	pushErr                     error    // if set, Push returns this error
@@ -847,6 +851,8 @@ type mockWorktreeManager struct {
 	branchSafeToDeleteErr       error    // if set, BranchSafeToDelete returns this error
 	deletedLocalBranches        []string // branches passed to DeleteLocalBranch
 	deleteLocalBranchErr        error    // if set, DeleteLocalBranch returns this error
+	deleteLocalBranchCtx        context.Context
+	deleteLocalBranchCtxLive    bool
 	injectPRNumbersCalls        []injectPRNumbersCall
 	injectPRNumbersErr          error
 	retryDeferredBaseSyncsCalls int
@@ -889,7 +895,9 @@ func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) 
 	}, nil
 }
 
-func (m *mockWorktreeManager) Archive(_ context.Context, path string) error {
+func (m *mockWorktreeManager) Archive(ctx context.Context, path string) error {
+	m.archiveCtx = ctx
+	m.archiveCtxLive = ctx.Err() == nil
 	m.archived = append(m.archived, path)
 	if m.archiveHook != nil {
 		m.archiveHook()
@@ -1018,7 +1026,9 @@ func (m *mockWorktreeManager) EmptyTrash(_ context.Context, _ string, _ []string
 	return nil
 }
 
-func (m *mockWorktreeManager) DeleteLocalBranch(_ context.Context, _, branch string) error {
+func (m *mockWorktreeManager) DeleteLocalBranch(ctx context.Context, _, branch string) error {
+	m.deleteLocalBranchCtx = ctx
+	m.deleteLocalBranchCtxLive = ctx.Err() == nil
 	m.deletedLocalBranches = append(m.deletedLocalBranches, branch)
 	return m.deleteLocalBranchErr
 }
@@ -1105,7 +1115,14 @@ type mockAgentRunner struct {
 
 	preflightCalls int
 	preflightErr   error
-	preflights     []mockPreflightCall
+	// preflightErrFromCall selects which preflight call preflightErr applies to,
+	// 1-based; the zero value means every call, which is what the single-probe
+	// tests assume. StartSession runs two probes against the same runner (the
+	// post-setup one in StartSession, then the authoritative one in
+	// startTmuxChat), so a test that needs the FIRST to pass and the SECOND to
+	// reject sets this to 2.
+	preflightErrFromCall int
+	preflights           []mockPreflightCall
 }
 
 type mockPreflightCall struct {
@@ -1198,6 +1215,9 @@ func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ contex
 		env:       extraEnv,
 		profile:   profile,
 	})
+	if m.preflightErrFromCall > 0 && m.preflightCalls < m.preflightErrFromCall {
+		return nil
+	}
 	return m.preflightErr
 }
 
@@ -1626,8 +1646,8 @@ func TestStartSession_HeadlessRunCarriesExplicitCapabilityProfile(t *testing.T) 
 	}
 }
 
-func TestStartSession_ProfilePreflightFailsBeforeWorktree(t *testing.T) {
-	t.Run("required profile fails before lifecycle side effects", func(t *testing.T) {
+func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
+	t.Run("required profile rolls back the initialized worktree", func(t *testing.T) {
 		ctx := context.Background()
 		sessions := newMockSessionStore()
 		repos := newMockRepoStore()
@@ -1669,11 +1689,17 @@ func TestStartSession_ProfilePreflightFailsBeforeWorktree(t *testing.T) {
 		if runner.preflightCalls != 1 {
 			t.Fatalf("preflight calls = %d, want 1", runner.preflightCalls)
 		}
-		if len(worktrees.created) != 0 || len(worktrees.createdFromExisting) != 0 {
-			t.Fatalf("worktree calls = create %d, existing %d; want zero", len(worktrees.created), len(worktrees.createdFromExisting))
+		if len(worktrees.created) != 1 || len(worktrees.createdFromExisting) != 0 {
+			t.Fatalf("worktree calls = create %d, existing %d; want create 1", len(worktrees.created), len(worktrees.createdFromExisting))
 		}
-		if setupCalls != 0 {
-			t.Fatalf("setup script calls = %d, want 0", setupCalls)
+		if setupCalls != 1 {
+			t.Fatalf("setup script calls = %d, want 1", setupCalls)
+		}
+		if len(worktrees.archived) != 1 {
+			t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+		}
+		if got := worktrees.deletedLocalBranches; !reflect.DeepEqual(got, []string{"test-session"}) {
+			t.Fatalf("deleted local branches = %v, want [test-session]", got)
 		}
 		if len(runner.started) != 0 {
 			t.Fatalf("agent starts = %d, want 0", len(runner.started))
@@ -1684,12 +1710,17 @@ func TestStartSession_ProfilePreflightFailsBeforeWorktree(t *testing.T) {
 		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) != 0 {
 			t.Fatalf("worktree_path updates = %d, want 0", len(updates))
 		}
-		if len(sessions.updates) != 0 {
-			t.Fatalf("session updates = %d, want 0 before preflight succeeds", len(sessions.updates))
+		if len(sessions.updates) != 1 {
+			t.Fatalf("session updates = %d, want creating state only", len(sessions.updates))
 		}
 	})
 
-	t.Run("unprofiled codex preserves normal creation and start", func(t *testing.T) {
+	// An unattended claude launch is the case that stays unprofiled: the launch
+	// policy requires a profile only for codex, so claude keeps its historical
+	// gate-free path byte-for-byte. (This subtest used to pin AgentName "codex"
+	// with no explicit profile as also gate-free — the deliberate behaviour flip
+	// moved that case to "policy-derived profile ..." below.)
+	t.Run("unprofiled claude preserves normal creation and start", func(t *testing.T) {
 		ctx := context.Background()
 		sessions := newMockSessionStore()
 		repos := newMockRepoStore()
@@ -1705,9 +1736,9 @@ func TestStartSession_ProfilePreflightFailsBeforeWorktree(t *testing.T) {
 			ID:         "sess-1",
 			RepoID:     "repo-1",
 			Title:      "Unprofiled",
-			Plan:       "normal codex run",
+			Plan:       "normal claude run",
 			BaseBranch: "main",
-			AgentName:  "codex",
+			AgentName:  "claude",
 			State:      machine.CreatingWorktree,
 		}
 		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
@@ -1721,10 +1752,644 @@ func TestStartSession_ProfilePreflightFailsBeforeWorktree(t *testing.T) {
 		if len(worktrees.created) != 1 || len(runner.started) != 1 {
 			t.Fatalf("normal side effects = worktree %d, start %d; want 1 each", len(worktrees.created), len(runner.started))
 		}
+		if got := runner.started[0].profile; got != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+			t.Fatalf("claude headless start profile = %s, want unspecified", got)
+		}
 		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) == 0 {
 			t.Fatal("worktree_path update missing")
 		}
 	})
+
+	// The flip: an unattended codex launch with NO explicit profile now derives
+	// TRACKER_PLAN_ATTACHMENT_V1 from the launch policy, so the preflight that
+	// used to be dead on every production start actually runs.
+	t.Run("policy-derived profile gates an unattended codex launch", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		worktrees := &mockWorktreeManager{}
+		runner := newMockAgentRunner()
+		repos.repos["repo-1"] = &models.Repo{
+			ID:                "repo-1",
+			LocalPath:         "/tmp/repo",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/worktrees",
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     "repo-1",
+			Title:      "Policy profiled",
+			Plan:       "normal codex run",
+			BaseBranch: "main",
+			AgentName:  "codex",
+			Model:      "gpt-5-codex",
+			State:      machine.CreatingWorktree,
+		}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+		if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
+			t.Fatalf("StartSession: %v", err)
+		}
+		if runner.preflightCalls != 1 || len(runner.preflights) != 1 {
+			t.Fatalf("preflight calls = %d, records = %d; want 1 each", runner.preflightCalls, len(runner.preflights))
+		}
+		if got := runner.preflights[0]; got.agentName != "codex" ||
+			got.profile != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+			t.Fatalf("preflight = %+v, want codex with tracker-plan-attachment-v1", got)
+		}
+		if len(worktrees.created) != 1 || len(runner.started) != 1 {
+			t.Fatalf("normal side effects = worktree %d, start %d; want 1 each", len(worktrees.created), len(runner.started))
+		}
+		if got := runner.started[0].profile; got != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+			t.Fatalf("headless start profile = %s, want tracker-plan-attachment-v1", got)
+		}
+	})
+
+	// Same post-setup rollback as the first subtest, but for a profile the
+	// policy derived rather than one a caller passed.
+	t.Run("policy-derived preflight failure rolls back initialized worktree", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		setupCalls := 0
+		worktrees := &mockWorktreeManager{onSetupScript: func() { setupCalls++ }}
+		runner := newMockAgentRunner()
+		runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+		provider := newMockVCSProvider()
+		setupScript := "run setup"
+		repos.repos["repo-1"] = &models.Repo{
+			ID:                "repo-1",
+			LocalPath:         "/tmp/repo",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/worktrees",
+			SetupScript:       &setupScript,
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     "repo-1",
+			Title:      "Policy profiled",
+			Plan:       "attach a tracker plan",
+			BaseBranch: "main",
+			AgentName:  "codex",
+			Model:      "gpt-5-codex",
+			State:      machine.CreatingWorktree,
+		}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
+
+		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true})
+
+		if err == nil || !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+			t.Fatalf("StartSession error = %v, want tracker-plan-attachment unavailable", err)
+		}
+		// Self-diagnosing failure: the error names the agent it gated and the
+		// profile it required.
+		if !strings.Contains(err.Error(), "codex") {
+			t.Errorf("error %q does not name the agent", err.Error())
+		}
+		wantProfile := pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1.String()
+		if !strings.Contains(err.Error(), wantProfile) {
+			t.Errorf("error %q does not name the profile %s", err.Error(), wantProfile)
+		}
+		if runner.preflightCalls != 1 {
+			t.Fatalf("preflight calls = %d, want 1", runner.preflightCalls)
+		}
+		if len(worktrees.created) != 1 || len(worktrees.createdFromExisting) != 0 {
+			t.Fatalf("worktree calls = create %d, existing %d; want create 1", len(worktrees.created), len(worktrees.createdFromExisting))
+		}
+		if setupCalls != 1 {
+			t.Fatalf("setup script calls = %d, want 1", setupCalls)
+		}
+		if len(worktrees.archived) != 1 {
+			t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+		}
+		if got := worktrees.deletedLocalBranches; !reflect.DeepEqual(got, []string{"test-session"}) {
+			t.Fatalf("deleted local branches = %v, want [test-session]", got)
+		}
+		if len(runner.started) != 0 {
+			t.Fatalf("agent starts = %d, want 0", len(runner.started))
+		}
+		if len(provider.createPRCalls) != 0 {
+			t.Fatalf("draft PR calls = %d, want 0", len(provider.createPRCalls))
+		}
+		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) != 0 {
+			t.Fatalf("worktree_path updates = %d, want 0", len(updates))
+		}
+		if len(sessions.updates) != 1 {
+			t.Fatalf("session updates = %d, want creating state only", len(sessions.updates))
+		}
+	})
+
+	t.Run("preserves supplied existing branch on rollback", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		worktrees := &mockWorktreeManager{}
+		runner := newMockAgentRunner()
+		runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees"}
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Existing branch", Plan: "do work", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true, ExistingBranch: "feature/existing"})
+		if err == nil || !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+			t.Fatalf("StartSession error = %v, want tracker-plan-attachment unavailable", err)
+		}
+		if len(worktrees.archived) != 1 {
+			t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+		}
+		if len(worktrees.deletedLocalBranches) != 0 {
+			t.Fatalf("deleted local branches = %v, want none for ExistingBranch", worktrees.deletedLocalBranches)
+		}
+	})
+
+	t.Run("removes fresh branch created after existing branch fallback", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		worktrees := &mockWorktreeManager{createFromExistingBranchErr: errors.New("branch not found on remote")}
+		runner := newMockAgentRunner()
+		runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees"}
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Fallback branch", Plan: "do work", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true, ExistingBranch: "feature/fallback"})
+		if err == nil || !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+			t.Fatalf("StartSession error = %v, want tracker-plan-attachment unavailable", err)
+		}
+		if len(worktrees.createdFromExisting) != 1 || len(worktrees.created) != 1 {
+			t.Fatalf("worktree calls = existing %d, create %d; want 1 each", len(worktrees.createdFromExisting), len(worktrees.created))
+		}
+		if len(worktrees.archived) != 1 {
+			t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+		}
+		if got := worktrees.deletedLocalBranches; !reflect.DeepEqual(got, []string{"test-session"}) {
+			t.Fatalf("deleted local branches = %v, want [test-session]", got)
+		}
+	})
+}
+
+// TestStartSession_AppliesHeadlessCapabilityProfilePolicy locks the launch
+// policy where it actually matters: inside StartSession, over the real
+// preflight seam, for every agent/interactivity combination that reaches the
+// headless or idle branch. Only an unattended codex launch may reach the gate.
+func TestStartSession_AppliesHeadlessCapabilityProfilePolicy(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentName     string
+		opts          StartSessionOpts
+		wantPreflight bool
+		wantStarts    int
+	}{
+		{
+			name:          "codex detach derives the tracker-plan-attachment profile",
+			agentName:     "codex",
+			opts:          StartSessionOpts{Detach: true, DeferPR: true},
+			wantPreflight: true,
+			wantStarts:    1,
+		},
+		{
+			name:       "interactive codex stays unprofiled",
+			agentName:  "codex",
+			opts:       StartSessionOpts{DeferPR: true},
+			wantStarts: 0,
+		},
+		{
+			name:       "claude detach stays unprofiled",
+			agentName:  "claude",
+			opts:       StartSessionOpts{Detach: true, DeferPR: true},
+			wantStarts: 1,
+		},
+		{
+			name:       "interactive claude stays unprofiled",
+			agentName:  "claude",
+			opts:       StartSessionOpts{DeferPR: true},
+			wantStarts: 0,
+		},
+		{
+			// mockAgentRunner is not an agent.AgentNameResolver, so the
+			// resolved name is the raw empty string: an unresolved agent must
+			// never opt a launch into a gate its runner may not implement.
+			name:       "unresolved empty agent name stays unprofiled",
+			agentName:  "",
+			opts:       StartSessionOpts{Detach: true, DeferPR: true},
+			wantStarts: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			worktrees := &mockWorktreeManager{}
+			runner := newMockAgentRunner()
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                "repo-1",
+				LocalPath:         "/tmp/repo",
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   "/tmp/worktrees",
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Policy",
+				Plan:       "do work",
+				BaseBranch: "main",
+				AgentName:  tc.agentName,
+				Model:      "some-model",
+				State:      machine.CreatingWorktree,
+			}
+			lifecycle := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+			if err := lifecycle.StartSession(ctx, "sess-1", tc.opts); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+
+			wantCalls := 0
+			if tc.wantPreflight {
+				wantCalls = 1
+			}
+			if runner.preflightCalls != wantCalls || len(runner.preflights) != wantCalls {
+				t.Fatalf("preflight calls = %d, records = %d; want %d each", runner.preflightCalls, len(runner.preflights), wantCalls)
+			}
+			if tc.wantPreflight {
+				got := runner.preflights[0]
+				if got.agentName != tc.agentName {
+					t.Errorf("preflight agent = %q, want %q", got.agentName, tc.agentName)
+				}
+				if got.profile != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+					t.Errorf("preflight profile = %s, want tracker-plan-attachment-v1", got.profile)
+				}
+			}
+			if len(runner.started) != tc.wantStarts {
+				t.Fatalf("agent starts = %d, want %d", len(runner.started), tc.wantStarts)
+			}
+			if tc.wantStarts == 1 {
+				wantProfile := pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
+				if tc.wantPreflight {
+					wantProfile = pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+				}
+				if got := runner.started[0].profile; got != wantProfile {
+					t.Errorf("headless start profile = %s, want %s", got, wantProfile)
+				}
+			}
+		})
+	}
+}
+
+// TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch covers the
+// two unattended markers that route away from the headless branch into the
+// durable tmux-hosted path (IsTmuxUnattended and CronJobID). Such a launch is
+// checked twice against the post-setup worktree environment: once before the
+// session records it and again before tmux starts.
+func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testing.T) {
+	tests := []struct {
+		name string
+		opts StartSessionOpts
+	}{
+		{name: "tmux unattended", opts: StartSessionOpts{DeferPR: true, IsTmuxUnattended: true, HookToken: "tok-1"}},
+		{name: "cron", opts: StartSessionOpts{DeferPR: true, CronJobID: "cron-1", HookToken: "tok-1"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			worktreeDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(worktreeDir, ".env"), []byte("CODEX_HOME=.codex\nHOME=home\n"), 0o600); err != nil {
+				t.Fatalf("write worktree .env: %v", err)
+			}
+			// The registered checkout deliberately disagrees with the worktree;
+			// neither check may use it as the launch environment.
+			repoDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("CODEX_HOME=/repo/codex-home\nHOME=/repo/home\n"), 0o600); err != nil {
+				t.Fatalf("write repo .env: %v", err)
+			}
+
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			chats := &mockAgentChatStore{}
+			worktrees := &mockWorktreeManager{worktreePath: worktreeDir}
+			runner := newMockAgentRunner()
+			tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                "repo-1",
+				LocalPath:         repoDir,
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   "/tmp/worktrees",
+				OriginURL:         "owner/repo",
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Unattended codex",
+				Plan:       "do work",
+				BaseBranch: "main",
+				AgentName:  "codex",
+				Model:      "gpt-5-codex",
+				State:      machine.CreatingWorktree,
+			}
+
+			client := newFakeAgent()
+			lifecycle := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, worktrees, runner, tx, newMockVCSProvider(), zerolog.Nop())
+			lifecycle.newTmuxChatAgentSessionID = func() string { return "agent-1" }
+			lifecycle.SetHookPort(45678)
+			lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": client})
+			lifecycle.SetAgentLogsDir(t.TempDir())
+			lifecycle.SetPollArmer(&fakePollArmer{})
+			lifecycle.SetDaemonCtx(ctx)
+
+			if err := lifecycle.StartSession(ctx, "sess-1", tc.opts); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+
+			// Both checks use the post-setup worktree environment.
+			if runner.preflightCalls != 2 || len(runner.preflights) != 2 {
+				t.Fatalf("preflight calls = %d, records = %d; want 2 each", runner.preflightCalls, len(runner.preflights))
+			}
+			for i, got := range runner.preflights {
+				if got.agentName != "codex" {
+					t.Errorf("preflight[%d] agent = %q, want codex", i, got.agentName)
+				}
+				if got.profile != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+					t.Errorf("preflight[%d] profile = %s, want tracker-plan-attachment-v1", i, got.profile)
+				}
+				if got.model != "gpt-5-codex" {
+					t.Errorf("preflight[%d] model = %q, want gpt-5-codex", i, got.model)
+				}
+			}
+			if got := runner.preflights[0]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
+				t.Errorf("post-setup preflight env = %v, want worktree CODEX_HOME and HOME", got.env)
+			}
+			if got := runner.preflights[1]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
+				t.Errorf("tmux preflight env = %v, want worktree CODEX_HOME and HOME", got.env)
+			}
+		})
+	}
+}
+
+// TestStartSession_ProfilePreflightUsesWorktreeEnvAfterSetup proves a setup
+// script can replace the registered checkout's CODEX_HOME before preflight.
+func TestStartSession_ProfilePreflightUsesWorktreeEnvAfterSetup(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".env"), []byte("CODEX_HOME=/repo/codex-home\n"), 0o600); err != nil {
+		t.Fatalf("write repo .env: %v", err)
+	}
+	worktreeDir := t.TempDir()
+	setupScript := "replace worktree env"
+	var setupWriteErr error
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	worktrees := &mockWorktreeManager{
+		worktreePath: worktreeDir,
+		onSetupScript: func() {
+			setupWriteErr = os.WriteFile(filepath.Join(worktreeDir, ".env"), []byte("CODEX_HOME=.codex\nHOME=home\n"), 0o600)
+		},
+	}
+	runner := newMockAgentRunner()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		SetupScript:       &setupScript,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Unmanaged codex",
+		Plan:       "do work",
+		BaseBranch: "main",
+		AgentName:  "codex",
+		Model:      "gpt-5-codex",
+		State:      machine.CreatingWorktree,
+	}
+	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if setupWriteErr != nil {
+		t.Fatalf("write setup .env: %v", setupWriteErr)
+	}
+	if runner.preflightCalls != 1 || len(runner.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each", runner.preflightCalls, len(runner.preflights))
+	}
+	if got := runner.preflights[0]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
+		t.Errorf("preflight env = %v, want relative homes resolved from the setup worktree", got.env)
+	}
+	if got := runner.started[0]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
+		t.Errorf("headless start env = %v, want relative homes resolved from the setup worktree", got.env)
+	}
+}
+
+func TestStartSession_ProfilePreflightRollbackUsesLiveCleanupContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	worktrees := &mockWorktreeManager{onSetupScript: cancel}
+	runner := newMockAgentRunner()
+	runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", Title: "Profiled", Plan: "do work", BaseBranch: "main",
+		AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree,
+	}
+	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+	err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{
+		Detach:                    true,
+		DeferPR:                   true,
+		HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	})
+	if err == nil {
+		t.Fatal("StartSession succeeded, want profile preflight failure")
+	}
+	if !worktrees.archiveCtxLive {
+		t.Fatalf("Archive context = %v, want live cleanup context", worktrees.archiveCtx)
+	}
+	if !worktrees.deleteLocalBranchCtxLive {
+		t.Fatalf("DeleteLocalBranch context = %v, want live cleanup context", worktrees.deleteLocalBranchCtx)
+	}
+}
+
+// TestStartSession_TmuxHostedProfilePreflightRollsBackWorktree pins that a
+// tmux-hosted launch validates post-setup and cleans up on failure.
+func TestStartSession_TmuxHostedProfilePreflightRollsBackWorktree(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	setupCalls := 0
+	worktrees := &mockWorktreeManager{onSetupScript: func() { setupCalls++ }}
+	runner := newMockAgentRunner()
+	runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+	provider := newMockVCSProvider()
+	setupScript := "run setup"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		SetupScript:       &setupScript,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Cron codex",
+		Plan:       "do work",
+		BaseBranch: "main",
+		AgentName:  "codex",
+		Model:      "gpt-5-codex",
+		State:      machine.CreatingWorktree,
+	}
+	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
+
+	// CronJobID alone makes this tmux-hosted, independent of tmux availability.
+	err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1", DeferPR: true, HookToken: "tok-1"})
+
+	if err == nil || !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+		t.Fatalf("StartSession error = %v, want tracker-plan-attachment unavailable", err)
+	}
+	if runner.preflightCalls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", runner.preflightCalls)
+	}
+	if len(worktrees.created) != 1 || len(worktrees.createdFromExisting) != 0 {
+		t.Fatalf("worktree calls = create %d, existing %d; want create 1", len(worktrees.created), len(worktrees.createdFromExisting))
+	}
+	if setupCalls != 1 {
+		t.Fatalf("setup script calls = %d, want 1", setupCalls)
+	}
+	if len(worktrees.archived) != 1 {
+		t.Fatalf("archived worktrees = %v, want one rollback", worktrees.archived)
+	}
+	if len(provider.createPRCalls) != 0 {
+		t.Fatalf("draft PR calls = %d, want 0", len(provider.createPRCalls))
+	}
+	if len(sessions.updates) != 1 {
+		t.Fatalf("session updates = %d, want creating state only", len(sessions.updates))
+	}
+}
+
+// TestStartSession_TmuxChatProfilePreflightRollsBackWorktree pins the second,
+// authoritative probe. StartSession runs the capability preflight twice: once
+// post-setup (covered above) and again inside startTmuxChat, which is the one
+// that decides the launch when the two can disagree. That second probe runs
+// after the worktree and branch have been persisted, and the cron caller drops
+// only the session row on error, so a rejection there must roll both back too —
+// otherwise the next fire collides with the stranded branch.
+//
+// preflightErrFromCall = 2 is what makes this distinct from the test above: the
+// post-setup probe passes, so the launch only fails once it reaches the probe
+// in startTmuxChat.
+func TestStartSession_TmuxChatProfilePreflightRollsBackWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	worktreeDir := t.TempDir()
+	worktrees := &mockWorktreeManager{worktreePath: worktreeDir}
+	runner := newMockAgentRunner()
+	runner.preflightErr = status.Error(codes.FailedPrecondition, "tracker-plan-attachment unavailable")
+	runner.preflightErrFromCall = 2
+	provider := newMockVCSProvider()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Cron codex",
+		Plan:       "do work",
+		BaseBranch: "main",
+		AgentName:  "codex",
+		Model:      "gpt-5-codex",
+		State:      machine.CreatingWorktree,
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	lifecycle := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, worktrees, runner, tmuxClient, provider, zerolog.Nop())
+	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lifecycle.SetAgentLogsDir(t.TempDir())
+
+	// HookToken is left empty so the Stop-hook configuration step is skipped;
+	// this test is about the preflight, not hook wiring.
+	err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1", DeferPR: true})
+
+	if err == nil || !strings.Contains(err.Error(), "tracker-plan-attachment unavailable") {
+		t.Fatalf("StartSession error = %v, want tracker-plan-attachment unavailable", err)
+	}
+	if runner.preflightCalls != 2 {
+		t.Fatalf("preflight calls = %d, want 2 (post-setup then startTmuxChat)", runner.preflightCalls)
+	}
+	if len(worktrees.archived) != 1 || worktrees.archived[0] != worktreeDir {
+		t.Fatalf("archived worktrees = %v, want one rollback of %q", worktrees.archived, worktreeDir)
+	}
+	if !slices.Contains(worktrees.deletedLocalBranches, "test-session") {
+		t.Fatalf("deleted local branches = %v, want the created branch rolled back", worktrees.deletedLocalBranches)
+	}
+	if len(provider.createPRCalls) != 0 {
+		t.Fatalf("draft PR calls = %d, want 0", len(provider.createPRCalls))
+	}
+}
+
+// TestStartSession_ExplicitCapabilityProfileSurvivesPolicy pins that an
+// explicitly-passed profile wins over the policy's verdict: claude + detach
+// derives UNSPECIFIED, yet an explicit V1 still reaches the preflight and the
+// profiled start untouched.
+func TestStartSession_ExplicitCapabilityProfileSurvivesPolicy(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	worktrees := &mockWorktreeManager{}
+	runner := newMockAgentRunner()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Explicit override",
+		Plan:       "do work",
+		BaseBranch: "main",
+		AgentName:  "claude",
+		Model:      "claude-opus-4-8",
+		State:      machine.CreatingWorktree,
+	}
+	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{
+		Detach:                    true,
+		DeferPR:                   true,
+		HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if runner.preflightCalls != 1 || len(runner.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each", runner.preflightCalls, len(runner.preflights))
+	}
+	if got := runner.preflights[0]; got.agentName != "claude" ||
+		got.profile != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("preflight = %+v, want claude with tracker-plan-attachment-v1", got)
+	}
+	if len(runner.started) != 1 {
+		t.Fatalf("agent starts = %d, want 1", len(runner.started))
+	}
+	if got := runner.started[0].profile; got != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("headless start profile = %s, want tracker-plan-attachment-v1", got)
+	}
 }
 
 // TestStartSession_NewPR_AwaitsManualStart pins the fix for the "headless agent
@@ -7428,8 +8093,9 @@ func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing
 // but is local to the session package because Go does not export test helpers
 // across packages. Other AgentRunner methods are no-op stubs.
 type labeledRunner struct {
-	name      string
-	startSeen atomic.Pointer[string] // "<name>:<agentSessionID>" set on each Start
+	name        string
+	startSeen   atomic.Pointer[string] // "<name>:<agentSessionID>" set on each Start
+	profileSeen atomic.Int32           // last profile passed to a profiled call
 }
 
 func newLabeledRunner(name string) *labeledRunner {
@@ -7443,6 +8109,21 @@ func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSe
 		return r.name + "-generated-id", nil
 	}
 	return agentSessionID, nil
+}
+
+// PreflightHeadlessCapabilityProfile / StartWithHeadlessCapabilityProfile make
+// labeledRunner profile-aware so an unattended codex launch — which the launch
+// policy now requires TRACKER_PLAN_ATTACHMENT_V1 for — still exercises real
+// dispatcher routing instead of failing closed on a runner that predates the
+// profile seam. Both record what they saw so routing assertions still hold.
+func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
+	r.profileSeen.Store(int32(profile))
+	return nil
+}
+
+func (r *labeledRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
+	r.profileSeen.Store(int32(profile))
+	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
 }
 func (r *labeledRunner) Stop(_ string) error      { return nil }
 func (r *labeledRunner) IsRunning(_ string) bool  { return false }
@@ -7520,6 +8201,15 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 	}
 	if seen := claudeRunner.startSeen.Load(); seen != nil {
 		t.Errorf("claude runner unexpectedly saw Start: %q (routing regression: codex session leaked to claude)", *seen)
+	}
+
+	// The launch policy makes this unattended codex run a profiled one, so the
+	// profiled dispatch must route to codex too — and must not reach claude.
+	if got := codexRunner.profileSeen.Load(); got != int32(pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1) {
+		t.Errorf("codex runner profile = %d, want %d (tracker-plan-attachment-v1)", got, int32(pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1))
+	}
+	if got := claudeRunner.profileSeen.Load(); got != int32(pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED) {
+		t.Errorf("claude runner saw profile %d, want none (profiled dispatch leaked to claude)", got)
 	}
 
 	// Sanity-check that the session was advanced and the codex runner's

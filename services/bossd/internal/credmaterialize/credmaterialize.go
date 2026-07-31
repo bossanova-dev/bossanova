@@ -26,8 +26,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,8 +43,16 @@ const (
 	providerCodex  = "codex"
 	providerClaude = "claude"
 
-	authFileName    = "auth.json"
-	cacheDirTagName = "CACHEDIR.TAG"
+	authFileName = "auth.json"
+	// authHashFileName sidecars auth.json with the hex SHA-256 of the bytes bossd
+	// last wrote there. It is the only durable record of OUR last write, and
+	// reconcileRefreshedAuth needs it to tell an agent-side refresh from a
+	// store-side one — both surface identically as "auth.json differs from the
+	// stored credential". It holds a hash, never credential material, and like
+	// auth.json it is skipped by projectCodexBaseHome, so an entry of this name in
+	// the inherited codex home can never shadow the account's own record.
+	authHashFileName = ".bossd-auth-sha256"
+	cacheDirTagName  = "CACHEDIR.TAG"
 	// cacheDirTagSignature is the exact magic mandated by the Cache Directory
 	// Tagging Specification. Every tool that honors the marker (tar
 	// --exclude-caches, borg, restic, bup, …) matches on this fixed byte
@@ -74,6 +84,18 @@ type Materialized struct {
 type CredentialStore interface {
 	LoadCredential(ctx context.Context, accountID string) ([]byte, error)
 	SaveCredential(ctx context.Context, accountID string, blob []byte) error
+}
+
+// CredentialStoreLocker optionally serializes operations that must observe and
+// then replace one account credential as a unit. Production accountcred.Store
+// implements it, and the account server takes the same lock around an operator
+// refresh save. Stores that do not implement it remain supported; the
+// materializer's own lock still serializes materializer operations in that case.
+//
+// The callback must not call WithCredentialLock recursively for the same
+// account: implementations use a non-reentrant mutex.
+type CredentialStoreLocker interface {
+	WithCredentialLock(accountID string, fn func() error) error
 }
 
 // PersistBack persists any agent-side mutation of the materialized credential
@@ -212,26 +234,53 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	}
 
 	m.writeCacheDirTag()
-
-	blob, err := m.store.LoadCredential(ctx, accountID)
-	if err != nil {
-		return Materialized{}, nil, fmt.Errorf("load codex credential for %q: %w", accountID, err)
-	}
-	// A credential stored in the account-store top-level "{access,refresh,id_token}"
-	// shape is not a codex auth.json; codex reads a "tokens" object. Normalize
-	// before writing so the first spawned process can authenticate without waiting
-	// for a refresh/persist-back cycle. Already-codex-shaped blobs pass through
-	// byte-identical.
-	authBlob := codexAuthForWrite(blob)
-
 	authPath := filepath.Join(dir, authFileName)
-	if err := atomicWriteFile(authPath, authBlob, 0o600); err != nil {
-		return Materialized{}, nil, fmt.Errorf("write codex auth.json at %q: %w", authPath, err)
-	}
+	var recorded [sha256.Size]byte
+	materializeAuth := func() error {
+		blob, err := m.store.LoadCredential(ctx, accountID)
+		if err != nil {
+			return fmt.Errorf("load codex credential for %q: %w", accountID, err)
+		}
+		// A credential stored in the account-store top-level "{access,refresh,id_token}"
+		// shape is not a codex auth.json; codex reads a "tokens" object. Normalize
+		// before writing so the first spawned process can authenticate without waiting
+		// for a refresh/persist-back cycle. Already-codex-shaped blobs pass through
+		// byte-identical.
+		authBlob := codexAuthForWrite(blob)
 
-	// Hash the bytes actually written so the persist-back unchanged-gate no-ops
-	// until codex itself mutates auth.json.
-	recorded := sha256.Sum256(authBlob)
+		// The PersistBack closure below is dropped by every real spawn seam
+		// (accountwiring/adapters.go), so a refresh codex wrote into auth.json during
+		// the previous run reaches the store only here. Reconcile it into the
+		// credential store BEFORE overwriting the file, or the stale stored blob
+		// silently restores an invalidated refresh token.
+		if reconciled, err := m.reconcileRefreshedAuth(ctx, accountID, authPath, authBlob); err != nil {
+			return err
+		} else if reconciled != nil {
+			authBlob = reconciled
+		}
+
+		if err := atomicWriteFile(authPath, authBlob, 0o600); err != nil {
+			return fmt.Errorf("write codex auth.json at %q: %w", authPath, err)
+		}
+
+		// Hash the bytes actually written so the persist-back unchanged-gate no-ops
+		// until codex itself mutates auth.json.
+		recorded = sha256.Sum256(authBlob)
+		// Persist that same hash beside the file: `recorded` dies with this process,
+		// but the next materialization — possibly after a bossd restart — needs it to
+		// know whether auth.json still holds what we wrote (see
+		// reconcileRefreshedAuth). Best-effort: a missing record only costs the
+		// reconcile, so warn rather than fail a spawn over a hash file.
+		m.recordAuthWrite(authPath, recorded)
+		return nil
+	}
+	if locker, ok := m.store.(CredentialStoreLocker); ok {
+		if err := locker.WithCredentialLock(accountID, materializeAuth); err != nil {
+			return Materialized{}, nil, err
+		}
+	} else if err := materializeAuth(); err != nil {
+		return Materialized{}, nil, err
+	}
 
 	persist := func(ctx context.Context) error {
 		return m.persistBack(ctx, accountID, authPath, &recorded)
@@ -247,7 +296,12 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 // Codex home into accountHome. Codex reads configuration, plugins, connector
 // state, and session history from the managed home; linking keeps those entries
 // current while auth.json remains account-local. A missing base home is valid:
-// all of its entries are optional to a generic Codex invocation.
+// all of its entries are optional to a generic Codex invocation. An optional
+// entry that has become unsafe is not merely skipped: any projection created
+// while it was safe is withdrawn, so the account home never keeps resolving
+// through a base entry that now leaves the validated base home. An entry that
+// disappears from the base home entirely is not returned by os.ReadDir and so is
+// out of this loop's reach — a separate, lower-severity gap.
 func projectCodexBaseHome(accountHome string) error {
 	baseHome, err := codexBaseHome()
 	if err != nil {
@@ -269,7 +323,11 @@ func projectCodexBaseHome(accountHome string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == authFileName {
+		// auth.json is account-local by design, and the write record describes THIS
+		// account's auth.json — projecting a base-home entry over either would both
+		// leak across accounts and, because projection insists on owning the name,
+		// fail every materialization after the first.
+		if entry.Name() == authFileName || entry.Name() == authHashFileName {
 			continue
 		}
 		source, projectable, err := validatedBaseHomeEntry(canonicalBase, entry.Name())
@@ -280,6 +338,11 @@ func projectCodexBaseHome(accountHome string) error {
 			// Optional entries such as skills may be symlinked outside the Codex
 			// home. They cannot be safely projected into an account home, so leave
 			// them absent rather than failing an otherwise-valid materialization.
+			// An entry that was projected while safe must also be withdrawn, or the
+			// account home keeps resolving through the now-unsafe base entry.
+			if err := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); err != nil {
+				return err
+			}
 			continue
 		}
 		aliasesAuth, err := aliasesCanonicalBaseAuth(source, canonicalAuth)
@@ -291,6 +354,13 @@ func projectCodexBaseHome(accountHome string) error {
 		}
 		if err := validateProjectedDirectory(source, canonicalBase, canonicalAuth); err != nil {
 			if isOptionalCodexBaseEntry(entry.Name()) && errors.Is(err, errSymlinkOutsideBase) {
+				// Same withdrawal as the !projectable branch: skipping creation is not
+				// enough once an already-projected entry has become unsafe.
+				if removeErr := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); removeErr != nil {
+					// Keep the errSymlinkOutsideBase diagnosis: it names why the entry
+					// went unsafe, which the removal error alone does not say.
+					return fmt.Errorf("withdraw stale projection for base home entry %q: %w", entry.Name(), errors.Join(err, removeErr))
+				}
 				continue
 			}
 			return fmt.Errorf("validate base home entry %q: %w", entry.Name(), err)
@@ -503,6 +573,55 @@ func ensureProjectedSymlink(accountPath, source, canonicalBase, canonicalAuth st
 	return nil
 }
 
+// removeStaleProjection withdraws an account-home projection whose base-home
+// entry is no longer safe to project. It unlinks the symlink itself and never
+// follows it, so the base-home target is untouched. Anything that is not a
+// symlink this package created is foreign state: it is refused rather than
+// deleted, because a real file or directory at a projected name was not put
+// there by the materializer, and neither was a symlink aimed anywhere other
+// than into the base home. Provenance is proved from the link text alone
+// (os.Readlink plus lexical containment, never EvalSymlinks): what makes an
+// entry stale is that resolving it now leaves the base home, so a resolving
+// check would refuse exactly the projections that must be withdrawn — and it
+// would also fail on the dangling link left when a base entry disappears.
+// auth.json is refused by name as well — the account-local credential is never
+// a projection. The Lstat/Readlink/Remove window is not defended against a
+// same-uid actor: the account chain is owner-only (0700) and this package puts
+// same-uid tampering out of scope, as assertNoSymlinkChain already records.
+func removeStaleProjection(accountPath, canonicalBase string) error {
+	info, err := os.Lstat(accountPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("lstat account projection %q: %w", accountPath, err)
+	}
+	if filepath.Base(accountPath) == authFileName {
+		return fmt.Errorf("refusing to remove account projection %q: auth.json must remain local", accountPath)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("refusing to remove account projection %q: existing entry is not a symlink", accountPath)
+	}
+	target, err := os.Readlink(accountPath)
+	if err != nil {
+		return fmt.Errorf("readlink account projection %q: %w", accountPath, err)
+	}
+	if !filepath.IsAbs(target) {
+		return fmt.Errorf("refusing to remove account projection %q: link text is not an absolute base-home path", accountPath)
+	}
+	withinBase, err := isWithinCanonicalBase(canonicalBase, filepath.Clean(target))
+	if err != nil {
+		return fmt.Errorf("validate account projection %q containment: %w", accountPath, err)
+	}
+	if !withinBase {
+		return fmt.Errorf("refusing to remove account projection %q: link text does not point into the base home", accountPath)
+	}
+	if err := os.Remove(accountPath); err != nil {
+		return fmt.Errorf("remove stale account projection %q: %w", accountPath, err)
+	}
+	return nil
+}
+
 // validateRetargetableProjection proves an old destination is the kind of
 // safe, in-base projection this package creates before replacing it. The
 // account-home chain is already owner-only; this validation prevents a stale
@@ -561,38 +680,313 @@ func atomicReplaceSymlink(path, source string) error {
 // older one when two sessions share an account (last-writer-wins under the lock,
 // but never a stale-baseline regression). On success it advances *recorded so a
 // subsequent no-change call is a no-op.
+//
+// The read, the merge/save and the durable hash record are one transaction under
+// the shared credential lock, exactly as in MaterializeCodex. m.locks cannot
+// stand in for that lock here: production builds a Materializer per account
+// source (services/bossd/cmd/main.go), so two of them share no local lock map and
+// only the store's lock orders them. Were the record to land after the lock was
+// released, it could overwrite a peer materializer's record of its own newer
+// auth.json, leaving the sidecar describing bytes that are no longer on disk —
+// and the next reconcile would then read that peer's write as an agent-side
+// rotation and fold stale tokens over the fresher stored credential.
 func (m *Materializer) persistBack(ctx context.Context, accountID, authPath string, recorded *[32]byte) error {
 	unlock := m.locks.Lock(lockKey(providerCodex, accountID))
 	defer unlock()
+
+	persist := func() error {
+		// #nosec G304 -- reads codex `auth.json` under the account lock; internally-derived materialize path (secret-adjacent)
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
+		current, err := os.ReadFile(authPath)
+		if err != nil {
+			return fmt.Errorf("read codex auth.json at %q for persist-back: %w", authPath, err)
+		}
+		currentHash := sha256.Sum256(current)
+		if currentHash == *recorded {
+			// Unchanged gate: nothing to save.
+			return nil
+		}
+
+		if _, err := m.mergeAndSaveRefreshedLocked(ctx, accountID, current); err != nil {
+			return err
+		}
+		// Advance the recorded hash to the on-disk bytes we just persisted, so a
+		// subsequent PersistBack with no further agent-side change re-hashes
+		// auth.json to the same value and no-ops (idempotent). Record it durably too:
+		// the store has now absorbed exactly these bytes, so the next materialization
+		// must not fold them in again.
+		*recorded = currentHash
+		m.recordAuthWrite(authPath, currentHash)
+		return nil
+	}
+	if locker, ok := m.store.(CredentialStoreLocker); ok {
+		return locker.WithCredentialLock(accountID, persist)
+	}
+	return persist()
+}
+
+// mergeAndSaveRefreshedLocked is the single merge/save implementation shared by
+// persistBack and the materialize-time reconcile. It reloads the store's blob as
+// the merge baseline — rather than a materialize-time snapshot — so a concurrent
+// session's already-persisted refresh is what current overlays, which is what
+// keeps the newest id_token from being rolled back. It returns the merged blob
+// now held by the store.
+//
+// Every caller already holds both the per-account lock and, when the store
+// implements CredentialStoreLocker, that lock too — the Locked suffix is the
+// precondition, not a variant. The shared lock is non-reentrant and each caller
+// spans more than the merge alone (load-reconcile-write-record in
+// MaterializeCodex, read-merge-record in persistBack), so re-acquiring it here
+// would both deadlock and cut those transactions in half. Errors carry only the
+// account id, never credential bytes.
+func (m *Materializer) mergeAndSaveRefreshedLocked(ctx context.Context, accountID string, current []byte) ([]byte, error) {
+	prevBlob, err := m.store.LoadCredential(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("reload stored codex credential for %q: %w", accountID, err)
+	}
+	merged, err := mergePreservingIDToken(prevBlob, current)
+	if err != nil {
+		return nil, fmt.Errorf("merge refreshed codex credential for %q: %w", accountID, err)
+	}
+	if err := m.store.SaveCredential(ctx, accountID, merged); err != nil {
+		return nil, fmt.Errorf("save refreshed codex credential for %q: %w", accountID, err)
+	}
+	return merged, nil
+}
+
+// reconcileRefreshedAuth folds an agent-refreshed auth.json back into the
+// credential store before MaterializeCodex overwrites the file. Every real spawn
+// seam discards the PersistBack closure, so this is where a refresh token codex
+// rotated during the previous run actually reaches the keyring.
+//
+// storedAuth is the projection of the currently stored credential — the bytes
+// MaterializeCodex is about to write. When the on-disk file matches them byte for
+// byte there is nothing to fold back, so an ordinary spawn performs no keyring
+// write. It returns the bytes to write when a reconcile happened and nil when
+// none was needed or possible: an absent file (first materialization), an
+// unchanged file, a file still holding bossd's own last write (the STORE moved,
+// not the file — an operator refresh), a materialization with no record of that
+// write, a non-regular or multiply-linked entry, or bytes that are not a usable
+// credential.
+//
+// A returned error must abort materialization with no write: overwriting a file
+// we could not reconcile would destroy a possibly-valid refreshed token, so an
+// unreadable file or unwritable store leaves auth.json exactly as it was. That
+// abort is reserved for cases where a refreshed secret may actually be at stake.
+// A file that CANNOT safely be read as account-local — a non-regular or
+// multiply-linked entry, or bytes that are not a usable credential object — is
+// treated as "nothing to reconcile" instead, so the rename-based write below
+// replaces it and the tree self-heals; aborting there would fail this
+// materialization and every later one identically, because nothing else ever
+// rewrites auth.json.
+//
+// The caller holds the per-account lock, which serializes materializations but
+// NOT the codex processes themselves: CODEX_HOME is per-account, so sessions
+// sharing an account share one auth.json. A codex still running from an earlier
+// session can therefore rotate the file between the read below and the caller's
+// write, and that write then supersedes the newer token. This narrows a window it
+// does not close — before this reconcile existed EVERY mid-run refresh was
+// discarded unconditionally, and closing the remainder needs either a file-locking
+// protocol codex does not participate in or a per-session CODEX_HOME, both well
+// beyond folding the previous run's refresh back in. Do not read the guarantee
+// here as atomicity against a live codex.
+// The caller holds the shared credential lock for the whole
+// load-reconcile-write-record transaction, so this merges via the Locked helper.
+func (m *Materializer) reconcileRefreshedAuth(ctx context.Context, accountID, authPath string, storedAuth []byte) ([]byte, error) {
+	// This is the package's only read of the auth.json leaf, and
+	// assertNoSymlinkChain guards directory components only — before this reconcile
+	// existed the leaf was merely rename-replaced, which never follows a symlink.
+	// Reading it blind would fold a FOREIGN credential into this account's store
+	// entry via a symlink, and a FIFO, socket, or device would make ReadFile block
+	// indefinitely (a writerless FIFO hangs forever) while MaterializeCodex holds
+	// the account lock — the same hazard writeCacheDirTag already guards for the
+	// far less sensitive CACHEDIR.TAG. Lstat first (not Stat, so a symlink stays
+	// caught) and skip any non-regular entry; the atomic write then renames a
+	// regular file over it.
+	info, err := os.Lstat(authPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// First materialization for this account: nothing on disk to fold back.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat codex auth.json at %q before materialize: %w", authPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		m.logger.Warn().Str("path", authPath).
+			Msg("credmaterialize: codex auth.json is not a regular file; not reconciling it, replacing it with the stored credential")
+		return nil, nil
+	}
+	if authFileHasMultipleLinks(authPath, info) {
+		m.logger.Warn().Str("path", authPath).
+			Msg("credmaterialize: codex auth.json has multiple hard links; not reconciling it, replacing it with the stored credential")
+		return nil, nil
+	}
 
 	// #nosec G304 -- reads codex `auth.json` under the account lock; internally-derived materialize path (secret-adjacent)
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	current, err := os.ReadFile(authPath)
 	if err != nil {
-		return fmt.Errorf("read codex auth.json at %q for persist-back: %w", authPath, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Raced with a removal between the Lstat and here.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read codex auth.json at %q before materialize: %w", authPath, err)
 	}
-	currentHash := sha256.Sum256(current)
-	if currentHash == *recorded {
-		// Unchanged gate: nothing to save.
-		return nil
+	if bytes.Equal(current, storedAuth) {
+		return nil, nil
 	}
+	// The file differs from the stored credential, which by itself does NOT say
+	// which side moved. An operator refresh (server.RefreshAccount) saves a new
+	// blob and nothing invalidates this file, so a stale-but-intact auth.json also
+	// lands here — and folding THAT back would overwrite the operator's fresh
+	// credential with the tokens they just replaced, which is precisely the bug
+	// this reconcile exists to prevent, only inverted. Reconcile only when the file
+	// no longer matches the bytes bossd itself last wrote, which is true of an
+	// agent-side rotation and false of a store-side one.
+	lastWritten, ok := m.lastAuthWrite(authPath)
+	if !ok {
+		// No usable record: an account materialized by a build without the sidecar,
+		// or a sidecar we failed to write. Nothing can distinguish the two cases
+		// here, so behave exactly as this package did before the reconcile existed
+		// and overwrite from the store. The caller records the hash afterwards, so
+		// this degrades one materialization per account, not every one.
+		m.logger.Warn().Str("path", authPath).
+			Msg("credmaterialize: no record of the last codex auth.json write; not reconciling it, replacing it with the stored credential")
+		return nil, nil
+	}
+	if lastWritten == sha256.Sum256(current) {
+		// Untouched since we wrote it: the store moved, not the file. There is no
+		// agent-side refresh to fold back, and the write below carries the newer
+		// stored credential onto disk.
+		return nil, nil
+	}
+	// The file moved. The store may have moved too, and the hash cannot say which
+	// side moved SECOND: it proves the file changed, never when the store changed.
+	// Order them by the credential's own generation marker instead — the
+	// "last_refresh" stamp codex writes on every rotation — so a store write that
+	// provably came later stays authoritative. That is the operator case:
+	// server.RefreshAccount saves a freshly captured credential and never touches
+	// this file or its hash record, so without this gate the stale on-disk tokens
+	// would be merged over the credential the operator had just installed.
+	if storedCredentialIsNewer(storedAuth, current) {
+		m.logger.Info().Str("path", authPath).
+			Msg("credmaterialize: stored codex credential is newer than auth.json; not reconciling it, replacing it with the stored credential")
+		return nil, nil
+	}
+	// Otherwise fold the file back — deliberately, even when the store has moved
+	// too. Unordered is not the same as newer: blobs without a usable marker cannot
+	// be ordered at all, and declining the fold on that alone would discard an
+	// agent-rotated refresh token whenever ANY store write raced a live session —
+	// including a peer session persisting its own refresh, the common case on a
+	// shared account — which is exactly the data loss this reconcile exists to stop
+	// (TestMaterializeCodexReconcileKeepsNewerStoredIDToken and
+	// TestPersistBackMergesAgainstCurrentStore pin that direction). The merge keeps
+	// store-only fields such as a newer id_token, so what survives is the union, and
+	// an operator refresh with no live session rotating the file still wins outright
+	// via the unchanged-file gate above.
+	merged, err := m.mergeAndSaveRefreshedLocked(ctx, accountID, current)
+	if err != nil {
+		if errors.Is(err, errIncomingUnusable) {
+			// The on-disk bytes are not a usable credential object — truncated by a
+			// killed codex, or otherwise corrupt. There is no refreshed token in them
+			// to preserve, and mergeAndSaveRefreshedLocked fails before touching the store,
+			// so skip the reconcile and let the write replace the garbage.
+			m.logger.Warn().Str("path", authPath).
+				Msg("credmaterialize: codex auth.json is not a usable credential; not reconciling it, replacing it with the stored credential")
+			return nil, nil
+		}
+		return nil, err
+	}
+	// Re-derive the bytes to write from the now-current stored credential, so the
+	// file and the store agree and the next materialization finds them equal.
+	return codexAuthForWrite(merged), nil
+}
 
-	prevBlob, err := m.store.LoadCredential(ctx, accountID)
+// authHashPath is the sidecar recording the hash of the last auth.json write.
+func authHashPath(authPath string) string {
+	return filepath.Join(filepath.Dir(authPath), authHashFileName)
+}
+
+// recordAuthWrite persists the hash of the bytes just written to authPath.
+// Failures are warnings, not errors: an absent record makes the next reconcile
+// fall back to overwriting from the store (this package's pre-reconcile
+// behavior), so it costs a fold-back at worst and must not fail a spawn. A
+// STALE record would be worse than none — it would read as an agent-side
+// rotation — so drop the sidecar when it cannot be replaced.
+//
+// Dropping it is the last resort, not the first: an absent record re-opens the
+// overwrite this package exists to close, so when something unreplaceable sits
+// at the path, clear it and write again before settling for none.
+func (m *Materializer) recordAuthWrite(authPath string, sum [sha256.Size]byte) {
+	path := authHashPath(authPath)
+	record := []byte(hex.EncodeToString(sum[:]))
+	writeRecord := func() error { return atomicWriteFile(path, record, 0o600) }
+	err := writeRecord()
 	if err != nil {
-		return fmt.Errorf("reload stored codex credential for %q before persist-back: %w", accountID, err)
+		// A rename can replace a file but never a directory, so a restored or
+		// corrupted account with a directory at the sidecar path fails this write
+		// on every materialization. Clearing the obstruction is not enough on its
+		// own: an ABSENT record is precisely what sends the next materialization
+		// down the no-record path, which overwrites an agent-rotated refresh token
+		// with the stored one — the loss this sidecar exists to prevent. So retry
+		// the write once the path is actually clear. The removal doubles as the
+		// stale-record drop the comment above describes, and a failed retry leaves
+		// the path empty rather than stale, because atomicWriteFile only ever
+		// renames into place and cleans up its temp file when the rename fails.
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+			// Nothing was removed — a nonempty directory, or a parent we cannot
+			// write. Whatever sits there still does, so there is nothing to retry.
+			m.logger.Warn().Err(rmErr).Str("path", path).
+				Msg("credmaterialize: could not drop a stale codex auth.json write record")
+		} else {
+			err = writeRecord()
+		}
 	}
-	merged, err := mergePreservingIDToken(prevBlob, current)
 	if err != nil {
-		return fmt.Errorf("merge refreshed codex credential for %q: %w", accountID, err)
+		m.logger.Warn().Err(err).Str("path", path).
+			Msg("credmaterialize: could not record the codex auth.json write; the next materialization will not reconcile it")
 	}
-	if err := m.store.SaveCredential(ctx, accountID, merged); err != nil {
-		return fmt.Errorf("save refreshed codex credential for %q: %w", accountID, err)
+}
+
+// lastAuthWrite returns the recorded hash of bossd's last auth.json write and
+// whether a usable record exists. Anything unreadable or not a SHA-256 digest
+// counts as absent, so neither a truncated nor a same-length-but-corrupt sidecar
+// can be mistaken for a match — "matches" and "does not match" drive opposite fold
+// decisions, absent is the safe answer, and the next write re-establishes it.
+//
+// It returns the DECODED digest rather than the recorded text so callers compare
+// hashes, not encodings: hex decoding accepts either case while recordAuthWrite
+// only ever emits lower case, so a case-mangled record would decode as a perfectly
+// usable digest yet fail a textual comparison — reading as an agent-side rotation,
+// the one reading that can fold stale bytes over a refreshed stored credential.
+//
+// Like the auth.json leaf, the sidecar is only ever rename-written, so a
+// non-regular entry there is not ours: Lstat first and refuse it rather than
+// blocking forever on a writerless FIFO while the account lock is held, and
+// refuse an oversized file rather than reading an arbitrary symlink target into
+// memory. Its contents are compared, never logged.
+func (m *Materializer) lastAuthWrite(authPath string) ([sha256.Size]byte, bool) {
+	var recorded [sha256.Size]byte
+	path := authHashPath(authPath)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || authFileHasMultipleLinks(path, info) || info.Size() > int64(hex.EncodedLen(sha256.Size))+8 {
+		return recorded, false
 	}
-	// Advance the recorded hash to the on-disk bytes we just persisted, so a
-	// subsequent PersistBack with no further agent-side change re-hashes
-	// auth.json to the same value and no-ops (idempotent).
-	*recorded = currentHash
-	return nil
+	// #nosec G304 -- reads a bossd-written hash sidecar under the account lock; internally-derived materialize path
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return recorded, false
+	}
+	// Decode rather than only length-check: a corrupt record of the right length
+	// would otherwise compare unequal to every hash and so read as an agent-side
+	// rotation — the one reading that can overwrite a stored credential.
+	decoded, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil || len(decoded) != sha256.Size {
+		return recorded, false
+	}
+	copy(recorded[:], decoded)
+	return recorded, true
 }
 
 // MaterializeClaude returns the CLAUDE_CODE_OAUTH_TOKEN env overlay for

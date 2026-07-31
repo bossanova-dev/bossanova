@@ -16,6 +16,7 @@ package accountcred
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/99designs/keyring"
 
@@ -41,12 +42,47 @@ type credKeyring interface {
 // real keyring; the default opens the shared "bossanova" keyring exactly as
 // proofenvkeyring does.
 type Store struct {
-	open func() (credKeyring, error)
+	open  func() (credKeyring, error)
+	locks credentialLocks
+}
+
+// credentialLocks lazily creates one mutex per account. Account credentials
+// are touched infrequently and account IDs are durable, so retaining the mutex
+// for an account's lifetime avoids a delete/recreate race in lock cleanup.
+type credentialLocks struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func (l *credentialLocks) lock(accountID string) func() {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[string]*sync.Mutex)
+	}
+	accountLock := l.locks[accountID]
+	if accountLock == nil {
+		accountLock = &sync.Mutex{}
+		l.locks[accountID] = accountLock
+	}
+	l.mu.Unlock()
+
+	accountLock.Lock()
+	return accountLock.Unlock
 }
 
 // New returns a Store backed by the real shared "bossanova" keyring.
 func New() *Store {
 	return &Store{open: openSharedKeyring}
+}
+
+// WithCredentialLock serializes a compound operation on one account's
+// credential. The account server uses it for explicit refreshes, while the
+// Codex materializer uses it around its load-merge-save reconciliation; sharing
+// this lock prevents either writer from saving over the other's newer value.
+func (s *Store) WithCredentialLock(accountID string, fn func() error) error {
+	unlock := s.locks.lock(accountID)
+	defer unlock()
+	return fn()
 }
 
 // itemKey is the stable keyring item key a credential blob is stored under. The

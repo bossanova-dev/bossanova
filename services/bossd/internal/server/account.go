@@ -178,7 +178,7 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 	if err := s.rejectDuplicateCredential(ctx, string(account.Provider), credential, id); err != nil {
 		return nil, err
 	}
-	if err := s.accountCreds.Save(id, credential); err != nil {
+	if err := s.saveRefreshedCredential(id, credential); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 	// The credential just changed on disk, but any session that already failed
@@ -225,6 +225,18 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 		Account: accountToProto(account),
 		Detail:  "credential refreshed",
 	}), nil
+}
+
+// saveRefreshedCredential shares accountcred.Store's optional per-account lock
+// with credmaterialize's load-merge-save reconciliation. The lock covers this
+// whole write, so a materializer either reloads this explicit refresh before it
+// merges or saves first and lets the explicit refresh win afterwards.
+func (s *Server) saveRefreshedCredential(id string, credential []byte) error {
+	save := func() error { return s.accountCreds.Save(id, credential) }
+	if locker, ok := s.accountCreds.(accountCredentialLocker); ok {
+		return locker.WithCredentialLock(id, save)
+	}
+	return save()
 }
 
 func (s *Server) deleteRefreshedCredentialOnNotFound(id string, err error) {
@@ -310,9 +322,10 @@ func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.Upda
 	return connect.NewResponse(&pb.UpdateAccountResponse{Account: accountToProto(account)}), nil
 }
 
-// RemoveAccount deletes the metadata row and purges the keyring credential.
-// A missing credential (accountcred.ErrCredentialNotFound) is tolerated — D9
-// accounts may never have stored a blob.
+// RemoveAccount purges every trace of an account, most-sensitive artifact first:
+// the on-disk credential materialization, then the keyring credential, then the
+// metadata row. A missing credential (accountcred.ErrCredentialNotFound) is
+// tolerated — D9 accounts may never have stored a blob.
 func (s *Server) RemoveAccount(ctx context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
 	id := strings.TrimSpace(req.Msg.Id)
 	if id == "" {
@@ -324,14 +337,41 @@ func (s *Server) RemoveAccount(ctx context.Context, req *connect.Request[pb.Remo
 	if s.accountCreds == nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
 	}
-	// Purge the credential BEFORE the metadata row. If the row were deleted first
-	// and the keyring delete then failed, the secret would be stranded (the CLI
-	// resolves the now-absent account to CodeNotFound on retry). Credential-first
-	// keeps the "no orphaned secret" invariant and leaves removal retryable on a
-	// transient keyring error — a missing credential (D9 accounts) is tolerated.
+	// Resolve the account first: the materialization purge is provider-scoped, so
+	// the provider has to be read while the row still exists. This also moves the
+	// unknown-id NotFound ahead of the deletes (it used to come from
+	// s.accounts.Delete); the observable gRPC code is unchanged.
+	account, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
+	}
+	// Purge the on-disk materialization FIRST. The plaintext credential file is
+	// the most sensitive artifact of the three, and it is the only one no later
+	// step can clean up: a failure here aborts the removal with the row still
+	// intact, so the whole operation stays retryable. Swallowing the error would
+	// strand exactly the plaintext secret this ordering exists to remove. The
+	// capability is provider-aware and no-ops for providers that materialize
+	// nothing; nil (unwired) leaves the tree alone, as before. The error carries
+	// path components only — never credential bytes.
+	if s.accountMaterializations != nil {
+		if err := s.accountMaterializations.RemoveMaterialization(ctx, string(account.Provider), id); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("purge account materialization: %w", err))
+		}
+	}
+	// Then the credential, still BEFORE the metadata row. If the row were deleted
+	// first and the keyring delete then failed, the secret would be stranded (the
+	// CLI resolves the now-absent account to CodeNotFound on retry).
+	// Credential-before-row keeps the "no orphaned secret" invariant and leaves
+	// removal retryable on a transient keyring error — a missing credential (D9
+	// accounts) is tolerated.
 	if err := s.accountCreds.Delete(id); err != nil && !errors.Is(err, accountcred.ErrCredentialNotFound) {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete account credential: %w", err))
 	}
+	// Finally the metadata row. sql.ErrNoRows is still mapped here as
+	// belt-and-braces for a concurrent removal that won the race after our Get.
 	if err := s.accounts.Delete(ctx, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))

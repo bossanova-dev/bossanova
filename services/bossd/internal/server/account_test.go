@@ -69,6 +69,28 @@ type fakeCredStore struct {
 	deleteErr   error
 	preSaveHook func(id string, blob []byte)
 	saveHook    func(id string, blob []byte)
+	deleteHook  func(id string)
+}
+
+// lockedFakeCredStore exercises the optional production lock without forcing
+// every AccountCredentialStore test double to implement it.
+type lockedFakeCredStore struct {
+	*fakeCredStore
+	lockMu    sync.Mutex
+	lockCalls int
+}
+
+func (f *lockedFakeCredStore) WithCredentialLock(_ string, fn func() error) error {
+	f.lockMu.Lock()
+	defer f.lockMu.Unlock()
+	f.lockCalls++
+	return fn()
+}
+
+func (f *lockedFakeCredStore) credentialLockCalls() int {
+	f.lockMu.Lock()
+	defer f.lockMu.Unlock()
+	return f.lockCalls
 }
 
 func newFakeCredStore() *fakeCredStore { return &fakeCredStore{blobs: map[string][]byte{}} }
@@ -100,6 +122,9 @@ func (f *fakeCredStore) Load(id string) ([]byte, error) {
 }
 
 func (f *fakeCredStore) Delete(id string) error {
+	if f.deleteHook != nil {
+		f.deleteHook(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.deleteErr != nil {
@@ -128,6 +153,42 @@ func (f *fakeSmoke) Smoke(_ context.Context, accountID, provider string, blob []
 	f.provider = provider
 	f.blob = append([]byte(nil), blob...)
 	return f.err
+}
+
+// materializationPurge is one recorded RemoveMaterialization argument pair.
+type materializationPurge struct {
+	provider  string
+	accountID string
+}
+
+// fakeAccountMaterializations is an in-memory AccountMaterializations capability.
+// It records every purge (provider + id) and, when rec is set, logs the call into
+// a shared eventRecorder so RemoveAccount's ordering is assertable. It never
+// touches disk.
+type fakeAccountMaterializations struct {
+	rec    *eventRecorder
+	purges []materializationPurge
+	err    error
+}
+
+func (f *fakeAccountMaterializations) RemoveMaterialization(_ context.Context, provider, accountID string) error {
+	f.purges = append(f.purges, materializationPurge{provider: provider, accountID: accountID})
+	if f.rec != nil {
+		f.rec.record("purge")
+	}
+	return f.err
+}
+
+// recordingAccountStore logs the metadata-row delete into a shared eventRecorder
+// so the purge → keyring → row sequence can be pinned.
+type recordingAccountStore struct {
+	db.AccountStore
+	rec *eventRecorder
+}
+
+func (r recordingAccountStore) Delete(ctx context.Context, id string) error {
+	r.rec.record("row-delete")
+	return r.AccountStore.Delete(ctx, id)
 }
 
 type fakeUsageProbe struct {
@@ -534,6 +595,22 @@ func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
 	}
 	if bytes.Contains(raw, secret) {
 		t.Fatalf("RefreshAccount response wire form leaked the credential")
+	}
+}
+
+func TestRefreshAccountUsesOptionalCredentialStoreLock(t *testing.T) {
+	creds := &lockedFakeCredStore{fakeCredStore: newFakeCredStore()}
+	srv, _ := newAccountServer(t, creds, nil)
+	acct := mustAddClaude(t, srv, "refresh-lock", []byte("old-token"))
+
+	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+		Id:         acct.Id,
+		Credential: []byte("new-token"),
+	})); err != nil {
+		t.Fatalf("RefreshAccount: %v", err)
+	}
+	if got := creds.credentialLockCalls(); got != 1 {
+		t.Fatalf("credential lock calls = %d, want 1", got)
 	}
 }
 
@@ -1170,4 +1247,128 @@ func TestRemoveAccountToleratesMissingCredential(t *testing.T) {
 	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.ID})); err != nil {
 		t.Fatalf("RemoveAccount should tolerate missing credential: %v", err)
 	}
+}
+
+// codexAuthBlob is a well-formed codex credential, unique per label so the
+// duplicate-credential guard does not reject a second account.
+func codexAuthBlob(label string) []byte {
+	return []byte(`{"access":"a-` + label + `","refresh":"r-` + label + `","id_token":"i-` + label + `"}`)
+}
+
+func TestRemoveAccountPurgesMaterializationBeforeCredentialAndRow(t *testing.T) {
+	rec := &eventRecorder{}
+	creds := newFakeCredStore()
+	creds.deleteHook = func(string) { rec.record("cred-delete") }
+	srv, accts := newAccountServer(t, creds, nil)
+	srv.accounts = recordingAccountStore{AccountStore: accts, rec: rec}
+	purger := &fakeAccountMaterializations{rec: rec}
+	srv.accountMaterializations = purger
+	ctx := context.Background()
+
+	acct := mustAddCodex(t, srv, "materialized", codexAuthBlob("materialized"))
+	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAccount: %v", err)
+	}
+
+	want := []materializationPurge{{provider: "codex", accountID: acct.Id}}
+	if len(purger.purges) != 1 || purger.purges[0] != want[0] {
+		t.Fatalf("purges = %+v, want %+v", purger.purges, want)
+	}
+	if got, wantSteps := rec.steps(), []string{"purge", "cred-delete", "row-delete"}; !equalSteps(got, wantSteps) {
+		t.Fatalf("order = %v, want %v", got, wantSteps)
+	}
+}
+
+func TestRemoveAccountPurgeFailureIsInternalAndLeavesCredentialAndRow(t *testing.T) {
+	rec := &eventRecorder{}
+	creds := newFakeCredStore()
+	creds.deleteHook = func(string) { rec.record("cred-delete") }
+	srv, accts := newAccountServer(t, creds, nil)
+	srv.accounts = recordingAccountStore{AccountStore: accts, rec: rec}
+	srv.accountMaterializations = &fakeAccountMaterializations{rec: rec, err: errors.New("permission denied")}
+	ctx := context.Background()
+
+	acct := mustAddCodex(t, srv, "stuck", codexAuthBlob("stuck"))
+	_, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id}))
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("code = %v, want Internal (err=%v)", got, err)
+	}
+	// Neither the keyring credential nor the metadata row may be touched, so the
+	// whole removal stays retryable.
+	if got, wantSteps := rec.steps(), []string{"purge"}; !equalSteps(got, wantSteps) {
+		t.Fatalf("order = %v, want %v (nothing may be deleted after a purge failure)", got, wantSteps)
+	}
+	if _, ok := creds.blobs[acct.Id]; !ok {
+		t.Errorf("credential gone after purge failure, want it to survive")
+	}
+	if _, err := accts.Get(ctx, acct.Id); err != nil {
+		t.Errorf("account row gone after purge failure: %v", err)
+	}
+}
+
+func TestRemoveAccountWithoutMaterializationsCapabilityStillRemoves(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, accts := newAccountServer(t, creds, nil)
+	ctx := context.Background()
+
+	acct := mustAddCodex(t, srv, "unwired", codexAuthBlob("unwired"))
+	if srv.accountMaterializations != nil {
+		t.Fatalf("capability should default to nil")
+	}
+	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAccount: %v", err)
+	}
+	if _, ok := creds.blobs[acct.Id]; ok {
+		t.Errorf("credential still present after remove")
+	}
+	if _, err := accts.Get(ctx, acct.Id); err == nil {
+		t.Errorf("account row still present after remove")
+	}
+}
+
+func TestRemoveAccountUnknownIDIsNotFoundWithoutPurging(t *testing.T) {
+	purger := &fakeAccountMaterializations{}
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+	srv.accountMaterializations = purger
+
+	_, err := srv.RemoveAccount(context.Background(), connect.NewRequest(&pb.RemoveAccountRequest{Id: "nope"}))
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
+	}
+	if len(purger.purges) != 0 {
+		t.Errorf("purges = %+v, want none for an unknown id", purger.purges)
+	}
+}
+
+func TestRemoveClaudeAccountStillInvokesPurge(t *testing.T) {
+	creds := newFakeCredStore()
+	srv, _ := newAccountServer(t, creds, nil)
+	purger := &fakeAccountMaterializations{}
+	srv.accountMaterializations = purger
+
+	acct := mustAddClaude(t, srv, "claude-acct", []byte("setup-token"))
+	if _, err := srv.RemoveAccount(context.Background(), connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAccount: %v", err)
+	}
+	// The RPC always calls the capability; the adapter's claude no-op is what
+	// makes it harmless, so the server never branches on provider.
+	want := materializationPurge{provider: "claude", accountID: acct.Id}
+	if len(purger.purges) != 1 || purger.purges[0] != want {
+		t.Fatalf("purges = %+v, want [%+v]", purger.purges, want)
+	}
+	if _, ok := creds.blobs[acct.Id]; ok {
+		t.Errorf("credential still present after remove")
+	}
+}
+
+func equalSteps(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

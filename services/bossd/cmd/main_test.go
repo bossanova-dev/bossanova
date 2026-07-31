@@ -49,6 +49,81 @@ func TestDeliverChatMessageRejectsUndeliveredResponses(t *testing.T) {
 	}
 }
 
+// TestDeliverChatMessageErrorNamesDeliveryState guards the diagnosis that
+// BOS-598 moved. An unconfirmed submit used to arrive here as a CodeInternal
+// error whose message the rpc-error branch wrapped and logged; it now arrives as
+// a SUCCESSFUL rpc carrying delivered=false. All three workers sharing this
+// primitive (callback delivery, transient resume, broadcast delivery) log only
+// what it returns, so collapsing that to a bare "not delivered" would erase the
+// reason for exactly the case that is hardest to diagnose — and would hide that
+// the capped-backoff retry they schedule can double-deliver a message the pane
+// may already be running.
+func TestDeliverChatMessageErrorNamesDeliveryState(t *testing.T) {
+	tests := []struct {
+		name     string
+		response *bossanovav1.SendChatMessageResponse
+		want     []string
+		// wantOnce are substrings the rendered reason must state exactly once.
+		// The server's notice_text already ends with the resend guidance, so a
+		// headline that repeats it prints the same sentence twice in one log line.
+		wantOnce []string
+	}{
+		{
+			name: "unconfirmed carries the state and the notice",
+			response: &bossanovav1.SendChatMessageResponse{
+				Delivered:     false,
+				DeliveryState: bossanovav1.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED,
+				NoticeText:    "message delivery could not be confirmed: capture-pane failed",
+			},
+			want:     []string{"unconfirmed", "may already have been submitted", "capture-pane failed"},
+			wantOnce: []string{"may already have been submitted"},
+		},
+		{
+			name: "unconfirmed states the server's own guidance once",
+			response: &bossanovav1.SendChatMessageResponse{
+				Delivered:     false,
+				DeliveryState: bossanovav1.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED,
+				NoticeText: "message delivery could not be confirmed on tmux session \"boss-1\": capture-pane failed; " +
+					"the message may already have been submitted; check the pane before resending",
+			},
+			want:     []string{"unconfirmed", "check the pane before resending"},
+			wantOnce: []string{"may already have been submitted"},
+		},
+		{
+			name: "not submitted names the payload's known state",
+			response: &bossanovav1.SendChatMessageResponse{
+				Delivered:     false,
+				DeliveryState: bossanovav1.SendChatMessageResponse_DELIVERY_STATE_NOT_SUBMITTED,
+			},
+			want: []string{"not submitted"},
+		},
+		{
+			name:     "unset state keeps the generic reason",
+			response: &bossanovav1.SendChatMessageResponse{Delivered: false},
+			want:     []string{"not delivered"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := sendChatMessageStub{response: connect.NewResponse(tt.response)}
+			err := deliverChatMessage(context.Background(), stub, "chat-1", "message")
+			if err == nil {
+				t.Fatal("deliverChatMessage() error = nil, want error")
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("deliverChatMessage() error = %q, want it to mention %q", err, want)
+				}
+			}
+			for _, once := range tt.wantOnce {
+				if got := strings.Count(err.Error(), once); got != 1 {
+					t.Errorf("deliverChatMessage() error = %q, mentions %q %d times, want exactly once", err, once, got)
+				}
+			}
+		})
+	}
+}
+
 // TestRun_GracefulShutdown_NoGoroutineLeak boots the full daemon with an
 // isolated DB + socket, sends a synthetic SIGTERM, and asserts run() returns
 // within 10s without leaking goroutines. This is the end-to-end guard for

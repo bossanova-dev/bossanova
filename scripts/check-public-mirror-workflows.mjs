@@ -72,7 +72,73 @@ if (missingClauses.length > 0) {
   process.exit(1)
 }
 
+// Guard the merge sequence. Pushing `public-mirror` leaves the mirror PR's
+// required checks pending, so a merge issued straight afterwards fails, the job
+// exits, and the `.last-mirror-sha` verification never runs — the production
+// commit silently stays unpublished. The shape that fixes it is
+// wait-for-checks -> synchronous merge -> verify marker, and every leg is load
+// bearing:
+//   - the wait must come *before* the merge, or the race is back;
+//   - the merge must stay synchronous (no `--auto`), because a queued
+//     auto-merge has not landed by the time the marker check runs;
+//   - the marker verification must come *after* the merge, so it can only pass
+//     on a merge that actually landed.
+
+// Returns the whole shell command starting at `startIndex`, following trailing
+// backslash line continuations, so flags on continuation lines are seen.
+function extractShellCommand(content, startIndex) {
+  const collected = []
+  for (const line of content.slice(startIndex).split('\n')) {
+    collected.push(line)
+    if (!line.trimEnd().endsWith('\\')) break
+  }
+  return collected.join('\n')
+}
+
+const checksWaitIndex = mirror.indexOf('gh pr checks')
+const mergeIndex = mirror.indexOf('gh pr merge')
+// The marker path is also read *before* the replay, to find the resume point.
+// Only the last occurrence can be the post-merge verification.
+const markerVerifyIndex = mirror.lastIndexOf('public/main:.last-mirror-sha')
+
+const sequenceProblems = []
+
+if (mergeIndex === -1) {
+  sequenceProblems.push(
+    'no `gh pr merge` invocation found; the mirror pull request is never merged',
+  )
+} else {
+  if (checksWaitIndex === -1) {
+    sequenceProblems.push(
+      'no `gh pr checks` wait found; the mirror pull request would be merged while its checks are still pending',
+    )
+  } else if (checksWaitIndex > mergeIndex) {
+    sequenceProblems.push('the `gh pr checks` wait runs after `gh pr merge`; it must run before it')
+  }
+
+  if (extractShellCommand(mirror, mergeIndex).includes('--auto')) {
+    sequenceProblems.push(
+      'the `gh pr merge` invocation carries `--auto`; a queued auto-merge has not landed when the marker check runs, so the merge must stay synchronous',
+    )
+  }
+
+  if (markerVerifyIndex < mergeIndex) {
+    sequenceProblems.push(
+      'the `public/main:.last-mirror-sha` verification does not run after `gh pr merge`; it must confirm a merge that actually landed',
+    )
+  }
+}
+
+if (sequenceProblems.length > 0) {
+  console.error('Public mirror merge sequence is unsafe:')
+  for (const problem of sequenceProblems) {
+    console.error(`  - ${problem}`)
+  }
+  process.exit(1)
+}
+
 console.log(
   `Public mirror workflows OK (${requiredPublicWorkflows.length} workflows, ` +
-    `${requiredMirrorClauses.length} leak-prevention clauses checked)`,
+    `${requiredMirrorClauses.length} leak-prevention clauses, ` +
+    'wait-before-merge/no---auto/marker-after-merge sequence checked)',
 )

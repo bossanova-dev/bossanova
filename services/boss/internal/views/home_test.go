@@ -3036,8 +3036,8 @@ func TestHomeEndpointRowRendersBeforeWarnings(t *testing.T) {
 		t.Fatalf("rows = %d, want 3 (primary + endpoint + warning)", len(rows))
 	}
 	endpointRow := rows[1]
-	if got := visibleRowText(endpointRow[3]); got != ":3000 · :5173" {
-		t.Errorf("endpoint row NAME = %q, want %q", got, ":3000 · :5173")
+	if got := visibleRowText(endpointRow[3]); got != ":3000 :5173" {
+		t.Errorf("endpoint row NAME = %q, want %q", got, ":3000 :5173")
 	}
 	for i, cell := range endpointRow {
 		if i == 3 {
@@ -3086,7 +3086,7 @@ func TestHomeEndpointLinksSurviveTableRender(t *testing.T) {
 			t.Errorf("rendered home view lost the hyperlink %q:\n%q", want, content)
 		}
 	}
-	if !strings.Contains(stripANSI(osc8Pattern.ReplaceAllString(content, "")), ":3000 · :5173") {
+	if !strings.Contains(stripANSI(osc8Pattern.ReplaceAllString(content, "")), ":3000 :5173") {
 		t.Errorf("rendered home view lost the visible endpoint labels:\n%q", content)
 	}
 }
@@ -3135,7 +3135,14 @@ func TestHomeEndpointLabelsCountTowardNameWidth(t *testing.T) {
 	if wideWidth <= narrowWidth {
 		t.Fatalf("NAME width did not account for endpoint labels: %d <= %d", wideWidth, narrowWidth)
 	}
-	if want := lipgloss.Width(":3000 · :5173 · :8080 · :9229"); wideWidth < want {
+	// Derive the floor from the same helper the production width path reads
+	// (home_table.go) instead of transcribing the joined labels: a literal
+	// silently keeps passing for any separator WIDER than the current one, so it
+	// would stop bounding the property this test names. The separator's own bytes
+	// are pinned by TestSessionEndpointLabels. Keep this fixture's port list
+	// short: want is uncapped, while the production NAME width is capped at 60
+	// columns, so a label run past that cap would make the floor unreachable.
+	if want := lipgloss.Width(sessionEndpointLabels(wide.sessions[0])); wideWidth < want {
 		t.Fatalf("NAME width = %d, want at least %d to fit the endpoint labels", wideWidth, want)
 	}
 }

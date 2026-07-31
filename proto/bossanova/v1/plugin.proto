@@ -724,7 +724,17 @@ message HasQuestionPromptRequest {
   bytes pane_content = 1;
 }
 message HasQuestionPromptResponse {
+  // The pane is waiting on the user: notify a human. True for a modal AND for
+  // a conversational question asked with a live composer.
   bool has_prompt = 1;
+  // The prompt is MODAL: a selection UI has taken over the composer, so a
+  // keystroke is consumed as a choice rather than typed as text. Strict subset
+  // of has_prompt. Callers gating whether it is safe to DELIVER input must read
+  // this field, never has_prompt -- a conversational question sets has_prompt
+  // with the composer live, and refusing there would drop the answer (BOS-600).
+  // Plugins predating this field leave it false, which fails open to the
+  // pre-BOS-600 behaviour rather than refusing every send.
+  bool blocks_input = 2;
 }
 
 message DetectUsageLimitRequest {

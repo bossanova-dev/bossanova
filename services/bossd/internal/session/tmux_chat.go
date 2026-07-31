@@ -30,6 +30,22 @@ var (
 	ErrRepairChatActive          = errors.New("repair chat active or not stale")
 )
 
+// capabilityPreflightError marks a headless-capability preflight failure raised
+// by the authoritative probe in startTmuxChat. Unlike the post-setup probe in
+// StartSession, that one runs after the worktree and branch have already been
+// persisted, so StartSession matches this type with errors.As to roll both back
+// (the cron caller in taskorchestrator drops only the session row, which would
+// otherwise strand them and make the next attempt collide with the branch).
+// Every other startTmuxChat failure keeps its existing no-rollback behavior.
+//
+// Error() returns the wrapped message verbatim, so wrapping in this type does
+// not change what callers log or surface.
+type capabilityPreflightError struct{ err error }
+
+func (e capabilityPreflightError) Error() string { return e.err.Error() }
+
+func (e capabilityPreflightError) Unwrap() error { return e.err }
+
 type ReclaimRepairChatResult struct {
 	Reclaimed       bool
 	TmuxSessionName string
@@ -272,6 +288,11 @@ type HookOpts struct {
 	// for callers that intentionally launch an additional chat next to an
 	// existing primary chat, such as cron finalization.
 	AllowSiblingChat bool
+
+	// HeadlessCapabilityProfile is the profile StartSession deferred until this
+	// worktree's effective tmux environment was available. Direct chat callers
+	// leave it unspecified and retain their existing launch path.
+	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
 }
 
 // Note: this method calls ConfigureFinalizeHook only when hookOpts.Token
@@ -416,6 +437,31 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			"agent runner for session %s returned empty argv", sessionID)
 	}
 
+	// Build the env once, then validate and launch against that exact map. A
+	// tmux-hosted launch can receive CODEX_HOME or HOME from its worktree .env,
+	// so this is the only environment the tmux child actually inherits.
+	//
+	// StartSession has already run the same check before creating the worktree,
+	// against the repo checkout's .env — the file this worktree's .env is copied
+	// from — so a bad profile is normally rejected without stranding artifacts.
+	// This re-check is authoritative for the case those two can diverge (a repo
+	// whose setup script is skipped or does not copy .env), and it still runs
+	// before hook configuration and tmux creation. Unlike the first probe it
+	// runs after the worktree and branch have been persisted, so both failures
+	// below are wrapped in capabilityPreflightError — StartSession matches that
+	// type and applies the same rollback rather than stranding them.
+	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
+	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), sess.WorktreePath, repo), sess.WorktreePath)
+	if hookOpts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
+		if !ok {
+			return "", capabilityPreflightError{fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", hookOpts.HeadlessCapabilityProfile, spawnAgentName)}
+		}
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, spawnModel, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
+			return "", capabilityPreflightError{fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", spawnAgentName, hookOpts.HeadlessCapabilityProfile, err)}
+		}
+	}
+
 	finalizeHookSupported := true
 	if cmdResp.GetConsumesInitialInput() {
 		hookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts)
@@ -446,12 +492,11 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	//
 	// A repo lookup failure is non-fatal: OverlayWithRepo(nil) still guarantees
 	// LINEAR_API_KEY is present so the daemon's ambient value can never leak.
-	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), sess.WorktreePath, repo),
+		Env:     tmuxEnv,
 	}); err != nil {
 		// tmux's error carries its own stderr (e.g. a missing-terminfo
 		// "missing or unsuitable terminal" failure). The normal agent_chats row
@@ -629,6 +674,33 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 // DeliverySubmit types/pastes then presses Enter and verifies the payload left
 // the composer, while DeliveryPrefillOnly (the zero value) delivers into the
 // composer and stops there so the composer owner submits.
+//
+// BOS-600 gave the readiness gate two halves and this path carries only one.
+// Row-anchored composer resolution applies here (it lives inside
+// waitForReadyMarker, which every entry point below funnels through), so a
+// marker glyph drawn mid-row no longer reads as ready. The agent-grammar half —
+// the injected ModalDetector — is NOT installed here; it is bound per call on
+// the SendChatMessage path only (server.modalDetectorFor).
+//
+// That is a deliberate limit, not an oversight. The grammars the detector routes
+// to (hasCodexQuestionPrompt, statusdetect.HasModalPrompt) recognise approval
+// menus and question pickers — states a *conversing* agent enters. The panes this
+// path meets are freshly started or freshly resumed, where the realistic modal is
+// an update interstitial or an auth prompt, which those grammars do not match; a
+// detector here would cost a plugin round-trip per poll tick and refuse nothing.
+//
+// Be precise about what that leaves uncovered, because it includes the incident
+// BOS-600 was opened for: a codex pane that *opened* on an "Update available!"
+// interstitial, i.e. this path, not SendChatMessage. What this path gained is the
+// row-anchoring half, and whether that alone refuses the interstitial depends on
+// whether the interstitial draws a row led by "›" — which nobody knows, because
+// the rendering was never captured. So this path is improved but does NOT prove
+// the motivating case is prevented, and the same is true of a resume branch
+// reaching a pane left mid-menu.
+//
+// Closing it needs a detector grammar for boot interstitials (the parent epic's
+// requirement 5), which needs a real capture first; the plan's instruction for
+// exactly this outcome was to disclose it rather than commit a guessed fixture.
 func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName string, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse) error {
 	prompt := input.render(cmdResp.GetCommandPrefix())
 	marker := cmdResp.GetReadyMarker()
@@ -983,7 +1055,9 @@ func (l *Lifecycle) startTmuxChat(
 	// Unattended/cron sessions wire their session-keyed Stop hook earlier in
 	// StartSession (opts.HookToken); pass an empty HookOpts so StartTmuxChat
 	// doesn't install a duplicate run-keyed entry.
-	return l.StartTmuxChat(ctx, sessionID, input, title, HookOpts{})
+	return l.StartTmuxChat(ctx, sessionID, input, title, HookOpts{
+		HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
+	})
 }
 
 // cronAutonomyDirective is appended to the agent's system prompt for every

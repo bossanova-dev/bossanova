@@ -2,9 +2,21 @@ package credmaterialize
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// errIncomingUnusable marks a merge that failed because the INCOMING blob (next)
+// is not a usable credential object — as distinct from a failure attributable to
+// the stored blob or to marshalling. Callers that read next off disk use it to
+// tell "the agent refreshed the credential" apart from "the file is garbage":
+// garbage holds no refreshed secret worth preserving, so the materialize-time
+// reconcile skips it and lets the normal write replace the file. Aborting there
+// instead would fail that materialization and every later one identically, since
+// nothing else ever rewrites auth.json.
+var errIncomingUnusable = errors.New("incoming credential blob is not a usable credential object")
 
 // mergePreservingIDToken overlays the freshly-written codex credential blob
 // (next) onto the previously-stored blob (prev), preserving fields that a
@@ -25,7 +37,9 @@ import (
 //     next. id_token is NEVER lost.
 //
 // The returned bytes are compact JSON. Errors reference the failure context but
-// NEVER include blob contents (the blobs are credentials).
+// NEVER include blob contents (the blobs are credentials). A failure caused by
+// next being unusable wraps errIncomingUnusable, so a caller that read next off
+// disk can distinguish it from a stored-blob or marshalling failure.
 func mergePreservingIDToken(prev, next []byte) ([]byte, error) {
 	prevTop, err := parseObject(prev)
 	if err != nil {
@@ -33,7 +47,7 @@ func mergePreservingIDToken(prev, next []byte) ([]byte, error) {
 	}
 	nextTop, err := parseObject(next)
 	if err != nil {
-		return nil, fmt.Errorf("parse new credential blob: %w", err)
+		return nil, fmt.Errorf("parse new credential blob: %w: %w", errIncomingUnusable, err)
 	}
 
 	normalizeTokens(prevTop)
@@ -59,7 +73,7 @@ func mergePreservingIDToken(prev, next []byte) ([]byte, error) {
 	}
 	nextTokens, nextErr := parseTokenObject(nextTop["tokens"])
 	if nextErr != nil {
-		return nil, fmt.Errorf("parse new tokens object: %w", nextErr)
+		return nil, fmt.Errorf("parse new tokens object: %w: %w", errIncomingUnusable, nextErr)
 	}
 
 	if prevTokens != nil || nextTokens != nil {
@@ -110,6 +124,61 @@ func codexAuthForWrite(blob []byte) []byte {
 		return blob
 	}
 	return out
+}
+
+// authGenerationKey is the codex auth.json field recording when the credential
+// it carries was last rotated. Codex stamps it on every token refresh, so it
+// orders two blobs that both claim to hold the account's credentials.
+const authGenerationKey = "last_refresh"
+
+// authGeneration returns the credential's own generation marker: the
+// "last_refresh" timestamp codex stamps into auth.json each time it rotates the
+// tokens. The bool is false whenever the blob carries no usable marker — not an
+// object, no "last_refresh", or a value that is not an RFC 3339 timestamp — so a
+// caller can tell "this blob is older" apart from "these blobs cannot be
+// ordered". Blobs stored in the account-store top-level shape carry no marker at
+// all, which is why the unordered case must stay a first-class answer rather
+// than collapsing into a zero time.
+func authGeneration(blob []byte) (time.Time, bool) {
+	top, err := parseObject(blob)
+	if err != nil {
+		return time.Time{}, false
+	}
+	raw, ok := top[authGenerationKey]
+	if !ok || isEmptyJSON(raw) {
+		return time.Time{}, false
+	}
+	var stamp string
+	if err := json.Unmarshal(raw, &stamp); err != nil {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimSpace(stamp))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
+
+// storedCredentialIsNewer reports whether the stored blob was rotated strictly
+// later than the on-disk one, per the generation marker both carry. It answers
+// the one question a content hash cannot: when auth.json and the store have BOTH
+// moved since bossd last wrote the file, which side moved second.
+//
+// It is deliberately conservative. Either blob lacking a usable marker leaves the
+// pair unordered, and an unordered pair reports false — preserving the fold-back
+// that keeps an agent-rotated refresh token, which is the data loss this package
+// exists to prevent. Equal stamps report false for the same reason. Only a
+// provably later store write turns it true.
+func storedCredentialIsNewer(stored, current []byte) bool {
+	storedGen, ok := authGeneration(stored)
+	if !ok {
+		return false
+	}
+	currentGen, ok := authGeneration(current)
+	if !ok {
+		return false
+	}
+	return storedGen.After(currentGen)
 }
 
 // parseObject parses a blob as a top-level JSON object into a raw-message map,

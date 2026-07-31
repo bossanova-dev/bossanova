@@ -271,3 +271,13 @@ func (a credentialStoreAdapter) LoadCredential(_ context.Context, accountID stri
 func (a credentialStoreAdapter) SaveCredential(_ context.Context, accountID string, blob []byte) error {
 	return a.store.Save(accountID, blob)
 }
+
+// WithCredentialLock forwards the concrete store's optional per-account lock
+// to credmaterialize. This keeps Codex smoke-token persistence serialized with
+// account refreshes that use the same store.
+func (a credentialStoreAdapter) WithCredentialLock(accountID string, fn func() error) error {
+	if locker, ok := a.store.(credentialStoreLocker); ok {
+		return locker.WithCredentialLock(accountID, fn)
+	}
+	return fn()
+}

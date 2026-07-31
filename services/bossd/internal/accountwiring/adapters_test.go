@@ -646,6 +646,96 @@ func TestMaterializer_ProbeUsageSnapshotPreservesGRPCStatusVerbatim(t *testing.T
 	}
 }
 
+// materializationRemover is the removal capability the daemon type-asserts out
+// of the account.Materializer returned by NewMaterializer. It is deliberately
+// NOT part of account.Materializer (removal is not a spawn concern), so the
+// tests assert it the same way cmd/main.go does: an optional type assertion.
+type materializationRemover interface {
+	RemoveMaterialization(ctx context.Context, provider, accountID string) error
+}
+
+// newMaterializedCodexAdapter builds a materializer whose codex leg writes under
+// a temp app-data dir (never the real one, never the real keyring), materializes
+// codex-1, and returns the materializer plus the on-disk account dir.
+func newMaterializedCodexAdapter(t *testing.T) (account.Materializer, string) {
+	t.Helper()
+	appDataDir := t.TempDir()
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"app_data_dir":`+strconv.Quote(appDataDir)+`}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	acct := newCodexAccount()
+	store := &spyStore{accounts: map[string]*models.Account{acct.ID: acct}}
+	m := NewMaterializer(
+		map[string]agent.AgentRunnerClient{},
+		store,
+		&fakeCreds{blob: []byte(`{"tokens":{"access_token":"fixture-access"}}`)},
+		zerolog.Nop(),
+	)
+	if _, err := m.MaterializeAccount(context.Background(), acct.ID); err != nil {
+		t.Fatalf("MaterializeAccount: %v", err)
+	}
+	dir := filepath.Join(appDataDir, "accounts", "codex", acct.ID)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("materialized codex dir missing before removal: %v", err)
+	}
+	return m, dir
+}
+
+func removerFor(t *testing.T, m account.Materializer) materializationRemover {
+	t.Helper()
+	remover, ok := m.(materializationRemover)
+	if !ok {
+		t.Fatalf("materializer %T does not expose RemoveMaterialization", m)
+	}
+	return remover
+}
+
+// RemoveMaterialization delegates to the codex materializer, so the on-disk
+// account dir (and the plaintext auth.json in it) is actually gone afterwards.
+func TestMaterializer_RemoveMaterializationPurgesCodexDir(t *testing.T) {
+	m, dir := newMaterializedCodexAdapter(t)
+
+	if err := removerFor(t, m).RemoveMaterialization(context.Background(), "codex", newCodexAccount().ID); err != nil {
+		t.Fatalf("RemoveMaterialization: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("codex account dir still present after removal: %v", err)
+	}
+}
+
+// Any non-codex provider is a no-op: no error, and nothing on disk is touched.
+// An unknown provider must not reach credmaterialize.RemoveAccount, which
+// rejects it with "unknown provider".
+func TestMaterializer_RemoveMaterializationNoOpsForOtherProviders(t *testing.T) {
+	for _, provider := range []string{"claude", "opencode-not-a-provider"} {
+		t.Run(provider, func(t *testing.T) {
+			m, dir := newMaterializedCodexAdapter(t)
+
+			if err := removerFor(t, m).RemoveMaterialization(context.Background(), provider, newCodexAccount().ID); err != nil {
+				t.Fatalf("RemoveMaterialization(%q) = %v, want nil (no-op)", provider, err)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatalf("provider %q purged the codex dir; want an untouched no-op: %v", provider, err)
+			}
+		})
+	}
+}
+
+// Without a credential store there is no codex materializer at all, so removal
+// degrades to a nil-error no-op rather than panicking.
+func TestMaterializer_RemoveMaterializationNoOpsWithoutCodexLeg(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	m := NewMaterializer(map[string]agent.AgentRunnerClient{}, store, nil, zerolog.Nop())
+
+	if err := removerFor(t, m).RemoveMaterialization(context.Background(), "codex", "codex-1"); err != nil {
+		t.Fatalf("RemoveMaterialization with nil codex leg = %v, want nil (no-op)", err)
+	}
+}
+
 func TestLifecycleMaterializer_MaterializesAccount(t *testing.T) {
 	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}

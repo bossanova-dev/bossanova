@@ -40,6 +40,44 @@ function mirrorWorkflowWith(extraLines) {
   ].join('\n')
 }
 
+// The merge sequence the guard requires: wait for the mirror PR's checks, merge
+// synchronously, then verify that public main received the marker. Each option
+// below breaks exactly one leg of it.
+function mergeSequence({ wait = 'before', auto = false, marker = 'after' } = {}) {
+  const waitLine =
+    'gh pr checks "$MIRROR_PR_NUMBER" --repo bossanova-dev/bossanova --json name,state'
+  const mergeLines = [
+    'gh pr merge "$MIRROR_PR_NUMBER" \\',
+    '  --repo bossanova-dev/bossanova \\',
+    ...(auto ? ['  --auto \\'] : []),
+    '  --rebase \\',
+    '  --delete-branch',
+  ]
+  const markerLine =
+    'ACTUAL_MIRROR_SHA=$(git show public/main:.last-mirror-sha 2>/dev/null || true)'
+
+  return [
+    ...(wait === 'before' ? [waitLine] : []),
+    ...(marker === 'before' ? [markerLine] : []),
+    ...mergeLines,
+    ...(wait === 'after' ? [waitLine] : []),
+    ...(marker === 'after' ? [markerLine] : []),
+  ]
+}
+
+function assertMirrorWorkflowRejected(lines, expected) {
+  withMirrorWorkflow(mirrorWorkflowWith(lines), (dir) => {
+    assert.throws(
+      () => execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' }),
+      (error) => {
+        assert.equal(error.status, 1)
+        assert.match(error.stderr, expected)
+        return true
+      },
+    )
+  })
+}
+
 test('requires .env.example as a distinct filename token', () => {
   withMirrorWorkflow(mirrorWorkflowWith([]), (dir) => {
     assert.throws(
@@ -55,12 +93,40 @@ test('requires .env.example as a distinct filename token', () => {
 
 test('accepts mirror workflow when private and public env example filenames are both wired', () => {
   withMirrorWorkflow(
-    mirrorWorkflowWith(['.env.example', '--state open', 'public/main:.last-mirror-sha']),
+    mirrorWorkflowWith(['.env.example', '--state open', ...mergeSequence()]),
     (dir) => {
       const output = execFileSync('node', [scriptPath], { cwd: dir, encoding: 'utf8' })
 
       assert.match(output, /Public mirror workflows OK/)
     },
+  )
+})
+
+test('rejects merging the mirror pull request without waiting for its checks', () => {
+  assertMirrorWorkflowRejected(
+    ['.env.example', '--state open', ...mergeSequence({ wait: 'none' })],
+    /no `gh pr checks` wait found/,
+  )
+})
+
+test('rejects a checks wait that runs after the merge', () => {
+  assertMirrorWorkflowRejected(
+    ['.env.example', '--state open', ...mergeSequence({ wait: 'after' })],
+    /`gh pr checks` wait runs after `gh pr merge`/,
+  )
+})
+
+test('rejects an auto-merge, which has not landed when the marker check runs', () => {
+  assertMirrorWorkflowRejected(
+    ['.env.example', '--state open', ...mergeSequence({ auto: true })],
+    /carries `--auto`/,
+  )
+})
+
+test('rejects marker verification that runs before the merge', () => {
+  assertMirrorWorkflowRejected(
+    ['.env.example', '--state open', ...mergeSequence({ marker: 'before' })],
+    /verification does not run after `gh pr merge`/,
   )
 })
 

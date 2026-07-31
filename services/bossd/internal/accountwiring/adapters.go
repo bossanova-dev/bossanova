@@ -91,6 +91,14 @@ type CredentialStore interface {
 	Save(accountID string, blob []byte) error
 }
 
+// credentialStoreLocker is an optional compound-operation lock shared by the
+// materializer and account RPCs when the concrete credential store provides
+// one. The base CredentialStore interface stays small so existing custom stores
+// and test fakes remain compatible.
+type credentialStoreLocker interface {
+	WithCredentialLock(accountID string, fn func() error) error
+}
+
 // --- Registry adapter -----------------------------------------------------
 
 type registryAdapter struct{ store AccountStore }
@@ -209,6 +217,15 @@ func (s contextCredentialStore) SaveCredential(ctx context.Context, accountID st
 	return s.store.Save(accountID, blob)
 }
 
+// WithCredentialLock forwards the concrete store's optional lock to
+// credmaterialize. If the store has no lock, preserve the original behavior.
+func (s contextCredentialStore) WithCredentialLock(accountID string, fn func() error) error {
+	if locker, ok := s.store.(credentialStoreLocker); ok {
+		return locker.WithCredentialLock(accountID, fn)
+	}
+	return fn()
+}
+
 func (m *materializerAdapter) client(provider string) (agent.AgentRunnerClient, bool) {
 	c, ok := m.clients[provider]
 	return c, ok && c != nil
@@ -249,6 +266,13 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		if m.codex == nil {
 			return nil, nil
 		}
+		// The PersistBack closure is deliberately discarded, not overlooked. This
+		// seam returns only an env map and has no run-completion hook to invoke it
+		// from, so instead MaterializeCodex reconciles at the START of the next
+		// materialization: it folds an agent-refreshed auth.json into the credential
+		// store before overwriting the file. A refresh codex writes mid-run is
+		// therefore never lost. Do not "fix" this by plumbing a closure lifetime the
+		// spawn seam does not have.
 		materialized, _, err := m.codex.MaterializeCodex(ctx, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("materialize codex account: %w", err)
@@ -268,6 +292,28 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		return nil, fmt.Errorf("plugin MaterializeAccount: %w", err)
 	}
 	return resp.GetEnv(), nil
+}
+
+// RemoveMaterialization deletes the on-disk credential materialization for a
+// removed account, so no plaintext credential outlives the account row. Only
+// codex materializes anything on disk (claude is env-only), so every other
+// provider — and an unconfigured codex leg — is a nil-error no-op; an unknown
+// provider must not reach the materializer, which rejects it. A real failure is
+// returned so the caller can fail closed rather than orphan a credential file.
+//
+// It is deliberately NOT part of account.Materializer: that interface is the
+// spawn seam, and removal is not a spawn capability. Callers reach this method
+// through an optional type assertion on the value NewMaterializer returns, the
+// same pattern the daemon already uses for the usage-probe capability. Errors
+// carry only path components and identifiers, never credential bytes.
+func (m *materializerAdapter) RemoveMaterialization(ctx context.Context, provider, accountID string) error {
+	if provider != "codex" || m.codex == nil {
+		return nil
+	}
+	if err := m.codex.RemoveAccount(ctx, provider, accountID); err != nil {
+		return fmt.Errorf("remove codex materialization: %w", err)
+	}
+	return nil
 }
 
 // RecordUsageProbe probes the currently bound account through its provider

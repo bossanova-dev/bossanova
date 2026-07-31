@@ -33,6 +33,7 @@ go_library(
         "//lib/bossalib/bossmcp",
         "//lib/bossalib/broadcast",
         "//lib/bossalib/buildinfo",
+        "//lib/bossalib/chatdelivery",
         "//lib/bossalib/clidoc",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonstate",
@@ -113,6 +114,7 @@ go_test(
     ],
     deps = [
         "//lib/bossalib/broadcast",
+        "//lib/bossalib/chatdelivery",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

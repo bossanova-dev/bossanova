@@ -521,6 +521,18 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 	if err != nil {
 		return nil, err
 	}
+	// This is one of TWO hand-rolled converters that rebuild the response field by
+	// field instead of passing it through — the sibling is (*Backend).SendChatMessage
+	// in services/mcp-gateway/internal/proxybackend/proxybackend.go — so both are
+	// places where a new daemon-side signal can be dropped silently, and a field
+	// added here has to be added there too (they have already drifted once).
+	// delivery_state is deliberately NOT threaded: it lives on the
+	// daemon-local SendChatMessageResponse, and ProxySendChatMessageResponse
+	// (orchestrator.proto) carries no mirror of it — that proto is an observable
+	// surface whose change would force an apiversion bump. On the remote path
+	// notice_text is therefore the only reason a caller gets, which is why the
+	// daemon always populates it alongside delivered=false; a cloud caller sees
+	// delivered=false plus prose rather than a distinct UNCONFIRMED state.
 	return &pb.SendChatMessageResponse{
 		TmuxSessionName: resp.Msg.GetTmuxSessionName(),
 		Delivered:       resp.Msg.GetDelivered(),

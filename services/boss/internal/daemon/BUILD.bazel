@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "daemon.go",
         "launchd.go",
+        "mcpprocess.go",
         "systemd.go",
     ],
     importpath = "github.com/recurser/boss/internal/daemon",
@@ -16,6 +17,7 @@ go_test(
     srcs = [
         "daemon_test.go",
         "launchd_test.go",
+        "mcpprocess_test.go",
         "systemd_test.go",
     ],
     embed = [":daemon"],

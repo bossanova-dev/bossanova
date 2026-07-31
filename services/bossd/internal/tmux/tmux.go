@@ -533,6 +533,36 @@ type sendPlanOpts struct {
 	// Used by the Prefill* wrappers; the Send* wrappers leave it false so they
 	// submit and verify as before.
 	prefillOnly bool
+
+	// modalDetector is the "is this a menu?" half of the readiness gate for
+	// THIS delivery. It lives here, in the per-call options, rather than on
+	// Client because the grammar is per agent — codex's glyphs are not Claude's
+	// — while the daemon holds one long-lived Client shared by every chat. The
+	// caller is the only layer that knows which agent owns this pane, so it is
+	// the only layer that can supply the right grammar (BOS-600). Nil disables
+	// the check; see ModalDetector in tmux_modal.go.
+	modalDetector ModalDetector
+}
+
+// deliveryOpts builds the standard production timing for one delivery: the 5s
+// readiness deadline, the 100ms poll, the agent's ready marker, and either the
+// submit-verifier budget or the prefill (no-Enter) routing. The four public
+// Send*/Prefill* wrappers and SendMessage all share it so a timing change is
+// one edit rather than five drifting literals.
+func deliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendPlanOpts {
+	opts := sendPlanOpts{
+		deadline:      sendPlanDefaultDeadline,
+		pollInterval:  sendPlanDefaultPollInterval,
+		readyMarker:   readyMarker,
+		modalDetector: detector,
+	}
+	if submit {
+		opts.submitVerifyWait = 2 * time.Second
+		opts.submitVerifyTick = 100 * time.Millisecond
+	} else {
+		opts.prefillOnly = true
+	}
+	return opts
 }
 
 // SendPlan delivers a plan to a tmux-hosted agent session as a bracketed paste.
@@ -564,26 +594,14 @@ func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 // only shape skipped, since it matches any row. When the first Enter is
 // swallowed the verifier sends one more Enter and re-checks before erroring.
 func (c *Client) SendPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
-	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
-		deadline:         sendPlanDefaultDeadline,
-		pollInterval:     sendPlanDefaultPollInterval,
-		readyMarker:      readyMarker,
-		submitVerifyWait: 2 * time.Second,
-		submitVerifyTick: 100 * time.Millisecond,
-	})
+	return c.sendPlan(ctx, sessionName, plan, deliveryOpts(readyMarker, true, nil))
 }
 
 // SendLineWithReadyMarker sends a short literal line and submits it with Enter.
 // Use this for command invocations where bracketed paste can leave some TUIs
 // with the command text loaded but not executed.
 func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
-	return c.sendLine(ctx, sessionName, line, sendPlanOpts{
-		deadline:         sendPlanDefaultDeadline,
-		pollInterval:     sendPlanDefaultPollInterval,
-		readyMarker:      readyMarker,
-		submitVerifyWait: 2 * time.Second,
-		submitVerifyTick: 100 * time.Millisecond,
-	})
+	return c.sendLine(ctx, sessionName, line, deliveryOpts(readyMarker, true, nil))
 }
 
 // PrefillPlanWithReadyMarker delivers a plan into the composer WITHOUT
@@ -592,24 +610,23 @@ func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line,
 // (a human, or a later explicit-submit step) will submit — the counterpart to
 // SendPlanWithReadyMarker's auto-submit-and-verify behaviour.
 func (c *Client) PrefillPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
-	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
-		deadline:     sendPlanDefaultDeadline,
-		pollInterval: sendPlanDefaultPollInterval,
-		readyMarker:  readyMarker,
-		prefillOnly:  true,
-	})
+	return c.sendPlan(ctx, sessionName, plan, deliveryOpts(readyMarker, false, nil))
 }
 
 // PrefillLineWithReadyMarker delivers a short literal line into the composer
 // WITHOUT submitting it (no Enter, no verification), mirroring
 // SendLineWithReadyMarker for the prefill case.
 func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
-	return c.sendLine(ctx, sessionName, line, sendPlanOpts{
-		deadline:     sendPlanDefaultDeadline,
-		pollInterval: sendPlanDefaultPollInterval,
-		readyMarker:  readyMarker,
-		prefillOnly:  true,
-	})
+	return c.sendLine(ctx, sessionName, line, deliveryOpts(readyMarker, false, nil))
+}
+
+// WillSubmit reports whether SendMessage would take the submit path (deliver +
+// Enter + verify) for this request, rather than routing it to a prefill. It is
+// exported so callers that must describe the delivery they just asked for — the
+// SendChatMessage RPC populating delivery_state — read the routing decision from
+// the one place that makes it, instead of re-deriving it and drifting from it.
+func WillSubmit(submit bool, text string) bool {
+	return submit && strings.TrimSpace(text) != ""
 }
 
 // SendMessage delivers text into an existing chat's live agent composer,
@@ -623,30 +640,47 @@ func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, li
 //     submit-verifier so a swallowed Enter is retried once and a false
 //     "submitted" cannot happen — a delivery that never executes surfaces as a
 //     loud error, not a silent no-op. This holds for BOTH single- and
-//     multi-line payloads: SendPlanWithReadyMarker (sendPlan) picks the reliable
-//     literal-keystroke delivery for a single line and bracketed paste for a
-//     multi-line plan, and verifies each shape against the matching signal one
-//     layer down.
+//     multi-line payloads: sendPlan picks the reliable literal-keystroke
+//     delivery for a single line and bracketed paste for a multi-line plan, and
+//     verifies each shape against the matching signal one layer down.
 //   - !submit (prefill, the default): paste/type into the composer, NO Enter,
 //     for the composer owner (a human, or a later explicit-submit step) to
-//     submit. Routes through PrefillPlanWithReadyMarker.
+//     submit.
+//
+// Both arms differ only in the options deliveryOpts builds; neither routes
+// through the Send/Prefill wrappers, so a reader chasing either path lands on
+// sendPlan with the modal detector already threaded in.
 //
 // An empty/whitespace-only payload has nothing to submit, so it is always
 // treated as a prefill (no Enter, no verification) regardless of submit.
 func (c *Client) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string) error {
+	return c.sendMessage(ctx, sessionName, text, submit, readyMarker, nil)
+}
+
+// sendMessage is SendMessage with the readiness gate's modal detector threaded
+// through. Both public spellings funnel through here so the routing decision —
+// and the fact that a modal check applies to the prefill path exactly as it
+// does to the submit path — is made in one place.
+func (c *Client) sendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector) error {
 	if sessionName == "" {
 		return fmt.Errorf("session name is required")
 	}
+	// Submit: deliver + Enter + verify (fails toward "still pending"). sendPlan
+	// picks literal-type vs bracketed paste by payload shape and verifies each
+	// shape one layer down; a payload the agent queues behind a running turn is
+	// recognised there from the pane itself (BOS-599), so no caller has to supply
+	// an agent working-state probe for it. Prefill (submit=false, or nothing
+	// meaningful to submit): deliver into the composer with no Enter and no
+	// verification.
+	return c.sendPlan(ctx, sessionName, text, deliveryOpts(readyMarker, WillSubmit(submit, text), detector))
+}
 
-	if submit && strings.TrimSpace(text) != "" {
-		// Submit: deliver + Enter + verify (fails toward "still pending").
-		// sendPlan picks literal-type vs bracketed paste by payload shape and
-		// verifies each shape one layer down.
-		return c.SendPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
-	}
-	// Prefill (submit=false, or nothing meaningful to submit): deliver into the
-	// composer with no Enter and no verification.
-	return c.PrefillPlanWithReadyMarker(ctx, sessionName, text, readyMarker)
+// SendMessageWithModal is SendMessage with the readiness gate's modal check
+// bound to detector for this one delivery, refusing with ErrBlockedByModal
+// (OutcomeBlockedByModal) when the pane is showing a menu rather than a
+// composer. A nil detector behaves exactly like SendMessage.
+func (c *Client) SendMessageWithModal(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector) error {
+	return c.sendMessage(ctx, sessionName, text, submit, readyMarker, detector)
 }
 
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
@@ -680,12 +714,18 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// text — so a single logical line carrying surrounding whitespace (e.g. a
 	// trailing newline) still takes the reliable literal path rather than
 	// slipping into paste, matching the trimmed payload the verifier checks for.
+	//
+	// The dispatch is a closure so the verifier's retry can re-run the exact same
+	// delivery after clearing the composer (see verifyWithEnterRetry): a retry
+	// must reproduce this shape choice, not approximate it.
 	trimmedPlan := strings.TrimSpace(plan)
-	if trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
-		if err := c.typeLiteralLineNoEnter(ctx, sessionName, trimmedPlan); err != nil {
-			return err
+	deliver := func(ctx context.Context) error {
+		if trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
+			return c.typeLiteralLineNoEnter(ctx, sessionName, trimmedPlan)
 		}
-	} else if err := c.pasteBufferNoEnter(ctx, sessionName, plan); err != nil {
+		return c.pasteBufferNoEnter(ctx, sessionName, plan)
+	}
+	if err := deliver(ctx); err != nil {
 		return err
 	}
 
@@ -707,7 +747,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// Only the empty string is skipped (it matches any row). A first Enter the
 	// TUI swallows is retried once inside verifyWithEnterRetry before erroring.
 	if opts.submitVerifyWait > 0 && trimmedPlan != "" {
-		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts); err != nil {
+		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts, deliver); err != nil {
 			return err
 		}
 	}
@@ -733,7 +773,12 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return err
 	}
 
-	if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
+	// A closure so the verifier's retry can re-run the identical delivery after
+	// clearing the composer (see verifyWithEnterRetry).
+	deliver := func(ctx context.Context) error {
+		return c.typeLiteralLineNoEnter(ctx, sessionName, line)
+	}
+	if err := deliver(ctx); err != nil {
 		return err
 	}
 
@@ -746,7 +791,7 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return err
 	}
 	if opts.submitVerifyWait > 0 {
-		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts); err != nil {
+		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts, deliver); err != nil {
 			return err
 		}
 	}
@@ -825,6 +870,35 @@ func (c *Client) sendEnter(ctx context.Context, sessionName string) error {
 	return nil
 }
 
+// clearComposer sends a single "C-u" — kill-to-start-of-line — to the live
+// input box. It is the first half of the idempotent submit retry: clear, then
+// re-deliver, so a retry types the payload exactly once instead of appending a
+// second copy to a composer that may still hold the first (BOS-598).
+//
+// Two limits are deliberate, and neither is assumed away. First, C-u is a
+// best-effort clear, not a guaranteed empty: it kills to the start of the
+// LINE, and no fixture in this repo demonstrates that either the Claude or the
+// Codex composer collapses a multi-line payload to nothing on one press — so
+// the caller confirms the postcondition with awaitComposerCleared instead of
+// trusting this call's success. Second, C-u in a working full-screen pane is an
+// unwanted keystroke, so callers MUST only invoke it with positive evidence
+// that a composer is drawn and holds the payload (the verifier's
+// confirmed-pending result, which waitForSubmission returns only when the final
+// poll actually saw a prompt marker). stderr from tmux is wrapped into the
+// returned error.
+func (c *Client) clearComposer(ctx context.Context, sessionName string) error {
+	clearCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "C-u")
+	var clearStderr bytes.Buffer
+	clearCmd.Stderr = &clearStderr
+	if err := clearCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(clearStderr.String()); msg != "" {
+			return fmt.Errorf("tmux send-keys C-u for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux send-keys C-u for %q: %w", sessionName, err)
+	}
+	return nil
+}
+
 // escapeSendKeysLiteral protects a payload from tmux's command lexer on the
 // literal "send-keys -l --" path, where the text becomes the final argument of
 // a tmux command. tmux treats a single trailing ";" on that argument as a
@@ -841,9 +915,37 @@ func escapeSendKeysLiteral(line string) string {
 	return line
 }
 
-// waitForReadyMarker polls CapturePane until the Claude Code ready marker
-// is observed or the deadline elapses. The first poll is immediate so
-// already-ready sessions return without sleeping.
+// waitForReadyMarker polls CapturePane until a live composer is observed or the
+// deadline elapses. The first poll is immediate so already-ready sessions return
+// without sleeping.
+//
+// Readiness is two conditions, checked against the same capture in this order,
+// so the gate adds no tmux calls:
+//
+//  1. A row whose leading glyph is the ready marker exists — a drawn input box,
+//     not the glyph occurring somewhere in the capture.
+//  2. That row is not part of a modal. A modal is refused — not waited out —
+//     with ErrBlockedByModal / OutcomeBlockedByModal, because the alternative is
+//     an Enter into a menu whose side effect is unbounded. One such Enter
+//     selected "Update now" on a codex update interstitial, and the reinstall
+//     killed the pane and destroyed the chat (BOS-600).
+//
+// The order is load-bearing, not cosmetic. Condition 2 is answered by the
+// agent's plugin over gRPC, so asking it first would cost one round-trip per
+// poll tick — up to ~50 per send — and would need a memoizer to claw that back.
+// Asking it only about a capture that already satisfies condition 1 makes the
+// probe at-most-once per wait BY CONSTRUCTION: either no marker row is drawn
+// (keep polling, no RPC at all) or one is, and the probe's answer ends the loop
+// in both directions. This costs nothing in coverage — every modal that draws a
+// marker-shaped row, which includes both captured fixtures, is still probed on
+// the tick it appears — and the deadline branch below probes once more so a
+// modal that draws no marker row at all is still NAMED rather than reported as
+// a bare timeout.
+//
+// Refusing is deliberately conservative: it fails loud rather than guessing, and
+// it never dismisses the modal (pressing Escape into an unknown TUI state is the
+// same gamble). A composer whose text happens to match an agent's menu grammar
+// would be refused too — a new, visible failure mode this trade accepts.
 //
 // On timeout, the error embeds the most recent successful pane capture
 // (truncated). This matters for the cron path: the caller kills the
@@ -857,11 +959,21 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 		out, err := c.CapturePane(ctx, sessionName)
 		if err == nil {
 			lastPane = out
-			if strings.Contains(out, opts.readyMarker) {
+			if composerRowIndex(out, opts.readyMarker) != -1 {
+				if paneShowsModal(ctx, opts.modalDetector, out) {
+					return blockedByModalErr(sessionName, out)
+				}
 				return nil
 			}
 		}
 		if time.Now().After(deadline) {
+			// The loop above never probed this pane: nothing composer-shaped was
+			// ever drawn on it. Ask once here so a modal that renders no marker
+			// row still refuses under its own name instead of masquerading as a
+			// slow-starting agent.
+			if lastPane != "" && paneShowsModal(ctx, opts.modalDetector, lastPane) {
+				return blockedByModalErr(sessionName, lastPane)
+			}
 			return fmt.Errorf("ready marker %q not seen in pane %q within %s; last pane (truncated): %s",
 				opts.readyMarker, sessionName, opts.deadline, truncatePaneForError(lastPane))
 		}

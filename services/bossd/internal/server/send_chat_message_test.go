@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -460,5 +463,200 @@ func TestSendChatMessage_WorktreeMissing_FailedPrecondition(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
+	}
+}
+
+// verifierPaneFactory builds a tmux CommandFactory that drives the real submit
+// verifier through a scripted sequence of capture-pane results. The first
+// capture satisfies sendPlan's ready-marker wait; every capture after it is a
+// verification poll and is answered by verify.
+//
+// These tests deliberately drive the REAL tmux.Client rather than the fake
+// spawner: the outcome classification under test lives inside the verifier, so a
+// fake that simply returns a canned error would prove nothing about how a real
+// capture failure is classified.
+func verifierPaneFactory(verify func() *exec.Cmd) tmux.CommandFactory {
+	var mu sync.Mutex
+	captures := 0
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(args) > 0 && args[0] == "capture-pane" {
+			captures++
+			if captures == 1 {
+				return exec.CommandContext(ctx, "printf", "%s", "❯ \n")
+			}
+			return verify()
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+}
+
+// newVerifierTestServer wires a Server whose tmux surface is a real client
+// driven by factory, so SendChatMessage exercises the production verifier.
+func newVerifierTestServer(t *testing.T, factory tmux.CommandFactory) *Server {
+	t.Helper()
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	return &Server{
+		agentChats: &chatStoreFake{chat: chat},
+		sessions:   &sessionStoreFake{sess: sess},
+		tmux:       tmux.NewClient(tmux.WithCommandFactory(factory)),
+	}
+}
+
+// TestSendChatMessage_CaptureFailure_ReturnsUnconfirmedResponse is BOS-598
+// acceptance criterion 2. A capture-pane failure during verification means the
+// payload MAY have been submitted. Reporting that as a CodeInternal error reads
+// to a caller as "it failed" and invites a retry that double-types into the
+// agent's composer, so it must come back as a RESPONSE carrying the state —
+// with delivered=false, so every caller already keying on delivered (notably
+// bossd's own deliverChatMessage) still fails closed.
+func TestSendChatMessage_CaptureFailure_ReturnsUnconfirmedResponse(t *testing.T) {
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		// Verification cannot read the pane at all.
+		return exec.CommandContext(context.Background(), "false")
+	}))
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("expected a response, got error: %v (code %v)", err, connect.CodeOf(err))
+	}
+	if resp.Msg.GetDelivered() {
+		t.Error("delivered = true, want false for an unconfirmed submit")
+	}
+	if got := resp.Msg.GetDeliveryState(); got != pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED {
+		t.Errorf("delivery_state = %v, want DELIVERY_STATE_UNCONFIRMED", got)
+	}
+	if resp.Msg.GetNoticeText() == "" {
+		t.Error("notice_text is empty; an unconfirmed response must carry human-readable detail")
+	}
+	// notice_text must also carry the one action this state calls for. It is the
+	// only field the hand-rolled converters (services/boss/internal/client/remote.go,
+	// services/mcp-gateway/internal/proxybackend/proxybackend.go) forward, so a
+	// caller reached over the proxy learns "unconfirmed" from here or nowhere.
+	if !strings.Contains(resp.Msg.GetNoticeText(), "check the pane before resending") {
+		t.Errorf("notice_text = %q, want it to carry the resend guidance", resp.Msg.GetNoticeText())
+	}
+	// It must carry it ONCE, and must not re-state the condition the verifier's
+	// own error already opens with: notice_text is rendered verbatim by the
+	// surfaces that never see delivery_state, so every duplicated clause here is
+	// a duplicated clause in front of an operator.
+	if n := strings.Count(resp.Msg.GetNoticeText(), "may already have been submitted"); n != 1 {
+		t.Errorf("notice_text = %q, states the resend guidance %d times, want exactly once", resp.Msg.GetNoticeText(), n)
+	}
+	if n := strings.Count(resp.Msg.GetNoticeText(), "could not be"); n > 1 {
+		t.Errorf("notice_text = %q, states the unverifiable condition %d times, want at most once", resp.Msg.GetNoticeText(), n)
+	}
+	// The pane is what the guidance sends the operator to look at, so the notice
+	// must name it even for a caller that only ever sees notice_text.
+	if !strings.Contains(resp.Msg.GetNoticeText(), resp.Msg.GetTmuxSessionName()) {
+		t.Errorf("notice_text = %q, want it to name tmux session %q", resp.Msg.GetNoticeText(), resp.Msg.GetTmuxSessionName())
+	}
+}
+
+// TestSendChatMessage_ConfirmedPending_ErrorsNamingState is BOS-598 acceptance
+// criterion 3. A payload confirmed to be still sitting in the composer is a
+// genuine failure and must stay loud — and the error has to name the state, so
+// the distinction survives surfaces that carry no delivery_state (the proxied
+// bossanova.v1 path).
+func TestSendChatMessage_ConfirmedPending_ErrorsNamingState(t *testing.T) {
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		// The payload never leaves the prompt.
+		return exec.CommandContext(context.Background(), "printf", "%s", "❯ do the thing\n")
+	}))
+
+	_, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err == nil {
+		t.Fatal("expected an error for a confirmed-pending payload, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("expected CodeInternal, got %v", connect.CodeOf(err))
+	}
+	if !strings.Contains(err.Error(), tmux.OutcomeNotSubmitted.String()) {
+		t.Errorf("error %q does not name the delivery state %q", err.Error(), tmux.OutcomeNotSubmitted)
+	}
+}
+
+// TestSendChatMessage_Submitted_ReportsSubmittedState pins the positive half of
+// the enum: a verified submit reports DELIVERY_STATE_SUBMITTED, so a caller can
+// read one field for all three outcomes instead of inferring from delivered.
+func TestSendChatMessage_Submitted_ReportsSubmittedState(t *testing.T) {
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		// Composer cleared: the payload was accepted.
+		return exec.CommandContext(context.Background(), "printf", "%s", "❯ \n")
+	}))
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Msg.GetDelivered() {
+		t.Error("delivered = false, want true")
+	}
+	if got := resp.Msg.GetDeliveryState(); got != pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED {
+		t.Errorf("delivery_state = %v, want DELIVERY_STATE_SUBMITTED", got)
+	}
+}
+
+// TestSendChatMessage_Prefill_LeavesDeliveryStateUnspecified guards the honesty
+// of the enum on the prefill path: submit=false runs no Enter and no
+// verification, so claiming SUBMITTED would be a lie.
+func TestSendChatMessage_Prefill_LeavesDeliveryStateUnspecified(t *testing.T) {
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		return exec.CommandContext(context.Background(), "printf", "%s", "❯ \n")
+	}))
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := resp.Msg.GetDeliveryState(); got != pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED {
+		t.Errorf("delivery_state = %v, want DELIVERY_STATE_UNSPECIFIED for a prefill", got)
+	}
+}
+
+// TestSendChatMessage_WhitespaceSubmit_LeavesDeliveryStateUnspecified covers the
+// prefill the request does not ask for. tmux.Client.SendMessage routes on
+// `submit && the trimmed text is non-empty`, so a whitespace-only body with
+// submit=true has nothing to submit and takes the PREFILL path: no Enter, no
+// verification. Deriving the state from submit alone reported SUBMITTED for it —
+// the exact unearned claim the field exists to remove — so the state must be
+// derived from the same predicate tmux routes on.
+func TestSendChatMessage_WhitespaceSubmit_LeavesDeliveryStateUnspecified(t *testing.T) {
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		return exec.CommandContext(context.Background(), "printf", "%s", "❯ \n")
+	}))
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "   \n  ",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The delivery itself succeeded — it was simply a prefill, so delivered stays
+	// true and only the claim about submission is withheld.
+	if !resp.Msg.GetDelivered() {
+		t.Error("delivered = false, want true (the prefill itself succeeded)")
+	}
+	if got := resp.Msg.GetDeliveryState(); got != pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED {
+		t.Errorf("delivery_state = %v, want DELIVERY_STATE_UNSPECIFIED (nothing was submitted or verified)", got)
 	}
 }

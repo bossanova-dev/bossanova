@@ -14,11 +14,11 @@
         },
         {
           "expect": {
-            "text": ":3000 · :5173",
+            "text": ":3000 :5173",
             "match": "normalized",
-            "label": "both endpoint ports render on one auxiliary row, joined by the muted separator"
+            "label": "both endpoint ports render on one auxiliary row, joined by a single space"
           },
-          "caption": "BOS-474: the session's machine-local listeners render as clickable :3000 · :5173 links"
+          "caption": "BOS-474/BOS-616: the session's machine-local listeners render as clickable :3000 :5173 links"
         },
         {
           "expect": {
@@ -72,7 +72,7 @@
         },
         {
           "expect": {
-            "text": "HTTP  :3000 · :5173",
+            "text": "HTTP :3000 :5173",
             "match": "normalized",
             "label": "the HTTP line shows both ports, each independently clickable"
           },

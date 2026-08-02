@@ -1,0 +1,28 @@
+{
+  "data": {
+    "issues": {
+      "nodes": [
+        {
+          "identifier": "ENG-126",
+          "title": "Support OIDC discovery",
+          "description": "Parked in the backlog until the auth refactor lands, but users still want to start a session on it.",
+          "branchName": "eng-126-backlog-item",
+          "url": "https://linear.app/recurser/issue/ENG-126",
+          "state": {
+            "name": "Backlog"
+          }
+        },
+        {
+          "identifier": "ENG-124",
+          "title": "Add dark mode toggle",
+          "description": "Users have requested a dark theme for the settings page.",
+          "branchName": "eng-124-dark-mode",
+          "url": "https://linear.app/recurser/issue/ENG-124",
+          "state": {
+            "name": "Todo"
+          }
+        }
+      ]
+    }
+  }
+}

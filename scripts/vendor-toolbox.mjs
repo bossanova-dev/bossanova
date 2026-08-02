@@ -56,6 +56,9 @@ export const VENDOR_MAP = {
     'pr-ownership.mjs',
     'remove-bossd-stop-hooks.mjs',
     'cron-gates/boss-build.mjs',
+    // Preflight drift probe: an installed toolbox can silently fall behind this source tree
+    // (the install is a copy, not a link), so the skill compares the two at startup.
+    'toolbox-drift.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
@@ -95,7 +98,11 @@ export const VENDOR_MAP = {
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
   // embedded skillinstall payload (no repo-root skills-toolbox/), so the helper must be
   // co-located in this skill's own toolbox rather than referenced from another copy.
-  // plan-epic-lib.mjs (epic validation + intra-epic wiring), plan-image-guard.mjs (the
+  // plan-epic-lib.mjs (epic validation + intra-epic wiring), plan-epic-phase25.mjs (BOS-652:
+  // Phase 2.5's epic-parent preconditions and step-4 first-write sequence —
+  // detectEpicParent, epicSpecRecoveryGate, stalePlanAttachmentSweep, epicPhase25WritePlan;
+  // it imports plan-epic-lib.mjs, so the two must ship together for its relative import to
+  // resolve), plan-image-guard.mjs (the
   // image-parity STOP gate) and plan-slug.mjs (the plan-path slug) are boss-plan's
   // deterministic planning core: pure, node-builtin-only helpers the SKILL invokes by
   // path. They ship in the toolbox so a consuming repo never has to re-derive them.
@@ -106,9 +113,13 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
     'plan-attachment.mjs',
     'plan-epic-lib.mjs',
+    'plan-epic-phase25.mjs',
     'plan-image-guard.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
+    // Preflight drift probe: an installed toolbox can silently fall behind this source tree
+    // (the install is a copy, not a link), so the skill compares the two at startup.
+    'toolbox-drift.mjs',
   ],
   'boss-repair': ['main-module.mjs', 'skill-extensions.mjs'],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
@@ -216,7 +227,9 @@ if (isMainModule(import.meta.url)) {
       `Skipped vendored toolbox check: ${skillsRoot} and ${publishedRoot} are absent (skills stripped)\n`,
     )
   } else if (check && res.changed) {
-    process.stderr.write('Vendored skill toolboxes are stale. Run `make vendor-toolbox`.\n')
+    process.stderr.write(
+      'Vendored skill toolboxes are stale. Run `make vendor-toolbox` (it also refreshes the plugin mirror).\n',
+    )
     process.stderr.write(res.differences.join('\n') + '\n')
     process.exit(1)
   } else {

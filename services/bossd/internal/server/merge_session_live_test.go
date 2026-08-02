@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -25,14 +28,26 @@ import (
 // meaningful; the rest return safe zero values. mergeCalled records whether the
 // gate let execution reach the actual merge.
 type mergeGateProvider struct {
-	prStatus    *vcs.PRStatus
-	checks      []vcs.CheckResult
-	reviews     []vcs.ReviewComment
+	prStatus *vcs.PRStatus
+	checks   []vcs.CheckResult
+	reviews  []vcs.ReviewComment
+	// prStatusErr/checksErr/reviewsErr make each of the gate's three live reads
+	// individually fail, so the fail-closed contract can be asserted per read
+	// rather than only in aggregate (BOS-644).
+	prStatusErr error
+	checksErr   error
+	reviewsErr  error
 	mergeErr    error
 	mergeCalled bool
 	// onMerge, when set, fires inside MergePR before it returns — a seam for
 	// observing display-tracker state at the exact moment the blocking merge runs.
 	onMerge func()
+	// onPRStatus, when set, fires inside GetPRStatus before it returns. It is
+	// the seam for killing the context DURING the gate reads: MergeSession
+	// rejects an already-dead context up front in acquireRepoMerge, so a test
+	// that merely passes a canceled context never reaches the gate at all and
+	// would assert the merge-lock wait instead of the gate.
+	onPRStatus func(context.Context)
 
 	// allowed overrides the merge strategies the remote reports as enabled.
 	// nil keeps the historical default of []string{"merge"}.
@@ -50,16 +65,44 @@ type mergeGateProvider struct {
 	// historical default of ("", vcs.ErrPRNotMerged).
 	mergeCommitSHA string
 	mergeCommitErr error
+
+	// observation/observationErr drive GetReviewObservation, the RAW
+	// pre-filtering review tally. It is deliberately independent of `reviews`
+	// above: `reviews` is the ALREADY-FILTERED set the gate judges, and the real
+	// provider drops addressed bot reviews from it. Keeping the two separate is
+	// what lets a test express the shape that a fake returning one slice for
+	// both cannot — a bot that reviewed and was fully addressed, which the
+	// filter removes but the observation still counts.
+	observation    vcs.ReviewObservation
+	observationErr error
+	// onObservation, when set, fires inside GetReviewObservation. The
+	// observation is a fourth context-bound read running AFTER the three
+	// guarded ones, so this is the only seam that can kill the context at that
+	// specific point.
+	onObservation func(context.Context)
 }
 
-func (p *mergeGateProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
-	return p.prStatus, nil
+func (p *mergeGateProvider) GetPRStatus(ctx context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	if p.onPRStatus != nil {
+		p.onPRStatus(ctx)
+	}
+	return p.prStatus, p.prStatusErr
 }
 func (p *mergeGateProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
-	return p.checks, nil
+	return p.checks, p.checksErr
 }
 func (p *mergeGateProvider) GetReviewComments(context.Context, string, int) ([]vcs.ReviewComment, error) {
-	return p.reviews, nil
+	return p.reviews, p.reviewsErr
+}
+
+// GetReviewObservation makes the fake satisfy vcs.ReviewObserver, the optional
+// capability the no-reviews-observed warning reads instead of counting bots in
+// the filtered GetReviewComments result.
+func (p *mergeGateProvider) GetReviewObservation(ctx context.Context, _ string, _ int) (vcs.ReviewObservation, error) {
+	if p.onObservation != nil {
+		p.onObservation(ctx)
+	}
+	return p.observation, p.observationErr
 }
 func (p *mergeGateProvider) GetAllowedMergeStrategies(context.Context, string) ([]string, error) {
 	if p.allowedErr != nil {
@@ -182,6 +225,14 @@ func withRebaseStrategy() mergeGateOpt {
 // gate tests rely on).
 func withMergeWorktrees(wt gitpkg.WorktreeManager) mergeGateOpt {
 	return func(s *Server, _ *models.Repo) { s.worktrees = wt }
+}
+
+// withMergeLogger swaps the server's zerolog.Nop() for one writing into buf, so
+// a test can assert on a log line the gate emits. The merge gate's
+// no-bot-review signal is log-only (MergeSessionResponse.detail is discarded by
+// every RPC consumer), so the log is the only observable it has.
+func withMergeLogger(buf *bytes.Buffer) mergeGateOpt {
+	return func(s *Server, _ *models.Repo) { s.logger = zerolog.New(buf) }
 }
 
 func mergeGateServer(t *testing.T, prov *mergeGateProvider, staleStatus vcs.DisplayStatus, opts ...mergeGateOpt) *Server {
@@ -402,6 +453,351 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 				t.Fatal("a live-bad PR must not reach the actual merge")
 			}
 		})
+	}
+}
+
+// TestMergeSessionRejectsUnverifiableLiveRead pins the fail-CLOSED contract
+// (BOS-644). The gate judges a PR from three live provider reads; before this
+// change every one of them discarded its error and fell through to `return nil`
+// — "no block". A GitHub outage, an expired token or a malformed response
+// therefore did not hold the merge, it *silently removed the gate*, which is the
+// one moment the gate matters most. Each read failing on its own must now block
+// with gate=pending and never reach MergePR. The nil-status-nil-error case is
+// listed separately because it is not an error at all: the provider reports
+// success with nothing to judge, which is equally unverifiable.
+func TestMergeSessionRejectsUnverifiableLiveRead(t *testing.T) {
+	cases := []struct {
+		name string
+		prov *mergeGateProvider
+		// wantRead is the read named in the block detail, so a future
+		// refactor that swaps the reads' order can't silently mislabel them.
+		wantRead string
+	}{
+		{
+			name:     "PR status read fails",
+			prov:     &mergeGateProvider{prStatusErr: errors.New("gh: HTTP 502")},
+			wantRead: "could not read the PR status",
+		},
+		{
+			name: "PR status read returns nothing",
+			prov: &mergeGateProvider{
+				prStatus: nil,
+				checks:   livePassingChecks(),
+			},
+			wantRead: "could not read the PR status",
+		},
+		{
+			name: "check results read fails",
+			prov: &mergeGateProvider{
+				prStatus:  openCleanPRStatus(),
+				checksErr: errors.New("gh: HTTP 502"),
+			},
+			wantRead: "could not read the check results",
+		},
+		{
+			name: "review comments read fails",
+			prov: &mergeGateProvider{
+				prStatus:   openCleanPRStatus(),
+				checks:     livePassingChecks(),
+				reviewsErr: vcs.ErrReviewThreadsUnverified,
+			},
+			wantRead: "could not read the review comments",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A stale *Passing* tracker entry is the trap: if the gate fell
+			// back to the tracker instead of blocking, this would merge.
+			srv := mergeGateServer(t, tc.prov, vcs.DisplayStatusPassing)
+
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "merge blocked: gate=pending;") {
+				t.Fatalf("error = %v, want it to contain 'merge blocked: gate=pending;'", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantRead) {
+				t.Errorf("error = %v, want it to name the failed read (%q)", err, tc.wantRead)
+			}
+			if tc.prov.mergeCalled {
+				t.Fatal("an unverifiable PR state must not reach the actual merge")
+			}
+		})
+	}
+}
+
+// TestLiveMergeBlockSkipsWithoutProviderOrOrigin pins the two inputs that are
+// legitimately unreadable and must stay non-blocking: a server with no provider
+// configured, and a repo with no origin URL. Neither is a failed read — there is
+// no remote to consult at all — so the fail-closed change above must not turn
+// them into a permanent block on every such repo. Called directly because
+// MergeSession's own callers never reach the gate without a provider.
+func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
+	t.Run("no provider", func(t *testing.T) {
+		srv := &Server{logger: zerolog.Nop()}
+		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42)
+		if err != nil {
+			t.Fatalf("liveMergeBlock err = %v, want nil when no provider is configured", err)
+		}
+		if block != nil {
+			t.Fatalf("liveMergeBlock = %+v, want nil when no provider is configured", block)
+		}
+	})
+	t.Run("no origin URL", func(t *testing.T) {
+		prov := &mergeGateProvider{prStatusErr: errors.New("must never be called")}
+		srv := &Server{provider: prov, logger: zerolog.Nop()}
+		block, err := srv.liveMergeBlock(context.Background(), "", 42)
+		if err != nil {
+			t.Fatalf("liveMergeBlock err = %v, want nil when the repo has no origin URL", err)
+		}
+		if block != nil {
+			t.Fatalf("liveMergeBlock = %+v, want nil when the repo has no origin URL", block)
+		}
+	})
+}
+
+// TestMergeSessionWarnsWhenNoBotReviewObserved pins the observability half of
+// BOS-644. The review gate can only block on evidence an external bot produced,
+// so a bot that was uninstalled, rate-limited or silently crashed leaves the
+// gate with nothing to block on — and the resulting merge is indistinguishable
+// in the logs from one that passed a real review. The WARN is what makes that
+// difference visible. It keys on *bot* reviews, so a human approval alongside
+// zero bot reviews still warns: that is precisely the silent-loss case.
+func TestMergeSessionWarnsWhenNoBotReviewObserved(t *testing.T) {
+	cases := []struct {
+		name string
+		// reviews is the FILTERED set the gate judges; observation is the RAW
+		// pre-filtering tally. They differ exactly where the real provider drops
+		// a review, which is the point of several cases below.
+		reviews     []vcs.ReviewComment
+		observation vcs.ReviewObservation
+		wantWarn    bool
+		wantReviews string
+	}{
+		{
+			name:        "no reviews at all",
+			observation: vcs.ReviewObservation{},
+			wantWarn:    true,
+			wantReviews: `"reviews_total":0`,
+		},
+		{
+			name:        "human approval but no bot review",
+			reviews:     []vcs.ReviewComment{{Author: "alice", State: vcs.ReviewStateApproved}},
+			observation: vcs.ReviewObservation{Total: 1},
+			wantWarn:    true,
+			wantReviews: `"reviews_total":1`,
+		},
+		{
+			name: "bot review observed",
+			reviews: []vcs.ReviewComment{
+				{Author: "alice", State: vcs.ReviewStateApproved},
+				{Author: "cursor[bot]", State: vcs.ReviewStateCommented},
+			},
+			observation: vcs.ReviewObservation{Total: 2, Bot: 1},
+			wantWarn:    false,
+		},
+		{
+			// The regression this warning shipped with: a bot reviewed and every
+			// one of its threads was then resolved, so GetReviewComments DROPS
+			// the review and the filtered set has zero bot entries — while the
+			// bot demonstrably ran. Counting bots in `reviews` warns here, which
+			// means warning on the healthy, fully-addressed, ready-to-merge PR
+			// and never distinguishing the absent-reviewer case at all.
+			name:        "bot reviewed but its addressed review was filtered out",
+			reviews:     []vcs.ReviewComment{{Author: "alice", State: vcs.ReviewStateApproved}},
+			observation: vcs.ReviewObservation{Total: 2, Bot: 1},
+			wantWarn:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &mergeGateProvider{
+				prStatus:    openCleanPRStatus(),
+				checks:      livePassingChecks(),
+				reviews:     tc.reviews,
+				observation: tc.observation,
+				mergeErr:    errors.New("merge short-circuited in test"),
+			}
+			var logs bytes.Buffer
+			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeLogger(&logs))
+
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+				t.Fatalf("green PR was rejected by the merge gate: %v", err)
+			}
+			if !prov.mergeCalled {
+				t.Fatal("expected execution to reach the actual merge (MergePR), but the gate blocked it")
+			}
+
+			gotWarn := strings.Contains(logs.String(), `"review_gate":"no_reviews_observed"`)
+			if gotWarn != tc.wantWarn {
+				t.Fatalf("review_gate=no_reviews_observed logged = %t, want %t (logs: %s)", gotWarn, tc.wantWarn, logs.String())
+			}
+			if !tc.wantWarn {
+				return
+			}
+			for _, want := range []string{tc.wantReviews, `"bot_reviews_total":0`, `"level":"warn"`} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs = %s, want them to contain %q", logs.String(), want)
+				}
+			}
+		})
+	}
+}
+
+// TestMergeSessionPreservesCanceledContextAtGate pins that a context that dies
+// mid-gate is reported as the cancellation it is. The three gate reads are
+// context-bound, so a caller that hangs up or hits its deadline makes them
+// error — and treating that as an unverifiable provider read would answer a
+// canceled request with FailedPrecondition plus advice to retry once the
+// provider is reachable, discarding the Canceled / DeadlineExceeded semantics
+// MergeSession preserves while queued behind the repo merge lock.
+//
+// The context MUST still be alive when MergeSession is entered and die inside
+// the gate: acquireRepoMerge rejects an already-dead context before contending
+// for the merge lock, so passing a pre-canceled context asserts that guard
+// rather than this one and passes even with the fix reverted.
+func TestMergeSessionPreservesCanceledContextAtGate(t *testing.T) {
+	cases := []struct {
+		name     string
+		ctx      func(t *testing.T) (context.Context, func(context.Context))
+		wantCode connect.Code
+	}{
+		{
+			name: "canceled",
+			ctx: func(t *testing.T) (context.Context, func(context.Context)) {
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				// Cancel from inside the gate's first read, the way a caller
+				// hanging up kills an in-flight context-bound `gh` call.
+				return ctx, func(context.Context) { cancel() }
+			},
+			wantCode: connect.CodeCanceled,
+		},
+		{
+			name: "deadline exceeded",
+			ctx: func(t *testing.T) (context.Context, func(context.Context)) {
+				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+				t.Cleanup(cancel)
+				// Block inside the read until the deadline actually expires.
+				return ctx, func(c context.Context) { <-c.Done() }
+			},
+			wantCode: connect.CodeDeadlineExceeded,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, kill := tc.ctx(t)
+			// The read then fails the way a killed context-bound `gh` call
+			// fails: a non-nil error, with ctx.Err() already set.
+			prov := &mergeGateProvider{
+				onPRStatus:  kill,
+				prStatusErr: errors.New("signal: killed"),
+			}
+			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+			_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			if got := connect.CodeOf(err); got != tc.wantCode {
+				t.Fatalf("MergeSession code = %v, want %v (err: %v)", got, tc.wantCode, err)
+			}
+			// The failure must not be reported as an unverifiable provider read
+			// telling a caller who hung up to retry when the provider recovers.
+			if strings.Contains(fmt.Sprint(err), "gate=pending") {
+				t.Errorf("canceled gate read reported as gate=pending: %v", err)
+			}
+			if prov.mergeCalled {
+				t.Fatal("a canceled gate read must never fall through to MergePR")
+			}
+		})
+	}
+}
+
+// TestMergeSessionObservationErrorDoesNotBlockMerge pins that the raw review
+// observation stays OBSERVABILITY, never a fourth gate read. It is not part of
+// the fail-closed decision: an unreadable tally means "we cannot tell whether a
+// reviewer ran", which is not evidence that the PR is unmergeable, so a green
+// PR whose observation read fails must still merge — and must not claim a
+// reviewer was absent when it simply could not look.
+func TestMergeSessionObservationErrorDoesNotBlockMerge(t *testing.T) {
+	prov := &mergeGateProvider{
+		prStatus:       openCleanPRStatus(),
+		checks:         livePassingChecks(),
+		observationErr: errors.New("gh: rate limited"),
+		mergeErr:       errors.New("merge short-circuited in test"),
+	}
+	var logs bytes.Buffer
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeLogger(&logs))
+
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+		t.Fatalf("an unreadable review observation blocked a green PR: %v", err)
+	}
+	if !prov.mergeCalled {
+		t.Fatal("expected execution to reach MergePR despite the observation read failing")
+	}
+	if strings.Contains(logs.String(), `"review_gate":"no_reviews_observed"`) {
+		t.Errorf("an unreadable observation must not be reported as an absent reviewer (logs: %s)", logs.String())
+	}
+}
+
+// TestMergeSessionPreservesCancellationAfterObservationRead covers the gap the
+// observation read itself opened. It is a FOURTH context-bound provider read,
+// running after the three guarded ones, and it deliberately swallows its own
+// errors so an unreadable tally cannot block an approved merge. A dead context
+// is not an ordinary failure though: swallowing it let the merge run on with an
+// expired context until MergePR failed and surfaced as CodeInternal — the exact
+// misclassification the gate's cancellation handling exists to prevent.
+//
+// All three gate reads succeed here, so only the observation can be responsible
+// for the cancellation.
+func TestMergeSessionPreservesCancellationAfterObservationRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	prov := &mergeGateProvider{
+		prStatus: openCleanPRStatus(),
+		checks:   livePassingChecks(),
+		// The observation dies with the caller, and reports an ordinary error
+		// alongside it — exactly what a killed context-bound `gh` call returns.
+		onObservation:  func(context.Context) { cancel() },
+		observationErr: errors.New("signal: killed"),
+		mergeErr:       errors.New("MergePR must never be reached"),
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	if got := connect.CodeOf(err); got != connect.CodeCanceled {
+		t.Fatalf("MergeSession code = %v, want %v (err: %v)", got, connect.CodeCanceled, err)
+	}
+	if prov.mergeCalled {
+		t.Fatal("a merge must not proceed on an expired context after the observation read")
+	}
+}
+
+// TestMergeSessionOrdinaryObservationFailureStillMerges is the other half of the
+// pair above: with the context ALIVE, an observation error stays swallowed and
+// the merge proceeds. Without this, "preserve cancellation" could be satisfied
+// by blocking on every observation failure, which would turn a log-only signal
+// into a fourth gate read.
+func TestMergeSessionOrdinaryObservationFailureStillMerges(t *testing.T) {
+	prov := &mergeGateProvider{
+		prStatus:       openCleanPRStatus(),
+		checks:         livePassingChecks(),
+		observationErr: errors.New("gh: rate limited"),
+		mergeErr:       errors.New("merge short-circuited in test"),
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	if code := connect.CodeOf(err); code == connect.CodeCanceled || code == connect.CodeDeadlineExceeded {
+		t.Fatalf("a live-context observation failure was reported as cancellation: %v", err)
+	}
+	if !prov.mergeCalled {
+		t.Fatal("an ordinary observation failure must not block the merge")
 	}
 }
 

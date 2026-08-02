@@ -13,6 +13,11 @@ const requiredFiles = [
   '.claude/skills/agent-fast-testing/SKILL.md',
 ]
 
+// CLAUDE.md is loaded into every session, so its length is a standing cost paid by every
+// run. This is a shrink-only ceiling, not a target: to raise it, do so deliberately in the
+// same commit as the growth and record the reason on this line. BOS-636 set it at 150.
+const CLAUDE_MD_MAX_LINES = 150
+
 test('agent guidance points to the generated test command manifest', () => {
   for (const file of requiredFiles) {
     const text = fs.readFileSync(path.join(repoRoot, file), 'utf8')
@@ -20,4 +25,13 @@ test('agent guidance points to the generated test command manifest', () => {
     assert.match(text, /make test-smoke/, file)
     assert.match(text, /make test-affected/, file)
   }
+})
+
+test('CLAUDE.md stays within its line ceiling', () => {
+  const text = fs.readFileSync(path.join(repoRoot, 'CLAUDE.md'), 'utf8')
+  const lines = text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+  assert.ok(
+    lines <= CLAUDE_MD_MAX_LINES,
+    `CLAUDE.md is ${lines} lines, over the ${CLAUDE_MD_MAX_LINES}-line ceiling`,
+  )
 })

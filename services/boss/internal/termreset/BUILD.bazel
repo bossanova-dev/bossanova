@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "termreset",
+    srcs = [
+        "rescue.go",
+        "termreset.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/termreset",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@org_golang_x_term//:term",
+    ],
+)
+
+go_test(
+    name = "termreset_test",
+    srcs = [
+        "rescue_test.go",
+        "termreset_test.go",
+    ],
+    embed = [":termreset"],
+    deps = ["@com_github_charmbracelet_x_ansi//:ansi"],
+)

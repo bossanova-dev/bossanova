@@ -11,6 +11,10 @@
 // The decomposition spec shape (produced by the SKILL, validated here):
 //
 //   {
+//     parentId: "<ISSUE-ID>",                               // NOT optional: serializeEpicSpec
+//                                                           // omits an absent id rather than
+//                                                           // inventing one, so an unbound spec
+//                                                           // can never pass validateSpecIdentity
 //     parent:   { title, goal, keyChanges[] },              // the epic overview
 //     children: [
 //       { key, title, goal, keyChanges[], blockedByKeys[], estimate, priority, layer?, agentFriendly?, openQuestions? },
@@ -19,19 +23,19 @@
 //
 // - `agentFriendly` is the child plan's agent-friendliness call (optional;
 //   default true). It is NOT structurally validated, but it IS persisted in the
-//   spec marker so a fresh-worktree resume can re-derive each ALREADY-created
-//   child's deferred-exposure label (`agent-friendly` vs `needs-human`) without
-//   the `.linear-plans/` scratch.
+//   spec so a fresh-worktree resume can re-derive each ALREADY-created child's
+//   deferred-exposure label (`agent-friendly` vs `needs-human`) without the
+//   `.linear-plans/` scratch.
 // - `openQuestions` is the child plan's list of genuinely controversial open
 //   questions (optional). A non-empty list drives the `agent-question` label
-//   (the Phase 4 contract). The marker persists it as a derived boolean
+//   (the Phase 4 contract). The spec persists it as a derived boolean
 //   `agentQuestion` so a fresh-worktree resume re-applies the label without the
 //   `.linear-plans/` scratch.
 // - `layer` is the child's architectural seam in a vertical/pipeline feature
 //   (optional; one of contract|persistence|producer|read|ui). It drives the
 //   producer-before-consumer soft check (`validateLayering`): a `read`/`ui` child
 //   must be gated by a `producer` sibling (or an external upstream — see R5a
-//   recon). Advisory only — it is persisted in the spec marker but never blocks
+//   recon). Advisory only — it is persisted in the spec but never blocks
 //   decomposition (`validateLayering` returns warnings, not `errors`).
 //   }
 //
@@ -41,11 +45,29 @@
 //   keys and adopts the existing children instead of duplicating them.
 // - `blockedByKeys` declares the intended implementation order WITHIN the epic
 //   (child B blocked by child A) — the DAG boss-epic later schedules against.
-// - The `boss-plan-epic-spec` parent-description marker persists the FULL spec
-//   (parent overview + every child's full metadata), so a headless retry
-//   completes the ORIGINAL decomposition — recreating each MISSING child from
-//   its persisted metadata and wiring the persisted DAG — rather than
-//   re-decomposing from scratch (which could build a DIFFERENT partial epic).
+//
+// WHERE THE SPEC IS STORED. In a native tracker ATTACHMENT on the epic parent,
+// whose body is PLAIN, pretty-printed JSON:
+//
+//   { schemaVersion, parentId, parent: {…}, children: [ … ] }
+//
+// It persists the FULL spec (parent overview + every child's full metadata), so
+// a headless retry completes the ORIGINAL decomposition — recreating each
+// MISSING child from its persisted metadata and wiring the persisted DAG —
+// rather than re-decomposing from scratch (which could build a DIFFERENT partial
+// epic). The attachment is named `specAttachmentFilename()` / titled
+// `specAttachmentTitle(issueId)`, and a recovered spec is only trusted after
+// `validateSpecIdentity` confirms its `schemaVersion` and its `parentId` match
+// the ticket being resumed — an attachment title is a weak sentinel.
+//
+// This REPLACES the old store: a base64 blob inside a `boss-plan-epic-spec` HTML
+// comment appended to the parent's DESCRIPTION. That marker (and an even older
+// raw-JSON one) is still READ by `parseEpicSpec` so epics planned by an earlier
+// build still resume, but nothing writes either form any more. Two consequences
+// of the move: child plan BODIES (`planMarkdown`) are no longer carried at all —
+// they were the only thing that ever made the payload large, so there is no size
+// bound and no truncation left — and the payload no longer needs base64's
+// escaping alphabet, because it is not hiding inside an HTML comment.
 //
 // API SHAPES (chosen + pinned in plan-epic-lib.test.mjs):
 //   validateDecomposition(spec)  -> { ok: boolean, errors: string[] }   (structured, never throws)
@@ -58,12 +80,27 @@
 //   stableChildKey(child, seen?) -> deterministic title-derived slug, unique within
 //     `seen` (a colliding slug gets a `-2`, `-3`, … suffix); the STABLE `key` a
 //     headless retry re-derives identically so resume markers keep matching.
-//   epicSpecMarker(spec)         -> the hidden `<!-- boss-plan-epic-spec:{parent,children:[…]} -->`
-//     marker persisted FIRST in the parent description (the durable FULL spec:
-//     parent overview + every child's full metadata).
-//   parseEpicSpecMarker(description) -> the persisted FULL spec object
-//     `{parent, children:[…]}`, or null when the marker is absent or garbled
-//     (recovers the ORIGINAL spec on a fresh worktree so resume finishes it).
+//   serializeEpicSpec(spec)      -> the spec ATTACHMENT body: pretty-printed JSON
+//     `{schemaVersion, parentId, parent, children:[…]}` (the durable FULL spec:
+//     parent overview + every child's full metadata). No size bound; never throws.
+//   parseEpicSpec(content)       -> the persisted FULL spec object, or null when
+//     the content carries no parsable spec (never throws). Accepts the plain-JSON
+//     attachment body first, then the two LEGACY inline description markers as a
+//     read-only fallback (recovers the ORIGINAL spec on a fresh worktree so
+//     resume finishes it).
+//   specAttachmentFilename()     -> 'epic-spec.json'; SPEC_ATTACHMENT_MIME is its MIME type.
+//   specAttachmentTitle(issueId) -> the attachment title (never `Implementation plan…`).
+//   validateSpecIdentity(spec, issueId) -> { ok, errors } (structured, never throws):
+//     the recovered spec's schemaVersion and parentId must match before it is trusted.
+//   epicChildMarker(key)         -> the `<!-- boss-plan-epic-child:{key} -->` marker
+//     (the canonical byte-format emitter for the per-child resume marker).
+//   parseEpicChildMarker(description) -> the child's persisted marker key, or
+//     null when the argument is not a string or carries no parsable marker.
+//   reconcileEpicChildren(spec, liveChildren) -> { ok, adopted, missing, orphans,
+//     unmarked, repairs, errors } (structured, never throws) — joins the parent
+//     spec's `children[].key` set against each live child's `boss-plan-epic-child`
+//     marker so resume detects retitle-driven key drift (self-healing the
+//     unambiguous 1:1 case) instead of silently duplicating a child.
 
 // Guard constants. MIN is the "fewer ⇒ not an epic, plan as one ticket" floor.
 // MAX is the child-count cap: forcing every child to CHILD_MAX_ESTIMATE points
@@ -74,11 +111,6 @@
 // exact monolith this decomposition exists to avoid.
 export const EPIC_MIN_CHILDREN = 2
 export const EPIC_MAX_CHILDREN = 12
-// Keep the durable parent-description marker comfortably below tracker payload
-// limits. Child plan bodies are optional retry accelerators: when their
-// aggregate would overflow this cap, omit bodies deterministically and let a
-// fresh resume redraft those children before attaching them.
-export const EPIC_SPEC_MARKER_MAX_BYTES = 256 * 1024
 // A single buildable child must land in one reviewable PR, so its estimate is
 // hard-capped here: an honest ≥5 unit is not a child, it is decomposed further.
 // This is the forcing function — a `5`/`8` child is REJECTED by
@@ -87,6 +119,14 @@ export const CHILD_MAX_ESTIMATE = 3
 // Stable tracker-label role. The skill resolves its display name through
 // skill-config.mjs's labelName(config, EPIC_LABEL) accessor.
 export const EPIC_LABEL = 'epic'
+
+// The spec attachment's payload version. Bump it only for a shape change a
+// reader cannot absorb; `validateSpecIdentity` refuses anything else, so an
+// older/newer writer's attachment is never half-applied to a resume.
+export const SPEC_SCHEMA_VERSION = 1
+// The spec attachment is plain JSON — that is the whole point of the store: a
+// human can open it and read the decomposition.
+export const SPEC_ATTACHMENT_MIME = 'application/json'
 
 // `createdIdByKey` reserves this entry for the epic parent's tracker id, so a
 // child may not claim it — otherwise its childId would silently resolve to the
@@ -227,7 +267,7 @@ export function validateDecomposition(spec) {
       )
     }
     // `agentFriendly` is optional (omitted ⇒ agent-friendly default), but when
-    // present it must be a real boolean. epicSpecMarker persists it as
+    // present it must be a real boolean. serializeEpicSpec persists it as
     // `agentFriendly !== false`, so a truthy non-boolean — e.g. the string
     // "false" from a drafted JSON spec — would be coerced to `true` and a crash
     // before deferred exposure would let resume stamp an otherwise needs-human
@@ -459,38 +499,82 @@ export function stableChildKey(child, seen = new Set()) {
   return key
 }
 
-// The hidden marker persisted in the epic PARENT's description carrying the
-// FULL decomposition spec (parent overview + every child's full metadata).
-// Written as the FIRST tracker write (a description-only mutation that does NOT
-// move the parent out of the unplanned state, so the parent-repurpose-LAST atomicity guard
-// still holds), it survives a fresh worktree so a headless retry recovers the
-// ORIGINAL spec and completes it — recreating each MISSING child from its
-// persisted metadata and wiring the persisted DAG — instead of re-decomposing
-// (an LLM re-decomposition could build a DIFFERENT partial epic while believing
-// it is resuming idempotently). ≤ EPIC_MAX_CHILDREN children of small metadata
-// is a few KB — fine inside a Linear description.
-// The spec payload is base64-encoded inside the marker (below). base64's alphabet
-// (`A-Za-z0-9+/=`) cannot contain `-->` or `}`, so a generated title/goal/keyChange
-// text that includes an HTML-comment terminator (e.g. an epic ABOUT comment parsing)
-// can never truncate the marker — the failure mode a raw-JSON payload had.
+// The hidden marker persisted in each CHILD's own description naming the spec
+// `key` it was created from — the resume-side join key against the parent's
+// spec.children[].key set (see reconcileEpicChildren below). Keys are `slugify`
+// output (lowercase alphanumerics and `-`), so that is the exact character
+// class; mirrors EPIC_SPEC_MARKER_RE's tolerance of optional whitespace.
+const EPIC_CHILD_MARKER_RE = /<!--\s*boss-plan-epic-child:([a-z0-9-]+)\s*-->/
+
+/**
+ * The canonical byte-format emitter for the per-child resume marker persisted
+ * in a created child's own description. The single definition of the marker
+ * format — every writer and every parser goes through this (and
+ * `parseEpicChildMarker`) rather than re-deriving the shape inline.
+ * @param {string} key
+ * @returns {string}
+ */
+export function epicChildMarker(key) {
+  return `<!-- boss-plan-epic-child:${key} -->`
+}
+
+/**
+ * Recover a child's persisted marker key from its own description. Finds the
+ * marker embedded anywhere in surrounding description prose. Returns `null`
+ * when `description` is not a string or carries no parsable marker (never
+ * throws) — the caller (reconcileEpicChildren) treats a null result as an
+ * unmarked child and refuses rather than guessing.
+ * @param {string} description
+ * @returns {string|null}
+ */
+export function parseEpicChildMarker(description) {
+  if (typeof description !== 'string') return null
+  const m = description.match(EPIC_CHILD_MARKER_RE)
+  return m ? m[1] : null
+}
+
+// LEGACY, READ-ONLY. Two inline `boss-plan-epic-spec` markers that earlier
+// builds hid in the epic PARENT's description. NOTHING WRITES EITHER ANY MORE —
+// the spec now lives in its own plain-JSON attachment (see serializeEpicSpec) —
+// but an epic planned before that move carries only the marker, so both are kept
+// as a read-only fallback in parseEpicSpec. Deleting one silently strands every
+// in-flight epic of that vintage: it is a regression only the G4/G5 tests catch.
+//
+// The base64 form. Its payload was encoded because the marker lived INSIDE an
+// HTML comment: base64's alphabet (`A-Za-z0-9+/=`) cannot contain `-->` or `}`,
+// so a generated title/goal/keyChange carrying an HTML-comment terminator (an
+// epic ABOUT comment parsing, say) could not truncate the marker. That hazard is
+// what the attachment store removes outright — the spec no longer sits inside a
+// comment, so it no longer needs an escaping alphabet, and the payload can be
+// human-readable JSON.
 const EPIC_SPEC_MARKER_RE = /<!--\s*boss-plan-epic-spec:([A-Za-z0-9+/=]+)\s*-->/
-// Legacy raw-JSON marker (pre-base64). Still parsed on resume so a marker written
-// by an earlier build is recovered rather than lost. Disjoint from the base64 form
-// (a JSON payload starts with `{`, which is not in the base64 alphabet).
+// The oldest raw-JSON marker (pre-base64) — the form that HAD the truncation
+// hazard above. Disjoint from the base64 form (a JSON payload starts with `{`,
+// which is not in the base64 alphabet).
 const EPIC_SPEC_MARKER_LEGACY_RE = /<!--\s*boss-plan-epic-spec:(\{[\s\S]*?\})\s*-->/
 
 /**
- * Serialize the FULL decomposition spec into the durable `boss-plan-epic-spec`
- * parent-description marker: the `parent` overview (title, goal, keyChanges) AND
- * every child's full metadata (key, title, goal, keyChanges, blockedByKeys,
- * estimate, priority, layer, agentFriendly, planMarkdown) — everything needed to finish the original
- * epic WITHOUT re-decomposing, INCLUDING each child's deferred-exposure
- * agent-friendliness call so a resume re-stamps an already-created child
- * correctly. Compact JSON inside the same marker.
+ * Serialize the FULL decomposition spec into the plain-JSON body of the epic
+ * spec ATTACHMENT: `{ schemaVersion, parentId, parent, children }` — the
+ * `parent` overview (title, goal, keyChanges, priority) AND every child's full
+ * metadata (key, title, goal, keyChanges, blockedByKeys, estimate, priority,
+ * layer, agentFriendly, agentQuestion) — everything needed to finish the
+ * original epic WITHOUT re-decomposing, INCLUDING each child's
+ * deferred-exposure agent-friendliness call so a resume re-stamps an
+ * already-created child correctly.
+ *
+ * Pretty-printed with a two-space indent, because the attachment is meant to be
+ * READ: a human opening it sees the decomposition, not a base64 blob. There is
+ * no size bound and no truncation — the spec is a few KB of metadata now that
+ * child plan bodies are not part of it.
+ *
+ * `parentId` comes from `spec.parentId` and is OMITTED (JSON drops an undefined
+ * value) when absent or not a non-empty string — never fabricated, because it is
+ * what `validateSpecIdentity` trusts to bind the attachment to its ticket.
  * @param {object} spec
- * @returns {string}
+ * @returns {string} the attachment body: pretty-printed JSON
  */
-export function epicSpecMarker(spec) {
+export function serializeEpicSpec(spec) {
   const parentSrc = spec?.parent && typeof spec.parent === 'object' ? spec.parent : {}
   const parent = {
     title: parentSrc.title,
@@ -515,7 +599,7 @@ export function epicSpecMarker(spec) {
     // resume (whose `.linear-plans/` child plans are gone) exposes each
     // ALREADY-created-but-unexposed child correctly — a child whose plan
     // concluded it needs a human (`agentFriendly:false`) is re-stamped
-    // `needs-human`, never `agent-friendly`. Without this the marker carried
+    // `needs-human`, never `agent-friendly`. Without this the spec carried
     // only `priority`, so a crash in the create→expose window left resume
     // unable to recover the call. Default true (agent-friendly) per the
     // plan-contract convention when the spec omits it; only an explicit
@@ -529,95 +613,354 @@ export function epicSpecMarker(spec) {
     // carried as a boolean on a re-serialized recovered spec. Default false.
     agentQuestion:
       (Array.isArray(c?.openQuestions) && c.openQuestions.length > 0) || c?.agentQuestion === true,
-    // The shell-first flow can crash after a child exists but before its native
-    // attachment finalizes. Persist the validated plan body with the rest of the
-    // resume spec so a fresh worktree can attach that exact plan to an adopted
-    // shell rather than exposing a child with no canonical artifact.
-    planMarkdown: typeof c?.planMarkdown === 'string' ? c.planMarkdown : undefined,
   }))
-  // Base64-encode the compact JSON so no generated text (a title/goal/keyChange
-  // containing `} -->`) can inject an HTML-comment terminator and truncate the
-  // marker. Full child plans are persisted only while the resulting marker fits
-  // safely in a tracker description; omitted bodies trigger the existing resume
-  // redraft path rather than risking a failed first save_issue.
-  const encode = () => Buffer.from(JSON.stringify({ parent, children }), 'utf8').toString('base64')
-  let payload = encode()
-  for (
-    let index = children.length - 1;
-    Buffer.byteLength(payload, 'utf8') > EPIC_SPEC_MARKER_MAX_BYTES && index >= 0;
-    index -= 1
-  ) {
-    delete children[index].planMarkdown
-    payload = encode()
+  const payload = {
+    schemaVersion: SPEC_SCHEMA_VERSION,
+    // Bind the attachment to its ticket. Omitted rather than invented when the
+    // spec carries no usable id — validateSpecIdentity then refuses, which is the
+    // correct outcome: an unbound spec must not be trusted as this epic's.
+    parentId: isNonEmptyString(spec?.parentId) ? spec.parentId : undefined,
+    parent,
+    children,
   }
-  if (Buffer.byteLength(payload, 'utf8') > EPIC_SPEC_MARKER_MAX_BYTES) {
-    throw new Error(
-      `epic specification exceeds ${EPIC_SPEC_MARKER_MAX_BYTES}-byte tracker marker limit`,
-    )
-  }
-  return `<!-- boss-plan-epic-spec:${payload} -->`
+  return JSON.stringify(payload, null, 2)
 }
 
 /**
- * Recover the persisted FULL spec from a parent description. Returns the parsed
- * `{ parent, children:[…] }` object, or `null` when the marker is absent or
- * garbled (malformed JSON, or a `children` field that is not an array) — the
- * caller then falls back to enumerating children by marker. Resume drafts each
- * missing child from its recovered metadata and wires the recovered DAG, so it
- * completes the ORIGINAL spec rather than a fresh re-decomposition.
- * @param {string} description
- * @returns {{parent: object, children: object[]}|null}
+ * Recover the persisted FULL spec from spec CONTENT — normally the body of the
+ * epic parent's spec attachment, but a parent DESCRIPTION carrying one of the
+ * two legacy inline markers works too. Accepted in order:
+ *   1. the whole content as plain JSON (the current attachment body);
+ *   2. the LEGACY base64 inline `boss-plan-epic-spec` marker;
+ *   3. the LEGACY raw-JSON inline `boss-plan-epic-spec` marker.
+ * Returns the parsed `{ …, parent, children:[…] }` object, or `null` when the
+ * content carries no usable spec — non-string, absent, malformed JSON, a
+ * `children` that is not an array, or a missing/non-object `parent`. NEVER
+ * throws: the caller then falls back to enumerating children by marker.
+ *
+ * Resume drafts each missing child from its recovered metadata and wires the
+ * recovered DAG, so it completes the ORIGINAL spec rather than a fresh
+ * re-decomposition. A recovered spec must still pass `validateSpecIdentity`
+ * before it is trusted as THIS ticket's.
+ * @param {string} content  the spec attachment body (or a legacy description)
+ * @returns {{schemaVersion?: number, parentId?: string, parent: object, children: object[]}|null}
  */
-export function parseEpicSpecMarker(description) {
-  if (typeof description !== 'string') return null
-  // Prefer the base64 marker; fall back to a legacy raw-JSON marker so a spec
-  // written by an earlier build still resumes. The two forms are disjoint, so at
-  // most one matches.
-  let json = null
-  const m = description.match(EPIC_SPEC_MARKER_RE)
-  if (m) {
-    const decoded = Buffer.from(m[1], 'base64').toString('utf8')
+export function parseEpicSpec(content) {
+  if (typeof content !== 'string') return null
+  // Candidate payloads in acceptance order. The first one that normalizes into a
+  // usable spec wins; a candidate that does not simply falls through, so a
+  // description carrying an unusable inline marker AND a usable one still
+  // resumes.
+  const candidates = []
+  // 1. The CURRENT form: the whole content IS the attachment body, plain JSON.
+  candidates.push(content)
+  // 2. LEGACY, read-only: the base64 inline marker an earlier build wrote into
+  //    the parent description. Nothing writes this any more.
+  const encoded = content.match(EPIC_SPEC_MARKER_RE)
+  if (encoded) {
+    const decoded = Buffer.from(encoded[1], 'base64').toString('utf8')
     // Guard against a stray base64-looking match that does not round-trip to the
     // same bytes (e.g. non-canonical padding) — treat it as no base64 marker and
     // let the legacy fallback try.
-    if (Buffer.from(decoded, 'utf8').toString('base64') === m[1]) json = decoded
+    if (Buffer.from(decoded, 'utf8').toString('base64') === encoded[1]) candidates.push(decoded)
   }
-  if (json == null) {
-    const legacy = description.match(EPIC_SPEC_MARKER_LEGACY_RE)
-    if (legacy) json = legacy[1]
+  // 3. LEGACY, read-only: the oldest raw-JSON inline marker (pre-base64).
+  const legacy = content.match(EPIC_SPEC_MARKER_LEGACY_RE)
+  if (legacy) candidates.push(legacy[1])
+
+  for (const json of candidates) {
+    const spec = normalizeParsedSpec(json)
+    if (spec != null) return spec
   }
-  if (json == null) return null
+  return null
+}
+
+/**
+ * Parse one candidate payload and normalize it, or return `null` when it is not
+ * a usable spec. Never throws — `parseEpicSpec`'s no-throw contract rests here.
+ * @param {string} json
+ * @returns {object|null}
+ */
+function normalizeParsedSpec(json) {
+  let parsed
   try {
-    const parsed = JSON.parse(json)
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.children)) return null
-    // Normalize the per-child agent-friendliness decision to a definite boolean
-    // so the resume/exposure path never has to guess. An OLD marker (written
-    // before this field was persisted) simply lacks it and degrades to true
-    // (agent-friendly) — the plan-contract default; only an explicit `false`
-    // recovers a needs-human child. Non-object entries are left untouched
-    // (callers already tolerate a garbled child list).
-    for (const child of parsed.children) {
-      if (child && typeof child === 'object') {
-        child.agentFriendly = child.agentFriendly !== false
-        // Normalize the open-questions decision to a definite boolean too. An OLD
-        // marker lacks it and degrades to false (no `agent-question`); only an
-        // explicit `true` re-applies the label on resume.
-        child.agentQuestion = child.agentQuestion === true
-        // Old markers legitimately lack the body. Callers must redraft before
-        // finalizing an adopted shell in that case; never expose it planless.
-        if (typeof child.planMarkdown !== 'string') delete child.planMarkdown
-        // Normalize the architectural seam: keep a known layer, drop anything
-        // else. An OLD marker (or a garbled value) simply carries no `layer` key,
-        // so the child opts out of the producer-before-consumer soft check on
-        // resume (delete, not set-undefined, so a recovered child stays minimal).
-        if (!CHILD_LAYERS.has(child.layer)) delete child.layer
-      }
-    }
-    // Older markers may carry no parent priority. Choose the
-    // defined Medium default so an older in-progress epic can resume safely.
-    if (!TODO_PRIORITIES.has(parsed.parent?.priority)) parsed.parent.priority = 3
-    return parsed
+    parsed = JSON.parse(json)
   } catch {
     return null
   }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.children)) return null
+  // A spec with no parent overview cannot recreate the epic parent, so it is
+  // refused outright rather than repaired: an invented parent object would be
+  // indistinguishable from a real one downstream, and the parent-priority
+  // default below would otherwise assign through `undefined` and throw. Refusing
+  // is also what the caller already handles — it is the same "garbled payload"
+  // path as malformed JSON.
+  if (!parsed.parent || typeof parsed.parent !== 'object' || Array.isArray(parsed.parent)) {
+    return null
+  }
+  // Normalize the per-child agent-friendliness decision to a definite boolean
+  // so the resume/exposure path never has to guess. An OLD marker (written
+  // before this field was persisted) simply lacks it and degrades to true
+  // (agent-friendly) — the plan-contract default; only an explicit `false`
+  // recovers a needs-human child. Non-object entries are left untouched
+  // (callers already tolerate a garbled child list).
+  for (const child of parsed.children) {
+    if (child && typeof child === 'object') {
+      child.agentFriendly = child.agentFriendly !== false
+      // Normalize the open-questions decision to a definite boolean too. An OLD
+      // marker lacks it and degrades to false (no `agent-question`); only an
+      // explicit `true` re-applies the label on resume.
+      child.agentQuestion = child.agentQuestion === true
+      // `planMarkdown` is no longer part of the spec shape at all. A legacy
+      // marker may still carry one; drop it UNCONDITIONALLY so it can never leak
+      // back to a caller. The documented recovery for an adopted shell with no
+      // canonical artifact is an unconditional redraft with `allowEpic:false`.
+      delete child.planMarkdown
+      // Normalize the architectural seam: keep a known layer, drop anything
+      // else. An OLD marker (or a garbled value) simply carries no `layer` key,
+      // so the child opts out of the producer-before-consumer soft check on
+      // resume (delete, not set-undefined, so a recovered child stays minimal).
+      if (!CHILD_LAYERS.has(child.layer)) delete child.layer
+    }
+  }
+  // Older specs may carry no parent priority. Choose the defined Medium default
+  // so an older in-progress epic can resume safely.
+  if (!TODO_PRIORITIES.has(parsed.parent.priority)) parsed.parent.priority = 3
+  return parsed
+}
+
+/**
+ * The spec attachment's filename. Constant, so a resume can find the attachment
+ * by name rather than by scanning bodies.
+ * @returns {string}
+ */
+export function specAttachmentFilename() {
+  return 'epic-spec.json'
+}
+
+/**
+ * The spec attachment's title. It deliberately does NOT begin with
+ * `Implementation plan`: `bs-epic-lib.mjs`'s `normalizeTicket` identifies a
+ * ticket's PLAN attachment by exactly that prefix, so a spec attachment titled
+ * that way would be mistaken for the ticket's implementation plan.
+ * @param {string} issueId
+ * @returns {string}
+ */
+export function specAttachmentTitle(issueId) {
+  return `Epic spec (${issueId})`
+}
+
+/**
+ * Confirm a recovered spec really is THIS ticket's, at THIS schema version.
+ * Returns the repo's standard structured `{ ok, errors }` and never throws.
+ *
+ * The attachment TITLE is only a weak sentinel — a human can rename an
+ * attachment to anything, and any attachment body can be handed to
+ * `parseEpicSpec` — so trust is established by the payload itself: the
+ * `schemaVersion` must be exactly `SPEC_SCHEMA_VERSION` (a reader must not
+ * half-apply a shape it does not know), and `parentId` must be a non-empty
+ * string equal to the ticket being resumed (so a spec copied or mis-attached
+ * from another epic can never drive this one's child creation).
+ * @param {object} spec  a spec recovered via parseEpicSpec
+ * @param {string} issueId  the tracker id of the epic parent being resumed
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateSpecIdentity(spec, issueId) {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    return { ok: false, errors: ['epic spec must be an object'] }
+  }
+  const errors = []
+  if (spec.schemaVersion !== SPEC_SCHEMA_VERSION) {
+    errors.push(
+      `epic spec schemaVersion ${JSON.stringify(spec.schemaVersion)} is not the expected ` +
+        `${SPEC_SCHEMA_VERSION}`,
+    )
+  }
+  if (!isNonEmptyString(spec.parentId)) {
+    errors.push('epic spec is missing a parentId, so it cannot be bound to a ticket')
+  } else if (spec.parentId !== issueId) {
+    errors.push(`epic spec parentId "${spec.parentId}" does not match ticket "${issueId}"`)
+  }
+  return { ok: errors.length === 0, errors }
+}
+
+// The empty structured refusal a caller-facing failure returns: no adoption or
+// create-list is trustworthy when `ok` is false, so `missing` (the create-list
+// resume would act on) is ALWAYS `[]` here — never the full spec key set. That
+// is the whole-epic-duplication guard: a caller that degrades a bad
+// `liveChildren` argument to "no children exist" would otherwise see every
+// spec key reported missing and duplicate the entire epic.
+const refuse = (errors, extra = {}) => ({
+  ok: false,
+  adopted: [],
+  missing: [],
+  orphans: [],
+  unmarked: [],
+  repairs: [],
+  errors,
+  ...extra,
+})
+
+/**
+ * Join the epic parent's persisted spec (`spec.children[].key`) against each
+ * live child's own `boss-plan-epic-child` marker key, so an idempotent resume
+ * detects retitle-driven key drift instead of silently duplicating a child.
+ * Pure and never throws; returns a structured result exactly like
+ * `validateDecomposition` does:
+ *
+ *   { ok, adopted: [{key,id}], missing: [key], orphans: [{key,id,title}],
+ *     unmarked: [{id,title}], repairs: [{specKey,liveKey,id}], errors: [string] }
+ *
+ * `liveChildren` is the `[{ id, title, description }]` array a tracker's
+ * "list children of this parent" call returns.
+ *
+ * The invariant this enforces: in an undrifted epic every live child was
+ * created FROM a spec key, so `liveKeys ⊆ specKeys`. A live child whose marker
+ * key is NOT a spec key is structurally impossible — an ORPHAN — and is a
+ * zero-false-positive drift signal. `specKeys \ liveKeys` (`missing`) is the
+ * honest create-list: a legitimately partially-built epic is normal, not an
+ * error.
+ *
+ * `errors` is non-empty when, and only when, at least one of:
+ *   - `spec` is not an object, or `spec.children` is not an array (cannot
+ *     verify) — refuse, `missing: []`.
+ *   - `liveChildren` is not an array (the whole-epic-duplication hazard: a
+ *     caller that passed the raw tool envelope, e.g. `{ nodes: [] }`, or
+ *     `undefined` must NOT degrade to "no children exist") — refuse,
+ *     `missing: []`.
+ *   - any live child carries no parsable epic-child marker (`unmarked`
+ *     non-empty).
+ *   - two live children carry the same marker key.
+ *   - `orphans` is non-empty and the unambiguous 1:1 repair does not apply
+ *     (i.e. NOT (`missing.length === 1 && orphans.length === 1`), evaluated on
+ *     the PRE-repair sets).
+ *
+ * On ANY refusal, `adopted`/`missing`/`repairs` are all `[]` — a caller must
+ * only ever act on those three fields when `ok` is true. `orphans`/`unmarked`
+ * are still populated with the real diagnostic data (except on the two
+ * structural refusals above, where nothing about `liveChildren` can be
+ * trusted at all) so a run log names the offending keys/ids.
+ *
+ * The unambiguous rename (exactly one missing spec key and exactly one
+ * orphan, evaluated before repair): `repairs` carries the single
+ * `{ specKey, liveKey, id }` pair; the orphan is reported in `adopted` under
+ * its SPEC key; `missing` and `orphans` are emptied; `ok` is `true`. This
+ * function performs NO mutation of `spec` — it is pure; it only reports. The
+ * caller repairs the CHILD, not the spec: it rewrites that child's own
+ * description marker to `epicChildMarker(specKey)`, replacing only the marker
+ * substring and preserving the rest of that description's bytes (the tracker
+ * save REPLACES the description, so a bare marker-only save would wipe the
+ * child's plan body). The spec key stays
+ * canonical because `specKey` is the namespace `adopted` reports under and the
+ * one every sibling's `blockedByKeys` and `epicWiringPlan` resolve through —
+ * re-pointing the spec at `liveKey` would strand those refs and throw at
+ * wiring, after the children already exist.
+ *
+ * Ordering is deterministic: `missing` in spec-children order; `adopted` /
+ * `orphans` / `unmarked` in `liveChildren` order.
+ * @param {{children?: object[]}} spec
+ * @param {{id: string, title?: string, description?: string}[]} liveChildren
+ * @returns {{ok: boolean, adopted: object[], missing: string[], orphans: object[], unmarked: object[], repairs: object[], errors: string[]}}
+ */
+export function reconcileEpicChildren(spec, liveChildren) {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.children)) {
+    return refuse(['epic spec must be an object with a children array; cannot verify against it'])
+  }
+  if (!Array.isArray(liveChildren)) {
+    return refuse([
+      'liveChildren must be an array of live child records; refusing rather than treating a ' +
+        'non-array as "no children exist", which would report the entire spec as missing and ' +
+        'duplicate the whole epic',
+    ])
+  }
+
+  const specKeys = spec.children.filter((c) => c && isNonEmptyString(c.key)).map((c) => c.key)
+  const specKeySet = new Set(specKeys)
+
+  // Classify every live child once, in `liveChildren` order, and keep that
+  // order in `classified` rather than filtering straight into `adopted` /
+  // `orphans`. The unambiguous-repair branch below needs to re-derive
+  // `adopted` from this SAME order (the repaired entry takes the orphan's
+  // original position, not the tail) — a caller that walks `adopted` to
+  // report or act on children must see `liveChildren` order regardless of
+  // whether an entry got there by aligning or by repair.
+  const classified = []
+  const liveKeyOwners = new Map() // marker key -> first live id that claimed it
+  const duplicateKeys = new Set()
+
+  for (const live of liveChildren) {
+    const id = live?.id
+    const title = live?.title
+    const key = parseEpicChildMarker(live?.description)
+    if (key == null) {
+      classified.push({ type: 'unmarked', id, title })
+      continue
+    }
+    if (liveKeyOwners.has(key)) {
+      duplicateKeys.add(key)
+    } else {
+      liveKeyOwners.set(key, id)
+    }
+    if (specKeySet.has(key)) {
+      classified.push({ type: 'adopted', key, id })
+    } else {
+      classified.push({ type: 'orphan', key, id, title })
+    }
+  }
+
+  const unmarked = classified
+    .filter((c) => c.type === 'unmarked')
+    .map(({ id, title }) => ({ id, title }))
+  const orphans = classified
+    .filter((c) => c.type === 'orphan')
+    .map(({ key, id, title }) => ({ key, id, title }))
+  const adopted = classified.filter((c) => c.type === 'adopted').map(({ key, id }) => ({ key, id }))
+
+  const markerErrors = []
+  for (const u of unmarked) {
+    markerErrors.push(`live child "${u.id}" carries no epic-child marker`)
+  }
+  for (const key of duplicateKeys) {
+    markerErrors.push(`multiple live children share epic-child marker key "${key}"`)
+  }
+  if (markerErrors.length > 0) {
+    return refuse(markerErrors, { orphans, unmarked })
+  }
+
+  const adoptedKeys = new Set(adopted.map((a) => a.key))
+  const missing = specKeys.filter((k) => !adoptedKeys.has(k))
+
+  if (orphans.length === 0) {
+    return { ok: true, adopted, missing, orphans, unmarked, repairs: [], errors: [] }
+  }
+
+  if (missing.length === 1 && orphans.length === 1) {
+    const specKey = missing[0]
+    const orphan = orphans[0]
+    // Re-derive `adopted` from `classified` (liveChildren order) rather than
+    // appending the repaired entry to the tail of the already-built
+    // `adopted` array, so the repaired entry lands at the orphan's original
+    // position when the orphan precedes an aligned child.
+    const repairedAdopted = classified
+      .filter((c) => c.type === 'adopted' || c.type === 'orphan')
+      .map((c) => (c.type === 'orphan' ? { key: specKey, id: c.id } : { key: c.key, id: c.id }))
+    return {
+      ok: true,
+      adopted: repairedAdopted,
+      missing: [],
+      orphans: [],
+      unmarked,
+      repairs: [{ specKey, liveKey: orphan.key, id: orphan.id }],
+      errors: [],
+    }
+  }
+
+  const orphanKeys = orphans.map((o) => o.key).join(', ')
+  return refuse(
+    [
+      `epic has ${orphans.length} orphaned child marker key(s) not present in the spec ` +
+        `(ambiguous drift, refusing to guess): ${orphanKeys}`,
+    ],
+    { orphans, unmarked },
+  )
 }

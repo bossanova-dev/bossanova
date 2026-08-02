@@ -231,6 +231,12 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // agent-agnostic (it always offers the suffix) means this gate lives in the
 // plugin that owns codex's CLI shape, not in the host.
 //
+// That no-op is DECLARED rather than silent: the response sets
+// append_system_prompt_support = NONE, so bossd can report the instruction
+// classes it built that never reached this argv instead of assuming they
+// landed. Flip the declaration to IN_ARGV in the same change that starts
+// appending the flag, never before.
+//
 // req.McpConfigPath IS consumed, but differently from claude: codex has no
 // --mcp-config flag, so codexMcpOverrideArgs translates the JSON config bossd
 // wrote (in app-data, never the worktree) into repeatable `-c mcp_servers.boss.*`
@@ -311,6 +317,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		ReadyMarker:          "›",
 		CommandPrefix:        "$",
 		ConsumesInitialInput: initialInput != "",
+		// codex has no append-system-prompt flag, so the suffix never reaches
+		// argv above. Declaring NONE lets bossd say so out loud.
+		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
 	}, nil
 }
 

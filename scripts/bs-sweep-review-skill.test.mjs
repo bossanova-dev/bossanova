@@ -165,7 +165,6 @@ test('triage runs in an awaited general-purpose subagent, never run_in_backgroun
       countOf(skill, 'subagent_type: general-purpose') >= 1,
       `${label} must name the general-purpose subagent type`,
     )
-    assert.ok(countOf(skill, '<!-- tier: opus -->') >= 1, `${label} dispatch must be tier: opus`)
     assert.ok(skill.includes('run_in_background'), `${label} must state the never-background rule`)
     assert.match(
       skill,
@@ -173,6 +172,43 @@ test('triage runs in an awaited general-purpose subagent, never run_in_backgroun
       `${label} must forbid run_in_background`,
     )
     assert.ok(skill.includes('await'), `${label} dispatches must say they are awaited`)
+  }
+})
+
+// Split SKILL.md into its `## ` phase sections and return the one whose heading starts
+// with `prefix` (e.g. "Phase 2:").
+function phaseSection(skill, prefix) {
+  return skill.split(/\n## /).find((section) => section.startsWith(prefix))
+}
+
+// The triage leg used to be pinned by `countOf(skill, '<!-- tier: opus -->') >= 1`. That was a
+// count threshold over the WHOLE file across three unrelated occurrences (overview bullet,
+// dispatch, red-flags row), so it could stay green while the dispatch itself said something
+// else entirely. It is now a per-section structural assertion in the
+// bs-sweep-debt-skill.test.mjs shape: the triage section carries a real provider-guarded
+// sonnet directive, and no `tier: opus` claim survives anywhere in the file.
+test('the triage dispatch carries a provider-guarded sonnet model directive (both mirrors)', () => {
+  for (const [label, skill] of BOTH) {
+    const triage = phaseSection(skill, 'Phase 2:')
+    assert.ok(triage, `${label} must have a Phase 2 triage section`)
+    // Adjacent, not merely both present: the section also carries a `<!-- tier: sonnet -->`
+    // annotation and prose about dropping "the `model:` line", so two independent matches
+    // stay green on a section whose directive was deleted.
+    assert.match(
+      triage,
+      /model:\s*"?sonnet\b/,
+      `${label} Phase 2 must carry a "model: sonnet" directive, not just the tier annotation`,
+    )
+    assert.match(triage, /\$BOSS_AGENT/, `${label} Phase 2 directive must be $BOSS_AGENT-guarded`)
+    assert.match(triage, /\bclaude\b/, `${label} Phase 2 guard must reference lowercase claude`)
+    assert.match(triage, /\bcodex\b/, `${label} Phase 2 guard must cover the codex-omit case`)
+    // The whole-file claim must move with the dispatch: leaving the overview bullet or the
+    // red-flags row asserting `tier: opus` is the self-contradiction the old count allowed.
+    assert.equal(
+      countOf(skill, '<!-- tier: opus -->'),
+      0,
+      `${label} must carry no tier: opus annotation once the triage leg is routed`,
+    )
   }
 })
 

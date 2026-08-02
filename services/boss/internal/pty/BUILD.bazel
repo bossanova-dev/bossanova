@@ -15,7 +15,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/statusdetect",
-        "@com_github_charmbracelet_x_ansi//:ansi",
+        "//services/boss/internal/termreset",
         "@com_github_creack_pty_v2//:pty",
         "@org_golang_x_term//:term",
     ],

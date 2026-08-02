@@ -654,6 +654,32 @@ message BuildInteractiveCommandResponse {
   // True when argv embeds initial_prompt/initial_command so the daemon must
   // not inject input into the tmux pane after launch.
   bool consumes_initial_input = 4;
+  // The runner's declaration about BuildInteractiveCommandRequest
+  // .append_system_prompt for THIS launch. The host compares it against the
+  // instruction classes it built and logs one structured record naming what
+  // was dropped; it never fails the spawn and never alters argv.
+  //
+  // The declaration is atomic for the whole suffix: append_system_prompt is a
+  // single string, so there is no partial support to negotiate. The class list
+  // the host logs describes what bossd BUILT (and therefore what was dropped),
+  // not a per-class handshake.
+  AppendSystemPromptSupport append_system_prompt_support = 5;
+}
+
+// AppendSystemPromptSupport is a runner's per-launch declaration about
+// BuildInteractiveCommandRequest.append_system_prompt. It describes the ARGV
+// the runner just returned — it is NOT a receipt that the launched binary
+// accepted, retained or applied the instructions.
+enum AppendSystemPromptSupport {
+  // The runner did not declare (e.g. a plugin binary older than this field).
+  // The host treats this exactly like NONE and says so in the log, so a
+  // runner that forgets to declare is loud by default.
+  APPEND_SYSTEM_PROMPT_SUPPORT_UNSPECIFIED = 0;
+  // The returned argv carries the instructions (e.g. claude's
+  // --append-system-prompt).
+  APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV = 1;
+  // The runner deliberately drops them; its CLI has no append surface.
+  APPEND_SYSTEM_PROMPT_SUPPORT_NONE = 2;
 }
 
 message ResolveInteractiveSessionIDRequest {

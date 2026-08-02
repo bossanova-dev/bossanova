@@ -2963,6 +2963,18 @@ components:
       description: |-
         AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for
          every live daemon that serves it. Web-safe: carries no Repo and no API keys.
+    bossanova.v1.AppendSystemPromptSupport:
+      type: string
+      title: AppendSystemPromptSupport
+      enum:
+        - APPEND_SYSTEM_PROMPT_SUPPORT_UNSPECIFIED
+        - APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
+        - APPEND_SYSTEM_PROMPT_SUPPORT_NONE
+      description: |-
+        AppendSystemPromptSupport is a runner's per-launch declaration about
+         BuildInteractiveCommandRequest.append_system_prompt. It describes the ARGV
+         the runner just returned — it is NOT a receipt that the launched binary
+         accepted, retained or applied the instructions.
     bossanova.v1.ArchiveSessionCommand:
       type: object
       properties:
@@ -3544,6 +3556,19 @@ components:
           description: |-
             True when argv embeds initial_prompt/initial_command so the daemon must
              not inject input into the tmux pane after launch.
+        appendSystemPromptSupport:
+          title: append_system_prompt_support
+          description: |-
+            The runner's declaration about BuildInteractiveCommandRequest
+             .append_system_prompt for THIS launch. The host compares it against the
+             instruction classes it built and logs one structured record naming what
+             was dropped; it never fails the spawn and never alters argv.
+
+             The declaration is atomic for the whole suffix: append_system_prompt is a
+             single string, so there is no partial support to negotiate. The class list
+             the host logs describes what bossd BUILT (and therefore what was dropped),
+             not a per-class handshake.
+          $ref: '#/components/schemas/bossanova.v1.AppendSystemPromptSupport'
       title: BuildInteractiveCommandResponse
       additionalProperties: false
     bossanova.v1.CallbackInterest:

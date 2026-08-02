@@ -397,6 +397,90 @@ func TestFetchIssues_NonNumericQueryNoNumberFilter(t *testing.T) {
 	}
 }
 
+func TestFetchIssues_StateFilterIncludesBacklog(t *testing.T) {
+	// Backlog issues used to be invisible in the new-session picker because
+	// the state filter only asked for "unstarted"/"started". Pin the exact
+	// state-type set — deleting "backlog" again must turn this red — and pin
+	// the explicit page size, which exists to mitigate (not eliminate) the
+	// widened candidate set evicting older active work from the single,
+	// un-paginated page.
+	// Hard-coded rather than read from defaultIssuePageSize: the wire value is
+	// what matters, and deriving it from the constant would make any future
+	// change to the constant silently self-approving.
+	const wantPageSize = float64(100)
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "empty query", query: ""},
+		{name: "non-empty query", query: "auth bug"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var receivedReq graphqlRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&receivedReq)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(makeEmptyResponse())
+			}))
+			defer server.Close()
+
+			client := &linearClient{apiKey: "k", endpoint: server.URL}
+			if _, err := client.FetchIssues(context.Background(), tc.query); err != nil {
+				t.Fatalf("FetchIssues failed: %v", err)
+			}
+
+			filter, ok := receivedReq.Variables["filter"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected filter variable to be a map, got %#v", receivedReq.Variables["filter"])
+			}
+			state, ok := filter["state"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected filter.state to be a map, got %#v", filter["state"])
+			}
+			stateType, ok := state["type"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected filter.state.type to be a map, got %#v", state["type"])
+			}
+			inRaw, ok := stateType["in"].([]any)
+			if !ok {
+				t.Fatalf("expected filter.state.type.in to be a list, got %#v", stateType["in"])
+			}
+
+			got := map[string]bool{}
+			for _, v := range inRaw {
+				s, ok := v.(string)
+				if !ok {
+					t.Fatalf("expected filter.state.type.in entries to be strings, got %#v", v)
+				}
+				got[s] = true
+			}
+			for _, want := range []string{"backlog", "unstarted", "started"} {
+				if !got[want] {
+					t.Errorf("filter.state.type.in missing %q: %#v", want, inRaw)
+				}
+			}
+			// Finished and un-triaged work stays out: you don't start a
+			// session on a completed issue, and triage is Linear's
+			// un-committed inbox.
+			for _, unwanted := range []string{"triage", "completed", "canceled"} {
+				if got[unwanted] {
+					t.Errorf("filter.state.type.in must not contain %q: %#v", unwanted, inRaw)
+				}
+			}
+			if len(inRaw) != 3 {
+				t.Errorf("filter.state.type.in = %#v, want exactly 3 entries", inRaw)
+			}
+
+			if gotFirst := receivedReq.Variables["first"]; gotFirst != wantPageSize {
+				t.Errorf("variables.first = %#v, want %v", gotFirst, wantPageSize)
+			}
+		})
+	}
+}
+
 func TestFetchIssues_UsesCorrectEndpoint(t *testing.T) {
 	endpointChecked := false
 	emptyResponse := makeEmptyResponse()

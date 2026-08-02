@@ -184,8 +184,12 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if s.runner != nil && s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	// The declaration is set in the same branch that appends the flag, so it
+	// cannot drift from what actually reached argv: no append, no claim.
+	appendSystemPromptSupport := bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_UNSPECIFIED
 	if sp := req.GetAppendSystemPrompt(); sp != "" {
 		args = append(args, "--append-system-prompt", sp)
+		appendSystemPromptSupport = bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
 	}
 	if model := req.GetModel(); model != "" {
 		args = append(args, "--model", model)
@@ -209,9 +213,10 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		loginShell = s.runner.loginShell
 	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv:          loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
-		ReadyMarker:   "❯",
-		CommandPrefix: "/",
+		Argv:                      loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
+		ReadyMarker:               "❯",
+		CommandPrefix:             "/",
+		AppendSystemPromptSupport: appendSystemPromptSupport,
 	}, nil
 }
 

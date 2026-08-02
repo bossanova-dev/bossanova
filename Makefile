@@ -155,9 +155,14 @@ codex-skills:
 codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
 
-## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into each skill's toolbox/.
+## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into every committed vendored
+## root in one command: the repo-local .claude/skills/ copies, the embedded skillinstall
+## payload, and — via copy-skills — the bossd-plugin-claude mirror of that payload. Vendoring
+## without the mirror step leaves the plugin copy stale and fails the parity gate, so the two
+## are chained here rather than left to be remembered separately (the gen-skill idiom).
 vendor-toolbox:
 	node scripts/vendor-toolbox.mjs
+	$(MAKE) copy-skills
 
 ## vendor-toolbox-check: Fail if any vendored skill toolbox has drifted.
 vendor-toolbox-check:
@@ -1000,11 +1005,21 @@ format:
 ## (syncpack), and ALL markdown (prettier). Slow (was `make format`); CI/release and
 ## BOS-372's sweep are the hard gate.
 format-all:
-	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+# `set -e` on the multi-command recipe lines (the house form, cf. readme-gifs): a shell
+# `for`/`if` block exits with its LAST command's status, so without it a module whose
+# gofmt/prettier fails is skipped and `make format-all` still exits 0. bs-sweep-prettify's
+# Phase 1 keys its "broken toolchain -> open no PR" abort on this target's exit status, so a
+# swallowed failure would have it commit and open a PR for a partially-formatted tree while
+# claiming the toolchain was healthy. Structural, not positional: a command added to either
+# block later is covered without anyone remembering to append `|| exit 1`. The single-command
+# blocks below need nothing — their one command is already the block's exit status.
+	@set -e; \
+	if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm syncpack format; \
 		pnpm syncpack fix; \
 	fi
-	@for mod in $(MODULES); do \
+	@set -e; \
+	for mod in $(MODULES); do \
 		echo "==> Formatting $$mod"; \
 		$(MAKE) -C $$mod format; \
 	done

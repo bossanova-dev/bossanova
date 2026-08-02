@@ -89,14 +89,16 @@ func splitNWO(nwo string) (owner, repo string, ok bool) {
 // PR and returns the set of bot authors (from botUsers) that have at least one
 // unresolved thread.
 //
-// On any error it fails closed: returns nil so that no promotions fire.
-// A missed promotion self-corrects on the next successful poll (2 min).
-func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) map[string]bool {
+// On any error it fails closed by returning an error wrapping
+// vcs.ErrReviewThreadsUnverified: the thread state is unknown, so callers must
+// not treat the absence of promotions as "nothing is blocking". The merge gate
+// blocks on this rather than merging an unverifiable review state.
+func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error) {
 	nwo := repoFlag(repoPath)
 	owner, repo, ok := splitNWO(nwo)
 	if !ok {
 		p.logger.Warn().Str("nwo", nwo).Msg("cannot split owner/repo for thread query, failing closed")
-		return nil
+		return nil, fmt.Errorf("%w: cannot split owner/repo from %q", vcs.ErrReviewThreadsUnverified, nwo)
 	}
 
 	query := `query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
@@ -167,7 +169,7 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		out, err := p.runGH(ctx, args...)
 		if err != nil {
 			p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing closed")
-			return nil
+			return nil, fmt.Errorf("%w: GraphQL thread query failed: %w", vcs.ErrReviewThreadsUnverified, err)
 		}
 		result = struct {
 			Data struct {
@@ -195,7 +197,7 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		}{}
 		if err := json.Unmarshal([]byte(out), &result); err != nil {
 			p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing closed")
-			return nil
+			return nil, fmt.Errorf("%w: parsing GraphQL thread response: %w", vcs.ErrReviewThreadsUnverified, err)
 		}
 		page := result.Data.Repository.PullRequest.ReviewThreads
 		for _, thread := range page.Nodes {
@@ -211,11 +213,11 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 			}
 		}
 		if !page.PageInfo.HasNextPage {
-			return unresolved
+			return unresolved, nil
 		}
 		if page.PageInfo.EndCursor == "" {
 			p.logger.Warn().Msg("GraphQL thread response missing endCursor, failing closed")
-			return nil
+			return nil, fmt.Errorf("%w: GraphQL thread response reported another page with no endCursor", vcs.ErrReviewThreadsUnverified)
 		}
 		after = page.PageInfo.EndCursor
 	}
@@ -479,8 +481,28 @@ func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID
 	return nil
 }
 
-// GetReviewComments returns review comments on a pull request.
-func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
+// rawReview is one entry of the REST review list, before any of
+// GetReviewComments' actionable-comment filtering.
+//
+// The REST shape is load-bearing for bot identity: `user.login` carries the
+// `[bot]` suffix isReviewBotLogin keys on, whereas the GraphQL review list
+// (`gh pr view --json reviews`) reports the same account under a bare login with
+// a null `is_bot`. Anything that must tell a bot review from a human one has to
+// read it from here.
+type rawReview struct {
+	ID   int64 `json:"id"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Body  string `json:"body"`
+	State string `json:"state"`
+}
+
+// listRawReviews fetches the unfiltered REST review list for a PR. It is the
+// single source both GetReviewComments (which then filters it down to the
+// actionable set) and GetReviewObservation (which only tallies it) read, so the
+// two can never disagree about what was submitted.
+func (p *Provider) listRawReviews(ctx context.Context, repoPath string, prID int) ([]rawReview, error) {
 	out, err := p.runGH(ctx,
 		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repoFlag(repoPath), prID),
 	)
@@ -488,30 +510,83 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		return nil, fmt.Errorf("get reviews: %w", err)
 	}
 
-	var raw []struct {
-		ID   int64 `json:"id"`
-		User struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Body  string `json:"body"`
-		State string `json:"state"`
-	}
+	var raw []rawReview
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse reviews: %w", err)
 	}
+	return raw, nil
+}
 
-	// First pass: collect bot COMMENTED review authors. If none exist, skip the
-	// GraphQL call entirely (zero overhead for non-bot PRs).
-	botReviewUsers := make(map[string]bool)
+// GetReviewObservation implements vcs.ReviewObserver: it reports what the PR's
+// review list actually contains, before GetReviewComments' filtering drops the
+// addressed bot reviews. The merge gate's empty-safety-net warning needs this
+// because a dropped bot review and an absent bot are indistinguishable in the
+// filtered result.
+//
+// It re-reads the list rather than caching a tally from the last
+// GetReviewComments call: the observation has to be a pure function of the PR's
+// current state, and a cached value would go stale between a display poll and a
+// merge. The cost is one extra REST call, paid only on the merge path.
+func (p *Provider) GetReviewObservation(ctx context.Context, repoPath string, prID int) (vcs.ReviewObservation, error) {
+	raw, err := p.listRawReviews(ctx, repoPath, prID)
+	if err != nil {
+		return vcs.ReviewObservation{}, err
+	}
+
+	obs := vcs.ReviewObservation{Total: len(raw)}
 	for _, r := range raw {
-		if parseReviewState(r.State) == vcs.ReviewStateCommented && isReviewBotLogin(r.User.Login) {
-			botReviewUsers[r.User.Login] = true
+		if isReviewBotLogin(r.User.Login) {
+			obs.Bot++
+		}
+	}
+	return obs, nil
+}
+
+// GetReviewComments returns review comments on a pull request.
+func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
+	raw, err := p.listRawReviews(ctx, repoPath, prID)
+	if err != nil {
+		return nil, err
+	}
+	// First pass: collect the bots whose LATEST review is COMMENTED — the only
+	// ones a promotion could still apply to. If none exist, skip the GraphQL
+	// call entirely (zero overhead for non-bot PRs).
+	//
+	// Keying on the latest state rather than "has a COMMENTED review anywhere"
+	// matters because the thread query now fails CLOSED. A bot whose older
+	// COMMENTED review is superseded by a newer APPROVED or DISMISSED one can
+	// never block: ComputeDisplayStatus reads each author's latest state, and
+	// the newer entry is appended after any promotion the older one produces.
+	// Querying threads for it would buy nothing and risk everything — a GraphQL
+	// outage would propagate as vcs.ErrReviewThreadsUnverified and stall the
+	// merge behind gate=pending over a review that was already cleared.
+	//
+	// `raw` is chronological (GitHub returns reviews in submission order), which
+	// is the same ordering the promotion logic below and ComputeDisplayStatus
+	// already depend on, so the last entry per login is that login's latest.
+	latestBotReview := make(map[string]vcs.ReviewState)
+	for _, r := range raw {
+		if isReviewBotLogin(r.User.Login) {
+			latestBotReview[r.User.Login] = parseReviewState(r.State)
+		}
+	}
+	botReviewUsers := make(map[string]bool)
+	for login, state := range latestBotReview {
+		if state == vcs.ReviewStateCommented {
+			botReviewUsers[login] = true
 		}
 	}
 
 	var botsWithUnresolved map[string]bool
 	if len(botReviewUsers) > 0 {
-		botsWithUnresolved = p.unresolvedThreadAuthors(ctx, repoPath, prID, botReviewUsers)
+		botsWithUnresolved, err = p.unresolvedThreadAuthors(ctx, repoPath, prID, botReviewUsers)
+		if err != nil {
+			// The thread state is unknown, so we cannot tell an addressed bot
+			// review from a blocking one. Surface it: the merge gate blocks on
+			// vcs.ErrReviewThreadsUnverified rather than merging on an
+			// unverifiable review state.
+			return nil, err
+		}
 	}
 
 	comments := make([]vcs.ReviewComment, 0, len(raw))
@@ -545,7 +620,12 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		// per-comment State); the realtime path performs an equivalent
 		// review-scoped, inline-comment-based promotion in
 		// upstream.WebhookDispatcher.enrichReviewComments. Keep both in sync.
-		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved != nil {
+		//
+		// botsWithUnresolved is authoritative here: an unverifiable thread state
+		// already returned vcs.ErrReviewThreadsUnverified above, so a nil map at
+		// this point means "no bot has an unresolved thread", never "we could not
+		// tell".
+		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] {
 			if !botsWithUnresolved[r.User.Login] {
 				// This bot's threads are all resolved (or it has none): the
 				// feedback has been addressed — never block, drop the review.

@@ -254,17 +254,44 @@ func DeriveMergeBlock(status DisplayStatus, hasFailures bool, changesRequestedBy
 // review/CI tracker, so GitHub may still report the PR mergeable.
 const divergenceNote = "the daemon's merge gate trusts its own review/CI tracker — GitHub may still report the PR mergeable"
 
+// remedyNote says what actually clears a review block, and is deliberately
+// narrower than "post a new review".
+//
+// The two remedies are NOT interchangeable, and the ordering here is load-
+// bearing. A newer approving or dismissing review from the blocking login
+// always clears the block (a later *empty* COMMENTED review does not, which is
+// why this does not say "any later review"). Resolving threads only clears a
+// block that was SYNTHESIZED out of a bot's unresolved threads: that promotion
+// is recomputed from scratch on every review read and gated on the login still
+// owning an unresolved one, so emptying that set drops it — including threads
+// GitHub collapses as outdated and hides from the default PR view, whose
+// isResolved is still false.
+//
+// A native CHANGES_REQUESTED review — an ordinary human request, or a bot that
+// can submit one directly — is returned by GetReviewComments with that state
+// regardless of thread state, so resolving its threads changes nothing and
+// ComputeDisplayStatus keeps rejecting. Stating thread resolution
+// unconditionally would send an operator to a remedy that cannot work, so it is
+// scoped to the synthesized case. It cannot be resolved by inspecting the login
+// either: a `[bot]` suffix does not imply the block was synthesized.
+//
+// It says "owned by", not "from": the no-login branch below must not contain a
+// "from ..." clause, which is the attribution TestDeriveMergeBlockReviewDetail
+// pins as absent there.
+const remedyNote = "clears when the blocking login submits a newer approving/dismissing review; when the block was synthesized out of a bot's review threads, resolving every unresolved review thread owned by that login also clears it (including outdated threads GitHub hides)"
+
 // reviewBlockDetail builds the human-readable one-liner for a review gate,
 // naming the outstanding reviewers when their logins are known and degrading
-// gracefully to a count-agnostic phrasing when they are not.
+// gracefully to a count-agnostic phrasing when they are not. Both phrasings
+// carry the remedy clause: a blocked operator needs to know what clears it.
 func reviewBlockDetail(changesRequestedBy []string) string {
 	if len(changesRequestedBy) == 0 {
-		return "an outstanding changes-requested review blocks the merge; " + divergenceNote
+		return "an outstanding changes-requested review blocks the merge; " + divergenceNote + "; " + remedyNote
 	}
 	noun := "review"
 	if len(changesRequestedBy) > 1 {
 		noun = "reviews"
 	}
-	return fmt.Sprintf("%d outstanding changes-requested %s from %s; %s",
-		len(changesRequestedBy), noun, strings.Join(changesRequestedBy, ", "), divergenceNote)
+	return fmt.Sprintf("%d outstanding changes-requested %s from %s; %s; %s",
+		len(changesRequestedBy), noun, strings.Join(changesRequestedBy, ", "), divergenceNote, remedyNote)
 }

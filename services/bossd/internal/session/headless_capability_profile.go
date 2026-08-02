@@ -29,7 +29,25 @@ const agentNameCodex = "codex"
 // (see agent.AgentNameResolver); this function does no fallback of its own.
 func headlessCapabilityProfileFor(resolvedAgentName string, opts StartSessionOpts) bossanovav1.HeadlessCapabilityProfile {
 	unattended := opts.Detach || opts.IsTmuxUnattended || opts.CronJobID != ""
-	if unattended && resolvedAgentName == agentNameCodex {
+	if !unattended {
+		return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
+	}
+	return headlessCapabilityProfileForAutonomousRun(resolvedAgentName)
+}
+
+// headlessCapabilityProfileForAutonomousRun reports the operation surface an
+// autonomous run of resolvedAgentName requires. It is the agent-keyed half of
+// the launch policy, shared by every enforcement point so "which agents need a
+// profile" is written exactly once.
+//
+// The caller has already established that the run is autonomous; this function
+// answers only the agent question. Callers that also hold interactivity signals
+// (headlessCapabilityProfileFor) test those first.
+//
+// resolvedAgentName must already be resolved the way the dispatcher resolves it
+// (see resolveAgentName); this function does no fallback of its own.
+func headlessCapabilityProfileForAutonomousRun(resolvedAgentName string) bossanovav1.HeadlessCapabilityProfile {
+	if resolvedAgentName == agentNameCodex {
 		return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
 	}
 	return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED

@@ -79,6 +79,14 @@ func TestBuildInteractiveCommandIgnoresAppendSystemPrompt(t *testing.T) {
 	if strings.Contains(strings.Join(respWith.GetArgv(), " "), "append-system-prompt") {
 		t.Fatalf("codex argv must not carry append-system-prompt: %v", respWith.GetArgv())
 	}
+	// The no-op is declared, not silent: bossd reads NONE and reports the
+	// instruction classes it built that never reached this argv. Flip this to
+	// IN_ARGV only in the change that starts appending the flag.
+	for _, resp := range []*bossanovav1.BuildInteractiveCommandResponse{respBase, respWith} {
+		if got := resp.GetAppendSystemPromptSupport(); got != bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE {
+			t.Fatalf("append_system_prompt_support = %v, want NONE while codex drops the suffix", got)
+		}
+	}
 }
 
 func TestBuildInteractiveCommand_WiresMcpViaConfigOverride(t *testing.T) {

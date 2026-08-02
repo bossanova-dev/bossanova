@@ -18,7 +18,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Docs whose `make` commands must stay valid.
-const DOC_FILES = ['CLAUDE.md', 'AGENTS.md', 'README.md']
+const DOC_FILES = ['CLAUDE.md', 'AGENTS.md', 'README.md', 'docs/build-and-ci.md']
 const SKILL_DOC_ROOTS = [
   '.claude/skills',
   'plugins/bossd-plugin-claude/skilldata/skills',

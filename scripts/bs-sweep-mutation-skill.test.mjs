@@ -15,7 +15,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import {
@@ -27,7 +27,8 @@ import {
   extractCoverageRows,
 } from './bs-sweep-mutation-survivors.mjs'
 
-const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const here = (rel) => new URL(rel, import.meta.url)
+const read = (rel) => readFileSync(here(rel), 'utf8')
 const SKILL = read('../.claude/skills/bs-sweep-mutation/SKILL.md')
 const CODEX = read('../.codex/skills/bs-sweep-mutation/SKILL.md')
 const NOTES_TEARDOWN =
@@ -378,4 +379,67 @@ test('extractCoverageRows parses the tab-separated coverage view, lowest first',
   )
   assert.equal(rows[0].coverage, '31.2')
   assert.equal(rows[0].notCovered, 22)
+})
+
+// ---------------------------------------------------------------------------
+// BOS-640 — the extracted PR gate, and the ratchet that keeps its saving spent.
+// ---------------------------------------------------------------------------
+
+test('the extracted PR gate is referenced in both mirrors and exists on disk', () => {
+  // No COMMON_REWRITES rule matches a bare repo-root `skills-toolbox/` path, so the mirror
+  // carries the invocation byte-identically; asserting BOTH trees is what catches a mirror
+  // that silently lost it.
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-mutation', SKILL],
+    ['.codex/skills/bs-sweep-mutation', CODEX],
+  ]) {
+    // Pin the EXECUTED bytes, not the bare path — the body also NAMES the helper in its
+    // resident "executed, not read" prose, so a bare-path substring survives deleting the
+    // fenced invocation entirely.
+    assert.ok(
+      skill.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+      `${label}/SKILL.md must execute skills-toolbox/sweep-pr-gate.sh`,
+    )
+    assert.ok(
+      skill.includes('test -n "$PR_NUMBER"'),
+      `${label}/SKILL.md must fail the block when the gate produced no PR number`,
+    )
+  }
+  assert.ok(
+    existsSync(here('../skills-toolbox/sweep-pr-gate.sh')),
+    'skills-toolbox/sweep-pr-gate.sh must exist on disk',
+  )
+})
+
+test('the PR-gate invocation passes this skill own body path and does not rm it', () => {
+  // bs-sweep-mutation is the one caller whose PR body is a tracked scratch file
+  // (.mutate/pr-body.md), not an mktemp; the helper never deletes $PR_BODY and this caller
+  // deliberately keeps its no-`rm` behaviour.
+  assert.ok(
+    SKILL.includes('PR_BODY=.mutate/pr-body.md'),
+    'the gate must be handed .mutate/pr-body.md as its PR body',
+  )
+  assert.ok(SKILL.includes('export PR_NUMBER'), 'the gate exports the PR number for later phases')
+})
+
+test('the resident body stays under the post-extraction ratchet', () => {
+  // Measured post-extraction bodies: 29221 B (.claude) / 29301 B (.codex), down from the
+  // 29845 B (.claude) / 29924 B (.codex) pre-extraction baseline. The ceiling is the larger
+  // mirror + 64 B, so the 22-line PR-gate saving is actually banked and cannot be silently
+  // re-spent on body regrowth — move situational content into a reference instead.
+  //
+  // BOS-653 added `START_SHA="$START_SHA" ` to the gate invocation (+23 B, no bump): bodies are
+  // 29244 B (.claude) / 29324 B (.codex), leaving 41 B.
+  const CEILING = 29365
+  assert.ok(CEILING < 29845, 'ceiling must stay below the pre-extraction baseline')
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-mutation', SKILL],
+    ['.codex/skills/bs-sweep-mutation', CODEX],
+  ]) {
+    const bytes = Buffer.byteLength(skill, 'utf8')
+    assert.ok(
+      bytes < CEILING,
+      `${label}/SKILL.md must stay under ${CEILING} bytes (post-extraction ratchet), got ${bytes} — move situational content into a reference`,
+    )
+  }
 })

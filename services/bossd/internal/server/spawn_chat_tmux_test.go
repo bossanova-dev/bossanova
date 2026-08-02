@@ -1,18 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -204,11 +209,15 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.C
 // appends agentSessionID, mirroring the shape both real plugins produce.
 // calls records every invocation so tests can assert *which* agent the
 // builder was asked to resolve — that's how we pin the bug fix.
+// support is the append_system_prompt declaration every built response
+// carries; the zero value is UNSPECIFIED, which is exactly what an old plugin
+// binary sends.
 type fakeArgvBuilder struct {
-	mu     sync.Mutex
-	fresh  map[string][]string
-	resume map[string][]string
-	calls  []argvCall
+	mu      sync.Mutex
+	fresh   map[string][]string
+	resume  map[string][]string
+	calls   []argvCall
+	support bossanovav1.AppendSystemPromptSupport
 }
 
 // argvCall captures one BuildInteractive invocation for assertions.
@@ -224,7 +233,7 @@ type argvCall struct {
 	strictMcpConfig    bool
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) ([]string, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, mcpConfigPath: mcpConfigPath, strictMcpConfig: strictMcpConfig})
@@ -242,7 +251,10 @@ func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSe
 	if prefix, ok := bucket[name]; ok {
 		out := append([]string{}, prefix...)
 		out = append(out, agentSessionID)
-		return out, nil
+		return &bossanovav1.BuildInteractiveCommandResponse{
+			Argv:                      out,
+			AppendSystemPromptSupport: f.support,
+		}, nil
 	}
 	return nil, fmt.Errorf("fakeArgvBuilder: no argv configured for agent %q (resume=%v)", name, resume)
 }
@@ -253,8 +265,9 @@ func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSe
 // vs. fresh decision logic in spawnChatTmux.
 func claudeArgvBuilder() *fakeArgvBuilder {
 	return &fakeArgvBuilder{
-		fresh:  map[string][]string{"claude": {"claude", "--session-id"}},
-		resume: map[string][]string{"claude": {"claude", "--resume"}},
+		fresh:   map[string][]string{"claude": {"claude", "--session-id"}},
+		resume:  map[string][]string{"claude": {"claude", "--resume"}},
+		support: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV,
 	}
 }
 
@@ -1169,4 +1182,76 @@ func TestLiveTranscriptOracle(t *testing.T) {
 			t.Fatal("absent transcript must report not-exists")
 		}
 	})
+}
+
+// spawnAndCaptureLog runs one spawn with a capturing logger and returns
+// whatever the undelivered-instruction reporter wrote.
+func spawnAndCaptureLog(t *testing.T, support bossanovav1.AppendSystemPromptSupport, classes []string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	builder := claudeArgvBuilder()
+	builder.support = support
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	_, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        builder,
+		Logger:      zerolog.New(&buf),
+	}, spawnInput{
+		Chat:                      newTestChat(t),
+		WorktreePath:              t.TempDir(),
+		TmuxName:                  "boss-aaa-bbb",
+		AppendSystemPrompt:        "boss session context …",
+		AppendSystemPromptClasses: classes,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// argv is spawned from the response regardless of the declaration: report,
+	// never enforce.
+	if tmuxer.createdN != 1 {
+		t.Fatalf("spawn must proceed whatever the runner declared, createdN = %d", tmuxer.createdN)
+	}
+	return buf.String()
+}
+
+// TestSpawnChatTmux_ReportsUndeliveredInstructions proves the wake/re-ensure
+// spawn path reports a runner that never carried the suffix into argv — and
+// still spawns it.
+func TestSpawnChatTmux_ReportsUndeliveredInstructions(t *testing.T) {
+	line := spawnAndCaptureLog(t,
+		bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		[]string{session.InstructionClassSessionContext, session.InstructionClassAutonomyDirective})
+	if line == "" {
+		t.Fatal("a NONE declaration with built instructions must emit a record")
+	}
+	for _, want := range []string{
+		session.InstructionClassAutonomyDirective,
+		"APPEND_SYSTEM_PROMPT_SUPPORT_NONE",
+		`"level":"error"`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("record missing %q: %s", want, line)
+		}
+	}
+	if strings.Contains(line, "boss session context") {
+		t.Errorf("record leaked the prompt body: %s", line)
+	}
+}
+
+func TestSpawnChatTmux_SilentWhenRunnerDeclaresInArgv(t *testing.T) {
+	if line := spawnAndCaptureLog(t,
+		bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV,
+		[]string{session.InstructionClassSessionContext}); line != "" {
+		t.Fatalf("IN_ARGV must emit nothing, got %s", line)
+	}
+}
+
+// A caller that builds no instruction classes reports nothing even from a
+// runner that declares nothing — there is no drop to name.
+func TestSpawnChatTmux_SilentWhenNoInstructionsBuilt(t *testing.T) {
+	if line := spawnAndCaptureLog(t,
+		bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_UNSPECIFIED, nil); line != "" {
+		t.Fatalf("no classes built must emit nothing, got %s", line)
+	}
 }

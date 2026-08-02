@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -179,6 +180,25 @@ type launchTUIOptions struct {
 }
 
 func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
+	// Self-heal a terminal that a previous boss run left stranded in
+	// mouse-reporting or focus-reporting mode. An abnormal exit (SSH drop =>
+	// SIGHUP) skips every teardown defer, so neither the modes a proxied
+	// tmux/Claude pane enabled nor boss's own ?1004 are ever reset, and the
+	// user's shell echoes pointer/focus reports as garbage text. This launch
+	// runs over a fresh connection to the same terminal, so writing the reset
+	// here clears it; boss's own renderer re-asserts what it needs on its first
+	// frame. Gated on stdout being a terminal so piped output is never
+	// corrupted. See BOS-650.
+	writeStdoutReset()
+	// Arm the SIGHUP rescue before the *first* Bubble Tea program runs, not just
+	// before the main one. Preflight and the daemon wait are full tea programs
+	// that enable the same input-reporting modes, and views.RunDaemonWait is an
+	// explicitly indefinite unattended wait — precisely the walked-away-and-the-
+	// SSH-dropped case this ticket is about. The tmux options are not known yet,
+	// so the cleanup reads them from tmuxRestore, which is filled in below; the
+	// handler itself stays armed from here to teardown. See BOS-650.
+	var tmuxRestore atomic.Pointer[func()]
+	defer installHangupRescueFn(hangupCleanup(&tmuxRestore))()
 	if issue := preflight.CheckTmux(); issue != nil {
 		return views.RunPreflight(*issue)
 	}
@@ -241,6 +261,15 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	// restoring them on exit. No-op outside tmux or when notifications are off.
 	restoreTmux := views.EnableTmuxNotificationOptions(config.NotificationsEnabled(settings))
 	defer restoreTmux()
+	// A SIGHUP (dropped SSH connection, closed tab, `kill -HUP`) terminates Go
+	// processes outright, so neither the defer above nor the terminal-mode reset
+	// the PTY proxy runs on a clean return ever happens. Hand the tmux half to
+	// the rescue armed above. (It does NOT restore raw mode — the PTY proxy's
+	// saved termios is not reachable from here; see the plan's Risks section.)
+	// Re-running restoreTmux is harmless: it unsets a captured option list, so
+	// the window between the deferred restoreTmux above and the deferred stop
+	// cannot do damage.
+	tmuxRestore.Store(&restoreTmux)
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err

@@ -1686,10 +1686,12 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		Delivery:             session.DeliverySubmit,
 		ResumeAgentSessionID: req.GetResumeAgentSessionId(),
 	}
-	hookOpts := session.HookOpts{Token: token}
-	if sess.AgentName == "codex" {
-		hookOpts.HeadlessCapabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
-	}
+	// Every launch through this RPC is autonomous (see above), so declare that
+	// intent and let StartTmuxChat pick the capability profile. Deciding it here
+	// would have to key on the session's persisted agent name, which is the
+	// wrong name whenever the chat carries its own — exactly the resume path the
+	// repair plugin always takes.
+	hookOpts := session.HookOpts{Token: token, AutonomousRun: true}
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID

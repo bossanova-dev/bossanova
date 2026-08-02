@@ -5,6 +5,47 @@ import (
 	"testing"
 )
 
+// TestBossSkillReferencesHaveNoOrphans asserts that every references/*.md the
+// boss core SHIPS is reachable: it must be named by a row of the SKILL.md index
+// table, which after BOS-637 is the only route an agent has to a command's
+// syntax. An unreferenced reference file is dead weight the payload carries into
+// every repo the published core installs into, and — worse — a command group
+// silently missing from the index reads as a command group that does not exist.
+//
+// Only this direction is implemented here. The opposite one (SKILL.md names a
+// references/<file>.md the payload does not ship) is already gated across both
+// shipped payloads by TestPublishedCoresShipTheReferencesTheyName in
+// skills_manifest_test.go; re-implementing it here would add a second copy of an
+// invariant that already has a non-vacuity proof.
+//
+// The payload is read through SkillsFS rather than off the filesystem so this
+// gates the bytes that actually get embedded into the binary and extracted into
+// a user's skill directory.
+func TestBossSkillReferencesHaveNoOrphans(t *testing.T) {
+	skill := readEmbeddedBossSkill(t)
+
+	entries, err := SkillsFS.ReadDir("skills/boss/references")
+	if err != nil {
+		t.Fatalf("read embedded skills/boss/references: %v", err)
+	}
+
+	shipped := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		shipped++
+		ref := "`references/" + entry.Name() + "`"
+		if !strings.Contains(skill, ref) {
+			t.Errorf("skills/boss/references/%s is an orphan: SKILL.md's index table has no %s row, "+
+				"so nothing routes an agent to it — add the row or delete the file", entry.Name(), ref)
+		}
+	}
+	if shipped == 0 {
+		t.Fatalf("skills/boss/references ships no .md files — this test would be vacuous")
+	}
+}
+
 // TestBossSkillDocumentsBroadcasts pins the broadcast documentation to the skill payload agents
 // actually read. Both surfaces exist in code either way, so a refactor that drops this section
 // would not fail any build — it would silently un-document the primitive, leaving agents unable

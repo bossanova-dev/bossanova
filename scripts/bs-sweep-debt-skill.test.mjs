@@ -68,6 +68,30 @@ test('every reference is reachable: a body pointer plus an existing file, in bot
   }
 })
 
+// BOS-640 — the extracted PR gate is reachable identically from both trees. No COMMON_REWRITES
+// rule matches a bare repo-root `skills-toolbox/` path, so the mirror carries it byte-identically;
+// asserting BOTH trees is what catches a mirror that silently lost the invocation.
+test('the extracted PR gate is referenced in both mirrors and exists on disk', () => {
+  for (const dir of skillDirs) {
+    const skill = read(path.join(dir, 'SKILL.md'))
+    // Pin the EXECUTED bytes, not the bare path — the body also NAMES the helper in its
+    // resident "executed, not read" prose, so a bare-path substring survives deleting the
+    // fenced invocation entirely.
+    assert.ok(
+      skill.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+      `${dir}/SKILL.md must execute skills-toolbox/sweep-pr-gate.sh`,
+    )
+    assert.ok(
+      skill.includes('test -n "$PR_NUMBER"'),
+      `${dir}/SKILL.md must fail the block when the gate produced no PR number`,
+    )
+  }
+  assert.ok(
+    fs.existsSync(path.join(rootDir, 'skills-toolbox/sweep-pr-gate.sh')),
+    'skills-toolbox/sweep-pr-gate.sh must exist on disk',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Residency — load-bearing contract strings stay resident in BOTH mirrors.
 // ---------------------------------------------------------------------------
@@ -117,11 +141,26 @@ Debt-Category: <exactly one canonical slug: dead-code | duplication | error-hand
 PR is not shippable.`,
     },
     {
-      label: 'PR ready check',
-      text: `if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then
-  gh pr ready "$PR_NUMBER"
-fi
-test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false"`,
+      // BOS-640: the draft->ready spine moved into skills-toolbox/sweep-pr-gate.sh, where its
+      // exact bytes are pinned by scripts/sweep-pr-gate.test.mjs. What stays pinned HERE is the
+      // invocation — the caller's whole interface to the gate: the three env inputs, the
+      // single captured scalar, and the `test -n` that turns an empty capture back into a
+      // non-zero block. A helper that is never invoked readies no PR; a gate whose failure
+      // the caller swallows readies no PR either, and says so nowhere.
+      //
+      // ORDER IS LOAD-BEARING. The fence has no `set -e`, so the block's exit status is its
+      // LAST command's. `test -n` must therefore come last: with `export PR_NUMBER` after it
+      // the guard is inert (`export` always exits 0) and the block reports success on a gate
+      // that never created a PR.
+      // BOS-653 added START_SHA: the gate's branch-safety guard refuses to retag, force-push
+      // and ready a PR on a branch that already carried non-placeholder commits at START_SHA,
+      // and START_SHA is the caller's to supply — Phase 0 already computes it.
+      label: 'PR gate helper invocation',
+      text: `PR_NUMBER="$(SESSION_BRANCH="$SESSION_BRANCH" START_SHA="$START_SHA" BASE_BRANCH="$BASE_BRANCH" PR_BODY="$PR_BODY" \\
+  bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"
+rm -f "$PR_BODY"
+export PR_NUMBER
+test -n "$PR_NUMBER"`,
     },
     {
       label: 'NO_CHANGE output',
@@ -391,8 +430,26 @@ test('the always-resident body stays under the post-split ratchet', () => {
   // 32575 B (.claude) / 32658 B (.codex) pre-split baseline. CEILING = 30 KiB gives ~0.9 KiB of
   // headroom above the larger mirror and stays ~1.8 KiB below the 32575 B baseline — regrowth
   // past it must move situational content into a reference, not back into the body.
-  const CEILING = 30720
+  //
+  // Bumped 30720 → 30784 for BOS-633: the mandatory `disable-model-invocation: true`
+  // frontmatter key costs every sweep 29 B, and the .codex mirror had 1 B of headroom. A
+  // frontmatter key is not situational content — there is no reference to move it into — so
+  // the ceiling absorbs exactly that key rather than the gate forcing a body edit. Body
+  // regrowth still has to pay for itself.
+  //
+  // Lowered 30784 → 30302 for BOS-640: the 22-line PR-gate spine moved into
+  // skills-toolbox/sweep-pr-gate.sh, taking 30669 → 30158 B (.claude) / 30748 → 30238 B
+  // (.codex). The ceiling is the larger mirror + 64 B, so the extraction's saving is actually
+  // banked rather than left re-spendable — a ceiling merely "below the old one" would have
+  // left ~500 B, most of the saving, silently available.
+  //
+  // BOS-653 added `START_SHA="$START_SHA" ` to the gate invocation (+23 B, no bump): bodies are
+  // 30181 B (.claude) / 30261 B (.codex), leaving 41 B.
+  const CEILING = 30302
   assert.ok(CEILING < 32575, 'ceiling must stay below the pre-split baseline')
+  // The pre-split baseline is 2.4 KiB stale and constrains nothing this extraction cares
+  // about; pin the pre-extraction body too so the saving cannot be handed back.
+  assert.ok(CEILING < 30669, 'ceiling must stay below the pre-extraction body')
   for (const dir of skillDirs) {
     const bytes = Buffer.byteLength(read(path.join(dir, 'SKILL.md')), 'utf8')
     assert.ok(

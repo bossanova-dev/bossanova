@@ -177,6 +177,22 @@ export function selectTargets(files) {
       continue
     }
 
+    // docs/build-and-ci.md carries the build-system reference lifted out of CLAUDE.md. It
+    // cites real Make targets and is scanned by scripts/check-doc-make-targets.mjs, so an
+    // edit must run the script tests rather than falling through to test-smoke.
+    if (file === 'docs/build-and-ci.md') {
+      selectWholeTarget(selections, 'test-scripts')
+      continue
+    }
+
+    // The skill config carries the tracker role tables that scripts/check-skill-symbols.mjs
+    // resolves skill prose against, so a config-only edit can turn a role citation red with
+    // no scripts/** change at all.
+    if (file === '.boss-skills.json') {
+      selectWholeTarget(selections, 'test-scripts')
+      continue
+    }
+
     // The vendored skill toolbox helpers (skills-toolbox/*.mjs) ship their unit tests as
     // skills-toolbox/*.test.mjs, which `make test-scripts` globs. A change touching only
     // skills-toolbox/ must run those tests, not fall through to test-smoke.
@@ -206,6 +222,14 @@ export function selectTargets(files) {
     if (isWebPath(file)) {
       selectWholeTarget(selections, 'test-web')
       continue
+    }
+
+    // The published skill sources live INSIDE services/boss, so a SKILL.md edit there is
+    // also a test-boss input (the skillinstall manifest test embeds them). Select
+    // test-scripts for the prose gates WITHOUT `continue`, so the moduleRules lookup below
+    // still adds test-boss — dropping it would silence the manifest gate.
+    if (file.startsWith('services/boss/internal/skillinstall/skills/') && file.endsWith('.md')) {
+      selectWholeTarget(selections, 'test-scripts')
     }
 
     const moduleRule = moduleRules.find(({ root }) => file.startsWith(root))

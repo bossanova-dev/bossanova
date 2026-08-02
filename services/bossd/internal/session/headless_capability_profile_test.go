@@ -76,6 +76,52 @@ func TestHeadlessCapabilityProfileFor(t *testing.T) {
 	}
 }
 
+// TestHeadlessCapabilityProfileForAutonomousRun locks the agent-keyed half of
+// the policy in isolation. Every enforcement point now shares this function, so
+// "which agents need a profile" is answered in exactly one place: if this table
+// and TestHeadlessCapabilityProfileFor ever disagree, the interactivity check
+// and the agent check have drifted apart.
+//
+// The caller has already established the run is autonomous, so there is no opts
+// argument to vary — only the name matters, and an unresolved (empty) name must
+// still decline to opt a launch into a gate its runner may not implement.
+func TestHeadlessCapabilityProfileForAutonomousRun(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent string
+		want  pb.HeadlessCapabilityProfile
+	}{
+		{
+			name:  "codex requires the tracker-plan-attachment surface",
+			agent: "codex",
+			want:  pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		},
+		{
+			name:  "claude requires nothing",
+			agent: "claude",
+			want:  pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED,
+		},
+		{
+			name:  "an unrecognized runner requires nothing",
+			agent: "opencode",
+			want:  pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED,
+		},
+		{
+			name:  "unresolved empty agent name never opts into a new gate",
+			agent: "",
+			want:  pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := headlessCapabilityProfileForAutonomousRun(tc.agent); got != tc.want {
+				t.Fatalf("headlessCapabilityProfileForAutonomousRun(%q) = %v, want %v", tc.agent, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestHeadlessCapabilityProfileForIsSideEffectFree pins that the policy does
 // not mutate the opts it is handed — it is read-only over the launch signals.
 func TestHeadlessCapabilityProfileForDoesNotMutateOpts(t *testing.T) {

@@ -380,7 +380,7 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
     'utf8',
   )
 
-  for (const doc of ['README.md', 'CLAUDE.md', 'AGENTS.md']) {
+  for (const doc of ['README.md', 'CLAUDE.md', 'AGENTS.md', 'docs/build-and-ci.md']) {
     assert.equal(workflow.match(new RegExp(`- ${doc}`, 'g'))?.length, 2)
   }
 

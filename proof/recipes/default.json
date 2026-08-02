@@ -705,6 +705,34 @@
       ]
     },
     {
+      "id": "marketing-theme-toggle",
+      "surface": "marketing",
+      "title": "Marketing Theme Toggle",
+      "description": "Marketing homepage toggling Light <-> Dark through the header theme control.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/", "caption": "Marketing home" },
+        { "action": "wait", "selector": "main", "caption": "Marketing home" },
+        {
+          "action": "click",
+          "selector": "[data-testid='theme-toggle']",
+          "caption": "Theme: dark"
+        },
+        { "action": "wait", "timeoutMs": 700 },
+        { "action": "scroll", "byPx": 900, "caption": "Dark headings stay legible" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='theme-toggle']",
+          "caption": "Theme: light"
+        },
+        { "action": "wait", "timeoutMs": 800 }
+      ]
+    },
+    {
       "id": "docs-home",
       "surface": "docs",
       "title": "Docs — Home",
@@ -783,6 +811,16 @@
       "route": "/skills/extensions",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-troubleshooting",
+      "surface": "docs",
+      "title": "Docs — Troubleshooting runbook",
+      "description": "Rendered Troubleshooting runbook page (services/docs/docs/help/troubleshooting.md).",
+      "privacy": "fixture",
+      "route": "/help/troubleshooting",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
     }
   ],
   "pathRules": [
@@ -831,7 +869,8 @@
         "marketing-home",
         "marketing-pricing",
         "marketing-changelog",
-        "marketing-home-scroll"
+        "marketing-home-scroll",
+        "marketing-theme-toggle"
       ]
     },
     {
@@ -873,6 +912,11 @@
       "name": "Docs Skills extension system",
       "patterns": ["services/docs/docs/skills/extensions"],
       "recipeIds": ["docs-skills-extensions"]
+    },
+    {
+      "name": "Docs Troubleshooting runbook",
+      "patterns": ["services/docs/docs/help/troubleshooting"],
+      "recipeIds": ["docs-troubleshooting"]
     }
   ]
 }

@@ -189,6 +189,12 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
+# Warn (never abort) when these installed helpers have drifted from the repo's helper source:
+# the install is a copy, so a repo that moved on leaves a stale copy here silently. One probe,
+# here at startup only — it never re-checks mid-run. The -f guard keeps an install predating
+# the helper silent instead of failing on a missing module. Clear a `boss-toolbox-drift:` line
+# by re-vendoring and reinstalling the skills; the run continues either way.
+[ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ] && node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true
 # BOSSD_MANAGED=1 iff a bossd daemon provisioned this worktree (references/standalone-mode.md):
 if node "$BOSS_BUILD_TOOLBOX/bossd-present.mjs"; then BOSSD_MANAGED=1; else BOSSD_MANAGED=0; fi
 if [ "$BOSSD_MANAGED" = "1" ]; then

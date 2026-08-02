@@ -41,6 +41,35 @@ func TestExtractGroupsAndInheritance(t *testing.T) {
 	}
 }
 
+func TestExtractPopulatesGroupReadWhen(t *testing.T) {
+	groups, err := Extract(newTestRoot())
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	got := map[string]string{}
+	for _, g := range groups {
+		got[g.ID] = g.ReadWhen
+	}
+	for _, wantID := range []string{"session", "repo"} {
+		specReadWhen := ""
+		for _, spec := range clidoc.GroupOrder {
+			if spec.ID == wantID {
+				specReadWhen = spec.ReadWhen
+			}
+		}
+		if specReadWhen == "" {
+			t.Fatalf("clidoc.GroupOrder has no ReadWhen for %q", wantID)
+		}
+		readWhen, ok := got[wantID]
+		if !ok {
+			t.Fatalf("group %q not extracted", wantID)
+		}
+		if readWhen != specReadWhen {
+			t.Errorf("group %q ReadWhen = %q, want %q (from clidoc.GroupOrder)", wantID, readWhen, specReadWhen)
+		}
+	}
+}
+
 func TestExtractMergesRegistryProseAndFlags(t *testing.T) {
 	groups, err := Extract(newTestRoot())
 	if err != nil {

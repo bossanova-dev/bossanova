@@ -88,6 +88,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		deps := spawnDeps{
 			Transcripts: liveTranscriptOracle{clients: s.agentClients},
 			Argv:        liveArgvBuilder{clients: s.agentClients},
+			Logger:      s.logger,
 		}
 		if s.tmux != nil {
 			deps.Tmux = liveTmuxSpawner{c: s.tmux}
@@ -160,12 +161,14 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
 			)
 		}
+		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
-			Chat:               chat,
-			WorktreePath:       sess.WorktreePath,
-			TmuxName:           tmuxName,
-			ForceFresh:         forceFresh,
-			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
+			Chat:                      chat,
+			WorktreePath:              sess.WorktreePath,
+			TmuxName:                  tmuxName,
+			ForceFresh:                forceFresh,
+			AppendSystemPrompt:        appendPrompt,
+			AppendSystemPromptClasses: promptClasses,
 			SessionEnvFunc: func() map[string]string {
 				// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath
 				// the worktree .env so the woken chat authenticates to its own

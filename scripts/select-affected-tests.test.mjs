@@ -68,6 +68,12 @@ test('selectTargets maps skills-toolbox changes to script tests', () => {
   ])
 })
 
+test('selectTargets maps the build-and-ci reference doc to script tests', () => {
+  assert.deepEqual(selectTargets(['docs/build-and-ci.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+})
+
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
   assert.deepEqual(
     selectTargets(['AGENTS.md', 'CLAUDE.md', 'docs/testing/test-command-manifest.md']),
@@ -89,6 +95,27 @@ test('selectTargets maps Codex skills to manifest, Stop-hook guard, and skill co
     { kind: 'make', target: 'test-no-inline-stop-hooks', env: {} },
     { kind: 'make', target: 'test-scripts', env: {} },
   ])
+})
+
+test('selectTargets maps the skill config to the script tests', () => {
+  // scripts/check-skill-symbols.mjs resolves skill role citations through this file, so a
+  // config-only edit can turn the gate red with no scripts/** change.
+  assert.deepEqual(selectTargets(['.boss-skills.json']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+})
+
+test('selectTargets adds the script tests to published skill sources WITHOUT dropping test-boss', () => {
+  // The published skill bodies live inside services/boss, so they are inputs to BOTH the
+  // prose gates and the skillinstall manifest test. Selecting test-scripts terminally here
+  // would silence the latter.
+  assert.deepEqual(
+    selectTargets(['services/boss/internal/skillinstall/skills/boss-build/SKILL.md']),
+    [
+      { kind: 'make', target: 'test-scripts', env: {} },
+      { kind: 'make', target: 'test-boss', env: {} },
+    ],
+  )
 })
 
 test('selectTargets maps guidance docs to manifest checks', () => {

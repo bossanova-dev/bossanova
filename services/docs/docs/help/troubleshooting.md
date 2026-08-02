@@ -349,6 +349,77 @@ Or export `BOSSD_ORCHESTRATOR_URL=""` before starting `bossd`. The TUI,
 daemon, and agent plugin work identically. You give up the web
 app.
 
+## Terminal
+
+### Terminal spams numbers and letters when you move the mouse
+
+After a boss session ends abnormally — an SSH connection drops, a terminal
+tab is closed, the process is killed — your terminal can be left in xterm
+**mouse-reporting mode**. Nothing is reading those reports any more, so every
+mouse movement over the window is printed as text. Native click-drag selection
+usually stops working at the same time.
+
+It shows up in two spellings, depending on what owns the terminal when the
+report arrives:
+
+- **Escape consumed.** At a shell prompt, the line editor eats the `ESC[<`
+  introducer and only the numbers reach the screen:
+
+  ```text
+  35;51;14M35;48;14M
+  35;39;28M0;17;5m
+  ```
+
+- **Escape visible.** In cooked mode — for example while `ssh` is still
+  connecting, before anything has taken the terminal into raw mode — the whole
+  sequence is echoed:
+
+  ```text
+  ^[[<35;31;13M
+  ```
+
+A stranded **focus-reporting** mode is the same bug with a quieter tell: a
+stray `I` or `O` appears every time you click away from the window and back
+again (or, in cooked mode, `^[[I` and `^[[O`). The same remedies clear it.
+
+To fix it:
+
+```bash
+boss fix-terminal              # on the machine whose terminal is stuck
+ssh <host> boss fix-terminal   # from the stuck terminal, if boss lives remotely
+```
+
+`boss fix-terminal` writes the mouse- and focus-reporting disable sequences and
+prints nothing else, so it is safe to pipe straight into the affected terminal.
+
+If boss isn't installed on the box, the core reset is a plain `printf` — mouse
+reporting, focus reporting and bracketed paste:
+
+```bash
+printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1004l\033[?2004l'
+```
+
+`boss fix-terminal` additionally clears some legacy mouse encodings and the
+keyboard-protocol modes, so prefer it when it's available.
+
+As a last resort, `reset` reinitializes the terminal completely — note that it
+**clears your scrollback**:
+
+```bash
+reset
+```
+
+Boss also writes the same reset every time the TUI launches, so relaunching
+boss on the affected terminal normally clears it on its own.
+
+**One honest limit.** That automatic self-heal is written by the boss process
+itself. When boss is on a remote host, the reset can't arrive until after SSH
+has connected, authenticated, and started boss — so relaunching boss over SSH
+still shows a few seconds of spam between pressing Enter and boss appearing.
+`boss fix-terminal` and the raw `printf` are the remedies that don't wait on a
+remote round trip: run them from a shell that's already connected, or run the
+`printf` locally.
+
 ## Reporting bugs
 
 Press `ctrl+b` from anywhere in the TUI to open the bug report form.

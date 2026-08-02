@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -313,6 +314,74 @@ func TestE2E_Linear_ListAvailableIssues(t *testing.T) {
 	}
 	if !strings.Contains(reqBody.Query, "issues") || !strings.Contains(reqBody.Query, "branchName") {
 		t.Errorf("GraphQL query missing expected fields:\n%s", reqBody.Query)
+	}
+}
+
+// TestE2E_Linear_ListAvailableIssues_IncludesBacklog proves the backlog fix
+// survives the real spawned, e2e-tagged plugin binary rather than only the
+// in-process GraphQL client. Uses its own fixture so
+// TestE2E_Linear_ListAvailableIssues keeps its exact 3-issue assertion
+// against issues_response.json.
+//
+// The regression guard is the wire-filter assertion below: the mock server
+// writes its fixture unconditionally and never applies the state filter it
+// receives, so only the captured request body can distinguish this change
+// from the pre-fix code. The ENG-126 round-trip assertions that follow are a
+// mapping smoke-check (they would pass against the old filter too), not the
+// guard.
+func TestE2E_Linear_ListAvailableIssues_IncludesBacklog(t *testing.T) {
+	h := newLinearHarness(t, linearHarnessOpts{
+		IssuesFixture: "issues_backlog_response.json",
+		PRsFixture:    "open_prs.json",
+	})
+
+	ctx := context.Background()
+	issues, err := h.TaskSource.ListAvailableIssues(ctx,
+		"https://github.com/recurser/bossanova",
+		"",
+		map[string]string{"linear_api_key": "lin_api_test123"},
+	)
+	if err != nil {
+		t.Fatalf("ListAvailableIssues: %v", err)
+	}
+
+	reqs := h.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("mock Linear server saw %d requests, want 1", len(reqs))
+	}
+	var reqBody struct {
+		Variables struct {
+			Filter struct {
+				State struct {
+					Type struct {
+						In []string `json:"in"`
+					} `json:"type"`
+				} `json:"state"`
+			} `json:"filter"`
+		} `json:"variables"`
+	}
+	if err := json.Unmarshal(reqs[0].Body, &reqBody); err != nil {
+		t.Fatalf("decode GraphQL request body: %v", err)
+	}
+	gotStateIn := reqBody.Variables.Filter.State.Type.In
+	if !slices.Contains(gotStateIn, "backlog") {
+		t.Errorf("outgoing state filter = %v, want it to include %q", gotStateIn, "backlog")
+	}
+
+	byID := map[string]int{}
+	for i, iss := range issues {
+		byID[iss.GetExternalId()] = i
+	}
+	idx, ok := byID["ENG-126"]
+	if !ok {
+		t.Fatalf("backlog issue ENG-126 missing from response (got %v)", byID)
+	}
+	backlogIssue := issues[idx]
+	if backlogIssue.GetState() != "Backlog" {
+		t.Errorf("ENG-126 state = %q, want %q", backlogIssue.GetState(), "Backlog")
+	}
+	if backlogIssue.GetBranchName() != "eng-126-backlog-item" {
+		t.Errorf("ENG-126 branch_name = %q, want %q", backlogIssue.GetBranchName(), "eng-126-backlog-item")
 	}
 }
 

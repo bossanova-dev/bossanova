@@ -5,20 +5,22 @@
 // execFileSync-backed runner; the unit test injects fakes.
 //
 // The gate answers one question before an LLM session spawns: "would a whole-repo
-// `make format` pass change anything?" It probes the formatters `make format`
-// actually applies, in CHECK mode (prettier `--check`, `gofmt -l`), so the tree
-// is never mutated. Exit 0 == run the sweep; non-zero == skip (spend zero tokens).
+// `make format-all` pass change anything?" It probes the formatters `make
+// format-all` actually applies, in CHECK mode (prettier `--check`, `gofmt -l`), so
+// the tree is never mutated. Exit 0 == run the sweep; non-zero == skip (zero tokens).
+// The target is `format-all`, NOT `format`: BOS-371 made the bare `format` target
+// the changed-files one, which on a fresh cron branch formats nothing (BOS-653).
 //
-// The probe is a SOUND SUBSET of `make format`, not a complete mirror of it: it
+// The probe is a SOUND SUBSET of `make format-all`, not a complete mirror of it: it
 // covers the two cheap, high-value formatters (docs prettier + gofmt) and omits
 // the rest (`syncpack`, the biome-owned web target, `services/docs`, `scripts`).
 // This is deliberate. Soundness — every drift it reports IS fixed by `make
-// format`, so the gate never triggers a run that produces an empty diff — is what
-// matters for a cost gate; a missed formatter just defers the sweep to a later
+// format-all`, so the gate never triggers a run that produces an empty diff — is
+// what matters for a cost gate; a missed formatter just defers the sweep to a later
 // trigger, it never wastes an agent run. Crucially it does NOT probe goimports:
-// `make format` runs `gofmt -w` + read-only `golangci-lint` per module and never
-// applies `goimports -w`, so a goimports probe would exit 0 (run) on drift the
-// sweep could not reconcile -> a guaranteed wasted NO_CHANGE run.
+// each module's `format` target runs plain `gofmt -w` and never `goimports -w`, so a
+// goimports probe would exit 0 (run) on drift the sweep could not reconcile -> a
+// guaranteed wasted NO_CHANGE run.
 
 // Batch size for the gofmt arg list so a 1000+ file repo never blows ARG_MAX.
 export const GO_BATCH = 300
@@ -59,41 +61,42 @@ export function parseGoFiles(listed) {
     .filter(Boolean)
 }
 
-// detectDrift decides whether a whole-repo `make format` pass would change
+// detectDrift decides whether a whole-repo `make format-all` pass would change
 // anything and returns the set of probes that reported drift.
 //
-// A prerequisite probe (`make lint-check-version`, the guard `make format`
-// itself runs first) plus both formatter probes — prettier over the docs/skills
-// markdown globs and gofmt over tracked Go — are REQUIRED and fail CLOSED: a
-// spawn error, a failed prerequisite, or ANY completed exit that is neither a
-// clean result nor the formatter's specific drift signal, THROWS so the gate
-// cannot prove state and therefore skips. This symmetry
+// An environment probe (`make lint-check-version`) plus both formatter probes —
+// prettier over the docs/skills markdown globs and gofmt over tracked Go — are
+// REQUIRED and fail CLOSED: a spawn error, a failed environment probe, or ANY
+// completed exit that is neither a clean result nor the formatter's specific drift
+// signal, THROWS so the gate cannot prove state and therefore skips. This symmetry
 // matters most in a dependency-free worktree (the gate's design target): a missing
 // prettier/pnpm, OR a `pnpm`/Corepack exit-1 that fails before prettier runs, must
 // fail closed (skip), never be mistaken for drift and waste an agent run. There is
-// intentionally no goimports probe: `make format` does not apply `goimports -w`, so
-// probing it would trigger runs the sweep can't reconcile (see the file header).
+// intentionally no goimports probe: `make format-all` does not apply `goimports -w`,
+// so probing it would trigger runs the sweep can't reconcile (see the file header).
 export function detectDrift(run, { goFiles = [] } = {}) {
   const reasons = []
 
-  // 0. `make format` prerequisite. The formatter entry point the sweep runs is
-  //    `format: lint-check-version` in the Makefile: that prereq exits BEFORE any
-  //    formatter runs when the pinned golangci-lint is absent or the wrong
-  //    version. On such a host, reporting drift would trigger a run whose Phase 1
-  //    `make format` fails and emits NO_CHANGE — leaving the same drift for the
-  //    next scheduled gate to re-trigger, burning an agent session on a tooling
-  //    problem. Probe the SAME prereq target first and fail CLOSED (throw → skip)
-  //    when `make format` cannot run, so every drift we report is one the sweep
-  //    can actually reconcile.
+  // 0. Toolchain environment probe. This is NOT a declared prerequisite of the
+  //    formatter target — neither `format` nor `format-all` declares
+  //    `lint-check-version`, and `format-all` delegates to per-module `format`
+  //    targets that run gofmt/prettier and no golangci-lint at all (BOS-653
+  //    corrected this comment; the probe itself is deliberately kept). It is a
+  //    CONSERVATIVE check: a host that cannot satisfy the repo's pinned toolchain
+  //    is a host whose formatter output we do not want to trust, so fail CLOSED
+  //    (throw → skip) rather than wake an agent on it. The failure direction is a
+  //    skipped sweep, never a bad one; the cost is an occasional deferred run.
+  //    The throw's wording is pinned by bs-sweep-prettify-skill.test.mjs — change
+  //    the message and that test, not this probe's behaviour.
   const prereq = run('make', ['lint-check-version'])
   if (prereq.error) {
     throw new Error(
-      `make prerequisite probe failed to run: ${prereq.error.message ?? prereq.error}`,
+      `make lint-check-version environment probe failed to run: ${prereq.error.message ?? prereq.error}`,
     )
   }
   if (prereq.status !== 0) {
     throw new Error(
-      `make format prerequisite (lint-check-version) failed (exit ${prereq.status}); cannot format`,
+      `make lint-check-version environment probe failed (exit ${prereq.status}); refusing to trust formatter output`,
     )
   }
 
@@ -103,7 +106,7 @@ export function detectDrift(run, { goFiles = [] } = {}) {
   //    exit 1 when they fail *before* prettier runs — e.g. the gate's design
   //    target, a dependency-free worktree where Corepack can't fetch the pinned
   //    pnpm. Counting that tooling failure as drift would wake an agent on a
-  //    problem `make format` can't fix (a guaranteed NO_CHANGE run), breaking the
+  //    problem `make format-all` can't fix (a guaranteed NO_CHANGE run), breaking the
   //    fail-closed contract. So exit 1 is drift ONLY when the output carries
   //    prettier's `--check` marker; a bare exit 1 (no marker) and every other
   //    non-zero exit (2 = config/parse error, 127 = missing binary) fail CLOSED.
@@ -122,7 +125,7 @@ export function detectDrift(run, { goFiles = [] } = {}) {
   // 2. gofmt -l over tracked Go files (batched). `gofmt -l` exits 0 and lists
   //    mis-formatted paths on stdout, so a non-zero exit is a genuine error
   //    (unreadable/unparseable file) → fail closed, not "no drift". Any listed
-  //    path == drift. (`make format` applies `gofmt -w` per module but not
+  //    path == drift. (`make format-all` applies `gofmt -w` per module but not
   //    `goimports -w`, so gofmt is the only Go formatter the sweep reconciles.)
   for (const batch of chunk(goFiles)) {
     const gofmt = run('gofmt', ['-l', ...batch])

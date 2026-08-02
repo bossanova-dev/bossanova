@@ -619,8 +619,70 @@ func TestDeriveMergeBlockReviewDetail(t *testing.T) {
 // This catches display.go's len(changesRequestedBy) > 1 conditional.
 func TestReviewBlockDetailSingularReviewer(t *testing.T) {
 	got := reviewBlockDetail([]string{"alice"})
-	want := "1 outstanding changes-requested review from alice; " + divergenceNote
+	want := "1 outstanding changes-requested review from alice; " + divergenceNote + "; " + remedyNote
 	if got != want {
 		t.Errorf("reviewBlockDetail() = %q, want %q", got, want)
+	}
+}
+
+// TestReviewBlockDetailRemedyClause pins the remedy clause an operator needs to
+// act on a review block: what clears it, and — because GitHub hides outdated
+// threads from the default PR view while their isResolved stays false — that
+// resolving every *visible* thread is not enough. It must not claim that any
+// later review clears the block: a later empty COMMENTED review does not.
+func TestReviewBlockDetailRemedyClause(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		logins []string
+	}{
+		{name: "named reviewer", logins: []string{"alice"}},
+		{name: "no login known", logins: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reviewBlockDetail(tc.logins)
+			for _, want := range []string{
+				divergenceNote,
+				"every unresolved review thread",
+				"outdated threads GitHub hides",
+				"newer approving/dismissing review",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("reviewBlockDetail(%v) = %q, want it to contain %q", tc.logins, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestReviewBlockDetailScopesThreadResolutionRemedy pins that the two remedies
+// are not offered as interchangeable. Thread resolution only clears a block
+// SYNTHESIZED out of a bot's unresolved threads; a native CHANGES_REQUESTED
+// review (an ordinary human request, or a bot that submits one directly) is
+// returned with that state regardless of thread state, so resolving its threads
+// changes nothing and the merge stays blocked. Stating it unconditionally sends
+// an operator to a remedy that cannot work for their block.
+//
+// The approval/dismissal remedy is the universally valid one, so it must be
+// stated unconditionally and must come FIRST — an operator who reads only the
+// opening clause must still be told something true.
+func TestReviewBlockDetailScopesThreadResolutionRemedy(t *testing.T) {
+	for _, logins := range [][]string{{"alice"}, {"cursor[bot]"}, nil} {
+		got := reviewBlockDetail(logins)
+
+		threadIdx := strings.Index(got, "every unresolved review thread")
+		approvalIdx := strings.Index(got, "newer approving/dismissing review")
+		if threadIdx < 0 || approvalIdx < 0 {
+			t.Fatalf("reviewBlockDetail(%v) = %q, want both remedies present", logins, got)
+		}
+		if approvalIdx > threadIdx {
+			t.Errorf("reviewBlockDetail(%v) = %q: the unconditional approval/dismissal remedy must precede the conditional thread-resolution one", logins, got)
+		}
+
+		// The thread-resolution remedy must be guarded by a condition rather
+		// than offered flatly. Without this the clause reads as universal.
+		guard := got[:threadIdx]
+		if !strings.Contains(guard, "when the block was synthesized") {
+			t.Errorf("reviewBlockDetail(%v) = %q: thread-resolution remedy is not scoped to synthesized bot blocks", logins, got)
+		}
 	}
 }

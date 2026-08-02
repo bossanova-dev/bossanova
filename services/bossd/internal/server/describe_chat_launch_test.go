@@ -128,3 +128,31 @@ func TestDescribeChatLaunch_UnknownChatIsNotFound(t *testing.T) {
 		t.Fatalf("err code = %v, want NotFound (%v)", connect.CodeOf(err), err)
 	}
 }
+
+// DescribeChatLaunch is a read-only preview of the launch command, not a spawn.
+// It deliberately requests an empty append_system_prompt, so bossd builds no
+// instruction classes on this path and therefore has no drop to report —
+// whatever the runner declares. Pin that: if this preview ever starts asking
+// for the suffix, it must also start reporting on it.
+func TestDescribeChatLaunch_RequestsNoInstructionsSoNothingIsReported(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-1", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	builder := claudeArgvBuilder()
+	// A runner that carries nothing into argv — the loudest declaration there is.
+	builder.support = pb.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+	if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+
+	calls := builder.calls
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one argv build, got %d", len(calls))
+	}
+	if calls[0].appendSystemPrompt != "" {
+		t.Fatalf("preview must request no instruction suffix, got %q", calls[0].appendSystemPrompt)
+	}
+}

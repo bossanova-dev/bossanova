@@ -114,6 +114,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	// Return a benign argv (true exits 0 and produces no output).
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv: []string{"true"},
+		// The stub builds no real command line, so any system-prompt suffix
+		// bossd offers is dropped. Declare that instead of staying silent.
+		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
 	}, nil
 }
 

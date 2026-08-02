@@ -1,0 +1,81 @@
+<!-- GENERATED from the boss CLI by `make gen-skill` — do not edit by hand. Index: ../SKILL.md -->
+
+## Diagnostics
+
+### `boss env [flags]`
+
+Report this session's boss context and the full CLI + MCP capability inventory
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of human-readable text
+
+### `boss fix-terminal`
+
+Clear stranded terminal mouse- and focus-reporting modes
+
+### `boss proof`
+
+Provision credentials for the proof pipeline
+
+### `boss proof set-secret [proof-anthropic-api-key|proof-cloudflare-api-token] [flags]`
+
+Store a proof secret in the keyring, read from stdin
+
+**Flags:**
+
+- `--check` — Report which proof secrets are set (never prints values) and exit
+
+### `boss repair`
+
+Auto-repair plugin operations
+
+### `boss repair doctor`
+
+Health-check the auto-repair pipeline (plugin loaded, claude on PATH, recent logs, etc.)
+
+Health-checks the auto-repair pipeline. Calls the daemon's `RepairDoctor` RPC and renders a checklist (plugin loaded, `claude` on PATH, recent log files, etc.) plus a recent-logs table — answers "is auto-repair healthy?" without having to grep daemon stderr.
+
+```bash
+boss repair doctor
+```
+
+### `boss repair start`
+
+(Re-)arm the auto-repair workflow (e.g. after the repair plugin was stopped or restarted)
+
+(Re-)arms the auto-repair workflow. Calls the daemon's `StartRepairWorkflow` RPC, which declares the repair plugin's desired-started state from current settings and ensures the workflow is running. A RUNNING workflow is left untouched (never restarted); a PAUSED one is left for the operator to resume. Use after the repair plugin was stopped or restarted and auto-repair is sitting disarmed — no bossd restart needed.
+
+```bash
+boss repair start
+```
+
+### `boss session`
+
+Session diagnostics
+
+### `boss session checks <session-id> [flags]`
+
+Show what bossd's display poller saw for this session's CI checks
+
+Shows bossd's persisted view of a session's CI check snapshots, alongside the `DisplayStatus` the daemon computed for each one. Useful when reconciling "why did the TUI think this PR was passing when GitHub says failing?".
+
+**Flags:**
+
+- `--limit` — Number of snapshots to show (newest first) (default: 5)
+
+```bash
+boss session checks abc123
+boss session checks abc123 --limit 10
+```
+
+### `boss session link-pr <session-id> <pr-number-or-url>`
+
+Attach an existing pull request to a session
+
+Attach an existing GitHub PR to a session. Use this to repair cron sessions where the agent already committed, pushed, and opened a PR before bossd finalized the run.
+
+```bash
+boss session link-pr abc123 477
+boss session link-pr abc123 https://github.com/owner/repo/pull/477
+```

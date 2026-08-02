@@ -2046,7 +2046,15 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	}
 }
 
-func TestStartChatRun_ProfilesAutonomousCodexLaunch(t *testing.T) {
+// TestStartChatRun_MarksLaunchAutonomous pins what this RPC is now responsible
+// for. Every launch through it is autonomous — a plugin, with no human at the
+// pane — so it declares that intent and StartTmuxChat picks the capability
+// profile. It must NOT pick the profile itself: the only agent name reachable
+// here is the session's persisted one, which is the wrong name whenever the
+// chat carries its own, exactly the resume path the repair plugin always takes.
+// Naming the profile here would re-key the policy on the session and reinstate
+// the divergence in both directions.
+func TestStartChatRun_MarksLaunchAutonomous(t *testing.T) {
 	lc := &fakeChatLifecycle{startResp: "agent-codex"}
 	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", AgentName: "codex", WorktreePath: "/tmp/wt"})
 	srv.agentClients["codex"] = newFakeAgentClient()
@@ -2059,8 +2067,37 @@ func TestStartChatRun_ProfilesAutonomousCodexLaunch(t *testing.T) {
 		t.Fatalf("StartChatRun: %v", err)
 	}
 
-	if got := lc.lastReq.hookOpts.HeadlessCapabilityProfile; got != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
-		t.Errorf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got)
+	if !lc.lastReq.hookOpts.AutonomousRun {
+		t.Error("AutonomousRun = false, want true — every launch through this RPC runs with no human watching")
+	}
+	if got := lc.lastReq.hookOpts.HeadlessCapabilityProfile; got != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		t.Errorf("HeadlessCapabilityProfile = %s, want unspecified — the profile is StartTmuxChat's to choose", got)
+	}
+}
+
+// TestStartChatRun_MarksClaudeLaunchAutonomous is the companion for a session
+// whose persisted agent is claude. The declaration is agent-independent: this
+// RPC says only "no human is watching", never "this agent needs a profile", so
+// the claude case must carry the identical flag and the identical unspecified
+// profile. A flag that varied by session agent name would be the old policy
+// under a new field.
+func TestStartChatRun_MarksClaudeLaunchAutonomous(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-claude"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", AgentName: "claude", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "Repair: sess-1",
+	}); err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+
+	if !lc.lastReq.hookOpts.AutonomousRun {
+		t.Error("AutonomousRun = false, want true for a claude session too — the declaration is agent-independent")
+	}
+	if got := lc.lastReq.hookOpts.HeadlessCapabilityProfile; got != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+		t.Errorf("HeadlessCapabilityProfile = %s, want unspecified", got)
 	}
 }
 

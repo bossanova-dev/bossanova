@@ -355,6 +355,80 @@ func TestBossRepairSkillStaleSHAContract(t *testing.T) {
 	assertContains(t, phase2, "They are not interchangeable")
 }
 
+// TestBossRepairSkillPhase2InlineBranchContract pins where a Phase 2 strategy runs. Dispatch is the
+// expected branch, and running the strategy inline is a written-down, sanctioned path — not an
+// improvisation a round has to invent unaided when the subagent tool is present in the tool list but
+// prohibited by a higher-priority instruction. That case is the common one and the original prose
+// covered neither it nor the tool-absent one: inline appeared only as a dispatch-failure fallback.
+//
+// The window is scoped with sectionBetween for the reason TestBossRepairSkillStaleSHAContract above
+// scopes its own — a document-wide match would go green with the branch written under some unrelated
+// heading, where the worker executing Phase 2 would never read it.
+//
+// The negative half matters as much as the positive. The improvement note behind this rule asserted
+// that cron runs are forbidden to dispatch subagents; that is false — boss-plan dispatches an awaited
+// `general-purpose` subagent under `BOSS_CRON=true`, itself gate-pinned in
+// scripts/bs-plan-skill.test.mjs — so the fix must not trade one false statement for another.
+func TestBossRepairSkillPhase2InlineBranchContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase2 := sectionBetween(t, skill, "### Phase 2: Execute Repair Strategy", "#### Strategy A: Merge Conflicts")
+
+			// The inline branch, and the word that makes it sanctioned rather than degraded.
+			assertContains(t, phase2, "run the strategy inline (sanctioned)")
+			assertContains(t, phase2, "Inline is the **sanctioned** path")
+
+			// Both conditions the choice turns on. Availability alone misses a tool that is listed
+			// but prohibited, which is precisely the case that sent rounds down an undocumented path.
+			assertContains(t, phase2, "subagent tool permitted AND available")
+			assertContains(t, phase2, "instruction prohibits calling it")
+
+			// Dispatch stays the expected branch, so a session that CAN dispatch does not read the
+			// inline branch as licence to take the weaker single-voice route.
+			assertContains(t, phase2, "(the expected path)")
+
+			// The dispatch branch still names the subagent type. Rewriting the branch prose is
+			// exactly when this token goes missing, and an unnamed type leaves the branch called
+			// "expected" the least specified of the three.
+			assertContains(t, phase2, "subagent_type: general-purpose")
+
+			// No claim that an unattended run may not dispatch. Lowercased so a capitalised
+			// restatement cannot slip past.
+			lowered := strings.ToLower(phase2)
+			for _, forbidden := range []string{
+				"may not dispatch",
+				"must not dispatch",
+				"cannot dispatch",
+				"forbidden from dispatching",
+				"forbidden to dispatch",
+				"cron runs are forbidden",
+			} {
+				assertNotContains(t, lowered, forbidden)
+			}
+		})
+	}
+}
+
+// bossRepairSkillPayloads returns the boss-repair SKILL.md body from BOTH shipped payloads — the
+// copy embedded in services/boss and the bossd-plugin-claude mirror — keyed by the name that
+// identifies the tree in a subtest failure. A prose contract asserted against only the embedded copy
+// goes green on a mirror `make copy-skills` has not refreshed, and the mirror is what the plugin
+// actually installs.
+func bossRepairSkillPayloads(t *testing.T) map[string]string {
+	t.Helper()
+
+	mirrorRoot := filepath.Join(findRepoRoot(t), "plugins", "bossd-plugin-claude", "skilldata", "skills", "boss-repair")
+	mirrorBytes, err := fs.ReadFile(os.DirFS(mirrorRoot), "SKILL.md")
+	if err != nil {
+		t.Fatalf("read bossd-plugin-claude boss-repair SKILL.md under %s: %v", mirrorRoot, err)
+	}
+
+	return map[string]string{
+		"embedded": readEmbeddedBossRepairSkill(t),
+		"mirror":   string(mirrorBytes),
+	}
+}
+
 // sectionBetween returns the slice of markdown from start (inclusive) up to end (exclusive).
 // markdownSection only splits on top-level `## ` headings, so this is the precise form used
 // when an assertion must stay inside one subsection.

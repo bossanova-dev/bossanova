@@ -58,7 +58,7 @@ func Extract(root *cobra.Command) ([]clidoc.GroupDoc, error) {
 			continue
 		}
 		sort.Slice(cmds, func(i, j int) bool { return cmds[i].Path < cmds[j].Path })
-		out = append(out, clidoc.GroupDoc{ID: spec.ID, Title: spec.Title, Commands: cmds})
+		out = append(out, clidoc.GroupDoc{ID: spec.ID, Title: spec.Title, ReadWhen: spec.ReadWhen, Commands: cmds})
 	}
 	return out, nil
 }

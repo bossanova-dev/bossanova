@@ -806,6 +806,221 @@ func TestUnshippedScriptRefsDetection(t *testing.T) {
 	}
 }
 
+// namespacedSkillPattern matches a plugin-namespaced skill invocation (`<namespace>:<kebab-skill>`).
+// The form is structural, not a name list: no boss-* core is plugin-namespaced, so any match is a
+// skill the consuming repo is not guaranteed to have — including plugins that do not exist yet.
+//
+// Requiring the skill half to carry a hyphen is what makes it precise. Measured across the whole
+// published tree, the strict form yields exactly one hit; a relaxed variant allowing a single-word
+// skill half yields 24, 23 of them ordinary `key:value` prose (`file:line`, `agent:claude`,
+// `refname:short`, `node:path`, `epic:true`, …).
+var namespacedSkillPattern = regexp.MustCompile(`(^|[^A-Za-z0-9_/-])([a-z][a-z0-9]*(?:-[a-z0-9]+)*):([a-z][a-z0-9]*(?:-[a-z0-9]+)+)`)
+
+// foreignSkillNames is a BOUNDED DENYLIST of skill names a published core must not assert: an
+// operator's globally-installed reviewer and this repo's vendored lenses. A published core reaches
+// specialists through the `.boss-skills.json` lens registry, never by naming one in prose.
+//
+// This is deliberately a denylist and not the allowlist that would generalize, because an allowlist
+// is NOT EXPRESSIBLE over prose: a skill name in markdown carries no lexical marker. The narrowest
+// plausible handle — a bare hyphenated inline-code token — yields ~40 distinct tokens across the
+// published markdown and does not contain `impeccable` at all, which is a single English word. Any
+// rule that catches `impeccable` must name it. namespacedSkillPattern is the general half of this
+// gate; this list is the honest, explicitly-named half. Do not describe it as more than that.
+var foreignSkillNames = []string{"impeccable", "golang-pro", "tui-design", "thermonuclear-review"}
+
+// foreignSkillFamily matches the skill family of an unrelated private repository, whose names would
+// be unresolvable for every consumer of a published core.
+var foreignSkillFamily = regexp.MustCompile(`\bwc-[a-z0-9-]+\b|\bwondercanvas\b`)
+
+// foreignSkillNamePatterns anchors each denylisted name on a hyphen-aware word boundary, so a name
+// that is a substring of a legitimate one is not matched (`api-review` never yields `review`, and
+// `boss-review` is untouched).
+var foreignSkillNamePatterns = func() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, 0, len(foreignSkillNames))
+	for _, name := range foreignSkillNames {
+		out = append(out, regexp.MustCompile(`(^|[^A-Za-z0-9_-])`+regexp.QuoteMeta(name)+`([^A-Za-z0-9_-]|$)`))
+	}
+	return out
+}()
+
+// foreignSkillRefs returns the normalized, deduplicated foreign-skill tokens in content: first the
+// plugin-namespaced invocations in full (`superpowers:requesting-code-review`) in first-seen order,
+// then each denylisted bare name in list order, then the foreign-repo family matches. Bare names are
+// matched on a word boundary so `boss-review` and `api-review` — the core's own siblings and
+// methodology citations — are untouched.
+func foreignSkillRefs(content string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(token string) {
+		if token == "" || seen[token] {
+			return
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	for _, m := range namespacedSkillPattern.FindAllStringSubmatch(content, -1) {
+		add(m[2] + ":" + m[3])
+	}
+	for i, pattern := range foreignSkillNamePatterns {
+		if pattern.MatchString(content) {
+			add(foreignSkillNames[i])
+		}
+	}
+	for _, m := range foreignSkillFamily.FindAllString(content, -1) {
+		add(m)
+	}
+	return out
+}
+
+// knownForeignSkillRefs is the SHRINK-ONLY baseline of foreign skill names a published core still
+// asserts, keyed payload-relative FILE → token. The finer key matters: keying on the core alone
+// would let a baselined token license a brand-new use of the same name elsewhere in that core.
+//
+// The baseline was seeded ONCE, from this gate's own failing output, and only ever shrinks:
+// TestPublishedCoresNameNoForeignSkills fails on an entry no longer observed ("stale baseline
+// entry"). The remedy for a NEW violation is to reword the core, never to append here.
+//
+// The key is presence, not an occurrence count, and that granularity is deliberate. The unit of
+// harm this gate exists to catch is "this published file names this absent skill" — a second mention
+// of an already-baselined token in an already-baselined file is the same leak, drained by the same
+// reword. Counting instead would break `foreignSkillRefs`'s pinned dedup contract
+// (TestForeignSkillRefsDetection) and force the bare-name leg from MatchString onto FindAllString,
+// buying a stricter ratchet over four tokens in one file at the cost of turning every benign reflow
+// of that contended file into a red build. What the presence key still catches is what matters: a
+// NEW token in a baselined file fails, any token in an unbaselined file fails, and an entry whose
+// last occurrence is gone fails as stale.
+//
+// The entries below are un-drained and owned by no ticket: boss-review/SKILL.md's frontmatter and
+// opening section are contended by several in-flight tickets at once, so rewording them from here
+// would be a merge conflict rather than a fix.
+var knownForeignSkillRefs = map[string]map[string]bool{
+	"boss-review/SKILL.md": {
+		// Named as a conditional Go lens in the opening summary; deferred with the file.
+		"golang-pro": true,
+		// Named as a conditional web lens in the opening summary; deferred with the file.
+		"impeccable": true,
+		// Named as a conditional TUI lens in the opening summary; deferred with the file.
+		"tui-design": true,
+		// The foreign-repo skill this core is described as the analogue of; deferred with the file.
+		"wc-auto-review": true,
+	},
+}
+
+// TestPublishedCoresNameNoForeignSkills is the fourth leg of the payload-reference triangle. The
+// other three gate artifacts that carry a path prefix — repo-root `scripts/<path>`,
+// `$BOSS_<CORE>_TOOLBOX/<file>`, core-relative `references/<file>`. A SKILL has no prefix: it is
+// invoked by bare name, which is exactly why a published core naming another repo's review roster
+// passed every existing gate. forbiddenIdentity misses it too — every one of its rules keys on a
+// Bossanova/backlog token, and these names contain none.
+//
+// Scope is markdown only. A `<core>/toolbox/*.mjs` config default naming a lens is the INTENDED
+// design (the lens registry pairs every entry with an inline fallback rubric for exactly the case
+// where the named reviewer is absent), so scanning .mjs would ratchet against the config seam
+// rather than against a leak.
+//
+// Both shipped payloads are scanned (the embedded skillinstall FS the boss CLI extracts and the
+// on-disk claude plugin mirror bossd ships), because either one alone can be the copy a user's
+// global skill directory is populated from.
+func TestPublishedCoresNameNoForeignSkills(t *testing.T) {
+	payloads := shippedPayloads(t)
+
+	for label, fsys := range payloads {
+		scanned := 0
+		observed := map[string]map[string]bool{}
+		err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				return err
+			}
+			scanned++
+			rel := strings.TrimPrefix(path, "skills/")
+			for _, token := range foreignSkillRefs(string(data)) {
+				if observed[rel] == nil {
+					observed[rel] = map[string]bool{}
+				}
+				observed[rel][token] = true
+				if knownForeignSkillRefs[rel][token] {
+					continue
+				}
+				t.Errorf("%s: published core file %q names foreign skill %q — a boss-* core installs into every user's global skill directory, where that skill does not exist; reword the passage to describe the SHAPE of the step and reach specialists through the .boss-skills.json lens registry instead of naming one", label, rel, token)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", label, err)
+		}
+		// A payload that silently resolves to zero markdown files would make this gate vacuous.
+		if scanned == 0 {
+			t.Fatalf("%s: no markdown files scanned; the foreign-skill gate would pass vacuously", label)
+		}
+		// The ratchet: a baseline entry whose reference is gone must be removed, so the
+		// baseline can never quietly outlive the leak it was granted for.
+		for rel, tokens := range knownForeignSkillRefs {
+			for token := range tokens {
+				if !observed[rel][token] {
+					t.Errorf("%s: stale baseline entry — knownForeignSkillRefs[%q][%q] is no longer named by the payload; remove it (the baseline is shrink-only)", label, rel, token)
+				}
+			}
+		}
+	}
+}
+
+// TestForeignSkillRefsDetection pins the classifier itself: the forms it must catch (so the gate
+// cannot quietly stop gating) and the forms it must not — ordinary `key:value` prose, the core's
+// own siblings, and methodology citations that name a review kind rather than a skill.
+func TestForeignSkillRefsDetection(t *testing.T) {
+	matched := map[string]string{
+		"run a `superpowers:requesting-code-review` round": "superpowers:requesting-code-review",
+		"prints a `wc-auto-review`-style report":           "wc-auto-review",
+		"the wondercanvas repo owns it":                    "wondercanvas",
+		"`impeccable` for services/web":                    "impeccable",
+		"lenses (`golang-pro` for Go)":                     "golang-pro",
+		"`tui-design` for the TUI":                         "tui-design",
+		"a vendored `thermonuclear-review` round":          "thermonuclear-review",
+	}
+	for content, want := range matched {
+		got := foreignSkillRefs(content)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("foreignSkillRefs(%q) = %v, want exactly [%q]", content, got, want)
+		}
+	}
+
+	ignored := []string{
+		"name the blocker with file:line so a human can jump to it",
+		"the selector agent:claude resolves the runner",
+		"git for-each-ref --format='%(refname:short)'",
+		"import { join } from 'node:path'",
+		"a bare key:value term inside one clause",
+		"the host:owner form is accepted too",
+		"pass epic:true to widen the selection",
+		"dispatch one general-purpose subagent",
+		"diff the branch against its merge-base",
+		"the read-only probe is safe to repeat",
+		"an agent-friendly planned ticket",
+		"invoke the boss-review skill with no args",
+		"boss-finalize injects the PR tag",
+		"the api-review lens covers proto changes",
+		"see references/receiving-code-review.md for the fix discipline",
+	}
+	for _, content := range ignored {
+		if got := foreignSkillRefs(content); len(got) != 0 {
+			t.Errorf("foreignSkillRefs(%q) = %v, want none", content, got)
+		}
+	}
+
+	// Deduplication keeps one entry per distinct token, in first-seen order.
+	got := foreignSkillRefs("`impeccable`, then `golang-pro`, then `impeccable` again")
+	if len(got) != 2 || got[0] != "impeccable" || got[1] != "golang-pro" {
+		t.Errorf("foreignSkillRefs dedup = %v, want [impeccable golang-pro]", got)
+	}
+}
+
 // toolboxRefPattern matches a `$BOSS_<CORE>_TOOLBOX/<file>` token anywhere in a payload file, in
 // each spelling the skills actually use: the bare shell form (`$BOSS_PLAN_TOOLBOX/f`), the braced
 // shell form (`${BOSS_PLAN_TOOLBOX}/f`), and the JS template-literal form
@@ -1277,11 +1492,33 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 		"finalizePlanAttachment",
 		"deletePlanAttachment",
 		"no plan metadata/state write",
-		"planMarkdown",
+		// BOS-651 re-pinned the persisted-epic-spec citation, it did not drop it: the spec
+		// is no longer a `planMarkdown`-carrying description marker but a plain-JSON
+		// `epic-spec.json` attachment serialized by `serializeEpicSpec`, so the payload must
+		// now name that contract instead. These pin the CONTRACT TABLE ROWS rather than the
+		// bare identifiers: `epic-spec.json` also appears in six Phase 5 `find … -delete`
+		// cleanup lines and `serializeEpicSpec` in the Phase 2.5 toolbox roll-call, so bare
+		// substrings would survive deleting the entire attachment contract this test is
+		// named for. Pinning the table cells makes prose deletion falsify the gate.
+		"| filename         | `epic-spec.json` (`specAttachmentFilename()`)",
+		"| body             | `serializeEpicSpec(spec)`",
+		// The stage-2 pre-PUT self-check: the only thing that catches a spec whose `parentId`
+		// was never set, since `serializeEpicSpec` omits an absent id silently.
+		"validateSpecIdentity(parseEpicSpec(",
 	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("boss-plan payload missing %q", want)
 		}
+	}
+	// The drafting brief is a separate shipped file with its own copy of the epic write ordering,
+	// and the assertions above read SKILL.md only. It is the file the headless drafting subagent is
+	// actually handed, and this exact requirement has drifted between the two twice, so pin it.
+	brief, err := SkillsFS.ReadFile("skills/boss-plan/references/headless-drafting-brief.md")
+	if err != nil {
+		t.Fatalf("read boss-plan drafting brief: %v", err)
+	}
+	if !strings.Contains(string(brief), "`deletePlanAttachment` was already required **before the FIRST epic") {
+		t.Error("boss-plan drafting brief must require deletePlanAttachment before the first epic write, not at stage 3 (which every resume skips)")
 	}
 	storage, err := SkillsFS.ReadFile("skills/boss-plan/references/plan-storage.md")
 	if err != nil {
@@ -1294,6 +1531,43 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 		if strings.Contains(payload, forbidden) {
 			t.Errorf("boss-plan payload still references retired plan storage %q", forbidden)
 		}
+	}
+	// `planMarkdown` is a retired epic-spec FIELD, not part of the retired R2 plan-storage
+	// subsystem above, so it gets its own loop and its own message: BOS-651's central deletion is
+	// that the spec no longer persists child plan bodies at all, and a re-introduced `planMarkdown`
+	// claim would document a field the library does not serialize. Nothing else guards that
+	// deletion — the byte ratchet cannot see a swap.
+	for _, forbidden := range []string{"planMarkdown"} {
+		if strings.Contains(payload, forbidden) {
+			t.Errorf("boss-plan payload must not claim the spec persists %q; BOS-651 removed child plan bodies from the spec", forbidden)
+		}
+	}
+}
+
+// TestBossPlanEmbeddedSkillCopiesStayIdentical closes the gap every other core already covered:
+// the assertions above read only the embedded payload, but bossd installs the plugin mirror, so a
+// mirror edit (or a revert applied without `make copy-skills`) could ship prose the embedded gates
+// never see. boss-epic, boss-finalize and boss-repair each have this test; boss-plan did not.
+func TestBossPlanEmbeddedSkillCopiesStayIdentical(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	for _, rel := range []string{
+		"SKILL.md",
+		filepath.Join("references", "headless-drafting-brief.md"),
+		filepath.Join("references", "plan-storage.md"),
+	} {
+		t.Run(rel, func(t *testing.T) {
+			embedded, err := SkillsFS.ReadFile("skills/boss-plan/" + filepath.ToSlash(rel))
+			if err != nil {
+				t.Fatalf("read embedded boss-plan %s: %v", rel, err)
+			}
+			mirror, err := os.ReadFile(filepath.Join(repoRoot, "plugins", "bossd-plugin-claude", "skilldata", "skills", "boss-plan", rel))
+			if err != nil {
+				t.Fatalf("read plugin boss-plan %s: %v", rel, err)
+			}
+			if string(embedded) != string(mirror) {
+				t.Errorf("boss-plan %s differs between services/boss and bossd-plugin-claude; run `make copy-skills`", rel)
+			}
+		})
 	}
 }
 

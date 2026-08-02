@@ -39,6 +39,21 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // defaultLinearEndpoint is the production Linear GraphQL endpoint.
 const defaultLinearEndpoint = "https://api.linear.app/graphql"
 
+// defaultIssuePageSize caps the issue list Linear returns. Linear's
+// connection default is 50 and its maximum is 250; 100 stays conservative
+// because every node carries its full description and the result crosses a
+// gRPC hop on the default 4 MiB receive limit.
+//
+// This is a hard, single-page truncation: FetchIssues requests no pageInfo
+// and follows no cursor, so with orderBy createdAt descending anything past
+// this cap is simply not returned. Including backlog-type states widened the
+// candidate set, and raising the cap only *mitigates* the resulting
+// displacement of older active work — it does not guarantee the list is
+// complete. A workspace with more selectable issues than this reaches the
+// rest through titleQuery (the substring/number filter below), not by
+// scrolling the default list.
+const defaultIssuePageSize = 100
+
 // linearClient is a GraphQL client for the Linear API.
 type linearClient struct {
 	apiKey   string
@@ -100,17 +115,18 @@ type graphqlData struct {
 }
 
 // FetchIssues retrieves issues from Linear filtered by workflow state type.
-// Uses the stable state type field ("unstarted", "started") rather than
-// customizable display names which vary across workspaces.
+// Uses the stable state type field ("backlog", "unstarted", "started")
+// rather than customizable display names which vary across workspaces.
+//
+// Results are always capped at defaultIssuePageSize and ordered by createdAt
+// descending; there is no pagination, so a larger result set is truncated.
 //
 // When titleQuery is non-empty, a case-insensitive substring filter on title
-// is pushed to the API so the search reaches issues outside Linear's default
-// first page. If titleQuery also contains digits, the integer is OR'd in as
-// a number filter so searching by issue number (e.g. "1181" or "FRE-1181")
-// finds the matching issue even when the title doesn't contain those digits.
-// An empty titleQuery returns the most recently created active issues, ordered
-// by createdAt descending and capped at Linear's default page size (currently
-// 50).
+// is pushed to the API so the search reaches issues beyond that first page.
+// If titleQuery also contains digits, the integer is OR'd in as a number
+// filter so searching by issue number (e.g. "1181" or "FRE-1181") finds the
+// matching issue even when the title doesn't contain those digits. An empty
+// titleQuery returns the most recently created selectable issues.
 func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]linearIssue, error) {
 	// GraphQL query to fetch issues across all accessible teams, filtered by
 	// state type and (optionally) by title and/or issue number. The filter
@@ -119,8 +135,8 @@ func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]li
 	// the stable values triage / backlog / unstarted / started / completed /
 	// canceled.
 	query := `
-		query Issues($filter: IssueFilter!) {
-			issues(filter: $filter, orderBy: createdAt) {
+		query Issues($filter: IssueFilter!, $first: Int!) {
+			issues(filter: $filter, first: $first, orderBy: createdAt) {
 				nodes {
 					identifier
 					title
@@ -135,10 +151,14 @@ func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]li
 		}
 	`
 
+	// Backlog issues are selectable too — users repeatedly could not find
+	// their issue in the picker because it sat in the backlog. `triage`
+	// (Linear's un-committed inbox), `completed`, and `canceled` remain
+	// deliberately excluded: you don't start a session on finished work.
 	filter := map[string]any{
 		"state": map[string]any{
 			"type": map[string]any{
-				"in": []string{"unstarted", "started"},
+				"in": []string{"backlog", "unstarted", "started"},
 			},
 		},
 	}
@@ -164,7 +184,7 @@ func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]li
 
 	reqBody := graphqlRequest{
 		Query:     query,
-		Variables: map[string]any{"filter": filter},
+		Variables: map[string]any{"filter": filter, "first": defaultIssuePageSize},
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)

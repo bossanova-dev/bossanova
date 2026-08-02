@@ -113,11 +113,20 @@ Before running local checks, discover this repo's commands from project instruct
 
 ### Phase 2: Execute Repair Strategy
 
-For each triggered strategy below, the orchestrator dispatches a fresh **awaited** subagent (`subagent_type: general-purpose`; **never** `run_in_background`) to run that strategy's investigate-and-fix steps and return a short summary — files changed, what was fixed, and residual risk.
+For each triggered strategy below, the orchestrator runs that strategy's investigate-and-fix steps and ends with a short summary — files changed, what was fixed, and residual risk. **Where** those steps run is one decision, taken per strategy:
+
+```
+subagent tool permitted AND available  -> dispatch a fresh awaited subagent (the expected path)
+tool absent, or a higher-priority      -> run the strategy inline (sanctioned)
+  instruction prohibits calling it
+dispatch attempted and failed          -> run the strategy inline (sanctioned)
+```
+
+Dispatch is the normal branch — a session that provisions the subagent tool should use it (`subagent_type: general-purpose`), because the subagent keeps the bulk material out of the orchestrator's context and gives the fix a second voice. Inline is the **sanctioned** path for a session where the tool genuinely is not usable, not a lesser mode to choose by preference: read the permission actually in force rather than assuming. A blanket "do not call the subagent tool unless the user asked for it" instruction is one common instance of the second branch; `BOSS_CRON=true` by itself is **not** one — an unattended run may dispatch. Either way the strategy's steps and its reporting are identical; only the context they run in differs, so running inline is never a reason to skip a step or shorten the summary.
 
 <!-- tier: opus (no override) because this dispatch runs whichever strategy triggered — A (merge-conflict resolution), B (fixing failing tests/build), or C (implementing review feedback) — all of which author or evaluate code, i.e. judgment. Not tiered down. -->
 
-This dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what the dispatched subagent runs. If the subagent dispatch itself fails (a tool error, not a repair failure), fall back to running that strategy inline; the dispatch is awaited and its failure is non-fatal, so it must never turn a would-be clean exit into a nonzero one.
+A dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what runs, dispatched or inline. A dispatch is awaited (**never** `run_in_background`) and its failure is a tool error, not a repair failure — it routes to the inline branch above and must never turn a would-be clean exit into a nonzero one.
 
 **Round freshness — capture the head SHA before reading PR state.** The first thing a round does,
 before reading review threads, check runs, or mergeability, is record the commit the **PR head**
@@ -485,7 +494,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      - [Change 1 from review]
      - [Change 2 from review]
 
-     Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+     Co-Authored-By: <the Co-Authored-By trailer your harness specifies>
      EOF
      )"
      ```

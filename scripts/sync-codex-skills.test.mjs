@@ -92,7 +92,15 @@ describe('sync-codex-skills', () => {
       assert.match(skill, /`\/boss-finalize`/)
       assert.match(skill, /READY_GREEN_PR/)
       assert.match(skill, /NO_CHANGE/)
-      assert.match(skill, /gh pr ready/)
+      // BOS-640: `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh (pinned byte-exact by
+      // scripts/sweep-pr-gate.test.mjs). The safety contract is unchanged — the skill still
+      // readies the PR itself — so this pin repoints at the EXECUTED invocation. A bare-path
+      // regex would also be satisfied by the resident "executed, not read" prose sentence, and
+      // so would survive deleting the fenced call outright.
+      assert.match(
+        skill,
+        /bash "\$\(git rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
+      )
       assert.match(skill, /gh pr checks/)
       assert.match(skill, /isDraft=false/)
       assert.doesNotMatch(skill, /NO_PR/)
@@ -114,8 +122,14 @@ describe('sync-codex-skills', () => {
       assert.match(skill, /current session branch/)
       assert.match(skill, /READY_GREEN_PR/)
       assert.match(skill, /NO_CHANGE/)
-      assert.match(skill, /gh pr create/)
-      assert.match(skill, /gh pr ready/)
+      // BOS-640: `gh pr create` / `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh
+      // (pinned byte-exact by scripts/sweep-pr-gate.test.mjs). PR creation is still OWNED by the
+      // skill — it EXECUTES the gate — so this pin repoints at the invocation. A bare-path regex
+      // would also be satisfied by the resident "executed, not read" prose sentence.
+      assert.match(
+        skill,
+        /bash "\$\(git rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
+      )
       assert.match(skill, /gh pr checks/)
       assert.match(skill, /isDraft=false/)
       assert.doesNotMatch(skill, /git switch -c "\$BRANCH"/)

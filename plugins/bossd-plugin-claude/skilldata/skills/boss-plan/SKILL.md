@@ -41,7 +41,17 @@ names generically everywhere else:
 - Statuses by role: the **unplanned** state (start) and the **planned** state (end), resolved from
   `trackerConfigFor(config).states.{unplanned,planned}` (with `inProgress`/`inReview` for the
   active-backlog reads).
-- Existing label roles resolve through `labelName(config, '<role>')`: `agent-friendly`, `needs-human`, `agent-plan`, `agent-question`, `epic`, `docs`, `bug`, `improvement`, `feature`. Never create labels. `agent-friendly` and `needs-human` are mutually exclusive (every plan gets exactly one).
+- **Pipeline label roles** resolve through `labelName(config, '<role>')`, whose keys are **camelCase**: `agentFriendly`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic` — the display
+  names they resolve to are `agent-friendly`, `needs-human`, and so on. `labelName` fails closed —
+  an unconfigured or misspelled role throws — so never hand it a display name. Never create labels.
+  `agentFriendly` and `needsHuman` are mutually exclusive (every plan gets exactly one).
+- **Content-taxonomy labels** (`bug`, `feature`, `improvement`, `docs`) are the tracker's own
+  display names, not fixed pipeline roles. Read the issue's existing set with the `readLabels` op
+  and merge — preserve what it returned, and add one only when it genuinely applies. Resolve a
+  taxonomy name through `labelName` whenever the repo maps that role, and treat the four names
+  above as this repo's display names rather than universal ones: a tracker that calls the role
+  something else (`bug: "defect"`) maps it under `trackerConfig.<tracker>.labels`, and writing the
+  literal would submit a label its tracker does not have.
 - Tracker priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - Dependency links use the tracker's `blocks`/`blocked by` relations. A blocker is "cleared" only
   when its state is `Done` or `Canceled` (PR merged / work dropped); the
@@ -77,10 +87,22 @@ names generically everywhere else:
      exit 0
    fi
    ```
-2. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`, and
+2. **Warn when this installed toolbox has drifted from its source.** The install is a copy, so a
+   repo whose helpers have moved on leaves a stale one here — silently. Probe once, now; it is an
+   observation that never aborts and never re-checks mid-run. Guard the call, because an install
+   predating the helper must stay silent rather than fail — and re-derive the path first, since a
+   guard against an unset variable is silent in exactly the same way as a clean tree:
+   ```bash
+   BOSS_PLAN_TOOLBOX="${BOSS_PLAN_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox}"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+   [ -f "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" ] && node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true
+   ```
+   A `boss-toolbox-drift:` line names installed helpers that differ from this repo's helper source.
+   Re-vendor and reinstall the skills to clear it, then continue — the run is not blocked.
+3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`, and
    `readPlanAttachment` operations now. If any is absent, stop before drafting or tracker writes.
    Native tracker attachments are the only implementation-plan store and never change proof storage.
-3. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
+4. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
    `trackerConfigFor(config).team`).
 
 ## Phase 1 — Select the issue
@@ -176,10 +198,17 @@ for the Phase 4 secret gate.
      echo "$DISPATCH_FAILURE: drafting subagent left no valid sentinel (status=$RC_STATUS) — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
      # A headless EPIC subagent can write child plans (.linear-plans/<ISSUE-ID>-child-*.md, which
-     # carry `## Original notes`) + image-guard scratch, then die WITHOUT an ok sentinel. This abort
-     # skips Phase 5, so glob that scratch here too (same globs as Phase 5) — never leave it in the
-     # cron worktree. No-op for a single-ticket run (no child scratch matches).
-     rm -f ".linear-plans/<ISSUE-ID>-child-"*.md ".linear-plans/<ISSUE-ID>"*.image-guard-*.md
+     # carry `## Original notes`) + image-guard, attachment-header and epic-spec-body scratch, then
+     # die WITHOUT an ok sentinel. This abort skips Phase 5, so remove the same four patterns here —
+     # never leave that scratch in the cron worktree. ONE PATTERN PER LINE + CLEANUP_RC, for the
+     # reasons Phase 5 records; this path already exits 1, so a failure is warned about, not re-signalled.
+     CLEANUP_RC=0
+     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
+     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
+     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
+     if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+     [ "$CLEANUP_RC" = 0 ] || echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2
      exit 1
    fi
    EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
@@ -203,16 +232,24 @@ for the Phase 4 secret gate.
      #       parent still unplanned means the epic is incomplete.
      #   (b) list_issues parentId="$EPIC_PARENT" limit=250: confirm the created children
      #       are present and their count matches the payload `childIds` (equivalently the
-     #       `parseEpicSpecMarker` child-key set recovered from the parent description).
+     #       `parseEpicSpec` child-key set recovered from the parent's spec attachment).
      # When (a) shows planned AND (b) matches, set `EPIC_REVERIFIED=true`; otherwise leave it false
      # and take the SAFE branch below — NO success report. For an INCOMPLETE epic that never flipped,
      # the parent is still unplanned, so the next headless sweep re-picks and resumes it.
      if [ "$EPIC_REVERIFIED" != "true" ]; then
        echo "$DISPATCH_FAILURE: epic sentinel ok but reverify failed (parent still unplanned, or children missing/short) — no success report, aborting" >&2
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       # Reverify-fail also skips Phase 5, and a partial epic definitely wrote child scratch — glob
-       # the same child plans + image-guard scratch (carrying `## Original notes`) before aborting.
-       rm -f ".linear-plans/<ISSUE-ID>-child-"*.md ".linear-plans/<ISSUE-ID>"*.image-guard-*.md
+       # Reverify-fail also skips Phase 5, and a partial epic definitely wrote child scratch (plans
+       # carry `## Original notes`, header files carry signed request data, the epic-spec body carries
+       # the whole decomposition) — same four patterns, same CLEANUP_RC accumulation; this path already
+       # exits 1, so a failure is warned about.
+       CLEANUP_RC=0
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+       [ "$CLEANUP_RC" = 0 ] || echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2
        exit 1
      fi
      # reverify PASSED: there is NO single-ticket plan file, and the single-ticket
@@ -237,7 +274,7 @@ for the Phase 4 secret gate.
    moved unplanned → planned. Just as the single-ticket branch re-verifies the plan file, the epic
    branch **re-reads Linear before accepting**: the parent must have reached planned (parent-repurpose-
    last makes a planned parent the proof the epic finished) and the enumerated children must match the
-   `childIds` / `parseEpicSpecMarker` set — a still-unplanned parent or short child set fails
+   `childIds` / `parseEpicSpec` set — a still-unplanned parent or short child set fails
    reverify and takes the safe branch (no success report, `exit 1`) so the next sweep resumes it. Only
    on a PASSED reverify does the orchestrator **skip Phase 3.5 and Phase 4** and jump to Phase 5
    - Phase 6; re-running Phase 4 would stamp a single-ticket plan artifact/labels onto the epic parent and
@@ -260,21 +297,58 @@ interactive propose → confirm → create flow lives in `references/interactive
 decompose-and-auto-create flow in `references/headless-drafting-brief.md`. The deterministic core —
 validation, cycle safety, stable creation order, and the tracker-write plan — is the unit-tested
 `$BOSS_PLAN_TOOLBOX/plan-epic-lib.mjs` (`validateDecomposition`, `validateLayering`, `assertAcyclic`,
-`topoOrderChildren`, `epicWiringPlan`, `epicParentEstimate`, `stableChildKey`, `epicSpecMarker`,
-`parseEpicSpecMarker`, `EPIC_LABEL`, `EPIC_MIN_CHILDREN`, `EPIC_MAX_CHILDREN`, `CHILD_MAX_ESTIMATE`);
-never re-derive it inline.
+`topoOrderChildren`, `epicWiringPlan`, `epicParentEstimate`, `stableChildKey`, `serializeEpicSpec`,
+`parseEpicSpec`, `validateSpecIdentity`, `specAttachmentFilename`, `specAttachmentTitle`,
+`reconcileEpicChildren`, `EPIC_LABEL`, `EPIC_MIN_CHILDREN`, `EPIC_MAX_CHILDREN`,
+`CHILD_MAX_ESTIMATE`, `SPEC_ATTACHMENT_MIME`) plus this phase's own
+`$BOSS_PLAN_TOOLBOX/plan-epic-phase25.mjs` (`detectEpicParent`, `epicSpecRecoveryGate`,
+`stalePlanAttachmentSweep`, `epicPhase25WritePlan`);
+never re-derive either inline.
 
 **Precondition — the source ticket MUST be unplanned.** The whole epic model depends on it:
 parent-repurpose-last keeps the original in unplanned until the epic is fully built, and idempotent
 resume re-picks a stranded partial epic via the **headless unplanned sweep** (`list_issues
 state=unplanned`). Phase 1 admits an explicitly-named planned/in-progress source; if such a
-non-unplanned source triages **EPIC**, **first `parseEpicSpecMarker` on its description before
-falling back**: if it already carries a `boss-plan-epic-spec` marker it is an **existing epic parent**
-(a fully-built epic is flipped to planned but keeps the marker), so route to the **idempotent
-resume/no-op path** — recover the spec, complete only the missing children/wiring, or no-op if the
-epic is already fully built — **never** the single-ticket fallback, which would re-plan a finished epic
-as a normal buildable ticket with an implementation-plan artifact + `agent-friendly`. Only a
-non-unplanned source **with no epic marker** falls back to a single-ticket
+non-unplanned source triages **EPIC**, **check BOTH spec stores before falling back** — one
+`get_issue(parent)` already returns `attachments[]` **and** `description`, so checking both costs
+**zero** extra calls. `detectEpicParent(issue)` is the whole classification, over that one payload:
+it returns `{isEpicParent, source, specAttachmentId, ambiguous, reasons}` and owns the
+store-specific presence rule, the attachment-wins-over-legacy ordering, and the two-or-more
+`Epic spec (…)` attachments case (`ambiguous: true` ⇒ **abort loudly** per the contract's duplicate
+policy, never guess which is current). An `isEpicParent` verdict means an **existing epic parent** (a
+fully-built epic is flipped to planned but keeps its spec), so route to the **idempotent
+resume/no-op path** — read the spec with `parseEpicSpec` on the **attachment body**, never on a
+description that merely contains it — and **never** to the single-ticket fallback, which would
+re-plan a finished epic as a normal buildable ticket with an implementation-plan artifact +
+`agent-friendly`. **Why the two stores are asymmetric:** an `Epic spec (…)` attachment is created by
+nothing but this phase, so a present-but-unreadable one is still proof; the **description** store is
+the opposite because it is reporter-writable prose. A bare `<!-- boss-plan-epic-spec:` substring
+is not evidence — a reporter can quote that string (this very sentence does), and treating the quote
+as presence would classify a brand-new ticket as an unreadable epic parent and abort it loudly on
+every sweep, permanently unplannable. **Identity is checked on an
+attachment-sourced spec ONLY:** an attachment body can be copied or mis-attached from another epic,
+so it must prove `validateSpecIdentity(spec, <ISSUE-ID>)`. A legacy inline spec predates both
+`schemaVersion` and `parentId`, so that check would reject it unconditionally; it is accepted on
+**provenance** instead — it sits in the description of the ticket being resumed, which is the
+strongest binding that store can offer. That is weaker than it sounds (duplicating an issue copies
+its description, so a duplicate carries a spec naming the original's children); it is accepted
+because the legacy store is read-only, frozen, and slated for removal, not because it is forgeproof.
+A legacy parse that succeeds is trusted and **recovered** as-is; only a legacy parse _failure_
+reaches the gate below. **Unreadable-spec recovery gate** — when the spec cannot be read, or an
+attachment-sourced spec fails `validateSpecIdentity`, the decision is
+`epicSpecRecoveryGate({parent, children, plannedState, epicLabel})`, which owns the ALL-of conjunct
+set and names every failed one. Feed it the `list_issues parentId=<parentId> limit=250` enumeration
+below; where that op omits each child's attachments, read them per child — the one extra read this
+gate may make. Its `action` is only ever `'noop'` (enumerate + no-op) or `'abort'`:
+**falling through to the single-ticket path is forbidden** — deliberately not even expressible in
+that return type, because it would re-plan a finished or partial
+epic as a normal buildable ticket. An **unplanned** parent can never satisfy the planned-parent
+conjunct, so a corrupt spec attachment on one aborts every sweep until a human intervenes — that is deliberate
+(re-decomposing would duplicate children), and the remediation is the same as the duplicate policy's:
+delete the unreadable `Epic spec (…)` attachment, leaving the parent to re-decompose cleanly, or
+repair its body. Accepted residual: the gate cannot detect a child deleted
+outright — that failure is non-destructive (a partial epic is left alone, not corrupted). Only a
+non-unplanned source with **neither** store present falls back to a single-ticket
 `SUBSTANTIAL` plan (headless records the reason; interactive may re-ask). A non-unplanned parent
 would sit in a non-queue state through the create→wire→expose window and, on a crash before the final
 flip, be **invisible to the unplanned sweep and stranded** — recoverable only by manually re-running
@@ -282,10 +356,35 @@ that exact id. This precondition also means a well-formed epic parent never carr
 `agent-friendly`/plan-link metadata; the strip in step 4 (below) is a defense-in-depth backstop, not
 the primary guard.
 
+**The spec attachment contract.** The decomposition spec is a **native tracker attachment carrying
+plain JSON**, never a description marker:
+
+| Field            | Value                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| filename         | `epic-spec.json` (`specAttachmentFilename()`)                                                                 |
+| MIME type        | `application/json` (`SPEC_ATTACHMENT_MIME`)                                                                   |
+| title            | `Epic spec (<ISSUE-ID>)` (`specAttachmentTitle(<ISSUE-ID>)`) — **must NOT start with `Implementation plan`**  |
+| body             | `serializeEpicSpec(spec)` — plain JSON `{ schemaVersion, parentId, parent, children }`                        |
+| read             | `readPlanAttachment` (the Phase 0 attachment-read op), by attachment id from `get_issue`                      |
+| duplicate policy | exactly one is valid; **two or more ⇒ abort loudly**, never guess — a human deletes all but one, then re-runs |
+| identity         | `validateSpecIdentity(spec, <ISSUE-ID>)` — `schemaVersion` + `parentId` must match, **not title alone**       |
+
+Upload it with the **same** prepare → PUT → finalize mechanism a plan artifact uses
+(`references/plan-storage.md` steps 1–4, `uploadRequest.headers` scratch-file discipline and its
+immediate deletion after the PUT included), substituting this contract's filename, MIME type and
+title. Never hand-roll a second upload path, and never claim the plan artifact's `text/markdown`
+MIME or its `Implementation plan (…)` title: `bs-epic-lib.mjs`'s `normalizeTicket` recognizes a plan
+by exactly that prefix, so a spec attachment titled that way is mistaken for the parent's plan
+artifact. Title alone is not identity — a human can create an attachment with any name — so the
+`schemaVersion` + `parentId` match is what makes it trustworthy.
+
 The planner drafts a **decomposition spec**
-`{ parent:{title,goal,keyChanges[]}, children:[{key,title,goal,keyChanges[],blockedByKeys[],estimate,priority,agentFriendly,openQuestions[]}] }`
+`{ parentId:"<ISSUE-ID>", parent:{title,goal,keyChanges[]}, children:[{key,title,goal,keyChanges[],blockedByKeys[],estimate,priority,agentFriendly,openQuestions[]}] }`
 (each `key` is a **stable** title-derived slug from `stableChildKey`, so a fresh-worktree retry
-re-derives it identically and its resume marker still matches), then runs this **ordering discipline —
+re-derives it identically and its resume marker still matches; **`parentId` is the source ticket's own
+id and is not optional** — `serializeEpicSpec` omits an absent id rather than inventing one, and
+`validateSpecIdentity` then refuses the attachment forever, so an unset `parentId` ships an
+unbindable spec), then runs this **ordering discipline —
 validate everything locally BEFORE the first Linear write** (the atomicity guard):
 
 1. **Validate the spec.** `validateDecomposition` + `assertAcyclic`. On failure: interactive
@@ -293,36 +392,94 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    plan and records the reason** (never emit a broken epic).
 2. **Fully plan every child locally** to `.linear-plans/<PARENT>-child-<key>-<slug>.md`, each a full
    **planContract-v1** plan (Phase 3), drafted with **`allowEpic: false`** — the **recursion guard**:
-   a child is never itself decomposed (depth cap = 1). Copy each child's exact gate-validated Markdown
-   into its `planMarkdown` spec field, and copy each child plan's own `agentFriendly`
-   verdict onto its spec entry, then **re-run `validateDecomposition` on the completed spec before any
+   a child is never itself decomposed (depth cap = 1). The spec never carries plan bodies, so copy
+   only each child plan's own `agentFriendly` verdict **and its `openQuestions` list** onto its spec
+   entry — `serializeEpicSpec` derives the child's `agentQuestion` (⇒ the `agent-question` label) from
+   a non-empty `openQuestions`, so a child left blank here silently loses that queue signal on
+   resume. Then **re-run `validateDecomposition` on the completed spec before any
    write** — step 1 validated the spec _before_ those verdicts existed, so its non-boolean-`agentFriendly`
-   guard (a malformed `"false"` string `epicSpecMarker` would coerce to `true`) only bites when
+   guard (a malformed `"false"` string `serializeEpicSpec` would coerce to `true`) only bites when
    validation runs again after the copy. Run the Phase 4 **secret** and **image-parity**
    gates on every child plan _before_ any write.
 3. **Confirm** (interactive only, via `AskUserQuestion`: create this epic / plan as one ticket /
    cancel); headless auto-creates.
-4. **Persist the FULL spec FIRST** (`epicSpecMarker(spec)`): **append** the hidden
-   `<!-- boss-plan-epic-spec:{parent,children:[…]} -->` marker to the **original** ticket's
-   **existing** description via `save_issue` — **preserve the original description bytes** (append/
-   prepend the marker, never replace; the marker is an HTML comment, so it stays invisible and adds/
-   removes no images). Description-only; does NOT move it out of unplanned, so parent-repurpose-last
-   still holds. **Defense-in-depth — in this SAME first `save_issue`, strip any pre-existing
-   `agent-friendly`/`needs-human` label and stale single-ticket `Implementation plan (…)` link or
-   attachment** from the parent. The unplanned-source precondition above means a well-formed parent has
-   none, but `boss-build` selects exactly a planned ticket carrying `agent-friendly` + a plan artifact, so stripping
-   at the FIRST write guarantees even a mis-selected/hand-forced parent is non-`boss-build`-selectable
-   from the first tracker mutation onward rather than through the create→wire→expose window or after a
-   crash (step 7's strip then only reaffirms it). **Crash-safety:** on a crash after this marker write but before step 7 repurposes the
-   parent, Linear still holds the **original notes + image URLs AND the marker**, so a fresh retry
-   recovers the spec from the marker **and** reconstructs the verbatim `## Original notes` + runs the
+4. **Persist the FULL spec FIRST.** The spec is an attachment now, so the old single atomic
+   `save_issue` becomes an ordered write sequence, and that sequence is
+   `epicPhase25WritePlan({parentId, spec, unplannedState, staleAttachmentIds, labelsToStrip})`
+   (`labelsToStrip` = the `agent-friendly`/`needs-human` exposure roles; it is **parent-scoped**,
+   stage 1's `stripLabels` and nothing else): execute its ops **in emitted order** — `label-strip`,
+   then `spec-upload`, then `stale-delete`, then `create-children` — **minus any stage the
+   preconditions below skip, and on a resume minus every child `reconcileEpicChildren` does NOT
+   report `missing`** (it emits one `createChild` per SPEC child, never per missing child; executing
+   those unfiltered on a resume duplicates every child that already exists), exactly as step 5
+   executes `epicWiringPlan`. Each entry is `{stage, op, args, runtimeArgs}`, and **`args` is the
+   statically-known subset only**, under the adapter's own key names — `runtimeArgs` names what only
+   the executor can supply because it does not exist until the previous op ran (the prepare's `size`,
+   the PUT's `file`/`uploadURL`/`headers`, the finalize's `assetUrl`). It owns the ordering (in
+   particular that every destructive delete comes strictly after the spec upload); never re-derive
+   that inline. It does **not** own the stage preconditions below, which stay prose, and it emits
+   **no child `labels` field** — a child's label set is not derivable from the spec
+   (`serializeEpicSpec` persists `agentFriendly`/`agentQuestion`, never a `labels` array), so the
+   content labels + `agent-question` union below stays the caller's job:
+   - **Stage 1 — label strip only.** The entry carries `stripLabels` OUTSIDE `args`, because
+     `save_issue` has **no** "remove these labels" argument — its `labels` **replaces** the whole
+     set. So read the parent's current labels (op `readLabels`), subtract `stripLabels`, and send
+     the result as `labels`; spreading a `removeLabels` key into the call would either error or
+     silently send `{id}` alone, leaving the parent exposed for the whole create→wire→expose
+     window. Cheap, atomic, reversible, and sufficient on its own:
+     `boss-build` selects a ticket that is planned **and** `agent-friendly` **and** carries a plan
+     artifact, so breaking one conjunct makes the parent non-selectable from the FIRST tracker
+     mutation onward rather than through the create→wire→expose window or after a crash (step 7's
+     strip then only reaffirms it). This is the safety write; **it must not delete anything.**
+   - **Stage 2 — upload the spec, exactly once.** **Read the parent's `attachments[]` AND its
+     description FIRST — BOTH stores, the same dual-store rule detection uses.** Scoping this check
+     to attachments would miss a legacy parent entirely, and the unplanned sweep that lands here is
+     the **primary** resume route, not just the named-source branch above. Unlike the description
+     marker it replaces — where a re-save simply overwrote the one marker —
+     a finalize is **not** idempotent: it mints a NEW attachment row on every call, so a re-picked
+     parent that already carries a spec must never upload a second one. Apply the same store-specific
+     presence rule detection uses: an `Epic spec (…)` **attachment** counts when present; a
+     **description** counts only when `parseEpicSpec(description)` returns a spec, never on a bare
+     quoted `<!-- boss-plan-epic-spec:` substring. Take these in order: **two
+     or more `Epic spec (…)` attachments ⇒ abort loudly** per the contract's duplicate policy;
+     otherwise **either** store present ⇒
+     **skip this stage entirely**, and skip stage 3 with
+     it (step 7's flip re-runs that same prefix-scoped strip); discard the spec just drafted and
+     continue on the idempotent resume
+     path below against **the stored** one (a crash after stage 2 leaves precisely this state,
+     and the parent is still unplanned, so the sweep re-picks it here). A legacy-sourced resume
+     writes **no** attachment — it keeps its inline marker, carried verbatim through step 6's save. Otherwise upload — first **set `spec.parentId` to this
+     ticket's id**, since only a bound spec can ever pass `validateSpecIdentity`. The PUT takes a
+     **file**, so write
+     `serializeEpicSpec(spec)` to `.linear-plans/<ISSUE-ID>.epic-spec.json` (the exact path Phase 5
+     cleanup matches by name). **Then verify those bytes BEFORE the PUT:**
+     `validateSpecIdentity(parseEpicSpec(<the file's contents>), <ISSUE-ID>)` must be `ok`. Nothing
+     else catches an unbound spec — `serializeEpicSpec` omits an unset `parentId` silently rather
+     than inventing one, and `validateDecomposition` never inspects it — so without this check the
+     attachment uploads clean and only turns fatal much later, when a resume cannot bind it. `ok:false`
+     ⇒ abort here, while zero children exist. Otherwise prepare → PUT → finalize the
+     `epic-spec.json` attachment per the contract above, then delete that scratch. **Any** failure takes the SAFE branch: abort with
+     **zero children created**, the parent still unplanned, so the next unplanned sweep re-picks it.
+   - **Stage 3 — the deferred destructive strip.** Its `staleAttachmentIds` come from the same
+     prefix-scoped sweep step 7 cites, in its **one-arg** form — no parent-overview attachment
+     exists yet, so there is nothing to keep; an unscoped sweep would destroy the spec just
+     uploaded. Any
+     stale single-ticket `Implementation plan (…)` **link** is dropped here too. For
+     `tracker-attachment`, `deletePlanAttachment` was already required **before the FIRST epic
+     write** (this stage is skipped on every resume, so gating on its availability here would defer
+     the check to step 7 — past child creation and exposure). A crash between stages 1 and 2 leaves only a removed label —
+     recoverable, non-destructive, and resume just re-decomposes from scratch, nothing orphaned.
+
+   No stage moves the ticket out of unplanned, so parent-repurpose-last still holds. **Crash-safety:**
+   the description is never rewritten here, so after stage 2 Linear holds the **original notes +
+   image URLs AND — unless stage 2 was skipped because a store already existed — the spec
+   attachment**, and a fresh retry recovers the spec from whichever store holds it
+   **and** reconstructs the verbatim `## Original notes` + runs the
    image-parity gate against the still-present original source. This durable record — surviving a fresh
    cron worktree — carries
    the parent overview **and every child's full metadata** (key, title, goal, keyChanges, blockedByKeys,
-   estimate, priority, **the child plan's gate-validated `planMarkdown` when the bounded aggregate marker
-   can retain it (otherwise resume redrafts that child before attachment), `agentFriendly` call, and its
-   `agentQuestion` decision** —
-   `openQuestions` non-empty), so a retry completes the
+   estimate, priority, **`agentFriendly` call, and its `agentQuestion` decision** —
+   `openQuestions` non-empty; it never carries plan bodies), so a retry completes the
    **original** epic from the parent alone rather than re-decomposing (a fresh LLM re-decomposition
    could build a different partial epic). Persisting `agentFriendly`/`agentQuestion` is what lets resume
    re-stamp the step-6 deferred-exposure label **and** re-apply `agent-question` to an ALREADY-created
@@ -333,21 +490,24 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    priority, schedules children as the decomposition intended rather than by default/None), content
    labels **plus `agent-question` for any child whose plan recorded non-empty `openQuestions`** (the
    Phase 4 contract — union it into that child's labels at creation; it is independent of the
-   agent-friendly/needs-human call and survives via the marker's `agentQuestion`), and a child plan
+   agent-friendly/needs-human call and survives via the spec's `agentQuestion`), and a child plan
    **artifact titled exactly `Implementation plan (<child id>)`** (`boss-epic`'s
    `normalizeTicket` recognizes a plan only via a link/attachment whose title **starts with**
    `Implementation plan`; a child linked or attached under any other title is exposed `agent-friendly` yet silently
    skipped by `boss-epic` as missing a plan). On resume, inspect every adopted shell for that exact
-   canonical attachment first. If absent, reconstruct its plan file from the durable `planMarkdown` and
-   prepare, PUT, and finalize it before any planned-state or exposure write. An old marker lacking the
-   body must redraft the same synthetic child with `allowEpic:false`, re-run its secret and image-parity
-   gates, and persist the renewed marker before attaching; never expose an adopted child without its
-   canonical plan artifact. Then add a `<!-- boss-plan-epic-child:<key> -->` resume marker
-   embedded in each child's description — but **not** `agent-friendly` yet: deferred exposure, step 6) in
+   canonical attachment first. If absent, **always redraft** that child from its persisted spec
+   metadata with `allowEpic:false`, re-run its secret and image-parity gates, and prepare, PUT and
+   finalize the plan attachment before any planned-state or exposure write. Plan bodies are never
+   persisted in the spec, so this unconditional redraft is the single documented path, not a
+   size-triggered fallback; never expose an adopted child without its
+   canonical plan artifact. Then add the `epicChildMarker(key)` resume marker (its canonical
+   emitter, never a hand-written literal comment) embedded in each child's description — but
+   **not** `agent-friendly` yet: deferred exposure, step 6) in
    `topoOrderChildren` order, recording each new id against its `key`. For `tracker-attachment`, now
    prepare, PUT, and finalize that child's attachment, then move its shell to the planned state. Any
    attachment failure takes the SAFE branch before that child's planned-state or label exposure. A non-`agent-friendly` child is
    not `boss-build`-selectable, so it cannot be picked up before its blockers exist.
+
 5. **Wire the intra-epic DAG.** Execute `epicWiringPlan(spec, createdIdByKey)`: set each child's
    intra-epic `blockedBy` (append-only). These edges are internal to the epic — the children were all
    just created together and, on abort, stay unexposed together — so wiring them before the parent
@@ -361,8 +521,14 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    (step 5; the external links are deferred to here), **commit the parent overview before any external
    edge is written or any child is exposed:** compose the parent overview, run step 7's
    two gates (secret + image-parity), then attach it natively and save it onto the still-unplanned
-   parent** (description-only, re-appending the `<!-- boss-plan-epic-spec:… -->` marker; the
-   unplanned → planned flip stays last — step 7). On a gate **or** attachment/save failure take the SAFE
+   parent** (description-only; an **attachment-sourced** spec lives outside the description, so this
+   description-replacing save cannot lose it — the old re-append-the-marker requirement is obsolete
+   there, not dropped by accident. **A LEGACY-sourced resume is the exception:** that parent's spec
+   _is_ the inline `<!-- boss-plan-epic-spec:… -->` marker, so carry that marker substring
+   **verbatim** into the composed overview — this save would otherwise destroy the only store and
+   leave the parent with neither, which the next sweep re-decomposes into DUPLICATE children. Carry
+   it; never migrate it to an attachment instead — this phase only ever sweeps unplanned tickets, so
+   a self-heal-on-read path would almost never fire and is not worth the second write. The unplanned → planned flip stays last — step 7). On a gate **or** attachment/save failure take the SAFE
    branch — **no external links, no exposure, no planned flip, abort**. Because the failure-prone
    plan-store + Linear parent save happen **here, before any external edge or exposure**, a
    **deterministic** parent-gate failure never leaves a child `agent-friendly`/buildable, nor a non-epic
@@ -389,14 +555,14 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    `agent-friendly`/`needs-human`, unbuildable), so a `boss-build` cron cannot pick a downstream child
    during the create→wire window; resume completes wiring **and** this exposure. **On resume the
    per-child call comes from the recovered spec:** an already-created-but-unexposed child adopted from
-   the parent marker has no `.linear-plans/` plan to re-read, so its persisted `agentFriendly` (step 4)
+   the parent's spec has no `.linear-plans/` plan to re-read, so its persisted `agentFriendly` (step 4)
    is the authoritative source for whether resume stamps it `agent-friendly` or `needs-human`.
 7. **Repurpose the parent (original-becomes-parent).** The epic overview (goal + child checklist with
    plan artifacts + verbatim `## Original notes`) was **composed, gated, stored + saved onto the
-   still-unplanned parent in step 6**, **carrying the hidden `<!-- boss-plan-epic-spec:… -->` marker
-   forward** (re-appended on that save — the save replaces the description, so without re-appending, the
-   step-4 marker is lost and idempotent resume could no longer recover the FULL original spec from a
-   fully-built parent, re-decomposing into DUPLICATE children instead of the promised clean no-op). The
+   still-unplanned parent in step 6**; the spec attachment is untouched by that description-replacing
+   save (and a legacy parent's inline marker was carried through it verbatim), so idempotent resume
+   still recovers the FULL original spec from a fully-built parent instead
+   of re-decomposing into DUPLICATE children. The
    parent overview embeds the original description verbatim, so its step-6 gates are the **same two
    Phase 4 STOP gates**: the **secret gate** (read the composed parent overview; redact
    any credentials/PII before attachment finalization) and the **image-parity gate** (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs` —
@@ -404,7 +570,7 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    overview's `## Original notes`; on a drop take the SAFE branch — **no parent write**, abort). **These
    gates run in step 6, BEFORE child exposure**, so a deterministic parent-gate failure aborts with the
    children still unexposed/unbuildable. So step 7 is the final unplanned → planned
-   flip (the last write), the overview + marker already saved above.
+   flip (the last write), the overview already saved above.
    **Parent estimate, priority, and label:** resolve `EPIC_LABEL` through
    `labelName(config, 'epic')`, then union that result into the parent labels. The final flip writes
    `estimate = epicParentEstimate(spec)` and `priority = parent.priority`. The sum can be non-Fibonacci:
@@ -413,16 +579,20 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    **neither** `agent-friendly` **nor** `needs-human` (it is a `boss-epic` container, not a
    `boss-build` target); each **child** carries exactly one of `agent-friendly`/`needs-human`
    (**per its own plan's agent-friendliness call**), but **applied only after wiring** (step 6 deferred
-   exposure), never at child-create time. **Strip stale build metadata as part of this flip:** Phase 1
-   admits explicitly-named planned/in-progress issues, so a ticket that was **already planned** before
-   being repurposed into an epic can already carry `agent-friendly` **and** an `Implementation plan
-(…)` artifact — and `boss-build` auto-selection keeps a planned issue with that label + artifact, so a
-   state-only flip would leave the epic parent itself `boss-build`-selectable, defeating the
-   parent-label exception. So the repurpose step must **explicitly remove any pre-existing
+   exposure), never at child-create time. **Strip stale build metadata as part of this flip**, for the step-4
+   stage-1 reason (a state-only flip would leave an already-planned parent `boss-build`-selectable,
+   defeating the parent-label exception): **remove any pre-existing
    `agent-friendly`/`needs-human` label from the parent and drop any stale single-ticket
    `Implementation plan (…)` link. For `tracker-attachment`, read the parent attachments and invoke
-   `deletePlanAttachment` for every stale matching attachment except the recorded parent-overview
-   attachment id before the final flip; require that optional operation before the first epic write. The parent overview attachment finalized in step 6 is
+   `deletePlanAttachment` on exactly the ids
+   `stalePlanAttachmentSweep(attachments, {keepAttachmentId: <the parent-overview attachment id>})` returns,
+   before the final flip; **require that optional
+   operation before the FIRST epic write** — not at stage 3, which is skipped on every resume, so
+   gating on it there would defer the check to this final flip, i.e. until after children are created,
+   wired and exposed `agent-friendly`. On an adapter lacking the op that ordering strands buildable
+   children under an unplanned parent; checking up front takes the SAFE branch with nothing written. That helper's predicate is prefix-scoped and
+   nothing else, deliberately: an unscoped sweep would silently destroy the `Epic spec (…)`
+   attachment on the final flip. The parent overview attachment finalized in step 6 is
    retained as the epic artifact.**
 
 **Guards (load-bearing — the trigger bar is low + headless auto-creates):** per-child estimate ceiling
@@ -437,19 +607,37 @@ children are created + wired **before** step 7 moves the parent unplanned → pl
 malformed sentinel mid-create leaves the original ticket unplanned and the next sweep re-picks and
 resumes it — a partial epic is never stranded), and **idempotent resume** (durable — survives a fresh
 cron worktree where the `.linear-plans/` scratch is gone): first `get_issue` the parent and
-`parseEpicSpecMarker` its description to recover the **FULL original spec** (parent overview + every
-child's full metadata) from the `<!-- boss-plan-epic-spec:… -->` marker (step 4 wrote it before any
-child **and step 7 re-appends it to the repurposed parent**, so the marker survives even a
-fully-built epic); then enumerate the already-created children with `list_issues parentId=<parentId> limit=250`
+`parseEpicSpec` the **body of its `Epic spec (<ISSUE-ID>)` attachment** (two or more
+`Epic spec (…)` attachments ⇒ **abort loudly**, never guess) to recover the **FULL original
+spec** (parent overview + every child's full metadata) — step 4 stage 2 wrote it before any child and
+no later description save touches it, so it survives even a fully-built epic. **Then
+`validateSpecIdentity(spec, <ISSUE-ID>)` it** — attachment-sourced specs only, here too and not just on
+the named-source branch above: the attachment was selected by title, and title alone is not identity.
+A failure takes the unreadable-spec recovery gate, never a silent resume against another epic's spec. **Legacy store (the one
+description read that remains):** a parent written by an earlier build carries the spec inline as a
+`<!-- boss-plan-epic-spec:… -->` description marker instead, and `parseEpicSpec` falls back to that
+form, so such an epic is still recognised and recovered. Then enumerate the already-created children with `list_issues parentId=<parentId> limit=250`
 (the op `boss-epic` uses — `get_issue` on the parent does not return the children's descriptions where
-the marker lives) and match each by its embedded `<!-- boss-plan-epic-child:<key> -->` marker (written
-at creation; preferred over title, which may collide). Create only the spec keys not yet present —
+the child markers live) then join them against the spec with `reconcileEpicChildren(spec, liveChildren)` — never by eye, never
+by title — which matches each live child's `epicChildMarker(key)` marker to `spec.children[].key` and
+reports `{adopted, missing, orphans, unmarked, repairs, errors}`. **Aligned** (no orphans): create
+exactly what `missing` names. **Unambiguous rename** (`repairs` holds one `{specKey, liveKey, id}`):
+adopt that child and rewrite **its own** description marker to `epicChildMarker(specKey)` — replacing
+only the marker substring and **preserving the rest of that description's bytes verbatim**, since the
+save replaces the description and would otherwise wipe the child's gated plan body; repair the
+child, never the spec key, because `specKey` is the namespace `adopted` reports under and the one every
+sibling's `blockedByKeys` and `epicWiringPlan` resolve through, so re-pointing the spec at `liveKey`
+would strand those refs and throw mid-wire, after children already exist — create nothing for it. **Ambiguous
+drift** (`ok:false` — multiple orphans, an unmarked child, duplicate live keys, or a non-array input):
+take the SAFE branch — report `errors`, write nothing, create nothing, never guess; a refusal must never
+be read as "no children exist" (that would duplicate the whole epic). Create only the spec keys
+`missing` names —
 **drafting each missing child from its persisted metadata and wiring it per the persisted
 `blockedByKeys`, never a fresh re-decomposition** — then finish wiring + parent repurpose.
 **Already-saved parent overview:** because step 6 saves the parent overview description-only while the
 parent stays unplanned (the planned flip is step 7), a crash in that window re-picks an unplanned
-parent whose description is **already the composed overview** (`## Original notes` + child checklist +
-marker), not the reporter's raw notes; on resume **detect this and reuse the saved overview verbatim** —
+parent whose description is **already the composed overview** (`## Original notes` + child checklist),
+not the reporter's raw notes; on resume **detect this and reuse the saved overview verbatim** —
 never recompose `## Original notes` from the transformed description (which would nest the overview or
 trip image parity) — then **run the deferred step-6 external conflict links BEFORE stamping any child
 buildable** (a crash could have landed after the parent save but before that pass, so the normal-flow
@@ -643,11 +831,28 @@ rm -f ".linear-plans/<ISSUE-ID>-<slug>.md"
 # prepare/PUT/finalize abort cannot strand signed-upload request headers.
 rm -f "${ATTACHMENT_HEADERS_FILE:-}"
 # EPIC runs also wrote one full plan per child (.linear-plans/<ISSUE-ID>-child-*.md — the planned
-# ticket is the parent) plus any per-issue image-guard and attachment-header scratch; glob them so a
-# successful epic, or an abort after child planning, never leaves scratch (child plans can carry
-# `## Original notes`; header files can carry signed request data).
-rm -f ".linear-plans/<ISSUE-ID>-child-"*.md ".linear-plans/<ISSUE-ID>"*.image-guard-*.md \
-  ".linear-plans/<ISSUE-ID>"*.attachment-headers-*.json
+# ticket is the parent) plus per-issue image-guard, attachment-header and epic-spec-body scratch
+# (step 4 stage 2's `.linear-plans/<ISSUE-ID>.epic-spec.json`), which can carry `## Original notes`,
+# signed request data and the whole decomposition. ONE PATTERN PER LINE: under zsh and fish an unmatched
+# glob aborts the WHOLE command line, so a single-ticket run — which writes no child plans — would
+# skip every pattern sharing it. `find … -delete` exits 0 on no match, so each line stands alone.
+# The `if` wrapper (not `… || true`, and not `2>/dev/null`) tolerates only the missing-directory
+# case: a real deletion error — permission denied, I/O failure — still propagates. `-type f` keeps
+# `rm -f` semantics by never removing a matching empty directory. Two separate masking bugs would
+# let a naive block report success with scratch still on disk, so guard BOTH: (1) exit status is
+# its LAST command's, so a failed child-plan delete followed by two no-match (exit 0) patterns
+# vanishes — hence CLEANUP_RC accumulates instead of trusting per-line status; (2) BSD `find`
+# (/usr/bin/find on macOS, where cron worktrees run) exits **0** even when `-delete` hits EACCES —
+# only GNU find returns 1 — so the accumulator alone still misses it there. The residual `-print`
+# sweep is the implementation-independent check: it asserts the post-condition we actually want
+# (no matching scratch survives) rather than trusting any find's exit status.
+CLEANUP_RC=0
+if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
+if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
+if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
+if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+[ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans may still hold plan text, signed upload headers or the epic spec" >&2; exit 1; }
 ```
 
 In **interactive** mode also remove the seeded design doc (see "Interactive cleanup" in

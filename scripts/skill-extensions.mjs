@@ -8,7 +8,11 @@ export function main(argv) {
   return toolboxMain(argv)
 }
 
-export { ROLE_SCHEMAS, discoverExtensions, validateResult } from '../skills-toolbox/skill-extensions.mjs'
+export {
+  ROLE_SCHEMAS,
+  discoverExtensions,
+  validateResult,
+} from '../skills-toolbox/skill-extensions.mjs'
 
 if (isMainModule(import.meta.url)) {
   process.exit(main(process.argv.slice(2)))

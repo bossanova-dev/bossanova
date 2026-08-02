@@ -210,8 +210,15 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 // so this returns an empty-but-valid response rather than a fabricated command
 // line. Resume of a headless run is by `--session <id>` on StartRun, not an
 // interactive relaunch.
-func (s *Server) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
-	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
+//
+// The NONE declaration is honest but currently unreachable: both bossd spawn
+// sites reject an empty argv before they read the declaration, so this response
+// fails the launch rather than reporting a dropped suffix. It is set anyway so
+// the declaration stays correct if this path ever returns a real command line.
+func (s *Server) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.BuildInteractiveCommandResponse{
+		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+	}, nil
 }
 
 // ResolveInteractiveSessionID binds a chat to its opencode session by finding

@@ -362,10 +362,17 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// target account's CODEX_HOME preflight before its respawn.
 	respawnOpts := StartSessionOpts{IsTmuxUnattended: isUnattendedSession(session)}
 	resolvedProvider := l.resolveAgentName(provider)
+	// This site computes the profile explicitly rather than deferring to
+	// StartTmuxChat's AutonomousRun seam: the profile has to key on the account
+	// being switched TO, and the respawn does not publish that provider anywhere
+	// the seam can read it. The seam reads the chat row's agent_name, which is
+	// written only by Create (agent_chat_store has no UpdateAgentName), so a
+	// non-resumable cross-agent switch would fall back to the session's stale
+	// provider and silently drop the gate.
 	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
-		resolvedProvider == agentNameCodex && IsRepairChatTitle(chat.Title) {
-		capabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
+		IsRepairChatTitle(chat.Title) {
+		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider)
 	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency
 	// check. The switch already killed the targeted pane and rebound the session;

@@ -48,7 +48,11 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	resumeID, _ := chatResumeSessionID(chat)
 	resume := transcripts.TranscriptExists(ctx, chat.AgentName, sess.WorktreePath, resumeID)
 
-	argv, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, "", false)
+	// This is a read-only preview, not a spawn: it deliberately passes an empty
+	// append_system_prompt, so there are no instruction classes to report and
+	// this path emits no undelivered-instruction record whatever the runner
+	// declares.
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, "", false)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}
@@ -66,7 +70,7 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	}
 
 	return connect.NewResponse(&pb.DescribeChatLaunchResponse{
-		Argv:           argv,
+		Argv:           cmdResp.GetArgv(),
 		WorktreePath:   sess.WorktreePath,
 		Host:           host,
 		AgentName:      chat.AgentName,

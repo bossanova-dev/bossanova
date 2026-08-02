@@ -68,11 +68,76 @@ test('frontmatter allows Task for the required subagent dispatches', () => {
   assert.ok(allowedTools(CODEX).includes('Task'), 'codex mirror must allow the Task tool')
 })
 
-test('every dispatch is annotated tier: opus (judgment steps)', () => {
-  assert.ok(
-    countOf(SKILL, '<!-- tier: opus -->') >= 2,
-    'expected a `<!-- tier: opus -->` annotation on each dispatch',
-  )
+// Split SKILL.md into its `## ` phase sections and return the one whose heading starts
+// with `prefix` (e.g. "Phase 1.5:", "Phase 2:", "Phase 4:"). The colon matters: bare
+// "Phase 1.5" would also match the "Phase 1.5b" stub-filing section.
+function phaseSection(skill, prefix) {
+  return skill.split(/\n## /).find((section) => section.startsWith(prefix))
+}
+
+// This used to be `countOf(SKILL, '<!-- tier: opus -->') >= 2` (plus a `>= 3` sibling below).
+// Both were whole-file count thresholds over five unrelated occurrences, so routing the two
+// mechanical legs while leaving the overview bullet and red-flags row asserting the opposite
+// would have kept them GREEN on a self-contradictory skill. They are now per-section
+// structural assertions in the bs-sweep-debt-skill.test.mjs shape.
+test('the two mechanical dispatches carry a provider-guarded sonnet directive (both mirrors)', () => {
+  for (const [label, skill] of [
+    ['source', SKILL],
+    ['codex mirror', CODEX],
+  ]) {
+    for (const [phase, what] of [
+      ['Phase 1.5:', 'gosec probe'],
+      ['Phase 2:', 'select-batch triage'],
+    ]) {
+      const section = phaseSection(skill, phase)
+      assert.ok(section, `${label} must have a ${phase} section`)
+      // Adjacent, not merely both present: the section also carries a `<!-- tier: sonnet -->`
+      // annotation and prose about dropping "the `model:` line", so two independent matches
+      // stay green on a section whose directive was deleted.
+      assert.match(
+        section,
+        /model:\s*"?sonnet\b/,
+        `${label} ${what} must carry a "model: sonnet" directive, not just the tier annotation`,
+      )
+      assert.match(
+        section,
+        /\$BOSS_AGENT/,
+        `${label} ${what} directive must be $BOSS_AGENT-guarded`,
+      )
+      // Adjacent to `$BOSS_AGENT`, not merely present: Phase 1.5 is ~250 lines and quotes
+      // `~/.claude/skills/…` paths and the `codex-skills` mirror in unrelated prose, so a
+      // section-wide pair stays green even with the per-agent naming deleted from the guard.
+      assert.match(
+        section,
+        /\$BOSS_AGENT[\s\S]{0,24}\bclaude\b/,
+        `${label} ${what} guard must reference lowercase claude next to $BOSS_AGENT`,
+      )
+      assert.match(
+        section,
+        /\$BOSS_AGENT[\s\S]{0,24}\bcodex\b/,
+        `${label} ${what} guard must cover the codex-omit case next to $BOSS_AGENT`,
+      )
+    }
+
+    // Phase 4's boss-repair WATCH is a judgment step and stays on the orchestrator's Opus.
+    const watch = phaseSection(skill, 'Phase 4:')
+    assert.ok(watch, `${label} must have a Phase 4 repair-watch section`)
+    assert.ok(
+      watch.includes('<!-- tier: opus -->'),
+      `${label} Phase 4 repair-watch must keep its tier: opus annotation`,
+    )
+    assert.ok(
+      !watch.includes('sonnet'),
+      `${label} Phase 4 repair-watch (Opus) must not carry a sonnet directive`,
+    )
+    // Exactly one annotation survives — the repair-watch one. Any other is a stale claim
+    // about a leg that is now routed.
+    assert.equal(
+      countOf(skill, '<!-- tier: opus -->'),
+      1,
+      `${label} must keep exactly one tier: opus annotation (the repair-watch dispatch)`,
+    )
+  }
 })
 
 test('dispatches are awaited, never backgrounded', () => {
@@ -217,9 +282,12 @@ test('the gosec probe adds a third awaited general-purpose dispatch', () => {
     countOf(SKILL, 'subagent_type: general-purpose') >= 3,
     'expected >= 3 `subagent_type: general-purpose` dispatch directives (adds the gosec probe)',
   )
+  // The gosec probe's tier is asserted structurally, per section, above — it is a mechanical
+  // leg (fixed CI flags in, one summary line out) and now routes to sonnet.
+  const probe = phaseSection(SKILL, 'Phase 1.5:')
   assert.ok(
-    countOf(SKILL, '<!-- tier: opus -->') >= 3,
-    'the gosec probe dispatch must also be a tier: opus judgment step',
+    probe.includes('subagent_type: general-purpose'),
+    'the gosec probe dispatch must live in the Phase 1.5 section',
   )
 })
 

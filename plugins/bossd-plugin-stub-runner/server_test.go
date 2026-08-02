@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -101,4 +102,24 @@ func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
 		}
 	}
 	t.Fatal("agentRunnerServiceDesc missing RemoveAgentRunHook")
+}
+
+// The stub builds no real command line, so any instruction suffix bossd offers
+// is dropped. Declaring NONE is what lets bossd say so out loud instead of
+// assuming the E2E stub carried it.
+func TestBuildInteractiveCommandDeclaresNoAppendSystemPromptSupport(t *testing.T) {
+	s := newServer(zerolog.Nop())
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:          "agent-1",
+		AppendSystemPrompt: "You are running inside a bossanova-managed chat. ...",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if got := resp.GetAppendSystemPromptSupport(); got != bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE {
+		t.Fatalf("append_system_prompt_support = %v, want NONE", got)
+	}
+	if strings.Contains(strings.Join(resp.GetArgv(), " "), "append-system-prompt") {
+		t.Fatalf("stub argv must stay benign: %v", resp.GetArgv())
+	}
 }

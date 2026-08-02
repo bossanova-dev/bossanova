@@ -13,7 +13,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 
 import {
   detectDrift,
@@ -24,7 +24,8 @@ import {
 } from './sweep-prettify-gate.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 
-const readSkill = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const here = (rel) => new URL(rel, import.meta.url)
+const readSkill = (rel) => readFileSync(here(rel), 'utf8')
 const SKILL = readSkill('../.claude/skills/bs-sweep-prettify/SKILL.md')
 const CODEX = readSkill('../.codex/skills/bs-sweep-prettify/SKILL.md')
 const GATE = readSkill('../.claude/skills/bs-sweep-prettify/gate/gate.mjs')
@@ -86,10 +87,24 @@ test('the sweep is formatting-only and never hand-edits', () => {
 test('commits are tagless with a style scope; PR number injected at finalize', () => {
   assert.ok(SKILL.includes('style(repo):'), 'documents the tagless style(scope) commit')
   assert.match(SKILL, /tagless/i, 'must state commits are tagless')
-  assert.ok(SKILL.includes('add-pr-numbers.sh'), 'must inject the PR number via boss-finalize')
+  // BOS-640: the `add-pr-numbers.sh` call and the `--force-with-lease` push moved into
+  // skills-toolbox/sweep-pr-gate.sh, whose bytes scripts/sweep-pr-gate.test.mjs pins.
+  // Injection is now proved by a CHAIN: this body EXECUTES the gate, and the gate's own bytes
+  // carry both steps. The bare `add-pr-numbers.sh` mention still in this body is narrative
+  // (the rewritten-head CI-rewatch sentence), so it is asserted for what it actually proves
+  // rather than being labelled as proof of injection.
   assert.ok(
-    SKILL.includes('--force-with-lease'),
-    'must force-push with lease after PR-number injection',
+    SKILL.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+    'must execute the PR gate — executing it is what injects [#N] and force-pushes with lease',
+  )
+  assert.ok(
+    SKILL.includes('add-pr-numbers.sh'),
+    'must keep the rewritten-head CI-rewatch rationale, which names add-pr-numbers.sh',
+  )
+  const GATE_SRC = readSkill('../skills-toolbox/sweep-pr-gate.sh')
+  assert.ok(
+    GATE_SRC.includes('--force-with-lease') && GATE_SRC.includes('add-pr-numbers.sh'),
+    'the extracted PR gate still injects [#N] and force-pushes with lease',
   )
 })
 
@@ -98,7 +113,16 @@ test('self-owned finalize removes bossd Stop-hooks before stopping', () => {
     SKILL.includes('skills-toolbox/remove-bossd-stop-hooks.mjs'),
     'must remove bossd Stop-hooks so bossd cannot double-finalize',
   )
-  assert.ok(SKILL.includes('gh pr ready'), 'this skill owns readying the PR')
+  // BOS-640: `gh pr ready` moved into the extracted gate; the skill still owns readying the
+  // PR by invoking it, and scripts/sweep-pr-gate.test.mjs pins the moved draft -> ready block.
+  assert.ok(
+    SKILL.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+    'this skill owns readying the PR, by executing the extracted PR gate',
+  )
+  assert.ok(
+    readSkill('../skills-toolbox/sweep-pr-gate.sh').includes('gh pr ready "$PR_NUMBER" >&2'),
+    'the extracted PR gate still flips the PR out of draft',
+  )
 })
 
 test('mirror gate is documented for any edit to this skill', () => {
@@ -225,6 +249,9 @@ test('the .codex mirror carries the same terminal + gate tokens', () => {
     'NO_CHANGE',
     'node .codex/skills/bs-sweep-prettify/gate/gate.mjs',
     'add-pr-numbers.sh',
+    // BOS-640: no COMMON_REWRITES rule matches a bare repo-root `skills-toolbox/` path, so the
+    // mirror must carry the PR-gate invocation byte-identically.
+    'skills-toolbox/sweep-pr-gate.sh',
   ]) {
     assert.ok(CODEX.includes(token), `codex mirror must carry the token "${token}"`)
   }
@@ -257,12 +284,12 @@ test('clean tree: no probe reports drift -> do not run', () => {
   assert.deepEqual(res.reasons, [])
 })
 
-// `make format` runs `lint-check-version` first and exits before any formatter
-// when the pinned golangci-lint is missing/wrong-version. If the gate reported
-// drift there, Phase 1 `make format` would fail → NO_CHANGE → the drift re-triggers
-// the gate forever, burning an agent session each time. Probe the same prereq and
-// fail CLOSED so every reported drift is one the sweep can actually reconcile.
-test('make format prerequisite failure fails closed (throws), not drift', () => {
+// `make lint-check-version` is a CONSERVATIVE environment probe, not a declared
+// prerequisite of any format target (BOS-653 corrected that claim wherever it appeared,
+// including this throw's own wording; the PROBE is what stays deliberately unchanged). A
+// host that cannot satisfy the pinned toolchain is one whose formatter output we will not
+// trust, so fail CLOSED — the failure direction is a skipped sweep, never a bad one.
+test('lint-check-version environment probe failure fails closed (throws), not drift', () => {
   assert.throws(
     () =>
       detectDrift(
@@ -271,14 +298,14 @@ test('make format prerequisite failure fails closed (throws), not drift', () => 
           goFiles,
         },
       ),
-    /make format prerequisite \(lint-check-version\) failed \(exit 1\)/,
+    /make lint-check-version environment probe failed \(exit 1\)/,
   )
 })
 
-test('make prerequisite spawn error fails closed (throws)', () => {
+test('lint-check-version probe spawn error fails closed (throws)', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, make: { error: new Error('no make') } }), { goFiles }),
-    /make prerequisite probe failed to run/,
+    /make lint-check-version environment probe failed to run/,
   )
 })
 
@@ -353,15 +380,15 @@ test('gofmt drift (listed file) -> run, reason gofmt', () => {
   assert.ok(res.reasons.includes('gofmt'))
 })
 
-// goimports is intentionally NOT probed: `make format` runs `gofmt -w` +
-// read-only golangci per module and never applies `goimports -w`, so a
-// goimports-only drift the sweep can't reconcile must not trigger a (wasted) run.
+// goimports is intentionally NOT probed: each module's `format` target runs plain
+// `gofmt -w` and never `goimports -w`, so a goimports-only drift the sweep can't
+// reconcile must not trigger a (wasted) run.
 test('goimports-only drift does NOT run, and `go` is never probed', () => {
   const run = (cmd, args) => {
     if (cmd === 'make') return { status: 0, stdout: '' }
     if (cmd === 'pnpm') return { status: 0, stdout: '' }
     if (cmd === 'gofmt') return { status: 0, stdout: '' }
-    throw new Error(`gate must not probe ${cmd} ${args?.join(' ')} — make format has no goimports`)
+    throw new Error(`gate must not probe ${cmd} ${args?.join(' ')} — format-all has no goimports`)
   }
   const res = detectDrift(run, { goFiles })
   assert.equal(res.drift, false)
@@ -411,4 +438,105 @@ test('chunk batches Go files under GO_BATCH to stay within ARG_MAX', () => {
   assert.equal(batches.length, 3)
   assert.ok(batches.every((b) => b.length <= GO_BATCH))
   assert.equal(batches.flat().length, files.length)
+})
+
+test('BOS-653: Phase 1 runs the WHOLE-REPO formatter target, not the changed-files one', () => {
+  // BOS-371 made `make format` the AFFECTED/changed-files formatter and moved the whole-repo
+  // run to `make format-all` (Makefile:1001 vs :1007). This sweep's entire purpose is the
+  // whole-tree pass, so on a fresh cron branch — which has no changed files — `make format`
+  // formatted nothing and Phase 2 emitted a false NO_CHANGE. The sweep was inert on that path.
+  //
+  // Pin the FENCED bytes, not a bare `make format-all` substring: the body names formatter
+  // targets in resident prose too, so a bare-path pin stays vacuously satisfied even if the
+  // fence itself regressed to `make format` (BOS-640's lesson, applied to Phase 1).
+  const FENCE = 'make format-all >"$FORMAT_LOG" 2>&1 || {'
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-prettify', SKILL],
+    ['.codex/skills/bs-sweep-prettify', CODEX],
+  ]) {
+    assert.ok(skill.includes(FENCE), `${label}/SKILL.md Phase 1 must run: ${FENCE}`)
+    // `make format` not followed by `-` — i.e. the changed-files target, never `format-all`
+    // and never `format-affected` (which the body may legitimately contrast against).
+    const stale = skill.match(/make format(?![-\w])/g) ?? []
+    assert.deepEqual(
+      stale,
+      [],
+      `${label}/SKILL.md must name no bare \`make format\` — BOS-371 made it the changed-files target`,
+    )
+    assert.ok(
+      !skill.includes('If BOS-371 later introduces a dedicated whole-repo `format-all`'),
+      `${label}/SKILL.md must drop the obsolete forward reference — the alias exists`,
+    )
+    assert.ok(
+      skill.includes('`goimports -w`'),
+      `${label}/SKILL.md must keep the goimports caveat — format-all does not apply it either`,
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-640 — the extracted PR gate, and the ratchet that keeps its saving spent.
+// ---------------------------------------------------------------------------
+
+test('the extracted PR gate is referenced in both mirrors and exists on disk', () => {
+  // No COMMON_REWRITES rule matches a bare repo-root `skills-toolbox/` path, so the mirror
+  // carries the invocation byte-identically; asserting BOTH trees is what catches a mirror
+  // that silently lost it.
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-prettify', SKILL],
+    ['.codex/skills/bs-sweep-prettify', CODEX],
+  ]) {
+    // Pin the EXECUTED bytes, not the bare path — the body also NAMES the helper in its
+    // resident "executed, not read" prose, so a bare-path substring survives deleting the
+    // fenced invocation entirely. prettify had NO other fence-local pin, so before this the
+    // whole invocation could be deleted with every test still green.
+    assert.ok(
+      skill.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+      `${label}/SKILL.md must execute skills-toolbox/sweep-pr-gate.sh`,
+    )
+    assert.ok(
+      skill.includes('test -n "$PR_NUMBER"'),
+      `${label}/SKILL.md must fail the block when the gate produced no PR number`,
+    )
+  }
+  assert.ok(
+    existsSync(here('../skills-toolbox/sweep-pr-gate.sh')),
+    'skills-toolbox/sweep-pr-gate.sh must exist on disk',
+  )
+})
+
+test('the resident body stays under the post-extraction ratchet', () => {
+  // Measured post-extraction bodies: 16761 B (.claude) / 16843 B (.codex), down from the
+  // 17365 B (.claude) / 17446 B (.codex) pre-extraction baseline. The ceiling is the larger
+  // mirror + 64 B, so the 22-line PR-gate saving is actually banked and cannot be silently
+  // re-spent on body regrowth — move situational content into a reference instead.
+  //
+  // Bumped 16907 -> 17312 for the model-tier work: the Hard Rules now record the negative
+  // result that this skill dispatches NO subagent, so it has no leg to route to a cheaper
+  // tier and per-dispatch `effort:` is not settable from a skill here. That is a decision
+  // record, not situational content — there is no reference to move it into, and without it
+  // the question gets re-litigated every time someone audits tier coverage. Bodies are
+  // 17174 B (.claude) / 17256 B (.codex), so the ceiling leaves 56 B of slack — nearly none.
+  // It still sits below the pre-extraction baseline, so the extraction saving is not handed
+  // back, but the NEXT addition here does not fit: move situational content into a reference
+  // rather than bumping again.
+  //
+  // BOS-653 spent 21 B of that 56 without a bump: `START_SHA="$START_SHA" ` in the gate
+  // invocation (+23) and `make format` -> `make format-all` at 8 sites (+32), funded by
+  // deleting the obsolete "if a format-all alias later appears" paragraph and by correcting
+  // two now-false prose claims (the golangci parenthetical, and the cron-gate sentence that
+  // still said the sweep "could never reconcile" drift `format-all` in fact reconciles).
+  // Bodies are 17195 B (.claude) / 17277 B (.codex) — 35 B of slack. Re-measure before editing.
+  const CEILING = 17312
+  assert.ok(CEILING < 17365, 'ceiling must stay below the pre-extraction baseline')
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-prettify', SKILL],
+    ['.codex/skills/bs-sweep-prettify', CODEX],
+  ]) {
+    const bytes = Buffer.byteLength(skill, 'utf8')
+    assert.ok(
+      bytes < CEILING,
+      `${label}/SKILL.md must stay under ${CEILING} bytes (post-extraction ratchet), got ${bytes} — move situational content into a reference`,
+    )
+  }
 })

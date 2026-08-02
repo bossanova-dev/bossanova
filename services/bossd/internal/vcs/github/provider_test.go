@@ -1276,6 +1276,12 @@ func TestGetReviewComments_BotNoThreads(t *testing.T) {
 	}
 }
 
+// TestGetReviewComments_GraphQLFailure pins the fail-CLOSED contract for an
+// unreadable thread state. This test previously asserted the opposite under a
+// "fail-closed" label: the transport failure was swallowed and the bot's review
+// was returned un-promoted, which the merge gate reads as "nothing is blocking"
+// — a gate that disappears exactly when GitHub is unreachable. The thread state
+// is unknown, so the error must surface (BOS-644).
 func TestGetReviewComments_GraphQLFailure(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
@@ -1288,15 +1294,61 @@ func TestGetReviewComments_GraphQLFailure(t *testing.T) {
 
 	p := New(zerolog.Nop(), WithRunGH(fakeGH))
 	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
+		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
 	}
-	if len(comments) != 1 {
-		t.Fatalf("got %d comments, want 1", len(comments))
+	if comments != nil {
+		t.Errorf("got %d comments, want none alongside an unverified thread state", len(comments))
 	}
-	// GraphQL failed — fail-closed means no promotion.
-	if comments[0].State != vcs.ReviewStateCommented {
-		t.Errorf("bot comment state = %v, want Commented (fail-closed)", comments[0].State)
+}
+
+// TestGetReviewComments_GraphQLMalformedResponse covers the second unverifiable
+// path: the query succeeded but its response cannot be parsed, so which threads
+// are unresolved is just as unknown as when the call failed outright.
+func TestGetReviewComments_GraphQLMalformedResponse(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return `{"data":{"repository":{"pullRequest":`, nil
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
+		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
+	}
+	if comments != nil {
+		t.Errorf("got %d comments, want none alongside an unverified thread state", len(comments))
+	}
+}
+
+// TestGetReviewComments_GraphQLMissingEndCursor covers the third unverifiable
+// path: GitHub reports another page of threads but supplies no cursor to fetch
+// it. Pagination cannot continue, so the threads already seen are an incomplete
+// answer — the unresolved thread that blocks may be on the page we cannot read.
+func TestGetReviewComments_GraphQLMissingEndCursor(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return `{"data":{"repository":{"pullRequest":{"reviewThreads":{
+				"nodes":[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}}],
+				"pageInfo":{"hasNextPage":true,"endCursor":""}
+			}}}}}`, nil
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
+		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
+	}
+	if comments != nil {
+		t.Errorf("got %d comments, want none alongside an unverified thread state", len(comments))
 	}
 }
 
@@ -1540,5 +1592,185 @@ func assertPRSummaries(t *testing.T, got, want []vcs.PRSummary) {
 		if got[i] != want[i] {
 			t.Errorf("PR[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestGetReviewObservation_CountsReviewsGetReviewCommentsDrops is the provider
+// half of the BOS-644 observability fix. GetReviewComments deliberately drops a
+// bot's COMMENTED review once every thread from that bot is resolved, so a tally
+// taken from its result cannot tell "the bot reviewed and was fully addressed"
+// (the healthy, ready-to-merge PR) from "no bot ever reviewed" (the empty
+// safety net). GetReviewObservation reads the same REST list BEFORE that
+// filtering, so the dropped review is still counted.
+func TestGetReviewObservation_CountsReviewsGetReviewCommentsDrops(t *testing.T) {
+	// One bot review whose only thread is resolved, plus one human review.
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{true, "chatgpt-codex-connector"},
+			), nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"no issues found","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"looks good","state":"APPROVED"}
+		]`, nil
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	// The filtered set the gate judges has dropped the addressed bot review.
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("GetReviewComments: unexpected error: %v", err)
+	}
+	for _, c := range comments {
+		if isReviewBotLogin(c.Author) {
+			t.Fatalf("expected the addressed bot review to be filtered out, got %+v", c)
+		}
+	}
+
+	// The raw observation still counts it — which is the whole point.
+	obs, err := p.GetReviewObservation(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("GetReviewObservation: unexpected error: %v", err)
+	}
+	if obs.Total != 2 {
+		t.Errorf("observation.Total = %d, want 2", obs.Total)
+	}
+	if obs.Bot != 1 {
+		t.Errorf("observation.Bot = %d, want 1 (the review GetReviewComments dropped)", obs.Bot)
+	}
+}
+
+// TestGetReviewObservation_NoBotReviews pins the condition the merge gate's WARN
+// actually exists for: a PR reviewed only by humans has a zero bot tally.
+func TestGetReviewObservation_NoBotReviews(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return `[{"user":{"login":"human-reviewer"},"body":"lgtm","state":"APPROVED"}]`, nil
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	obs, err := p.GetReviewObservation(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if obs.Total != 1 || obs.Bot != 0 {
+		t.Errorf("observation = %+v, want Total=1 Bot=0", obs)
+	}
+}
+
+// TestGetReviewObservation_ReadFailurePropagates keeps the observation honest
+// about not knowing: an unreadable list must surface as an error, never as a
+// zero tally the merge gate would report as an absent reviewer.
+func TestGetReviewObservation_ReadFailurePropagates(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return "", errors.New("gh: rate limited")
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	obs, err := p.GetReviewObservation(context.Background(), "owner/repo", 1)
+	if err == nil {
+		t.Fatalf("GetReviewObservation err = nil, want the read failure; got obs %+v", obs)
+	}
+}
+
+// Compile-time check that the GitHub provider supplies the optional raw-review
+// observation the merge gate type-asserts for.
+var _ vcs.ReviewObserver = (*Provider)(nil)
+
+// TestGetReviewComments_SupersededBotReviewSkipsThreadQuery pins that a bot
+// whose COMMENTED review has been superseded by a newer APPROVED one is not
+// thread-verified at all. Since BOS-644 the thread query fails CLOSED, so
+// querying for a review that can no longer block is not merely wasted work: a
+// GraphQL outage would surface as vcs.ErrReviewThreadsUnverified and stall the
+// merge behind gate=pending over already-cleared feedback.
+//
+// The fake fails every GraphQL call, so reaching the query at all is an error.
+func TestGetReviewComments_SupersededBotReviewSkipsThreadQuery(t *testing.T) {
+	graphqlCalls := 0
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphqlCalls++
+			return "", errors.New("GraphQL: server error (thread query outage)")
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"id":124,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"all good now","state":"APPROVED"}
+		]`, nil
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("a superseded bot review must not be thread-verified, got error: %v", err)
+	}
+	if graphqlCalls != 0 {
+		t.Errorf("GraphQL thread query ran %d time(s) for a superseded review, want 0", graphqlCalls)
+	}
+
+	// The bot's latest state must remain APPROVED — nothing was promoted.
+	var latest vcs.ReviewState
+	for _, c := range comments {
+		if c.Author == "chatgpt-codex-connector[bot]" {
+			latest = c.State
+		}
+	}
+	if latest != vcs.ReviewStateApproved {
+		t.Errorf("bot's latest review state = %v, want Approved", latest)
+	}
+}
+
+// TestGetReviewComments_DismissedBotReviewSkipsThreadQuery is the DISMISSED
+// sibling of the case above: a dismissed review is equally incapable of
+// blocking, so it must not drag the merge into a fail-closed thread query.
+func TestGetReviewComments_DismissedBotReviewSkipsThreadQuery(t *testing.T) {
+	graphqlCalls := 0
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphqlCalls++
+			return "", errors.New("GraphQL: server error (thread query outage)")
+		}
+		return `[
+			{"id":123,"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"id":124,"user":{"login":"cursor[bot]"},"body":"","state":"DISMISSED"}
+		]`, nil
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	if _, err := p.GetReviewComments(context.Background(), "owner/repo", 1); err != nil {
+		t.Fatalf("a dismissed bot review must not be thread-verified, got error: %v", err)
+	}
+	if graphqlCalls != 0 {
+		t.Errorf("GraphQL thread query ran %d time(s) for a dismissed review, want 0", graphqlCalls)
+	}
+}
+
+// TestGetReviewComments_StillCommentedBotIsThreadVerified is the guard against
+// over-correcting the two cases above into "never verify". A bot whose LATEST
+// review is still COMMENTED is exactly the promotion case the external-review
+// gate exists for, so its threads must still be queried — and a query failure
+// must still fail closed.
+func TestGetReviewComments_StillCommentedBotIsThreadVerified(t *testing.T) {
+	graphqlCalls := 0
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphqlCalls++
+			return "", errors.New("GraphQL: server error (thread query outage)")
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"approved earlier","state":"APPROVED"},
+			{"id":124,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"new issues","state":"COMMENTED"}
+		]`, nil
+	}
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	_, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
+		t.Fatalf("err = %v, want ErrReviewThreadsUnverified: a still-COMMENTED bot must fail closed", err)
+	}
+	if graphqlCalls == 0 {
+		t.Error("a bot whose latest review is COMMENTED must still be thread-verified")
 	}
 }

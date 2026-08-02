@@ -181,11 +181,15 @@ On a resume, the orchestrator **replaces** this section rather than appending a 
 After the Step 6b outside-voice pass and **before** Step 7, run one **`boss-review`** pass — a
 consolidated, multi-lens review over the implementation branch. Invoke it via the `Skill` tool
 (`boss-review`, no args → it reviews the current branch against its merge-base with the default base).
-`boss-review` runs conditional language/UI lenses (`golang-pro` for Go, `tui-design` for `services/boss`,
-`impeccable` for `services/web`), a `superpowers:requesting-code-review` round, a cross-agent
-second-opinion round (codex↔claude), and a vendored `thermonuclear-review` round; it fixes every
-must-fix finding locally (committing tagless), and prints a rendered `wc-auto-review`-style report
-(a one-line header, a ✅/❌ verdict block, and collapsible `<details>` sections, produced by
+`boss-review` resolves its passes at runtime rather than running a fixed roster. Conditional specialist
+**lenses** come from the configured lens registry (the `lensMap` in `.boss-skills.json`, matched against
+the changed paths, each carrying an inline fallback rubric for when the reviewer it names is absent).
+Whole-branch **rounds** are then resolved by strict precedence: the repo-local round extensions this
+repository provides, or — when it provides none — a single fallback round, either the host's native
+whole-diff review or an inline whole-diff rubric. How many rounds run, and what each one looks at, is
+therefore whatever the consuming repository configures. It fixes every must-fix finding
+locally (committing tagless), and prints a rendered report (a one-line header, a ✅/❌ verdict block,
+and collapsible `<details>` sections, produced by
 `$BOSS_BUILD_TOOLBOX/bs-review-report.mjs`) followed by a `bs-review clean:` or `bs-review capped:` sentinel
 line.
 

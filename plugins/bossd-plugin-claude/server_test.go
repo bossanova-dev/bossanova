@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,10 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	if !strings.Contains(joined, "--append-system-prompt\x00autonomous cron run") {
 		t.Fatalf("argv = %v, want --append-system-prompt with the directive", resp.GetArgv())
 	}
+	// The declaration is what bossd trusts instead of assuming delivery, so it
+	// must track the flag exactly. Assert both together: the pair, never the
+	// declaration alone, is what makes drift detectable.
+	assertDeclarationMatchesArgv(t, resp)
 
 	// Without it, the flag must be absent (non-cron chats are unaffected).
 	respNone, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
@@ -82,6 +87,22 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(respNone.GetArgv(), " "), "--append-system-prompt") {
 		t.Fatalf("argv = %v, want no --append-system-prompt when field empty", respNone.GetArgv())
+	}
+	assertDeclarationMatchesArgv(t, respNone)
+}
+
+// assertDeclarationMatchesArgv is the anti-drift pin: append_system_prompt_support
+// claims IN_ARGV exactly when --append-system-prompt is on the command line, and
+// never otherwise. A declaration that outran the flag would make bossd stay
+// silent about a suffix that never reached the agent — the precise failure this
+// field exists to make impossible.
+func assertDeclarationMatchesArgv(t *testing.T, resp *bossanovav1.BuildInteractiveCommandResponse) {
+	t.Helper()
+	onArgv := slices.Contains(resp.GetArgv(), "--append-system-prompt")
+	claimed := resp.GetAppendSystemPromptSupport() == bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
+	if onArgv != claimed {
+		t.Fatalf("declaration %v disagrees with argv %v (flag present = %v)",
+			resp.GetAppendSystemPromptSupport(), resp.GetArgv(), onArgv)
 	}
 }
 

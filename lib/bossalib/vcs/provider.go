@@ -65,3 +65,45 @@ type Provider interface {
 // ErrPRNotMerged is returned by GetPRMergeCommit when the PR is not in a
 // merged state (still open, closed without merge, etc.).
 var ErrPRNotMerged = errors.New("PR is not merged")
+
+// ReviewObserver is an OPTIONAL Provider capability, type-asserted rather than
+// required. A provider whose GetReviewComments filters non-actionable reviews
+// out of its result cannot answer "did an external reviewer run at all?" from
+// that result: the GitHub provider deliberately DROPS a bot's COMMENTED review
+// once that bot's threads are all resolved, so a bot that reviewed and was fully
+// addressed and a bot that never ran both leave zero bot entries behind. Any
+// count taken after the filter therefore reports "no reviewer" on precisely the
+// healthy, fully-addressed PRs that are ready to merge.
+//
+// A provider implements ReviewObserver to report the raw observation its
+// filtering discards. It is kept off Provider on purpose: only the merge gate's
+// observability warning needs the raw tally, so a provider that filters nothing
+// — and every test double — stays complete without it. Callers MUST type-assert
+// and degrade gracefully when it is absent.
+type ReviewObserver interface {
+	// GetReviewObservation reports the reviews the provider saw on a PR BEFORE
+	// any actionable-comment filtering.
+	GetReviewObservation(ctx context.Context, repoPath string, prID int) (ReviewObservation, error)
+}
+
+// ReviewObservation is the raw, pre-filtering review tally for a pull/merge
+// request. It answers only "what was submitted", never "what is blocking" —
+// the gate decision belongs to GetReviewComments.
+type ReviewObservation struct {
+	// Total counts reviews in any state from any author.
+	Total int
+
+	// Bot counts reviews authored by a bot account. Zero means no external
+	// review bot submitted a review at all, which is the empty-safety-net
+	// condition the merge gate warns on: the gate can only block on evidence a
+	// reviewer produced, so an uninstalled, rate-limited or silent bot leaves
+	// it with nothing to block on.
+	Bot int
+}
+
+// ErrReviewThreadsUnverified is returned by GetReviewComments when the
+// provider could not determine which review threads are unresolved — the
+// thread query failed, its response was unparseable, or pagination could not
+// continue. Callers must treat the review state as unknown rather than as
+// "nothing is blocking": the merge gate blocks on it instead of proceeding.
+var ErrReviewThreadsUnverified = errors.New("review thread state could not be verified")

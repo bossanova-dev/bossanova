@@ -2,8 +2,11 @@ package clidoc
 
 import (
 	"reflect"
+	"regexp"
 	"testing"
 )
+
+var groupIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 func TestGroupOrderIsStableAndTitled(t *testing.T) {
 	if len(GroupOrder) == 0 {
@@ -14,6 +17,12 @@ func TestGroupOrderIsStableAndTitled(t *testing.T) {
 		if g.ID == "" || g.Title == "" {
 			t.Errorf("group spec has empty field: %+v", g)
 		}
+		if g.ReadWhen == "" {
+			t.Errorf("group spec %q has empty ReadWhen (needed for the skill routing index)", g.ID)
+		}
+		if !groupIDPattern.MatchString(g.ID) {
+			t.Errorf("group id %q must match %s (it becomes a references/<id>.md filename)", g.ID, groupIDPattern.String())
+		}
 		if seen[g.ID] {
 			t.Errorf("duplicate group id %q", g.ID)
 		}
@@ -21,6 +30,49 @@ func TestGroupOrderIsStableAndTitled(t *testing.T) {
 		title, ok := GroupTitle(g.ID)
 		if !ok || title != g.Title {
 			t.Errorf("GroupTitle(%q) = %q,%v; want %q,true", g.ID, title, ok, g.Title)
+		}
+	}
+}
+
+// TestGroupOrderReadWhenHintsArePinned pins every routing hint literally.
+//
+// The generator-side tests derive their expectation from GroupOrder itself, so
+// they prove the string is threaded through Extract and renderIndex unmutated
+// but cannot notice a wrong hint — a copy-pasted line passes a non-empty check
+// and a derived-expectation check alike. These hints are the only thing routing
+// an agent to the right references/<id>.md, so a silently mis-copied one sends
+// it to the wrong file with no gate firing. Pinning them here makes a reword a
+// deliberate two-place edit.
+func TestGroupOrderReadWhenHintsArePinned(t *testing.T) {
+	want := map[string]string{
+		"session":     "Creating, listing, attaching to, merging or archiving a session",
+		"chat":        "Starting a chat, sending it a message, or reading a transcript",
+		"repo":        "Registering, cloning, updating or removing a repository",
+		"cron":        "Creating, editing, listing or firing a scheduled job",
+		"callback":    "Arming or inspecting a one-shot GitHub PR callback",
+		"broadcast":   "Sending a broadcast or registering an outcome subscription",
+		"notes":       "Recording or harvesting durable repo-scoped notes",
+		"account":     "Adding, testing, rotating or switching a provider account",
+		"trash":       "Resurrecting an archived session or emptying the trash",
+		"daemon":      "Starting, stopping or inspecting bossd",
+		"mcp":         "Running or configuring the MCP server",
+		"skills":      "Installing or syncing the boss skill payload",
+		"settings":    "Changing global settings or authenticating",
+		"diagnostics": "Running the repair doctor, checks or other diagnostics",
+		"plugins":     "Listing or inspecting loaded bossd plugins",
+		"other":       "Anything unclassified (e.g. `boss version`)",
+	}
+	if len(GroupOrder) != len(want) {
+		t.Errorf("GroupOrder has %d groups, pinned hints cover %d — add the new group's hint here", len(GroupOrder), len(want))
+	}
+	for _, g := range GroupOrder {
+		hint, ok := want[g.ID]
+		if !ok {
+			t.Errorf("group %q has no pinned ReadWhen hint — add one here", g.ID)
+			continue
+		}
+		if g.ReadWhen != hint {
+			t.Errorf("group %q ReadWhen = %q, want %q", g.ID, g.ReadWhen, hint)
 		}
 	}
 }

@@ -28,6 +28,18 @@ const LENSES = [
   { id: 'tui', skill: 'tui-design', glob: 'services/boss/**', fallbackRubric: 'tui rubric' },
   { id: 'web', skill: 'impeccable', glob: 'services/web/**', fallbackRubric: 'web rubric' },
   { id: 'db', skill: 'database-review', glob: '**/migrations/**', fallbackRubric: 'db rubric' },
+  // The api lens uses the `globs` array form, which no single-`glob` entry above exercises.
+  {
+    id: 'api',
+    skill: 'api-review',
+    globs: [
+      'proto/**',
+      'lib/bossalib/apiversion/**',
+      'services/bosso/internal/server/**',
+      'services/web/src/api.ts',
+    ],
+    fallbackRubric: 'api rubric',
+  },
 ]
 
 test('matchLenses selects the go lens with its skill and fallback for a .go change', () => {
@@ -67,6 +79,33 @@ test('matchLenses selects the db lens for a migration path with skill database-r
 test('matchLenses does NOT select the db lens for a non-migration diff', () => {
   const m = matchLenses(['internal/store/store.go', 'docs/schema.md'], LENSES)
   assert.ok(!m.some((x) => x.lens === 'db'), 'no db lens for a .go/docs diff outside migrations/')
+})
+
+test('matchLenses selects the api lens for a proto/apiversion change (globs array form)', () => {
+  const m = matchLenses(
+    [
+      'proto/bossanova/v1/orchestrator.proto',
+      'lib/bossalib/apiversion/version.go',
+      'docs/readme.md',
+    ],
+    LENSES,
+  )
+  const api = m.find((x) => x.lens === 'api')
+  assert.ok(api, 'api lens matched')
+  // Assert every field boss-review Phase 1 substitutes into its dispatch template:
+  // lens, skill, fallbackRubric, files. Nothing in that template is lens-id-specific,
+  // so these four are the complete dispatch contract.
+  assert.equal(api.skill, 'api-review')
+  assert.ok(api.fallbackRubric && api.fallbackRubric.length > 0)
+  assert.deepEqual(api.files, [
+    'proto/bossanova/v1/orchestrator.proto',
+    'lib/bossalib/apiversion/version.go',
+  ])
+})
+
+test('matchLenses does NOT select the api lens for an unrelated diff', () => {
+  const m = matchLenses(['services/boss/internal/views/attach.go', 'docs/foo.md'], LENSES)
+  assert.ok(!m.some((x) => x.lens === 'api'), 'no api lens for a TUI/docs diff')
 })
 
 test('matchLenses with an empty/absent registry degrades to no lenses', () => {
@@ -164,6 +203,38 @@ test('CLI --lenses classifies a newline-separated file list from the config regi
   assert.ok(byLens.web.fallbackRubric && byLens.web.fallbackRubric.length > 0)
   // the docs file matches no lens (still covered by the always-on rounds)
   assert.ok(!lenses.some((l) => l.files.includes('docs/readme.md')))
+})
+
+test('CLI --lenses selects the api lens from the committed config for a proto change', () => {
+  const { stdout, status } = runCli(
+    ['--lenses'],
+    'proto/bossanova/v1/orchestrator.proto\ndocs/readme.md\n',
+  )
+  assert.equal(status, 0)
+  const lenses = JSON.parse(stdout)
+  const byLens = Object.fromEntries(lenses.map((l) => [l.lens, l]))
+  assert.ok(byLens.api, 'api lens matched from the committed .boss-skills.json')
+  assert.equal(byLens.api.skill, 'api-review')
+  assert.ok(byLens.api.fallbackRubric && byLens.api.fallbackRubric.length > 0)
+  assert.deepEqual(byLens.api.files, ['proto/bossanova/v1/orchestrator.proto'])
+})
+
+test('CLI --lenses without a .boss-skills.json still selects the api lens from defaults', () => {
+  // The DEFAULT_CONFIG leg: from a checkout lacking .boss-skills.json, loadSkillConfig()
+  // returns DEFAULT_CONFIG, so this proves the api entry is in the published default and
+  // not only in the committed repo config.
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-detect-'))
+  try {
+    const { stdout, status } = runCli(['--lenses'], 'proto/bossanova/v1/orchestrator.proto\n', dir)
+    assert.equal(status, 0)
+    const lenses = JSON.parse(stdout)
+    const api = lenses.find((l) => l.lens === 'api')
+    assert.ok(api, 'api lens matched from DEFAULT_CONFIG')
+    assert.equal(api.skill, 'api-review')
+    assert.ok(api.fallbackRubric && api.fallbackRubric.trim().length > 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('CLI --lenses on empty stdin yields no lenses', () => {

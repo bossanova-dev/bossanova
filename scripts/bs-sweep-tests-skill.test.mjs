@@ -269,8 +269,14 @@ test('the manifest runtime note is present', () => {
 // ---------------------------------------------------------------------------
 
 test('the completion contract owns PR readiness and stop-hook removal', () => {
-  assert.ok(SKILL.includes('gh pr create'), 'skill owns PR creation')
-  assert.ok(SKILL.includes('gh pr ready'), 'skill owns PR readiness')
+  // BOS-640: `gh pr create` / `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh. The
+  // skill still OWNS both — by invoking the gate — so the pins repoint at the invocation
+  // rather than being dropped. scripts/sweep-pr-gate.test.mjs pins the moved bytes themselves.
+  assert.ok(
+    SKILL.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+    'skill owns PR creation + readiness by executing the extracted PR gate',
+  )
+  assert.ok(SKILL.includes('export PR_NUMBER'), 'the gate exports the PR number for later phases')
   assert.ok(SKILL.includes('gh pr checks'), 'skill watches checks')
   assert.ok(
     SKILL.includes('node skills-toolbox/remove-bossd-stop-hooks.mjs'),
@@ -349,11 +355,74 @@ test('files the SKILL references are reachable', () => {
     '../.codex/skills/bs-sweep-tests/gate/gate.mjs',
     '../.codex/skills/bs-sweep-tests/toolbox/bs-run-sentinel.mjs',
     '../skills-toolbox/remove-bossd-stop-hooks.mjs',
+    '../skills-toolbox/sweep-pr-gate.sh',
     '../skills-toolbox/linear-gate-lib.mjs',
     '../scripts/cron-open-pr.mjs',
     '../docs/testing/test-command-manifest.md',
   ]
   for (const rel of referenced) {
     assert.ok(existsSync(here(rel)), `referenced file must exist: ${rel}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// BOS-640 — the extracted PR gate, and the ratchet that keeps its saving spent.
+// ---------------------------------------------------------------------------
+
+test('the extracted PR gate is referenced in both mirrors and exists on disk', () => {
+  // No COMMON_REWRITES rule matches a bare repo-root `skills-toolbox/` path, so the mirror
+  // carries the invocation byte-identically; asserting BOTH trees is what catches a mirror
+  // that silently lost it.
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-tests', SKILL],
+    ['.codex/skills/bs-sweep-tests', CODEX],
+  ]) {
+    // Pin the EXECUTED bytes, not the bare path — the body also NAMES the helper in its
+    // resident "executed, not read" prose, so a bare-path substring survives deleting the
+    // fenced invocation entirely.
+    assert.ok(
+      skill.includes('bash "$(git rev-parse --show-toplevel)/skills-toolbox/sweep-pr-gate.sh")"'),
+      `${label}/SKILL.md must execute skills-toolbox/sweep-pr-gate.sh`,
+    )
+    assert.ok(
+      skill.includes('test -n "$PR_NUMBER"'),
+      `${label}/SKILL.md must fail the block when the gate produced no PR number`,
+    )
+  }
+  assert.ok(
+    existsSync(here('../skills-toolbox/sweep-pr-gate.sh')),
+    'skills-toolbox/sweep-pr-gate.sh must exist on disk',
+  )
+})
+
+test('the resident body stays under the post-extraction ratchet', () => {
+  // Measured post-extraction bodies: 26520 B (.claude) / 26601 B (.codex), down from the
+  // 27050 B (.claude) / 27130 B (.codex) pre-extraction baseline. The ceiling is the larger
+  // mirror + 64 B, so the 22-line PR-gate saving is actually banked and cannot be silently
+  // re-spent on body regrowth — move situational content into a reference instead.
+  //
+  // Bumped 26665 -> 26818 for the model-tier work: the Phase 3 Model tier paragraph gained
+  // the escalate contract it was missing (drop the `model:` line and revert to Opus if the
+  // cheap leg ever loses findings). scripts/skill-model-tier.test.mjs now requires one — a
+  // routed leg with no documented exit is the failure this ticket exists to prevent, so the
+  // ceiling absorbs exactly that sentence. (The four legs that gate names all carry one;
+  // bs-sweep-mutation §2 and bs-sweep-debt Phase 3 route without one and are gated only by
+  // their own content tests — a real gap, out of scope here.) Bodies are re-measured below;
+  // the ceiling stays the larger mirror + 64 B and still sits below the pre-extraction
+  // baseline.
+  //
+  // BOS-653 added `START_SHA="$START_SHA" ` to the gate invocation (+23 B, no bump): bodies are
+  // 26717 B (.claude) / 26798 B (.codex), leaving 20 B. Nothing further fits without a bump.
+  const CEILING = 26818
+  assert.ok(CEILING < 27050, 'ceiling must stay below the pre-extraction baseline')
+  for (const [label, skill] of [
+    ['.claude/skills/bs-sweep-tests', SKILL],
+    ['.codex/skills/bs-sweep-tests', CODEX],
+  ]) {
+    const bytes = Buffer.byteLength(skill, 'utf8')
+    assert.ok(
+      bytes < CEILING,
+      `${label}/SKILL.md must stay under ${CEILING} bytes (post-extraction ratchet), got ${bytes} — move situational content into a reference`,
+    )
   }
 })

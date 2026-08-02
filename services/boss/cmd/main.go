@@ -85,8 +85,16 @@ func rootCmd() *cobra.Command {
 			// interactive startup installer/self-heal — otherwise `boss skills
 			// sync` would hit the [Y/n] prompt (interactive) or be pre-empted by
 			// selfHealSkills (non-TTY), reporting "up to date" instead of "updated".
+			//
+			// fix-terminal bypasses for a different reason: it is the escape hatch
+			// for a terminal stranded in mouse-reporting mode, so it must write its
+			// reset immediately. On an interactive tty the installer would print a
+			// [Y/n] prompt into the very terminal being repaired and then block in
+			// fmt.Scanln — hanging the remedy exactly when the user can least type.
+			// See BOS-650.
 			path := cmd.CommandPath()
-			if path == "boss gen-skill" || path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
+			if path == "boss gen-skill" || path == "boss fix-terminal" ||
+				path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}
 			return maybeInstallSkills()
@@ -133,7 +141,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("mcp", mcpCmd())
 	addGrouped("skills", skillsCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
-	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd())
 	addGrouped("plugins", pluginCmd())
 	addGrouped("other", versionCmd(), upgradeCmd())
 
@@ -783,6 +791,14 @@ func maybeInstallSkills() error {
 			action = "Update"
 			preposition = "in"
 		}
+		// Clear any stranded input-reporting modes before blocking on the
+		// prompt. This hook runs ahead of the TUI's own self-heal, so without
+		// this a user relaunching boss to fix a terminal that is spewing mouse
+		// reports would have that garbage echoed into the answer line — and
+		// fmt.Scanln would consume it as a non-empty, non-"n" answer. Acute on
+		// the first run after an upgrade, which is exactly when a payload change
+		// makes this prompt appear. See BOS-650.
+		writeStderrReset()
 		fmt.Fprintf(os.Stderr, "%s boss skills for %s %s %s? [Y/n] ", action, target.name, preposition, dir)
 		answer := strings.ToLower(strings.TrimSpace(skillInstallReadAnswer()))
 		if answer == "n" || answer == "no" {

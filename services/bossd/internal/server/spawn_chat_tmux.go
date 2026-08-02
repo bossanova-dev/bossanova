@@ -7,9 +7,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -135,8 +138,13 @@ func chatCommandPrefix(agentName string) string {
 // BuildInteractiveCommand RPC so each agent can own its own CLI shape and
 // flag wiring (claude → `claude --resume <id>`, codex → `codex resume <id>`,
 // plus per-plugin user settings). spawnChatTmux stays agent-agnostic.
+//
+// It returns the whole BuildInteractiveCommandResponse rather than just argv so
+// callers can also read the runner's append_system_prompt declaration and report
+// instructions that never reached the command line. Callers still spawn from
+// GetArgv() alone — the declaration is reported, never enforced.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) ([]string, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -155,6 +163,11 @@ type spawnDeps struct {
 	Transcripts transcriptOracle
 	Argv        argvBuilder
 	Resolver    interactiveSessionResolver
+	// Logger receives the undelivered-instruction record when the runner does
+	// not declare it carried AppendSystemPrompt into argv. The zero value is a
+	// usable zerolog.Logger, so a caller that reports nothing (DescribeChatLaunch,
+	// which builds no instructions) can leave it unset.
+	Logger zerolog.Logger
 }
 
 // spawnInput captures the per-chat parameters for a spawn attempt.
@@ -167,6 +180,12 @@ type spawnInput struct {
 	// agent's system prompt so record/wake-spawned chats carry the same boss
 	// identifiers StartTmuxChat injects. Empty when no session context applies.
 	AppendSystemPrompt string
+	// AppendSystemPromptClasses names the instruction classes that went into
+	// AppendSystemPrompt, so a runner that does not carry the suffix into argv
+	// can be reported in terms of what was dropped. Callers get it from
+	// session.BuildAppendSystemPrompt alongside the text; nil (the value a
+	// caller that builds no instructions passes) reports nothing.
+	AppendSystemPromptClasses []string
 	// Model is the session's opaque agent model id ("" = plugin default). It
 	// must thread through so a re-ensured (RecordChat) or woken (WakeChat) pane
 	// launches on the same model as the initial StartTmuxChat rather than
@@ -264,13 +283,18 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	// at all — pane capture is wired post-NewSession via tmux pipe-pane
 	// by StartTmuxChat, and the WakeChat path here just doesn't need
 	// any. Keeping the empty argument makes the contract explicit.
-	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, in.McpConfigPath, in.StrictMcpConfig)
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, in.McpConfigPath, in.StrictMcpConfig)
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
+	args := cmdResp.GetArgv()
 	if len(args) == 0 {
 		return spawnResult{}, fmt.Errorf("argv builder returned empty command for agent %q", in.Chat.AgentName)
 	}
+	// Report — never enforce. argv is already resolved above and is not touched
+	// by what the runner did or did not declare about the instruction suffix.
+	session.LogUndeliveredInstructions(deps.Logger, in.Chat.SessionID, in.Chat.AgentSessionID,
+		in.Chat.AgentName, in.AppendSystemPromptClasses, cmdResp.GetAppendSystemPromptSupport())
 
 	launchedAt := time.Now().UTC()
 	sessionEnv := in.SessionEnv
@@ -455,7 +479,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) ([]string, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -483,5 +507,5 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 	if resp == nil || len(resp.Argv) == 0 {
 		return nil, fmt.Errorf("agent %q returned empty argv", name)
 	}
-	return resp.Argv, nil
+	return resp, nil
 }

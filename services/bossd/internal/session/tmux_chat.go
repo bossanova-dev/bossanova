@@ -293,6 +293,13 @@ type HookOpts struct {
 	// worktree's effective tmux environment was available. Direct chat callers
 	// leave it unspecified and retain their existing launch path.
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
+
+	// AutonomousRun marks a launch that runs with no human watching, so the
+	// capability profile must be selected here — from the agent that will
+	// actually spawn — rather than by a caller that can only see the session's
+	// persisted agent name. Ignored when HeadlessCapabilityProfile is set
+	// explicitly.
+	AutonomousRun bool
 }
 
 // Note: this method calls ConfigureFinalizeHook only when hookOpts.Token
@@ -414,9 +421,26 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		spawnSess = &cp
 	}
 
+	// An autonomous caller declares only its intent; the profile is selected
+	// here because this is the first point that knows which agent will actually
+	// spawn. A caller keying on the session's persisted agent name gets a
+	// cross-agent chat wrong in both directions: it skips the gate for a codex
+	// chat inside a claude session, and hands claude a profile it answers
+	// Unimplemented for inside a codex session. An explicitly-supplied profile
+	// still wins, mirroring StartSession.
+	//
+	// The name is resolved here but the preflight below is handed the raw
+	// spawnAgentName, which agrees only because the dispatcher resolves it
+	// again on the way in. Resolve here anyway: the policy must see the name
+	// the launch will really use, not depend on someone else re-deriving it.
+	if hookOpts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED && hookOpts.AutonomousRun {
+		hookOpts.HeadlessCapabilityProfile = headlessCapabilityProfileForAutonomousRun(l.resolveAgentName(spawnAgentName))
+	}
+
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
 	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID)
+	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, mcpConfigPath)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          agentSessionID,
 		Resume:             resuming,
@@ -424,7 +448,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		InitialPrompt:      input.Prompt,
 		InitialCommand:     input.Command,
 		WorktreePath:       sess.WorktreePath,
-		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, spawnAgentName, mcpConfigPath),
+		AppendSystemPrompt: appendPrompt,
 		Model:              spawnModel,
 		McpConfigPath:      mcpConfigPath,
 		StrictMcpConfig:    isCronSession(sess),
@@ -436,6 +460,11 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
 			"agent runner for session %s returned empty argv", sessionID)
 	}
+	// Report — never enforce. argv is spawned exactly as the runner returned it;
+	// the declaration only decides whether bossd says out loud that instructions
+	// it built never reached the command line.
+	LogUndeliveredInstructions(l.logger, sess.ID, agentSessionID, spawnAgentName,
+		promptClasses, cmdResp.GetAppendSystemPromptSupport())
 
 	// Build the env once, then validate and launch against that exact map. A
 	// tmux-hosted launch can receive CODEX_HOME or HOME from its worktree .env,
@@ -1078,6 +1107,66 @@ const zeroOutputCronAutonomyDirective = "You are running as an autonomous, sched
 	"There is no worktree and no pull request for this run. Do not commit or modify repository files. " +
 	"No human is watching, so make decisions yourself and never wait for input."
 
+// unattendedSubagentDirective is appended to every unattended session's prompt,
+// right after whichever autonomy directive above was selected. Unattended runs
+// execute skills — boss-build, boss-repair, boss-plan, the bs-sweep-* family —
+// whose protocols mandate awaited subagent dispatch (a multi-lens review stack,
+// a per-strategy repair pass). Yet the only autonomy instruction bossd injected
+// before this constant, cronAutonomyDirective, is silent on subagents: it is
+// entirely about not waiting for a human. An agent reading a prompt that spells
+// out one autonomy grant and omits another reasonably reads the omission as a
+// boundary, and at least one build session did exactly that — it skipped its
+// mandated review stack, reviewed inline and single-voice, and shipped defects
+// that the multi-lens stack exists to catch.
+//
+// This is deliberately an INSTRUCTION-layer fix and NOT skill-frontmatter
+// `allowed-tools` / `disallowed-tools`. Those fields are permission-layer
+// PRE-AUTHORISATION ("tools usable without asking permission"), and the
+// permission layer is not where this gap lives. Where the operator has enabled
+// bossd-plugin-claude's `dangerously_skip_permissions` setting (opt-in, default
+// "false" — see that plugin's UserSettings and BuildInteractiveCommand, which
+// appends --dangerously-skip-permissions only when the toggle is on), the layer
+// is already fully open, so `allowed-tools` would be a no-op and
+// `disallowed-tools` could only restrict further. Where the toggle is off, the
+// session prompts for permission and no frontmatter field bossd could set would
+// pre-authorise it either. Neither configuration is fixed by `allowed-tools`;
+// what is missing in both is a statement of the authority, so the fix belongs in
+// the instruction channel bossd already owns. Do not retry either field.
+//
+// Residual failure mode, deliberately not papered over here: with the toggle
+// off, an unattended session that acts on this directive can still block on a
+// permission prompt with no human to answer it. That is a permission-layer
+// operator setting, out of scope for this constant.
+//
+// The grant is bounded to what the running skill already mandates, awaited and
+// never backgrounded, so it sanctions the protocol's own dispatch rather than
+// open-ended fan-out. It is prose, not a mechanism: it makes the authority
+// explicit and greppable, and cannot guarantee any model honours it.
+//
+// The escalation keys on UNDONE WORK, not on a failed dispatch call. Every skill
+// that mandates dispatch also documents an inline fallback for when the dispatch
+// tool itself errors, and treats that fallback as non-fatal (boss-repair's
+// Strategy A/B/C dispatch, boss-build Step 6b/6c's `references/review-stack.md`
+// run, boss-finalize's inline Steps 1-8). Because this directive outranks a
+// skill body, an escalation worded as "cannot dispatch" would override those
+// fallbacks and let a transient tool error abandon a repair, review, or
+// finalize the orchestrator was fully capable of completing itself — turning a
+// recoverable hiccup into a non-clean terminal state. So the non-clean route is
+// reserved for the case the fallbacks cannot cover: the mandated work actually
+// went undone. Do not re-word this to fire on dispatch failure itself.
+const unattendedSubagentDirective = "Launching this boss-managed unattended session IS the operator's " +
+	"standing request for the subagent dispatches your running skill's protocol mandates. You are " +
+	"authorised to dispatch them without asking, and skipping them is not the conservative choice — " +
+	"it silently downgrades the work you were launched to do. Bound that grant to the protocol: " +
+	"dispatch only what it mandates, and always await every dispatch — never background one " +
+	"(if your dispatch tool backgrounds by default, pass run_in_background: false) — rather than " +
+	"open-ended fan-out or convenience delegation. If a dispatch you cannot make has a documented " +
+	"inline fallback, take that fallback: it is the protocol's own recovery, and completing the " +
+	"mandated work inline is a clean result, not a downgrade. Escalate only when the mandated work " +
+	"itself goes undone — the protocol documents no fallback, or the fallback also failed: then do " +
+	"not report a clean result, state it verbatim as SUBAGENT-DISPATCH-UNAVAILABLE, name the " +
+	"mandated work left undone, and route the run to its non-clean terminal state."
+
 // isCronSession reports whether the session was spawned by the cron scheduler.
 func isCronSession(sess *models.Session) bool {
 	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
@@ -1342,8 +1431,23 @@ func installedSkillDriftWarning(f SessionFacts) string {
 // receive: claude only gets --mcp-config when this path is non-empty, and a
 // failed config write yields "" even when McpBin resolves.
 func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpConfigPath string) string {
+	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, mcpConfigPath)
+	return text
+}
+
+// BuildAppendSystemPrompt returns the same suffix as AppendSystemPromptFor plus
+// the names of the instruction classes it carries, so a spawn site can say what
+// was dropped when the runner declares it never carried the suffix into argv
+// (see LogUndeliveredInstructions). The classes are derived in the same branches
+// that append the text, so the two cannot drift: classes is nil exactly when the
+// text is empty.
+//
+// The class names are deliberately coarse — they name what kind of instruction
+// was lost, never its contents, so the report can be logged without leaking the
+// prompt body.
+func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName, mcpConfigPath string) (string, []string) {
 	if sess == nil {
-		return ""
+		return "", nil
 	}
 	f := ResolveSessionFacts(sess, agentSessionID, agentName)
 	if mcpConfigPath == "" {
@@ -1351,14 +1455,19 @@ func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpC
 		f.McpBin = ""
 	}
 	prompt := bossSessionContext(f)
+	classes := []string{InstructionClassSessionContext}
 	if f.IsUnattended {
 		if f.IsCron && f.IsQuickChat {
 			prompt += "\n\n" + zeroOutputCronAutonomyDirective
 		} else {
 			prompt += "\n\n" + cronAutonomyDirective
 		}
+		// Both unattended shapes (worktree and zero-output) get the subagent
+		// grant; attended chats keep the no-surprise-fan-out default.
+		prompt += "\n\n" + unattendedSubagentDirective
+		classes = append(classes, InstructionClassAutonomyDirective)
 	}
-	return prompt
+	return prompt, classes
 }
 
 // writeSessionMcpConfig generates the per-spawn boss MCP config for this chat

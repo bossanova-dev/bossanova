@@ -61,14 +61,18 @@ test('CONFIG_FILENAME is the repo-root dotfile', () => {
   assert.equal(CONFIG_FILENAME, '.boss-skills.json')
 })
 
-test('DEFAULT_CONFIG carries the four current lenses', () => {
+test('DEFAULT_CONFIG carries the five current lenses', () => {
+  // Order-independent: adding a lens should be a one-line edit here rather than a
+  // positional merge conflict. The committed file's literal ordering is pinned
+  // separately, by the .boss-skills.json reproduction test below.
   const ids = DEFAULT_CONFIG.lensMap.map((r) => r.id)
-  assert.deepEqual(ids, ['go', 'tui', 'web', 'db'])
+  assert.deepEqual([...ids].sort(), ['api', 'db', 'go', 'tui', 'web'])
   const byId = Object.fromEntries(DEFAULT_CONFIG.lensMap.map((r) => [r.id, r]))
   assert.equal(byId.go.skill, 'golang-pro')
   assert.equal(byId.tui.skill, 'tui-design')
   assert.equal(byId.web.skill, 'impeccable')
   assert.equal(byId.db.skill, 'database-review')
+  assert.equal(byId.api.skill, 'api-review')
 })
 
 test('DEFAULT_CONFIG lenses each carry a non-empty inline fallbackRubric', () => {
@@ -384,12 +388,14 @@ test('detectChangeTypes reports every default lens (one-arg)', () => {
     tui: true,
     web: false,
     db: false,
+    api: false,
   })
   assert.deepEqual(detectChangeTypes(['docs/foo.md', 'CONCEPTS.md']), {
     go: false,
     tui: false,
     web: false,
     db: false,
+    api: false,
   })
 })
 
@@ -677,6 +683,10 @@ test('the committed tracker config supplies every operational state and label ro
   ]) {
     assert.ok(stateName(cfg, role).length > 0, `missing state role ${role}`)
   }
+  // The five pipeline roles plus the one content-taxonomy role this repo maps. `labelName` has no
+  // allowlist — it resolves whatever `trackerConfig.<tracker>.labels` supplies — so a taxonomy role
+  // is resolvable exactly when a repo configures it, and unconfigured roles throw (see the
+  // `bugfix` fail-closed case above). Nothing here is universal to the published core.
   for (const role of ['agentPlan', 'agentFriendly', 'needsHuman', 'agentQuestion', 'epic', 'bug']) {
     assert.ok(labelName(cfg, role).length > 0, `missing label role ${role}`)
   }
@@ -841,6 +851,7 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
       ['tui', 'tui-design'],
       ['web', 'impeccable'],
       ['db', 'database-review'],
+      ['api', 'api-review'],
     ],
   )
   // Byte-identical lensMap invariant: the committed .boss-skills.json lensMap must equal
@@ -874,6 +885,9 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
     'planned',
     'unplanned',
   ])
+  // Five pipeline roles plus the `bug` taxonomy role this repo maps. A consuming repo whose
+  // tracker names that label differently remaps it here (`"bug": "defect"`); the seam is open,
+  // so this pin records THIS repo's config, never a contract of the published core.
   assert.deepEqual(Object.keys(tc.labels).sort(), [
     'agentFriendly',
     'agentPlan',

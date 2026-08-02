@@ -11,9 +11,10 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/charmbracelet/x/ansi"
 	creackpty "github.com/creack/pty/v2"
 	"golang.org/x/term"
+
+	"github.com/recurser/boss/internal/termreset"
 )
 
 const detachByte = 0x1d      // Ctrl+]
@@ -264,24 +265,11 @@ func (c *PTYCommand) Run() error {
 //
 // The core set (?1000/?1002/?1003/?1006) covers what tmux `mouse on` enables;
 // the defensive extras (?1005 legacy UTF-8, ?1015 urxvt, ?9 X10) cover exotic
-// terminal/tmux encodings. ansi has no named constants for ?1005l or ?1015l, so
-// those two are raw literals.
+// terminal/tmux encodings. The bytes themselves live in internal/termreset so
+// the CLI layer (startup self-heal, SIGHUP rescue, `boss fix-terminal`) can
+// reuse them without importing the PTY process manager. See BOS-650.
 func writeTerminalModeReset(w io.Writer) {
-	const (
-		resetModeMouseUTF8  = "\x1b[?1005l" // no ansi constant: legacy UTF-8 mouse encoding
-		resetModeMouseUrxvt = "\x1b[?1015l" // no ansi constant: urxvt mouse encoding
-	)
-	_, _ = io.WriteString(w,
-		// Core set first.
-		ansi.ResetModeMouseNormal+ // ?1000l
-			ansi.ResetModeMouseButtonEvent+ // ?1002l
-			ansi.ResetModeMouseAnyEvent+ // ?1003l
-			ansi.ResetModeMouseExtSgr+ // ?1006l
-			// Defensive extras.
-			resetModeMouseUTF8+ // ?1005l
-			resetModeMouseUrxvt+ // ?1015l
-			ansi.ResetModeMouseX10, // ?9l
-	)
+	termreset.WriteMouseReset(w)
 }
 
 func containsDetachSequence(data []byte) bool {

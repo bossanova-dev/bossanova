@@ -617,6 +617,119 @@ func TestStartTmuxChat_UnspecifiedProfileSkipsPreflight(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent covers the fail-open
+// half of the divergence: a codex chat resumed inside a session whose persisted
+// agent_name is still claude. A caller keying the profile on sess.AgentName
+// reads "claude", sends UNSPECIFIED, and the gate never runs — the codex launch
+// proceeds without its capability ever being probed. Declaring AutonomousRun
+// instead defers the choice to here, the first point that knows codex is what
+// will actually spawn.
+//
+// ResumeAgentSessionID is load-bearing: without it spawnAgentName never leaves
+// sess.AgentName and the case passes vacuously against a fresh claude launch.
+func TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	// The session is claude; the chat being resumed is codex.
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:      "sess-1",
+			AgentSessionID: "agent-1",
+			AgentName:      "codex",
+		}},
+	}
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{
+		Prompt:               "/boss-repair",
+		Delivery:             DeliverySubmit,
+		ResumeAgentSessionID: "agent-1",
+	}, "title", HookOpts{AutonomousRun: true})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each — a codex chat must be gated even inside a claude session",
+			h.agentRun.preflightCalls, len(h.agentRun.preflights))
+	}
+	got := h.agentRun.preflights[0]
+	if got.agentName != "codex" {
+		t.Errorf("preflight agentName = %q, want codex (the agent that actually spawns)", got.agentName)
+	}
+	if got.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Errorf("preflight profile = %v, want TRACKER_PLAN_ATTACHMENT_V1", got.profile)
+	}
+}
+
+// TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat covers the opposite,
+// fail-closed half: a claude chat resumed inside a session whose persisted
+// agent_name is codex. A caller keying on sess.AgentName reads "codex" and
+// hands claude a profile claude answers Unimplemented for, so the launch is
+// refused outright. Keying on the spawning agent leaves the gate off and the
+// launch alone.
+func TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	// The session is codex; the chat being resumed is claude.
+	h.sessions.sessions["sess-1"].AgentName = "codex"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:      "sess-1",
+			AgentSessionID: "agent-1",
+			AgentName:      "claude",
+		}},
+	}
+	// A runner that rejects every probe: if the gate runs at all, the launch
+	// fails, which is exactly the false refusal this change removes.
+	h.agentRun.preflightErr = grpcstatus.Error(codes.Unimplemented, "PreflightHeadlessRun is not implemented")
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{
+		Prompt:               "/boss-repair",
+		Delivery:             DeliverySubmit,
+		ResumeAgentSessionID: "agent-1",
+	}, "title", HookOpts{AutonomousRun: true}); err != nil {
+		t.Fatalf("StartTmuxChat for a claude chat inside a codex session: %v", err)
+	}
+	if h.agentRun.preflightCalls != 0 {
+		t.Fatalf("preflight calls = %d, want 0 — a claude chat must not be gated on the session's codex name", h.agentRun.preflightCalls)
+	}
+}
+
+// TestStartTmuxChat_ExplicitProfileWinsOverAutonomousRun pins the precedence:
+// AutonomousRun only asks the seam to choose, so a caller that already computed
+// a profile (SwitchAccount, which keys on the account being switched to and
+// cannot publish that provider anywhere the seam could read it) keeps its value.
+// Without this, the seam would silently overwrite the one site that knows more
+// than it does.
+func TestStartTmuxChat_ExplicitProfileWinsOverAutonomousRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	// A claude session and a claude chat: the seam alone would choose
+	// UNSPECIFIED, so a surviving profile can only be the explicit one.
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{
+		AutonomousRun:             true,
+		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+	}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
+		t.Fatalf("preflight calls = %d, records = %d; want 1 each", h.agentRun.preflightCalls, len(h.agentRun.preflights))
+	}
+	if got := h.agentRun.preflights[0].profile; got != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
+		t.Fatalf("preflight profile = %v, want the caller's explicit TRACKER_PLAN_ATTACHMENT_V1 preserved", got)
+	}
+}
+
 // TestStartTmuxChat_NonPreflightFailureIsNotTyped scopes the wrapper. Every
 // other StartTmuxChat failure keeps its existing no-rollback behavior, so an
 // unrelated error must not match capabilityPreflightError — otherwise
@@ -2267,7 +2380,7 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	const agentSessionID = "agent-123"
 
 	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude", "")
-	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, "rename"} {
+	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, unattendedSubagentDirective, "rename"} {
 		if !strings.Contains(cronPrompt, want) {
 			t.Fatalf("cron prompt missing %q: %q", want, cronPrompt)
 		}
@@ -2277,6 +2390,11 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	if !strings.Contains(zeroOutputPrompt, zeroOutputCronAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
 		t.Fatalf("zero-output prompt = %q, want dedicated no-commit directive", zeroOutputPrompt)
 	}
+	// The subagent grant rides alongside the zero-output directive too: a
+	// zero-output cron still runs skills that mandate awaited dispatch.
+	if !strings.Contains(zeroOutputPrompt, unattendedSubagentDirective) {
+		t.Fatalf("zero-output prompt missing the subagent directive: %q", zeroOutputPrompt)
+	}
 
 	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude", "")
 	if !strings.Contains(plainPrompt, "s2") {
@@ -2284,6 +2402,11 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	}
 	if strings.Contains(plainPrompt, cronAutonomyDirective) {
 		t.Fatalf("plain prompt should not contain the cron directive: %q", plainPrompt)
+	}
+	// Permissive direction: an attended chat keeps the no-surprise-fan-out
+	// default, so the grant must not leak outside the IsUnattended branch.
+	if strings.Contains(plainPrompt, unattendedSubagentDirective) {
+		t.Fatalf("attended prompt must not contain the subagent directive: %q", plainPrompt)
 	}
 	if AppendSystemPromptFor(nil, agentSessionID, "", "") != "" {
 		t.Fatalf("nil session should yield empty prompt")
@@ -2299,6 +2422,50 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	if !strings.Contains(plainPrompt, "boss env") {
 		t.Fatalf("prompt should reference `boss env` as the capability-discovery entry point: %q", plainPrompt)
 	}
+
+	// The subagent grant is only safe because it is bounded. A directive that
+	// lost its bound would read as an unbounded fan-out licence, so pin the
+	// bounding clause itself rather than merely its presence in the prompt.
+	t.Run("subagent directive is bounded", func(t *testing.T) {
+		for _, want := range []string{
+			// Scoped to what the running skill already mandates…
+			"protocol mandates",
+			// …awaited, never backgrounded…
+			"await every dispatch",
+			"run_in_background",
+			// …and non-delivery is greppable, not a silent clean report.
+			"SUBAGENT-DISPATCH-UNAVAILABLE",
+		} {
+			if !strings.Contains(unattendedSubagentDirective, want) {
+				t.Errorf("subagent directive lost its bounding clause %q: %q", want, unattendedSubagentDirective)
+			}
+		}
+	})
+
+	// This directive outranks a skill body, so an escalation worded as "cannot
+	// dispatch" would override the inline fallback every dispatch-mandating
+	// skill documents (boss-repair Strategy A/B/C, boss-build Step 6b/6c,
+	// boss-finalize Steps 1-8) and let a transient tool error abandon work the
+	// orchestrator could finish itself. The escalation must key on the mandated
+	// work going UNDONE instead.
+	t.Run("subagent directive preserves the documented inline fallback", func(t *testing.T) {
+		for _, want := range []string{
+			// The fallback is the sanctioned route, not a downgrade…
+			"inline fallback",
+			"clean result, not a downgrade",
+			// …so the non-clean route is reserved for undone work.
+			"Escalate only when the mandated work",
+		} {
+			if !strings.Contains(unattendedSubagentDirective, want) {
+				t.Errorf("subagent directive lost its inline-fallback carve-out %q: %q", want, unattendedSubagentDirective)
+			}
+		}
+		// Guard the specific regression: escalation must not be triggered by a
+		// failed dispatch call on its own.
+		if strings.Contains(unattendedSubagentDirective, "cannot dispatch a subagent the protocol mandates, do not report a clean result") {
+			t.Errorf("escalation re-keyed on dispatch failure, overriding the skills' inline fallback: %q", unattendedSubagentDirective)
+		}
+	})
 }
 
 // TestBossPromptHasNoStaleCapabilityList guards against re-introducing the
@@ -2654,6 +2821,11 @@ func TestAppendSystemPromptFor_IsTmuxUnattended(t *testing.T) {
 	if !strings.Contains(prompt, cronAutonomyDirective) {
 		t.Fatal("tmux_unattended session must get the autonomy directive")
 	}
+	// Unattendedness, not cron-ness, is what grants the subagent dispatch: an
+	// epic child has no CronJobID but runs the same dispatch-mandating skills.
+	if !strings.Contains(prompt, unattendedSubagentDirective) {
+		t.Fatal("tmux_unattended session must get the subagent directive")
+	}
 }
 
 func TestMergeEnv_ManagedKeysWin(t *testing.T) {
@@ -2784,5 +2956,86 @@ func TestClampInt32(t *testing.T) {
 				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBuildAppendSystemPromptClasses pins the class list to the branches
+// actually taken when building the suffix. bossd reports these names when a
+// runner drops the suffix, so a class that drifts from the text it stands for
+// would make the report lie.
+func TestBuildAppendSystemPromptClasses(t *testing.T) {
+	job := "cron-42"
+	cases := []struct {
+		name        string
+		sess        *models.Session
+		wantClasses []string
+	}{
+		{
+			name:        "attended session carries session context only",
+			sess:        &models.Session{ID: "s1", Title: "Manual"},
+			wantClasses: []string{InstructionClassSessionContext},
+		},
+		{
+			name:        "cron session adds the autonomy directive",
+			sess:        &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job},
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			// The zero-output directive is different prose but the same class:
+			// it is still the unattended autonomy instruction.
+			name:        "zero-output cron session still reports the directive",
+			sess:        &models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true},
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			name:        "tmux_unattended session adds the autonomy directive",
+			sess:        &models.Session{ID: "s4", Title: "Epic child", IsTmuxUnattended: true},
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			name:        "detached session adds the autonomy directive",
+			sess:        &models.Session{ID: "s5", Title: "Headless", Detach: true},
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude", "")
+			if strings.Join(classes, ",") != strings.Join(tc.wantClasses, ",") {
+				t.Fatalf("classes = %v, want %v", classes, tc.wantClasses)
+			}
+			// The exported wrapper must stay byte-identical to the text the
+			// class-bearing builder produces: argv is unchanged by this feature.
+			if got := AppendSystemPromptFor(tc.sess, "agent-1", "claude", ""); got != text {
+				t.Fatalf("AppendSystemPromptFor diverged from BuildAppendSystemPrompt:\n got %q\nwant %q", got, text)
+			}
+			// text-iff-class: the directive class is claimed exactly when some
+			// directive prose is actually in the suffix.
+			hasDirective := strings.Contains(text, cronAutonomyDirective) ||
+				strings.Contains(text, zeroOutputCronAutonomyDirective)
+			claimsDirective := slices.Contains(classes, InstructionClassAutonomyDirective)
+			if hasDirective != claimsDirective {
+				t.Fatalf("directive text present = %v but class claimed = %v: %q", hasDirective, claimsDirective, text)
+			}
+		})
+	}
+}
+
+// A nil session builds nothing, so there is nothing to report on.
+// The doc contract is "classes is nil exactly when the text is empty", which
+// takes two assertions: the nil session is the only empty case, and a plain
+// session yields both. Without the second half a regression that returned an
+// empty suffix would still report a class, and bossd would log a drop for an
+// instruction it never built.
+func TestBuildAppendSystemPromptNilSession(t *testing.T) {
+	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude", "")
+	if text != "" || classes != nil {
+		t.Fatalf("nil session = (%q, %v), want empty text and nil classes", text, classes)
+	}
+
+	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude", "")
+	if text == "" || len(classes) == 0 {
+		t.Fatalf("plain session = (%q, %v), want a non-empty suffix and its class", text, classes)
 	}
 }

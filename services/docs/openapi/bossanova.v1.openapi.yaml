@@ -6805,13 +6805,18 @@ components:
         provider:
           type: string
           title: provider
+        shouldRefresh:
+          type: boolean
+          title: should_refresh
       title: ListAccountsCommand
       additionalProperties: false
       description: |-
         bosso → daemon: list the daemon's rotation accounts, optionally filtered by
          provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
          only — never credentials). Replies with CommandResult carrying a
-         ListAccountsResponse (list_accounts = 16).
+         ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+         live usage probe over each account first; false/omitted keeps the passive read
+         an older bosso would have sent.
     bossanova.v1.ListAccountsRequest:
       type: object
       properties:
@@ -6837,6 +6842,14 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.Account'
           title: accounts
+        hasRefreshed:
+          type: boolean
+          title: has_refreshed
+          description: |-
+            Set only when the daemon recognized and completed a refresh=true command.
+             Bosso requires this acknowledgement for a refresh request so an older
+             daemon, which silently ignores the newer command field, cannot report a
+             passive list as a successful live refresh.
       title: ListAccountsResponse
       additionalProperties: false
     bossanova.v1.ListAgentsCommand:
@@ -9781,12 +9794,17 @@ components:
         provider:
           type: string
           title: provider
+        shouldRefresh:
+          type: boolean
+          title: should_refresh
       title: ProxyManageListAccountsRequest
       additionalProperties: false
       description: |-
         ProxyManageListAccountsRequest lists every rotation account on the daemon
          named by daemon_id (not session-scoped). provider optionally filters
-         ("" = all).
+         ("" = all). should_refresh asks the daemon to run its live usage probe over each
+         returned account before responding; false/omitted is the passive read the
+         30-second poll uses and is byte-for-byte the pre-refresh request.
     bossanova.v1.ProxyManageListAccountsResponse:
       type: object
       properties:
@@ -9795,6 +9813,14 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.Account'
           title: accounts
+        hasRefreshed:
+          type: boolean
+          title: has_refreshed
+          description: |-
+            Set only when bosso handled a should_refresh=true request and the daemon
+             confirmed its live usage probe. The web requires this acknowledgement for
+             refreshes, so an older bosso that silently ignores should_refresh cannot
+             make a passive list look like a completed usage refresh.
       title: ProxyManageListAccountsResponse
       additionalProperties: false
     bossanova.v1.ProxyMergeSessionRequest:

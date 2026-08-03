@@ -240,6 +240,38 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// textEntryActive reports whether a focused text input owns keystrokes in the
+// wizard's current phase — either of the two "/" list filters, or the huh form
+// phase. App consults it before aliasing ctrl+x onto Esc (BOS-660).
+//
+// Each filter is scoped to its own picker phase, so the pairs here are exactly
+// the ones handleKey delegates to keyPRFilter / keyIssueFilter on (and that
+// handlePaste routes on): the question is whether the filter really consumes
+// this keystroke, not whether one was left focused. Enter in keyIssueFilter
+// selects the highlighted row and starts creating without blurring the filter,
+// so an unscoped Active() kept claiming a text input on the creating screen and
+// on the overwrite-confirm prompt and create-error notice reached from it —
+// screens whose only key is Esc.
+//
+// The filters are checked with Active() (focused), not Engaged(): a committed
+// but blurred filter is a non-text state whose Esc clears the query, and that
+// is exactly the behaviour ctrl+x should inherit.
+//
+// The form phase is checked with formOnScreen, not the phase alone: the wizard
+// stays on newSessionPhaseForm while the overwrite-confirm prompt and the
+// create-error notice render INSTEAD of the completed form (see View's guard
+// order), and both of those are pure y/n-and-esc screens. The phase test still
+// leads because a form left non-nil by an earlier phase is not on screen either.
+func (m NewSessionModel) textEntryActive() bool {
+	if m.phase == newSessionPhasePRSelect && m.prFilter.Active() {
+		return true
+	}
+	if m.phase == newSessionPhaseIssueSelect && m.issueFilter.Active() {
+		return true
+	}
+	return m.phase == newSessionPhaseForm && formOnScreen(m.form)
+}
+
 // Cancelled returns true if the user cancelled the wizard.
 func (m NewSessionModel) Cancelled() bool { return m.cancel }
 

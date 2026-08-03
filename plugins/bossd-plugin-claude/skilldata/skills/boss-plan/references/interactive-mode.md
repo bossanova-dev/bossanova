@@ -127,14 +127,22 @@ both `extensions` and `skipped`; record every skip in the autonomous decisions.
 If the helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
 
-- **Tier 1:** if one or more extensions are returned, load each discovered extension by its returned
-  descriptor `name` via the Skill tool on the main thread, passing
+- **Tier 1:** if one or more extensions are returned, dispatch each on the main thread, passing
   `{ role: "draft", core: "boss-plan", context: { mode: "interactive", planPath, ticket, designDoc },
-runTmp, outPath }`. The extension owns the interview and writes the plan. Tiers 2 and 3 do not run.
-- **Tier 2:** if no extension exists and the host exposes a native drafting command, such as
+runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath` from disk**
+  (`dir` is its directory), passing both `skillPath` and `dir` in the worker brief, and requiring
+  relative extension resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch
+  as the extension's instructions. Never load a discovered extension by its bare descriptor `name` through the Skill tool:
+  extension skills are dispatched explicitly, never model-matched, so they SHOULD declare
+  `disable-model-invocation: true`, and the Skill tool refuses such a skill.
+  The extension owns the interview and writes the plan. If at least one extension ran successfully,
+  tiers 2 and 3 do not run. If **every** discovered extension failed to load or returned no valid
+  envelope, record `extension <name>: skipped (<reason>)` for each and fall through to Tier 2, then
+  Tier 3 — the drafting layer is never silently dropped.
+- **Tier 2:** if no extension ran successfully and the host exposes a native drafting command, such as
   Claude Code plan mode, delegate to it, then normalize the output to the planContract sections
   from `references/headless-drafting-brief.md` **Step 7**.
-- **Tier 3:** if no extension and no host built-in exists, run the inline drafting prompt in
+- **Tier 3:** if no extension ran successfully and no host built-in exists, run the inline drafting prompt in
   Phase 5: work the review dimensions, follow the shared Step 5/Step 7 sections, and write a
   planContract-compliant plan with no external skill dependency.
 

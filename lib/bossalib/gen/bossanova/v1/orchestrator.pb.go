@@ -2895,11 +2895,14 @@ func (x *ProxyListAccountsResponse) GetAccounts() []*Account {
 
 // ProxyManageListAccountsRequest lists every rotation account on the daemon
 // named by daemon_id (not session-scoped). provider optionally filters
-// ("" = all).
+// ("" = all). should_refresh asks the daemon to run its live usage probe over each
+// returned account before responding; false/omitted is the passive read the
+// 30-second poll uses and is byte-for-byte the pre-refresh request.
 type ProxyManageListAccountsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DaemonId      string                 `protobuf:"bytes,1,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"`
 	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	ShouldRefresh bool                   `protobuf:"varint,3,opt,name=should_refresh,json=shouldRefresh,proto3" json:"should_refresh,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2948,9 +2951,21 @@ func (x *ProxyManageListAccountsRequest) GetProvider() string {
 	return ""
 }
 
+func (x *ProxyManageListAccountsRequest) GetShouldRefresh() bool {
+	if x != nil {
+		return x.ShouldRefresh
+	}
+	return false
+}
+
 type ProxyManageListAccountsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Accounts      []*Account             `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Accounts []*Account             `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	// Set only when bosso handled a should_refresh=true request and the daemon
+	// confirmed its live usage probe. The web requires this acknowledgement for
+	// refreshes, so an older bosso that silently ignores should_refresh cannot
+	// make a passive list look like a completed usage refresh.
+	HasRefreshed  bool `protobuf:"varint,2,opt,name=has_refreshed,json=hasRefreshed,proto3" json:"has_refreshed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2990,6 +3005,13 @@ func (x *ProxyManageListAccountsResponse) GetAccounts() []*Account {
 		return x.Accounts
 	}
 	return nil
+}
+
+func (x *ProxyManageListAccountsResponse) GetHasRefreshed() bool {
+	if x != nil {
+		return x.HasRefreshed
+	}
+	return false
 }
 
 // ProxyAddAccountRequest registers a new account on the named daemon. The
@@ -9532,12 +9554,14 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\"N\n" +
 	"\x19ProxyListAccountsResponse\x121\n" +
-	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"Y\n" +
+	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\x80\x01\n" +
 	"\x1eProxyManageListAccountsRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
-	"\bprovider\x18\x02 \x01(\tR\bprovider\"T\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12%\n" +
+	"\x0eshould_refresh\x18\x03 \x01(\bR\rshouldRefresh\"y\n" +
 	"\x1fProxyManageListAccountsResponse\x121\n" +
-	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\xa3\x01\n" +
+	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\x12#\n" +
+	"\rhas_refreshed\x18\x02 \x01(\bR\fhasRefreshed\"\xa3\x01\n" +
 	"\x16ProxyAddAccountRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +

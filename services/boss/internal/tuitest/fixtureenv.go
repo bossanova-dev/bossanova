@@ -116,6 +116,11 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
+			// BOS-659: the retained-re-login seed. Stripped here like every other
+			// BOSS_AUTH_E2E_* var so an ambient developer value can never flag the
+			// subprocess's credentials; the bridge re-adds it only when a scenario
+			// asks for it.
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_NEEDS_RELOGIN=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE=") ||

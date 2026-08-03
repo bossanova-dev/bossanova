@@ -739,6 +739,14 @@ func (m RepoSettingsModel) Cancelled() bool { return m.cancel }
 // Done returns true if settings were saved and the view should close.
 func (m RepoSettingsModel) Done() bool { return m.done }
 
+// textEntryActive reports whether a row is in inline edit mode with its
+// textinput focused, so App can leave ctrl+x alone rather than aliasing it onto
+// Esc (BOS-660). Off the edit path Esc backs out one level — dismissing the
+// GitHub App overlay when one is up, otherwise exiting the view.
+func (m RepoSettingsModel) textEntryActive() bool {
+	return m.editingField != repoSettingsRowNone
+}
+
 func (m RepoSettingsModel) View() tea.View {
 	if m.githubAppMode == repoSettingsGitHubModePrompt {
 		if m.githubAppInstalled() {

@@ -888,7 +888,12 @@ transcript, command output, user-provided content, credentials, tokens, or other
 file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
 
 Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents, each bounded
-by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Load each extension by **reading the
+descriptor's `skillPath` from disk** (`dir` is its directory), passing both `skillPath` and `dir` in
+the worker brief, and requiring relative extension resources to resolve from `dir`. Pass that `SKILL.md`
+content into the dispatch as the extension's instructions — never by its bare descriptor `name` via the
+Skill tool, which refuses a skill declaring `disable-model-invocation: true`.
+Each receives:
 
 ```json
 {

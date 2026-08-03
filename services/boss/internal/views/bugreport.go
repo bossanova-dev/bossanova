@@ -147,6 +147,17 @@ func (m BugReportModel) Done() bool { return m.done }
 // The caller uses it to restore the prior screen without recreating it.
 func (m BugReportModel) PreviousView() View { return m.previousView }
 
+// textEntryActive reports whether the huh comment form owns keystrokes, so App
+// can leave ctrl+x alone rather than aliasing it onto Esc (BOS-660).
+//
+// This mirrors the guard Update uses before handing a key to the form, so the
+// submitting / success / error phases — whose Esc dismisses the modal — stay
+// eligible for the alias. `m.form != nil` alone is NOT that test: the form is
+// built in the constructor and never cleared, so it is non-nil in every phase.
+func (m BugReportModel) textEntryActive() bool {
+	return m.phase == bugReportPhaseEditing && formOnScreen(m.form)
+}
+
 func (m BugReportModel) Init() tea.Cmd {
 	return tea.Batch(m.form.Init(), m.spinner.Tick)
 }

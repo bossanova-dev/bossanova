@@ -489,6 +489,20 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Cancelled returns true if the user exited the trash view.
 func (m TrashModel) Cancelled() bool { return m.cancel }
 
+// textEntryActive reports whether the "/" filter input is focused, so App can
+// leave ctrl+x alone rather than aliasing it onto Esc (BOS-660).
+//
+// Active() (focused), not Engaged(): a committed but blurred filter is a
+// non-text state whose Esc clears the query, and that is behaviour ctrl+x
+// should inherit.
+//
+// The m.err guard keeps the predicate honest while an error overlay is up. A
+// restore/delete can fail after the user has already focused the filter, and
+// View then REPLACES the filter with a full-screen error whose only route out
+// is Esc. Reporting text entry there would leave ctrl+x unconverted for the
+// Update arm above to swallow, stranding the user on a screen Esc escapes.
+func (m TrashModel) textEntryActive() bool { return m.err == nil && m.filter.Active() }
+
 // RestoredSessionID returns the session restored by the latest successful restore.
 func (m TrashModel) RestoredSessionID() string { return m.restoredID }
 

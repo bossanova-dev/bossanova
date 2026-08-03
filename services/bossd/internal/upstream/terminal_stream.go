@@ -119,15 +119,19 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 		// a long bosso outage doesn't tight-loop on stale credentials.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
-				// invalid_grant means WorkOS has terminally killed the
-				// refresh token. Mark the shared AuthState so the Run
-				// loop pauses instead of tight-looping on a credential
-				// that will never work. Other refresh failures are
-				// logged by the DaemonStream opener (which runs more
-				// often) — keep this branch quiet to avoid double-warns.
+				// ErrAuthExpired means the stored refresh token can no
+				// longer be exchanged — either WorkOS rejected it, or the
+				// exchange outcome could never be confirmed (BOS-659), so
+				// replaying it is unsafe. Mark the shared AuthState so the
+				// Run loop pauses instead of tight-looping on a credential
+				// that will never work. One sanitized line, keyed off the
+				// enumerated reason so an ambiguous timeout is not reported
+				// as invalid_grant. Other refresh failures are logged by
+				// the DaemonStream opener (which runs more often) — keep
+				// this branch quiet to avoid double-warns.
 				if errors.Is(err, ErrAuthExpired) && o.authState != nil {
 					if o.authState.MarkNeedsLogin() {
-						o.logger.Warn().Err(err).Msg("terminal: token refresh rejected as invalid_grant; pausing stream until re-login")
+						logReloginPause(&o.logger, "terminal: ", err)
 					}
 				}
 			}
@@ -140,10 +144,13 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 		raw.RequestHeader().Set("Authorization", "Bearer "+jwt)
 	} else if o.authState != nil {
 		// Mirror connectOpener.DaemonStream: no JWT to send means no point
-		// dialling. Mark NeedsLogin so the Run loop pauses; log only on
-		// the state change (the DaemonStream opener typically logs first).
+		// dialling — including the BOS-659 startup case where the provider
+		// reloaded a retained record flagged for re-login and therefore
+		// exposes no bearer token. Mark NeedsLogin so the Run loop pauses;
+		// log only on the state change (the DaemonStream opener typically
+		// logs first).
 		if o.authState.MarkNeedsLogin() {
-			o.logger.Warn().Msg("terminal: no upstream credentials available; pausing stream until login")
+			o.logger.Warn().Msg("terminal: " + noCredentialsPauseMessage(o.tokens))
 		}
 	}
 	if o.sessionToken != nil {

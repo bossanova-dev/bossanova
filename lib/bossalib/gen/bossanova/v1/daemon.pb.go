@@ -8070,8 +8070,13 @@ func (x *ListAccountsRequest) GetRefresh() bool {
 }
 
 type ListAccountsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Accounts      []*Account             `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Accounts []*Account             `protobuf:"bytes,1,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	// Set only when the daemon recognized and completed a refresh=true command.
+	// Bosso requires this acknowledgement for a refresh request so an older
+	// daemon, which silently ignores the newer command field, cannot report a
+	// passive list as a successful live refresh.
+	HasRefreshed  bool `protobuf:"varint,2,opt,name=has_refreshed,json=hasRefreshed,proto3" json:"has_refreshed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8111,6 +8116,13 @@ func (x *ListAccountsResponse) GetAccounts() []*Account {
 		return x.Accounts
 	}
 	return nil
+}
+
+func (x *ListAccountsResponse) GetHasRefreshed() bool {
+	if x != nil {
+		return x.HasRefreshed
+	}
+	return false
 }
 
 type AddAccountRequest struct {
@@ -10538,9 +10550,10 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\arefresh\x18\x02 \x01(\bH\x01R\arefresh\x88\x01\x01B\v\n" +
 	"\t_providerB\n" +
 	"\n" +
-	"\b_refresh\"I\n" +
+	"\b_refresh\"n\n" +
 	"\x14ListAccountsResponse\x121\n" +
-	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\"\x8e\x01\n" +
+	"\baccounts\x18\x01 \x03(\v2\x15.bossanova.v1.AccountR\baccounts\x12#\n" +
+	"\rhas_refreshed\x18\x02 \x01(\bR\fhasRefreshed\"\x8e\x01\n" +
 	"\x11AddAccountRequest\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1a\n" +

@@ -1312,6 +1312,18 @@ test('browser video step schema requires action-specific fields', () => {
   assert.deepEqual(requirementsByAction.goto, ['route'])
   assert.deepEqual(requirementsByAction.click, ['selector'])
   assert.deepEqual(requirementsByAction.type, ['selector', 'value'])
+  assert.deepEqual(requirementsByAction.press, ['key'])
+  assert.deepEqual(requirementsByAction.select, ['selector', 'value'])
+
+  // The runner deliberately accepts value: '' for a select step (the leading
+  // "All …" filter option, i.e. clearing a filter), so the shared `value`
+  // property must NOT carry minLength — allOf intersects, and a shared
+  // minLength would make a supported step schema-invalid. `type` keeps the
+  // non-empty requirement in its own branch, where an empty keystroke
+  // sequence really is meaningless.
+  assert.deepEqual(stepSchema.properties.value, { type: 'string' })
+  const typeRule = stepSchema.allOf.find((rule) => rule.if.properties.action.const === 'type')
+  assert.equal(typeRule.then.properties.value.minLength, 1)
 })
 
 test('buildManifest sets png url unchanged (regression) and webm poster/video urls', () => {

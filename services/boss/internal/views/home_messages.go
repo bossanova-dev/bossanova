@@ -35,6 +35,14 @@ type repoCountMsg struct {
 type authStatusMsg struct {
 	loggedIn bool
 	email    string
+	// needsRelogin reports stored-but-unusable credentials (BOS-659): the
+	// email above is the retained identity, but the daemon can no longer
+	// refresh, so Home offers [l]ogin and explains why. Distinct from
+	// never having logged in, where both fields below are zero.
+	needsRelogin bool
+	// reloginReason is one of auth.ReloginReason*, rendered through
+	// auth.ReloginReasonDescription. Never carries token material.
+	reloginReason string
 }
 
 type cloudAccessMsg struct {
@@ -63,6 +71,14 @@ type upgradeRunMsg struct {
 }
 
 type daemonRestartMsg struct {
+	err error
+}
+
+// logoutMsg carries the result of the confirmed logout action. Logout mutates
+// the shared credential record behind a cross-process lock that bossd can be
+// holding, so it genuinely fails; before BOS-659 the TUI discarded the error
+// and the board simply stayed signed in with no explanation.
+type logoutMsg struct {
 	err error
 }
 

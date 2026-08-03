@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -191,14 +193,28 @@ func (r recordingAccountStore) Delete(ctx context.Context, id string) error {
 	return r.AccountStore.Delete(ctx, id)
 }
 
+// fakeUsageProbe records the accounts ListAccounts probed. ListAccounts runs
+// its probes concurrently (usageProbeConcurrency), so the recording is guarded
+// and the recorded order is not meaningful — assert on the SET of ids.
 type fakeUsageProbe struct {
+	mu  sync.Mutex
 	ids []string
 	err error
 }
 
 func (f *fakeUsageProbe) RecordUsageProbe(_ context.Context, accountID string) error {
+	f.mu.Lock()
 	f.ids = append(f.ids, accountID)
+	f.mu.Unlock()
 	return f.err
+}
+
+func (f *fakeUsageProbe) probed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := append([]string(nil), f.ids...)
+	sort.Strings(out)
+	return out
 }
 
 func newAccountServer(t *testing.T, creds AccountCredentialStore, smoke AccountSmokeRunner) (*Server, db.AccountStore) {
@@ -231,24 +247,181 @@ func TestListAccountsRefreshUsesUsageProbeFailSoft(t *testing.T) {
 	if len(listed.Msg.Accounts) != 2 {
 		t.Fatalf("list len = %d, want 2", len(listed.Msg.Accounts))
 	}
-	if len(probe.ids) != 2 {
-		t.Fatalf("probe calls = %v, want both accounts", probe.ids)
-	}
-	if probe.ids[0] != first.Id || probe.ids[1] != second.Id {
-		t.Fatalf("probe ids = %v, want [%s %s]", probe.ids, first.Id, second.Id)
+	want := []string{first.Id, second.Id}
+	sort.Strings(want)
+	if got := probe.probed(); !slices.Equal(got, want) {
+		t.Fatalf("probe ids = %v, want %v", got, want)
 	}
 
+	probe.mu.Lock()
 	probe.ids = nil
+	probe.mu.Unlock()
 	refresh = false
 	if _, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh})); err != nil {
 		t.Fatalf("ListAccounts no refresh: %v", err)
 	}
-	if len(probe.ids) != 0 {
-		t.Fatalf("refresh=false probe calls = %v, want none", probe.ids)
+	if got := probe.probed(); len(got) != 0 {
+		t.Fatalf("refresh=false probe calls = %v, want none", got)
 	}
 
 	if _, err := store.Get(ctx, first.Id); err != nil {
 		t.Fatalf("store still readable after fail-soft probe: %v", err)
+	}
+}
+
+// barrierUsageProbe parks every probe until release is closed, announcing each
+// arrival first. A sequential ListAccounts can therefore only ever announce
+// ONE arrival, which is what makes the concurrency assertion falsifiable.
+type barrierUsageProbe struct {
+	arrived chan string
+	release chan struct{}
+}
+
+func (b *barrierUsageProbe) RecordUsageProbe(ctx context.Context, accountID string) error {
+	b.arrived <- accountID
+	select {
+	case <-b.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestListAccountsRefreshProbesConcurrently asserts a refresh=true list probes
+// accounts in parallel rather than one at a time (BOS-655). Sequential probing
+// made the refresh cost the SUM of every probe — ~20s each for a worst-case
+// Claude account — so it outgrew bosso's bounded refresh deadline as accounts
+// were added, and a timeout there makes that daemon's rows vanish from the web
+// account list instead of updating. Three accounts all park inside the probe at
+// once here; under the old loop the second arrival never happens and the read
+// below times out.
+func TestListAccountsRefreshProbesConcurrently(t *testing.T) {
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+	const accountCount = 3
+	for i := range accountCount {
+		// Distinct credentials: AddAccount rejects a duplicate blob.
+		mustAddClaude(t, srv, fmt.Sprintf("acct-%d", i), fmt.Appendf(nil, "token-%d", i))
+	}
+	probe := &barrierUsageProbe{
+		arrived: make(chan string, accountCount),
+		release: make(chan struct{}),
+	}
+	srv.usageProbe = probe
+
+	refresh := true
+	listed := make(chan error, 1)
+	go func() {
+		_, err := srv.ListAccounts(context.Background(), connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh}))
+		listed <- err
+	}()
+
+	for i := range accountCount {
+		select {
+		case <-probe.arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d probes started concurrently", i, accountCount)
+		}
+	}
+	close(probe.release)
+
+	select {
+	case err := <-listed:
+		if err != nil {
+			t.Fatalf("ListAccounts refresh: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListAccounts did not return after the probes were released")
+	}
+}
+
+// TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests proves that
+// independent ListAccounts commands share the daemon-wide cap. The reverse
+// stream dispatches each command in its own goroutine, so without a Server
+// semaphore two refreshes could each start usageProbeConcurrency probes.
+func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T) {
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+	accounts := make([]*models.Account, usageProbeConcurrency)
+	for i := range accounts {
+		accounts[i] = &models.Account{ID: fmt.Sprintf("acct-%d", i)}
+	}
+	probe := &barrierUsageProbe{
+		arrived: make(chan string, 2*usageProbeConcurrency),
+		release: make(chan struct{}),
+	}
+	srv.usageProbe = probe
+
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			srv.refreshUsageSnapshots(context.Background(), accounts)
+			done <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < usageProbeConcurrency; i++ {
+		select {
+		case <-probe.arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d shared probes started", i, usageProbeConcurrency)
+		}
+	}
+	select {
+	case accountID := <-probe.arrived:
+		t.Fatalf("started %q above the daemon-wide limit of %d", accountID, usageProbeConcurrency)
+	default:
+	}
+
+	close(probe.release)
+	for range 2 {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("refresh did not return after the probes were released")
+		}
+	}
+}
+
+// TestRefreshUsageSnapshotsStopsSchedulingWhenCancelled ensures a refresh
+// deadline cancels a wait for a saturated probe slot instead of allowing the
+// next account to start as an earlier probe exits.
+func TestRefreshUsageSnapshotsStopsSchedulingWhenCancelled(t *testing.T) {
+	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
+	accounts := make([]*models.Account, usageProbeConcurrency+1)
+	for i := range accounts {
+		accounts[i] = &models.Account{ID: fmt.Sprintf("acct-%d", i)}
+	}
+	probe := &barrierUsageProbe{
+		arrived: make(chan string, len(accounts)),
+		release: make(chan struct{}),
+	}
+	srv.usageProbe = probe
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		srv.refreshUsageSnapshots(ctx, accounts)
+		close(done)
+	}()
+
+	for i := 0; i < usageProbeConcurrency; i++ {
+		select {
+		case <-probe.arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d initial probes started", i, usageProbeConcurrency)
+		}
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not stop after cancellation")
+	}
+	select {
+	case accountID := <-probe.arrived:
+		t.Fatalf("scheduled %q after cancellation", accountID)
+	default:
 	}
 }
 

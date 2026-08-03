@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,9 +15,12 @@ import (
 // so bosso re-verifies the JWT against WorkOS JWKS and updates its
 // auth context for subsequent commands (decision #2).
 //
-// Returns an error when Refresh itself fails. Per the design, a refresh
-// failure closes the stream — the outer Run loop reconnects, which
-// forces a fresh register/handshake with whatever token is available.
+// Returns an error when Refresh itself fails. Per the design, a transient
+// refresh failure closes the stream — the outer Run loop reconnects, which
+// forces a fresh register/handshake with whatever token is available. A
+// terminal re-login failure (either BOS-659 state: an unconfirmed exchange
+// outcome or an authoritative rejection) is different: it marks the shared
+// AuthState first, so the loop pauses for `boss login` instead of reconnecting.
 // When the TokenProvider is nil, the function blocks on ctx only (used
 // by tests that don't exercise the refresh path).
 func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *pb.DaemonEvent) error {
@@ -49,6 +53,19 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 
 		newTok, err := c.tokenProvider.Refresh(ctx)
 		if err != nil {
+			// BOS-659: both terminal re-login states (an ambiguous outcome
+			// and an authoritative rejection) compose with ErrAuthExpired.
+			// Mark the shared AuthState BEFORE returning: the outer Run loop
+			// checks NeedsLogin ahead of its error branch, so marking first
+			// is what makes this an intentional pause (no stream-error
+			// metric, no backoff ramp, no re-dial) instead of a reconnect.
+			// Marking also cancels the live stream through the needs-login
+			// watcher, so the pause is immediate rather than one tick late.
+			if errors.Is(err, ErrAuthExpired) && c.authState != nil {
+				if c.authState.MarkNeedsLogin() {
+					logReloginPause(&c.logger, "", err)
+				}
+			}
 			return fmt.Errorf("token refresh: %w", err)
 		}
 		if newTok == "" {

@@ -331,6 +331,21 @@ test('discoverExtensions skips a malformed manifest without throwing', () => {
   assert.ok(skipped.some((s) => s.name === 'bs-review-broken'))
 })
 
+// A core loads a discovered extension by reading its descriptor's `skillPath` from disk, so an
+// extension directory whose SKILL.md is absent must surface as a *reasoned skip* rather than
+// silently vanishing. Cores gate their Tier-2/Tier-3 fallbacks on the Tier-1 dispatch SUCCEEDING,
+// and this skip entry is the signal they fall through on — an empty `skipped` here would let a
+// failed Tier 1 masquerade as "no extension configured" and silently drop the layer.
+test('discoverExtensions reports a reasoned skip when SKILL.md is absent', () => {
+  const root = scratchRoot()
+  fs.mkdirSync(path.join(root, '.claude', 'skills', 'bs-review-headless'), { recursive: true })
+
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root })
+
+  assert.deepEqual(extensions, [])
+  assert.deepEqual(skipped, [{ name: 'bs-review-headless', reason: 'no SKILL.md' }])
+})
+
 test('validateResult accepts a well-formed lens envelope', () => {
   const envelope = {
     ok: true,

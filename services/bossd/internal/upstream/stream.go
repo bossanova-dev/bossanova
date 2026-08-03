@@ -186,12 +186,16 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
 				// Distinguish terminal from transient. ErrAuthExpired
-				// means WorkOS told us the refresh token is dead — no
-				// keychain reload will help (the keychain holds the same
-				// dead token), and continuing to dial just produces log
-				// spam at 1 Hz. Mark the shared AuthState so the Run
-				// loop pauses on the next iteration; log only on the
-				// state change so a sustained stuck-loop doesn't spam.
+				// covers both BOS-659 terminal states — the refresh token
+				// was authoritatively rejected, or the exchange outcome
+				// could never be confirmed — and neither is fixable by a
+				// keychain reload (the keychain holds the same unusable
+				// token, now flagged), while continuing to dial just
+				// produces log spam at 1 Hz. Mark the shared AuthState so
+				// the Run loop pauses on the next iteration; log one
+				// sanitized line on the state change, carrying the
+				// enumerated reason rather than the raw error, so an
+				// ambiguous timeout is never reported as invalid_grant.
 				//
 				// For transient failures (network, 5xx, malformed body)
 				// keep the original behaviour: log + reload keychain so
@@ -199,7 +203,7 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 				// NotifyLogin RPC never reached us.
 				if errors.Is(err, ErrAuthExpired) && o.authState != nil {
 					if o.authState.MarkNeedsLogin() {
-						o.logger.Warn().Err(err).Msg("token refresh rejected as invalid_grant; pausing stream until re-login")
+						logReloginPause(&o.logger, "", err)
 					}
 				} else {
 					o.logger.Warn().Err(err).Msg("token refresh failed; reloading keychain")
@@ -226,14 +230,17 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 		raw.RequestHeader().Set("Authorization", "Bearer "+jwt)
 	} else if o.authState != nil {
 		// No JWT to send and no static fallback either. Common causes:
-		// keychain was wiped after invalid_grant, daemon started before
-		// the user ran `boss login`, or a transient refresh failure
-		// returned an empty cache. In every case dialling produces a
-		// "missing or invalid Authorization header" rejection that the
-		// Run loop currently retries forever. Mark NeedsLogin so it
-		// pauses on the next iteration; log only on the state change.
+		// the daemon started before the user ran `boss login`, a transient
+		// refresh failure returned an empty cache, or — since BOS-659 —
+		// the provider reloaded a RETAINED record flagged for re-login,
+		// which deliberately exposes no bearer token. In every case
+		// dialling produces a "missing or invalid Authorization header"
+		// rejection that the Run loop would otherwise retry forever. Mark
+		// NeedsLogin so it pauses on the next iteration; log only on the
+		// state change, and let the flagged case explain itself rather
+		// than reporting the retained credentials as absent.
 		if o.authState.MarkNeedsLogin() {
-			o.logger.Warn().Msg("no upstream credentials available; pausing stream until login")
+			o.logger.Warn().Msg(noCredentialsPauseMessage(o.tokens))
 		}
 	}
 	if o.sessionToken != nil {
@@ -330,8 +337,10 @@ type SessionCommandHandler interface {
 	ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error)
 	// ListAccounts returns the daemon's rotation accounts (metadata only — never
 	// credentials), optionally filtered by provider ("" = all). Bosso proxies
-	// this for the web account-switch picker, scoped to a session's owning daemon.
-	ListAccounts(ctx context.Context, provider string) (*pb.ListAccountsResponse, error)
+	// this for the web account-switch picker, scoped to a session's owning
+	// daemon. refresh, when true, requests a live per-account usage probe
+	// before the re-read (fail-soft — see services/bossd/internal/server/account.go).
+	ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error)
 	// GetRepo returns a repo's web-safe settings for the hosted repo-management
 	// surface. The direct daemon handler never exposes plaintext keys.
 	GetRepo(ctx context.Context, repoID string) (*pb.GetRepoSettingsResponse, error)
@@ -737,7 +746,8 @@ type StreamClientConfig struct {
 	ReRegister ReRegisterFunc
 
 	// AuthState, when set, lets the opener flag a terminal credential
-	// failure (WorkOS invalid_grant) and the Run loop pause until
+	// failure (a WorkOS rejection, or an unconfirmed exchange outcome —
+	// both re-login states) and the Run loop pause until
 	// NotifyLogin clears it. Production wiring should pass the same
 	// AuthState to the TerminalStreamClient so both bidis pause together.
 	// Nil keeps the legacy tight-loop behaviour.

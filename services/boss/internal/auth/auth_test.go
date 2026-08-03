@@ -1,13 +1,16 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -29,6 +32,10 @@ type mockTokenStore struct {
 	saveCalled   bool
 	deleteCalled bool
 }
+
+type errorRefreshLock struct{ err error }
+
+func (l errorRefreshLock) Unlock() error { return l.err }
 
 func (m *mockTokenStore) Save(tokens *Tokens) error {
 	m.saveCalled = true
@@ -265,7 +272,11 @@ func TestManager_Logout(t *testing.T) {
 	}
 	mgr := NewManager(store, Config{})
 
-	if err := mgr.Logout(); err != nil {
+	var lockMu sync.Mutex
+	withRefreshHooks(t, &lockMu, func(context.Context, Config, string) (*Tokens, error) {
+		return nil, errors.New("refresh should not be called")
+	})
+	if err := mgr.Logout(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !store.deleteCalled {
@@ -273,6 +284,69 @@ func TestManager_Logout(t *testing.T) {
 	}
 	if store.tokens != nil {
 		t.Error("tokens should be nil after logout")
+	}
+}
+
+func TestManager_LogoutWaitsForCredentialLock(t *testing.T) {
+	store := &mockTokenStore{
+		tokens: &Tokens{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	mgr := NewManager(store, Config{})
+
+	origAcquire := acquireRefreshLock
+	defer func() { acquireRefreshLock = origAcquire }()
+	var lockMu sync.Mutex
+	lockMu.Lock() // Simulate a daemon refresh holding the shared file lock.
+	acquireRefreshLock = func(context.Context) (refreshUnlocker, error) {
+		lockMu.Lock()
+		return &mutexRefreshLock{mu: &lockMu}, nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- mgr.Logout(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Logout completed while credential lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if store.deleteCalled {
+		t.Fatal("Delete called while credential lock was held")
+	}
+
+	lockMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Logout returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Logout did not complete after credential lock was released")
+	}
+	if !store.deleteCalled {
+		t.Fatal("Delete was not called after credential lock was released")
+	}
+}
+
+func TestManager_LogoutSucceedsWhenUnlockFailsAfterDelete(t *testing.T) {
+	store := &mockTokenStore{
+		tokens: &Tokens{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	mgr := NewManager(store, Config{})
+
+	origAcquire := acquireRefreshLock
+	t.Cleanup(func() { acquireRefreshLock = origAcquire })
+	acquireRefreshLock = func(context.Context) (refreshUnlocker, error) {
+		return errorRefreshLock{err: errors.New("unlock failed")}, nil
+	}
+
+	if err := mgr.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout returned error after successful Delete: %v", err)
+	}
+	if !store.deleteCalled {
+		t.Fatal("expected Delete to be called")
+	}
+	if store.tokens != nil {
+		t.Fatal("tokens should be nil after logout")
 	}
 }
 
@@ -743,5 +817,71 @@ func TestRefreshAccessToken_ErrorResponse(t *testing.T) {
 	_, err := RefreshAccessToken(context.Background(), cfg, "expired-refresh")
 	if err == nil {
 		t.Fatal("expected error for invalid grant")
+	}
+}
+
+// noopRefreshLock is a lock whose Unlock always succeeds.
+type noopRefreshLock struct{}
+
+func (noopRefreshLock) Unlock() error { return nil }
+
+// TestManager_WithCredentialLockBoundsAcquisition pins the sibling contract:
+// refreshStoredTokens and bossd's KeychainTokenProvider.refresh both bound lock
+// acquisition at refreshLockTimeout, but withCredentialLock passed the caller's
+// raw context. `boss logout` passes cmd.Context() (signal-cancelled, no
+// deadline) and the TUI passes an app-lifetime context, so a daemon mid-refresh
+// could block a logout for as long as it held the lock, silently.
+func TestManager_WithCredentialLockBoundsAcquisition(t *testing.T) {
+	store := &mockTokenStore{tokens: &Tokens{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}}
+	mgr := NewManager(store, Config{})
+
+	origAcquire := acquireRefreshLock
+	t.Cleanup(func() { acquireRefreshLock = origAcquire })
+	var deadline time.Time
+	var hasDeadline bool
+	acquireRefreshLock = func(ctx context.Context) (refreshUnlocker, error) {
+		deadline, hasDeadline = ctx.Deadline()
+		return noopRefreshLock{}, nil
+	}
+
+	before := time.Now()
+	if err := mgr.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout returned error: %v", err)
+	}
+	if !hasDeadline {
+		t.Fatal("credential lock acquired with no deadline; a busy daemon can block logout indefinitely")
+	}
+	if budget := deadline.Sub(before); budget <= 0 || budget > refreshLockTimeout+time.Second {
+		t.Fatalf("acquisition budget = %v, want ~%v (the sibling refresh paths' timeout)", budget, refreshLockTimeout)
+	}
+}
+
+// TestManager_WithCredentialLockReportsUnlockFailureOnSuccess keeps the
+// swallow deliberate but no longer silent. A failed flock Unlock leaves the
+// descriptor locked for the rest of the process, so in the long-lived TUI every
+// later login, logout, or refresh blocks on a lock nothing will release — a
+// warning at the point of failure beats a mystery timeout later. The mutation
+// itself stays authoritative (TestManager_LogoutSucceedsWhenUnlockFailsAfterDelete).
+func TestManager_WithCredentialLockReportsUnlockFailureOnSuccess(t *testing.T) {
+	store := &mockTokenStore{tokens: &Tokens{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}}
+	mgr := NewManager(store, Config{})
+
+	origAcquire := acquireRefreshLock
+	origOut := credentialLockWarnOut
+	t.Cleanup(func() {
+		acquireRefreshLock = origAcquire
+		credentialLockWarnOut = origOut
+	})
+	acquireRefreshLock = func(context.Context) (refreshUnlocker, error) {
+		return errorRefreshLock{err: errors.New("flock release refused")}, nil
+	}
+	var warnings bytes.Buffer
+	credentialLockWarnOut = &warnings
+
+	if err := mgr.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout returned error after successful Delete: %v", err)
+	}
+	if !strings.Contains(warnings.String(), "flock release refused") {
+		t.Fatalf("unlock failure was swallowed silently; warnings = %q", warnings.String())
 	}
 }

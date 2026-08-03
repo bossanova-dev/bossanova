@@ -25,9 +25,9 @@ var _ vcs.Provider = (*Provider)(nil)
 // Changes reviews, so they post resolvable review threads instead.
 //
 // Promotion is conditional: a bot's COMMENTED review is only promoted if the bot
-// has at least one unresolved review thread on the PR. When all threads are
-// resolved, the review stays as COMMENTED (showing as "reviewed" rather than
-// "rejected").
+// has at least one BLOCKING review thread on the PR — unresolved AND not
+// outdated (BOS-665). When every thread is resolved or outdated, the review
+// stays as COMMENTED (showing as "reviewed" rather than "rejected").
 func isReviewBotLogin(login string) bool {
 	return strings.HasSuffix(login, "[bot]")
 }
@@ -85,15 +85,64 @@ func splitNWO(nwo string) (owner, repo string, ok bool) {
 	return parts[0], parts[1], true
 }
 
-// unresolvedThreadAuthors queries GitHub's GraphQL API for review threads on a
-// PR and returns the set of bot authors (from botUsers) that have at least one
-// unresolved thread.
+// reviewThread is one node of the reviewThreads GraphQL query.
+type reviewThread struct {
+	IsResolved bool `json:"isResolved"`
+	IsOutdated bool `json:"isOutdated"`
+	Comments   struct {
+		Nodes []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"comments"`
+}
+
+// blocks reports whether this thread still holds the merge gate open.
+//
+// A thread blocks only while it is unresolved AND not outdated. An outdated
+// thread is anchored to a diff hunk that no longer exists at HEAD, and GitHub
+// collapses it out of the default PR view as moot while its isResolved stays
+// false forever — so counting it means nothing an operator can do at HEAD will
+// ever clear the gate, which is precisely the livelock BOS-665 removes. It is
+// safe to skip because a review bot's push-triggered re-review re-raises any
+// still-valid concern against the new hunk.
+//
+// Note this is deliberately MORE lenient than GitHub's own "Require
+// conversation resolution" branch protection, which counts an unresolved
+// thread whether or not it is outdated. The alignment claimed here is with how
+// GitHub SURFACES threads, not with that setting.
+func (t reviewThread) blocks() bool {
+	return !t.IsResolved && !t.IsOutdated
+}
+
+// reviewThreadsResponse decodes one page of the reviewThreads GraphQL query.
+type reviewThreadsResponse struct {
+	Data struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+					Nodes []reviewThread `json:"nodes"`
+				} `json:"reviewThreads"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+// blockingThreadAuthors queries GitHub's GraphQL API for review threads on a
+// PR and returns the set of bot authors (from botUsers) that own at least one
+// thread that still blocks. reviewThread.blocks defines that predicate and
+// carries its rationale.
 //
 // On any error it fails closed by returning an error wrapping
 // vcs.ErrReviewThreadsUnverified: the thread state is unknown, so callers must
 // not treat the absence of promotions as "nothing is blocking". The merge gate
 // blocks on this rather than merging an unverifiable review state.
-func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error) {
+func (p *Provider) blockingThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error) {
 	nwo := repoFlag(repoPath)
 	owner, repo, ok := splitNWO(nwo)
 	if !ok {
@@ -111,6 +160,7 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
         }
         nodes {
           isResolved
+          isOutdated
           comments(first:1) {
             nodes { author { login } }
           }
@@ -120,30 +170,7 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
   }
 }`
 
-	var result struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						PageInfo struct {
-							HasNextPage bool   `json:"hasNextPage"`
-							EndCursor   string `json:"endCursor"`
-						} `json:"pageInfo"`
-						Nodes []struct {
-							IsResolved bool `json:"isResolved"`
-							Comments   struct {
-								Nodes []struct {
-									Author struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
+	var result reviewThreadsResponse
 
 	// GraphQL returns bare logins for bots ("cursor") while REST returns
 	// the suffixed form ("cursor[bot]"). Build a lookup that handles both.
@@ -153,7 +180,7 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		graphqlToRest[strings.TrimSuffix(login, "[bot]")] = login
 	}
 
-	unresolved := make(map[string]bool)
+	blocking := make(map[string]bool)
 	after := ""
 	for {
 		args := []string{
@@ -171,37 +198,14 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 			p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing closed")
 			return nil, fmt.Errorf("%w: GraphQL thread query failed: %w", vcs.ErrReviewThreadsUnverified, err)
 		}
-		result = struct {
-			Data struct {
-				Repository struct {
-					PullRequest struct {
-						ReviewThreads struct {
-							PageInfo struct {
-								HasNextPage bool   `json:"hasNextPage"`
-								EndCursor   string `json:"endCursor"`
-							} `json:"pageInfo"`
-							Nodes []struct {
-								IsResolved bool `json:"isResolved"`
-								Comments   struct {
-									Nodes []struct {
-										Author struct {
-											Login string `json:"login"`
-										} `json:"author"`
-									} `json:"nodes"`
-								} `json:"comments"`
-							} `json:"nodes"`
-						} `json:"reviewThreads"`
-					} `json:"pullRequest"`
-				} `json:"repository"`
-			} `json:"data"`
-		}{}
+		result = reviewThreadsResponse{}
 		if err := json.Unmarshal([]byte(out), &result); err != nil {
 			p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing closed")
 			return nil, fmt.Errorf("%w: parsing GraphQL thread response: %w", vcs.ErrReviewThreadsUnverified, err)
 		}
 		page := result.Data.Repository.PullRequest.ReviewThreads
 		for _, thread := range page.Nodes {
-			if thread.IsResolved {
+			if !thread.blocks() {
 				continue
 			}
 			if len(thread.Comments.Nodes) == 0 {
@@ -209,11 +213,11 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 			}
 			author := thread.Comments.Nodes[0].Author.Login
 			if restLogin, ok := graphqlToRest[author]; ok {
-				unresolved[restLogin] = true
+				blocking[restLogin] = true
 			}
 		}
 		if !page.PageInfo.HasNextPage {
-			return unresolved, nil
+			return blocking, nil
 		}
 		if page.PageInfo.EndCursor == "" {
 			p.logger.Warn().Msg("GraphQL thread response missing endCursor, failing closed")
@@ -577,9 +581,9 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		}
 	}
 
-	var botsWithUnresolved map[string]bool
+	var botsWithBlockingThreads map[string]bool
 	if len(botReviewUsers) > 0 {
-		botsWithUnresolved, err = p.unresolvedThreadAuthors(ctx, repoPath, prID, botReviewUsers)
+		botsWithBlockingThreads, err = p.blockingThreadAuthors(ctx, repoPath, prID, botReviewUsers)
 		if err != nil {
 			// The thread state is unknown, so we cannot tell an addressed bot
 			// review from a blocking one. Surface it: the merge gate blocks on
@@ -592,66 +596,16 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 	comments := make([]vcs.ReviewComment, 0, len(raw))
 	for _, r := range raw {
 		state := parseReviewState(r.State)
-		// Promote a bot COMMENTED review to CHANGES_REQUESTED only when it is
-		// review-scoped actionable: the bot still has an unresolved thread on the
-		// PR AND *this* review carries its own inline comments. The review's
-		// summary body is NOT consulted — a substantive body cannot be told apart
-		// from benign prose ("LGTM", "No issues found"), so promoting on body
-		// alone false-blocks (BOS-254); only the review's own inline suggestions
-		// are treated as actionable.
-		//
-		// An empty bot review (no inline comments of its own) is dropped from the
-		// surfaced set even when the same bot has a separate unresolved/outdated
-		// thread elsewhere on the PR. This is the BOS-254 fix:
-		// chatgpt-codex-connector[bot] posts a byte-identical boilerplate
-		// COMMENTED review on every pushed commit, and the old author-scoped
-		// heuristic promoted every one of them off a single stale thread, wedging
-		// the merge gate in a loop boss-repair could never clear.
-		//
-		// The empty review is dropped rather than appended as COMMENTED: because
-		// ComputeDisplayStatus keys off each author's *latest* review state, an
-		// appended trailing COMMENTED entry would overwrite an earlier promoted
-		// CHANGES_REQUESTED from the same bot (the common codex flow: real inline
-		// suggestions, then a later empty follow-up review) and silently unblock
-		// genuinely-actionable feedback. Dropping it preserves the earlier
-		// promotion while still not gating on the empty review itself.
-		//
-		// This feeds the display-poller path (ComputeDisplayStatus keys off
-		// per-comment State); the realtime path performs an equivalent
-		// review-scoped, inline-comment-based promotion in
-		// upstream.WebhookDispatcher.enrichReviewComments. Keep both in sync.
-		//
-		// botsWithUnresolved is authoritative here: an unverifiable thread state
-		// already returned vcs.ErrReviewThreadsUnverified above, so a nil map at
-		// this point means "no bot has an unresolved thread", never "we could not
-		// tell".
+		// botsWithBlockingThreads is authoritative here: an unverifiable thread
+		// state already returned vcs.ErrReviewThreadsUnverified above, so a nil
+		// map at this point means "no bot has a blocking thread", never "we could
+		// not tell". A nil result drops the review from the surfaced set.
 		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] {
-			if !botsWithUnresolved[r.User.Login] {
-				// This bot's threads are all resolved (or it has none): the
-				// feedback has been addressed — never block, drop the review.
-				continue
+			promoted, err := p.promoteBotCommentedReview(ctx, repoPath, prID, r, botsWithBlockingThreads[r.User.Login])
+			if err != nil {
+				return nil, err
 			}
-			// The bot still has an unresolved thread. Fetch *this* review's own
-			// inline comments so the promotion decision is review-scoped.
-			var inlineComments []vcs.ReviewComment
-			if r.ID != 0 {
-				inlineComments, err = p.getInlineReviewComments(ctx, repoPath, prID, r.ID)
-				if err != nil {
-					return nil, err
-				}
-			}
-			if len(inlineComments) == 0 {
-				// No actionable inline content of its own: drop it (do not
-				// promote on body substance, do not append as COMMENTED — see the
-				// notes above).
-				continue
-			}
-			comments = append(comments, vcs.ReviewComment{
-				Author: r.User.Login,
-				Body:   r.Body,
-				State:  vcs.ReviewStateChangesRequested,
-			})
-			comments = append(comments, inlineComments...)
+			comments = append(comments, promoted...)
 			continue
 		}
 		comments = append(comments, vcs.ReviewComment{
@@ -671,6 +625,79 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 	}
 
 	return comments, nil
+}
+
+// promoteBotCommentedReview decides what a bot's COMMENTED review contributes to
+// the surfaced review set. It returns the entries to append — a promoted
+// CHANGES_REQUESTED summary followed by the review's own inline comments — or
+// nil to DROP the review entirely.
+//
+// Promotion ANDs an author-scoped signal with a review-scoped one, and the
+// distinction is the whole BOS-254 rationale: the review's AUTHOR must still own
+// a blocking thread somewhere on the PR (authorHasBlockingThread — unresolved and
+// not outdated, per reviewThread.blocks, BOS-665), AND *this* review must carry
+// its own inline comments. The review's summary body is NOT consulted — a substantive
+// body cannot be told apart from benign prose ("LGTM", "No issues found"), so
+// promoting on body alone false-blocks (BOS-254); only the review's own inline
+// suggestions are treated as actionable.
+//
+// An empty bot review (no inline comments of its own) is dropped even when the
+// same bot has a separate blocking thread elsewhere on the PR. This is the
+// BOS-254 fix: chatgpt-codex-connector[bot] posts a byte-identical boilerplate
+// COMMENTED review on every pushed commit, and the old author-scoped heuristic
+// promoted every one of them off a single lingering thread, wedging the merge
+// gate in a loop boss-repair could never clear.
+//
+// The empty review is dropped rather than appended as COMMENTED: because
+// ComputeDisplayStatus keys off each author's *latest* review state, an appended
+// trailing COMMENTED entry would overwrite an earlier promoted
+// CHANGES_REQUESTED from the same bot (the common codex flow: real inline
+// suggestions, then a later empty follow-up review) and silently unblock
+// genuinely-actionable feedback. Dropping it preserves the earlier promotion
+// while still not gating on the empty review itself.
+//
+// This feeds the display-poller path (ComputeDisplayStatus keys off per-comment
+// State); the realtime path performs an equivalent review-scoped,
+// inline-comment-based promotion in upstream.WebhookDispatcher's
+// enrichReviewComments. Keep both review-scoped and inline-based — but note the
+// thread predicate is NOT shared, and cannot be: that path's own promotion logic
+// consults no review-thread state (its promotion comment says so), so the
+// BOS-665 outdated skip has nothing to apply to there. (Its ReviewID==0 fallback
+// does route through GetReviewComments, and so inherits the skip; its normal
+// branch does not.) Its residual livelock is a different one — it promotes off
+// inline comments with no freshness check — and closing that needs
+// review-submission timestamps threaded into a path that has none by design,
+// tracked as a follow-up. Do not "restore" symmetry by re-blocking on outdated
+// threads here.
+func (p *Provider) promoteBotCommentedReview(ctx context.Context, repoPath string, prID int, r rawReview, authorHasBlockingThread bool) ([]vcs.ReviewComment, error) {
+	if !authorHasBlockingThread {
+		// This bot's threads are all resolved or outdated (or it has none): the
+		// feedback has been addressed, or the code it was anchored to no longer
+		// exists — never block, drop the review.
+		return nil, nil
+	}
+	// The bot still has a blocking thread. Fetch *this* review's own inline
+	// comments so the promotion decision is review-scoped.
+	var inlineComments []vcs.ReviewComment
+	if r.ID != 0 {
+		var err error
+		inlineComments, err = p.getInlineReviewComments(ctx, repoPath, prID, r.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(inlineComments) == 0 {
+		// No actionable inline content of its own: drop it (do not promote on
+		// body substance, do not append as COMMENTED — see the notes above).
+		return nil, nil
+	}
+	promoted := make([]vcs.ReviewComment, 0, len(inlineComments)+1)
+	promoted = append(promoted, vcs.ReviewComment{
+		Author: r.User.Login,
+		Body:   r.Body,
+		State:  vcs.ReviewStateChangesRequested,
+	})
+	return append(promoted, inlineComments...), nil
 }
 
 func (p *Provider) getInlineReviewComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {

@@ -122,6 +122,14 @@ func (m AccountRegisterModel) Cancelled() bool { return m.cancelled }
 // to a refreshed accounts list so the new account appears).
 func (m AccountRegisterModel) Done() bool { return m.done }
 
+// textEntryActive reports whether a blocking prompt has the text input
+// focused, so App can leave ctrl+x alone rather than aliasing it onto Esc
+// (BOS-660). The y/n confirmation prompt is deliberately excluded: it consumes
+// no free text, so it is a normal back/cancel screen.
+func (m AccountRegisterModel) textEntryActive() bool {
+	return m.state == registerStateAwaitText || m.state == registerStateAwaitSecret
+}
+
 // Init satisfies tea.Model. The flow does not start until a provider is chosen,
 // so there is nothing to launch yet.
 func (m AccountRegisterModel) Init() tea.Cmd { return nil }
@@ -149,8 +157,10 @@ func (m AccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward everything else (paste/IME) to the active input while a text or
-	// secret prompt is showing so text entry behaves normally.
-	if m.state == registerStateAwaitText || m.state == registerStateAwaitSecret {
+	// secret prompt is showing so text entry behaves normally. Same predicate
+	// App consults before aliasing ctrl+x, kept as one definition so the two
+	// cannot drift apart.
+	if m.textEntryActive() {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd

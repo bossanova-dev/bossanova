@@ -15,6 +15,7 @@ import {
   parseArgs,
   stageEnvForArgs,
   OVERLAY_CAPTION_CSS,
+  VIDEO_ACTIONS,
 } from './proof-playwright-runner.mjs'
 import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
 
@@ -67,6 +68,54 @@ test('buildSpec stages a closing attach socket only for the reconnecting chat re
   assert.match(healthySpec, /ws\.send\(Buffer\.from/)
 })
 
+test('buildSpec replays the BOS-658 glyph line only for the plain chat-terminal still', () => {
+  const specFor = (id) =>
+    buildSpec({
+      recipe: { id, surface: 'web', route: '/' },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv: { VITE_E2E: '1' },
+    })
+
+  // The captured canvas must carry real terminal output, so the healthy
+  // chat-terminal socket replays a kind=0 data frame holding the evidence
+  // glyphs. Every other web recipe keeps the original clients-frame-only
+  // socket.
+  const chatTerminal = specFor('web-chat-terminal')
+  assert.match(chatTerminal, /✓ ↳ ─/)
+  assert.match(chatTerminal, /Buffer\.concat\(\[header, payload\]\)/)
+
+  assert.doesNotMatch(specFor('web-sessions'), /✓ ↳ ─/)
+  assert.doesNotMatch(specFor('web-chat-terminal-reconnecting'), /✓ ↳ ─/)
+})
+
+test('buildSpec waits for the rendered glyph row before capturing the chat-terminal still', () => {
+  // The capture selector ([data-testid='chat-terminal-canvas']) goes visible as
+  // soon as xterm mounts, which is before the staged socket's data frame is
+  // painted — so toBeVisible() alone can screenshot an empty pane. The gate
+  // must come from the rendered rows, and only for the recipe that stages the
+  // glyph line.
+  const specFor = (id, stageEnv) =>
+    buildSpec({
+      recipe: { id, surface: 'web', route: '/', selector: "[data-testid='chat-terminal-canvas']" },
+      outputDir: '/tmp/out',
+      surface: 'web',
+      stageEnv,
+    })
+
+  const staged = specFor('web-chat-terminal', { VITE_E2E: '1' })
+  assert.ok(staged.includes(String.raw`page.locator('.xterm-rows').first()`))
+  // Tolerant spacing: xterm pads a row with cell spaces between style runs.
+  assert.ok(staged.includes(String.raw`toContainText(new RegExp("✓\\s*↳\\s*─")`))
+  // The wait must precede the screenshot, or it gates nothing.
+  assert.ok(staged.indexOf('.xterm-rows') < staged.indexOf('.screenshot('))
+
+  // No staging → no glyph line → the wait would hang forever.
+  assert.doesNotMatch(specFor('web-chat-terminal', undefined), /\.xterm-rows/)
+  assert.doesNotMatch(specFor('web-sessions', { VITE_E2E: '1' }), /\.xterm-rows/)
+  assert.doesNotMatch(specFor('web-chat-terminal-reconnecting', { VITE_E2E: '1' }), /\.xterm-rows/)
+})
+
 test('validateRecipe requires a key for press steps and accepts a valid one', () => {
   assert.doesNotThrow(() =>
     validateRecipe({
@@ -80,6 +129,63 @@ test('validateRecipe requires a key for press steps and accepts a valid one', ()
     () =>
       validateRecipe({ id: 'v', surface: 'web', capture: 'video', steps: [{ action: 'press' }] }),
     /video press step requires key/,
+  )
+})
+
+test('buildSpec video drives a native select with selectOption and reloads in place', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-filter-flow',
+      surface: 'web',
+      capture: 'video',
+      steps: [
+        { action: 'goto', route: '/' },
+        { action: 'select', selector: '[data-testid="sessions-daemon-filter"]', value: 'daemon-b' },
+        { action: 'reload' },
+      ],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  })
+  // A click would only open the OS popup, which never paints into the video.
+  assert.match(spec, /\.selectOption\('daemon-b'\)/)
+  // reload, not goto: a fresh navigation would discard the localStorage the
+  // persistence proof exists to demonstrate.
+  assert.match(spec, /await page\.reload\(\)/)
+})
+
+test('validateRecipe requires selector and value for select steps, allowing an empty value', () => {
+  const recipe = (step) => ({ id: 'v', surface: 'web', capture: 'video', steps: [step] })
+  assert.doesNotThrow(() => validateRecipe(recipe({ action: 'select', selector: 's', value: 'x' })))
+  // '' is the leading "All …" filter option, so clearing a filter is valid.
+  assert.doesNotThrow(() => validateRecipe(recipe({ action: 'select', selector: 's', value: '' })))
+  assert.throws(
+    () => validateRecipe(recipe({ action: 'select', value: 'x' })),
+    /video select step requires selector/,
+  )
+  assert.throws(
+    () => validateRecipe(recipe({ action: 'select', selector: 's' })),
+    /video select step requires value/,
+  )
+  assert.doesNotThrow(() => validateRecipe(recipe({ action: 'reload' })))
+})
+
+// The video-step contract is encoded twice — VIDEO_ACTIONS + the validateRecipe
+// ladder here, and the action enum in proof/recipes/schema.json — and the two
+// HAVE drifted: `press` was accepted by this runner while the schema enum
+// omitted it, and the step schema is additionalProperties:false, so valid
+// recipes were schema-invalid until someone noticed by hand. Pin the schema to
+// the runner's own constant, the way proof-scenario.test.mjs pins the scenarios
+// schema to STEP_OPS, so a one-sided addition fails here instead.
+test('recipe schema step actions agree with the runner VIDEO_ACTIONS set', () => {
+  const schema = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/schema.json', import.meta.url), 'utf8'),
+  )
+  const stepSchema = schema.$defs.browserRecipe.allOf[1].properties.steps.items
+  assert.deepEqual(
+    [...stepSchema.properties.action.enum].sort(),
+    [...VIDEO_ACTIONS].sort(),
+    'proof/recipes/schema.json step actions must match proof-playwright-runner.mjs VIDEO_ACTIONS',
   )
 })
 

@@ -17,22 +17,92 @@ import (
 // errors.Is and surface a re-login hint to the user.
 var ErrCredentialsUnreadable = errors.New("stored credentials can't be decrypted — run 'boss login' to reset")
 
+// ErrReloginRequired is returned when the stored credentials are retained but
+// flagged unusable: the daemon's last WorkOS refresh either was rejected or
+// never confirmed its outcome, so the one-shot refresh token must not be
+// replayed. The entry (and the email in it) is kept; only `boss login` clears
+// the flag. See BOS-659.
+var ErrReloginRequired = errors.New("stored credentials need a new sign-in — run 'boss login'")
+
 const (
 	serviceName = "bossanova"
 	tokenKey    = "workos-tokens"
 )
 
+// Enumerated, non-secret re-login reasons persisted on the shared
+// "workos-tokens" keychain record. bossd writes them
+// (services/bossd/internal/upstream tokens.go reloginReason*); the CLI reads
+// them. Keep the two lists in step — the record is one shared JSON document.
+const (
+	// ReloginReasonRefreshOutcomeUnknown means a refresh request was
+	// dispatched but its outcome was never confirmed, so WorkOS may already
+	// have consumed and rotated the refresh token.
+	ReloginReasonRefreshOutcomeUnknown = "refresh_outcome_unknown"
+	// ReloginReasonRefreshTokenRejected means WorkOS authoritatively rejected
+	// the refresh token.
+	ReloginReasonRefreshTokenRejected = "refresh_token_rejected"
+)
+
 // Tokens holds the OAuth2 token set persisted in the keychain.
+// NeedsRelogin/ReloginReason are the BOS-659 re-login marker: both are
+// omitempty so a record written here still round-trips through an older bossd,
+// and a record with no marker keeps behaving exactly as it always has.
 type Tokens struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	Email        string    `json:"email,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// NeedsRelogin marks credentials retained for their identity (email) that
+	// must not be used for another WorkOS exchange.
+	NeedsRelogin bool `json:"needs_relogin,omitempty"`
+	// ReloginReason is one of the ReloginReason* values above. It never
+	// carries token material or raw upstream payloads.
+	ReloginReason string `json:"relogin_reason,omitempty"`
 }
 
-// Valid returns true if the access token is present and not expired.
+// Valid returns true if the access token is present, not expired, and not
+// flagged for re-login.
 func (t *Tokens) Valid() bool {
-	return t.AccessToken != "" && time.Now().Before(t.ExpiresAt)
+	return t.AccessToken != "" && !t.NeedsRelogin && time.Now().Before(t.ExpiresAt)
+}
+
+// ReloginReasonOrEmpty normalizes the persisted marker: a record flagged
+// without a recognized reason is reported as an authoritative rejection, the
+// conservative reading that never invites a retry.
+func (t *Tokens) ReloginReasonOrEmpty() string {
+	if t == nil || !t.NeedsRelogin {
+		return ""
+	}
+	if t.ReloginReason == ReloginReasonRefreshOutcomeUnknown {
+		return ReloginReasonRefreshOutcomeUnknown
+	}
+	return ReloginReasonRefreshTokenRejected
+}
+
+// clearReloginMarker drops any re-login flag before persisting. Every
+// successful login or refresh writes a clean record.
+func (t *Tokens) clearReloginMarker() {
+	if t == nil {
+		return
+	}
+	t.NeedsRelogin = false
+	t.ReloginReason = ""
+}
+
+// ReloginRequiredError builds the user-facing error for a retained,
+// re-login-flagged record. The text is safe to log and display: it names the
+// reason and the remedy, never the credentials.
+func ReloginRequiredError(reason string) error {
+	return fmt.Errorf("%w: %s", ErrReloginRequired, ReloginReasonDescription(reason))
+}
+
+// ReloginReasonDescription renders an enumerated reason as a short,
+// non-secret explanation suitable for CLI and TUI output.
+func ReloginReasonDescription(reason string) string {
+	if reason == ReloginReasonRefreshOutcomeUnknown {
+		return "the last refresh outcome could not be confirmed"
+	}
+	return "the stored refresh token was rejected"
 }
 
 // TokenStore abstracts token persistence for testing.

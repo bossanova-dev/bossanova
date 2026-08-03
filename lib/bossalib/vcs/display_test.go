@@ -626,10 +626,15 @@ func TestReviewBlockDetailSingularReviewer(t *testing.T) {
 }
 
 // TestReviewBlockDetailRemedyClause pins the remedy clause an operator needs to
-// act on a review block: what clears it, and — because GitHub hides outdated
-// threads from the default PR view while their isResolved stays false — that
-// resolving every *visible* thread is not enough. It must not claim that any
-// later review clears the block: a later empty COMMENTED review does not.
+// act on a review block: what clears it, and — since BOS-665 made an outdated
+// thread non-blocking — that only the unresolved threads GitHub has NOT marked
+// outdated need resolving. It must not claim that any later review clears the
+// block: a later empty COMMENTED review does not.
+//
+// The absent-substring check is the load-bearing half. The detail used to tell
+// operators that outdated threads GitHub hides still block, sending them
+// hunting for threads that are now irrelevant; that instruction must not
+// survive the behaviour change.
 func TestReviewBlockDetailRemedyClause(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -642,13 +647,16 @@ func TestReviewBlockDetailRemedyClause(t *testing.T) {
 			got := reviewBlockDetail(tc.logins)
 			for _, want := range []string{
 				divergenceNote,
-				"every unresolved review thread",
-				"outdated threads GitHub hides",
+				"every unresolved, non-outdated review thread",
+				"outdated threads are already non-blocking",
 				"newer approving/dismissing review",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("reviewBlockDetail(%v) = %q, want it to contain %q", tc.logins, got, want)
 				}
+			}
+			if strings.Contains(got, "outdated threads GitHub hides") {
+				t.Errorf("reviewBlockDetail(%v) = %q, must no longer tell operators that outdated threads block", tc.logins, got)
 			}
 		})
 	}
@@ -669,7 +677,7 @@ func TestReviewBlockDetailScopesThreadResolutionRemedy(t *testing.T) {
 	for _, logins := range [][]string{{"alice"}, {"cursor[bot]"}, nil} {
 		got := reviewBlockDetail(logins)
 
-		threadIdx := strings.Index(got, "every unresolved review thread")
+		threadIdx := strings.Index(got, "every unresolved, non-outdated review thread")
 		approvalIdx := strings.Index(got, "newer approving/dismissing review")
 		if threadIdx < 0 || approvalIdx < 0 {
 			t.Fatalf("reviewBlockDetail(%v) = %q, want both remedies present", logins, got)

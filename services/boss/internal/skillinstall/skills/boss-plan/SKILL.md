@@ -134,7 +134,9 @@ modes differ only in **who drafts**:
 ## Draft-resolution (shared Fallback contract)
 
 Resolve drafting by the Fallback contract: discovered `boss-plan-*` `role: draft`
-extension → host built-in → inline prompt; tiers 2/3 suppressed when an extension exists.
+extension → host built-in → inline prompt; tiers 2/3 suppressed only when a Tier-1 dispatch
+**succeeded**, never merely because an extension exists. If every discovered extension failed,
+record `extension <name>: skipped (<reason>)` and fall through to tier 2, then tier 3.
 
 ### Interactive (default `/boss-plan`)
 
@@ -894,7 +896,10 @@ transcript, command output, user-provided content, credentials, tokens, or other
 file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
 
 Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents, each bounded
-by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Read each descriptor's `skillPath`; pass
+it and `dir` in the worker brief. Resolve relative extension resources from `dir`, and use `SKILL.md`
+as instructions — never its bare `name` through the Skill tool, which refuses `disable-model-invocation: true`.
+Each receives:
 
 ```json
 {

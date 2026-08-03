@@ -663,7 +663,12 @@ The owning orchestrator writes at most five secret-scrubbed candidate observatio
 empty is valid and this is the worker's only run history.
 
 Ascending `(order,name)` fresh **awaited** workers (timeout `BOSS_SKILL_EXTENSION_TIMEOUT_MS`, default
-`300000`) receive `{role:"notes",core:"boss-epic",context:{mode:"<interactive if the run
+`300000`) are loaded by **reading the descriptor's `skillPath` from disk** (`dir` is its directory),
+passing both `skillPath` and `dir` in the worker brief, and requiring relative extension resources to
+resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions — never by a
+bare descriptor `name` through the Skill tool, which refuses a skill declaring
+`disable-model-invocation: true`.
+Each receives `{role:"notes",core:"boss-epic",context:{mode:"<interactive if the run
 interacted; else headless>",core:"boss-epic",outcome:"<decided>",repoId:"<BOSS_REPO_ID or
 null>",observationPath:"<NOTES_OBSERVATIONS>"},runTmp:"<NOTES_RUN_TMP>",
 outPath:"<NOTES_RUN_TMP>/notes-<extension-name>.json"}`. Validate via

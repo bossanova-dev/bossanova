@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "title": "BOS-662 General Settings daemon name",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "General Settings offers an editable Daemon name row",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings menu" },
+        { "key": "g", "caption": "Open General Settings from the Settings menu" },
+        {
+          "waitFor": "Daemon name",
+          "timeoutMs": 10000,
+          "caption": "General Settings lists a Daemon name row"
+        },
+        { "key": "down", "caption": "Move from worktree base directory to poll interval" },
+        { "key": "down", "caption": "Select the Daemon name row" },
+        {
+          "expect": [
+            {
+              "text": "Daemon name",
+              "match": "normalized",
+              "label": "daemon name setting label"
+            },
+            {
+              "text": "machine hostname; restart daemon to apply",
+              "match": "normalized",
+              "label": "unset daemon name defaults to the machine hostname"
+            }
+          ],
+          "caption": "The unset daemon name shows the machine hostname default"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "a custom daemon name is typed into the row editor",
+      "steps": [
+        { "key": "enter", "caption": "Press [enter] to edit the daemon name" },
+        {
+          "waitFor": "Blank uses this machine's hostname",
+          "timeoutMs": 10000,
+          "caption": "The editor explains the blank-to-reset behaviour"
+        },
+        { "type": "studio-mini", "caption": "Type the custom daemon name studio-mini" },
+        {
+          "waitFor": "studio-mini",
+          "timeoutMs": 10000,
+          "caption": "The typed name is in the editor"
+        },
+        {
+          "expect": [
+            {
+              "text": "studio-mini",
+              "match": "normalized",
+              "label": "typed custom daemon name"
+            },
+            {
+              "text": "restart daemon to apply",
+              "match": "normalized",
+              "label": "restart guidance while editing"
+            }
+          ],
+          "caption": "The editor carries the restart guidance"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "saving persists the custom daemon name with restart guidance",
+      "steps": [
+        { "key": "enter", "caption": "Press [enter] to save the daemon name" },
+        {
+          "waitFor": "Daemon name: studio-mini",
+          "timeoutMs": 10000,
+          "caption": "The saved daemon name is shown on the row"
+        },
+        {
+          "expect": [
+            {
+              "text": "Daemon name: studio-mini (restart daemon to apply)",
+              "match": "normalized",
+              "label": "saved daemon name with restart guidance"
+            }
+          ],
+          "caption": "The row shows the custom name and that a restart applies it"
+        }
+      ]
+    }
+  ]
+}

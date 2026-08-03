@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "title": "BOS-659 — credentials retained after an unconfirmed WorkOS refresh render as a 'Sign in required' warning with [l]ogin, not as a silent logout",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Home's auth poll reads the retained re-login marker and explains why sign-in is needed while the local session board keeps working",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Sign in required",
+            "match": "normalized",
+            "label": "Home surfaces the retained re-login state instead of silently reverting to a never-logged-in board"
+          },
+          "timeoutMs": 15000,
+          "caption": "The seeded keychain record is kept but flagged: Home's first auth poll turns it into a warning, not a logout"
+        },
+        {
+          "waitMs": 1500,
+          "caption": "Before BOS-659 an ambiguous refresh deleted workos-tokens outright — there was no email, no reason, and nothing on screen to explain the sign-out"
+        },
+        {
+          "expect": [
+            {
+              "text": "refresh outcome could not be confirmed",
+              "match": "normalized",
+              "label": "the enumerated refresh_outcome_unknown reason is rendered as plain prose — never a raw WorkOS payload or token"
+            },
+            {
+              "text": "Local sessions are still available",
+              "match": "normalized",
+              "label": "the warning scopes the damage: only cloud auth is paused, local session management is untouched"
+            },
+            {
+              "text": "[l]ogin",
+              "match": "normalized",
+              "label": "[l]ogin — the action bar offers the one remedy that clears the marker, so the flagged record is treated as signed out"
+            }
+          ],
+          "caption": "Reason, blast radius, and remedy are all on the captured frame"
+        },
+        {
+          "expect": {
+            "text": "STATUS",
+            "match": "normalized",
+            "label": "the session table still renders beneath the warning — a flagged cloud credential does not take the TUI down"
+          },
+          "caption": "The board is unchanged: this is a paused cloud connection, not a broken client"
+        }
+      ]
+    }
+  ]
+}

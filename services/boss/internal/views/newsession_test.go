@@ -40,6 +40,7 @@ type stubClient struct {
 	accountsProvider  string // captures the provider arg of the last ListAccounts call
 	createdCronReq    *pb.CreateCronJobRequest
 	updatedCronReq    *pb.UpdateCronJobRequest
+	authChanges       []string
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -217,7 +218,10 @@ func (s *stubClient) GetChatTranscript(context.Context, *pb.GetChatTranscriptReq
 func (s *stubClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
+func (s *stubClient) NotifyAuthChange(_ context.Context, action string) error {
+	s.authChanges = append(s.authChanges, action)
+	return nil
+}
 
 func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	s.createCronCalls++

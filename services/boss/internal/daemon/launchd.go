@@ -53,6 +53,8 @@ const (
 	<dict>
 		<key>PATH</key>
 		<string>{{.Path}}</string>
+		<key>LC_CTYPE</key>
+		<string>UTF-8</string>
 	</dict>
 </dict>
 </plist>
@@ -90,6 +92,8 @@ const (
 	<dict>
 		<key>PATH</key>
 		<string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+		<key>LC_CTYPE</key>
+		<string>UTF-8</string>
 	</dict>
 </dict>
 </plist>

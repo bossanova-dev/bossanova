@@ -1,6 +1,7 @@
 // Package upstream — auth_state.go houses the shared "user must re-login"
-// signal between the openers (which discover the dead refresh token when
-// WorkOS returns invalid_grant) and the Run loops (which need to stop
+// signal between the openers (which discover the unusable refresh token
+// when WorkOS returns invalid_grant, or when a dispatched exchange never
+// confirms its outcome — see BOS-659) and the Run loops (which need to stop
 // dialling instead of tight-looping on a credential that will never work
 // again).
 //

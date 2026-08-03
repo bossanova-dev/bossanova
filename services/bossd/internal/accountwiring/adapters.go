@@ -93,10 +93,20 @@ type CredentialStore interface {
 
 // credentialStoreLocker is an optional compound-operation lock shared by the
 // materializer and account RPCs when the concrete credential store provides
-// one. The base CredentialStore interface stays small so existing custom stores
-// and test fakes remain compatible.
+// one. It keeps an explicit refresh from racing a usage probe that loaded the
+// prior credential and would otherwise record its stale result. The base
+// CredentialStore interface stays small so existing custom stores and test
+// fakes remain compatible.
 type credentialStoreLocker interface {
 	WithCredentialLock(accountID string, fn func() error) error
+}
+
+// credentialGenerationStore exposes a monotonically increasing generation for
+// successful credential mutations. Together with credentialStoreLocker it lets
+// a long-running provider probe discard an outcome from an older credential
+// without holding the credential lock across network I/O.
+type credentialGenerationStore interface {
+	CredentialGeneration(accountID string) uint64
 }
 
 // --- Registry adapter -----------------------------------------------------
@@ -324,16 +334,55 @@ func (m *materializerAdapter) RecordUsageProbe(ctx context.Context, accountID st
 	if !ok {
 		return nil
 	}
-	snap, err := m.ProbeUsageSnapshot(ctx, accountID)
-	if err != nil {
+
+	locker, locked := m.creds.(credentialStoreLocker)
+	generationStore, versioned := m.creds.(credentialGenerationStore)
+	if locked && versioned {
+		// Capture the generation under the same short lock that a refresh uses.
+		// The provider call itself must run unlocked: a slow probe must not make a
+		// ProxyRefreshAccount command wait past its own deadline.
+		var generation uint64
+		if err := locker.WithCredentialLock(accountID, func() error {
+			generation = generationStore.CredentialGeneration(accountID)
+			return nil
+		}); err != nil {
+			return err
+		}
+		snap, probeErr := m.ProbeUsageSnapshot(ctx, accountID)
+		return locker.WithCredentialLock(accountID, func() error {
+			// A refresh which won while the probe was in flight invalidates every
+			// old result. In particular, do not suspend fresh credentials because
+			// their replaced predecessor received PermissionDenied.
+			if generationStore.CredentialGeneration(accountID) != generation {
+				return nil
+			}
+			return recordUsageProbeResult(ctx, store, accountID, snap, probeErr)
+		})
+	}
+
+	// Custom stores that only offer the legacy lock retain its original stale
+	// result protection. The production accountcred.Store implements both
+	// capabilities above and never holds this lock during provider I/O.
+	record := func() error {
+		snap, err := m.ProbeUsageSnapshot(ctx, accountID)
+		return recordUsageProbeResult(ctx, store, accountID, snap, err)
+	}
+	if locked {
+		return locker.WithCredentialLock(accountID, record)
+	}
+	return record()
+}
+
+func recordUsageProbeResult(ctx context.Context, store usageProbeStore, accountID string, snap models.UsageSnapshot, probeErr error) error {
+	if probeErr != nil {
 		// A confirmed suspension (org/billing block) is permanent, unlike a
 		// transient probe failure: fail the account's health so rotation and a
 		// manual `--refresh` alike stop selecting it. Any other error is returned
 		// for the caller to log and ignore (fail-soft, unchanged).
-		if handled, _, merr := MarkSuspendedIfConfirmed(ctx, store, accountID, err); handled {
-			return merr // nil on success; the account is now health=failed
+		if handled, _, err := MarkSuspendedIfConfirmed(ctx, store, accountID, probeErr); handled {
+			return err // nil on success; the account is now health=failed
 		}
-		return err
+		return probeErr
 	}
 	if snap.FetchedAt == nil {
 		return nil

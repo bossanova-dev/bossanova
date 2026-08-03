@@ -138,7 +138,10 @@ test('size ratchet', () => {
   // the message. Re-baselined to one KiB above actual per the ratchet convention.
   // BOS-614 extends BOS-605's resident callback contract with scoped target selection.
   // Re-baselined to one KiB above actual per the ratchet convention.
-  const RATCHET = 47104
+  // BOS-663 adds the Tier-1 path-load clause to the notes-extension dispatch (+310 bytes): the
+  // notes extension declares `disable-model-invocation: true`, so a Skill-tool load by descriptor
+  // `name` is refused and the layer goes inert silently. Re-baselined 47104 → 48128.
+  const RATCHET = 48128
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })

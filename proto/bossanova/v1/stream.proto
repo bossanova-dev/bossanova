@@ -758,9 +758,12 @@ message TestAccountCommand { string id = 1; }
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
 // provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
 // only — never credentials). Replies with CommandResult carrying a
-// ListAccountsResponse (list_accounts = 16).
+// ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+// live usage probe over each account first; false/omitted keeps the passive read
+// an older bosso would have sent.
 message ListAccountsCommand {
   string provider = 1;
+  bool should_refresh = 2;
 }
 
 // GetRepoCommand asks the daemon for its web-safe repo settings. It reuses the

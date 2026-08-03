@@ -86,9 +86,15 @@ type HomeModel struct {
 	archiveInFlightIDs map[string]struct{}
 
 	// Auth
-	authMgr              *auth.Manager // nil means auth not configured
-	loggedIn             bool
-	loggedInEmail        string
+	authMgr       *auth.Manager // nil means auth not configured
+	loggedIn      bool
+	loggedInEmail string
+	// needsRelogin / reloginReason mirror the auth poll's retained
+	// re-login state (BOS-659): credentials are still stored but cannot be
+	// used. Both are cleared by the next clean poll, so a successful login
+	// removes the warning without any extra bookkeeping.
+	needsRelogin         bool
+	reloginReason        string
 	confirm              confirmPrompt
 	cloudAccess          CloudAccessClient
 	cloudStatus          *pb.CloudAccessStatus
@@ -114,6 +120,24 @@ type HomeModel struct {
 	upgrading         bool
 	restarting        bool
 	daemonRemediation string
+
+	// logoutError holds the rendered text of a failed logout. Cleared by the
+	// next successful one. Never carries token material: Manager.Logout's
+	// errors wrap the credential-lock and keychain errors only.
+	logoutError string
+}
+
+// handleLogout records the outcome of the confirmed logout so a failure is
+// visible. The credential record is mutated behind a cross-process lock the
+// daemon can be holding, so this really does fail; a discarded error left the
+// board apparently unchanged and still signed in.
+func (h HomeModel) handleLogout(msg logoutMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		h.logoutError = msg.err.Error()
+		return h, nil
+	}
+	h.logoutError = ""
+	return h, nil
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
@@ -190,6 +214,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleUpgradeRun(msg)
 	case daemonRestartMsg:
 		return h.handleDaemonRestart(msg)
+	case logoutMsg:
+		return h.handleLogout(msg)
 	case sessionListMsg:
 		return h.handleSessionList(msg)
 	case spinner.TickMsg:
@@ -251,6 +277,12 @@ func (h HomeModel) handleRepoCount(msg repoCountMsg) (tea.Model, tea.Cmd) {
 func (h HomeModel) handleAuthStatus(msg authStatusMsg) (tea.Model, tea.Cmd) {
 	h.loggedIn = msg.loggedIn
 	h.loggedInEmail = msg.email
+	h.needsRelogin = msg.needsRelogin
+	h.reloginReason = msg.reloginReason
+	// Auth state can add or remove the re-login warning below the table. The
+	// table rows are unchanged, so recalculate its cached height here rather
+	// than waiting for the next session poll.
+	h.table.SetHeight(h.tableHeight())
 	if !h.loggedIn {
 		h.cloudStatus = nil
 		h.cloudErr = nil
@@ -278,9 +310,9 @@ func (h HomeModel) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
 
 func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
 	// Re-poll auth status alongside sessions so the menu label
-	// (e.g. [l]ogout vs [l]ogin) catches up after the daemon
-	// clears the keychain on a terminal refresh failure
-	// (invalid_grant). Without this, the TUI keeps showing the
+	// (e.g. [l]ogout vs [l]ogin) and the re-login warning catch up
+	// after the daemon flags the stored credentials on a terminal
+	// refresh failure. Without this, the TUI keeps showing the
 	// pre-expiry label until the user navigates away and back.
 	h.nextSessionPollID++
 	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), tickCmd()}
@@ -327,6 +359,11 @@ func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {
 func fetchAuthStatus(mgr *auth.Manager) tea.Cmd {
 	return func() tea.Msg {
 		status := mgr.Status()
-		return authStatusMsg{loggedIn: status.LoggedIn, email: status.Email}
+		return authStatusMsg{
+			loggedIn:      status.LoggedIn,
+			email:         status.Email,
+			needsRelogin:  status.NeedsRelogin,
+			reloginReason: status.ReloginReason,
+		}
 	}
 }

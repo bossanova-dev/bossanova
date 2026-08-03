@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/recurser/boss/internal/tuitest"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 func fakeProviderPath(t *testing.T, commands ...string) string {
@@ -236,4 +237,99 @@ func TestTUI_OnboardingFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
 		t.Fatalf("cancel subscription waiting view: %v", err)
 	}
 	assertHomeAfterLogin(t, h)
+}
+
+// TestTUI_OnboardingFlow_FirstRepoLandsOnSessionEmptyState is the BOS-664
+// regression: a brand-new user who finishes provider onboarding and then
+// registers their very first repository must land on Home's no-active-sessions
+// empty state, NOT in the New Session wizard. Users read the wizard's
+// "What are you working on?" prompt as a dead end because they never asked to
+// start a session.
+//
+// The whole fresh-user path is driven here — provider onboarding, the zero-repo
+// welcome screen, [enter] into the add wizard, and the full add — because the
+// unit-level witness (TestRepoAddCompletedFirstRepoGoesHome) only proves the
+// routing branch, not that the flow actually reaches it or what it renders.
+//
+// The assertion is positive-first: the screen must carry Home's empty-session
+// guidance and the daemon must hold exactly one repo, so the absence of the New
+// Session prompt cannot pass vacuously on some earlier, still-loading screen.
+func TestTUI_OnboardingFlow_FirstRepoLandsOnSessionEmptyState(t *testing.T) {
+	h := newFreshOnboardingHarness(t, fakeProviderPath(t, "claude", "codex"))
+	// Pin validation so the add wizard advances deterministically regardless of
+	// what is on the developer's disk.
+	h.Daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{
+		IsValid:       true,
+		IsGithub:      true,
+		OriginUrl:     "https://github.com/acme/widgets.git",
+		DefaultBranch: "main",
+	})
+
+	completeProviderOnboarding(t, h)
+
+	// Onboarding completion lands a zero-repo user on the welcome empty state,
+	// whose primary action is [enter] add repository.
+	//
+	// Wait on Home's own copy and action bar, NOT on the "Welcome to Bossanova"
+	// banner: onboarding runs as its own tea.Program and prints that same banner,
+	// so matching it can return while the onboarding program is still tearing
+	// down — and a key sent during that handoff is read by nobody.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "To get started, you need to add a repository") &&
+			strings.Contains(screen, "[enter] add repository")
+	}); err != nil {
+		t.Fatalf("expected zero-repo home after onboarding; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatalf("open add-repo wizard from zero-repo home: %v", err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Open project"); err != nil {
+		t.Fatalf("expected add-repo source phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatalf("pick 'Open project': %v", err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add a local repository"); err != nil {
+		t.Fatalf("expected add-repo input phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendString("widgets"); err != nil {
+		t.Fatalf("type repository path: %v", err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatalf("submit repository path: %v", err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
+		t.Fatalf("expected add-repo details phase; screen:\n%s", h.Driver.Screen())
+	}
+	completeRepoAddDetails(t, h)
+
+	// The registration really happened: exactly one repo, and no sessions were
+	// ever created, so Home must be in its no-sessions (not no-repos) state.
+	if err := h.Driver.WaitFor(waitTimeout, func(_ string) bool {
+		return len(h.Daemon.Repos()) == 1
+	}); err != nil {
+		t.Fatalf("expected exactly 1 registered repo, got %d; screen:\n%s",
+			len(h.Daemon.Repos()), h.Driver.Screen())
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "You have no active sessions.") &&
+			strings.Contains(screen, "Press 'n' to create a new session.")
+	}); err != nil {
+		t.Fatalf("expected Home no-active-sessions guidance after first repo add; screen:\n%s",
+			h.Driver.Screen())
+	}
+
+	screen := h.Driver.Screen()
+	// Belt-and-braces only. "What are you working on?" is the New Session prompt's
+	// placeholder, rendered only once that field is focused and empty — under the
+	// real regression the wizard opens on its mode picker first, so this check does
+	// NOT fire. The positive WaitFor above is what actually catches the bug; do not
+	// trim it and keep this one.
+	if strings.Contains(screen, "What are you working on?") {
+		t.Fatalf("first repo registration must not dump the user into the New Session wizard; screen:\n%s", screen)
+	}
+	// The welcome/zero-repo state is equally wrong here: the repo exists now.
+	if strings.Contains(screen, "Press Enter to add your first repository") {
+		t.Fatalf("expected the no-sessions empty state, not the zero-repo welcome; screen:\n%s", screen)
+	}
 }

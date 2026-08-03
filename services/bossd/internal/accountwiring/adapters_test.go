@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,41 @@ type fakeCreds struct {
 	saves int
 }
 
+// probeLockedCreds models the production credential store's shared,
+// per-account compound-operation lock and successful-mutation generation.
+type probeLockedCreds struct {
+	fakeCreds
+	mu           sync.Mutex
+	lockAttempts chan struct{}
+	generationMu sync.Mutex
+	generation   uint64
+}
+
+func (f *probeLockedCreds) WithCredentialLock(_ string, fn func() error) error {
+	if f.lockAttempts != nil {
+		f.lockAttempts <- struct{}{}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return fn()
+}
+
+func (f *probeLockedCreds) CredentialGeneration(string) uint64 {
+	f.generationMu.Lock()
+	defer f.generationMu.Unlock()
+	return f.generation
+}
+
+func (f *probeLockedCreds) Save(accountID string, blob []byte) error {
+	if err := f.fakeCreds.Save(accountID, blob); err != nil {
+		return err
+	}
+	f.generationMu.Lock()
+	f.generation++
+	f.generationMu.Unlock()
+	return nil
+}
+
 func (f *fakeCreds) Load(string) ([]byte, error) {
 	f.calls++
 	if f.err != nil {
@@ -156,6 +192,24 @@ func (f *fakeRotationClient) ProbeRateLimit(_ context.Context, req *bossanovav1.
 		}
 	}
 	return &bossanovav1.ProbeRateLimitResponse{Status: f.probe}, nil
+}
+
+// blockingSuspensionProbe holds a usage probe after materialization so a test
+// can race it against an explicit credential replacement.
+type blockingSuspensionProbe struct {
+	agent.AgentRunnerClient
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingSuspensionProbe) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+	return &bossanovav1.MaterializeAccountResponse{Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "old-token"}}, nil
+}
+
+func (p *blockingSuspensionProbe) ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
+	p.started <- struct{}{}
+	<-p.release
+	return nil, grpcstatus.Error(codes.PermissionDenied, "old credential suspended")
 }
 
 func newClaudeAccount() *models.Account {
@@ -615,6 +669,71 @@ func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 	}
 	if store.usageCalls != 0 {
 		t.Errorf("usageCalls = %d, want 0 (no snapshot cached on suspension)", store.usageCalls)
+	}
+}
+
+func TestMaterializer_RecordUsageProbeDiscardsStaleSuspensionWithoutBlockingCredentialRefresh(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	creds := &probeLockedCreds{
+		fakeCreds:    fakeCreds{blob: []byte("old-token")},
+		lockAttempts: make(chan struct{}, 3),
+	}
+	probe := &blockingSuspensionProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": probe}, store, creds, zerolog.Nop())
+	probeCache := m.(interface {
+		RecordUsageProbe(context.Context, string) error
+	})
+
+	probeDone := make(chan error, 1)
+	go func() { probeDone <- probeCache.RecordUsageProbe(context.Background(), "a1") }()
+	select {
+	case <-probe.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage probe did not start")
+	}
+	select {
+	case <-creds.lockAttempts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage probe did not capture the credential generation")
+	}
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- creds.WithCredentialLock("a1", func() error {
+			return creds.Save("a1", []byte("new-token"))
+		})
+	}()
+	select {
+	case <-creds.lockAttempts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential refresh did not attempt the shared credential lock")
+	}
+	select {
+	case err := <-refreshDone:
+		if err != nil {
+			t.Fatalf("refresh credential: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential refresh waited for the slow usage probe")
+	}
+
+	close(probe.release)
+	select {
+	case err := <-probeDone:
+		if err != nil {
+			t.Fatalf("RecordUsageProbe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage probe did not finish")
+	}
+	if store.suspendCalls != 0 {
+		t.Fatalf("suspension writes = %d, want 0 for the replaced credential", store.suspendCalls)
+	}
+	if got := string(creds.blob); got != "new-token" {
+		t.Errorf("stored credential = %q, want refreshed credential", got)
 	}
 }
 

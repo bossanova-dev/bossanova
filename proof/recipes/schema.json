@@ -109,15 +109,18 @@
                 "additionalProperties": false,
                 "required": ["action"],
                 "properties": {
-                  "action": { "enum": ["goto", "click", "type", "wait", "scroll"] },
+                  "action": {
+                    "enum": ["goto", "click", "type", "press", "select", "reload", "wait", "scroll"]
+                  },
                   "label": { "type": "string", "minLength": 1 },
                   "caption": { "type": "string", "minLength": 1 },
+                  "key": { "type": "string", "minLength": 1 },
                   "route": {
                     "type": "string",
                     "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
                   },
                   "selector": { "type": "string", "minLength": 1 },
-                  "value": { "type": "string", "minLength": 1 },
+                  "value": { "type": "string" },
                   "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
                   "toSelector": { "type": "string", "minLength": 1 },
                   "byPx": { "type": "integer", "minimum": -100000, "maximum": 100000 },
@@ -134,6 +137,23 @@
                   },
                   {
                     "if": { "properties": { "action": { "const": "type" } } },
+                    "then": {
+                      "required": ["selector", "value"],
+                      "properties": { "value": { "minLength": 1 } }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": { "action": { "const": "press" } },
+                      "required": ["action"]
+                    },
+                    "then": { "required": ["key"] }
+                  },
+                  {
+                    "if": {
+                      "properties": { "action": { "const": "select" } },
+                      "required": ["action"]
+                    },
                     "then": { "required": ["selector", "value"] }
                   },
                   {

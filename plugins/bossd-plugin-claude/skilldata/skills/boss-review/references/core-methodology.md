@@ -76,7 +76,10 @@ empty or absent lens registry degrades to "whole-branch rounds only" — never t
 
 Round resolution follows strict precedence: discovered repo-local `round` extensions first, then
 a host-native whole-diff review command when available, then an inline rubric embedded in the core.
-Fallback tiers do not run when any round extension is discovered.
+Fallback tiers do not run when at least one round extension **ran successfully**. Suppression is
+keyed on the dispatch succeeding, never on an extension merely being discovered: when every
+discovered round extension is skipped, the fallback tiers still run, so the round layer is never
+silently dropped.
 
 ### Lens fallback
 

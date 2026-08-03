@@ -30,6 +30,12 @@ func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (out *Tok
 	if err != nil {
 		return nil, err
 	}
+	// Retained-but-flagged credentials are terminal until the user signs in
+	// again: their refresh token may already have been consumed upstream, so
+	// no exchange may be attempted with it.
+	if reason := tokens.ReloginReasonOrEmpty(); reason != "" {
+		return nil, ReloginRequiredError(reason)
+	}
 	if !force && tokens.Valid() {
 		return tokens, nil
 	}
@@ -53,6 +59,12 @@ func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (out *Tok
 	tokens, err = m.store.Load()
 	if err != nil {
 		retErr = err
+		return nil, retErr
+	}
+	// Re-checked under the lock: another process may have flagged the shared
+	// record while we waited for it.
+	if reason := tokens.ReloginReasonOrEmpty(); reason != "" {
+		retErr = ReloginRequiredError(reason)
 		return nil, retErr
 	}
 	if !force && tokens.Valid() {
@@ -91,6 +103,8 @@ func (m *Manager) refreshStoredTokens(ctx context.Context, force bool) (out *Tok
 	if refreshed.Email == "" {
 		refreshed.Email = tokens.Email
 	}
+	// A successful exchange always persists a clean record.
+	refreshed.clearReloginMarker()
 	if err := m.store.Save(refreshed); err != nil {
 		retErr = fmt.Errorf("save refreshed tokens: %w", err)
 		return nil, retErr

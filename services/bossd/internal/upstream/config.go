@@ -26,9 +26,13 @@ type SessionLister interface {
 // independently of the StreamClient wiring.
 type Config struct {
 	OrchestratorURL string // e.g. "https://orchestrator.bossanova.dev"
-	DaemonID        string // unique daemon identifier
-	Hostname        string // machine hostname
-	UserJWT         string // user's OIDC JWT for initial registration
+	DaemonID        string // unique daemon identifier — the routing key
+	// Hostname is the daemon's self-reported DISPLAY name: the operator's
+	// daemon_name override when set (applied by bossd startup), otherwise the
+	// machine hostname ConfigFromEnv reads. Presentation only — never a routing
+	// or identity input, and never an input to ResolveDaemonID.
+	Hostname string
+	UserJWT  string // user's OIDC JWT for initial registration
 }
 
 // defaultOrchestratorURL is the production bosso that bossd syncs with

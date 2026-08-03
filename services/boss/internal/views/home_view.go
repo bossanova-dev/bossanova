@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/recurser/boss/internal/auth"
 )
 
 // renderError renders an error message that wraps to the given terminal width.
@@ -132,6 +134,67 @@ func (h HomeModel) loginAction() string {
 	return "[l]ogin"
 }
 
+// authReloginLine renders Home's retained-re-login warning, or "" when the
+// stored credentials are fine (or absent — never having logged in is not a
+// warning, it is the normal signed-out state).
+//
+// The copy is deliberately split across three short source lines rather than
+// left to wrap: statusLine wraps at statusWrapWidth minus the block padding,
+// and each line here fits inside the minStatusWrapWidth (60) floor's budget,
+// so the reason phrase stays contiguous at every width at or above the floor.
+// Below 60 columns statusWrapWidth clamps to h.width and the phrase can wrap
+// mid-sentence — accepted, and the reason the width sweep in
+// TestHomeReloginWarningSurvivesWrappingAtEveryWidth starts at the floor.
+// The BOS-659 proof scenario asserts "Sign in required", the reason
+// description, and "[l]ogin" as substrings of the captured frame, and a
+// mid-phrase wrap would break it. Keep the lines short if you edit them.
+//
+// This block renders THREE rows at the floor, so it is deliberately outside
+// the <= 2-row bound TestHomeFixedStatusCopyStaysReadableAtFloor puts on
+// single-sentence status copy: the plan requires the state, the reason, and
+// the local-sessions reassurance all be shown. Its own bound is asserted by
+// TestHomeReloginLineStaysWithinThreeRowsAtFloor.
+func (h HomeModel) authReloginLine() string {
+	if !h.needsRelogin {
+		return ""
+	}
+	// ReloginReasonDescription always returns one of its two sentences, so
+	// this sentence-cases a known-non-empty string. It is the same helper
+	// `boss auth-status` renders, which keeps the two surfaces in step.
+	reason := auth.ReloginReasonDescription(h.reloginReason)
+	return h.statusLine(colorWarning, strings.Join([]string{
+		"Sign in required: cloud authentication needs [l]ogin.",
+		strings.ToUpper(reason[:1]) + reason[1:] + ".",
+		"Local sessions are still available.",
+	}, "\n"))
+}
+
+// guestCloudOfferVisible wraps the package-level cloudGuestOfferVisible with
+// Home's own suppression. A retained re-login state reports LoggedIn=false,
+// which is exactly what the promo keys on, so without this "[l]ogin to try
+// Bossanova Cloud for free" renders directly above "Sign in required: cloud
+// authentication needs [l]ogin". The user is not a guest — they are a
+// signed-out account holder, and offering them a free trial in that moment is
+// wrong. Named distinctly from the package function it calls so the call
+// below does not read as recursion.
+func (h HomeModel) guestCloudOfferVisible() bool {
+	if h.needsRelogin {
+		return false
+	}
+	return cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil)
+}
+
+// logoutErrorLine renders a failed logout, or "" when the last one succeeded.
+// Placed alongside cloudGateLine rather than in the reserved footer block: like
+// that line it is transient, and reserving table height for a state that is
+// almost always absent would shrink the board permanently.
+func (h HomeModel) logoutErrorLine() string {
+	if h.logoutError == "" {
+		return ""
+	}
+	return renderError("Logout: "+h.logoutError, h.statusWrapWidth())
+}
+
 func (h HomeModel) renderDaemonError() string {
 	remediation := h.daemonRemediation
 	if remediation == "" {
@@ -154,7 +217,7 @@ func (h HomeModel) renderLoading() string {
 func (h HomeModel) renderEmptyState() string {
 	var content string
 	discovery := ""
-	if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
+	if h.guestCloudOfferVisible() {
 		discovery = cloudDiscoveryLine(h.loggedIn, h.authMgr != nil)
 	}
 	if h.repoCount == 0 {
@@ -173,6 +236,22 @@ func (h HomeModel) renderEmptyState() string {
 			}
 			content += separator + upgradeStatus
 		}
+	}
+	if relogin := h.authReloginLine(); relogin != "" && !h.confirm.active {
+		// Hidden behind a confirm prompt, as the session table hides it (a
+		// confirm replaces the whole footer there) and as the upgrade status
+		// above is hidden: a modal question should not compete with a
+		// three-row advisory.
+		//
+		// DEFENSIVE today: Home's only confirmPrompt is the logout prompt,
+		// raised behind `if h.loggedIn`, and a flagged record reports
+		// LoggedIn=false — so the two states cannot currently coexist. The
+		// clause keeps the parity rule true if Home ever grows a second
+		// confirm.
+		content += "\n" + relogin
+	}
+	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
+		content += "\n" + logoutErr
 	}
 	if gate := h.cloudGateLine(); gate != "" {
 		content += "\n" + gate
@@ -281,7 +360,7 @@ func (h HomeModel) renderSessionTableFooter() string {
 	var b strings.Builder
 	left, nav, quit := h.sessionTableFooterActions()
 	b.WriteString(actionBarWidth(h.width, left, nav, quit))
-	if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
+	if h.guestCloudOfferVisible() {
 		if discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil); discovery != "" {
 			b.WriteString(discovery)
 		}
@@ -289,6 +368,14 @@ func (h HomeModel) renderSessionTableFooter() string {
 	if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 		b.WriteString("\n")
 		b.WriteString(upgradeStatus)
+	}
+	if relogin := h.authReloginLine(); relogin != "" {
+		b.WriteString("\n")
+		b.WriteString(relogin)
+	}
+	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
+		b.WriteString("\n")
+		b.WriteString(logoutErr)
 	}
 	if gate := h.cloudGateLine(); gate != "" {
 		b.WriteString("\n")
@@ -315,5 +402,11 @@ func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
 
 func (h HomeModel) sessionTableFooterLineCount() int {
 	left, nav, quit := h.sessionTableFooterActions()
-	return actionBarLineCount(h.width, left, nav, quit)
+	lines := actionBarLineCount(h.width, left, nav, quit)
+	if relogin := h.authReloginLine(); relogin != "" {
+		// renderSessionTableFooter puts a newline between the action bar and
+		// this multi-line warning, so reserve that separator too.
+		lines += 1 + strings.Count(relogin, "\n") + 1
+	}
+	return lines
 }

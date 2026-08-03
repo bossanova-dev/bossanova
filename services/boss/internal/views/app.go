@@ -207,6 +207,18 @@ func (a App) Init() tea.Cmd {
 // the witness those tests rely on. Flipping one of those three to fall through
 // is currently invisible.
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Ctrl+X is an alias for Esc wherever the TUI treats Esc as "back one
+	// level" (BOS-660). Rewriting the message here — before the toast, the
+	// global chords and the active view — is what lets every existing Esc
+	// branch inherit the alias without gaining a duplicate "ctrl+x" case.
+	//
+	// Narrowed to key presses at the call site so the alias reads as key
+	// routing rather than a per-message hook; aliasCtrlXToEsc takes a pointer
+	// receiver so this is a readability choice, not a load-bearing perf guard.
+	if key, isKey := msg.(tea.KeyPressMsg); isKey {
+		msg = a.aliasCtrlXToEsc(key)
+	}
+
 	// Route keys through the rotation toast first. It only consumes Esc while a
 	// toast is visible, letting the operator dismiss the notice without also
 	// triggering the active view's back action.
@@ -255,6 +267,94 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a.delegateToActiveView(msg)
+}
+
+// aliasCtrlXToEsc rewrites a bare ctrl+x key press into an Esc key press when
+// the active view is a non-text back/cancel screen, and returns key untouched
+// otherwise (BOS-660).
+//
+// The chord is matched on its full String() so only the exact `ctrl+x` is
+// aliased: cmd+x, ctrl+shift+x and every other decorated variant fall through
+// to the active view unchanged, as does ctrl+c (handled by handleGlobalKey).
+//
+// Presses only. A ctrl+x tea.KeyReleaseMsg would reach the views unaliased, but
+// the program enables no keyboard enhancements, so releases are never delivered
+// and no view handles them.
+//
+// Pointer receiver purely to avoid copying the ~20-sub-model App on the key
+// path: this reads App and mutates nothing, and is NOT one of the Update-arm
+// handler shapes the doc comment above describes.
+func (a *App) aliasCtrlXToEsc(key tea.KeyPressMsg) tea.Msg {
+	if key.String() != "ctrl+x" {
+		return key
+	}
+	if !a.backKeyAliasEligible() {
+		return key
+	}
+	return tea.KeyPressMsg{Code: tea.KeyEsc}
+}
+
+// backKeyAliasEligible reports whether the App's current state is a non-text
+// back/cancel screen, i.e. one where Esc means "go back one level" and nothing
+// on screen can legitimately consume a raw ctrl+x.
+//
+// The switch is EXHAUSTIVE over View on purpose — no `default`, so the
+// `exhaustive` linter (enabled in .golangci.yml) turns a newly added View into
+// a build-gate failure rather than a silent opt-in. Fail-open was the obvious
+// shape and it is the wrong one: a view that quietly becomes eligible starts
+// cancelling out from under the cursor with no compile error, no lint error and
+// no failing test, because app_ctrl_x_test.go can only cover the views that
+// exist today. Adding a text input to a listed view still needs its arm
+// widened; that part the tests do guard.
+//
+// Every text-entry arm delegates to a textEntryActive() method on the model
+// that owns the state, rather than re-encoding that model's "not editing"
+// sentinel here. Two views are excluded outright instead (ViewAttach and
+// ViewOnboarding): those are view-wide exclusions, not text-entry ones.
+func (a *App) backKeyAliasEligible() bool {
+	switch a.activeView {
+	case ViewAttach:
+		// Forward ctrl+x unchanged so tmux — not this model — can own it: the
+		// detach binding lives in tmux's own root key table, and once the PTY is
+		// attached the chord is consumed there without ever reaching App.Update.
+		// On the pre-exec launch screen nothing is listening for it, so leaving
+		// it unaliased makes it intentionally inert rather than a second way to
+		// trigger attach's Esc branch (which bails out of the launch screen).
+		return false
+	case ViewOnboarding:
+		// Onboarding's Esc quits the program outright rather than going back a
+		// level, and `x` is a live binding on that screen — so a brushed Ctrl
+		// must not turn it into an exit.
+		return false
+	case ViewNewSession:
+		return !a.newSession.textEntryActive()
+	case ViewTrash:
+		return !a.trash.textEntryActive()
+	case ViewRepoAdd:
+		return !a.repoAdd.textEntryActive()
+	case ViewCronForm:
+		return !a.cronForm.textEntryActive()
+	case ViewBugReport:
+		return !a.bugReport.textEntryActive()
+	case ViewRepoSettings:
+		return !a.repoSettings.textEntryActive()
+	case ViewSessionSettings:
+		return !a.sessionSettings.textEntryActive()
+	case ViewGeneralSettings:
+		return !a.generalSettings.textEntryActive()
+	case ViewAccountEdit:
+		return !a.accountEdit.textEntryActive()
+	case ViewAccountRegister:
+		return !a.accountRegister.textEntryActive()
+	case ViewHome, ViewChatPicker, ViewRepoList, ViewSettings, ViewLogin,
+		ViewCron, ViewAccounts:
+		// Pure list/hub screens: no text input, and Esc already means "back one
+		// level" on each of them.
+		return true
+	}
+	// Unreachable while the switch stays exhaustive; fail closed if it ever
+	// stops being.
+	return false
 }
 
 func (a App) View() tea.View {

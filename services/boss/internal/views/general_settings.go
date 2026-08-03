@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -34,7 +35,12 @@ const (
 	settingsRowKindPostHogHost                          // built-in PostHog host
 	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
 	settingsRowKindNotifications                        // built-in desktop notifications toggle
+	settingsRowKindDaemonName                           // built-in daemon display name override
 )
+
+// daemonRestartHint is appended to the daemon name row so the delayed effect
+// of a rename is never a surprise — bossd only reads the setting at startup.
+const daemonRestartHint = "restart daemon to apply"
 
 // settingsRow is a single addressable line in the settings TUI. Header
 // rows have IsHeader=true and are skipped during cursor navigation.
@@ -69,7 +75,35 @@ type GeneralSettingsModel struct {
 	pollIntervalInput textinput.Model
 	stringInput       textinput.Model // shared for plugin String rows
 
+	// hostname is this machine's OS hostname, shown as the daemon name's
+	// resolved default when no override is configured. Captured once at
+	// construction so the row renders the same value the daemon would fall
+	// back to; tests pin it for deterministic rendering.
+	hostname string
+
 	width int
+}
+
+// unknownHostname stands in for a name we cannot render. It is PURELY a render
+// substitution: it is never fed into config.DaemonDisplayName, because that
+// would make the row preview "unknown" where bossd would advertise an empty
+// hostname.
+const unknownHostname = "unknown"
+
+// orUnknownHostname substitutes the placeholder for an empty/whitespace name.
+// The raw empty string would otherwise render as "Daemon name:  (machine
+// hostname; …)" — a blank that reads as a bug rather than as "this machine will
+// not say".
+func orUnknownHostname(name string) string {
+	if n := strings.TrimSpace(name); n != "" {
+		return n
+	}
+	return unknownHostname
+}
+
+// hostnameForDisplay renders this machine's hostname for the edit hint.
+func (m GeneralSettingsModel) hostnameForDisplay() string {
+	return orUnknownHostname(m.hostname)
 }
 
 // NewGeneralSettingsModel constructs the general settings view. With a non-nil
@@ -94,6 +128,8 @@ func NewGeneralSettingsModel(c client.BossClient, ctx context.Context) GeneralSe
 	strIn := textinput.New()
 	strIn.SetWidth(40)
 
+	hostname, _ := os.Hostname()
+
 	m := GeneralSettingsModel{
 		client:            c,
 		ctx:               ctx,
@@ -102,6 +138,7 @@ func NewGeneralSettingsModel(c client.BossClient, ctx context.Context) GeneralSe
 		worktreeDirInput:  wtIn,
 		pollIntervalInput: piIn,
 		stringInput:       strIn,
+		hostname:          hostname,
 	}
 
 	if c != nil {
@@ -306,6 +343,7 @@ func (m *GeneralSettingsModel) rebuildRows() {
 	m.rows = append(m.rows,
 		settingsRow{Kind: settingsRowKindWorktree, Label: "Worktree base directory"},
 		settingsRow{Kind: settingsRowKindPollInterval, Label: "Poll interval (seconds)"},
+		settingsRow{Kind: settingsRowKindDaemonName, Label: "Daemon name"},
 		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
 		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
 	)
@@ -514,6 +552,10 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		m.editingRow = m.cursor
 		m.stringInput.SetValue(m.settings.PostHogHost)
 		return m, m.stringInput.Focus()
+	case settingsRowKindDaemonName:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(m.settings.DaemonName)
+		return m, m.stringInput.Focus()
 	case settingsRowKindWorktree:
 		m.editingRow = m.cursor
 		return m, m.worktreeDirInput.Focus()
@@ -562,7 +604,7 @@ func (m GeneralSettingsModel) updateEditing(msg tea.Msg) (GeneralSettingsModel, 
 		m.pollIntervalInput, cmd = m.pollIntervalInput.Update(msg)
 	case settingsRowKindString:
 		m.stringInput, cmd = m.stringInput.Update(msg)
-	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost, settingsRowKindDaemonName:
 		m.stringInput, cmd = m.stringInput.Update(msg)
 	}
 	return m, cmd
@@ -630,6 +672,23 @@ func (m GeneralSettingsModel) commitEdit() (GeneralSettingsModel, tea.Cmd) {
 		}
 		m.editingRow = -1
 		m.stringInput.Blur()
+	case settingsRowKindDaemonName:
+		// A blank (or whitespace-only) value is the documented reset: it
+		// persists no override, so the daemon falls back to the machine
+		// hostname on its next start.
+		saved := m.settings.DaemonName
+		m.settings.DaemonName = strings.TrimSpace(m.stringInput.Value())
+		if !m.persistSettings() {
+			// The candidate stays in the still-focused input for a retry, but
+			// the model rolls back to the saved name: the editor remains open,
+			// so cancelling from here would otherwise leave the resting row
+			// showing an unsaved value that the next successful save of any
+			// other setting would silently persist.
+			m.settings.DaemonName = saved
+			return m, nil
+		}
+		m.editingRow = -1
+		m.stringInput.Blur()
 	}
 	return m, nil
 }
@@ -649,7 +708,7 @@ func (m GeneralSettingsModel) cancelEdit() (GeneralSettingsModel, tea.Cmd) {
 		}
 	case settingsRowKindString:
 		m.stringInput.Blur()
-	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost, settingsRowKindDaemonName:
 		m.stringInput.Blur()
 	}
 	m.editingRow = -1
@@ -659,6 +718,12 @@ func (m GeneralSettingsModel) cancelEdit() (GeneralSettingsModel, tea.Cmd) {
 
 // Cancelled returns true if the user exited the general settings view.
 func (m GeneralSettingsModel) Cancelled() bool { return m.cancel }
+
+// textEntryActive reports whether a row is in inline edit mode with its
+// textinput focused, so App can leave ctrl+x alone rather than aliasing it onto
+// Esc (BOS-660). editingRow is -1 when nothing is being edited, and Esc there
+// just exits the view.
+func (m GeneralSettingsModel) textEntryActive() bool { return m.editingRow >= 0 }
 
 func (m GeneralSettingsModel) View() tea.View {
 	var b strings.Builder
@@ -721,6 +786,18 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", row.Label)))
 			b.WriteString("\n")
 			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
+			b.WriteString("\n")
+			return
+		case settingsRowKindDaemonName:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", row.Label)))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
+			b.WriteString("\n")
+			// Same helper-text chrome as the Settings hub's section descriptions
+			// (settings.go): faint, indented 4, padded 2 on the right — so this
+			// hint reads as secondary rather than competing with the value.
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2, 0, 4).Render(styleSubtle.Render(
+				fmt.Sprintf("Blank uses this machine's hostname (%s); %s.", m.hostnameForDisplay(), daemonRestartHint))))
 			b.WriteString("\n")
 			return
 		}
@@ -810,6 +887,22 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 			val = "(unset)"
 		}
 		line = fmt.Sprintf("%s: %s", row.Label, val)
+	case settingsRowKindDaemonName:
+		// Resolve through config.DaemonDisplayName against the RAW hostname —
+		// never a local re-implementation and never a placeholder — so the value
+		// shown is exactly what bossd will advertise after its next start.
+		switch resolved := config.DaemonDisplayName(m.settings, m.hostname); {
+		case strings.TrimSpace(m.settings.DaemonName) != "":
+			line = fmt.Sprintf("%s: %s (%s)", row.Label, resolved, daemonRestartHint)
+		case strings.TrimSpace(resolved) == "":
+			// os.Hostname() failed and there is no override, so bossd would
+			// advertise an empty hostname — which bosso rejects at registration.
+			// Rendering a placeholder here would read as a name; this is a
+			// prompt to set one.
+			line = fmt.Sprintf("%s: (machine hostname unavailable — set a name; %s)", row.Label, daemonRestartHint)
+		default:
+			line = fmt.Sprintf("%s: %s (machine hostname; %s)", row.Label, resolved, daemonRestartHint)
+		}
 	}
 
 	b.WriteString(renderFieldRow(focused, line))

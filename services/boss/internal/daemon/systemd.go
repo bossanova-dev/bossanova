@@ -56,6 +56,7 @@ ExecStart={{.BossdPath}}
 LimitNOFILE=65536
 Restart=always
 RestartSec=5
+Environment=LC_CTYPE=C.UTF-8
 
 [Install]
 WantedBy=default.target
@@ -73,6 +74,7 @@ ExecStart={{.McpPath}} --http {{.Addr}}
 Restart=always
 RestartSec=5
 Environment=PATH={{.Path}}
+Environment=LC_CTYPE=C.UTF-8
 
 [Install]
 WantedBy=default.target

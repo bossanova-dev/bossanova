@@ -2192,3 +2192,77 @@ func TestSettingsSerializesManagedAccountsKey(t *testing.T) {
 		t.Errorf("serialized settings should not emit legacy rotation key: %s", out)
 	}
 }
+
+func TestDaemonNameOmittedFromDefaultSettingsJSON(t *testing.T) {
+	out, err := json.Marshal(DefaultSettings())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), `"daemon_name"`) {
+		t.Errorf("default settings should not persist a daemon_name key: %s", out)
+	}
+}
+
+func TestDaemonNameDecodesFromJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "omitted", json: `{"worktree_base_dir":"/tmp/wt"}`, want: ""},
+		{name: "blank", json: `{"worktree_base_dir":"/tmp/wt","daemon_name":""}`, want: ""},
+		{name: "padded", json: `{"worktree_base_dir":"/tmp/wt","daemon_name":"  studio-mini  "}`, want: "  studio-mini  "},
+		{name: "custom", json: `{"worktree_base_dir":"/tmp/wt","daemon_name":"studio-mini"}`, want: "studio-mini"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var s Settings
+			if err := json.Unmarshal([]byte(tc.json), &s); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if s.DaemonName != tc.want {
+				t.Fatalf("DaemonName = %q, want %q", s.DaemonName, tc.want)
+			}
+		})
+	}
+}
+
+func TestDaemonNameRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	in := DefaultSettings()
+	in.DaemonName = "studio-mini"
+
+	if err := SaveTo(path, in); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	out, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if out.DaemonName != "studio-mini" {
+		t.Fatalf("DaemonName = %q, want %q", out.DaemonName, "studio-mini")
+	}
+}
+
+func TestDaemonDisplayName(t *testing.T) {
+	tests := []struct {
+		name       string
+		daemonName string
+		hostname   string
+		want       string
+	}{
+		{name: "unset falls back to hostname", daemonName: "", hostname: "host-a", want: "host-a"},
+		{name: "whitespace-only falls back to hostname", daemonName: "   \t ", hostname: "host-a", want: "host-a"},
+		{name: "override wins", daemonName: "studio-mini", hostname: "host-a", want: "studio-mini"},
+		{name: "override is trimmed", daemonName: "  studio-mini  ", hostname: "host-a", want: "studio-mini"},
+		{name: "empty hostname stays empty", daemonName: "", hostname: "", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DaemonDisplayName(Settings{DaemonName: tc.daemonName}, tc.hostname)
+			if got != tc.want {
+				t.Fatalf("DaemonDisplayName(%q, %q) = %q, want %q", tc.daemonName, tc.hostname, got, tc.want)
+			}
+		})
+	}
+}

@@ -52,6 +52,8 @@ type fakeCommandHandler struct {
 	listAgentsResult        *pb.ListAgentsResponse
 	listAccountsResult      *pb.ListAccountsResponse
 	listAccountsProvider    string // last provider passed to ListAccounts
+	listAccountsRefresh     bool   // last refresh passed to ListAccounts
+	listAccountsBlock       bool
 	repoSettings            *pb.GetRepoSettingsResponse
 	updatedRepo             *pb.UpdateRepoResponse
 	removedRepoID           string
@@ -227,9 +229,14 @@ func (f *fakeCommandHandler) ListAgents(_ context.Context) (*pb.ListAgentsRespon
 	f.listAgentsCalls.Add(1)
 	return f.listAgentsResult, f.returnErr
 }
-func (f *fakeCommandHandler) ListAccounts(_ context.Context, provider string) (*pb.ListAccountsResponse, error) {
+func (f *fakeCommandHandler) ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error) {
 	f.listAccountsCalls.Add(1)
 	f.listAccountsProvider = provider
+	f.listAccountsRefresh = refresh
+	if f.listAccountsBlock {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return f.listAccountsResult, f.returnErr
 }
 func (f *fakeCommandHandler) GetRepo(_ context.Context, _ string) (*pb.GetRepoSettingsResponse, error) {
@@ -2003,6 +2010,9 @@ func TestDispatchCommand_ListAccounts_CallsHandler(t *testing.T) {
 	if handler.listAccountsProvider != "claude" {
 		t.Fatalf("list_accounts provider = %q, want claude", handler.listAccountsProvider)
 	}
+	if handler.listAccountsRefresh {
+		t.Fatalf("list_accounts refresh = true, want false for an omitted command field")
+	}
 	r := ev.GetResult()
 	if r == nil || !r.GetOk() || r.GetCommandId() != "c-lacc1" {
 		t.Fatalf("expected ok result with command_id, got %+v", ev)
@@ -2010,6 +2020,51 @@ func TestDispatchCommand_ListAccounts_CallsHandler(t *testing.T) {
 	got := r.GetListAccounts().GetAccounts()
 	if len(got) != 1 || got[0].GetId() != "acc-1" {
 		t.Fatalf("expected list_accounts payload with acc-1, got %+v", got)
+	}
+}
+
+// TestDispatchCommand_ListAccounts_ForwardsRefresh proves refresh=true and
+// refresh=false both travel from the command through to the handler unchanged.
+func TestDispatchCommand_ListAccounts_ForwardsRefresh(t *testing.T) {
+	for _, refresh := range []bool{true, false} {
+		t.Run(fmt.Sprintf("refresh=%v", refresh), func(t *testing.T) {
+			handler := &fakeCommandHandler{listAccountsResult: &pb.ListAccountsResponse{}}
+			client := newDispatcherClient(handler, nil, nil)
+			out := make(chan *pb.DaemonEvent, 4)
+			if ev := client.dispatchCommand(context.Background(),
+				&pb.OrchestratorCommand{
+					CommandId: "c-lacc-refresh",
+					Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{ShouldRefresh: refresh}},
+				}, out); ev != nil {
+				t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+			}
+			recvEvent(t, out)
+			if handler.listAccountsRefresh != refresh {
+				t.Fatalf("list_accounts refresh = %v, want %v", handler.listAccountsRefresh, refresh)
+			}
+		})
+	}
+}
+
+func TestDispatchCommand_ListAccounts_RefreshDeadlineCancelsHandler(t *testing.T) {
+	previousDeadline := listAccountsRefreshDeadline
+	listAccountsRefreshDeadline = 20 * time.Millisecond
+	t.Cleanup(func() { listAccountsRefreshDeadline = previousDeadline })
+
+	handler := &fakeCommandHandler{listAccountsBlock: true}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-lacc-deadline",
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{ShouldRefresh: true}},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	if got := ev.GetResult().GetError(); !strings.Contains(got, context.DeadlineExceeded.Error()) {
+		t.Fatalf("list_accounts error = %q, want deadline exceeded", got)
 	}
 }
 

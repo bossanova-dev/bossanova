@@ -4,6 +4,7 @@ go_library(
     name = "cmd_lib",
     srcs = [
         "clamp_int32.go",
+        "daemon_identity.go",
         "filelimit_darwin.go",
         "filelimit_nondarwin.go",
         "filelimit_other.go",
@@ -80,6 +81,7 @@ go_test(
     name = "cmd_test",
     srcs = [
         "auth_failed_stream_test.go",
+        "daemon_identity_test.go",
         "dispatcher_lookup_test.go",
         "filelimit_unix_test.go",
         "init_order_test.go",

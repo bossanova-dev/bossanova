@@ -26,6 +26,7 @@ go_test(
         "devicecode_test.go",
         "migration_test.go",
         "refresh_test.go",
+        "relogin_test.go",
     ],
     embed = [":auth"],
 )

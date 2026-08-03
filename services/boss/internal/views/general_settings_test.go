@@ -649,3 +649,388 @@ func TestGeneralSettings_CursorSkipsHeaderRows(t *testing.T) {
 		m = updated.(GeneralSettingsModel)
 	}
 }
+
+// daemonNameRow focuses the Daemon name row and pins the model's machine
+// hostname so the fallback rendering is deterministic across machines.
+func daemonNameRow(t *testing.T, m GeneralSettingsModel, hostname string) GeneralSettingsModel {
+	t.Helper()
+	m.hostname = hostname
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindDaemonName {
+			m.cursor = i
+			return m
+		}
+	}
+	t.Fatal("daemon name row not found")
+	return m
+}
+
+func typeInto(t *testing.T, m GeneralSettingsModel, text string) GeneralSettingsModel {
+	t.Helper()
+	for _, r := range text {
+		updated, _ := m.Update(keyPress(r))
+		next, ok := updated.(GeneralSettingsModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want GeneralSettingsModel", updated)
+		}
+		m = next
+	}
+	return m
+}
+
+func TestGeneralSettings_DaemonNameRowRendersMachineHostnameByDefault(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+
+	view := m.View().Content
+	if !strings.Contains(view, "Daemon name: studio-imac") {
+		t.Errorf("daemon name row should fall back to the machine hostname. Got:\n%s", view)
+	}
+	if !strings.Contains(view, "restart daemon") {
+		t.Errorf("daemon name row should state that a restart applies it. Got:\n%s", view)
+	}
+	if m.settings.DaemonName != "" {
+		t.Errorf("DaemonName = %q, want no persisted override", m.settings.DaemonName)
+	}
+}
+
+func TestGeneralSettings_DaemonNameRowSitsBetweenPollIntervalAndRotation(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	pollInterval, daemonName, rotation := -1, -1, -1
+	for i, row := range m.rows {
+		switch row.Kind { //nolint:exhaustive // only the three ordered rows matter here
+		case settingsRowKindPollInterval:
+			pollInterval = i
+		case settingsRowKindDaemonName:
+			daemonName = i
+		case settingsRowKindRotation:
+			rotation = i
+		}
+	}
+	if pollInterval < 0 || daemonName < 0 || rotation < 0 {
+		t.Fatalf("missing rows: poll=%d daemon=%d rotation=%d", pollInterval, daemonName, rotation)
+	}
+	if daemonName != pollInterval+1 || rotation != daemonName+1 {
+		t.Fatalf("daemon name row misplaced: poll=%d daemon=%d rotation=%d", pollInterval, daemonName, rotation)
+	}
+}
+
+// TestGeneralSettings_DownKeyCountsMatchTheProofScenarios encodes, in the fast
+// suite, the fixed key counts the committed TUI proof scenarios navigate by:
+// bos662-daemon-name-settings presses down twice to reach Daemon name and
+// bos459-settings-notifications-toggle presses down four times to reach the
+// notifications toggle. Adjacency alone does not pin those — inserting a row
+// ABOVE Worktree re-targets both scenarios while leaving adjacency intact, and
+// the breakage would then only surface in the release-tier proof run.
+func TestGeneralSettings_DownKeyCountsMatchTheProofScenarios(t *testing.T) {
+	withTempConfigHome(t)
+
+	for _, tc := range []struct {
+		name  string
+		downs int
+		want  settingsRowKind
+	}{
+		{name: "bos662 reaches the daemon name row in 2 downs", downs: 2, want: settingsRowKindDaemonName},
+		{name: "bos459 reaches the notifications row in 4 downs", downs: 4, want: settingsRowKindNotifications},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			if m.cursor != 0 {
+				t.Fatalf("precondition: cursor = %d, want the scenarios' starting row 0", m.cursor)
+			}
+			for i := 0; i < tc.downs; i++ {
+				updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+				next, ok := updated.(GeneralSettingsModel)
+				if !ok {
+					t.Fatalf("updated model = %T, want GeneralSettingsModel", updated)
+				}
+				m = next
+			}
+			if got := m.rows[m.cursor].Kind; got != tc.want {
+				t.Fatalf("after %d downs the cursor is on row kind %v (%q), want %v",
+					tc.downs, got, m.rows[m.cursor].Label, tc.want)
+			}
+		})
+	}
+}
+
+// TestGeneralSettings_DaemonNameEditorShowsBlankResetHint pins the editor hint
+// in the fast suite. Every other "restart daemon" assertion renders the RESTING
+// row, so without this the hint's only guard is the release-tier bos662 proof
+// scenario — the same late-and-expensive failure class the down-count test
+// exists to close.
+func TestGeneralSettings_DaemonNameEditorShowsBlankResetHint(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	if m.editingRow < 0 {
+		t.Fatal("enter did not open the daemon name editor")
+	}
+
+	view := m.View().Content
+	for _, want := range []string{"Blank uses this machine's hostname", "studio-imac", daemonRestartHint} {
+		if !strings.Contains(view, want) {
+			t.Errorf("daemon name editor hint missing %q. Got:\n%s", want, view)
+		}
+	}
+}
+
+func TestGeneralSettings_DaemonNameEditPersistsTrimmedValue(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	if m.editingRow < 0 {
+		t.Fatal("enter did not open the daemon name editor")
+	}
+	m = typeInto(t, m, "  studio-mini  ")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+
+	if m.editingRow >= 0 {
+		t.Fatalf("enter did not commit the daemon name edit (err=%v)", m.err)
+	}
+	if m.settings.DaemonName != "studio-mini" {
+		t.Fatalf("DaemonName = %q, want trimmed %q", m.settings.DaemonName, "studio-mini")
+	}
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if persisted.DaemonName != "studio-mini" {
+		t.Fatalf("persisted DaemonName = %q, want %q", persisted.DaemonName, "studio-mini")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "Daemon name: studio-mini") {
+		t.Errorf("daemon name row should show the custom name. Got:\n%s", view)
+	}
+	if !strings.Contains(view, "restart daemon") {
+		t.Errorf("daemon name row should still state the restart requirement. Got:\n%s", view)
+	}
+}
+
+func TestGeneralSettings_DaemonNameBlankClearsOverride(t *testing.T) {
+	withTempConfigHome(t)
+	seed, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	seed.DaemonName = "studio-mini"
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+	if m.settings.DaemonName != "studio-mini" {
+		t.Fatalf("precondition: DaemonName = %q, want the seeded override", m.settings.DaemonName)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	for range "studio-mini" {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		m = updated.(GeneralSettingsModel)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+
+	if m.settings.DaemonName != "" {
+		t.Fatalf("DaemonName = %q, want cleared", m.settings.DaemonName)
+	}
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if persisted.DaemonName != "" {
+		t.Fatalf("persisted DaemonName = %q, want cleared", persisted.DaemonName)
+	}
+	if config.DaemonDisplayName(persisted, "studio-imac") != "studio-imac" {
+		t.Fatal("cleared override did not restore hostname resolution")
+	}
+	if !strings.Contains(m.View().Content, "Daemon name: studio-imac") {
+		t.Errorf("cleared daemon name should render the machine hostname. Got:\n%s", m.View().Content)
+	}
+}
+
+func TestGeneralSettings_DaemonNameCancelRestoresSavedValue(t *testing.T) {
+	withTempConfigHome(t)
+	seed, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	seed.DaemonName = "studio-mini"
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	m = typeInto(t, m, "-scratch")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(GeneralSettingsModel)
+
+	if m.editingRow >= 0 {
+		t.Fatal("esc did not leave the daemon name editor")
+	}
+	if m.settings.DaemonName != "studio-mini" {
+		t.Fatalf("DaemonName = %q, want the saved value after cancel", m.settings.DaemonName)
+	}
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if persisted.DaemonName != "studio-mini" {
+		t.Fatalf("persisted DaemonName = %q, want the saved value after cancel", persisted.DaemonName)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	if got := m.stringInput.Value(); got != "studio-mini" {
+		t.Fatalf("reopened editor value = %q, want the saved value", got)
+	}
+}
+
+// TestGeneralSettings_DaemonNameFailedSaveKeepsSavedValue pins the rollback on
+// the failed-persist path: when config.Save fails the editor stays open, so the
+// model must keep the previously-saved name. Otherwise cancelling leaves the
+// resting row showing an unsaved rename that the next successful save of any
+// other setting would silently persist.
+func TestGeneralSettings_DaemonNameFailedSaveKeepsSavedValue(t *testing.T) {
+	withTempConfigHome(t)
+	goodPath := os.Getenv("BOSS_SETTINGS_PATH")
+	seed, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	seed.DaemonName = "studio-mini"
+	if err := config.Save(seed); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "studio-imac")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	m = typeInto(t, m, "-scratch")
+
+	// A directory where the settings file belongs makes the atomic write fail.
+	badPath := filepath.Join(t.TempDir(), "settings-dir")
+	if err := os.Mkdir(badPath, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q): %v", badPath, err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", badPath)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	t.Setenv("BOSS_SETTINGS_PATH", goodPath)
+
+	if m.err == nil {
+		t.Fatal("failed daemon name save did not surface an error")
+	}
+	if m.editingRow < 0 {
+		t.Fatal("failed daemon name save closed the editor")
+	}
+	if m.settings.DaemonName != "studio-mini" {
+		t.Fatalf("DaemonName = %q, want the saved value after a failed save", m.settings.DaemonName)
+	}
+	if got := m.stringInput.Value(); got != "studio-mini-scratch" {
+		t.Fatalf("editor value = %q, want the candidate kept for a retry", got)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(GeneralSettingsModel)
+	if m.settings.DaemonName != "studio-mini" {
+		t.Fatalf("DaemonName = %q, want the saved value after cancelling a failed save", m.settings.DaemonName)
+	}
+	if !strings.Contains(m.View().Content, "Daemon name: studio-mini (") {
+		t.Errorf("resting row should show the saved name. Got:\n%s", m.View().Content)
+	}
+
+	// A later successful save of an unrelated setting must not persist the
+	// cancelled rename.
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindErrorTracking {
+			m.cursor = i
+			break
+		}
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	if m.err != nil {
+		t.Fatalf("unrelated save failed: %v", m.err)
+	}
+	persisted, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if persisted.DaemonName != "studio-mini" {
+		t.Fatalf("persisted DaemonName = %q, want the saved value", persisted.DaemonName)
+	}
+}
+
+func TestGeneralSettings_DaemonNamePromptsWhenHostnameUnresolvable(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	// os.Hostname() can fail; the row must not render a bare blank for it.
+	m = daemonNameRow(t, m, "")
+
+	view := m.View().Content
+	if !strings.Contains(view, "Daemon name: (machine hostname unavailable — set a name;") {
+		t.Errorf("unresolvable hostname should prompt for a name, not render a blank. Got:\n%s", view)
+	}
+	if strings.Contains(view, "Daemon name: unknown") {
+		t.Errorf("the row must not present a placeholder as the name bossd will advertise. Got:\n%s", view)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(GeneralSettingsModel)
+	if editView := m.View().Content; !strings.Contains(editView, "hostname (unknown)") {
+		t.Errorf("editor hint should render the placeholder too. Got:\n%s", editView)
+	}
+}
+
+func TestGeneralSettings_DaemonNameOverrideWinsWhenHostnameUnresolvable(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m = daemonNameRow(t, m, "")
+	m.settings.DaemonName = "studio-mini"
+
+	// An unresolvable machine hostname must not displace a configured override
+	// — neither with a placeholder nor with the unavailable-hostname prompt.
+	view := m.View().Content
+	if !strings.Contains(view, "Daemon name: studio-mini") {
+		t.Errorf("override should render even with no machine hostname. Got:\n%s", view)
+	}
+	if strings.Contains(view, "machine hostname unavailable") {
+		t.Errorf("the unavailable-hostname prompt shadowed a configured override. Got:\n%s", view)
+	}
+}
+
+func TestGeneralSettings_CapturesMachineHostnameAtConstruction(t *testing.T) {
+	withTempConfigHome(t)
+	// Every other daemon-name test pins m.hostname for determinism, so this is
+	// the only assertion that the constructor captures it at all — without it,
+	// dropping the capture would leave the row rendering "unknown" in
+	// production while the suite stayed green.
+	want, err := os.Hostname()
+	if err != nil {
+		t.Skipf("os.Hostname unavailable: %v", err)
+	}
+
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	if m.hostname != want {
+		t.Fatalf("hostname = %q, want the machine hostname %q", m.hostname, want)
+	}
+}

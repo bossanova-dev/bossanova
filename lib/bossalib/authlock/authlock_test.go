@@ -6,12 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/recurser/bossalib/appstate"
-	"github.com/recurser/bossalib/config"
 )
 
 func TestAcquireSerializesLock(t *testing.T) {
@@ -190,43 +186,6 @@ func TestAcquireHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestWorkOSRefreshLockPathIgnoresConfiguredAppDataDir(t *testing.T) {
-	appDataDir := filepath.Join(t.TempDir(), "data")
-
-	got, err := workOSRefreshLockPath(config.Settings{AppDataDir: appDataDir})
-	if err != nil {
-		t.Fatalf("workOSRefreshLockPath() returned error: %v", err)
-	}
-
-	want, err := appstate.Path(workOSRefreshLockFile)
-	if err != nil {
-		t.Fatalf("appstate.Path() returned error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("workOSRefreshLockPath() = %q, want %q", got, want)
-	}
-}
-
-func TestWorkOSRefreshLockPathRejectsInvalidConfiguredAppDataDir(t *testing.T) {
-	_, err := workOSRefreshLockPath(config.Settings{AppDataDir: "relative/data"})
-	if err == nil {
-		t.Fatal("workOSRefreshLockPath() error = nil, want invalid app_data_dir error")
-	}
-	if !strings.Contains(err.Error(), "app_data_dir must be absolute") {
-		t.Fatalf("workOSRefreshLockPath() error = %q, want app_data_dir absolute error", err.Error())
-	}
-}
-
-func TestAcquireWorkOSRefreshLockForSettingsRejectsInvalidConfiguredAppDataDir(t *testing.T) {
-	_, err := AcquireWorkOSRefreshLockForSettings(context.Background(), config.Settings{AppDataDir: "relative/data"})
-	if err == nil {
-		t.Fatal("AcquireWorkOSRefreshLockForSettings() error = nil, want invalid app_data_dir error")
-	}
-	if !strings.Contains(err.Error(), "app_data_dir must be absolute") {
-		t.Fatalf("AcquireWorkOSRefreshLockForSettings() error = %q, want app_data_dir absolute error", err.Error())
-	}
-}
-
 func TestAcquireWorkOSRefreshLockDoesNotUseConfiguredAppDataDir(t *testing.T) {
 	appDataDir := filepath.Join(t.TempDir(), "data")
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
@@ -249,4 +208,18 @@ func TestAcquireWorkOSRefreshLockDoesNotUseConfiguredAppDataDir(t *testing.T) {
 	} else {
 		t.Fatalf("configured refresh lock was created in app_data_dir")
 	}
+}
+
+func TestAcquireWorkOSRefreshLockIgnoresMalformedSettings(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(settingsPath, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+	lock, err := AcquireWorkOSRefreshLock(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireWorkOSRefreshLock() returned error: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
 }

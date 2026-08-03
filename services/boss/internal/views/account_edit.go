@@ -133,6 +133,13 @@ func (m AccountEditModel) Init() tea.Cmd { return nil }
 // Cancelled reports whether the user dismissed the edit form.
 func (m AccountEditModel) Cancelled() bool { return m.cancel }
 
+// textEntryActive reports whether a row is in inline edit mode with its
+// textinput focused, so App can leave ctrl+x alone rather than aliasing it onto
+// Esc (BOS-660). editingField is -1 when nothing is being edited, and Esc there
+// backs out one level — dismissing the remove-confirm when it is up, otherwise
+// exiting the view.
+func (m AccountEditModel) textEntryActive() bool { return m.editingField >= 0 }
+
 func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Async results and resizes must be handled regardless of editing state.
 	// A save command runs asynchronously, so its accountEditSavedMsg can

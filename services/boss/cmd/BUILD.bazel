@@ -86,6 +86,7 @@ go_test(
         "account_ls_test.go",
         "account_refresh_test.go",
         "account_switch_test.go",
+        "auth_status_test.go",
         "broadcast_test.go",
         "callback_test.go",
         "chat_test.go",

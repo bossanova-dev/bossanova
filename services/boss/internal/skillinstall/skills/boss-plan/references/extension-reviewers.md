@@ -39,7 +39,14 @@ dispatched as an awaited subagent (no human gating).
    run — in a headless `boss-plan` cron this is mandatory. On timeout expiry, record
    `extension <name>: skipped (timed out after <ms>ms)` and move to the next extension (the same
    skip path a missing/malformed/erroring envelope takes in Step 3); never abort the run.
-   The subagent loads the extension's `SKILL.md` via the Skill tool and receives the `plan-reviewer`
+   Load the extension by **reading the descriptor's `skillPath` from disk** (`dir` is its directory),
+   passing both `skillPath` and `dir` in the worker brief, and requiring relative extension resources
+   to resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions.
+   Never load
+   a discovered extension by its bare descriptor `name` through the Skill tool: extension skills are
+   dispatched explicitly, never model-matched, so they SHOULD declare
+   `disable-model-invocation: true`, and the Skill tool refuses such a skill.
+   The subagent also receives the `plan-reviewer`
    **invocation envelope** from the contract:
 
    ```json

@@ -1414,6 +1414,11 @@ message ListAccountsRequest {
 
 message ListAccountsResponse {
   repeated Account accounts = 1;
+  // Set only when the daemon recognized and completed a refresh=true command.
+  // Bosso requires this acknowledgement for a refresh request so an older
+  // daemon, which silently ignores the newer command field, cannot report a
+  // passive list as a successful live refresh.
+  bool has_refreshed = 2;
 }
 
 message AddAccountRequest {

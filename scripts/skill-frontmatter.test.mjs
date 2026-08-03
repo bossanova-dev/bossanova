@@ -97,14 +97,23 @@ test('every bs-sweep-* skill disables model invocation', () => {
   assert.deepEqual(flagged, discovered)
 })
 
-test('no boss skill extension disables model invocation', () => {
-  // Extensions are dispatched into fresh subagents by their core, and a failed
-  // dispatch is only ever a non-fatal skip — so this regression would be silent.
+test('every boss skill extension disables model invocation', () => {
+  // BOS-663 inverted this invariant. It previously forbade the flag, on the theory that a
+  // core dispatching an extension by its descriptor `name` through the Skill tool would be
+  // silently refused. The correct fix is the other direction: an extension is dispatched
+  // EXPLICITLY by its core, never model-matched, so it must not consume listing budget — and
+  // the cores now load it by reading the descriptor's `skillPath` from disk, which the flag
+  // cannot break. `TestPublishedCoresDispatchExtensionsByPath` in
+  // services/boss/internal/skillinstall/extension_dispatch_test.go gates the other half: no
+  // published core may go back to dispatching a discovered extension by name.
   const offenders = skillFiles()
     .filter((skill) => {
       const frontmatter = readFrontmatter(skill.path)
 
-      return frontmatter.has('x-boss-extension') && frontmatter.has('disable-model-invocation')
+      return (
+        frontmatter.has('x-boss-extension') &&
+        frontmatter.get('disable-model-invocation') !== 'true'
+      )
     })
     .map((skill) => `${skill.root}/${skill.name}`)
 

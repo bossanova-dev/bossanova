@@ -215,7 +215,11 @@ func RefreshAccessToken(ctx context.Context, cfg Config, refreshToken string) (*
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed (HTTP %d): %s", resp.StatusCode, string(body))
+		// The response body is never interpolated: this error reaches the
+		// user through Manager.AccessToken, and a WorkOS error body can echo
+		// token material back at us. Mirrors the daemon's rule in
+		// services/bossd/internal/upstream/tokens.go.
+		return nil, fmt.Errorf("token refresh failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var authResp deviceAuthResponse

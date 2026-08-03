@@ -195,6 +195,12 @@ func (m SessionSettingsModel) Cancelled() bool { return m.cancel }
 // Done returns true if settings were saved and the view should close.
 func (m SessionSettingsModel) Done() bool { return m.done }
 
+// textEntryActive reports whether a row is in inline edit mode with its
+// textinput focused, so App can leave ctrl+x alone rather than aliasing it onto
+// Esc (BOS-660). editingField is -1 when nothing is being edited, and Esc there
+// just exits the view.
+func (m SessionSettingsModel) textEntryActive() bool { return m.editingField >= 0 }
+
 func (m SessionSettingsModel) View() tea.View {
 	if m.session == nil {
 		if m.err != nil {

@@ -3,11 +3,18 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/safego"
 )
+
+// listAccountsRefreshDeadline is deliberately daemon-local: bosso's command
+// wait only abandons its correlation slot and does not cancel this long-lived
+// stream context. Keep the provider probes bounded even after that caller has
+// timed out, so a later refresh cannot overlap stale work.
+var listAccountsRefreshDeadline = 120 * time.Second
 
 // dispatchCommand routes an inbound OrchestratorCommand to the matching
 // daemon handler and returns the DaemonEvent that should be sent back
@@ -740,8 +747,14 @@ func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, r
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
+	handlerCtx := ctx
+	cancel := func() {}
+	if req.GetShouldRefresh() {
+		handlerCtx, cancel = context.WithTimeout(ctx, listAccountsRefreshDeadline)
+	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.ListAccounts(ctx, req.GetProvider())
+		defer cancel()
+		out, err := c.commandHandler.ListAccounts(handlerCtx, req.GetProvider(), req.GetShouldRefresh())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

@@ -4966,10 +4966,13 @@ func (x *TestAccountCommand) GetId() string {
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
 // provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
 // only — never credentials). Replies with CommandResult carrying a
-// ListAccountsResponse (list_accounts = 16).
+// ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+// live usage probe over each account first; false/omitted keeps the passive read
+// an older bosso would have sent.
 type ListAccountsCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	ShouldRefresh bool                   `protobuf:"varint,2,opt,name=should_refresh,json=shouldRefresh,proto3" json:"should_refresh,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5009,6 +5012,13 @@ func (x *ListAccountsCommand) GetProvider() string {
 		return x.Provider
 	}
 	return ""
+}
+
+func (x *ListAccountsCommand) GetShouldRefresh() bool {
+	if x != nil {
+		return x.ShouldRefresh
+	}
+	return false
 }
 
 // GetRepoCommand asks the daemon for its web-safe repo settings. It reuses the
@@ -8351,9 +8361,10 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x14RemoveAccountCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"$\n" +
 	"\x12TestAccountCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"1\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"X\n" +
 	"\x13ListAccountsCommand\x12\x1a\n" +
-	"\bprovider\x18\x01 \x01(\tR\bprovider\")\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12%\n" +
+	"\x0eshould_refresh\x18\x02 \x01(\bR\rshouldRefresh\")\n" +
 	"\x0eGetRepoCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"\xc7\x06\n" +
 	"\x11UpdateRepoCommand\x12\x17\n" +

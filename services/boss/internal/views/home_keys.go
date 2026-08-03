@@ -105,11 +105,14 @@ func (h HomeModel) handleLoginKey() (HomeModel, tea.Cmd) {
 			label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
 		}
 		h.confirm = newConfirmPrompt(label, func() tea.Msg {
+			var err error
 			if authMgr != nil {
-				_ = authMgr.Logout()
+				err = authMgr.Logout(ctx)
 			}
-			_ = c.NotifyAuthChange(ctx, "logout")
-			return nil
+			if err == nil {
+				_ = c.NotifyAuthChange(ctx, "logout")
+			}
+			return logoutMsg{err: err}
 		})
 		return h, nil
 	}

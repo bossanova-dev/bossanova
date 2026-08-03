@@ -436,15 +436,24 @@ First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-p
 that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
 
-- **Tier 1:** if a draft extension exists, load each discovered extension by its returned descriptor
-  `name` via the Skill tool with
+- **Tier 1:** if a draft extension exists, dispatch each discovered extension with
   `{ role: "draft", core: "boss-plan", context: { mode: "headless", planPath: PLAN_PATH, ticket },
-runTmp, outPath }`. The extension works the dimensions and writes the plan inside this single awaited
-  drafting context.
-- **Tier 2:** if no extension exists and the host exposes a native drafting command, use it and
-  normalize the result to the planContract sections in Step 7.
-- **Tier 3:** if neither exists, draft directly from Step 3 plus the self-contained plan-body
-  requirements below. This tier has no external skill dependency.
+runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath` from disk**
+  (`dir` is its directory), passing both `skillPath` and `dir` in the worker brief, and requiring
+  relative extension resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch
+  as the extension's instructions. Never load a discovered extension by its bare descriptor `name` through the Skill tool:
+  extension skills are dispatched explicitly, never model-matched, so they SHOULD declare
+  `disable-model-invocation: true`, and the Skill tool refuses such a skill.
+  The extension works the dimensions and writes the plan inside this single awaited
+  drafting context. If at least one extension ran successfully, tiers 2 and 3 do not run. If
+  **every** discovered extension failed to load or returned no valid envelope, record
+  `extension <name>: skipped (<reason>)` for each and fall through to Tier 2, then Tier 3 — the
+  drafting layer is never silently dropped.
+- **Tier 2:** if no extension ran successfully and the host exposes a native drafting command, use it
+  and normalize the result to the planContract sections in Step 7.
+- **Tier 3:** if neither a successful extension nor a host built-in exists, draft directly from
+  Step 3 plus the self-contained plan-body requirements below. This tier has no external skill
+  dependency.
 
 Whichever tier runs, **write the plan to `PLAN_PATH`** and **stop after saving the plan file**. Do
 not continue into subagent-driven-development or executing-plans. We only want the plan document

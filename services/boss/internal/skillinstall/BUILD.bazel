@@ -136,6 +136,7 @@ go_test(
         "boss_finalize_skill_test.go",
         "boss_repair_skill_test.go",
         "boss_skill_test.go",
+        "extension_dispatch_test.go",
         "skills_manifest_test.go",
     ],
     embed = [":skillinstall"],

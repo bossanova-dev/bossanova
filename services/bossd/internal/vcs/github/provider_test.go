@@ -885,24 +885,27 @@ func TestMergePR_ClassifiesWorkflowScopeError(t *testing.T) {
 	}
 }
 
-// graphqlThreadsResponse builds a fake GraphQL response with the given threads.
-// Each thread is (isResolved bool, authorLogin string).
-func graphqlThreadsResponse(threads ...struct {
+// fakeThread describes one GraphQL review thread in a fixture. Fields are named
+// (and call sites use keyed literals) because resolved and outdated are adjacent
+// booleans: a transposed positional pair would still compile and would silently
+// assert the opposite of the test's name.
+type fakeThread struct {
 	resolved bool
+	outdated bool
 	author   string
-}) string {
+}
+
+// graphqlThreadsResponse builds a fake GraphQL response with the given threads.
+func graphqlThreadsResponse(threads ...fakeThread) string {
 	return graphqlThreadsPageResponse(false, "", threads...)
 }
 
-func graphqlThreadsPageResponse(hasNextPage bool, endCursor string, threads ...struct {
-	resolved bool
-	author   string
-}) string {
+func graphqlThreadsPageResponse(hasNextPage bool, endCursor string, threads ...fakeThread) string {
 	nodes := make([]string, len(threads))
 	for i, t := range threads {
 		nodes[i] = fmt.Sprintf(
-			`{"isResolved":%t,"comments":{"nodes":[{"author":{"login":%q}}]}}`,
-			t.resolved, t.author,
+			`{"isResolved":%t,"isOutdated":%t,"comments":{"nodes":[{"author":{"login":%q}}]}}`,
+			t.resolved, t.outdated, t.author,
 		)
 	}
 	return fmt.Sprintf(
@@ -969,14 +972,8 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 				t.Error("expected -F pr=1 in GraphQL args")
 			}
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{false, "chatgpt-codex-connector"},
-				struct {
-					resolved bool
-					author   string
-				}{true, "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
+				fakeThread{resolved: true, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
@@ -1022,10 +1019,7 @@ func TestGetReviewComments_CodexBotCommentedReviewWithInlineCommentsPromotesToCh
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{false, "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		if args[0] == "api" && strings.Contains(args[1], "/reviews/987/comments") {
@@ -1067,17 +1061,11 @@ func TestGetReviewComments_BotWithUnresolvedThreadOnSecondPage(t *testing.T) {
 			argsStr := strings.Join(args, " ")
 			if !strings.Contains(argsStr, "after=cursor-1") {
 				return graphqlThreadsPageResponse(true, "cursor-1",
-					struct {
-						resolved bool
-						author   string
-					}{true, "chatgpt-codex-connector"},
+					fakeThread{resolved: true, outdated: false, author: "chatgpt-codex-connector"},
 				), nil
 			}
 			return graphqlThreadsPageResponse(false, "",
-				struct {
-					resolved bool
-					author   string
-				}{false, "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
@@ -1123,29 +1111,27 @@ const codexBoilerplateBody = "\n### 💡 Codex Review\n\n" +
 	"If Codex has suggestions, it will comment; otherwise it will react with 👍.\n\n\n\n\n" +
 	"Codex can also answer questions or update the PR. Try commenting \"@codex address that feedback\".\n            \n</details>\n"
 
-// TestGetReviewComments_EmptyCodexCommentedReviewWithStaleThreadIsDropped is
+// TestGetReviewComments_EmptyCodexCommentedReviewWithBlockingThreadIsDropped is
 // the BOS-254 headline: an empty codex COMMENTED review (boilerplate-only body,
 // zero inline comments of its own) must NOT be promoted to ChangesRequested
-// even when the same bot has a separate unresolved/outdated thread on the PR.
-// The old author-scoped heuristic promoted it off that stale thread, wedging the
+// even when the same bot has a separate unresolved (still-blocking) thread on
+// the PR. The old author-scoped heuristic promoted it off that thread, wedging the
 // merge gate in a loop boss-repair could never clear. The empty review is
 // dropped (not surfaced) rather than appended as COMMENTED, so it cannot
 // overwrite an earlier promoted CHANGES_REQUESTED from the same bot in
 // ComputeDisplayStatus's latest-by-author map.
-func TestGetReviewComments_EmptyCodexCommentedReviewWithStaleThreadIsDropped(t *testing.T) {
+func TestGetReviewComments_EmptyCodexCommentedReviewWithBlockingThreadIsDropped(t *testing.T) {
 	reviewsJSON := fmt.Sprintf(
 		`[{"id":111,"user":{"login":"chatgpt-codex-connector[bot]"},"body":%q,"state":"COMMENTED"}]`,
 		codexBoilerplateBody,
 	)
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
-			// The bot has a separate, unresolved (outdated) thread on the PR —
-			// but NOT one belonging to this empty review.
+			// The bot has a separate blocking thread on the PR — unresolved and
+			// NOT outdated (an outdated thread would no longer block at all
+			// after BOS-665) — but NOT one belonging to this empty review.
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{false, "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		if args[0] == "api" && strings.Contains(args[1], "/reviews/111/comments") {
@@ -1175,10 +1161,7 @@ func TestGetReviewComments_EmptyCodexFollowupDoesNotClobberEarlierPromotion(t *t
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{false, "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		// Review 111 (earlier) carries a real inline suggestion; review 222
@@ -1226,14 +1209,8 @@ func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{true, "cursor"},
-				struct {
-					resolved bool
-					author   string
-				}{true, "cursor"},
+				fakeThread{resolved: true, outdated: false, author: "cursor"},
+				fakeThread{resolved: true, outdated: false, author: "cursor"},
 			), nil
 		}
 		return `[
@@ -1252,6 +1229,295 @@ func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 	}
 	if comments[0].State != vcs.ReviewStateApproved {
 		t.Errorf("human comment state = %v, want Approved", comments[0].State)
+	}
+}
+
+// TestGetReviewComments_GraphQLQuerySelectsIsOutdated guards a false-green that
+// every behavioural BOS-665 test below is blind to. Those tests feed a fixture
+// that already carries isOutdated, so they only prove the response is DECODED.
+// If the isOutdated line were dropped from the selection set, GitHub would never
+// return the field, Go would decode the absent field as false, no thread would
+// ever be skipped, and the fix would be inert in production while the suite
+// stayed green. This test asserts on the query TEXT actually sent to gh.
+func TestGetReviewComments_GraphQLQuerySelectsIsOutdated(t *testing.T) {
+	graphQLCalled := false
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphQLCalled = true
+			argsStr := strings.Join(args, " ")
+			if !strings.Contains(argsStr, "isOutdated") {
+				t.Error("GraphQL query must select isOutdated; without it GitHub never returns the field and outdated threads are silently treated as blocking")
+			}
+			if !strings.Contains(argsStr, "isResolved") {
+				t.Error("GraphQL query must still select isResolved")
+			}
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	if _, err := p.GetReviewComments(context.Background(), "owner/repo", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !graphQLCalled {
+		t.Fatal("GraphQL thread query was never issued, so the selection set was never asserted")
+	}
+}
+
+// TestGetReviewComments_BotResolvedAndOutdatedThreadIsSkipped covers the
+// belt-and-braces case: a thread that is both resolved and outdated is skipped,
+// so the bot's COMMENTED review is not promoted.
+func TestGetReviewComments_BotResolvedAndOutdatedThreadIsSkipped(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: true, outdated: true, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"lgtm","state":"APPROVED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want only the human review", len(comments))
+	}
+	if comments[0].State != vcs.ReviewStateApproved {
+		t.Errorf("human comment state = %v, want Approved", comments[0].State)
+	}
+}
+
+// TestGetReviewComments_BotUnresolvedOutdatedThreadIsSkipped is the BOS-665
+// acceptance criterion: a bot whose only thread is unresolved but OUTDATED (its
+// anchored hunk no longer exists at HEAD) must not be promoted to
+// CHANGES_REQUESTED. GitHub treats such threads as moot; counting them livelocks
+// the merge gate, since the bot's push-triggered re-review re-raises any
+// still-valid concern against the new hunk.
+func TestGetReviewComments_BotUnresolvedOutdatedThreadIsSkipped(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: true, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"lgtm","state":"APPROVED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want only the human review (the outdated-threaded bot review must be dropped): %+v", len(comments), comments)
+	}
+	if comments[0].State != vcs.ReviewStateApproved {
+		t.Errorf("human comment state = %v, want Approved", comments[0].State)
+	}
+	for _, c := range comments {
+		if c.State == vcs.ReviewStateChangesRequested {
+			t.Errorf("no comment may be ChangesRequested off an outdated thread, got %+v", c)
+		}
+	}
+}
+
+// TestGetReviewComments_BotUnresolvedNotOutdatedThreadStillPromotes is the
+// falsifiability inverse of the test above: without it, an implementation that
+// skipped EVERY thread would pass the outdated cases too. An unresolved thread
+// that is not outdated must still promote the bot review.
+func TestGetReviewComments_BotUnresolvedNotOutdatedThreadStillPromotes(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"lgtm","state":"APPROVED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 3 {
+		t.Fatalf("got %d comments, want promoted summary, inline comment, and human review", len(comments))
+	}
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("bot comment state = %v, want ChangesRequested (a live unresolved thread must still block)", comments[0].State)
+	}
+	if comments[1].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("inline comment state = %v, want ChangesRequested", comments[1].State)
+	}
+}
+
+// TestGetReviewComments_BotWithOutdatedAndLiveThreadsStillPromotes pins the
+// PER-BOT boundary of the new predicate, which the two-bot page-2 test cannot
+// reach: one and the same bot owns an unresolved-but-outdated thread AND a live
+// unresolved one. The blocking set is a union over threads, so the outdated
+// thread must not cancel the live one. An implementation that dropped a bot as
+// soon as it saw ANY outdated thread for it (rather than skipping that thread
+// and continuing) would pass every other test here and fail only this one.
+func TestGetReviewComments_BotWithOutdatedAndLiveThreadsStillPromotes(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: true, author: "chatgpt-codex-connector"},
+				fakeThread{resolved: false, outdated: false, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want promoted summary plus inline comment: %+v", len(comments), comments)
+	}
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("bot comment state = %v, want ChangesRequested (its live thread must still block despite a sibling outdated thread)", comments[0].State)
+	}
+	if comments[1].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("inline comment state = %v, want ChangesRequested", comments[1].State)
+	}
+}
+
+// TestGetReviewComments_NativeChangesRequestedIgnoresOutdatedThreads pins bound
+// 1 of the BOS-665 tradeoff, which display.go's rationale and
+// docs/automation-troubleshooting.md both lean on but nothing tested: the
+// outdated skip applies ONLY to a block the daemon SYNTHESIZED from a bot's
+// COMMENTED review. A native CHANGES_REQUESTED review blocks regardless of
+// thread state, so a bot that can submit one directly still blocks even when
+// every thread it owns is outdated. Widening the skip to cover
+// CHANGES_REQUESTED would silently un-block real change requests.
+func TestGetReviewComments_NativeChangesRequestedIgnoresOutdatedThreads(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: true, author: "cursor"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/777/comments") {
+			return `[
+				{"user":{"login":"cursor[bot]"},"body":"this is a real change request","path":"main.go","line":7}
+			]`, nil
+		}
+		return `[
+			{"id":777,"user":{"login":"cursor[bot]"},"body":"requesting changes","state":"CHANGES_REQUESTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want the native review summary plus its inline comment: %+v", len(comments), comments)
+	}
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("summary state = %v, want ChangesRequested (a native review must block regardless of thread state)", comments[0].State)
+	}
+	if comments[1].Body != "this is a real change request" {
+		t.Errorf("inline comment body = %q, want the native review's inline comment", comments[1].Body)
+	}
+}
+
+// TestGetReviewComments_OutdatedThreadOnSecondPageIsSkipped pins that the
+// outdated skip lives INSIDE the pagination loop and does not disturb cross-page
+// accumulation. Page 1 carries a live unresolved thread for cursor (which must
+// still promote); page 2 carries an unresolved-but-outdated thread for the codex
+// bot (which must not). A skip hoisted outside the loop, or pagination that
+// stopped after page 1, would fail one half or the other.
+func TestGetReviewComments_OutdatedThreadOnSecondPageIsSkipped(t *testing.T) {
+	graphQLCalls := 0
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphQLCalls++
+			argsStr := strings.Join(args, " ")
+			if !strings.Contains(argsStr, "after=cursor-1") {
+				return graphqlThreadsPageResponse(true, "cursor-1",
+					fakeThread{resolved: false, outdated: false, author: "cursor"},
+				), nil
+			}
+			return graphqlThreadsPageResponse(false, "",
+				fakeThread{resolved: false, outdated: true, author: "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/501/comments") {
+			return `[
+				{"user":{"login":"cursor[bot]"},"body":"fix the leak","path":"main.go","line":10}
+			]`, nil
+		}
+		return `[
+			{"id":501,"user":{"login":"cursor[bot]"},"body":"issue found","state":"COMMENTED"},
+			{"id":502,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if graphQLCalls != 2 {
+		t.Fatalf("GraphQL calls = %d, want 2", graphQLCalls)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want cursor's promoted summary + inline (the outdated-threaded codex review dropped): %+v", len(comments), comments)
+	}
+	if comments[0].Author != "cursor[bot]" || comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("comment[0] = {%q, %v}, want cursor[bot] ChangesRequested (page-1 live thread must still promote)", comments[0].Author, comments[0].State)
+	}
+	if comments[1].Body != "fix the leak" {
+		t.Errorf("inline comment body = %q, want fix the leak", comments[1].Body)
+	}
+	for _, c := range comments {
+		if c.Author == "chatgpt-codex-connector[bot]" {
+			t.Errorf("codex review must be dropped: its only thread is outdated, got %+v", c)
+		}
 	}
 }
 
@@ -1389,14 +1655,8 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 		if args[0] == "api" && args[1] == "graphql" {
 			// cursor has an unresolved thread, cubic-dev-ai all resolved.
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{false, "cursor"},
-				struct {
-					resolved bool
-					author   string
-				}{true, "cubic-dev-ai"},
+				fakeThread{resolved: false, outdated: false, author: "cursor"},
+				fakeThread{resolved: true, outdated: false, author: "cubic-dev-ai"},
 			), nil
 		}
 		// cursor's review carries its own inline suggestion; cubic-dev-ai is
@@ -1607,10 +1867,7 @@ func TestGetReviewObservation_CountsReviewsGetReviewCommentsDrops(t *testing.T) 
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
 			return graphqlThreadsResponse(
-				struct {
-					resolved bool
-					author   string
-				}{true, "chatgpt-codex-connector"},
+				fakeThread{resolved: true, outdated: false, author: "chatgpt-codex-connector"},
 			), nil
 		}
 		return `[

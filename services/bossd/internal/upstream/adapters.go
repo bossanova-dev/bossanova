@@ -587,14 +587,20 @@ func (a *CommandHandlerAdapter) ListAgents(ctx context.Context) (*pb.ListAgentsR
 // ListAccounts implements SessionCommandHandler.ListAccounts by delegating to
 // the daemon's ListAccounts connect handler and unwrapping the response message.
 // An empty provider maps to nil (proto3 optional) so the daemon returns every
-// account; a non-empty provider is passed through as the filter.
-func (a *CommandHandlerAdapter) ListAccounts(ctx context.Context, provider string) (*pb.ListAccountsResponse, error) {
+// account; a non-empty provider is passed through as the filter. refresh is
+// forwarded the same way: false leaves the request's Refresh pointer nil (the
+// exact pre-BOS-655 wire shape) and only true sets it, so an omitted/false
+// request behaves identically to before the field existed.
+func (a *CommandHandlerAdapter) ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("list_accounts: command server not wired")
 	}
 	req := &pb.ListAccountsRequest{}
 	if provider != "" {
 		req.Provider = proto.String(provider)
+	}
+	if refresh {
+		req.Refresh = proto.Bool(true)
 	}
 	resp, err := a.Commands.ListAccounts(ctx, connect.NewRequest(req))
 	if err != nil {

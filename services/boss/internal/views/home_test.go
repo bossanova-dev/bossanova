@@ -4253,3 +4253,79 @@ func TestHomeRebuildKeepsTheSelectionVisible(t *testing.T) {
 		t.Errorf("after a rebuild the selected row %q is no longer visible in the viewport:\n%s", selected, got)
 	}
 }
+
+// logoutFailingTokenStore makes Manager.Logout fail at the keychain delete.
+type logoutFailingTokenStore struct{}
+
+func (logoutFailingTokenStore) Save(*auth.Tokens) error { return nil }
+
+func (logoutFailingTokenStore) Load() (*auth.Tokens, error) {
+	return &auth.Tokens{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (logoutFailingTokenStore) Delete() error { return errors.New("keychain refused the delete") }
+
+// TestHomeLogoutFailureIsSurfaced pins the fix for a silently discarded error:
+// the confirmation used to run `_ = authMgr.Logout(ctx)`, so a logout that
+// failed — the credential lock is cross-process and bossd can hold it while it
+// refreshes — left the user staring at an unchanged, still-signed-in board with
+// no explanation at all.
+func TestHomeLogoutFailureIsSurfaced(t *testing.T) {
+	h := HomeModel{
+		ctx:           context.Background(),
+		client:        &stubClient{},
+		authMgr:       auth.NewManager(logoutFailingTokenStore{}, auth.Config{}),
+		sessions:      []*pb.Session{},
+		repoCount:     1,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		width:         100,
+	}
+
+	updated, _ := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	h = updated.(HomeModel)
+	if !h.confirm.active || h.confirm.action == nil {
+		t.Fatal("expected an active logout confirmation with an action")
+	}
+
+	msg := h.confirm.action()
+	logout, ok := msg.(logoutMsg)
+	if !ok {
+		t.Fatalf("logout action returned %T, want a logoutMsg carrying the result", msg)
+	}
+	if logout.err == nil {
+		t.Fatal("logout error was discarded; the TUI cannot report a failed logout")
+	}
+	if got := h.client.(*stubClient).authChanges; len(got) != 0 {
+		t.Fatalf("logout notification = %v, want none when credential deletion fails", got)
+	}
+
+	updated, _ = h.Update(logout)
+	h = updated.(HomeModel)
+	if content := h.View().Content; !strings.Contains(content, "Logout:") {
+		t.Fatalf("failed logout is not rendered anywhere, got: %s", content)
+	}
+}
+
+// TestHomeLogoutSuccessClearsPriorError checks the other edge: a retry that
+// succeeds must not leave the previous failure on screen.
+func TestHomeLogoutSuccessClearsPriorError(t *testing.T) {
+	h := HomeModel{
+		ctx:       context.Background(),
+		sessions:  []*pb.Session{},
+		repoCount: 1,
+		width:     100,
+	}
+
+	updated, _ := h.Update(logoutMsg{err: errors.New("keychain refused the delete")})
+	h = updated.(HomeModel)
+	if content := h.View().Content; !strings.Contains(content, "keychain refused the delete") {
+		t.Fatalf("logout error not rendered, got: %s", content)
+	}
+
+	updated, _ = h.Update(logoutMsg{})
+	h = updated.(HomeModel)
+	if content := h.View().Content; strings.Contains(content, "keychain refused the delete") {
+		t.Fatalf("a successful logout left the previous error on screen, got: %s", content)
+	}
+}

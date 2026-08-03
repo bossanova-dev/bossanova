@@ -147,6 +147,15 @@ func (m CronFormModel) Cancelled() bool { return m.cancelled }
 // Done reports whether the form was successfully submitted.
 func (m CronFormModel) Done() bool { return m.done }
 
+// textEntryActive reports whether the huh form is the screen on display, so App
+// can leave ctrl+x alone rather than aliasing it onto Esc (BOS-660).
+//
+// formOnScreen, not `m.form != nil` — the same question View asks before it
+// renders the form and enables mouse reporting: huh draws nothing once the form
+// is completed or aborted, which is the state this view sits in after a failed
+// submit.
+func (m CronFormModel) textEntryActive() bool { return formOnScreen(m.form) }
+
 func (m CronFormModel) Init() tea.Cmd {
 	return tea.Batch(m.fetchRepos(), m.fetchAgents())
 }

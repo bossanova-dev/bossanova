@@ -949,6 +949,29 @@ func (m RepoAddModel) Cancelled() bool { return m.cancel }
 // Done returns true if registration succeeded.
 func (m RepoAddModel) Done() bool { return m.done }
 
+// textEntryActive reports whether the huh form is the screen on display, so App
+// can leave ctrl+x alone rather than aliasing it onto Esc (BOS-660).
+//
+// This is formOnScreen, not `m.form != nil` — the same distinction View already
+// makes when it scopes mouse reporting. The form outlives its own screen by a
+// long way here: it stays built (completed, so huh renders nothing) while the
+// GitHub-App prompt and install steps, the validating and cloning spinners, and
+// the config-error and success notices each render INSTEAD of it, and every one
+// of those has its own `case "esc"` that backs out, dismisses or completes the
+// add — exactly the behaviour ctrl+x should inherit. Enumerating those screens
+// here would duplicate View's guard order; asking whether the form draws
+// anything does not.
+//
+// The error notice is the exception, and the reason `m.err` needs its own term:
+// a validation failure sets m.err AND rebuilds the input form (a fresh, NORMAL
+// huh form), so it is the one pre-form screen where a live form coexists with a
+// notice View renders instead of it. Its action bar advertises `[esc] back`
+// (which clears the error and returns to the input form), so ctrl+x must reach
+// that branch rather than be blocked by a form nobody can see.
+func (m RepoAddModel) textEntryActive() bool {
+	return m.err == nil && formOnScreen(m.form)
+}
+
 func (m RepoAddModel) View() tea.View {
 	if m.phase == repoAddPhaseGitHubAppPrompt {
 		return tea.NewView(m.githubAppInstallPromptView())

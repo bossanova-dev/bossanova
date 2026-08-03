@@ -15,6 +15,7 @@
           "caption": "Desktop notifications are enabled by default"
         },
         { "key": "down", "caption": "Move from worktree base directory to poll interval" },
+        { "key": "down", "caption": "Move to the daemon name" },
         { "key": "down", "caption": "Move to automatic account rotation" },
         { "key": "down", "caption": "Select desktop notifications" },
         {

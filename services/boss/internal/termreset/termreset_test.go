@@ -2,11 +2,13 @@ package termreset
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+	creackpty "github.com/creack/pty/v2"
 )
 
 // TestMouseResetContainsEveryDisableSequence pins the exact DECRST set, in
@@ -133,6 +135,27 @@ func TestWriteResetIfTerminalSkipsNonTerminal(t *testing.T) {
 				t.Errorf("%s wrote %q to a non-terminal; want nothing", name, got.String())
 			}
 		})
+	}
+}
+
+func TestWriteMouseResetIfTerminalWritesToTerminal(t *testing.T) {
+	master, slave, err := creackpty.Open()
+	if err != nil {
+		t.Fatalf("open pty: %v", err)
+	}
+	defer master.Close() //nolint:errcheck // test cleanup
+	defer slave.Close()  //nolint:errcheck // test cleanup
+
+	if !WriteMouseResetIfTerminal(slave) {
+		t.Fatal("WriteMouseResetIfTerminal() = false for a real terminal, want true")
+	}
+
+	got := make([]byte, len(MouseReset))
+	if _, err := io.ReadFull(master, got); err != nil {
+		t.Fatalf("read reset from pty: %v", err)
+	}
+	if string(got) != MouseReset {
+		t.Errorf("reset written to terminal = %q, want %q", got, MouseReset)
 	}
 }
 

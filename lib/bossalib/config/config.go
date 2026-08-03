@@ -766,6 +766,14 @@ type Settings struct {
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
+	// DaemonName is an optional, operator-chosen display name for this
+	// daemon. It is PRESENTATION METADATA ONLY: it feeds the self-reported
+	// hostname bossd advertises to the orchestrator, and never the daemon's
+	// routing identity (daemon_id / BOSSD_DAEMON_ID / the persisted UUID).
+	// Empty (or whitespace-only) means "use the machine hostname", so the
+	// key stays absent from a fresh settings.json and legacy files keep
+	// inheriting the live OS hostname.
+	DaemonName string `json:"daemon_name,omitempty"`
 	// LoginShell is the user's interactive shell ($SHELL), captured by the TUI
 	// (which runs in that shell) so the launchd daemon — which has no $SHELL —
 	// can launch agents through it for per-project tool resolution.
@@ -915,6 +923,18 @@ func (s Settings) DisplayPollInterval() time.Duration {
 // Notifications default to enabled unless explicitly disabled.
 func NotificationsEnabled(s Settings) bool {
 	return s.NotificationsEnabled == nil || *s.NotificationsEnabled
+}
+
+// DaemonDisplayName resolves the daemon's user-facing name: the trimmed
+// daemon_name override when one is configured, otherwise the caller-supplied
+// machine hostname. Callers must pass the real OS hostname as the fallback and
+// must keep using that hostname — never this result — for daemon-ID
+// resolution, so renaming a daemon can never re-key its identity.
+func DaemonDisplayName(s Settings, hostname string) string {
+	if name := strings.TrimSpace(s.DaemonName); name != "" {
+		return name
+	}
+	return hostname
 }
 
 // DefaultSettings returns settings with sensible defaults.

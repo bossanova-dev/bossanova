@@ -473,7 +473,7 @@ func runLogout(cmd *cobra.Command) error {
 	}
 	status := mgr.Status()
 
-	if err := mgr.Logout(); err != nil {
+	if err := mgr.Logout(cmd.Context()); err != nil {
 		return fmt.Errorf("logout: %w", err)
 	}
 	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "logout", status.Email)
@@ -504,23 +504,48 @@ func runAuthStatus(cmd *cobra.Command) error {
 		return err
 	}
 
-	status := mgr.Status()
-	if !status.LoggedIn {
-		fmt.Println("Not logged in.")
-		fmt.Println("Run 'boss login' to authenticate with Bossanova cloud.")
-		return nil
+	_, _ = fmt.Fprint(cmd.OutOrStdout(), renderAuthStatus(mgr.Status()))
+	return nil
+}
+
+// renderAuthStatus writes the three states `boss auth-status` can report:
+// logged in, never logged in, and — since BOS-659 — credentials that are
+// still stored but can no longer be used, so the user must sign in again.
+//
+// The retained state deliberately reads differently from both neighbours: it
+// keeps the known identity on screen (that is the whole point of no longer
+// deleting the keychain entry) while making clear the session is not usable.
+// Only the enumerated, non-secret reason is rendered as prose — never a raw
+// WorkOS payload, network error, or any token material.
+func renderAuthStatus(status *auth.Status) string {
+	var b strings.Builder
+	if status.NeedsRelogin {
+		b.WriteString("Sign in required.\n")
+		if status.Email != "" {
+			fmt.Fprintf(&b, "  Account: %s\n", status.Email)
+		}
+		fmt.Fprintf(&b, "  Reason: %s.\n", auth.ReloginReasonDescription(status.ReloginReason))
+		b.WriteString("  Your stored credentials were kept, but they can no longer be used.\n")
+		b.WriteString("Run 'boss login' to sign in again. Local sessions are still available.\n")
+		return b.String()
 	}
 
-	fmt.Println("Logged in.")
-	if status.Email != "" {
-		fmt.Printf("  Email: %s\n", status.Email)
+	if !status.LoggedIn {
+		b.WriteString("Not logged in.\n")
+		b.WriteString("Run 'boss login' to authenticate with Bossanova cloud.\n")
+		return b.String()
 	}
-	fmt.Printf("  Token expires: %s\n", status.ExpiresAt.Format(time.RFC3339))
+
+	b.WriteString("Logged in.\n")
+	if status.Email != "" {
+		fmt.Fprintf(&b, "  Email: %s\n", status.Email)
+	}
+	fmt.Fprintf(&b, "  Token expires: %s\n", status.ExpiresAt.Format(time.RFC3339))
 	remaining := time.Until(status.ExpiresAt).Round(time.Second)
 	if remaining > 0 {
-		fmt.Printf("  Remaining: %s\n", remaining)
+		fmt.Fprintf(&b, "  Remaining: %s\n", remaining)
 	} else {
-		fmt.Println("  Token expired — will refresh on next request.")
+		b.WriteString("  Token expired — will refresh on next request.\n")
 	}
-	return nil
+	return b.String()
 }

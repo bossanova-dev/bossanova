@@ -167,7 +167,14 @@ func NewTerminalAttach(ctx context.Context, cfg AttachConfig) (*TerminalAttach, 
 	// the tmux client process. The cancel func is held by the attach and
 	// fired from Close.
 	cmdCtx, cancel := context.WithCancel(ctx)
-	cmd := cmdFactory(cmdCtx, "tmux", "attach", "-t", cfg.SessionName)
+	// -u forces this client into UTF-8 output and must precede the subcommand
+	// (it is a server-level flag; attach-session has no such option). Without
+	// it tmux guesses from the client's LC_CTYPE, and bossd under launchd has
+	// no locale at all — see the PATH-only EnvironmentVariables in
+	// services/boss/internal/daemon/launchd.go. tmux <= 3.6 assumed UTF-8 when
+	// the locale was absent; 3.7 stopped, so an unlocalised client renders every
+	// multibyte glyph as "_" and box drawing as ACS escapes (BOS-658).
+	cmd := cmdFactory(cmdCtx, "tmux", "-u", "attach", "-t", cfg.SessionName)
 	// tmux needs a usable TERM to initialise its terminal driver. CI runners
 	// (GitHub Actions etc.) often leave TERM unset or set it to "dumb", which
 	// causes `tmux attach` to exit immediately with "open terminal failed".

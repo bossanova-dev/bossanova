@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "title": "BOS-660 — Ctrl+X returns a TUI child board to its parent, exactly like Esc",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Open the Cron jobs child board from the Settings hub",
+      "steps": [
+        { "key": "s", "caption": "Open Settings" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "The Settings hub is visible"
+        },
+        { "key": "c", "caption": "Open the Cron jobs board with its hotkey" },
+        {
+          "waitFor": "CRON",
+          "timeoutMs": 10000,
+          "caption": "The Cron jobs child board is open"
+        },
+        {
+          "expect": {
+            "text": "CRON",
+            "match": "normalized",
+            "label": "CRON — the child board owns the screen before the back key"
+          },
+          "caption": "The child board is the visible screen, so the return below is observable"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Ctrl+X returns to the visible Settings parent",
+      "steps": [
+        { "key": "ctrl+x", "caption": "Press Ctrl+X from the Cron jobs board" },
+        {
+          "waitFor": {
+            "text": "❯.*Cron jobs",
+            "match": "regex",
+            "label": "the Settings hub is back with Cron jobs selected"
+          },
+          "timeoutMs": 10000,
+          "caption": "Ctrl+X walks one level back to the Settings hub"
+        },
+        {
+          "expect": [
+            {
+              "text": "Settings",
+              "match": "normalized",
+              "label": "Settings — the parent screen is the one now rendered"
+            },
+            {
+              "text": "Cron jobs",
+              "match": "normalized",
+              "label": "Cron jobs — the parent's row for the board we came back from"
+            }
+          ],
+          "caption": "Ctrl+X lands on the same parent screen Esc would have shown"
+        }
+      ]
+    }
+  ]
+}

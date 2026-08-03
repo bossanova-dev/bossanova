@@ -552,3 +552,81 @@ func TestTerminalAttach_InputAfterCloseReturnsErr(t *testing.T) {
 		_ = err
 	}
 }
+
+// TestTerminalAttach_ForcesUTF8Client pins `-u` on the `tmux attach` argv.
+//
+// bossd is started by launchd/systemd, whose environment carries no locale at
+// all (the service templates in services/boss/internal/daemon set PATH and
+// LC_CTYPE only). tmux <= 3.6 assumed UTF-8 when it could not read one; 3.7
+// stopped, and an unlocalised client renders every multibyte glyph as "_" and
+// box drawing as ACS escapes — the BOS-658 report. `-u` forces UTF-8 output
+// without depending on a locale name, which differs across macOS ("UTF-8") and
+// glibc ("C.UTF-8").
+//
+// The flag must precede the subcommand: it is a server-level option and
+// attach-session has no `-u` of its own.
+func TestTerminalAttach_ForcesUTF8Client(t *testing.T) {
+	skipIfNoTmux(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+
+	c, base := newTestTmuxClient(t)
+	name := uniqueSessionName("boss-attach-utf8")
+	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
+
+	if err := c.NewSession(ctx, NewSessionOpts{
+		Name:    name,
+		WorkDir: t.TempDir(),
+		Command: []string{"cat"},
+	}); err != nil {
+		t.Fatalf("create tmux session: %v", err)
+	}
+
+	var attachArgv []string
+	recording := func(ctx context.Context, cmdName string, args ...string) *exec.Cmd {
+		if cmdName == "tmux" {
+			for _, a := range args {
+				if a == "attach" {
+					attachArgv = append([]string(nil), args...)
+					break
+				}
+			}
+		}
+		return base(ctx, cmdName, args...)
+	}
+
+	att, err := NewTerminalAttach(ctx, AttachConfig{
+		AttachID:       "utf8",
+		SessionName:    name,
+		Cols:           80,
+		Rows:           24,
+		TmuxClient:     c,
+		CommandFactory: recording,
+	})
+	if err != nil {
+		t.Fatalf("NewTerminalAttach: %v", err)
+	}
+	t.Cleanup(func() { _ = att.Close() })
+
+	if attachArgv == nil {
+		t.Fatal("no tmux attach command was spawned")
+	}
+	// Assert ordering, not mere presence: `tmux attach -u` is rejected by tmux,
+	// so a -u that drifted after the subcommand would break the attach outright.
+	uAt, attachAt := -1, -1
+	for i, a := range attachArgv {
+		if a == "-u" && uAt == -1 {
+			uAt = i
+		}
+		if a == "attach" && attachAt == -1 {
+			attachAt = i
+		}
+	}
+	if uAt == -1 {
+		t.Fatalf("attach argv %q is missing -u; an unlocalised tmux >= 3.7 client renders multibyte glyphs as underscores (BOS-658)", attachArgv)
+	}
+	if uAt > attachAt {
+		t.Fatalf("attach argv %q has -u after the subcommand; it is a server-level flag and must precede it", attachArgv)
+	}
+}

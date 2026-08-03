@@ -63,6 +63,28 @@ func TestBaseHarnessEnvStripsSeedEnvCarrier(t *testing.T) {
 	}
 }
 
+// TestBaseHarnessEnvStripsAuthE2EFamily pins that every BOSS_AUTH_E2E_* var the
+// e2e auth store reads is stripped from the ambient environ. The whitelist is a
+// prefix match, but BaseHarnessEnv strips by exact key: a var added to the store
+// and not to this list would be inherited from the developer's shell and could
+// never be overridden per scenario. BOS-659 added NEEDS_RELOGIN.
+func TestBaseHarnessEnvStripsAuthE2EFamily(t *testing.T) {
+	stripped := []string{
+		"BOSS_AUTH_E2E_EMAIL=ambient@example.com",
+		"BOSS_AUTH_E2E_LOGIN_EMAIL=ambient@example.com",
+		"BOSS_AUTH_E2E_NEEDS_RELOGIN=refresh_outcome_unknown",
+	}
+	got := BaseHarnessEnv(append([]string{"PATH=/bin"}, stripped...))
+	for _, want := range stripped {
+		key := strings.SplitN(want, "=", 2)[0] + "="
+		for _, e := range got {
+			if strings.HasPrefix(e, key) {
+				t.Fatalf("BaseHarnessEnv must strip %s, got %v", key, got)
+			}
+		}
+	}
+}
+
 func TestProofEnvWhitelistFamilies(t *testing.T) {
 	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_PROOF_UPGRADE_"}
 	if !reflect.DeepEqual(ProofEnvWhitelist, want) {

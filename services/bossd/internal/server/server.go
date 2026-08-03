@@ -121,6 +121,10 @@ type Server struct {
 	addAccountMu           sync.Mutex
 	accountSmoke           AccountSmokeRunner
 	usageProbe             UsageProbeRecorder
+	// usageProbeSlots bounds all concurrent live usage probes on this daemon,
+	// including probes started by independent ListAccounts RPCs.
+	usageProbeSlots     chan struct{}
+	usageProbeSlotsOnce sync.Once
 	// accountMaterializations purges an account's on-disk credential
 	// materialization. Optional, may be nil — RemoveAccount then behaves as it
 	// did before the capability existed.

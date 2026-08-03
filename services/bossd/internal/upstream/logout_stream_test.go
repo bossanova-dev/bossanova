@@ -232,6 +232,100 @@ func TestStreamClientRunPausesWithoutStreamErrorOnLogout(t *testing.T) {
 	}
 }
 
+// TestStreamClientRunPausesWithoutStreamErrorOnRefreshRelogin is the BOS-659
+// sibling of the logout test above: the pause is triggered by the periodic
+// refresher observing a terminal re-login error rather than by an explicit
+// logout. Both terminal reasons must take the same intentional-pause path —
+// no stream-error metric, no reconnect ramp, no "reconnecting" warning — and
+// the daemon must not re-dial or re-attempt the uncertain refresh token.
+func TestStreamClientRunPausesWithoutStreamErrorOnRefreshRelogin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "ambiguous outcome", err: ErrRefreshOutcomeUnknown},
+		{name: "authoritative rejection", err: ErrRefreshTokenRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authState := NewAuthState()
+			stream := newBlockingDaemonStream()
+			stores := emptySnapshotStores{}
+			metrics := &countingStreamMetrics{}
+			logs := &syncBuffer{}
+			refreshErr := tc.err
+			tp := &fakeTokenProvider{
+				token:     "old",
+				expiresAt: time.Now().Add(time.Second),
+				refreshFn: func(_ context.Context) (string, error) { return "", refreshErr },
+			}
+			client := NewStreamClient(StreamClientConfig{
+				Opener: &blockingDaemonOpener{stream: stream},
+				Stores: StreamStores{
+					Sessions: stores,
+					Chats:    stores,
+					Repos:    stores,
+					Statuses: stores,
+				},
+				Events:           NoopEventSource{},
+				AuthState:        authState,
+				Metrics:          metrics,
+				TokenProvider:    tp,
+				RefreshInterval:  5 * time.Millisecond,
+				RefreshThreshold: time.Hour,
+				Logger:           zerolog.New(logs),
+			})
+
+			runCtx, runCancel := context.WithCancel(context.Background())
+			defer runCancel()
+			done := make(chan struct{})
+			go func() {
+				client.Run(runCtx)
+				close(done)
+			}()
+
+			deadline := time.After(5 * time.Second)
+			for !strings.Contains(logs.String(), "stream paused: re-login required") {
+				select {
+				case <-done:
+					t.Fatalf("Run returned instead of pausing; logs=%s", logs.String())
+				case <-deadline:
+					t.Fatalf("Run did not pause within 5s; logs=%s", logs.String())
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+
+			if got := metrics.streamErrors.Load(); got != 0 {
+				t.Fatalf("IncStreamError called %d times, want 0", got)
+			}
+			if got := metrics.reconnects.Load(); got != 0 {
+				t.Fatalf("IncReconnect called %d times, want 0", got)
+			}
+			if strings.Contains(logs.String(), "stream closed, reconnecting") {
+				t.Fatalf("re-login pause produced a misleading reconnect warning; logs=%s", logs.String())
+			}
+			if strings.Contains(logs.String(), "invalid_grant") {
+				t.Fatalf("re-login pause labelled the outcome invalid_grant; logs=%s", logs.String())
+			}
+
+			// Parked at the gate: the uncertain token is never re-exchanged.
+			time.Sleep(50 * time.Millisecond)
+			tp.mu.Lock()
+			calls := tp.refreshCalls
+			tp.mu.Unlock()
+			if calls != 1 {
+				t.Fatalf("Refresh calls = %d, want exactly 1 while paused", calls)
+			}
+
+			runCancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Run did not return after ctx cancel")
+			}
+		})
+	}
+}
+
 type NoopEventSource struct{}
 
 func (NoopEventSource) Subscribe(ctx context.Context) <-chan StreamEvent {

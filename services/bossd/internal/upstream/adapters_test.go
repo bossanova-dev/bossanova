@@ -37,6 +37,7 @@ type fakeSessionCommandServer struct {
 	lastListNotes              *pb.ListNotesRequest
 	lastUpdateNote             *pb.UpdateNoteRequest
 	lastDeleteNoteID           string
+	lastListAccountsReq        *pb.ListAccountsRequest
 	lastAddAccount             *pb.AddAccountRequest
 	lastRefreshAcct            *pb.RefreshAccountRequest
 	lastUpdateAcct             *pb.UpdateAccountRequest
@@ -134,7 +135,8 @@ func (f *fakeSessionCommandServer) ListAgents(_ context.Context, _ *connect.Requ
 	return connect.NewResponse(&pb.ListAgentsResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) ListAccounts(_ context.Context, _ *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+func (f *fakeSessionCommandServer) ListAccounts(_ context.Context, req *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+	f.lastListAccountsReq = req.Msg
 	return connect.NewResponse(&pb.ListAccountsResponse{}), nil
 }
 
@@ -1502,7 +1504,7 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.ListAccounts(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "list_accounts: command server not wired") {
+		if _, err := adapter.ListAccounts(context.Background(), "", false); err == nil || !strings.Contains(err.Error(), "list_accounts: command server not wired") {
 			t.Fatalf("ListAccounts error = %v, want command server not wired", err)
 		}
 	})
@@ -1510,7 +1512,7 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.ListAccounts(context.Background(), "claude"); err == nil || !strings.Contains(err.Error(), "list accounts: boom") {
+		if _, err := adapter.ListAccounts(context.Background(), "claude", false); err == nil || !strings.Contains(err.Error(), "list accounts: boom") {
 			t.Fatalf("ListAccounts error = %v, want list accounts: boom", err)
 		}
 	})
@@ -1518,12 +1520,41 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 	t.Run("returns the response on success", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		resp, err := adapter.ListAccounts(context.Background(), "")
+		resp, err := adapter.ListAccounts(context.Background(), "", false)
 		if err != nil {
 			t.Fatalf("ListAccounts returned error: %v", err)
 		}
 		if resp == nil {
 			t.Fatal("ListAccounts returned nil response on success")
+		}
+	})
+
+	// BOS-655: refresh=false must leave the wire-level Refresh pointer nil (the
+	// byte-for-byte pre-change request); refresh=true must set it non-nil true.
+	t.Run("refresh false leaves the request field unset", func(t *testing.T) {
+		t.Parallel()
+		server := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: server}
+		if _, err := adapter.ListAccounts(context.Background(), "claude", false); err != nil {
+			t.Fatalf("ListAccounts returned error: %v", err)
+		}
+		if server.lastListAccountsReq.GetRefresh() {
+			t.Fatalf("forwarded refresh = true, want false")
+		}
+		if server.lastListAccountsReq.Refresh != nil {
+			t.Fatalf("forwarded Refresh pointer = %v, want nil (unset)", server.lastListAccountsReq.Refresh)
+		}
+	})
+
+	t.Run("refresh true sets the request field", func(t *testing.T) {
+		t.Parallel()
+		server := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: server}
+		if _, err := adapter.ListAccounts(context.Background(), "claude", true); err != nil {
+			t.Fatalf("ListAccounts returned error: %v", err)
+		}
+		if server.lastListAccountsReq.Refresh == nil || !server.lastListAccountsReq.GetRefresh() {
+			t.Fatalf("forwarded Refresh = %v, want non-nil true", server.lastListAccountsReq.Refresh)
 		}
 	})
 }

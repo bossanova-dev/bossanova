@@ -42,8 +42,9 @@ type credKeyring interface {
 // real keyring; the default opens the shared "bossanova" keyring exactly as
 // proofenvkeyring does.
 type Store struct {
-	open  func() (credKeyring, error)
-	locks credentialLocks
+	open        func() (credKeyring, error)
+	locks       credentialLocks
+	generations credentialGenerations
 }
 
 // credentialLocks lazily creates one mutex per account. Account credentials
@@ -52,6 +53,29 @@ type Store struct {
 type credentialLocks struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
+}
+
+// credentialGenerations records successful credential mutations. Consumers can
+// use the value as an optimistic guard around long-lived reads: a result based
+// on a credential whose generation changed must not update account metadata.
+type credentialGenerations struct {
+	mu          sync.Mutex
+	generations map[string]uint64
+}
+
+func (g *credentialGenerations) current(accountID string) uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.generations[accountID]
+}
+
+func (g *credentialGenerations) increment(accountID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.generations == nil {
+		g.generations = make(map[string]uint64)
+	}
+	g.generations[accountID]++
 }
 
 func (l *credentialLocks) lock(accountID string) func() {
@@ -77,12 +101,20 @@ func New() *Store {
 
 // WithCredentialLock serializes a compound operation on one account's
 // credential. The account server uses it for explicit refreshes, while the
-// Codex materializer uses it around its load-merge-save reconciliation; sharing
-// this lock prevents either writer from saving over the other's newer value.
+// materializer uses it around load-merge-save reconciliation and usage probes;
+// sharing this lock prevents writers or stale probe results from overwriting a
+// refreshed credential or its healthy state.
 func (s *Store) WithCredentialLock(accountID string, fn func() error) error {
 	unlock := s.locks.lock(accountID)
 	defer unlock()
 	return fn()
+}
+
+// CredentialGeneration returns the current successful-mutation generation for
+// an account credential. It is intended to be read while WithCredentialLock is
+// held when callers need an atomic check before committing probe results.
+func (s *Store) CredentialGeneration(accountID string) uint64 {
+	return s.generations.current(accountID)
 }
 
 // itemKey is the stable keyring item key a credential blob is stored under. The
@@ -124,6 +156,7 @@ func (s *Store) Save(accountID string, blob []byte) error {
 	}); err != nil {
 		return fmt.Errorf("save account credential: %w", err)
 	}
+	s.generations.increment(accountID)
 	return nil
 }
 

@@ -263,9 +263,34 @@ const divergenceNote = "the daemon's merge gate trusts its own review/CI tracker
 // why this does not say "any later review"). Resolving threads only clears a
 // block that was SYNTHESIZED out of a bot's unresolved threads: that promotion
 // is recomputed from scratch on every review read and gated on the login still
-// owning an unresolved one, so emptying that set drops it — including threads
-// GitHub collapses as outdated and hides from the default PR view, whose
-// isResolved is still false.
+// owning a BLOCKING one — unresolved and not outdated, per the next paragraph —
+// so emptying that set drops it.
+//
+// Per BOS-665 that promotion now also skips a thread GitHub has marked
+// OUTDATED — one anchored to a diff hunk that no longer exists at HEAD, whose
+// isResolved stays false forever. Previously such a thread kept blocking, which
+// livelocked PRs against noisy review bots: nothing an operator could do at
+// HEAD would ever clear it. Outdated threads are therefore already
+// non-blocking, and the note must not send an operator hunting for the ones
+// GitHub hides from the default PR view.
+//
+// Accepted tradeoff: this genuinely reduces gate strictness. A bot's finding
+// now stops blocking if the code under it is merely rewritten, even when the
+// finding was never actually addressed. Two things bound that, and both are
+// why it is acceptable rather than merely tolerated:
+//
+//  1. Bot-scoped only. The provider consults blocking-thread authors only
+//     when it found bot review users at all, and those are logins with a
+//     `[bot]` suffix whose LATEST review is COMMENTED. Human reviewers, and
+//     native CHANGES_REQUESTED reviews, never reach this code path.
+//  2. These bots re-review every push. The same behaviour that created the
+//     livelock re-raises a still-valid concern against the new hunk, so the
+//     loop's cause is also the fix's safety net. This holds for the
+//     bossanova-driven ways threads go outdated too, not just an author
+//     rewriting the hunk: a `should_keep_branches_current` rebase can
+//     mass-outdate threads without anything being addressed, but the
+//     force-push it emits is a `synchronize` event, so the same re-review
+//     fires.
 //
 // A native CHANGES_REQUESTED review — an ordinary human request, or a bot that
 // can submit one directly — is returned by GetReviewComments with that state
@@ -278,7 +303,7 @@ const divergenceNote = "the daemon's merge gate trusts its own review/CI tracker
 // It says "owned by", not "from": the no-login branch below must not contain a
 // "from ..." clause, which is the attribution TestDeriveMergeBlockReviewDetail
 // pins as absent there.
-const remedyNote = "clears when the blocking login submits a newer approving/dismissing review; when the block was synthesized out of a bot's review threads, resolving every unresolved review thread owned by that login also clears it (including outdated threads GitHub hides)"
+const remedyNote = "clears when the blocking login submits a newer approving/dismissing review; when the block was synthesized out of a bot's review threads, resolving every unresolved, non-outdated review thread owned by that login also clears it — outdated threads are already non-blocking, so they need no action"
 
 // reviewBlockDetail builds the human-readable one-liner for a review gate,
 // naming the outstanding reviewers when their logins are known and degrading

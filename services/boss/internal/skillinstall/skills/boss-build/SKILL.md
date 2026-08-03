@@ -651,13 +651,21 @@ Resolve the implementation methodology by strict precedence:
    ```
 
    If one or more `boss-build-*` extensions are listed, dispatch each in ascending `order` as a
-   fresh awaited subagent. Each extension receives the copied plan path, the current Step-5 scope
+   fresh awaited subagent. Load each extension by **reading the descriptor's `skillPath` from disk**
+   (`dir` is its directory), passing both `skillPath` and `dir` in the worker brief, and requiring
+   relative extension resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch
+   as the extension's instructions — never by its bare descriptor `name` through the Skill tool, which refuses a skill
+   declaring `disable-model-invocation: true`.
+   Each extension receives the copied plan path, the current Step-5 scope
    (full plan vs. remaining acceptance criteria), the unattended Decide-vs-ABORT rules, the
    fixed short task-contract schema, and the **commit-before-return contract** above — every
-   extension inherits it and must pass it down to its own implementation subagents. When any
-   extension is present, tiers 2 and 3 are **suppressed**.
+   extension inherits it and must pass it down to its own implementation subagents. When at least
+   one extension **ran successfully**, tiers 2 and 3 are **suppressed**. When **every** discovered
+   extension failed to load or returned no valid result, record
+   `extension <name>: skipped (<reason>)` for each and fall through to tier 2, then tier 3 — the
+   methodology layer is never silently dropped, and the ledger must show which path was taken.
 
-2. **Tier 2 — host built-in.** If no methodology extension is present, use a host-native
+2. **Tier 2 — host built-in.** If no methodology extension ran successfully, use a host-native
    test-first/implementation affordance only when the current agent environment actually exposes one.
    This is a prose self-assessment, not a programmatic probe. Whatever that affordance dispatches is
    still bound by the **commit-before-return contract** above — hand it down with every task, and run
@@ -685,7 +693,9 @@ This scenario gates only its own PR; do not add path rules or edit another PR's 
 
 ### Inline TDD methodology (tier 3)
 
-Use this branch only when no `methodology` extension is discovered and no host built-in is available.
+Use this branch only when no `methodology` extension ran successfully and no host built-in is
+available. A discovered extension that failed to load does **not** disqualify this branch — it is
+recorded as `extension <name>: skipped (<reason>)` and the run falls through to here.
 For each task from the copied plan, create a fresh focused implementation pass with only that task,
 the relevant acceptance criteria, and the global constraints. Write the failing test first and run the
 smallest covering command until the failure proves the missing behavior. Then write the minimal code
@@ -1025,7 +1035,12 @@ transcript, command output, user-provided content, credentials, tokens, or other
 file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
 
 Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents. Bound each by
-`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Each receives:
+`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Load each extension by **reading the
+descriptor's `skillPath` from disk** (`dir` is its directory), passing both `skillPath` and `dir` in
+the worker brief, and requiring relative extension resources to resolve from `dir`. Pass that `SKILL.md`
+content into the dispatch as the extension's instructions — never by its bare descriptor `name` via the
+Skill tool, which refuses a skill declaring `disable-model-invocation: true`.
+Each receives:
 
 ```json
 {

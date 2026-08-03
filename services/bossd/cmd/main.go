@@ -2053,12 +2053,12 @@ func run(opts runOpts) error {
 		// Pin daemon_id to a UUID persisted under the data dir (not the
 		// rotating hostname) so a hostname change doesn't orphan the old
 		// id's rows in the orchestrator read model. BOSSD_DAEMON_ID still
-		// wins when set; hostname remains the last-resort fallback.
-		if daemonID, idErr := upstream.ResolveDaemonID(os.Getenv, appDataDir, cfg.Hostname); idErr != nil {
-			log.Warn().Err(idErr).Str("daemon_id", daemonID).Msg("stable daemon id unavailable; using fallback")
-			cfg.DaemonID = daemonID
-		} else {
-			cfg.DaemonID = daemonID
+		// wins when set; hostname remains the last-resort fallback. The same
+		// call swaps cfg.Hostname for the operator's daemon_name display
+		// override (BOS-662) — presentation only, and applied after the real
+		// hostname has been handed to identity resolution.
+		if idErr := resolveDaemonIdentity(cfg, settings, os.Getenv, appDataDir); idErr != nil {
+			log.Warn().Err(idErr).Str("daemon_id", cfg.DaemonID).Msg("stable daemon id unavailable; using fallback")
 		}
 		persistedDaemonID = cfg.DaemonID
 		// EGRESS: a broadcast issued here whose audience reaches beyond this
@@ -2348,11 +2348,12 @@ func run(opts runOpts) error {
 		// failed, sessionToken is "" — the first stream open will be
 		// rejected, reRegister fires, and the holder is populated.
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
-		// Shared auth state: when WorkOS rejects our refresh token as
-		// invalid_grant (the user's session ended) the opener flips this
-		// to NeedsLogin and both Run loops pause until NotifyLogin
-		// clears it after a fresh `boss login`. Without this, the
-		// daemon tight-loops on a dead credential indefinitely.
+		// Shared auth state: when the stored refresh token can no longer
+		// be exchanged — WorkOS rejected it, or the exchange outcome could
+		// never be confirmed (BOS-659) — the opener flips this to
+		// NeedsLogin and both Run loops pause until NotifyLogin clears it
+		// after a fresh `boss login`. Without this, the daemon tight-loops
+		// on an unusable credential indefinitely.
 		authState := upstream.NewAuthState()
 		// BOS-376: positive terminal-liveness signal shared by the
 		// TerminalStream reader (sets it healthy on TerminalReady) and its
@@ -2456,7 +2457,7 @@ func run(opts runOpts) error {
 		// for keystroke / data-chunk traffic so it cannot starve
 		// control-plane commands. Reuses the SAME orchestrator client,
 		// AuthToken, sessionTokenHolder, TokenProvider, and AuthState so
-		// a re-register-driven session_token rotation or an invalid_grant
+		// a re-register-driven session_token rotation or a re-login
 		// pause fans out to both streams. Idle until bosso pushes the
 		// first attach.
 		terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
@@ -3579,7 +3580,8 @@ type streamAuthAdapter struct {
 // never fails on it.
 //
 // MarkOK (called last) clears the "needs re-login" flag set by the opener
-// when WorkOS rejected the previous refresh token as invalid_grant. The Run
+// when the previous refresh token could no longer be exchanged — WorkOS
+// rejected it, or the exchange outcome was never confirmed. The Run
 // loops are blocked on AuthState.Wait() in that case; clearing the flag
 // wakes them so they reconnect with the freshly-loaded keychain credentials
 // and the now-populated session token. While the re-register runs (bounded

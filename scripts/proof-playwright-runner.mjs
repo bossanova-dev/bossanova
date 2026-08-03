@@ -20,7 +20,22 @@ export { OVERLAY_CAPTION_CSS }
 // id SHAPE (the same slug rule recipe ids use) so it stays a safe path segment.
 const validSurfacePattern = /^[a-z0-9][a-z0-9-]*$/
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/
-const VIDEO_ACTIONS = new Set(['goto', 'click', 'type', 'wait', 'scroll', 'press'])
+// Exported so the schema-agreement test can pin proof/recipes/schema.json's
+// step-action enum to this set, mirroring how proof-scenario.mjs exports
+// STEP_OPS for the scenarios schema. The two encodings HAVE drifted before:
+// `press` was live here and in validateRecipe while the schema enum omitted it,
+// and the step schema is additionalProperties:false, so valid recipes were
+// schema-invalid until it was noticed by hand.
+export const VIDEO_ACTIONS = new Set([
+  'goto',
+  'click',
+  'type',
+  'wait',
+  'scroll',
+  'press',
+  'select',
+  'reload',
+])
 const DEFAULT_VIDEO_SLOWMO_MS = 350
 
 // Only drive Playwright when invoked directly; importing this module (e.g. from
@@ -177,6 +192,13 @@ export function validateRecipe(recipe) {
         requireVideoStepString(step, 'value')
       } else if (step.action === 'press') {
         requireVideoStepString(step, 'key')
+      } else if (step.action === 'select') {
+        requireVideoStepString(step, 'selector')
+        // '' is a legitimate option value (the leading "All …" filter entry), so
+        // this deliberately does NOT go through requireVideoStepString.
+        if (typeof step.value !== 'string') {
+          throw new Error('video select step requires value')
+        }
       } else if (step.action === 'wait' && step.selector !== undefined) {
         requireVideoStepString(step, 'selector')
       } else if (step.action === 'scroll') {
@@ -223,6 +245,7 @@ export function buildSpec({ recipe, outputDir, surface, defaultCrop, stageEnv })
   const viewport = JSON.stringify(recipe.viewport ?? { width: 1440, height: 1000 })
   const fullPage = Boolean(recipe.fullPage)
   const stageWeb = stageEnv ? webStageScript(recipe) : ''
+  const captureReady = stageEnv ? captureReadyScript(recipe) : ''
   const testTitle = JSON.stringify(`proof screenshot: ${recipe.id}`)
 
   return `
@@ -234,7 +257,7 @@ test(${testTitle}, async ({ page }) => {
   ${stageWeb}
   await page.setViewportSize(${viewport});
   const response = await page.goto(${route});
-  expect(response?.status(), 'proof route status').toBeLessThan(400);
+  expect(response?.status(), 'proof route status').toBeLessThan(400);${captureReady}
   const selector = ${selector};
   const cropToSelector = ${cropToSelector};
   let auditText = '';
@@ -399,6 +422,26 @@ ${captionLine}`
       // the page keyboard rather than a located element, since the target is a
       // window-level handler with no clickable trigger.
       return `${captionLine}  await page.keyboard.press(${jsString(step.key)});`
+    case 'select':
+      // Native <select>: a click would only open the OS-drawn popup, which the
+      // browser never paints into a screenshot or video. selectOption drives the
+      // real change event, so the narrowing it causes IS the captured evidence.
+      return `${captionLine}  {
+    const __loc = page.locator(${jsString(step.selector)}).first();
+    await __loc.scrollIntoViewIfNeeded();
+    const __box = await __loc.boundingBox();
+    if (__box) await page.evaluate(([x, y]) => window.__proofOverlay?.ripple(x, y), [__box.x + __box.width / 2, __box.y + __box.height / 2]);
+    await __loc.selectOption(${jsString(step.value)});
+  }`
+    case 'reload':
+      // Reload keeps storage (unlike goto with a fresh context), which is the
+      // whole point for a persistence proof. Caption after the navigation for
+      // the same reason as goto: the reload destroys the overlay.
+      return `  {
+    const response = await page.reload();
+    expect(response?.status(), 'proof reload status').toBeLessThan(400);
+  }
+${captionLine}`
     case 'wait':
       return step.selector
         ? `${captionLine}  await expect(page.locator(${jsString(step.selector)}).first()).toBeVisible();`
@@ -540,6 +583,10 @@ function webStageScript(recipe) {
         baseBranch: 'main',
         repoId: 'repo-proof',
         repoDisplayName: 'bossanova',
+        // Canonical origin URL, matching how proxyListReposAggregated derives an
+        // AggregatedRepo originUrl from a repo id. Feeds the sessions-list
+        // repository filter (BOS-654).
+        repoOriginUrl: 'https://github.com/e2e/repo-proof',
         prNumber: 597,
         prUrl: 'https://github.com/recurser/bossanova/pull/597',
         // DisplayStatus.PASSING (=6) so the session-detail header offers the
@@ -565,8 +612,12 @@ function webStageScript(recipe) {
         title: 'Proof quick chat',
         branchName: 'proof/quick-chat',
         baseBranch: 'main',
-        repoId: 'repo-proof',
-        repoDisplayName: 'bossanova',
+        // Attributed to the SECOND daemon and the second repository so the
+        // sessions-list filters visibly narrow the table (BOS-654).
+        daemonId: 'daemon-proof-standby',
+        repoId: 'repo-proof-web',
+        repoDisplayName: 'bossanova-web',
+        repoOriginUrl: 'https://github.com/e2e/repo-proof-web',
         chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
       }, {
         // A session carrying a BOS-409 stale-failover-proxy-port audit record
@@ -578,8 +629,10 @@ function webStageScript(recipe) {
         title: 'Proof rotated session',
         branchName: 'proof/rotation',
         baseBranch: 'main',
+        daemonId: 'daemon-proof',
         repoId: 'repo-proof',
         repoDisplayName: 'bossanova',
+        repoOriginUrl: 'https://github.com/e2e/repo-proof',
         rotationEvents: [{
           id: 'rot-e2e-1',
           // RotationOutcome.UNSPECIFIED (=0) — no meaningful label, so the row
@@ -602,12 +655,177 @@ function webStageScript(recipe) {
         { repoOriginUrl: 'github.com/recurser/bossanova', installed: true },
         { repoOriginUrl: 'github.com/madverts/madverts-core', installed: true },
       ],
-      // Seed a daemon-local repository so repository settings proof flows can
-      // open its form and confirmation dialog without relying on a live daemon.
-      daemons: [{ id: 'daemon-proof', displayName: 'Proof daemon' }],
+      // Seed daemon-local repositories so repository settings proof flows can
+      // open a form and confirmation dialog without relying on a live daemon.
+      //
+      // TWO daemons and TWO repositories (BOS-654): the sessions-list daemon and
+      // repository filters only have something to narrow when the fixture spans
+      // more than one of each. 'daemon-proof' / 'repo-proof' stay FIRST — the
+      // fake binds its default cron jobs and rotation accounts to the first
+      // seeded daemon/repo, and every repo-settings flow clicks .first()
+      // (alphabetical ordering keeps 'Proof repository' ahead of 'Proof web
+      // repository', so BOS-656's sort does not move that target).
+      daemons: [
+        { id: 'daemon-proof', displayName: 'Proof daemon' },
+        { id: 'daemon-proof-standby', displayName: 'Standby daemon' },
+      ],
+      // Cron jobs spanning BOTH daemons (BOS-657). The built-in defaultCronJobs()
+      // binds every job to the first daemon, which leaves the cron list's daemon
+      // filter with nothing to narrow and its Daemon column showing one value.
+      // Seeded deliberately OUT of alphabetical order so the still also proves
+      // the ascending name sort. lastRunStatus is the numeric CronJobStatus
+      // (1 IDLE, 2 RUNNING, 3 FAILED) because the fixture crosses addInitScript
+      // as plain JSON.
+      cronJobs: [
+        {
+          id: 'cron-weekly-changelog',
+          name: 'Weekly changelog',
+          schedule: '0 9 * * 1',
+          agentName: 'claude',
+          repoId: 'repo-proof',
+          daemonId: 'daemon-proof',
+          daemonHostname: 'Proof daemon',
+          enabled: false,
+          lastRunStatus: 1,
+        },
+        {
+          id: 'cron-sentry-triage',
+          name: 'Sentry triage',
+          schedule: '*/30 * * * *',
+          agentName: 'codex',
+          repoId: 'repo-proof',
+          daemonId: 'daemon-proof',
+          daemonHostname: 'Proof daemon',
+          enabled: true,
+          lastRunStatus: 3,
+        },
+        {
+          id: 'cron-nightly-deps',
+          name: 'Nightly dependency sweep',
+          schedule: '0 3 * * *',
+          agentName: 'claude',
+          repoId: 'repo-proof',
+          daemonId: 'daemon-proof',
+          daemonHostname: 'Proof daemon',
+          enabled: true,
+          lastRunStatus: 2,
+        },
+        {
+          id: 'cron-standby-cache',
+          name: 'Standby cache warmer',
+          schedule: '*/15 * * * *',
+          agentName: 'codex',
+          repoId: 'repo-proof',
+          daemonId: 'daemon-proof-standby',
+          daemonHostname: 'Standby daemon',
+          enabled: true,
+          lastRunStatus: 1,
+        },
+      ],
+      // Rotation accounts spanning BOTH daemons (BOS-655). The built-in
+      // defaultAccounts() binds every account to the first daemon, which leaves
+      // the accounts list's daemon filter with nothing to narrow and its Daemon
+      // column showing one value. The first four rows reproduce
+      // defaultAccounts() so the existing account stills keep their promised
+      // evidence — a Codex row, an undeterminable-usage row whose Usage cell is
+      // an em dash, and the saturated row that proves the widest Usage string —
+      // then add a disabled row for the dormant treatment the still's
+      // description promises, and one on the Standby daemon so the filter flow
+      // has a second option and a row set to narrow to.
+      //
+      // reset*InSeconds are offsets FROM NOW (see E2eAccount in
+      // services/web/tests/e2e/fakes/api.ts); mid-bucket values keep the
+      // rendered countdown stable across capture drift.
+      accounts: [
+        {
+          id: 'acct-claude-work',
+          provider: 'claude',
+          label: 'work@anthropic.com',
+          status: 'active',
+          health: 'ok',
+          tier: 'max',
+          daemonId: 'daemon-proof',
+          util5h: 0.42,
+          util7d: 0.18,
+          reset5hInSeconds: 16200,
+          reset7dInSeconds: 302400,
+        },
+        {
+          id: 'acct-codex-personal',
+          provider: 'codex',
+          label: 'personal',
+          status: 'active',
+          health: 'ok',
+          tier: 'pro',
+          daemonId: 'daemon-proof',
+          util5h: 0.1,
+          util7d: 0.05,
+          reset5hInSeconds: 9000,
+          reset7dInSeconds: 561600,
+        },
+        {
+          id: 'acct-claude-undeterminable',
+          provider: 'claude',
+          label: 'ops@anthropic.com',
+          status: 'active',
+          health: 'ok',
+          daemonId: 'daemon-proof',
+          util5h: 0,
+          util7d: 0,
+          usageStatus: 'RATE_LIMIT_PLAN_STATUS_UNSUPPORTED',
+          reset5hInSeconds: 16200,
+        },
+        {
+          id: 'acct-claude-saturated',
+          provider: 'claude',
+          label: 'saturated@anthropic.com',
+          status: 'active',
+          health: 'ok',
+          tier: 'max',
+          daemonId: 'daemon-proof',
+          util5h: 1,
+          util7d: 1,
+          reset5hInSeconds: 3240,
+          reset7dInSeconds: 82800,
+        },
+        {
+          // The dormant-row treatment web-accounts-list promises. defaultAccounts()
+          // has no disabled row, so before this fixture owned the list that claim
+          // had nothing behind it.
+          id: 'acct-claude-retired',
+          provider: 'claude',
+          label: 'retired@anthropic.com',
+          status: 'disabled',
+          health: 'ok',
+          tier: 'max',
+          daemonId: 'daemon-proof',
+          util5h: 0,
+          util7d: 0.12,
+          reset5hInSeconds: 10800,
+          reset7dInSeconds: 432000,
+        },
+        {
+          id: 'acct-claude-standby',
+          provider: 'claude',
+          label: 'standby@anthropic.com',
+          status: 'active',
+          health: 'ok',
+          tier: 'max',
+          daemonId: 'daemon-proof-standby',
+          util5h: 0.6,
+          util7d: 0.31,
+          reset5hInSeconds: 12600,
+          reset7dInSeconds: 216000,
+        },
+      ],
+      // BOS-656: each repository is attributed to a DIFFERENT daemon so the
+      // repository-settings Daemon column and its header filter have something
+      // to show and narrow. Without an explicit daemonId the fake binds every
+      // repo to the first online daemon.
       repos: [{
         id: 'repo-proof',
         displayName: 'Proof repository',
+        daemonId: 'daemon-proof',
         setupScript: 'pnpm install',
         canAutoMerge: true,
         canAutoMergeDependabot: true,
@@ -616,6 +834,12 @@ function webStageScript(recipe) {
         sentryOrg: 'proof',
         hasLinearKey: true,
         hasSentryKey: true,
+      }, {
+        id: 'repo-proof-web',
+        displayName: 'Proof web repository',
+        daemonId: 'daemon-proof-standby',
+        setupScript: 'pnpm install',
+        canAutoMerge: true,
       }],
     };
   });
@@ -624,9 +848,44 @@ ${notificationStageScript(recipe)}
 `
 }
 
+// BOS-658 evidence line for the web-chat-terminal still: a status mark, a
+// continuation arrow, and a box-drawing rule — the glyph classes that degraded
+// on mobile Safari. Without this the still is an empty terminal pane, because
+// proof capture stages its own attach socket instead of reusing
+// installAttachServer. Mirrors GLYPH_TOKENS in
+// services/web/tests/e2e/specs/chat-terminal.spec.ts.
+const CHAT_TERMINAL_GLYPH_TOKENS = ['✓', '↳', '─']
+const CHAT_TERMINAL_GLYPH_LINE = `${CHAT_TERMINAL_GLYPH_TOKENS.join(' ')}\r\n`
+// xterm splits a rendered row into one span per style run and pads it with cell
+// spaces, so match the tokens in order with tolerant spacing rather than an
+// exact substring (same tolerance as the e2e spec's GLYPH_ROW_TEXT).
+const CHAT_TERMINAL_GLYPH_ROW_SOURCE = CHAT_TERMINAL_GLYPH_TOKENS.join('\\s*')
+
+// captureReadyScript emits an extra readiness gate for recipes whose promised
+// evidence lands *after* their capture selector becomes visible.
+//
+// web-chat-terminal crops to [data-testid='chat-terminal-canvas'], which xterm
+// mounts as soon as the route renders — before the staged attach socket's
+// kind=0 data frame has been parsed and painted. `toBeVisible()` is therefore
+// satisfied by an empty pane, and the still could be captured with none of the
+// glyphs its recipe description promises. Wait for the row text itself, the
+// same way services/web/tests/e2e/specs/chat-terminal.spec.ts does.
+//
+// Only meaningful when the web fixture is staged (the glyph line comes from
+// attachStageScript), so callers gate this on stageEnv.
+function captureReadyScript(recipe) {
+  if (recipe?.id !== 'web-chat-terminal') return ''
+  return `
+  await expect(page.locator('.xterm-rows').first()).toContainText(new RegExp(${JSON.stringify(
+    CHAT_TERMINAL_GLYPH_ROW_SOURCE,
+  )}), { timeout: 10000 });`
+}
+
 // attachStageScript makes the attach socket deterministic per recipe. Most
 // captures need a healthy attached_clients frame so the terminal mounts; the
-// reconnecting recipe closes it to exercise the transient reconnect state.
+// reconnecting recipe closes it to exercise the transient reconnect state; the
+// plain chat-terminal still additionally replays a raw kind=0 data frame so the
+// captured canvas carries visible terminal output instead of an empty pane.
 function attachStageScript(recipe) {
   if (recipe?.id === 'web-chat-terminal-reconnecting') {
     return `
@@ -634,9 +893,16 @@ function attachStageScript(recipe) {
     ws.close();
   });`
   }
+  const initialData =
+    recipe?.id === 'web-chat-terminal'
+      ? `
+    const payload = Buffer.from(${JSON.stringify(CHAT_TERMINAL_GLYPH_LINE)}, 'utf-8');
+    const header = Buffer.from([0, (payload.length >>> 16) & 0xff, (payload.length >>> 8) & 0xff, payload.length & 0xff]);
+    ws.send(Buffer.concat([header, payload]));`
+      : ''
   return `
   await page.routeWebSocket('**/ws/attach*', (ws) => {
-    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));
+    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));${initialData}
   });`
 }
 

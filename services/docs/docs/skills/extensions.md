@@ -90,9 +90,12 @@ Extensions are additive and never load-bearing:
   extension that is discovered but returns a failing result at run time is skipped by the
   core rather than folded in. Neither is ever a hard failure — it can never abort a core run
   or block a merge.
-- Where a core defines a **fallback tier**, it uses that when no extension is
-  discovered. `boss-review`, for instance, reviews through an inline rubric declared in
-  the lens's `.boss-skills.json` row when the lens skill itself is unavailable.
+- Where a core defines a **fallback tier**, it uses that when no extension **ran
+  successfully** — not merely when none was discovered. A discovered extension that fails to
+  load or returns no valid result is recorded as skipped and the core falls through to the
+  next tier, so the layer is never silently dropped. `boss-review`, for instance, reviews
+  through an inline rubric declared in the lens's `.boss-skills.json` row when the lens skill
+  itself is unavailable.
 
 Because discovery is repo-local and degradation is silent, a repository can adopt the
 `boss-*` cores as-is and add its own extensions incrementally, while other repos that

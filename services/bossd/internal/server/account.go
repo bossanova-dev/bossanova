@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/agent"
@@ -22,6 +23,22 @@ import (
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
 // TestAccount detail when no AccountSmokeRunner is wired.
 const liveSmokeUnavailableDetail = "provider verification unavailable"
+
+// usageProbeConcurrency bounds how many accounts a refresh=true ListAccounts
+// probes at once. The probes are independent — each loads its own credential
+// and materializes into its own temp home (accountwiring.usageProbeCredentialEnv)
+// before talking to a different provider account — so serializing them only
+// ever cost wall clock. Sequentially a refresh costs the SUM of every probe and
+// one Claude account on the common `claude setup-token` path can spend ~20s
+// (two HTTP calls with a 10s client timeout each), so the total grew without
+// bound as accounts were added and eventually outran bosso's
+// accountsRefreshCommandDeadline — at which point the web account list drops
+// the timed-out daemon's whole contribution and its rows vanish on Refresh
+// instead of updating (BOS-655). Probing 8 at a time makes the refresh cost
+// ceil(n/8) probes deep rather than n, so that 120s bound covers dozens of
+// worst-case accounts, while the cap keeps one click from opening an unbounded
+// burst of provider connections.
+const usageProbeConcurrency = 8
 
 // ListAccounts returns registry accounts, optionally filtered by provider.
 // Metadata only — credential blobs never cross the wire.
@@ -43,11 +60,7 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts: %w", err))
 	}
 	if req.Msg.GetRefresh() && s.usageProbe != nil {
-		for _, a := range accounts {
-			if err := s.usageProbe.RecordUsageProbe(ctx, a.ID); err != nil {
-				s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("ListAccounts: usage refresh failed")
-			}
-		}
+		s.refreshUsageSnapshots(ctx, accounts)
 		if req.Msg.Provider != nil && strings.TrimSpace(*req.Msg.Provider) != "" {
 			accounts, err = s.accounts.ListByProvider(ctx, models.AccountProvider(strings.TrimSpace(*req.Msg.Provider)))
 		} else {
@@ -61,7 +74,64 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 	for _, a := range accounts {
 		out = append(out, accountToProto(a))
 	}
-	return connect.NewResponse(&pb.ListAccountsResponse{Accounts: out}), nil
+	return connect.NewResponse(&pb.ListAccountsResponse{
+		Accounts:     out,
+		HasRefreshed: req.Msg.GetRefresh(),
+	}), nil
+}
+
+// refreshUsageSnapshots probes every listed account against its provider and
+// records the result, at most usageProbeConcurrency probes at a time across the
+// whole daemon, returning once this request's probes have all finished.
+// ListAccounts commands are dispatched independently, so a per-request
+// semaphore would let concurrent tabs multiply provider traffic. Fail-soft,
+// exactly as the sequential loop it replaces: a probe error is logged and the
+// listing carries on with whatever usage the row already had. Scheduling stops
+// early once ctx is done so a request whose deadline already expired stops
+// spending provider calls.
+func (s *Server) refreshUsageSnapshots(ctx context.Context, accounts []*models.Account) {
+	slots := s.sharedUsageProbeSlots()
+	running := make([]<-chan struct{}, 0, len(accounts))
+scheduling:
+	for _, a := range accounts {
+		if ctx.Err() != nil {
+			break
+		}
+		// Acquiring a slot can block behind a slow probe. Keep cancellation in
+		// that wait so a refresh deadline cannot schedule another account after
+		// the probes already in flight drain their slots.
+		select {
+		case <-ctx.Done():
+			break scheduling
+		case slots <- struct{}{}:
+		}
+		// Both the cancellation and slot cases can become ready together. The
+		// select may then acquire a slot despite cancellation, so release it
+		// before scheduling a probe.
+		if ctx.Err() != nil {
+			<-slots
+			break scheduling
+		}
+		running = append(running, safego.Go(s.logger, func() {
+			defer func() { <-slots }()
+			if err := s.usageProbe.RecordUsageProbe(ctx, a.ID); err != nil {
+				s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("ListAccounts: usage refresh failed")
+			}
+		}))
+	}
+	for _, done := range running {
+		<-done
+	}
+}
+
+// sharedUsageProbeSlots lazily initializes the daemon-wide probe semaphore.
+// Tests construct Server values directly, while production constructs them via
+// New, so lazy initialization keeps both paths on the same shared bound.
+func (s *Server) sharedUsageProbeSlots() chan struct{} {
+	s.usageProbeSlotsOnce.Do(func() {
+		s.usageProbeSlots = make(chan struct{}, usageProbeConcurrency)
+	})
+	return s.usageProbeSlots
 }
 
 // AddAccount registers a new provider login. The credential blob is consumed

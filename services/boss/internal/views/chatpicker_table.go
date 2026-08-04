@@ -143,7 +143,7 @@ func (m ChatPickerModel) tableHeight() int {
 	if len(left) > 0 {
 		footerLines = actionBarLineCount(m.width, left, middle, back)
 	}
-	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
+	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.waitingLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
 	return clampedTableHeight(len(m.chats), m.height, overhead)
 }
 
@@ -310,6 +310,41 @@ func (m ChatPickerModel) warningBlockHeight() int {
 // tableHeight keeps the hint from pushing a chat row off-screen.
 func (m ChatPickerModel) limitedLineHeight() int {
 	if m.limitedProviderLine() == "" {
+		return 0
+	}
+	return 2
+}
+
+// waitingReasonLine returns the session-detail hint naming why a chat in this
+// session is parked on an external event, e.g.
+// "waiting · awaiting checks_passed_ready on acme/widget#123" (BOS-668). It
+// returns "" when nothing in the session is waiting, so callers can skip the
+// line entirely and the layout does not shift.
+//
+// Only the FIRST waiting chat's reason is shown. Sessions park on at most one
+// callback in practice, and a multi-line block here would eat chat rows on a
+// short terminal for a case that does not occur; the per-chat STATUS column
+// still marks every waiting chat.
+//
+// The wording is composed by waitingHintLine, shared with the home list and
+// mirrored byte-for-byte by the web UI (services/web/src/sessionStatus.ts).
+func (m ChatPickerModel) waitingReasonLine() string {
+	for _, chat := range m.chats {
+		if m.daemonStatuses[chat.AgentSessionId] != statusWaiting {
+			continue
+		}
+		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId]); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// waitingLineHeight reserves the rows waitingReasonLine occupies (the line plus
+// its trailing blank), mirroring limitedLineHeight. Reserved in tableHeight so
+// the hint shrinks the chat table rather than pushing it off-screen.
+func (m ChatPickerModel) waitingLineHeight() int {
+	if m.waitingReasonLine() == "" {
 		return 0
 	}
 	return 2

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -68,6 +69,9 @@ var ErrRefreshOutcomeUnknown = fmt.Errorf("refresh outcome could not be confirme
 const (
 	reloginReasonRefreshOutcomeUnknown = "refresh_outcome_unknown"
 	reloginReasonRefreshTokenRejected  = "refresh_token_rejected"
+	legacyTokenKey                     = "workos-tokens"
+	versionedTokenKey                  = "workos-tokens-v1"
+	tokenRecordV1                      = 1
 )
 
 // keychainTokens mirrors the boss CLI token structure for keychain reading.
@@ -86,6 +90,15 @@ type keychainTokens struct {
 	// ReloginReason is one of the enumerated reloginReason* values. It never
 	// carries token material or upstream response bodies.
 	ReloginReason string `json:"relogin_reason,omitempty"`
+}
+
+// keychainTokenRecord is the authoritative, versioned WorkOS payload shared
+// with the CLI. Current readers only consult the legacy key when this key is
+// absent, so an older writer cannot erase a re-login marker by rewriting the
+// old record.
+type keychainTokenRecord struct {
+	Version int `json:"version"`
+	keychainTokens
 }
 
 func (t *keychainTokens) valid() bool {
@@ -254,7 +267,25 @@ func loadKeychainTokens() (*keychainTokens, error) {
 	if err != nil {
 		return nil, err
 	}
-	item, err := ring.Get("workos-tokens")
+	item, err := ring.Get(versionedTokenKey)
+	if err != nil {
+		if !tokenKeyMissing(err) {
+			return nil, err
+		}
+		return loadLegacyKeychainTokens(ring)
+	}
+	var record keychainTokenRecord
+	if err := json.Unmarshal(item.Data, &record); err != nil {
+		return nil, err
+	}
+	if record.Version != tokenRecordV1 {
+		return nil, errors.New("unsupported WorkOS token record version")
+	}
+	return &record.keychainTokens, nil
+}
+
+func loadLegacyKeychainTokens(ring keyring.Keyring) (*keychainTokens, error) {
+	item, err := ring.Get(legacyTokenKey)
 	if err != nil {
 		return nil, err
 	}
@@ -270,16 +301,26 @@ func saveKeychainTokens(tokens *keychainTokens) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(tokens)
+	data, err := json.Marshal(keychainTokenRecord{Version: tokenRecordV1, keychainTokens: *tokens})
 	if err != nil {
 		return err
 	}
-	return ring.Set(keyring.Item{
-		Key:         "workos-tokens",
+	if err := ring.Set(keyring.Item{
+		Key:         versionedTokenKey,
 		Data:        data,
 		Label:       "Bossanova",
 		Description: "WorkOS authentication tokens",
-	})
+	}); err != nil {
+		return err
+	}
+	if err := ring.Remove(legacyTokenKey); err != nil && !tokenKeyMissing(err) {
+		return err
+	}
+	return nil
+}
+
+func tokenKeyMissing(err error) bool {
+	return errors.Is(err, keyring.ErrKeyNotFound) || errors.Is(err, fs.ErrNotExist)
 }
 
 // NOTE (BOS-659): there is deliberately no removeKeychainTokens here. No
@@ -290,7 +331,8 @@ func saveKeychainTokens(tokens *keychainTokens) error {
 // keychainRecordDeleted discriminates the two ways a keychain read fails, which
 // need OPPOSITE responses:
 //
-//   - keyring.ErrKeyNotFound means the shared "workos-tokens" item is gone.
+//   - keyring.ErrKeyNotFound or fs.ErrNotExist means the shared
+//     "workos-tokens" item is gone.
 //     Since BOS-659 nothing in the daemon deletes it, so the only thing that
 //     can have is an explicit `boss logout` — an authoritative answer. Drop the
 //     cached credentials and stop; recreating the item would sign the user back
@@ -305,7 +347,7 @@ func saveKeychainTokens(tokens *keychainTokens) error {
 // Conflating the two is what let a successful refresh resurrect a deliberately
 // deleted record.
 func keychainRecordDeleted(err error) bool {
-	return errors.Is(err, keyring.ErrKeyNotFound)
+	return tokenKeyMissing(err)
 }
 
 // errCredentialsRemoved reports that the shared "workos-tokens" record is no

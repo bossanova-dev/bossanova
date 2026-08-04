@@ -10,7 +10,47 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/99designs/keyring"
 )
+
+func TestKeychainStoreVersionedRecordIsAuthoritative(t *testing.T) {
+	legacy := []byte(`{"access_token":"legacy-access","refresh_token":"legacy-refresh","expires_at":"2099-01-01T00:00:00Z","email":"legacy@example.com"}`)
+	versioned := []byte(`{"version":1,"access_token":"current-access","refresh_token":"current-refresh","expires_at":"2099-01-01T00:00:00Z","email":"current@example.com"}`)
+
+	t.Run("loads legacy only when no versioned record exists", func(t *testing.T) {
+		store := &KeychainStore{ring: keyring.NewArrayKeyring([]keyring.Item{{Key: tokenKey, Data: legacy}})}
+		tokens, err := store.Load()
+		if err != nil || tokens.Email != "legacy@example.com" {
+			t.Fatalf("Load() = (%+v, %v), want legacy tokens", tokens, err)
+		}
+	})
+
+	t.Run("versioned record wins over rewritten legacy record", func(t *testing.T) {
+		store := &KeychainStore{ring: keyring.NewArrayKeyring([]keyring.Item{
+			{Key: tokenKey, Data: legacy},
+			{Key: versionedTokenKey, Data: versioned},
+		})}
+		tokens, err := store.Load()
+		if err != nil || tokens.Email != "current@example.com" {
+			t.Fatalf("Load() = (%+v, %v), want authoritative versioned tokens", tokens, err)
+		}
+	})
+
+	t.Run("unsupported version fails closed without legacy fallback", func(t *testing.T) {
+		store := &KeychainStore{ring: keyring.NewArrayKeyring([]keyring.Item{
+			{Key: tokenKey, Data: legacy},
+			{Key: versionedTokenKey, Data: []byte(`{"version":999,"access_token":"must-not-load"}`)},
+		})}
+		_, err := store.Load()
+		if !errors.Is(err, ErrCredentialsUnreadable) {
+			t.Fatalf("Load() error = %v, want ErrCredentialsUnreadable", err)
+		}
+		if strings.Contains(err.Error(), "must-not-load") || strings.Contains(err.Error(), "legacy-access") {
+			t.Fatalf("Load error leaked credential material: %v", err)
+		}
+	})
+}
 
 // TestTokensJSONSharedShape pins the on-disk contract with bossd: both
 // binaries read and write the same "workos-tokens" item, so an older record

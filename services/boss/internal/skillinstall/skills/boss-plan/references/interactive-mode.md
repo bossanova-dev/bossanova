@@ -135,14 +135,45 @@ runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath`
   as the extension's instructions. Never load a discovered extension by its bare descriptor `name` through the Skill tool:
   extension skills are dispatched explicitly, never model-matched, so they SHOULD declare
   `disable-model-invocation: true`, and the Skill tool refuses such a skill.
-  The extension owns the interview and writes the plan. If at least one extension ran successfully,
-  tiers 2 and 3 do not run. If **every** discovered extension failed to load or returned no valid
-  envelope, record `extension <name>: skipped (<reason>)` for each and fall through to Tier 2, then
+  The extension owns the interview and writes the plan.
+
+  **Per-dispatch plan target.** The `planPath` you pass is **not** the shared
+  `.linear-plans/<ISSUE-ID>-<slug>.md` plan target: give each dispatch its own path under `runTmp`
+  (`<runTmp>/draft-<extension-name>/<ISSUE-ID>-<slug>.md`), unique to the dispatch you are about to
+  classify, and create its parent directory before dispatching. You promote the winner yourself:
+  copy the file produced by the **first** dispatch that succeeded under the predicate below to
+  `.linear-plans/<ISSUE-ID>-<slug>.md`, which is the plan target every later phase reads and the one
+  tiers 2 and 3 write directly. A later sibling never overwrites a promoted plan.
+
+  **Draft success predicate** — one definition, used by every tier gate below. A dispatched draft
+  extension **succeeded** only when both of these hold: it returned a result envelope valid for the
+  requested dispatch, **AND** the requested plan now exists and is non-empty at the `planPath` you
+  passed **this** dispatch, **written by this dispatch**. Verify
+  the second conjunct yourself by reading that `planPath` after the dispatch returns; a valid envelope
+  that wrote no plan did **not** succeed. The per-dispatch target is what makes that read an
+  attribution: hand every sibling the **same** `planPath` and "a plan is there now"
+  is a test of shared state, not of this extension, so the first extension to
+  write a plan silently credits every sibling dispatched after it, which is the false success this
+  predicate exists to prevent. Do not try to rescue a shared path by comparing it before and after
+  instead — neither half of that comparison holds across arbitrary projects and filesystems, which is
+  where these skills run. Identical bytes are the ordinary output of a deterministic redraft, so a
+  byte comparison records a real dispatch as a skip and drops the run to a lower tier that overwrites
+  its plan; and the modification time need not advance either, because a filesystem whose timestamp
+  resolution is coarser than the rewrite stamps both writes the same. Attribution has to come from
+  the target you chose. Anything else is a failed dispatch: record
+  `extension <name>: skipped (<reason>)` for that extension as you classify it — every failed
+  dispatch is recorded, including when a sibling succeeded, so the ledger shows the whole Tier-1
+  outcome and not just the winner.
+  If at least one extension succeeded under the draft success predicate, tiers 2 and 3 do not run.
+  If **no** extension succeeded under the draft success predicate — whether it failed to load,
+  returned no valid envelope, or returned a valid envelope without producing the plan —
+  fall through to Tier 2, then
   Tier 3 — the drafting layer is never silently dropped.
-- **Tier 2:** if no extension ran successfully and the host exposes a native drafting command, such as
+
+- **Tier 2:** if no extension succeeded under the draft success predicate and the host exposes a native drafting command, such as
   Claude Code plan mode, delegate to it, then normalize the output to the planContract sections
   from `references/headless-drafting-brief.md` **Step 7**.
-- **Tier 3:** if no extension ran successfully and no host built-in exists, run the inline drafting prompt in
+- **Tier 3:** if no extension succeeded under the draft success predicate and no host built-in exists, run the inline drafting prompt in
   Phase 5: work the review dimensions, follow the shared Step 5/Step 7 sections, and write a
   planContract-compliant plan with no external skill dependency.
 

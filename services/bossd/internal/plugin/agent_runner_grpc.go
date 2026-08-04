@@ -37,6 +37,7 @@ type AgentRunner interface {
 	ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 	RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
 	MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
+	ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error)
 }
 
 // AgentRunnerGRPCPlugin implements go-plugin's GRPCPlugin interface for
@@ -265,6 +266,18 @@ func (c *agentRunnerGRPCClient) RotationCapability(ctx context.Context, req *bos
 func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
 	resp := &bossanovav1.MaterializeAccountResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/MaterializeAccount", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ProbeProgressLiveness forwards to the plugin (BOS-667). The error is returned
+// verbatim — including Unimplemented from a runner binary built before the RPC
+// existed — because the only caller (internal/status) fails open on any error,
+// so degrading here would just hide which plugins lack the capability.
+func (c *agentRunnerGRPCClient) ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
+	resp := &bossanovav1.ProbeProgressLivenessResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ProbeProgressLiveness", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

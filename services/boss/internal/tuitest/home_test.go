@@ -156,6 +156,37 @@ func TestTUI_HomeView_LogoutConfirm(t *testing.T) {
 	}
 }
 
+func TestTUI_HomeView_LogoutFailureKeepsSignedInPresentation(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithLoggedInUser("test-user@example.com"),
+		tuitest.WithE2ELogoutError(),
+	)
+
+	waitForLoggedInHome(t, h)
+	if err := h.Driver.SendKey('l'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Log out test-user@example.com?"); err != nil {
+		t.Fatalf("expected logout confirm; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Logout: e2e memory store: logout failed") &&
+			strings.Contains(screen, "[l]ogout") &&
+			strings.Contains(screen, "test-user@example.com") &&
+			!strings.Contains(screen, "Log out test-user@example.com?")
+	}); err != nil {
+		t.Fatalf("failed logout did not restore signed-in Home presentation; screen:\n%s", h.Driver.Screen())
+	}
+	if calls := h.Daemon.NotifyAuthChangeCalls(); len(calls) != 0 {
+		t.Fatalf("NotifyAuthChange should not be called after failed logout; got %v", calls)
+	}
+}
+
 func TestTUI_HomeView_LogoutCancel(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

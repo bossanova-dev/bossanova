@@ -186,17 +186,31 @@ const (
 // of a live run.
 //
 //   - Post-agent strands (ImplementingPlan/PushingBranch/OpeningDraftPR have an
-//     AgentSessionID) defer to cronRunIsOver unchanged — durable agent-log idle
-//     plus liveness — so the historical ImplementingPlan path is byte-identical.
+//     AgentSessionID) defer to cronRunIsOver unchanged.
 //   - Pre-agent strands (CreatingWorktree/StartingAgent have no agent log yet, so
-//     AgentSessionID is nil/empty) have no durable idle evidence. They are dead
-//     only when a wired liveness checker positively reports the session NOT alive;
+//     AgentSessionID is nil/empty) have no durable idle evidence. At startup a
+//     dead liveness result proves the creator did not survive the daemon restart;
 //     if liveness is unwired or reports alive, they are conservatively left.
-func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
-	if sess.AgentSessionID != nil && *sess.AgentSessionID != "" {
-		return l.cronRunIsOver(sess)
+func (l *Lifecycle) strandedRunCompletionEvidence(sess *models.Session) (bool, string) {
+	if sess == nil {
+		return false, "session_unknown"
 	}
-	return l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID)
+	if sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		// A tmux chat gets an agent ID only after its pane and chat row have been
+		// created. Thus in a pre-agent state, a dead liveness result at startup
+		// reaps a row the restart froze before it could create a live pane. Once
+		// an agent ID exists, false liveness is never enough for tmux completion.
+		if isPreAgentState(sess.State) && l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID) {
+			return true, "pre_agent_liveness_dead"
+		}
+		return false, "pre_agent_liveness_unknown_or_alive"
+	}
+	return l.cronRunCompletionEvidence(sess)
+}
+
+func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
+	over, _ := l.strandedRunCompletionEvidence(sess)
+	return over
 }
 
 // RecoverStrandedCronSessionsAtStartup runs the one-shot post-restart recovery
@@ -310,14 +324,20 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		if phase == reapPeriodic && !preAgentReapAllowed(sess.State, sess.CreatedAt, now) {
 			continue
 		}
-		if !l.strandedRunIsDead(sess) {
+		over, evidence := l.strandedRunCompletionEvidence(sess)
+		if !over {
+			l.logger.Debug().
+				Str("session", sess.ID).
+				Str("completion_evidence", evidence).
+				Msg("stranded unattended session recovery deferred")
 			continue
 		}
 
 		evt := l.logger.Warn().
 			Str("session", sess.ID).
 			Str("state", sess.State.String()).
-			Bool("tmuxUnattended", sess.IsTmuxUnattended)
+			Bool("tmuxUnattended", sess.IsTmuxUnattended).
+			Str("completion_evidence", evidence)
 		if sess.CronJobID != nil && *sess.CronJobID != "" {
 			evt = evt.Str("cronJob", *sess.CronJobID)
 		}
@@ -346,32 +366,107 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 // ambiguous we return false (treat as still running) so a live run is never
 // finalized.
 //
-// Two liveness signals refine that durable signal:
-//   - If the headless runner reports the agent running, the run is not over.
-//   - If a wired liveness checker confirms the session is NOT alive — neither a
-//     headless subprocess nor a tmux chat survives — the run is definitively
-//     over, so we reap it immediately even when the agent log is fresh (the
-//     agent died moments before a restart) or absent entirely (a logless Codex
-//     run, or a failed tmux pipe-pane). A live session can't be declared over
-//     from liveness alone — a finished cron agent sits idle but alive in tmux —
-//     so that case falls through to the durable log-idle threshold below.
-func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
-	if sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
-		return false
+// A running agent runner is always active. Tmux-hosted unattended runs require
+// a known idle log, except that a missing log may be finalized only with direct
+// proof that its persisted tmux pane exited. Liveness alone can be false while
+// their chat is still working. Non-tmux/headless runs retain the fast path where
+// a wired liveness checker confirms the session is dead, even when their log is
+// fresh or absent. Remaining non-tmux runs use the durable log-idle threshold.
+func (l *Lifecycle) cronRunCompletionEvidence(sess *models.Session) (bool, string) {
+	if sess == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return false, "agent_session_unknown"
 	}
 	if l.agentRunner != nil && l.agentRunner.IsRunningByAgent(sess.AgentName, *sess.AgentSessionID) {
-		return false
+		return false, "agent_runner_running"
+	}
+	idle, logKnown := agentLogIdleFor(l.agentLogsDir, *sess.AgentSessionID, time.Now())
+	if isUnattendedSession(sess) {
+		if !logKnown {
+			return l.loglessTmuxCompletionEvidence(sess)
+		}
+		if idle < cronAgentIdleThreshold {
+			return false, "tmux_log_active"
+		}
+		return true, "tmux_log_idle"
 	}
 	if l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID) {
-		return true
+		return true, "liveness_dead"
 	}
-	idle, known := agentLogIdleFor(l.agentLogsDir, *sess.AgentSessionID, time.Now())
-	if !known {
+	if !logKnown {
 		// No durable log evidence, and liveness is either unwired or reports the
 		// session alive: conservatively treat as still running.
-		return false
+		return false, "log_unknown"
 	}
-	return idle >= cronAgentIdleThreshold
+	if idle < cronAgentIdleThreshold {
+		return false, "log_active"
+	}
+	return true, "log_idle"
+}
+
+// loglessTmuxCompletionEvidence recovers the degraded pipe-pane path without
+// trusting the aggregate session-liveness result. A missing log alone is
+// ambiguous: a live tmux agent may be working after pipe-pane failed. It is
+// completion evidence only when every persisted tmux pane for the session has
+// disappeared or exited. An account switch can clear the old chat's tmux name
+// and create a replacement chat with a fresh agent-session ID while the parent
+// session retains the old ID, so the persisted chats—not that stale ID—define
+// the candidate panes. Any missing dependency, database error, no candidate
+// pane, live pane, or tmux probe failure defers finalization.
+func (l *Lifecycle) loglessTmuxCompletionEvidence(sess *models.Session) (bool, string) {
+	if sess == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return false, "tmux_log_unknown"
+	}
+	if l.agentChats == nil || l.tmux == nil {
+		return false, "tmux_pane_probe_unavailable"
+	}
+
+	chats, err := l.agentChats.ListBySession(context.Background(), sess.ID)
+	if err != nil {
+		return false, "tmux_pane_probe_error"
+	}
+	foundPane := false
+	missingPane := false
+	deadPane := false
+	for _, chat := range chats {
+		if chat == nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+			continue
+		}
+		foundPane = true
+
+		alive, err := l.tmux.HasSessionStatus(context.Background(), *chat.TmuxSessionName)
+		if err != nil {
+			return false, "tmux_pane_probe_error"
+		}
+		if !alive {
+			missingPane = true
+			continue
+		}
+
+		dead, err := l.tmux.PaneDead(context.Background(), *chat.TmuxSessionName)
+		if err != nil {
+			return false, "tmux_pane_probe_error"
+		}
+		if dead {
+			deadPane = true
+			continue
+		}
+		return false, "tmux_pane_running"
+	}
+
+	if foundPane {
+		if missingPane {
+			return true, "tmux_pane_missing"
+		}
+		if deadPane {
+			return true, "tmux_pane_dead"
+		}
+	}
+	return false, "tmux_pane_unknown"
+}
+
+func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
+	over, _ := l.cronRunCompletionEvidence(sess)
+	return over
 }
 
 // CronRunIsOver is the exported wrapper the CronCompletionGate is wired with so
@@ -380,4 +475,11 @@ func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
 // sweep can never drift onto different definitions of "the cron run is over".
 func (l *Lifecycle) CronRunIsOver(sess *models.Session) bool {
 	return l.cronRunIsOver(sess)
+}
+
+// CronRunCompletionEvidence is the production completion predicate used by both
+// the Stop-hook gate and recovery sweep. The evidence value is suitable for
+// structured logs and deliberately remains a stable, private-detail string.
+func (l *Lifecycle) CronRunCompletionEvidence(sess *models.Session) (bool, string) {
+	return l.cronRunCompletionEvidence(sess)
 }

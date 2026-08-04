@@ -1,0 +1,7 @@
+{"type":"user","timestamp":"2026-08-03T15:11:02.114Z","message":{"role":"user","content":"run the build"}}
+{"type":"assistant","timestamp":"2026-08-03T15:11:09.507Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll run the build."},{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{"command":"make build"}}]}}
+{"type":"user","timestamp":"2026-08-03T15:12:38.921Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A","content":"build ok"}]}}
+{"type":"system","timestamp":"2026-08-03T15:12:39.100Z","subtype":"hook_result","content":"PostToolUse hook ok"}
+{"type":"last-prompt","prompt":"run the build"}
+{"type":"mode","mode":"default"}
+{"type":"permission-mode","permissionMode":"acceptEdits"}

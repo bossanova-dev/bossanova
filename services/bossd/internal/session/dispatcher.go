@@ -460,9 +460,11 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	// before its RPC returns (and, more rarely, a scheduled display poll gets
 	// there first), which is seconds ahead of GitHub's PR-merged delivery.
 	// machine.Merged permits no outbound PRMerged, so firing again fails and
-	// returns early — skipping the archive hook below, which is the ONLY
-	// archive-after-merge trigger for ordinary sessions and, through
-	// ArchiveSession, the only auto-delete-branches trigger too. Treat an
+	// returns early — skipping the archive hook below. Since BOS-697 that hook
+	// is one of three archive-after-merge triggers (see
+	// archiveSessionAfterMergeIfEnabled) — all of them routed through
+	// ArchiveSession, so all of them auto-delete-branches triggers too — but it
+	// is the only one on this path. Treat an
 	// already-Merged row as "the transition happened" and fall through to the
 	// side effects, all of which are idempotent: the tracker Set and the state
 	// Update are writes of the value already there, notifyCompletion is guarded
@@ -479,14 +481,12 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	// its transition costs nothing that the reconcile has not already done.
 	//
 	// Deliberately an equality test, not sm.CanFire(PRMerged): CanFire would
-	// also swallow a genuinely illegal Closed/Orphaned -> Merged fire and fall
-	// through to the side effects. Do not "simplify" it to CanFire. The flip
-	// side is that those states still lose the archive hook, as does any daemon
-	// that never receives the webhook at all (the display reconcile lands
-	// Merged and pollableState then excludes the row from the state poller
-	// that would otherwise emit PRMerged). Both predate this branch — it only
-	// makes the second deterministic for user-initiated merges — and both want
-	// the archive hook moved somewhere both reconcile paths reach.
+	// also swallow a genuinely illegal Closed -> Merged fire and fall through to
+	// the side effects. Do not "simplify" it to CanFire. Losing the transition
+	// here no longer costs the archive: the hook now lives in the shared
+	// archiveSessionAfterMergeIfEnabled, which the display poller's terminal
+	// reconcile and the reconcile sweep call too (BOS-697), so a daemon that
+	// never receives this webhook still archives.
 	if sess.State != machine.Merged {
 		if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
 			return fmt.Errorf("fire pr_merged: %w", err)
@@ -509,32 +509,67 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 }
 
 // archiveAfterMergeIfEnabled archives the just-merged session when its repo has
-// the ShouldArchiveSessionsAfterMerge flag on. The archive runs asynchronously — it
-// stops the agent, kills tmux, and removes the worktree, none of which must
-// block the dispatcher's single event goroutine — and is best-effort: the
-// underlying archive is idempotent, so re-archiving an already-archived session
-// is a no-op success. nil-safe: with no archiver wired the automation is off.
+// the ShouldArchiveSessionsAfterMerge flag on. Delegates to the package-level
+// archiveSessionAfterMergeIfEnabled, which the display poller and the reconcile
+// sweep share (BOS-697).
 func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *models.Session) {
-	if d.archiver == nil {
+	archiveSessionAfterMergeIfEnabled(ctx, d.repos, d.archiver, d.logger, sess)
+}
+
+// archiveSessionAfterMergeIfEnabled archives a session that has just reached
+// Merged, when its repo has the ShouldArchiveSessionsAfterMerge flag on.
+//
+// The archive runs asynchronously — it stops the agent, kills tmux, and removes
+// the worktree, none of which must block the dispatcher's single event
+// goroutine or a poll cycle — and is best-effort: the underlying archive is
+// idempotent, so re-archiving an already-archived session is a no-op success.
+// nil-safe: with no archiver wired the automation is off.
+//
+// Package-level rather than a Dispatcher method because three paths can land a
+// session on Merged and every one of them must archive: the PR-merged webhook
+// (Dispatcher.handlePRMerged), the display poller's terminal reconcile
+// (DisplayPoller.reconcileNonTerminalToResolved, which also backs MergeSession's
+// synchronous post-merge refresh), and the reconcile sweep that heals rows
+// already stuck merged-but-unarchived.
+//
+// Idempotent covers re-archiving SEQUENTIALLY, not two archives in flight at
+// once, and having three callers makes overlap reachable: a TUI merge archives
+// from the post-merge refresh and again from the pr_merged webhook seconds
+// later if the first has not yet reached sessions.Archive (ListByRepoAndPR's
+// archived filter only excludes the row once it has), and the sweep re-spawns
+// every tick while an archive is slow or failing. The residue is warn-log noise
+// and a SetArchiving flag the first goroutine's defer clears while the second is
+// still running; the destructive steps themselves tolerate it (the worktree
+// archive falls back to os.RemoveAll, which is a no-op on a missing path). Named
+// rather than fixed: a per-session in-flight lock belongs at the ArchiveSession
+// chokepoint, not here.
+func archiveSessionAfterMergeIfEnabled(
+	ctx context.Context,
+	repos db.RepoStore,
+	archiver SessionArchiver,
+	logger zerolog.Logger,
+	sess *models.Session,
+) {
+	if archiver == nil || sess == nil {
 		return
 	}
-	repo, err := d.repos.Get(ctx, sess.RepoID)
+	repo, err := repos.Get(ctx, sess.RepoID)
 	if err != nil {
-		d.logger.Warn().Err(err).Str("session", sess.ID).Msg("archive-after-merge: repo lookup failed")
+		logger.Warn().Err(err).Str("session", sess.ID).Msg("archive-after-merge: repo lookup failed")
 		return
 	}
 	if !repo.ShouldArchiveSessionsAfterMerge {
 		return
 	}
 	sessionID := sess.ID
-	// Detach from ctx: the archive must complete even if the event ctx is
-	// cancelled when this handler returns. safego.Go recovers panics.
-	safego.Go(d.logger, func() {
-		if err := d.archiver.ArchiveSession(context.Background(), sessionID); err != nil {
-			d.logger.Warn().Err(err).Str("session", sessionID).Msg("archive-after-merge: archive failed")
+	// Detach from ctx: the archive must complete even if the caller's ctx is
+	// cancelled when its handler returns. safego.Go recovers panics.
+	safego.Go(logger, func() {
+		if err := archiver.ArchiveSession(context.Background(), sessionID); err != nil {
+			logger.Warn().Err(err).Str("session", sessionID).Msg("archive-after-merge: archive failed")
 			return
 		}
-		d.logger.Info().Str("session", sessionID).Msg("archive-after-merge: session archived")
+		logger.Info().Str("session", sessionID).Msg("archive-after-merge: session archived")
 	})
 }
 

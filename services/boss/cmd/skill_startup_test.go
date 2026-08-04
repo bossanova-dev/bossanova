@@ -481,9 +481,7 @@ func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "make build") {
-		t.Fatalf("stderr = %q, want stale-binary warning", got)
-	}
+	assertNamesFullSkillRebuildRemedy(t, string(got), root)
 }
 
 func assertAgentSkillsInstalled(t *testing.T, dir string) {

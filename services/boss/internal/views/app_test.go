@@ -254,6 +254,109 @@ func TestAppDiscardsSessionPollFromReplacedHome(t *testing.T) {
 	}
 }
 
+func TestAppPreservesLogoutStateAcrossHomeRebuild(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.loggedIn = true
+	a.home.loggedInEmail = "dev@example.com"
+	a.home.logoutPending = true
+	a.home.authStatusGeneration = 1
+
+	a.switchToHome()
+
+	if !a.home.logoutPending {
+		t.Fatal("rebuilding Home dropped a pending logout")
+	}
+	if got := a.home.authStatusGeneration; got != 1 {
+		t.Fatalf("auth status generation = %d, want 1", got)
+	}
+	if !a.home.loggedIn || a.home.loggedInEmail != "dev@example.com" {
+		t.Fatalf("rebuilding Home dropped the signed-in logout snapshot: loggedIn=%t email=%q", a.home.loggedIn, a.home.loggedInEmail)
+	}
+
+	updated, _ := a.home.Update(authStatusMsg{generation: 0, loggedIn: true, email: "stale@example.com"})
+	a.home = updated.(HomeModel)
+	if !a.home.loggedIn || a.home.loggedInEmail != "dev@example.com" {
+		t.Fatalf("stale auth status changed the preserved signed-in state: loggedIn=%t email=%q", a.home.loggedIn, a.home.loggedInEmail)
+	}
+}
+
+func TestAppDeliversQueuedLoginNotificationAfterLoginIsDismissed(t *testing.T) {
+	logoutStarted := make(chan struct{})
+	releaseLogout := make(chan struct{})
+	received := make(chan string, 2)
+	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if action == "logout" {
+			close(logoutStarted)
+			<-releaseLogout
+		}
+		received <- action
+		return nil
+	}}
+	a := NewApp(c, auth.NewManager(&countingLogoutTokenStore{}, auth.Config{}))
+	a.home.sessions = []*pb.Session{}
+	a.home.repoCount = 1
+	a.home.loggedIn = true
+	a.home.loggedInEmail = "dev@example.com"
+
+	updated, _ := a.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	a = updated.(App)
+	updated, logoutCmd := a.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	a = updated.(App)
+	if logoutCmd == nil {
+		t.Fatal("logout confirmation returned no command")
+	}
+	logoutResult := logoutCmd()
+
+	updated, logoutNotifyCmd := a.Update(logoutResult)
+	a = updated.(App)
+	if logoutNotifyCmd == nil {
+		t.Fatal("successful logout returned no notification command")
+	}
+	go logoutNotifyCmd()
+	select {
+	case <-logoutStarted:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("logout notification did not start")
+	}
+
+	updated, _ = a.Update(switchViewMsg{view: ViewLogin})
+	a = updated.(App)
+	updated, loginCmd := a.Update(loginCompleteMsg{email: "new@example.com"})
+	a = updated.(App)
+	loginMsg := loginCmd()
+	batch, ok := loginMsg.(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("login success command = %T, want non-empty tea.BatchMsg", loginMsg)
+	}
+	updated, _ = a.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	a = updated.(App)
+	if a.activeView != ViewHome {
+		t.Fatalf("activeView = %v, want %v after dismissing login", a.activeView, ViewHome)
+	}
+	go batch[0]()
+
+	select {
+	case action := <-received:
+		t.Fatalf("%s notification reached the daemon before the earlier stalled logout", action)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseLogout)
+	for _, want := range []string{"logout", "login"} {
+		select {
+		case got := <-received:
+			if got != want {
+				t.Fatalf("notification = %q, want %q", got, want)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("did not receive %s notification", want)
+		}
+	}
+}
+
 // TestNewHomeModelPreservesSessionStart guards the cloud-offer session-fatigue
 // timer: recreating Home (on every navigation back to the list) must reuse the
 // App's session epoch, not reset it to "now". Otherwise the 60s guest offer

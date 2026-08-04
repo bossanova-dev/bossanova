@@ -120,6 +120,9 @@ func (h *HomeModel) buildTableRows() {
 		if sessionHasEndpointRow(sess) {
 			nameWidthLabels = append(nameWidthLabels, sessionEndpointLabels(sess))
 		}
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
+			nameWidthLabels = append(nameWidthLabels, waitingHint)
+		}
 		nameWidthLabels = append(nameWidthLabels, sessionWarningHints(sess)...)
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
@@ -242,6 +245,14 @@ func (h *HomeModel) buildTableRows() {
 		// agrees with what is actually emitted here.
 		if sessionHasEndpointRow(sess) {
 			rows = append(rows, project(table.Row{"", "", "", renderSessionEndpoints(sess), "", ""}))
+		}
+		// Why a session is parked on an external event (BOS-668). Informational,
+		// not a warning, so it is styled with the info color and sits above the
+		// danger-styled warning block. Same emit-and-count discipline as the
+		// endpoint row: the predicate here is waitingHintLine != "", which is
+		// exactly what sessionSubRowCount counts.
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
+			rows = append(rows, project(table.Row{"", "", "", styleStatusInfo.Render(waitingHint), "", ""}))
 		}
 		// A merged/closed row's warnings no longer need to alarm — dim them
 		// (BOS-246). Part A clears the reason at the source, so this only paints

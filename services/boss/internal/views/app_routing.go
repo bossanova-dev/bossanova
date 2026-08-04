@@ -174,6 +174,7 @@ func (a *App) enterSettings() tea.Cmd {
 func (a *App) enterLogin() tea.Cmd {
 	a.login = NewLoginModel(a.auth, a.client, a.ctx)
 	a.login.SetAfterAuth(a.afterAuth)
+	a.login.SetAuthChangeQueue(a.authChanges)
 	if a.cloudAccess != nil {
 		a.login.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 		a.login.SetSubscriptionURL(a.subscriptionURL)
@@ -228,6 +229,7 @@ func (a *App) switchToReturn(v View) tea.Cmd {
 
 func (a *App) newHomeModel() HomeModel {
 	home := NewHomeModel(a.client, a.ctx, a.auth)
+	home.authChanges = a.authChanges
 	home.startedAt = a.startedAt
 	home.SetSettings(a.userSettings)
 	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
@@ -242,6 +244,14 @@ func (a *App) newHomeModel() HomeModel {
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
+	// A logout command can still be waiting on the credential lock while the
+	// user visits another view. Preserve its state so rebuilding Home cannot
+	// expose a second logout action or accept a stale auth-status result.
+	home.logoutPending = a.home.logoutPending
+	home.authStatusGeneration = a.home.authStatusGeneration
+	home.logoutError = a.home.logoutError
+	home.loggedIn = a.home.loggedIn
+	home.loggedInEmail = a.home.loggedInEmail
 	// Preserve focus state and any pending question so a rebuild between the
 	// notification and the user's click doesn't drop the auto-open (BOS-459).
 	home.focused = a.home.focused

@@ -2,10 +2,12 @@ package termreset
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	creackpty "github.com/creack/pty/v2"
@@ -151,11 +153,52 @@ func TestWriteMouseResetIfTerminalWritesToTerminal(t *testing.T) {
 	}
 
 	got := make([]byte, len(MouseReset))
-	if _, err := io.ReadFull(master, got); err != nil {
+	if err := readFullWithin(master, got, ptyReadTimeout); err != nil {
 		t.Fatalf("read reset from pty: %v", err)
 	}
 	if string(got) != MouseReset {
 		t.Errorf("reset written to terminal = %q, want %q", got, MouseReset)
+	}
+}
+
+// TestReadFullWithinBoundsAStalledRead proves the BOS-698 bound actually
+// fires. An io.Pipe with no writer never delivers, standing in for the wedged
+// pty master that burned the full 300s Bazel timeout on PR #1816.
+func TestReadFullWithinBoundsAStalledRead(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close() //nolint:errcheck // test cleanup
+
+	buf := make([]byte, 4)
+	start := time.Now()
+	err := readFullWithin(pr, buf, 20*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("readFullWithin returned nil for a reader that never delivers; want a timeout error")
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Errorf("error %q does not name the stall", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("readFullWithin took %s; want it bounded near 20ms", elapsed)
+	}
+}
+
+// TestReadFullWithinReturnsDeliveredBytes keeps the bound from breaking the
+// happy path: a reader that does deliver must fill the buffer and report nil.
+func TestReadFullWithinReturnsDeliveredBytes(t *testing.T) {
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte("abcd"))
+		_ = pw.Close()
+	}()
+
+	buf := make([]byte, 4)
+	if err := readFullWithin(pr, buf, 5*time.Second); err != nil {
+		t.Fatalf("readFullWithin: %v", err)
+	}
+	if string(buf) != "abcd" {
+		t.Errorf("readFullWithin filled buf with %q, want %q", buf, "abcd")
 	}
 }
 
@@ -167,5 +210,45 @@ func TestWriteResetIfTerminalHandlesNilFile(t *testing.T) {
 	}
 	if WriteAbnormalExitResetIfTerminal(nil) {
 		t.Error("WriteAbnormalExitResetIfTerminal(nil) returned true; want false")
+	}
+}
+
+// ptyReadTimeout bounds the pty master read below. The release matrix can delay
+// an unsandboxed PTY transfer past five seconds under whole-graph load, so leave
+// room for that scheduling variance while still cutting a true wedge well below
+// Bazel's 300s test timeout.
+const ptyReadTimeout = 20 * time.Second
+
+// readFullWithin is io.ReadFull with an upper bound (BOS-698). A transient
+// runner-level pty anomaly used to wedge the read forever, turning a 0.3s test
+// into a 300s Bazel TIMEOUT whose failure text said nothing about the cause.
+//
+// It deliberately does NOT use (*os.File).SetReadDeadline: that returns
+// ErrNoDeadline for any file the runtime poller did not adopt, which would
+// leave the read silently unbounded — a fail-open, and the exact failure this
+// bound exists to prevent. A goroutine plus select is portable and cannot
+// fail open.
+//
+// The goroutine leaks only on the stall path, where the test is failing and the
+// process is about to exit anyway; the channel is buffered so it can never
+// block on a receiver that has already timed out.
+func readFullWithin(r io.Reader, buf []byte, d time.Duration) error {
+	type result struct {
+		n   int
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		n, err := io.ReadFull(r, buf)
+		ch <- result{n: n, err: err}
+	}()
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case res := <-ch:
+		return res.err
+	case <-timer.C:
+		return fmt.Errorf("pty read stalled: %d bytes not delivered within %s", len(buf), d)
 	}
 }

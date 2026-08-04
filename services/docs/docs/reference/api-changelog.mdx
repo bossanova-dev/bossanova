@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-07-18**. The engineering procedure for adding a new
+The current version is **2026-08-04**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -79,7 +79,7 @@ to" from the prior "agent cannot rotate". Clients pinned to an older version are
 down-converted back to `ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY`, the prior
 observable value.
 
-### 2026-07-18 — Errored session display recolor (Current)
+### 2026-07-18 — Errored session display recolor
 
 The OrchestratorService began serving the errored-recolor display shape for
 orphaned/blocked sessions on `Session.display_label` / `display_intent` /
@@ -90,6 +90,41 @@ terminal muted PR ("✓ merged" / "closed") is exempt and stays muted. Clients
 pinned to an older version were built against the prior shapes — a fixed
 "orphaned"/`DANGER`/no-spinner tuple for orphaned sessions and an un-recolored
 base cascade for blocked sessions — so they are down-converted back to those.
+
+### 2026-07-23 — Respawn-in-place rotation outcomes
+
+The OrchestratorService began serving two `RotationOutcome` values on
+`Session.rotation_events[].outcome`:
+`ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT`, audited when a pane that failed
+authentication is stopped and respawned in place under the same account (the
+account itself probes healthy), and `ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED`,
+audited when the per-chat respawn-in-place budget for the window is spent.
+Clients pinned to an older version are down-converted back to
+`ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY`, the prior observable value.
+
+### 2026-08-03 — Agent-stalled attention reason
+
+The OrchestratorService began serving `AttentionReason` value
+`ATTENTION_REASON_AGENT_STALLED` on `Session.attention_status.reason`, a new
+attention reason raised when a chat reports `CHAT_STATUS_WORKING` while its agent
+has made no semantic progress for longer than its phase's threshold — a silently
+dead turn behind a still-animating spinner. Like the auth-failed reason it is
+only raised where the session had no other attention, so clients pinned to an
+older version are down-converted back to no attention reason, the prior
+"keeps spinning" behavior.
+
+### 2026-08-04 — Waiting chat status (Current)
+
+The OrchestratorService began serving `ChatStatus` value `CHAT_STATUS_WAITING`
+on `ChatStatusEntry.status`, `ChatStatusDelta.status` and
+`SessionStatusEntry.status`, alongside a new `waiting_reason` string on each of
+those messages. A chat is waiting when it is blocked on an external event — a
+registered GitHub callback, a background poll tick — rather than computing, and
+`waiting_reason` carries a short human-readable explanation such as
+`awaiting checks_passed_ready on owner/repo#123` (it is empty for every other
+status). Before this version such a chat reported `CHAT_STATUS_WORKING`, so
+clients pinned to an older version are down-converted back to
+`CHAT_STATUS_WORKING` with an empty `waiting_reason`.
 
 ## See also
 

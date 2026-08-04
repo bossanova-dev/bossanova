@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/config"
 )
@@ -52,7 +54,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldLoadSettings := loadSettings
 	oldSaveSettings := saveSettings
 	oldDiscoverPlugins := discoverPlugins
@@ -61,7 +63,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		loadSettings = oldLoadSettings
 		saveSettings = oldSaveSettings
 		discoverPlugins = oldDiscoverPlugins
@@ -121,7 +123,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 		return nil
 	}
 	restartCalled := false
-	restartDaemon = func() error {
+	restartDaemonAfterUpgrade = func() error {
 		restartCalled = true
 		return nil
 	}
@@ -158,7 +160,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 		t.Fatalf("runUpgrade() output = %q, want success message", out.String())
 	}
 	if !restartCalled {
-		t.Fatal("restartDaemon was not called")
+		t.Fatal("restartDaemonAfterUpgrade was not called")
 	}
 	if !strings.Contains(out.String(), "daemon restarted") {
 		t.Fatalf("runUpgrade() output = %q, want daemon restarted message", out.String())
@@ -170,13 +172,13 @@ func TestRunUpgradeExplicitVersionInstallsWithoutCheckingLatest(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 	}()
 
 	dir := t.TempDir()
@@ -194,7 +196,7 @@ func TestRunUpgradeExplicitVersionInstallsWithoutCheckingLatest(t *testing.T) {
 		gotPlan = plan
 		return nil
 	}
-	restartDaemon = func() error { return nil }
+	restartDaemonAfterUpgrade = func() error { return nil }
 
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -220,7 +222,7 @@ func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
 	oldBrewUpgradeBossanova := brewUpgradeBossanova
-	oldRestartDaemon := restartDaemon
+	oldRestartHomebrewDaemon := restartHomebrewDaemon
 	oldUpgradeLockPath := upgradeLockPath
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
@@ -228,7 +230,7 @@ func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
 		brewUpgradeBossanova = oldBrewUpgradeBossanova
-		restartDaemon = oldRestartDaemon
+		restartHomebrewDaemon = oldRestartHomebrewDaemon
 		upgradeLockPath = oldUpgradeLockPath
 	}()
 
@@ -249,12 +251,16 @@ func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
 		return nil
 	}
 	brewCalled := false
+	pluginDir := filepath.Join(dir, "opt", "homebrew", "opt", "bossanova", "libexec", "plugins")
 	brewUpgradeBossanova = func(context.Context, string) (string, error) {
 		brewCalled = true
-		return "", nil
+		return pluginDir, nil
 	}
 	restartCalled := false
-	restartDaemon = func() error {
+	restartHomebrewDaemon = func(_ context.Context, path string) error {
+		if want := filepath.Join(dir, "opt", "homebrew", "opt", "bossanova", "bin", "boss"); path != want {
+			t.Fatalf("post-upgrade executable = %q, want %q", path, want)
+		}
 		restartCalled = true
 		return nil
 	}
@@ -270,7 +276,7 @@ func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
 		t.Fatal("brewUpgradeBossanova was not called")
 	}
 	if !restartCalled {
-		t.Fatal("restartDaemon was not called")
+		t.Fatal("restartDaemonAfterUpgrade was not called")
 	}
 	if strings.Contains(out.String(), "assets into") || strings.Contains(out.String(), "Cellar") {
 		t.Fatalf("runUpgrade() output = %q, want no direct Cellar asset install", out.String())
@@ -286,7 +292,7 @@ func TestRunUpgradeHomebrewPersistsPostUpgradePluginPaths(t *testing.T) {
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
 	oldBrewUpgradeBossanova := brewUpgradeBossanova
-	oldRestartDaemon := restartDaemon
+	oldRestartHomebrewDaemon := restartHomebrewDaemon
 	oldLoadSettings := loadSettings
 	oldSaveSettings := saveSettings
 	oldUpgradeLockPath := upgradeLockPath
@@ -296,7 +302,7 @@ func TestRunUpgradeHomebrewPersistsPostUpgradePluginPaths(t *testing.T) {
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
 		brewUpgradeBossanova = oldBrewUpgradeBossanova
-		restartDaemon = oldRestartDaemon
+		restartHomebrewDaemon = oldRestartHomebrewDaemon
 		loadSettings = oldLoadSettings
 		saveSettings = oldSaveSettings
 		upgradeLockPath = oldUpgradeLockPath
@@ -322,7 +328,7 @@ func TestRunUpgradeHomebrewPersistsPostUpgradePluginPaths(t *testing.T) {
 	brewUpgradeBossanova = func(context.Context, string) (string, error) {
 		return newPluginDir, nil
 	}
-	restartDaemon = func() error { return nil }
+	restartHomebrewDaemon = func(context.Context, string) error { return nil }
 	loadSettings = func() (config.Settings, error) {
 		return config.Settings{
 			Plugins: []config.PluginConfig{
@@ -359,14 +365,14 @@ func TestRunUpgradeHomebrewNoRestartSkipsDaemonRestart(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldBrewUpgradeBossanova := brewUpgradeBossanova
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldUpgradeLockPath := upgradeLockPath
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		brewUpgradeBossanova = oldBrewUpgradeBossanova
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		upgradeLockPath = oldUpgradeLockPath
 	}()
 
@@ -382,8 +388,8 @@ func TestRunUpgradeHomebrewNoRestartSkipsDaemonRestart(t *testing.T) {
 		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
 	}
 	brewUpgradeBossanova = func(context.Context, string) (string, error) { return "", nil }
-	restartDaemon = func() error {
-		t.Fatal("restartDaemon called with --no-restart")
+	restartDaemonAfterUpgrade = func() error {
+		t.Fatal("restartDaemonAfterUpgrade called with --no-restart")
 		return nil
 	}
 	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
@@ -404,14 +410,14 @@ func TestRunUpgradeHomebrewBrewFailureIsActionable(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldBrewUpgradeBossanova := brewUpgradeBossanova
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldUpgradeLockPath := upgradeLockPath
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		brewUpgradeBossanova = oldBrewUpgradeBossanova
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		upgradeLockPath = oldUpgradeLockPath
 	}()
 
@@ -429,8 +435,8 @@ func TestRunUpgradeHomebrewBrewFailureIsActionable(t *testing.T) {
 	brewUpgradeBossanova = func(context.Context, string) (string, error) {
 		return "", errors.New("brew upgrade bossanova-dev/tap/bossanova failed: exit status 1\nRun manually: brew upgrade bossanova-dev/tap/bossanova")
 	}
-	restartDaemon = func() error {
-		t.Fatal("restartDaemon called after brew failure")
+	restartDaemonAfterUpgrade = func() error {
+		t.Fatal("restartDaemonAfterUpgrade called after brew failure")
 		return nil
 	}
 	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
@@ -639,13 +645,13 @@ func TestRunUpgradeNoRestartChangesOutput(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 	}()
 
 	dir := t.TempDir()
@@ -665,8 +671,8 @@ func TestRunUpgradeNoRestartChangesOutput(t *testing.T) {
 	}
 	executablePath = func() (string, error) { return exe, nil }
 	installUpgrade = func(context.Context, upgrade.InstallPlan) error { return nil }
-	restartDaemon = func() error {
-		t.Fatal("restartDaemon called with --no-restart")
+	restartDaemonAfterUpgrade = func() error {
+		t.Fatal("restartDaemonAfterUpgrade called with --no-restart")
 		return nil
 	}
 	t.Setenv("HOME", dir)
@@ -683,18 +689,246 @@ func TestRunUpgradeNoRestartChangesOutput(t *testing.T) {
 	}
 }
 
+func TestRestartDaemonAfterUpgradeWaitsForShutdownBeforeBootstrap(t *testing.T) {
+	oldDefaultSocketPath := defaultSocketPath
+	oldDaemonGetStatus := daemonGetStatus
+	oldDaemonStop := daemonStop
+	oldRestartDaemon := restartDaemon
+	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
+	oldWaitForSocketGone := waitForDaemonSocketGone
+	oldDaemonSocketReachable := daemonSocketReachable
+	oldDaemonRestartReadyTimeout := daemonRestartReadyTimeout
+	oldDaemonRestartPollInterval := daemonRestartPollInterval
+	defer func() {
+		defaultSocketPath = oldDefaultSocketPath
+		daemonGetStatus = oldDaemonGetStatus
+		daemonStop = oldDaemonStop
+		restartDaemon = oldRestartDaemon
+		terminateCurrentProfileBossd = oldTerminateCurrentProfileBossd
+		waitForDaemonSocketGone = oldWaitForSocketGone
+		daemonSocketReachable = oldDaemonSocketReachable
+		daemonRestartReadyTimeout = oldDaemonRestartReadyTimeout
+		daemonRestartPollInterval = oldDaemonRestartPollInterval
+	}()
+
+	const socketPath = "/tmp/bossd.sock"
+	var events []string
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonGetStatus = func() (*daemon.Status, error) {
+		events = append(events, "status")
+		return &daemon.Status{Installed: true, Running: true}, nil
+	}
+	daemonStop = func() error {
+		events = append(events, "stop")
+		return nil
+	}
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("wait socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "wait")
+		return true
+	}
+	restartDaemon = func() error {
+		events = append(events, "restart")
+		return nil
+	}
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "ready")
+		return true
+	}
+	terminateCurrentProfileBossd = func() (int, error) {
+		t.Fatal("terminateCurrentProfileBossd called for a running installed daemon")
+		return 0, nil
+	}
+
+	if err := restartDaemonAfterUpgrade(); err != nil {
+		t.Fatalf("restartDaemonAfterUpgrade() error = %v", err)
+	}
+	if want := []string{"status", "stop", "wait", "restart", "ready"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRestartDaemonAfterUpgradeReportsWhenSocketNeverBecomesReachable(t *testing.T) {
+	oldDefaultSocketPath := defaultSocketPath
+	oldDaemonGetStatus := daemonGetStatus
+	oldDaemonStop := daemonStop
+	oldRestartDaemon := restartDaemon
+	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
+	oldWaitForSocketGone := waitForDaemonSocketGone
+	oldDaemonSocketReachable := daemonSocketReachable
+	oldDaemonRestartReadyTimeout := daemonRestartReadyTimeout
+	oldDaemonRestartPollInterval := daemonRestartPollInterval
+	defer func() {
+		defaultSocketPath = oldDefaultSocketPath
+		daemonGetStatus = oldDaemonGetStatus
+		daemonStop = oldDaemonStop
+		restartDaemon = oldRestartDaemon
+		terminateCurrentProfileBossd = oldTerminateCurrentProfileBossd
+		waitForDaemonSocketGone = oldWaitForSocketGone
+		daemonSocketReachable = oldDaemonSocketReachable
+		daemonRestartReadyTimeout = oldDaemonRestartReadyTimeout
+		daemonRestartPollInterval = oldDaemonRestartPollInterval
+	}()
+
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true, Running: true}, nil }
+	daemonStop = func() error { return nil }
+	waitForDaemonSocketGone = func(string) bool { return true }
+	restartDaemon = func() error { return nil }
+	terminateCurrentProfileBossd = func() (int, error) { return 0, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	daemonRestartReadyTimeout = 20 * time.Millisecond
+	daemonRestartPollInterval = time.Millisecond
+
+	err := restartDaemonAfterUpgrade()
+	if err == nil || !strings.Contains(err.Error(), "did not become reachable") {
+		t.Fatalf("restartDaemonAfterUpgrade() error = %v, want readiness error", err)
+	}
+}
+
+func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *testing.T) {
+	oldDefaultSocketPath := defaultSocketPath
+	oldDaemonGetStatus := daemonGetStatus
+	oldDaemonStop := daemonStop
+	oldRestartDaemon := restartDaemon
+	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
+	oldWaitForSocketGone := waitForDaemonSocketGone
+	oldDaemonSocketReachable := daemonSocketReachable
+	defer func() {
+		defaultSocketPath = oldDefaultSocketPath
+		daemonGetStatus = oldDaemonGetStatus
+		daemonStop = oldDaemonStop
+		restartDaemon = oldRestartDaemon
+		terminateCurrentProfileBossd = oldTerminateCurrentProfileBossd
+		waitForDaemonSocketGone = oldWaitForSocketGone
+		daemonSocketReachable = oldDaemonSocketReachable
+	}()
+
+	const socketPath = "/tmp/bossd.sock"
+	var events []string
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonGetStatus = func() (*daemon.Status, error) {
+		events = append(events, "status")
+		return &daemon.Status{Installed: true, Running: false}, nil
+	}
+	daemonStop = func() error {
+		t.Fatal("daemon.Stop called for an inactive installed daemon")
+		return nil
+	}
+	terminateCurrentProfileBossd = func() (int, error) {
+		events = append(events, "terminate-current-profile")
+		return 1, nil
+	}
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("wait socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "wait")
+		return true
+	}
+	restartDaemon = func() error {
+		events = append(events, "restart")
+		return nil
+	}
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "ready")
+		return true
+	}
+
+	if err := restartDaemonAfterUpgrade(); err != nil {
+		t.Fatalf("restartDaemonAfterUpgrade() error = %v", err)
+	}
+	if want := []string{"status", "terminate-current-profile", "wait", "restart", "ready"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRestartDaemonAfterUpgradeKeepsStandaloneDaemonUninstalled(t *testing.T) {
+	oldDefaultSocketPath := defaultSocketPath
+	oldDaemonGetStatus := daemonGetStatus
+	oldDaemonStop := daemonStop
+	oldDaemonEnsureRunning := daemonEnsureRunning
+	oldRestartDaemon := restartDaemon
+	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
+	oldWaitForSocketGone := waitForDaemonSocketGone
+	oldDaemonSocketReachable := daemonSocketReachable
+	defer func() {
+		defaultSocketPath = oldDefaultSocketPath
+		daemonGetStatus = oldDaemonGetStatus
+		daemonStop = oldDaemonStop
+		daemonEnsureRunning = oldDaemonEnsureRunning
+		restartDaemon = oldRestartDaemon
+		terminateCurrentProfileBossd = oldTerminateCurrentProfileBossd
+		waitForDaemonSocketGone = oldWaitForSocketGone
+		daemonSocketReachable = oldDaemonSocketReachable
+	}()
+
+	const socketPath = "/tmp/bossd.sock"
+	var events []string
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonGetStatus = func() (*daemon.Status, error) {
+		events = append(events, "status")
+		return &daemon.Status{Installed: false}, nil
+	}
+	daemonStop = func() error {
+		t.Fatal("daemon.Stop called for a standalone daemon")
+		return nil
+	}
+	terminateCurrentProfileBossd = func() (int, error) {
+		events = append(events, "terminate-current-profile")
+		return 0, nil
+	}
+	waitForDaemonSocketGone = func(string) bool {
+		t.Fatal("waitForDaemonSocketGone called without a standalone daemon to reap")
+		return false
+	}
+	restartDaemon = func() error {
+		t.Fatal("daemon.Restart installs a LaunchAgent for standalone upgrades")
+		return nil
+	}
+	daemonEnsureRunning = func(path string) error {
+		if path != socketPath {
+			t.Fatalf("ensure path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "start-standalone")
+		return nil
+	}
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "ready")
+		return true
+	}
+
+	if err := restartDaemonAfterUpgrade(); err != nil {
+		t.Fatalf("restartDaemonAfterUpgrade() error = %v", err)
+	}
+	if want := []string{"status", "terminate-current-profile", "start-standalone", "ready"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
 func TestRunUpgradeReportsRestartError(t *testing.T) {
 	oldCurrentVersion := upgradeCurrentVersion
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 	}()
 
 	dir := t.TempDir()
@@ -714,7 +948,7 @@ func TestRunUpgradeReportsRestartError(t *testing.T) {
 	}
 	executablePath = func() (string, error) { return exe, nil }
 	installUpgrade = func(context.Context, upgrade.InstallPlan) error { return nil }
-	restartDaemon = func() error { return errors.New("restart failed") }
+	restartDaemonAfterUpgrade = func() error { return errors.New("restart failed") }
 	t.Setenv("HOME", dir)
 
 	err := runUpgrade(&cobra.Command{}, upgradeOptions{Yes: true})
@@ -743,7 +977,7 @@ func TestRunUpgradeInstallsPluginsIntoConfiguredPluginDir(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldLoadSettings := loadSettings
 	oldDiscoverPlugins := discoverPlugins
 	defer func() {
@@ -751,7 +985,7 @@ func TestRunUpgradeInstallsPluginsIntoConfiguredPluginDir(t *testing.T) {
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		loadSettings = oldLoadSettings
 		discoverPlugins = oldDiscoverPlugins
 	}()
@@ -794,7 +1028,7 @@ func TestRunUpgradeInstallsPluginsIntoConfiguredPluginDir(t *testing.T) {
 		gotPlan = plan
 		return nil
 	}
-	restartDaemon = func() error { return nil }
+	restartDaemonAfterUpgrade = func() error { return nil }
 
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
@@ -811,7 +1045,7 @@ func TestRunUpgradeInstallsPluginsIntoDiscoveredPluginDir(t *testing.T) {
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldLoadSettings := loadSettings
 	oldDiscoverPlugins := discoverPlugins
 	defer func() {
@@ -819,7 +1053,7 @@ func TestRunUpgradeInstallsPluginsIntoDiscoveredPluginDir(t *testing.T) {
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		loadSettings = oldLoadSettings
 		discoverPlugins = oldDiscoverPlugins
 	}()
@@ -850,7 +1084,7 @@ func TestRunUpgradeInstallsPluginsIntoDiscoveredPluginDir(t *testing.T) {
 		gotPlan = plan
 		return nil
 	}
-	restartDaemon = func() error { return nil }
+	restartDaemonAfterUpgrade = func() error { return nil }
 
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
@@ -925,7 +1159,7 @@ func TestRunUpgradeRewritesInstalledPluginPathsPreservingEnabledState(t *testing
 	oldCheck := checkUpgrade
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
-	oldRestartDaemon := restartDaemon
+	oldRestartDaemon := restartDaemonAfterUpgrade
 	oldLoadSettings := loadSettings
 	oldSaveSettings := saveSettings
 	oldDiscoverPlugins := discoverPlugins
@@ -935,7 +1169,7 @@ func TestRunUpgradeRewritesInstalledPluginPathsPreservingEnabledState(t *testing
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
-		restartDaemon = oldRestartDaemon
+		restartDaemonAfterUpgrade = oldRestartDaemon
 		loadSettings = oldLoadSettings
 		saveSettings = oldSaveSettings
 		discoverPlugins = oldDiscoverPlugins
@@ -975,8 +1209,8 @@ func TestRunUpgradeRewritesInstalledPluginPathsPreservingEnabledState(t *testing
 		return upgrade.CheckResult{}, nil
 	}
 	installUpgrade = func(context.Context, upgrade.InstallPlan) error { return nil }
-	restartDaemon = func() error {
-		t.Fatal("restartDaemon called with --no-restart")
+	restartDaemonAfterUpgrade = func() error {
+		t.Fatal("restartDaemonAfterUpgrade called with --no-restart")
 		return nil
 	}
 	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }

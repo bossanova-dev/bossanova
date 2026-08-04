@@ -104,6 +104,28 @@ func TestWaitForSocketGoneWaitsForDelayedDaemonShutdown(t *testing.T) {
 	}
 }
 
+func TestWaitForDaemonLockReleaseWaitsForSingletonLockRelease(t *testing.T) {
+	appDataDir := t.TempDir()
+	lock, err := os.OpenFile(filepath.Join(appDataDir, "bossd.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatalf("open singleton lock: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("lock singleton file: %v", err)
+	}
+
+	const releaseDelay = 25 * time.Millisecond
+	time.AfterFunc(releaseDelay, func() { _ = lock.Close() })
+	start := time.Now()
+	if !waitForDaemonLockRelease(appDataDir) {
+		t.Fatal("waitForDaemonLockRelease() = false, want true after lock release")
+	}
+	if elapsed := time.Since(start); elapsed < releaseDelay {
+		t.Fatalf("waitForDaemonLockRelease() returned after %s, before singleton lock release", elapsed)
+	}
+}
+
 func TestCurrentDaemonProfileUsesConfiguredAppDataAndSocketPath(t *testing.T) {
 	restoreDaemonCommandStubs(t)
 	dir := t.TempDir()
@@ -335,8 +357,8 @@ func TestDaemonRestartNeverSweepsPlugins(t *testing.T) {
 		status     *daemon.Status
 		wantEvents []string
 	}{
-		{"installed and running", &daemon.Status{Installed: true, Running: true}, []string{"stop", "start"}},
-		{"installed but not running", &daemon.Status{Installed: true, Running: false}, []string{"start"}},
+		{"installed and running", &daemon.Status{Installed: true, Running: true}, []string{"stop", "restart"}},
+		{"installed but not running", &daemon.Status{Installed: true, Running: false}, []string{"terminate-current-profile", "restart"}},
 		{"not installed", &daemon.Status{Installed: false, Running: false}, []string{"start"}},
 	}
 	for _, tc := range cases {
@@ -363,6 +385,14 @@ func TestDaemonRestartNeverSweepsPlugins(t *testing.T) {
 			daemonStop = func() error {
 				events = append(events, "stop")
 				return nil
+			}
+			restartDaemon = func() error {
+				events = append(events, "restart")
+				return nil
+			}
+			terminateCurrentProfileBossd = func() (int, error) {
+				events = append(events, "terminate-current-profile")
+				return 1, nil
 			}
 			daemonEnsureRunning = func(path string) error {
 				if path != socketPath {
@@ -415,6 +445,7 @@ func TestRunDaemonRestartReportsWhenSocketNeverBecomesReachable(t *testing.T) {
 	waitForDaemonSocketGone = func(string) bool { return true }
 	daemonStop = func() error { return nil }
 	findBossdPluginPIDs = func() ([]int, error) { return nil, nil }
+	restartDaemon = func() error { return nil }
 	daemonEnsureRunning = func(string) error { return nil }
 	// Keep the readiness loop fast so the failure path doesn't wait 30s.
 	daemonRestartReadyTimeout = 20 * time.Millisecond
@@ -426,6 +457,61 @@ func TestRunDaemonRestartReportsWhenSocketNeverBecomesReachable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not become reachable") {
 		t.Fatalf("error = %v, want it to mention socket not reachable", err)
+	}
+}
+
+func TestRunDaemonRestartWaitsForStandaloneExitBeforeStartingReplacement(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+	var events []string
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: false}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	terminateStandaloneCurrentProfile = func(profile daemonProfile) (int, error) {
+		if profile.AppDataDir != appDataDir {
+			t.Fatalf("profile app data dir = %q, want %q", profile.AppDataDir, appDataDir)
+		}
+		events = append(events, "terminate")
+		return 1, nil
+	}
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "socket-gone")
+		return true
+	}
+	waitForStandaloneBossdExit = func(dir string) bool {
+		if dir != appDataDir {
+			t.Fatalf("state dir = %q, want %q", dir, appDataDir)
+		}
+		events = append(events, "process-exited")
+		return true
+	}
+	daemonEnsureRunning = func(path string) error {
+		if path != socketPath {
+			t.Fatalf("ensure path = %q, want %q", path, socketPath)
+		}
+		events = append(events, "start")
+		return nil
+	}
+
+	if err := runDaemonRestart(&cobra.Command{}); err != nil {
+		t.Fatalf("runDaemonRestart: %v", err)
+	}
+	if want := []string{"terminate", "socket-gone", "process-exited", "start"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
 	}
 }
 
@@ -589,6 +675,7 @@ func TestRestartReachableDaemonForSettingsReloadReapsStandaloneWhenInstalledServ
 			events = append(events, "terminate-standalone")
 			return 1, nil
 		},
+		nil,
 		func(path string) bool {
 			events = append(events, "wait:"+path)
 			return true
@@ -893,10 +980,13 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonEnsureRunning := daemonEnsureRunning
 	oldDaemonStop := daemonStop
+	oldRestartDaemon := restartDaemon
+	oldTerminateStandaloneCurrentProfile := terminateStandaloneCurrentProfile
 	oldTerminateAllBossdProcesses := terminateAllBossdProcesses
 	oldTerminateAllPluginProcesses := terminateAllPluginProcesses
 	oldFindBossdPluginPIDs := findBossdPluginPIDs
 	oldWaitForDaemonSocketGone := waitForDaemonSocketGone
+	oldWaitForStandaloneBossdExit := waitForStandaloneBossdExit
 	oldDaemonRestartReadyTimeout := daemonRestartReadyTimeout
 	oldDaemonRestartPollInterval := daemonRestartPollInterval
 	t.Cleanup(func() {
@@ -905,10 +995,13 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		daemonGetStatus = oldDaemonGetStatus
 		daemonEnsureRunning = oldDaemonEnsureRunning
 		daemonStop = oldDaemonStop
+		restartDaemon = oldRestartDaemon
+		terminateStandaloneCurrentProfile = oldTerminateStandaloneCurrentProfile
 		terminateAllBossdProcesses = oldTerminateAllBossdProcesses
 		terminateAllPluginProcesses = oldTerminateAllPluginProcesses
 		findBossdPluginPIDs = oldFindBossdPluginPIDs
 		waitForDaemonSocketGone = oldWaitForDaemonSocketGone
+		waitForStandaloneBossdExit = oldWaitForStandaloneBossdExit
 		daemonRestartReadyTimeout = oldDaemonRestartReadyTimeout
 		daemonRestartPollInterval = oldDaemonRestartPollInterval
 	})

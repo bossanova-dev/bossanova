@@ -43,3 +43,5 @@ parallel sessions on the same repo. See
   Repair loop edge cases](../help/troubleshooting.md#repair-loop-edge-cases).
 - Want to see what repair did → the session row in Trash links to the
   archived chat.
+- Want to be notified when a PR merges, closes, or passes checks → see
+  [GitHub PR callbacks](./github-callbacks.md).

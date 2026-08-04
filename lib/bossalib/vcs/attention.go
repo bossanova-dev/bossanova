@@ -23,6 +23,15 @@ const (
 	// bossd's server hydration (which has the status tracker in scope), not by
 	// ComputeAttentionStatus, so it is not returned here.
 	AttentionReasonAgentAuthFailed
+	// AttentionReasonAgentStalled marks a session whose chat reports
+	// CHAT_STATUS_WORKING while the agent has made no semantic progress — no new
+	// transcript record — for longer than its phase's threshold, i.e. a dead turn
+	// behind a still-animating spinner. Its integer value (6) matches
+	// pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED so the direct cast in
+	// attentionStatusToProto stays 1:1. Like AttentionReasonAgentAuthFailed it is
+	// surfaced by bossd's status tracker, not by ComputeAttentionStatus, so it is
+	// not returned here.
+	AttentionReasonAgentStalled
 )
 
 // AttentionStatus represents whether and why a session needs human attention.

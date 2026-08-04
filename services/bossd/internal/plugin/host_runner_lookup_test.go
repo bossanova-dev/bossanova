@@ -86,6 +86,10 @@ func (s *stubAgentRunner) MaterializeAccount(context.Context, *bossanovav1.Mater
 	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
+func (s *stubAgentRunner) ProbeProgressLiveness(context.Context, *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
+	return &bossanovav1.ProbeProgressLivenessResponse{}, nil
+}
+
 func (s *stubAgentRunner) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
 }

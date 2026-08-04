@@ -290,11 +290,13 @@ func writeAuthTokensForTest(t *testing.T, email string) {
 
 func assertAuthTokensStoredInTestHome(t *testing.T, testEnv commandTelemetryTestEnv) {
 	t.Helper()
-	tokenPath := filepath.Join(testEnv.home, ".config", "bossanova", "keyring", "workos-tokens")
+	// Current auth writers persist only the authoritative versioned record;
+	// workos-tokens remains a migration-read key for older binaries.
+	tokenPath := filepath.Join(testEnv.home, ".config", "bossanova", "keyring", "workos-tokens-v1")
 	if _, err := os.Stat(tokenPath); err != nil {
 		t.Fatalf("auth tokens file = %q, stat: %v", tokenPath, err)
 	}
-	originalTokenPath := filepath.Join(testEnv.originalHome, ".config", "bossanova", "keyring", "workos-tokens")
+	originalTokenPath := filepath.Join(testEnv.originalHome, ".config", "bossanova", "keyring", "workos-tokens-v1")
 	if filepath.Clean(tokenPath) == filepath.Clean(originalTokenPath) {
 		t.Fatalf("auth tokens file = %q, want path outside caller home %q", tokenPath, testEnv.originalHome)
 	}

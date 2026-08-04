@@ -21,6 +21,16 @@ go_test(
         "termreset_test.go",
     ],
     embed = [":termreset"],
+    # keep: termreset_test.go opens a real pty (creackpty.Open) and blocks
+    # reading its master; the Bazel sandbox intermittently wedges that read
+    # ("input/output error" on processwrapper-sandbox, hang on darwin-sandbox),
+    # which burned the full 300s timeout on PR #1816 (run 30831222558). Same
+    # class as tuidriver_test / gatecmd / setupscript. Runs unsandboxed (still
+    # covered). See docs/solutions/build-systems/bazel-sandbox-patterns.md.
+    tags = [
+        "local",
+        "no-sandbox",
+    ],
     deps = [
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@com_github_creack_pty_v2//:pty",

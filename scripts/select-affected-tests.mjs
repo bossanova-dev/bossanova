@@ -224,11 +224,15 @@ export function selectTargets(files) {
       continue
     }
 
-    // The published skill sources live INSIDE services/boss, so a SKILL.md edit there is
-    // also a test-boss input (the skillinstall manifest test embeds them). Select
-    // test-scripts for the prose gates WITHOUT `continue`, so the moduleRules lookup below
+    // The published skill sources live INSIDE services/boss, so a payload edit there is
+    // also a test-boss input (the skillinstall manifest test embeds them). Both the prose
+    // (.md) and the shipped shell helpers (.sh, covered by scripts/*.test.mjs) route to the
+    // script gates. Select test-scripts WITHOUT `continue`, so the moduleRules lookup below
     // still adds test-boss — dropping it would silence the manifest gate.
-    if (file.startsWith('services/boss/internal/skillinstall/skills/') && file.endsWith('.md')) {
+    if (
+      file.startsWith('services/boss/internal/skillinstall/skills/') &&
+      (file.endsWith('.md') || file.endsWith('.sh'))
+    ) {
       selectWholeTarget(selections, 'test-scripts')
     }
 

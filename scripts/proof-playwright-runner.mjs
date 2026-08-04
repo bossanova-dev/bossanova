@@ -38,6 +38,37 @@ export const VIDEO_ACTIONS = new Set([
 ])
 const DEFAULT_VIDEO_SLOWMO_MS = 350
 
+// ----- Per-recipe staging payloads ---------------------------------------
+//
+// These MUST stay above the `if (invokedDirectly) run(...)` block below: a
+// direct run reaches attachStageScript()/captureReadyScript() while any `const`
+// declared later in the module is still in its temporal dead zone, which fails
+// the capture with "Cannot access '<name>' before initialization" rather than
+// anything that names the recipe.
+
+// BOS-658 evidence line for the web-chat-terminal capture: a status mark, a
+// continuation arrow, and a box-drawing rule — the glyph classes that degraded
+// on mobile Safari. Without this the capture is an empty terminal pane, because
+// proof capture stages its own attach socket instead of reusing
+// installAttachServer. Mirrors GLYPH_TOKENS in
+// services/web/tests/e2e/specs/chat-terminal.spec.ts.
+const CHAT_TERMINAL_GLYPH_TOKENS = ['✓', '↳', '─']
+const CHAT_TERMINAL_GLYPH_LINE = `${CHAT_TERMINAL_GLYPH_TOKENS.join(' ')}\r\n`
+// xterm splits a rendered row into one span per style run and pads it with cell
+// spaces, so match the tokens in order with tolerant spacing rather than an
+// exact substring (same tolerance as the e2e spec's GLYPH_ROW_TEXT).
+const CHAT_TERMINAL_GLYPH_ROW_SOURCE = CHAT_TERMINAL_GLYPH_TOKENS.join('\\s*')
+// Recipes whose staged attach socket replays that data frame. The chat page
+// clears its "Connecting…" overlay on the first data byte only, so a chat
+// capture without one shows a terminal that never connected.
+const CHAT_TERMINAL_DATA_REPLAY_IDS = new Set(['web-chat-terminal', 'web-chat-terminal-upload'])
+
+// BOS-661 staged upload file for web-chat-terminal-upload. Small on purpose:
+// one chunk fits inside a single kind=7 frame, so the capture never depends on
+// the ack window draining. The name is what the completion banner echoes.
+const CHAT_UPLOAD_FILENAME = 'agent-brief.txt'
+const CHAT_UPLOAD_CONTENT = 'Fixture upload for the BOS-661 chat file upload proof.\n'
+
 // Only drive Playwright when invoked directly; importing this module (e.g. from
 // the unit tests, to exercise buildSpec/validateRecipe) must not start a run.
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
@@ -620,6 +651,36 @@ function webStageScript(recipe) {
         repoOriginUrl: 'https://github.com/e2e/repo-proof-web',
         chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
       }, {
+        // BOS-668: a session holding one chat parked on an armed GitHub callback
+        // next to one genuinely working chat, so the web-session-waiting recipe
+        // captures BOTH badges in one still — 'waiting' (INFO, no spinner) and
+        // 'working' (spinner) — plus the reason notice above the table. The
+        // parked chat must NOT read 'stopped', which is what the panel produced
+        // before ChatStatus.WAITING had a case.
+        id: 'sess-e2e-waiting',
+        title: 'Proof waiting session',
+        branchName: 'proof/waiting',
+        baseBranch: 'main',
+        daemonId: 'daemon-proof',
+        repoId: 'repo-proof',
+        repoDisplayName: 'bossanova',
+        repoOriginUrl: 'https://github.com/e2e/repo-proof',
+        prNumber: 668,
+        prUrl: 'https://github.com/recurser/bossanova/pull/668',
+        chats: [
+          {
+            id: 'chat-e2e-waiting',
+            agentSessionId: 'claude-e2e-waiting',
+            title: 'Ship the release checklist',
+            status: 'waiting',
+            // Byte-identical to the TUI fixture's reason (BOS-668): both
+            // surfaces render the wording displaystatus.CallbackWaitingReason
+            // composes, so the two stills can be compared literally.
+            waitingReason: 'awaiting checks_passed_ready on acme/my-app#668',
+          },
+          { id: 'chat-e2e-busy', agentSessionId: 'claude-e2e-busy', title: 'Rebuild the search index', status: 'working' },
+        ],
+      }, {
         // A session carrying a BOS-409 stale-failover-proxy-port audit record
         // (UNSPECIFIED outcome, whole message in detail) so the
         // web-session-detail-rotation recipe proves BOS-432: the row renders the
@@ -848,19 +909,6 @@ ${notificationStageScript(recipe)}
 `
 }
 
-// BOS-658 evidence line for the web-chat-terminal still: a status mark, a
-// continuation arrow, and a box-drawing rule — the glyph classes that degraded
-// on mobile Safari. Without this the still is an empty terminal pane, because
-// proof capture stages its own attach socket instead of reusing
-// installAttachServer. Mirrors GLYPH_TOKENS in
-// services/web/tests/e2e/specs/chat-terminal.spec.ts.
-const CHAT_TERMINAL_GLYPH_TOKENS = ['✓', '↳', '─']
-const CHAT_TERMINAL_GLYPH_LINE = `${CHAT_TERMINAL_GLYPH_TOKENS.join(' ')}\r\n`
-// xterm splits a rendered row into one span per style run and pads it with cell
-// spaces, so match the tokens in order with tolerant spacing rather than an
-// exact substring (same tolerance as the e2e spec's GLYPH_ROW_TEXT).
-const CHAT_TERMINAL_GLYPH_ROW_SOURCE = CHAT_TERMINAL_GLYPH_TOKENS.join('\\s*')
-
 // captureReadyScript emits an extra readiness gate for recipes whose promised
 // evidence lands *after* their capture selector becomes visible.
 //
@@ -884,8 +932,11 @@ function captureReadyScript(recipe) {
 // attachStageScript makes the attach socket deterministic per recipe. Most
 // captures need a healthy attached_clients frame so the terminal mounts; the
 // reconnecting recipe closes it to exercise the transient reconnect state; the
-// plain chat-terminal still additionally replays a raw kind=0 data frame so the
-// captured canvas carries visible terminal output instead of an empty pane.
+// chat-terminal captures additionally replay a raw kind=0 data frame so the
+// captured canvas carries visible terminal output instead of an empty pane —
+// the page only clears its "Connecting…" overlay on the first data byte, so a
+// capture without one shows a disconnected terminal; the upload recipe
+// additionally answers the BOS-661 upload frames.
 function attachStageScript(recipe) {
   if (recipe?.id === 'web-chat-terminal-reconnecting') {
     return `
@@ -893,16 +944,121 @@ function attachStageScript(recipe) {
     ws.close();
   });`
   }
-  const initialData =
-    recipe?.id === 'web-chat-terminal'
-      ? `
+  const initialData = CHAT_TERMINAL_DATA_REPLAY_IDS.has(recipe?.id)
+    ? `
     const payload = Buffer.from(${JSON.stringify(CHAT_TERMINAL_GLYPH_LINE)}, 'utf-8');
     const header = Buffer.from([0, (payload.length >>> 16) & 0xff, (payload.length >>> 8) & 0xff, payload.length & 0xff]);
     ws.send(Buffer.concat([header, payload]));`
-      : ''
+    : ''
   return `
   await page.routeWebSocket('**/ws/attach*', (ws) => {
-    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));${initialData}
+    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));${initialData}${uploadServerScript(recipe)}
+  });${uploadFileChooserScript(recipe)}`
+}
+
+// uploadServerScript answers the browser's BOS-661 upload frames the way bosso
+// + bossd do: record the declared size from kind=6 upload_start, acknowledge
+// every kind=7 chunk with a kind=10 ack carrying the running byte count, then
+// answer kind=8 upload_finish with the single terminal kind=11 result whose ok
+// flag drives the 'Upload complete' banner. Wire format mirrors
+// services/bosso/internal/server/ws_attach_upload.go — every integer is
+// unsigned big-endian and every frame is `u8 kind | u24 len | payload`.
+//
+// The ok flag MUST stay conditional. An unconditional 0x01 makes the whole
+// web-chat-terminal-upload video vacuous: a browser regression that sent
+// upload_start + upload_finish and ZERO chunks — or short, duplicated or
+// out-of-order chunks — would still paint 'Upload complete' and the capture
+// would pass. So this responder holds the same three facts bosso holds
+// (declared size, cumulative bytes, next expected seq) and fails the upload
+// when they disagree, which turns the recipe's final wait into a timeout.
+// Exported so proof-playwright-runner.test.mjs can drive the snippet against a
+// fake socket and assert the failure paths, not just the happy one.
+export function uploadServerScript(recipe) {
+  if (recipe?.id !== 'web-chat-terminal-upload') return ''
+  return `
+    // Per-upload id: { declared, received, nextSeq }. Keyed rather than a
+    // single counter so a second upload on the same socket starts clean.
+    const __uploads = new Map();
+    const __frame = (kind, payload) => {
+      const header = Buffer.from([kind, (payload.length >>> 16) & 0xff, (payload.length >>> 8) & 0xff, payload.length & 0xff]);
+      ws.send(Buffer.concat([header, payload]));
+    };
+    // u64 BE. Number is exact to 2^53, far above the 500 MiB upload cap.
+    const __u64 = (buf, off) => buf.readUInt32BE(off) * 4294967296 + buf.readUInt32BE(off + 4);
+    // flags=0x00: ok=0, can_retry=0. Every failure below is a protocol
+    // violation by the sender, not transport loss, so a retry is pointless.
+    const __fail = (id, message) => {
+      __frame(11, Buffer.concat([id, Buffer.from([0x00]), Buffer.from(message, 'utf-8')]));
+    };
+    ws.onMessage((message) => {
+      const buf = Buffer.isBuffer(message) ? message : Buffer.from(message);
+      if (buf.length < 5) return;
+      const kind = buf[0];
+      if (kind !== 6 && kind !== 7 && kind !== 8) return; // ignore data/resize/cancel traffic
+      const body = buf.subarray(4);
+      const idLen = body[0];
+      if (idLen === 0 || body.length < 1 + idLen) return;
+      const id = body.subarray(0, 1 + idLen); // u8 idLen | id
+      const key = id.toString('latin1');
+      if (kind === 6) {
+        // u8 idLen | id | u64 size_bytes | u16 filenameLen | filename
+        if (body.length < 11 + idLen) return;
+        __uploads.set(key, { declared: __u64(body, 1 + idLen), received: 0, nextSeq: 0 });
+        return;
+      }
+      const state = __uploads.get(key);
+      if (!state) {
+        // A chunk or finish with no start (or after this upload already
+        // settled) is exactly the regression the capture must not survive.
+        __fail(id, 'unknown upload id');
+        return;
+      }
+      if (kind === 7) {
+        if (body.length < 9 + idLen) return;
+        const seq = body.subarray(1 + idLen, 9 + idLen);
+        if (__u64(body, 1 + idLen) !== state.nextSeq) {
+          __uploads.delete(key);
+          __fail(id, 'out-of-order chunk: expected seq ' + state.nextSeq);
+          return;
+        }
+        state.nextSeq += 1;
+        state.received += body.length - (9 + idLen);
+        if (state.received > state.declared) {
+          __uploads.delete(key);
+          __fail(id, 'received more than the declared ' + state.declared + ' bytes');
+          return;
+        }
+        const acked = Buffer.alloc(8);
+        acked.writeUInt32BE(Math.floor(state.received / 4294967296), 0);
+        acked.writeUInt32BE(state.received >>> 0, 4);
+        __frame(10, Buffer.concat([id, seq, acked]));
+        return;
+      }
+      // kind === 8 upload_finish: the single terminal frame for this id.
+      __uploads.delete(key);
+      if (state.received !== state.declared) {
+        __fail(id, 'incomplete upload: received ' + state.received + ' of ' + state.declared + ' bytes');
+        return;
+      }
+      // flags=0x01 (ok) with an EMPTY error_message: the wire spec says the
+      // message is empty when ok, and this fixture is a reference for it.
+      __frame(11, Buffer.concat([id, Buffer.from([0x01])]));
+    });`
+}
+
+// uploadFileChooserScript answers the native file picker the upload button
+// opens. Clicking the control is the affordance the video has to show, and the
+// control's only job is to click the hidden <input type=file> — which Chromium
+// reports as a filechooser event, the one hook Playwright gives us for it.
+function uploadFileChooserScript(recipe) {
+  if (recipe?.id !== 'web-chat-terminal-upload') return ''
+  return `
+  page.on('filechooser', async (chooser) => {
+    await chooser.setFiles({
+      name: ${JSON.stringify(CHAT_UPLOAD_FILENAME)},
+      mimeType: 'text/plain',
+      buffer: Buffer.from(${JSON.stringify(CHAT_UPLOAD_CONTENT)}, 'utf-8'),
+    });
   });`
 }
 

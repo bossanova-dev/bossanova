@@ -228,12 +228,17 @@ func (m *reconcileMockBranchResolver) CurrentBranch(_ context.Context, worktreeP
 type reconcileMockSessionStore struct {
 	sessions  map[string]*models.Session
 	updateErr map[string]error // session ID → error
+	// updateParams records every Update call in order, keyed by session ID, so
+	// tests can assert that fields land in the *same* store write rather than
+	// in a follow-up round-trip.
+	updateParams map[string][]db.UpdateSessionParams
 }
 
 func newReconcileMockSessionStore() *reconcileMockSessionStore {
 	return &reconcileMockSessionStore{
-		sessions:  make(map[string]*models.Session),
-		updateErr: make(map[string]error),
+		sessions:     make(map[string]*models.Session),
+		updateErr:    make(map[string]error),
+		updateParams: make(map[string][]db.UpdateSessionParams),
 	}
 }
 
@@ -318,6 +323,10 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
+	}
+	m.updateParams[id] = append(m.updateParams[id], params)
+	if params.State != nil {
+		s.State = machine.State(*params.State)
 	}
 	if params.PRNumber != nil {
 		s.PRNumber = *params.PRNumber
@@ -549,6 +558,236 @@ func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	}
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("expected PR URL, got %v", sess.PRURL)
+	}
+}
+
+// TestReconcilePRAssociations_AdvancesWedgedStateOnAdopt pins the BOS-697
+// un-wedge: when reconcile adopts a PR the agent opened itself, a session still
+// sitting in PushingBranch / OpeningDraftPR is advanced to AwaitingChecks in the
+// same store write that sets PRNumber. Without it the row keeps a state that
+// permits no PR lifecycle event, so it silently drops every check, review and
+// merge event that follows. ImplementingPlan is deliberately left alone — the
+// agent is still working and PlanComplete routes it via HasPR on its own.
+func TestReconcilePRAssociations_AdvancesWedgedStateOnAdopt(t *testing.T) {
+	cases := []struct {
+		name      string
+		initial   machine.State
+		wantState machine.State
+		wantWrite bool
+	}{
+		{"pushing_branch", machine.PushingBranch, machine.AwaitingChecks, true},
+		{"opening_draft_pr", machine.OpeningDraftPR, machine.AwaitingChecks, true},
+		{"implementing_plan", machine.ImplementingPlan, machine.ImplementingPlan, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := newReconcileMockSessionStore()
+			repos := newMockRepoStore()
+			provider := newReconcileMockProvider()
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:        "repo-1",
+				OriginURL: "https://github.com/owner/repo",
+			}
+			sessions.addSession(&models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				BranchName: "feature-x",
+				State:      tc.initial,
+			})
+			provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+				{Number: 42, HeadBranch: "feature-x", State: vcs.PRStateOpen},
+			}
+
+			n, err := ReconcilePRAssociations(context.Background(), sessions, repos, provider, zerolog.Nop())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if n != 1 {
+				t.Fatalf("expected 1 updated, got %d", n)
+			}
+
+			got := sessions.sessions["sess-1"]
+			if got.State != tc.wantState {
+				t.Fatalf("state = %s, want %s", got.State, tc.wantState)
+			}
+
+			writes := sessions.updateParams["sess-1"]
+			if len(writes) != 1 {
+				t.Fatalf("store writes = %d, want exactly 1 (state must ride the PR-association write)", len(writes))
+			}
+			if writes[0].PRNumber == nil {
+				t.Fatal("the single write must carry PRNumber")
+			}
+			if tc.wantWrite && writes[0].State == nil {
+				t.Fatal("the single write must also carry State")
+			}
+			if !tc.wantWrite && writes[0].State != nil {
+				t.Fatalf("state must not be written for %s, got %d", tc.initial, *writes[0].State)
+			}
+		})
+	}
+}
+
+// TestReconcile_ArchivesMergedButUnarchivedSessions pins the BOS-697 self-heal
+// sweep. Rows that reached Merged while the archive hook was unreachable (or on
+// a daemon that restarted before the poller got there) sit merged-but-unarchived
+// forever: nothing revisits a terminal row. The sweep archives them on the next
+// reconcile tick, gated on the repo's ShouldArchiveSessionsAfterMerge flag.
+func TestReconcile_ArchivesMergedButUnarchivedSessions(t *testing.T) {
+	archivedAt := time.Now()
+	cases := []struct {
+		name        string
+		state       machine.State
+		archiveFlag bool
+		archived    bool
+		wantArchive bool
+	}{
+		{"merged on flag-on repo", machine.Merged, true, false, true},
+		{"merged on flag-off repo", machine.Merged, false, false, false},
+		{"already archived", machine.Merged, true, true, false},
+		{"not merged", machine.AwaitingChecks, true, false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := newReconcileMockSessionStore()
+			repos := newMockRepoStore()
+			provider := newReconcileMockProvider()
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                              "repo-1",
+				OriginURL:                       "https://github.com/owner/repo",
+				ShouldArchiveSessionsAfterMerge: tc.archiveFlag,
+			}
+			prNumber := 42
+			sess := &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				BranchName: "feature-x",
+				State:      tc.state,
+				PRNumber:   &prNumber,
+			}
+			if tc.archived {
+				sess.ArchivedAt = &archivedAt
+			}
+			sessions.addSession(sess)
+
+			arch := newFakeArchiver()
+			resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+				WithArchiver(arch)
+
+			if _, err := resolver.Reconcile(context.Background()); err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			if tc.archived {
+				// ListActive already filters archived rows, so reaching the
+				// sweep through Reconcile would never exercise its own
+				// ArchivedAt guard — the sub-case would pin the store, not the
+				// guard. Hand the row straight to the sweep so deleting that
+				// guard goes red here.
+				resolver.archiveMergedButUnarchived(context.Background(), []*models.Session{sess})
+			}
+
+			if tc.wantArchive {
+				select {
+				case id := <-arch.calls:
+					if id != "sess-1" {
+						t.Fatalf("archived %q, want sess-1", id)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("merged-but-unarchived session was not archived by the sweep")
+				}
+				return
+			}
+			select {
+			case id := <-arch.calls:
+				t.Fatalf("session %q archived when it should not have been", id)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestReconcileSessions_DoesNotRunTheMergedSweep pins where the sweep lives.
+// It hangs off Reconcile, the full scanner, NOT the shared ReconcileSessions:
+// the other ReconcileSessions caller is Server.ListSessions, which passes rows
+// pre-filtered by NeedsPRAssociation (PRNumber == nil), a shape a merged row can
+// never have — so running it there is dead work on a hot path. Moving the call
+// back onto ReconcileSessions would otherwise be a silent change.
+func TestReconcileSessions_DoesNotRunTheMergedSweep(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		OriginURL:                       "https://github.com/owner/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+	prNumber := 42
+	merged := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.Merged,
+		PRNumber:   &prNumber,
+	}
+	sessions.addSession(merged)
+
+	arch := newFakeArchiver()
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithArchiver(arch)
+
+	if _, err := resolver.ReconcileSessions(context.Background(), []*models.Session{merged}); err != nil {
+		t.Fatalf("ReconcileSessions: %v", err)
+	}
+
+	select {
+	case id := <-arch.calls:
+		t.Fatalf("session %q archived from ReconcileSessions; the sweep belongs on Reconcile", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestReconcile_MergedSweepIsNoOpWithoutArchiver confirms the sweep is a
+// documented no-op — not a panic — when no archiver is wired.
+func TestReconcile_MergedSweepIsNoOpWithoutArchiver(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		OriginURL:                       "https://github.com/owner/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+	prNumber := 42
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.Merged,
+		PRNumber:   &prNumber,
+	})
+
+	n, err := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("reconciled = %d, want 0", n)
+	}
+	// Reading ShouldArchiveSessionsAfterMerge requires a repo lookup, and
+	// nothing else in this fixture touches the repo store (the session already
+	// has a PR, so PR association skips it). Zero lookups is therefore direct
+	// evidence the sweep returned before doing any work; the assertion goes red
+	// if BOTH nil-archiver guards — the resolver's and the shared helper's — are
+	// removed (verified by deleting them).
+	if got := repos.getCalls.Load(); got != 0 {
+		t.Fatalf("repo lookups = %d, want 0 (sweep must not run without an archiver)", got)
 	}
 }
 

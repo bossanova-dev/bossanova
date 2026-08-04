@@ -18,7 +18,13 @@ go_library(
 go_test(
     name = "telemetry_test",
     srcs = ["client_test.go"],
+    data = [
+        "events.go",
+        "//docs/analytics:events.md",
+        "//services/web/src/analytics:events.ts",
+    ],
     embed = [":telemetry"],
+    rundir = ".",
     deps = [
         "//lib/bossalib/config",
         "@com_github_posthog_posthog_go//:posthog-go",

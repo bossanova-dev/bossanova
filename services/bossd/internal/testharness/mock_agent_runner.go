@@ -9,12 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 )
 
 var (
-	_ agent.AgentRunner     = (*MockAgentRunner)(nil)
-	_ agent.AgentDispatcher = (*MockAgentRunner)(nil)
+	_ agent.AgentRunner                                  = (*MockAgentRunner)(nil)
+	_ agent.AgentDispatcher                              = (*MockAgentRunner)(nil)
+	_ agent.HeadlessCapabilityProfileDispatcher          = (*MockAgentRunner)(nil)
+	_ agent.HeadlessCapabilityProfilePreflightDispatcher = (*MockAgentRunner)(nil)
 )
 
 // MockAgentRunner is a mock AgentRunner that simulates the coding-agent subprocess
@@ -281,6 +284,18 @@ func (m *MockAgentRunner) Subscribe(ctx context.Context, sessionID string) (<-ch
 // fake doesn't need to inspect agentName.
 func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error) {
 	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+}
+
+// StartByAgentWithHeadlessCapabilityProfile forwards to StartByAgent. The mock
+// accepts every profile because it has no plugin capability surface to validate.
+func (m *MockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+}
+
+// PreflightByAgentWithHeadlessCapabilityProfile succeeds because the mock
+// runner can exercise any headless capability profile in test scenarios.
+func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.Context, string, string, map[string]string, bossanovav1.HeadlessCapabilityProfile) error {
+	return nil
 }
 
 // StopByAgent forwards to Stop, ignoring agentName (see StartByAgent).

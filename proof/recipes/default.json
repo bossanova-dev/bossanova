@@ -197,6 +197,42 @@
       "viewport": { "width": 1024, "height": 1000 }
     },
     {
+      "id": "web-chat-terminal-upload",
+      "surface": "web",
+      "title": "Web Chat Terminal (file upload)",
+      "description": "Chat terminal file upload (BOS-661), end to end against a staged attach socket. The top bar shows an icon-only upload control labelled 'Upload file' sitting immediately before the danger Stop control; activating it picks agent-brief.txt, and the status banner directly beneath the top bar then reads 'Upload complete — agent-brief.txt'. Width is 1024 so the Ctrl X 'to detach' hint is not display:none and the 14px lucide upload glyph is never downscaled by the judge's 1024px long-edge cap.",
+      "privacy": "fixture",
+      "capture": "video",
+      "route": "/sessions/sess-e2e-1/chats/claude-1",
+      "viewport": { "width": 1024, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1/chats/claude-1",
+          "label": "Open chat terminal",
+          "caption": "Chat terminal for an attached claude chat"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='chat-upload-button']",
+          "label": "Upload control",
+          "caption": "An 'Upload file' control sits immediately before Stop"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='chat-upload-button']",
+          "label": "Choose a file",
+          "caption": "Choosing agent-brief.txt streams it to the daemon"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='chat-upload-status']:has-text(\"Upload complete\")",
+          "label": "Upload complete",
+          "caption": "Upload complete — the daemon accepted the file"
+        }
+      ]
+    },
+    {
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
@@ -222,6 +258,16 @@
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-rotation",
       "cropToSelector": "[data-testid='session-detail-body']",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-session-waiting",
+      "surface": "web",
+      "title": "Web Session Detail (parked on an external event)",
+      "description": "BOS-668: a session whose first chat is parked on an armed GitHub callback. The sub-header carries the info-styled reason notice 'waiting · awaiting checks_passed_ready on acme/my-app#668' — naming the trigger and the PR — and the chat table below shows that chat's status badge reading 'waiting' (no spinner, since nothing is moving) beside a genuinely working chat that still spins. The parked chat must NOT read 'stopped': the wording matches the TUI's waiting-callback proof scenario byte for byte.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/sessions/sess-e2e-waiting",
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
@@ -266,7 +312,7 @@
       "id": "web-repositories-daemon-filter-flow",
       "surface": "web",
       "title": "Web Repositories Daemon Filter Flow",
-      "description": "Choosing a daemon in the repository-settings header filter narrows the table: both repositories are listed before the selection, and afterwards only 'Proof web repository' remains while 'daemon-proof-standby' shows as the selected value.",
+      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'daemon-proof-standby' shows as the selected value, and selecting 'All daemons' again restores the full list. Nothing resets the selection on the page's behalf.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -296,6 +342,19 @@
           "timeoutMs": 800,
           "label": "Narrowed list",
           "caption": "Only that daemon's repositories remain"
+        },
+        {
+          "action": "select",
+          "selector": "[data-testid=\"repository-daemon-filter\"]",
+          "value": "",
+          "label": "Return to All daemons",
+          "caption": "Clearing the filter is the user's own choice"
+        },
+        {
+          "action": "wait",
+          "selector": "text=Proof repository",
+          "label": "Full list restored",
+          "caption": "Every repository is listed again"
         }
       ]
     },
@@ -594,11 +653,48 @@
       "id": "web-daemons-mobile",
       "surface": "web",
       "title": "Web Daemons (mobile)",
-      "description": "Daemons at 390px, retained as the existing tidy mobile list reference.",
+      "description": "Daemons at 390px under the Settings layout, retained as the existing tidy mobile list reference.",
       "privacy": "fixture",
       "capture": "still",
-      "route": "/daemons",
+      "route": "/settings/daemons",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-header-menu",
+      "surface": "web",
+      "title": "Web Header Menu",
+      "description": "The signed-in hamburger menu opened from the app header: the account email 'e2e@example.com' reads first, then Sessions and Settings, then a visible divider with Sign Out alone below it. Neither 'Repositories' nor a top-level 'Daemons' entry appears — Daemons is a Settings section now. Captured as a flow because the menu is opened by a click, not reachable as a static route.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".app-menu",
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/",
+          "label": "Open home",
+          "caption": "Open the sessions list"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "Sessions list loads"
+        },
+        {
+          "action": "click",
+          "selector": "button[aria-label=\"Open menu\"]",
+          "label": "Open menu",
+          "caption": "Open the header hamburger menu"
+        },
+        {
+          "action": "wait",
+          "selector": ".app-menu",
+          "label": "Menu open",
+          "caption": "Email, Sessions, Settings, then a divider above Sign Out"
+        }
+      ]
     },
     {
       "id": "web-account-add-form",
@@ -1027,6 +1123,36 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
+      "id": "docs-github-callbacks-guide",
+      "surface": "docs",
+      "title": "Docs — GitHub Callbacks Guide",
+      "description": "Rendered GitHub PR callbacks guide page (services/docs/docs/guides/github-callbacks.md).",
+      "privacy": "fixture",
+      "route": "/guides/github-callbacks",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-broadcasts-guide",
+      "surface": "docs",
+      "title": "Docs — Broadcasts Guide",
+      "description": "Rendered broadcasts documentation guide page (services/docs/docs/guides/broadcasts.md).",
+      "privacy": "fixture",
+      "route": "/guides/broadcasts",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-notes-guide",
+      "surface": "docs",
+      "title": "Docs — Notes Guide",
+      "description": "Rendered notes documentation guide page (services/docs/docs/guides/notes.md).",
+      "privacy": "fixture",
+      "route": "/guides/notes",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
       "id": "docs-agent-runners-guide",
       "surface": "docs",
       "title": "Docs — Agent Plugins Guide",
@@ -1081,6 +1207,7 @@
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
+        "web-session-waiting",
         "web-session-detail-mobile",
         "web-new-session-mobile",
         "web-repositories",
@@ -1098,12 +1225,14 @@
         "web-accounts-filter-flow",
         "web-accounts-refresh-flow",
         "web-daemons-mobile",
+        "web-header-menu",
         "web-account-add-form",
         "web-account-remove",
         "web-account",
         "web-chat-terminal",
         "web-chat-terminal-reconnecting",
         "web-chat-terminal-stop-icon",
+        "web-chat-terminal-upload",
         "web-new-session-flow",
         "web-new-chat",
         "web-new-chat-back",
@@ -1149,6 +1278,21 @@
       "name": "Docs Account Rotation guide",
       "patterns": ["services/docs/docs/guides/account-rotation"],
       "recipeIds": ["docs-account-rotation"]
+    },
+    {
+      "name": "Docs GitHub Callbacks guide",
+      "patterns": ["services/docs/docs/guides/github-callbacks"],
+      "recipeIds": ["docs-github-callbacks-guide"]
+    },
+    {
+      "name": "Docs Broadcasts guide",
+      "patterns": ["services/docs/docs/guides/broadcasts"],
+      "recipeIds": ["docs-broadcasts-guide"]
+    },
+    {
+      "name": "Docs Notes guide",
+      "patterns": ["services/docs/docs/guides/notes"],
+      "recipeIds": ["docs-notes-guide"]
     },
     {
       "name": "Docs Agent Plugins guide",

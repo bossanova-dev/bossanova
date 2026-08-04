@@ -3,7 +3,9 @@ package callback
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -28,8 +30,20 @@ func (f *fakeInterestStore) List(_ context.Context, filter db.ListGithubCallback
 		if filter.State != nil && cb.State != *filter.State {
 			continue
 		}
+		if filter.TargetChatID != nil && cb.TargetChatID != *filter.TargetChatID {
+			continue
+		}
 		out = append(out, cb)
 	}
+	// The real store orders by created_at then id; mirror that so the fake
+	// cannot accidentally hand ActiveInterestForChat a pre-sorted convenience
+	// the production store would not guarantee.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
@@ -207,5 +221,217 @@ func assertInterests(t *testing.T, got, want []*pb.CallbackInterest) {
 				got[i].GetRepoOriginUrl(), got[i].GetPrNumber(),
 				want[i].GetRepoOriginUrl(), want[i].GetPrNumber())
 		}
+	}
+}
+
+// chatCB builds a callback targeting a chat, with an explicit id/created-at so
+// the deterministic-winner rule can be exercised. The repository is fixed at
+// acme/widget: none of these cases turn on the owner or name, only on the
+// trigger, the PR number and the state. expires_at is the registration default
+// (24h out) so these cases exercise the state rule alone; the expiry rule has
+// its own test that sets it explicitly.
+func chatCB(id, chatID string, created time.Time, trigger models.GithubCallbackTrigger, pr int, state models.GithubCallbackState) *models.GithubCallback {
+	return &models.GithubCallback{
+		ID:           id,
+		TargetChatID: chatID,
+		RepoOwner:    "acme",
+		RepoName:     "widget",
+		PRNumber:     pr,
+		Trigger:      trigger,
+		State:        state,
+		CreatedAt:    created,
+		ExpiresAt:    created.Add(24 * time.Hour),
+	}
+}
+
+func TestActiveInterestForChat_ArmedCallbackYieldsCanonicalReason(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+		chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerChecksPassedReady, 123, models.GithubCallbackStateActive),
+	}}
+	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
+	if err != nil {
+		t.Fatalf("ActiveInterestForChat: %v", err)
+	}
+	if got == nil {
+		t.Fatal("want an interest, got nil")
+	}
+	if got.ID != "cb1" {
+		t.Fatalf("id = %q, want cb1", got.ID)
+	}
+	const want = "awaiting checks_passed_ready on acme/widget#123"
+	if got.WaitingReason() != want {
+		t.Fatalf("WaitingReason() = %q, want %q", got.WaitingReason(), want)
+	}
+}
+
+func TestActiveInterestForChat_TerminalStatesAreNotWaiting(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	for _, state := range []models.GithubCallbackState{
+		models.GithubCallbackStateDelivered,
+		models.GithubCallbackStateExpired,
+		models.GithubCallbackStateCanceled,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+				chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerMerged, 1, state),
+			}}
+			got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
+			if err != nil {
+				t.Fatalf("ActiveInterestForChat: %v", err)
+			}
+			if got != nil {
+				t.Fatalf("want nil for %s callback, got %+v", state, got)
+			}
+		})
+	}
+}
+
+func TestActiveInterestForChat_NoCallbackYieldsNoReason(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+		chatCB("cb1", "other-chat", base, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateActive),
+	}}
+	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
+	if err != nil {
+		t.Fatalf("ActiveInterestForChat: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("want nil, got %+v", got)
+	}
+	if got.WaitingReason() != "" {
+		t.Fatalf("nil interest WaitingReason() = %q, want empty", got.WaitingReason())
+	}
+}
+
+func TestActiveInterestForChat_MultipleArmedPicksDeterministicWinner(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	// Three armed interests across all three non-terminal states, deliberately
+	// listed newest-first so a naive "first row wins" would pick the wrong one.
+	callbacks := []*models.GithubCallback{
+		chatCB("cb-z", "chat-a", base.Add(2*time.Hour), models.GithubCallbackTriggerMerged, 3, models.GithubCallbackStateTriggered),
+		chatCB("cb-m", "chat-a", base.Add(time.Hour), models.GithubCallbackTriggerChecksFailed, 2, models.GithubCallbackStateLeased),
+		chatCB("cb-b", "chat-a", base, models.GithubCallbackTriggerChecksPassed, 1, models.GithubCallbackStateActive),
+		// Same created_at as the earliest, larger id: loses the tiebreak.
+		chatCB("cb-c", "chat-a", base, models.GithubCallbackTriggerClosed, 9, models.GithubCallbackStateActive),
+	}
+	const want = "awaiting checks_passed on acme/widget#1"
+	// Run the permutations: the winner must not depend on listing order.
+	for i := range callbacks {
+		rotated := append(append([]*models.GithubCallback{}, callbacks[i:]...), callbacks[:i]...)
+		store := &fakeInterestStore{callbacks: rotated}
+		got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
+		if err != nil {
+			t.Fatalf("ActiveInterestForChat: %v", err)
+		}
+		if got == nil {
+			t.Fatal("want an interest, got nil")
+		}
+		if got.ID != "cb-b" {
+			t.Fatalf("rotation %d: id = %q, want cb-b (earliest created_at, smallest id)", i, got.ID)
+		}
+		if got.WaitingReason() != want {
+			t.Fatalf("rotation %d: WaitingReason() = %q, want %q", i, got.WaitingReason(), want)
+		}
+	}
+}
+
+func TestActiveInterestForChat_EmptyChatIDIsNoLookup(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{err: errors.New("must not be queried")}
+	got, err := ActiveInterestForChat(context.Background(), store, "", base)
+	if err != nil {
+		t.Fatalf("ActiveInterestForChat: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("want nil, got %+v", got)
+	}
+}
+
+func TestActiveInterestForChat_StoreErrorPropagates(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{err: errors.New("boom")}
+	if _, err := ActiveInterestForChat(context.Background(), store, "chat-a", base); err == nil {
+		t.Fatal("want an error, got nil")
+	}
+}
+
+// Expiry is swept lazily — the delivery worker's ExpireOverdue tick and the list
+// RPC are the only writers of the expired state — so a callback whose deadline
+// has passed still reads as active/leased/triggered for up to a poll interval.
+// The waiting derivation must not park a chat on an event that can no longer
+// fire, so it filters on expires_at as well as state.
+func TestActiveInterestForChat_OverdueButUnsweptCallbackIsNotWaiting(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	for _, state := range nonTerminalCallbackStates {
+		t.Run(string(state), func(t *testing.T) {
+			cb := chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerMerged, 1, state)
+			cb.ExpiresAt = base.Add(time.Hour)
+			store := &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}
+
+			// One nanosecond before the deadline: still parked.
+			got, err := ActiveInterestForChat(context.Background(), store, "chat-a", cb.ExpiresAt.Add(-time.Nanosecond))
+			if err != nil {
+				t.Fatalf("ActiveInterestForChat: %v", err)
+			}
+			if got == nil {
+				t.Fatal("want an interest just before expiry, got nil")
+			}
+
+			// At the deadline and after it: no longer parked. expires_at is an
+			// exclusive bound, matching AcquireLease's expires_at > now.
+			for _, now := range []time.Time{cb.ExpiresAt, cb.ExpiresAt.Add(time.Hour)} {
+				got, err := ActiveInterestForChat(context.Background(), store, "chat-a", now)
+				if err != nil {
+					t.Fatalf("ActiveInterestForChat: %v", err)
+				}
+				if got != nil {
+					t.Fatalf("now=%v: want nil for overdue %s callback, got %+v", now, state, got)
+				}
+			}
+		})
+	}
+}
+
+// An overdue callback must not merely lose — it must be invisible, so a younger
+// still-live sibling wins instead of the chat falling silent or reporting the
+// dead one. The overdue row is the older of the two, so it would win the
+// created_at tiebreak if the expiry filter were missing.
+func TestActiveInterestForChat_OverdueLoserYieldsToLiveSibling(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	overdue := chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateActive)
+	overdue.ExpiresAt = base.Add(time.Hour)
+	live := chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerChecksPassed, 2, models.GithubCallbackStateActive)
+	live.ExpiresAt = base.Add(48 * time.Hour)
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{overdue, live}}
+
+	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("ActiveInterestForChat: %v", err)
+	}
+	if got == nil {
+		t.Fatal("want the live sibling, got nil")
+	}
+	if got.ID != "cb-b" {
+		t.Fatalf("id = %q, want cb-b (the un-expired sibling)", got.ID)
+	}
+	const want = "awaiting checks_passed on acme/widget#2"
+	if got.WaitingReason() != want {
+		t.Fatalf("WaitingReason() = %q, want %q", got.WaitingReason(), want)
+	}
+}
+
+func TestWaitingReasonForChat_UsesCanonicalWording(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+		chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerReadyForReview, 42, models.GithubCallbackStateActive),
+	}}
+	got, err := WaitingReasonForChat(context.Background(), store, "chat-a", base)
+	if err != nil {
+		t.Fatalf("WaitingReasonForChat: %v", err)
+	}
+	const want = "awaiting ready_for_review on acme/widget#42"
+	if got != want {
+		t.Fatalf("WaitingReasonForChat = %q, want %q", got, want)
 	}
 }

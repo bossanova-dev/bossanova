@@ -65,6 +65,19 @@ go_library(
     ],
 )
 
+# keep: this package's non-test .go sources exposed as a filegroup so
+# TestNoBossdSpawnPathCanSilentlyDropStrictMcpConfig (mcp_config_test.go) can
+# statically scan them for the McpConfigPath/StrictMcpConfig BOS-672 pairing
+# invariant via runtime.Caller + go/ast, since Bazel only stages declared data.
+filegroup(
+    name = "go_sources",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
 go_test(
     name = "session_test",
     srcs = [
@@ -105,7 +118,11 @@ go_test(
         "testhelpers_test.go",
         "tmux_chat_test.go",
     ],
-    data = ["//services/bossd/migrations:sql"],  # keep: testharness reads migrations/*.sql from disk via runtime.Caller
+    data = [
+        ":go_sources",  # keep: TestNoBossdSpawnPathCanSilentlyDropStrictMcpConfig scans this package's own sources via runtime.Caller
+        "//services/bossd/internal/server:go_sources",  # keep: same test also scans internal/server's sources
+        "//services/bossd/migrations:sql",  # keep: testharness reads migrations/*.sql from disk via runtime.Caller
+    ],
     embed = [":session"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [

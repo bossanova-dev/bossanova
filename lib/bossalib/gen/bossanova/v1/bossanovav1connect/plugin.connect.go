@@ -149,6 +149,9 @@ const (
 	// AgentRunnerServiceReadTranscriptProcedure is the fully-qualified name of the AgentRunnerService's
 	// ReadTranscript RPC.
 	AgentRunnerServiceReadTranscriptProcedure = "/bossanova.v1.AgentRunnerService/ReadTranscript"
+	// AgentRunnerServiceProbeProgressLivenessProcedure is the fully-qualified name of the
+	// AgentRunnerService's ProbeProgressLiveness RPC.
+	AgentRunnerServiceProbeProgressLivenessProcedure = "/bossanova.v1.AgentRunnerService/ProbeProgressLiveness"
 	// AgentRunnerServiceRotationCapabilityProcedure is the fully-qualified name of the
 	// AgentRunnerService's RotationCapability RPC.
 	AgentRunnerServiceRotationCapabilityProcedure = "/bossanova.v1.AgentRunnerService/RotationCapability"
@@ -873,6 +876,19 @@ type AgentRunnerServiceClient interface {
 	// its messages plus the derived final assistant message. Each plugin resolves
 	// the transcript path the same way it does for TranscriptExists.
 	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
+	// ProbeProgressLiveness reports when the agent last made SEMANTIC progress on
+	// a chat (a new transcript record) and which phase that record leaves the
+	// agent in. It exists because pane content is not a progress signal: an
+	// animated spinner keeps changing while the turn behind it is dead, so the
+	// daemon's content-change comparison reads a hung run as "working". Each
+	// plugin resolves the transcript path the same way it does for
+	// TranscriptExists and reads only the tail.
+	//
+	// Fail open: a plugin that does not implement this (codes.Unimplemented), or
+	// that cannot read its transcript, returns is_known=false and the daemon raises
+	// NOTHING. A false "your session is dead" banner on a healthy long build is
+	// worse than the silent stall this detects.
+	ProbeProgressLiveness(context.Context, *connect.Request[v1.ProbeProgressLivenessRequest]) (*connect.Response[v1.ProbeProgressLivenessResponse], error)
 	// RotationCapability reports whether this agent supports account rotation and,
 	// if so, how its credentials are injected (an env token like
 	// CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
@@ -1028,6 +1044,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
 			connect.WithClientOptions(opts...),
 		),
+		probeProgressLiveness: connect.NewClient[v1.ProbeProgressLivenessRequest, v1.ProbeProgressLivenessResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceProbeProgressLivenessProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ProbeProgressLiveness")),
+			connect.WithClientOptions(opts...),
+		),
 		rotationCapability: connect.NewClient[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceRotationCapabilityProcedure,
@@ -1065,6 +1087,7 @@ type agentRunnerServiceClient struct {
 	probeRateLimit              *connect.Client[v1.ProbeRateLimitRequest, v1.ProbeRateLimitResponse]
 	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
 	readTranscript              *connect.Client[v1.ReadTranscriptRequest, v1.ReadTranscriptResponse]
+	probeProgressLiveness       *connect.Client[v1.ProbeProgressLivenessRequest, v1.ProbeProgressLivenessResponse]
 	rotationCapability          *connect.Client[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse]
 	materializeAccount          *connect.Client[v1.MaterializeAccountRequest, v1.MaterializeAccountResponse]
 }
@@ -1169,6 +1192,11 @@ func (c *agentRunnerServiceClient) ReadTranscript(ctx context.Context, req *conn
 	return c.readTranscript.CallUnary(ctx, req)
 }
 
+// ProbeProgressLiveness calls bossanova.v1.AgentRunnerService.ProbeProgressLiveness.
+func (c *agentRunnerServiceClient) ProbeProgressLiveness(ctx context.Context, req *connect.Request[v1.ProbeProgressLivenessRequest]) (*connect.Response[v1.ProbeProgressLivenessResponse], error) {
+	return c.probeProgressLiveness.CallUnary(ctx, req)
+}
+
 // RotationCapability calls bossanova.v1.AgentRunnerService.RotationCapability.
 func (c *agentRunnerServiceClient) RotationCapability(ctx context.Context, req *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error) {
 	return c.rotationCapability.CallUnary(ctx, req)
@@ -1269,6 +1297,19 @@ type AgentRunnerServiceHandler interface {
 	// its messages plus the derived final assistant message. Each plugin resolves
 	// the transcript path the same way it does for TranscriptExists.
 	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
+	// ProbeProgressLiveness reports when the agent last made SEMANTIC progress on
+	// a chat (a new transcript record) and which phase that record leaves the
+	// agent in. It exists because pane content is not a progress signal: an
+	// animated spinner keeps changing while the turn behind it is dead, so the
+	// daemon's content-change comparison reads a hung run as "working". Each
+	// plugin resolves the transcript path the same way it does for
+	// TranscriptExists and reads only the tail.
+	//
+	// Fail open: a plugin that does not implement this (codes.Unimplemented), or
+	// that cannot read its transcript, returns is_known=false and the daemon raises
+	// NOTHING. A false "your session is dead" banner on a healthy long build is
+	// worse than the silent stall this detects.
+	ProbeProgressLiveness(context.Context, *connect.Request[v1.ProbeProgressLivenessRequest]) (*connect.Response[v1.ProbeProgressLivenessResponse], error)
 	// RotationCapability reports whether this agent supports account rotation and,
 	// if so, how its credentials are injected (an env token like
 	// CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
@@ -1420,6 +1461,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceProbeProgressLivenessHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceProbeProgressLivenessProcedure,
+		svc.ProbeProgressLiveness,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ProbeProgressLiveness")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceRotationCapabilityHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceRotationCapabilityProcedure,
 		svc.RotationCapability,
@@ -1474,6 +1521,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceTranscriptExistsHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceReadTranscriptProcedure:
 			agentRunnerServiceReadTranscriptHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceProbeProgressLivenessProcedure:
+			agentRunnerServiceProbeProgressLivenessHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceRotationCapabilityProcedure:
 			agentRunnerServiceRotationCapabilityHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceMaterializeAccountProcedure:
@@ -1565,6 +1614,10 @@ func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, 
 
 func (UnimplementedAgentRunnerServiceHandler) ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ReadTranscript is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ProbeProgressLiveness(context.Context, *connect.Request[v1.ProbeProgressLivenessRequest]) (*connect.Response[v1.ProbeProgressLivenessResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ProbeProgressLiveness is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) RotationCapability(context.Context, *connect.Request[v1.RotationCapabilityRequest]) (*connect.Response[v1.RotationCapabilityResponse], error) {

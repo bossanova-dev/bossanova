@@ -180,6 +180,38 @@ in `settings.json`. Read [Security and
 Permissions](../reference/security-and-permissions.md) before flipping it
 on. It makes the agent more capable and more dangerous in equal measure.
 
+### macOS: archive, session creation, or repair hangs silently
+
+If archiving a session, creating a session, or running a repair hangs without
+an error, and a `git`, `tmux`, or `node` child is stuck in `getcwd`, macOS may
+be waiting for a privacy permission decision. TCC keys `bossd` access by its
+resolved binary path, so a Homebrew upgrade can make a previously granted path
+stop matching the daemon that now runs.
+
+First, inspect the daemon's diagnostic output:
+
+```bash
+boss daemon doctor
+```
+
+Answer any pending macOS privacy dialog. If no dialog appears, grant the
+staged daemon binary access in macOS Privacy & Security settings (for example,
+Full Disk Access):
+
+```
+~/Library/Application Support/bossanova/bin/bossd
+```
+
+Then restart the daemon:
+
+```bash
+boss daemon restart
+```
+
+After every `brew upgrade`, run the same restart. It refreshes the staged
+daemon copy at that stable real path, preserving the path macOS TCC associates
+with the permission.
+
 ## Workspace and worktree
 
 ### Worktree directory missing

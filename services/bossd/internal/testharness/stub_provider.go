@@ -14,17 +14,19 @@ var _ vcs.Provider = (*StubProvider)(nil)
 type StubProvider struct {
 	mu sync.Mutex
 
-	statuses map[int]*vcs.PRStatus
-	checks   map[int][]vcs.CheckResult
-	reviews  map[int][]vcs.ReviewComment
-	counts   StubProviderCallCounts
+	statuses     map[int]*vcs.PRStatus
+	checks       map[int][]vcs.CheckResult
+	reviews      map[int][]vcs.ReviewComment
+	blockingBots map[int]map[string]bool
+	counts       StubProviderCallCounts
 }
 
 // StubProviderCallCounts snapshots provider method invocation counts.
 type StubProviderCallCounts struct {
-	GetPRStatus       int
-	GetCheckResults   int
-	GetReviewComments int
+	GetPRStatus           int
+	GetCheckResults       int
+	GetReviewComments     int
+	BlockingThreadAuthors int
 }
 
 func NewStubProvider() *StubProvider {
@@ -33,8 +35,9 @@ func NewStubProvider() *StubProvider {
 		statuses: map[int]*vcs.PRStatus{
 			0: {State: vcs.PRStateOpen, Mergeable: &mergeable},
 		},
-		checks:  make(map[int][]vcs.CheckResult),
-		reviews: make(map[int][]vcs.ReviewComment),
+		checks:       make(map[int][]vcs.CheckResult),
+		reviews:      make(map[int][]vcs.ReviewComment),
+		blockingBots: make(map[int]map[string]bool),
 	}
 }
 
@@ -66,6 +69,41 @@ func (p *StubProvider) SetReviewComments(prID int, reviews []vcs.ReviewComment) 
 		return
 	}
 	p.reviews[prID] = append([]vcs.ReviewComment(nil), reviews...)
+}
+
+// SetBlockingThreadAuthors declares which bot logins still own a review thread
+// that blocks on prID — the freshness fixture the realtime promotion path reads
+// through upstream.ReviewThreadFreshnessProvider (BOS-669).
+//
+// The default is deliberately EMPTY, mirroring production's fail-closed posture:
+// a harness test that expects a bot COMMENTED review to be promoted must say so
+// explicitly. Defaulting to "everything blocks" would make the stub fail open
+// and hide exactly the regression the freshness gate exists to catch.
+func (p *StubProvider) SetBlockingThreadAuthors(prID int, logins []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if logins == nil {
+		delete(p.blockingBots, prID)
+		return
+	}
+	blocking := make(map[string]bool, len(logins))
+	for _, login := range logins {
+		blocking[login] = true
+	}
+	p.blockingBots[prID] = blocking
+}
+
+func (p *StubProvider) BlockingThreadAuthors(_ context.Context, _ string, prID int, botUsers map[string]bool) (map[string]bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.counts.BlockingThreadAuthors++
+	blocking := make(map[string]bool)
+	for login := range botUsers {
+		if p.blockingBots[prID][login] {
+			blocking[login] = true
+		}
+	}
+	return blocking, nil
 }
 
 func (p *StubProvider) CallCounts() StubProviderCallCounts {

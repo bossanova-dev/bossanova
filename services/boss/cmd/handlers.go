@@ -437,6 +437,7 @@ func restartReachableDaemonForSettingsReload(socketPath string) error {
 		daemon.Stop,
 		daemon.EnsureRunning,
 		terminateBossdProcesses,
+		waitForCurrentProfileBossdExit,
 		waitForSocketGone,
 	)
 }
@@ -447,6 +448,7 @@ func restartReachableDaemonForSettingsReloadWith(
 	stop func() error,
 	ensureRunning func(string) error,
 	terminateStandalone func() (int, error),
+	waitStandaloneExit func() bool,
 	waitSocketGone func(string) bool,
 ) error {
 	st, err := getStatus()
@@ -460,6 +462,9 @@ func restartReachableDaemonForSettingsReloadWith(
 		}
 		if n > 0 && socketPath != "" && !waitSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
+		}
+		if n > 0 && waitStandaloneExit != nil && !waitStandaloneExit() {
+			return fmt.Errorf("timed out waiting for standalone bossd to exit after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if err := ensureRunning(socketPath); err != nil {
 			if !st.Installed {
@@ -555,6 +560,56 @@ var verifyUpgradeVersion = func(ctx context.Context, version string) error {
 
 var restartDaemon = daemon.Restart
 
+// restartHomebrewDaemon runs the boss executable selected by Homebrew after an
+// upgrade. The current process can still be executing from the old Cellar
+// version, so restarting in-process would restage the old adjacent bossd.
+var restartHomebrewDaemon = func(ctx context.Context, executable string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, executable, "daemon", "restart")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restart daemon with upgraded boss: %w\noutput:\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// restartDaemonAfterUpgrade stops a running daemon and waits for its socket to
+// close before bootstrapping the upgraded daemon. launchctl bootout returns
+// before bossd has necessarily finished draining, so daemon.Restart can race
+// bootstrap against the old process.
+var restartDaemonAfterUpgrade = func() error {
+	socketPath, err := defaultSocketPath()
+	if err != nil {
+		return fmt.Errorf("restart daemon after upgrade: socket path: %w", err)
+	}
+	st, err := daemonGetStatus()
+	if err != nil {
+		return fmt.Errorf("restart daemon after upgrade: daemon status: %w", err)
+	}
+	start := func(string) error { return restartDaemon() }
+	if !st.Installed {
+		// A standalone daemon deliberately has no LaunchAgent. Restart would
+		// create one on macOS, changing the user's service mode during upgrade.
+		start = daemonEnsureRunning
+	}
+	if err := restartReachableDaemonForSettingsReloadWith(
+		socketPath,
+		func() (*daemon.Status, error) { return st, nil },
+		daemonStop,
+		start,
+		terminateCurrentProfileBossd,
+		waitForCurrentProfileBossdExit,
+		waitForDaemonSocketGone,
+	); err != nil {
+		return fmt.Errorf("restart daemon after upgrade: %w", err)
+	}
+	if err := waitForDaemonRestartReady(socketPath); err != nil {
+		return fmt.Errorf("restart daemon after upgrade: %w", err)
+	}
+	return nil
+}
+
 var runProviderStartupIfNeeded = views.RunProviderStartupIfNeeded
 
 var defaultSocketPath = client.DefaultSocketPath
@@ -569,9 +624,31 @@ var daemonStop = daemon.Stop
 
 var terminateAllBossdProcesses = terminateBossdProcesses
 
+// terminateCurrentProfileBossd only stops the standalone daemon recorded for
+// this profile. Upgrade restart must not kill daemons serving other profiles.
+var terminateCurrentProfileBossd = func() (int, error) {
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		return 0, err
+	}
+	return terminateStandaloneCurrentProfile(profile)
+}
+
+var terminateStandaloneCurrentProfile = func(profile daemonProfile) (int, error) {
+	return terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
+		return os.FindProcess(pid)
+	})
+}
+
 var terminateAllPluginProcesses = terminateAllBossdPluginProcesses
 
 var waitForDaemonSocketGone = waitForSocketGone
+
+// waitForStandaloneBossdExit waits until the current standalone daemon has
+// released its singleton lock. Its state record is removed before lock release
+// so shutdown cannot delete metadata written by a replacement; acquiring this
+// lock is therefore the handoff signal that prevents a detached-start race.
+var waitForStandaloneBossdExit = waitForDaemonLockRelease
 
 // daemonRestartReadyTimeout and daemonRestartPollInterval bound the wait for a
 // freshly-restarted bossd to start accepting connections. They default to the
@@ -859,7 +936,8 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 			if opts.NoRestart {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
 			} else {
-				if err := restartDaemon(); err != nil {
+				upgradedBoss := filepath.Join(filepath.Dir(filepath.Dir(pluginDir)), "bin", "boss")
+				if err := restartHomebrewDaemon(ctx, upgradedBoss); err != nil {
 					return fmt.Errorf("restart daemon: %w", err)
 				}
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
@@ -894,7 +972,7 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 		if opts.NoRestart {
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
 		} else {
-			if err := restartDaemon(); err != nil {
+			if err := restartDaemonAfterUpgrade(); err != nil {
 				return fmt.Errorf("restart daemon: %w", err)
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
@@ -1594,14 +1672,26 @@ func runDaemonInstall(cmd *cobra.Command) error {
 	if err := daemon.Install(bossdPath, force); err != nil {
 		return fmt.Errorf("install daemon failed: %w", err)
 	}
+	installedPath, err := daemon.EnsureStaged(bossdPath)
+	if err != nil {
+		return fmt.Errorf("resolve installed daemon path: %w", err)
+	}
 
 	st, _ := daemon.GetStatus()
-	fmt.Printf("Daemon installed and started.\n")
-	fmt.Printf("  bossd:   %s\n", bossdPath)
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintln(out, "Daemon installed and started.")
+	_, _ = fmt.Fprint(out, daemonInstallBossdLine(installedPath, bossdPath))
 	if st != nil && st.ServicePath != "" {
-		fmt.Printf("  service: %s\n", st.ServicePath)
+		_, _ = fmt.Fprintf(out, "  service: %s\n", st.ServicePath)
 	}
 	return nil
+}
+
+func daemonInstallBossdLine(installedPath, sourcePath string) string {
+	if filepath.Clean(installedPath) == filepath.Clean(sourcePath) {
+		return fmt.Sprintf("  bossd:   %s\n", sourcePath)
+	}
+	return fmt.Sprintf("  bossd:   %s (staged from %s)\n", installedPath, sourcePath)
 }
 
 func runDaemonUninstall(_ *cobra.Command) error {
@@ -1770,14 +1860,15 @@ func runDaemonRestart(_ *cobra.Command) error {
 	socketPath := profile.SocketPath
 
 	if !st.Installed {
-		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
-			return os.FindProcess(pid)
-		})
+		n, err := terminateStandaloneCurrentProfile(profile)
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
 		if n > 0 && !waitForDaemonSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
+		}
+		if n > 0 && !waitForStandaloneBossdExit(profile.AppDataDir) {
+			return fmt.Errorf("timed out waiting for standalone bossd to exit after %s", daemon.LifecycleShutdownTimeout)
 		}
 		if err := daemonEnsureRunning(socketPath); err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
@@ -1796,20 +1887,36 @@ func runDaemonRestart(_ *cobra.Command) error {
 		if !waitForDaemonSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for daemon socket to stop after %s", daemon.LifecycleShutdownTimeout)
 		}
+	} else {
+		n, err := terminateCurrentProfileBossd()
+		if err != nil {
+			return fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
+		if n > 0 && !waitForDaemonSocketGone(socketPath) {
+			return fmt.Errorf("timed out waiting for standalone bossd to stop after %s", daemon.LifecycleShutdownTimeout)
+		}
 	}
-	if err := daemonEnsureRunning(socketPath); err != nil {
+	if err := restartDaemon(); err != nil {
 		return fmt.Errorf("restart daemon failed: %w", err)
 	}
-	// Wait for the new bossd to come up so the next command doesn't race.
+	if err := waitForDaemonRestartReady(socketPath); err != nil {
+		return fmt.Errorf("daemon restarted but %w", err)
+	}
+	fmt.Println("Daemon restarted.")
+	return nil
+}
+
+// waitForDaemonRestartReady waits for the replacement daemon to accept
+// connections so restart callers cannot report success for the draining daemon.
+func waitForDaemonRestartReady(socketPath string) error {
 	deadline := time.Now().Add(daemonRestartReadyTimeout)
 	for time.Now().Before(deadline) {
 		if daemonSocketReachable(socketPath) {
-			fmt.Println("Daemon restarted.")
 			return nil
 		}
 		time.Sleep(daemonRestartPollInterval)
 	}
-	return fmt.Errorf("daemon restarted but socket did not become reachable after %s; check 'boss daemon status'", daemonRestartReadyTimeout)
+	return fmt.Errorf("socket did not become reachable after %s; check 'boss daemon status'", daemonRestartReadyTimeout)
 }
 
 func restartSocketPath(socketPath string, err error) (string, error) {
@@ -1836,6 +1943,37 @@ func waitForSocketGone(path string) bool {
 	for time.Now().Before(deadline) {
 		if !daemon.IsSocketReachable(path) {
 			return true
+		}
+		time.Sleep(daemon.LifecyclePollInterval)
+	}
+	return false
+}
+
+func waitForCurrentProfileBossdExit() bool {
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		return false
+	}
+	return waitForStandaloneBossdExit(profile.AppDataDir)
+}
+
+func waitForDaemonLockRelease(appDataDir string) bool {
+	deadline := time.Now().Add(daemon.LifecycleShutdownTimeout)
+	lockPath := filepath.Join(appDataDir, "bossd.lock")
+	for time.Now().Before(deadline) {
+		// #nosec G304 -- fixed singleton-lock filename beneath the active profile's configured app-data directory; non-secret local state.
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
+		lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return false
+		}
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		_ = lock.Close()
+		if err == nil {
+			return true
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return false
 		}
 		time.Sleep(daemon.LifecyclePollInterval)
 	}

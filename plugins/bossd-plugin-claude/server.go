@@ -50,6 +50,11 @@ type Server struct {
 	httpClient  *http.Client
 	usageURL    string
 	messagesURL string
+
+	// progress memoizes transcript progress snapshots for ProbeProgressLiveness,
+	// which the daemon calls on its poll tick for every live chat. Its zero
+	// value is usable, so it needs no setup in newServer.
+	progress progressProbe
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...RunnerOption) *Server {
@@ -440,6 +445,37 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 		Messages:           msgs,
 		FinalAssistantText: finalAssistant,
 		Exists:             exists,
+	}, nil
+}
+
+// ProbeProgressLiveness reports when the Claude Code transcript for
+// (work_dir, agent_session_id) last recorded semantic progress, and what that
+// last record leaves the agent doing. It exists because pane content is not a
+// progress signal: an animated spinner keeps the pane changing while the turn
+// behind it is dead, so only the transcript distinguishes "thinking hard" from
+// "silently stopped".
+//
+// Fail open, always: a missing, unreadable, empty, or unclassifiable transcript
+// returns known=false with NO timestamp and phase=UNKNOWN, and never an error.
+// The daemon must raise nothing on known=false — a false stall banner on a
+// healthy long-running tool call is worse than the stall this detects.
+func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation; fail-open means the error result is always nil
+	unknown := &bossanovav1.ProbeProgressLivenessResponse{
+		Phase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
+	}
+	path, err := transcriptPath(req.WorkDir, req.AgentSessionId)
+	if err != nil {
+		// Includes the traversal guard rejecting a hostile session id.
+		return unknown, nil
+	}
+	snap := s.progress.snapshot(path)
+	if !snap.known {
+		return unknown, nil
+	}
+	return &bossanovav1.ProbeProgressLivenessResponse{
+		LastProgressAt: timestamppb.New(snap.lastProgressAt),
+		Phase:          snap.phase,
+		IsKnown:        true,
 	}, nil
 }
 

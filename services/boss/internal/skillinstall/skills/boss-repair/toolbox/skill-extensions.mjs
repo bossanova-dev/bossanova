@@ -17,9 +17,14 @@ const KNOWN_EXTENSION_ROLES = new Set([
 // Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
 // nested `x-boss-extension:` block this contract needs — no external YAML dep
 // (matches the no-new-deps constraint of the scripts/ helpers).
+//
+// `hasFrontmatter` reports whether a delimited block was found at all. It matters because a file
+// with a broken fence (an opening `---` with no closing one, say) parses to the SAME empty `data`
+// as a file whose frontmatter is perfectly valid and simply declares no marker — and discovery has
+// to tell a failed declaration apart from a deliberate non-extension.
 export function parseFrontmatter(text) {
   const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(text)
-  if (!match) return { data: {}, body: text }
+  if (!match) return { data: {}, body: text, hasFrontmatter: false }
   const data = {}
   let current = null // name of the block we are collecting nested keys into
   for (const raw of match[1].split('\n')) {
@@ -39,11 +44,19 @@ export function parseFrontmatter(text) {
       current = null
     }
   }
-  return { data, body: match[2] }
+  return { data, body: match[2], hasFrontmatter: true }
 }
 
+// A quoted YAML scalar is a string by construction, so the quotes must be honoured
+// BEFORE the numeric test rather than stripped ahead of it: `lens: "42"` has to stay
+// the string "42" to bind to a config lens id of "42" (validateConfig only requires a
+// non-empty string id, so numeric-looking ids are legal), and stripping first turned it
+// into Number 42, which extensionMarker's `typeof === 'string'` guard then dropped —
+// silently reporting the extension as unbound. Only a bare, unquoted integer coerces.
 function coerce(value) {
-  const v = value.trim().replace(/^["']|["']$/g, '')
+  const v = value.trim()
+  const quoted = /^(["'])([\s\S]*)\1$/.exec(v)
+  if (quoted) return quoted[2]
   if (/^-?\d+$/.test(v)) return Number(v)
   return v
 }
@@ -53,7 +66,14 @@ export function extensionMarker(frontmatter) {
   if (!block || typeof block !== 'object') return null
   if (typeof block.extends !== 'string' || typeof block.role !== 'string') return null
   const order = typeof block.order === 'number' ? block.order : DEFAULT_ORDER
-  return { extends: block.extends, role: block.role, order }
+  const marker = { extends: block.extends, role: block.role, order }
+  // Optional binding to a config lens id. It is meaningful only for `role: lens` — a core's
+  // lens phase indexes discovered descriptors by it — but it is deliberately NOT validated
+  // against the role here: this helper is role-generic, and a stray key on another role is
+  // inert rather than a discovery failure. Absent/blank/non-string omits the field entirely,
+  // so an unbound descriptor's JSON is byte-identical to what it was before the key existed.
+  if (typeof block.lens === 'string' && block.lens !== '') marker.lens = block.lens
+  return marker
 }
 
 export function discoverExtensions({ core, root, role }) {
@@ -75,15 +95,26 @@ export function discoverExtensions({ core, root, role }) {
       continue
     }
     let marker = null
+    let parsed = null
     try {
-      const { data } = parseFrontmatter(fs.readFileSync(skillPath, 'utf8'))
-      marker = extensionMarker(data)
+      parsed = parseFrontmatter(fs.readFileSync(skillPath, 'utf8'))
+      marker = extensionMarker(parsed.data)
     } catch (err) {
       skipped.push({ name: entry.name, reason: `unreadable frontmatter: ${err.message}` })
       continue
     }
     if (!marker) {
-      skipped.push({ name: entry.name, reason: 'missing x-boss-extension marker' })
+      // Three very different inputs land here, and cores treat them differently: only a
+      // *genuinely* markerless skill is a deliberate non-extension they may quietly ignore.
+      // A broken fence and a half-written marker are both failed declarations of a real
+      // extension, so each gets its own reason and stays visible in the ledger.
+      let reason = 'missing x-boss-extension marker'
+      if (!parsed.hasFrontmatter) {
+        reason = 'malformed frontmatter: no parseable --- block'
+      } else if ('x-boss-extension' in parsed.data) {
+        reason = 'incomplete x-boss-extension marker: needs string "extends" and "role"'
+      }
+      skipped.push({ name: entry.name, reason })
       continue
     }
     if (marker.extends !== core) {
@@ -103,13 +134,15 @@ export function discoverExtensions({ core, root, role }) {
       }
       continue
     }
-    extensions.push({
+    const descriptor = {
       name: entry.name,
       dir: path.join(skillsDir, entry.name),
       skillPath,
       role: marker.role,
       order: marker.order,
-    })
+    }
+    if (marker.lens !== undefined) descriptor.lens = marker.lens
+    extensions.push(descriptor)
   }
   extensions.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
   return { extensions, skipped }

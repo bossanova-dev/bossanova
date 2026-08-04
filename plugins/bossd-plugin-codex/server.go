@@ -541,6 +541,31 @@ func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUs
 	return &bossanovav1.LastTurnIsUserResponse{IsUser: lastTurnIsUser(path)}, nil
 }
 
+// ProbeProgressLiveness always reports known=false for codex.
+//
+// The RPC's contract is "what does the LAST record leave the agent doing", and
+// codex's rollout JSONL does not answer that question cleanly. Its tail is
+// dominated by bookkeeping envelopes that carry no phase meaning at all —
+// event_msg/token_count is emitted periodically, and turn_context and
+// task_started interleave with the semantic records — so the final line is
+// routinely one of those rather than a user_message, agent_message,
+// function_call, or function_call_output. Skipping past them to the last
+// semantic record would report a phase for a moment that has already been
+// superseded, and treating a bookkeeping envelope as progress would report
+// liveness for a turn that has actually stalled: both are worse than silence.
+//
+// So we fail open (the same direction every other branch of this feature
+// takes) rather than guess. The daemon raises nothing on known=false, which
+// means codex sessions simply do not get stall detection yet — the deliberate,
+// documented scope choice for BOS-667. Wiring codex properly needs a phase
+// mapping derived from the rollout protocol itself, not from this heuristic.
+func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation; fail-open means the error result is always nil
+	return &bossanovav1.ProbeProgressLivenessResponse{
+		Phase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
+		IsKnown: false,
+	}, nil
+}
+
 // TranscriptExists reports whether a codex rollout JSONL transcript exists
 // on disk for (work_dir, agent_session_id). Used by wake-up logic to choose
 // between `codex exec resume <UUID>` (transcript present) and a fresh start

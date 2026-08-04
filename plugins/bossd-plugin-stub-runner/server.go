@@ -182,6 +182,16 @@ func (s *Server) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUser
 	return &bossanovav1.LastTurnIsUserResponse{IsUser: false}, nil
 }
 
+// ProbeProgressLiveness always returns known=false; the stub writes no
+// transcript, so it has no progress signal to report. known=false is the
+// fail-open answer the daemon raises nothing on.
+func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.ProbeProgressLivenessResponse{
+		Phase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
+		IsKnown: false,
+	}, nil
+}
+
 // TranscriptExists always returns false; the stub writes no transcript files.
 func (s *Server) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.TranscriptExistsResponse{Exists: false}, nil

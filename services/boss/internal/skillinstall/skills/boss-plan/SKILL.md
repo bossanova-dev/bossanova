@@ -135,8 +135,12 @@ modes differ only in **who drafts**:
 
 Resolve drafting by the Fallback contract: discovered `boss-plan-*` `role: draft`
 extension → host built-in → inline prompt; tiers 2/3 suppressed only when a Tier-1 dispatch
-**succeeded**, never merely because an extension exists. If every discovered extension failed,
-record `extension <name>: skipped (<reason>)` and fall through to tier 2, then tier 3.
+**succeeded**, never merely because an extension exists. A dispatch **succeeded** only when its
+result is valid **AND** the requested non-empty plan exists at the per-dispatch plan path that
+dispatch alone was given, written by **that** dispatch — never at a path a peer could have written;
+promote the first success to the real plan path. Record
+`extension <name>: skipped (<reason>)` for every failed dispatch, including when a sibling
+succeeded; when none succeeded, fall through to tier 2, then tier 3.
 
 ### Interactive (default `/boss-plan`)
 
@@ -260,10 +264,12 @@ for the Phase 4 secret gate.
      # the bounded epic metadata (epicParentId, childIds) for the report.
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
    else
-     PLAN_FILE="$(printf '%s' "$READ" | jq -r '.payload.planPath // empty')"
-     # single-ticket `ok` sentinel → re-verify the plan file is exactly the expected path and non-empty.
+     PLAN_FILE_RAW="$(printf '%s' "$READ" | jq -r '.payload.planPath // empty')"
+     # Normalize an equivalent absolute path; reject every path resolving elsewhere.
+     PLAN_FILE="$(node -e 'const {resolve}=require("node:path");const [reportedPath,expectedPath]=process.argv.slice(1);if(!reportedPath||resolve(reportedPath)!==resolve(expectedPath))process.exit(1);process.stdout.write(expectedPath)' "$PLAN_FILE_RAW" "$PLAN_PATH")"
+     # single-ticket `ok` sentinel → re-verify the expected plan file is non-empty.
      if [ "$PLAN_FILE" != "$PLAN_PATH" ] || [ ! -s "$PLAN_FILE" ]; then
-       echo "$DISPATCH_FAILURE: sentinel ok but plan file missing/empty or wrong path ($PLAN_FILE) — no Linear write, aborting" >&2
+       echo "$DISPATCH_FAILURE: sentinel ok but plan file missing/empty or wrong path ($PLAN_FILE_RAW) — no Linear write, aborting" >&2
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
        exit 1
      fi
@@ -271,19 +277,12 @@ for the Phase 4 secret gate.
    fi
    ```
    **Branch on the `ok` payload.** An **epic** outcome (`payload.epic == true`, no `planPath`) means
-   the subagent already did every Linear write in Phase 2.5 — children created + wired and the parent
-   repurposed under the parent-label exception (**neither** `agent-friendly` **nor** `needs-human`),
-   moved unplanned → planned. Just as the single-ticket branch re-verifies the plan file, the epic
-   branch **re-reads Linear before accepting**: the parent must have reached planned (parent-repurpose-
-   last makes a planned parent the proof the epic finished) and the enumerated children must match the
-   `childIds` / `parseEpicSpec` set — a still-unplanned parent or short child set fails
-   reverify and takes the safe branch (no success report, `exit 1`) so the next sweep resumes it. Only
-   on a PASSED reverify does the orchestrator **skip Phase 3.5 and Phase 4** and jump to Phase 5
-   - Phase 6; re-running Phase 4 would stamp a single-ticket plan artifact/labels onto the epic parent and
-     make it a `boss-build` target. Only a **single-ticket** `ok` sentinel — `payload.planPath` present
-     **and** a non-empty plan file at exactly `PLAN_PATH` — proceeds to Phase 4. The subagent's returned
-     metadata `planPath` must also equal `PLAN_PATH`; its `descriptionSummary` becomes the Linear
-     description. The orchestrator reads the plan **file** only for the secret gate.
+   the subagent already did every Phase 2.5 tracker write. Re-read Linear before accepting: its parent
+   must be planned and its children must match `childIds` / `parseEpicSpec`; otherwise safe-abort so
+   the next sweep resumes it. On success skip Phase 3.5–4; re-running them would turn the parent into a
+   `boss-build` target. A single-ticket `ok` sentinel proceeds only when its metadata `planPath`
+   resolves to `PLAN_PATH` and names a non-empty plan file. Its `descriptionSummary` becomes the
+   Linear description; read the plan file only for the secret gate.
 
 ## Phase 2.5 — Epic decomposition (triage = EPIC only)
 

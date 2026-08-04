@@ -5,7 +5,7 @@ description: Use when asked to implement a planned Linear ticket on a schedule, 
 
 # boss-build
 
-Implement exactly **one** planned Linear ticket end to end, unattended, and hand off a
+Implement exactly **one** planned Linear ticket end to end, unattended, hand off a
 review-ready PR. This skill is the second half of the pair whose first half is `boss-plan`
 (which turns vague tickets into `agent-friendly` planned tickets). It is a cron-style sibling of
 `bs-sweep-debt` and `bs-sweep-mutation`: no questions, tagless commits, self-owned PR gate,
@@ -73,7 +73,8 @@ body carries the decision skeleton; every moved instruction is still reachable h
 | `references/proof-capture.md`          | Step 5 for TUI scenario authoring; Step 11 (`REVIEW_READY`) proof gate detail |
 | `references/callback-watches.md`       | Step 8/9 — wiring one-shot CI/PR callbacks (grouped watch, reconcile, re-arm) |
 | `references/cron-gate.md`              | Setup — registering the cron gate command                                     |
-| `references/troubleshooting.md`        | Ambiguous state — rollback + red-flags                                        |
+| `references/finalize-and-stop.md`      | Steps 8-12 — tag, green gate, finalize, settle, proof, stop cleanly           |
+| `references/troubleshooting.md`        | Ambiguous terminal state — status-rollback table + red-flags catalog          |
 | `references/standalone-mode.md`        | Running with no bossd (`BOSSD_MANAGED=0`)                                     |
 
 ## Hard rules
@@ -168,7 +169,7 @@ git branch --show-current
 command -v git; command -v gh; gh auth status
 ```
 
-Arm a wall-clock deadline: record the start time, treat ~45 min as the cap. If exceeded at any phase
+Arm a wall-clock deadline: record the start time, treat ~3 hours as the cap. If exceeded at any phase
 boundary, stop at the nearest honest terminal state. Capture the baseline and branch facts:
 
 ```bash
@@ -341,7 +342,8 @@ The bootstrap PR row applies to `BOSSD_MANAGED=1` only (standalone has no bossd 
 The resume row applies in both bossd-managed and standalone runs when ownership signals match
 this ticket.
 
-`foreign` is the only `NO_CHANGE` here (the lock was acquired in Step 1, so it routes through Step 12).
+`foreign` is the only `NO_CHANGE`; its acquired lock means read
+[`references/finalize-and-stop.md`](references/finalize-and-stop.md) and execute Step 12 only.
 An empty bootstrap PR is adoptable, never foreign, regardless of its branch/title/body. Record the
 mode and the existing PR number — Steps 4.5, 6, and 7 read them.
 
@@ -524,7 +526,9 @@ The HEAD file lives under `$(git rev-parse --git-dir)`, not `/tmp`: it resolves 
 own git directory, so concurrent runs in sibling worktrees cannot overwrite each other's value, and
 it is never committed.
 
-**You** run this snapshot-and-check procedure, once per task, and nothing you dispatch runs it again.
+**You** run this snapshot-and-check procedure once per **dispatch** — which is one task here, and one
+whole extension on the Tier-1 methodology path below, where the label form changes with it — and
+nothing you dispatch runs it again.
 What layers below inherit is the commit-before-return contract, never this verification: a
 methodology extension that dispatched its own implementation subagents and snapshotted around each
 would overwrite and then delete the file you wrote, leaving your own after-return check with no
@@ -619,8 +623,26 @@ An **empty log range** is the other half of the check and has its own remedy: a 
 nothing committed and no _no commit — verification only_ claim means the task never landed. There is
 no residue to recover, so recovery does not apply — **re-dispatch that task** with the same brief
 rather than moving on, and if the second attempt also lands nothing, record it as a deferred
-required item. Silently continuing to the next task is what turns one lost task into an
-unexplained missing acceptance criterion at Step 9.
+required item **unless a fallback tier is still to run** for that scope. Silently continuing to the
+next task is what turns one lost task into an unexplained missing acceptance criterion at Step 9.
+
+That exception is the contract's own **fallback outranking this remedy**, and it is not optional.
+Where the dispatch that landed nothing still has a **lower tier left to run** — every Tier-1
+methodology extension does, because tiers 2 and 3 exist to finish exactly this remainder — record
+the exhausted attempt as that tier's own skip (`extension <name>: skipped (<reason>)`) and fall
+through, with **no** deferred required item. Defer the required item only once no fallback remains:
+the scope is still open after the last tier has run, or the dispatch had no lower tier behind it.
+Deferring at the Tier-1 attempt instead is the two-rules-one-situation failure this precedence
+removes — the fallback then implements every remaining criterion and Step 9 still finalizes BLOCKED
+(Hard rules) on an item the branch has already closed.
+
+Both halves of that remedy assume work is **missing**, so establish that before either one: check the
+acceptance criteria in that dispatch's scope against the branch, and where **you** confirm every one
+already holds, nothing was left to land — record the dispatch as landing nothing against an
+already-satisfied scope and move on, with neither a re-dispatch nor a deferred required item.
+Confirm it from the diff yourself, never on the dispatch's word. A deferred required item recorded
+here is not a bounded cost: Step 9 finalizes BLOCKED on any deferred required item (Hard rules), so
+recording one for a scope the branch already satisfies blocks a run that has nothing left to do.
 
 If a subagent **never returns** — a killed process, a host error — the same inventory applies even
 on a **fresh** run, where Step 4.5 never executed: list `git log --oneline "$BASE_BRANCH..HEAD"`,
@@ -628,19 +650,43 @@ map it onto the plan's task list, recover the residue, then dispatch **only** th
 carrying _continue from committed state; do not redo committed tasks_. Which recovery applies turns
 on **the snapshot, not on whether your process restarted** — that is what consuming it on every
 resolved outcome buys. If `boss-build-pre-dispatch-head` is present, a dispatch was in flight and its
-tree was verified clean, so everything dirty is that subagent's residue: use the command above
-unchanged, whether or not this is the same orchestrator that wrote it (a crash normally leaves the
-file behind, and that is exactly the case it exists for). Its second field is the `task-N` the
-recovery commit and the re-assessment both need: a restarted orchestrator cannot infer which task was
-in flight from the log, because the log shows what **finished**, and every unfinished task is equally
-a candidate. Read `N` from the file rather than guessing — a recovery commit scoped to the wrong task
-sends you on to re-assess a task that already passed while the interrupted one stays half-done. If
+tree was verified clean, so everything dirty is that subagent's residue: recover it with the command
+above, whether or not this is the same orchestrator that wrote it (a crash normally leaves the
+file behind, and that is exactly the case it exists for). Its second field names **which dispatch**
+was in flight, and the recovery commit and the re-assessment both scope to it: a restarted
+orchestrator cannot infer that from the log, because the log shows what **finished**, and every
+unfinished task is equally a candidate. Read that field from the file rather than guessing, and
+**branch on which of its two forms** you actually read — the snapshot writes one per dispatch unit:
+
+- `task-N` — a per-task dispatch. Commit the residue as `chore(task-N)` and re-assess task `N`.
+- `ext-<name>` — one whole Tier-1 methodology extension. Recovery is extension-wide: commit the
+  residue as `chore(ext-<name>)` and re-assess that extension's entire Step-5 scope, never a single
+  task inside it. Nothing outside the extension records which of its internal tasks was in flight, so
+  there is no `N` here and inventing one is the guess this field exists to remove.
+
+Never assume the per-task form. A recovery scoped to the wrong dispatch sends you on to re-assess a
+task that already passed while the interrupted one stays half-done, and reading an `ext-<name>`
+snapshot as a task id scopes it to a task that does not exist. If
 the file is **absent**, there is no
 clean-tree guarantee to lean on: attribute each dirty path to a task before staging it, and leave
 anything you cannot attribute alone rather than sweeping it in. The full procedure is in
 [`references/resume-assessment.md`](references/resume-assessment.md).
 
-Resolve the implementation methodology by strict precedence:
+Resolve the implementation methodology by strict precedence. One rule governs every dispatch this
+step makes, whichever tier makes it: **recompute the Step-5 scope immediately before each dispatch**
+— before each Tier-1 sibling, and again before tier 2 and before tier 3 — rather than reusing the one
+Step 4.5 set. Recompute it the way the empty-range remedy above does, from the branch: the plan's
+acceptance criteria checked against the diff, never a dispatch's own report of what it finished. Two
+things close criteria mid-step, and only one of them is a success — an earlier sibling that ran
+successfully, and a dispatch that did **not**, which still committed whatever part of its scope it
+got through before falling short. Both leave the next dispatch a smaller assignment, so hand it only
+what is still open, carrying _continue from committed state; do not redo committed tasks_. A stale
+scope handed down the tier fall-through is the more expensive of the two: the lower tiers exist to
+finish the remainder, and re-implementing work already on the branch is how they produce conflicts
+and duplicate changes instead. Where nothing remains, do not make that dispatch at all — record it in
+the ledger (each tier's own form is below) as neither a failed dispatch nor a deferred required item,
+and stop resolving, because a lower tier handed that same empty scope would have nothing to do
+either.
 
 1. **Tier 1 — discovered methodology extensions.** Run:
 
@@ -659,21 +705,87 @@ Resolve the implementation methodology by strict precedence:
    Each extension receives the copied plan path, the current Step-5 scope
    (full plan vs. remaining acceptance criteria), the unattended Decide-vs-ABORT rules, the
    fixed short task-contract schema, and the **commit-before-return contract** above — every
-   extension inherits it and must pass it down to its own implementation subagents. When at least
-   one extension **ran successfully**, tiers 2 and 3 are **suppressed**. When **every** discovered
-   extension failed to load or returned no valid result, record
-   `extension <name>: skipped (<reason>)` for each and fall through to tier 2, then tier 3 — the
+   extension inherits it and must pass it down to its own implementation subagents. Apply the
+   recompute rule above **per sibling**: an earlier sibling may have closed the criteria a later one
+   would otherwise be handed. Where nothing remains, do not
+   dispatch that sibling at all — record `extension <name>: not dispatched (scope already
+satisfied)`. That is a ledger entry, not a failed dispatch and never a deferred required item, and
+   the lower tiers stay suppressed by the sibling that closed the scope.
+
+   **Ran successfully** — one definition, used by every tier gate below. You snapshot around **this
+   dispatch** (the extension is one dispatch, however many subagents it runs inside itself), so let
+   the **Orchestrator verification** above run its own remedies first and classify only on what they
+   leave: where it requires a re-dispatch, re-dispatch; where it sends you to **Stop cleanly** with
+   BLOCKED, stop — the tier gate below is never reached. Its **deferred required item** is the one
+   remedy this tier outranks, and the fallback precedence above says so explicitly: an extension
+   attempt exhausted with nothing landed is a **skip that falls through to tiers 2 and 3**, never a
+   deferral, because those tiers _are_ the route the contract has for that scope. Nothing here is
+   deferred while a fallback is still to run. A dispatched methodology extension
+   **ran successfully** only when both hold: it returned a valid result for the requested dispatch,
+   **AND** that verification left the extension's work on the branch — the commits it reported
+   present in the post-dispatch log range, or its residue recovered by you. A **valid result for the
+   requested dispatch** is one that reports the requested scope implemented; a result that stops on a
+   Decide-vs-ABORT condition, or that otherwise reports scope it did not finish, is not one however
+   many commits it landed. Landed commits prove work happened, not that the assignment is done, so
+   check the dispatch's criteria against the diff before suppressing tiers 2 and 3: a dispatch that
+   left part of its scope unimplemented did **not** run successfully, and the lower tiers are what
+   finish the remainder rather than Step 9 discovering it as a partial implementation. A reported
+   Decide-vs-ABORT condition is not for a lower tier to retry — take the Decide-vs-ABORT route (Hard
+   rules) and stop BLOCKED. This tier's extensions are required to _produce_ commits, so that output
+   check belongs inside `ran successfully` and not beside it: an extension whose result looked valid
+   while its work never landed produced nothing,
+   and did **not** run successfully. _No commit — verification only_ is a per-task carve-out inside
+   an extension's own loop, never a whole-dispatch outcome — a dispatch handed a plan to implement
+   does not satisfy this gate by committing nothing. A dispatch that found its whole scope already
+   satisfied is classified the same way — it produced nothing — and an exit for it would be a third
+   outcome the accounting below, both lower-tier gates, and the extension contract all resolve as
+   failure. Classifying it a failure costs a pass and no more, and two things hold it there. The
+   verification above withholds its deferred required item once you confirm the scope already holds,
+   and the fallback precedence withholds it again for as long as a lower tier is still to run: the
+   recompute before each lower tier then finds nothing open and dispatches nothing, and where a
+   sibling suppressed the lower tiers nothing re-runs at all — Step 9 verifies those criteria on both
+   paths. Still confirm it. Without that confirmation the empty-range remedy re-dispatches an
+   extension whose scope the branch already satisfies, and once the last tier has run and no fallback
+   is left, that same unconfirmed empty range is what finally defers a required item and finalizes
+   Step 9 BLOCKED on criteria the branch already satisfies — so the confirmation and the precedence
+   are what bound the cost, not the classification. Both edges of this gate turn on that same check — the scope's
+   criteria against the branch, never the commit count: nothing landed against a scope already
+   satisfied is nothing left to do, while commits landed against a scope still open is work left
+   undone. (Step 4.5 already skips this step outright when it sets the scope to _none_.) Use this one
+   definition on both sides of the gate — a second wording for the same decision is how a tier gets
+   silently skipped.
+
+   Label that snapshot for the dispatch, not for a task inside it: write `ext-<name>` in the second
+   field where the per-task form writes `task-N`, and read it back the same way. Recovery under an
+   `ext-<name>` label is extension-wide — commit the residue as `chore(ext-<name>)` and re-assess the
+   extension's whole Step-5 scope rather than one task. Nothing outside the extension records which
+   of its internal tasks was in flight, so a `task-N` label here would be a guess, and the recovery
+   it scopes would re-assess a task that already passed while the interrupted one stayed half-done.
+
+   Account for each dispatch on its own, as you classify it: record
+   `extension <name>: skipped (<reason>)` for **every** extension that failed to load or returned no valid result
+   — or that did not **run successfully** under the definition above —
+   including when a sibling succeeded. A successful sibling suppresses the lower tiers; it does not
+   excuse omitting its failed peers from the ledger. When at least
+   one extension **ran successfully**, tiers 2 and 3 are **suppressed** — with every failed sibling
+   still recorded beside it. When **no** discovered extension ran successfully, that same
+   per-extension accounting has already recorded each one: fall through to tier 2, then tier 3 — the
    methodology layer is never silently dropped, and the ledger must show which path was taken.
 
 2. **Tier 2 — host built-in.** If no methodology extension ran successfully, use a host-native
    test-first/implementation affordance only when the current agent environment actually exposes one.
-   This is a prose self-assessment, not a programmatic probe. Whatever that affordance dispatches is
+   This is a prose self-assessment, not a programmatic probe. Hand it the scope the recompute rule
+   above leaves open, not the one the failed Tier-1 dispatch was handed — record
+   `tier 2: not dispatched (scope already satisfied)` where that leaves nothing.
+   Whatever that affordance dispatches is
    still bound by the **commit-before-return contract** above — hand it down with every task, and run
    the same after-return check yourself once the affordance returns. A host-native path is not an
    exemption from committing per task. If no such affordance exists, continue to tier 3.
 
 3. **Tier 3 — inline TDD methodology.** If tiers 1 and 2 are unavailable, execute the compact
-   self-contained loop in **Inline TDD methodology (tier 3)** below. This is the portable last resort
+   self-contained loop in **Inline TDD methodology (tier 3)** below, against the scope the recompute
+   rule above leaves open — record `tier 3: not dispatched (scope already satisfied)` where that
+   leaves nothing. This is the portable last resort
    for a bare host and has no external skill dependency.
 
 When the ticket touches a web or marketing UI surface (`services/web`, marketing), the implementer adds
@@ -694,10 +806,14 @@ This scenario gates only its own PR; do not add path rules or edit another PR's 
 ### Inline TDD methodology (tier 3)
 
 Use this branch only when no `methodology` extension ran successfully and no host built-in is
-available. A discovered extension that failed to load does **not** disqualify this branch — it is
+available. A discovered extension that did not **run successfully** does not disqualify this branch — it is
 recorded as `extension <name>: skipped (<reason>)` and the run falls through to here.
-For each task from the copied plan, create a fresh focused implementation pass with only that task,
-the relevant acceptance criteria, and the global constraints. Write the failing test first and run the
+For each **remaining** task from the copied plan — the recompute rule above, not the plan as Step 4.5
+handed it, decides which — create a fresh focused implementation pass with only that task,
+the relevant acceptance criteria, and the global constraints, carrying _continue from committed
+state; do not redo committed tasks_. A failed Tier-1 dispatch may have committed part of the plan
+before falling short, and this loop finishes the remainder rather than re-running it.
+Write the failing test first and run the
 smallest covering command until the failure proves the missing behavior. Then write the minimal code
 to pass, rerun the same covering command, and refactor only after it is green. Run a task-scoped
 review for spec compliance and code quality; fix Critical/Important findings before the next task.
@@ -879,221 +995,31 @@ section reads as "passed clean" to a reviewer). On a resume, **replace** it rath
 duplicate. On a resume, regenerate this body from the current done-vs-remaining map (Step 4.5). Do not add
 `please-review` or expose a ready PR before the green/finalize gate.
 
-## Step 8: Tag commits, then repair to green (boss-repair, capped)
+## Steps 8-12: tag, repair, finalize, settle, proof, stop
 
-**Inject the PR-number tag and force-push _before_ the green gate**, so CI runs once on the tagged
-head instead of a second time after a post-green rewrite. This is the finalize adapter's
-**inject-PR-tag** capability (`toolbox/finalize/cli.mjs inject-pr-tag`, which delegates to the
-dependency-free `boss-finalize` helper at `~/.claude/skills/boss-finalize/`, reachable in a
-cron worktree) — the same self-owned finalize the cron siblings use. **Tag-only, no squash** —
-preserve the per-task commits. The PR was created in Step 7; this does **not** re-create it.
+Read [`references/finalize-and-stop.md`](references/finalize-and-stop.md) on every route to Steps
+8–12, including pre-PR Step 12 exits.
 
-```bash
-# PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell).
-PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
-test -n "$PR_NUMBER"
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
-BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
-test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
-BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
-git fetch origin "$BASE_BRANCH"
-# Rebase all commits since the PR base and inject [#PR_NUMBER] into any missing it.
-BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
-git push --force-with-lease origin "$SESSION_BRANCH"
-test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"   # HEAD == upstream
-```
+Each bullet is a summary, never the instruction — follow its link and do the step there.
 
-> inject-PR-tag rewrites history (rebase). A daemon `pull --rebase` could race the force-push;
-> `--force-with-lease` plus the `HEAD == @{u}` assertion guard against clobbering a concurrent advance.
-> If the lease is rejected, re-fetch and re-run the block.
->
-> **Linear history:** sync with the base by rebasing only — never by merging it in. Keep
-> `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` at `0`; boss-repair carries the
-> full invariant and the linearize recovery.
+- **[Step 8](references/finalize-and-stop.md) — Tag commits, then repair to green (capped).** Inject
+  `[#<PR>]` and force-push _before_ the green gate, then boss-repair capped at `policy.repairCap`.
+- **[Step 9](references/finalize-and-stop.md) — Finalize (idempotent tag guard, ready), Linear
+  writeback.** Re-inject **only** if boss-repair added untagged fix-commits; assert
+  **no required item was deferred**, then ready the PR.
+- **[Step 10](references/finalize-and-stop.md) — Settle loop (capped).** Post-ready checks may still move.
+- **[Step 11](references/finalize-and-stop.md) — Proof (capture-only, mode-aware, non-fatal).**
+  `REVIEW_READY` only.
+- **[Step 12](references/finalize-and-stop.md) — Stop cleanly.** Remove the bossd Stop-hooks, release
+  the worktree lock, and pick the terminal state honestly —
+  **REVIEW_READY only with no deferred required item** (Hard rules); else BLOCKED.
 
-Then run **boss-repair** (the finalize adapter's repair capability) to fix failing checks, rebase
-conflicts, and review comments — the green gate now runs on the already-tagged head. Cap at
-`policy.repairCap` (**5**) passes. If still red after the cap (or the wall-clock breaker trips): keep
-the work as a **draft** PR, leave the ticket **In Progress**, post a blocker comment (failing check
-name, `file:line`, what was attempted), then go to **Stop cleanly** with BLOCKED.
-
-Before blocking on this green gate, arm the one-shot callback **group** for the tagged head so the run
-wakes the moment CI resolves or the PR merges/closes — `resolveCallbackAdapter(env)` `registerWatch`
-(`boss callback add "$PR_NUMBER" <trigger> --group ...`) for each `policy.watchTriggers`. On every
-wake **reconcile against real state before acting** (`gh pr checks`/`gh pr view`), re-arm while still
-waiting, dedup by callback id, and back it with the bounded `gh pr checks --watch --fail-fast`
-fallback (used directly when callbacks are unavailable). Full protocol:
-[`references/callback-watches.md`](references/callback-watches.md).
-
-## Step 9: Finalize (idempotent tag guard, ready), Linear writeback
-
-Tag injection + force-push already ran at the top of Step 8, so CI has been gated green on the tagged
-head. Step 9 is an **idempotent** guard: re-inject **only** if `boss-repair` added untagged
-fix-commits, then ready the PR. In the common path there is **no rewrite, no push, no second full CI
-wait** — `gh pr ready` triggers no gating `test-*.yml` workflow (they fire `on: push`, not
-`ready_for_review`).
-
-```bash
-PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
-test -n "$PR_NUMBER"
-BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
-BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
-test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
-BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
-git fetch origin "$BASE_BRANCH"
-# Re-inject only if boss-repair added tagless commits; else no rewrite, no push, no second CI wait.
-if git log "origin/$BASE_BRANCH"..HEAD --oneline | grep -qv "\[#$PR_NUMBER\]"; then
-  BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
-  git push --force-with-lease origin "$SESSION_BRANCH"
-  test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"   # HEAD == upstream (lease rejected → re-fetch, re-run)
-  gh pr checks "$PR_NUMBER" --watch --fail-fast            # red → route back to Step 8 (boss-repair)
-fi
-# Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
-[ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ] && gh pr ready "$PR_NUMBER"
-test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false"
-```
-
-> If the re-inject branch's `gh pr checks --watch --fail-fast` goes red, route back to **Step 8
-> (boss-repair)**; never move the ticket to **In Review** with non-green checks. This wait may also be
-> driven by the one-shot callback group ([`references/callback-watches.md`](references/callback-watches.md)):
-> re-arm after the force-push, reconcile real check state on wake, and treat `--watch --fail-fast` as
-> the bounded fallback. Remove the group's live watches once the PR is readied.
-
-Before readying, confirm **no required item was deferred** (Hard rules) — this now includes **every
-in-scope acceptance criterion being satisfied**: each `- [ ]` this ticket was scoped to close must be
-ticked `- [x]` and demonstrated by the diff/tests (a criterion whose evidence is a captured-proof
-artifact counts as satisfied once the diff/tests demonstrate it — proof _capture_ is the non-fatal
-Step 11, not a ready gate). **Partial implementation is not complete.** If any required item — an
-unsatisfied in-scope criterion, an open must-fix, or a missing API-version transform — was deferred,
-finalize BLOCKED (Step 12) naming it; do not ready. After the PR is ready, add `please-review` if missing. Then move
-the ticket from in-progress to in-review (`.inProgress → .inReview`) via the adapter's `moveState` capability, and comment the PR URL
-(the adapter's `writeComment` capability).
-
-## Step 10: Settle loop (capped)
-
-Late reviews sometimes land minutes after ready. Wait 5 minutes; if new review feedback appears, go
-back to Step 8 (boss-repair), then re-verify finalize. If late feedback cannot be repaired after the
-PR was marked ready, re-quarantine: convert the PR back to draft if supported, remove `please-review`,
-leave the ticket **In Progress**, post the blocker summary, then stop with BLOCKED. Bounded to
-`policy.settleCap` (**3**) settle cycles (or until the breaker trips), after which go to **Stop
-cleanly** — the repair plugin owns anything later in a fresh session.
-
-## Step 11: Proof (capture-only, mode-aware, non-fatal, REVIEW_READY only)
-
-<!-- Compact. Full gate detail (surface/env/time gates, headless fallbacks) is in
-     references/proof-capture.md. -->
-
-Only on the `REVIEW_READY` path — green, ready PR with the ticket already moved to **In Review**. Skip
-entirely for `BLOCKED`, draft, and `NO_CHANGE`. This step may **never** change the terminal state
-(BLOCKED is not reachable from here) and every failure is recorded and ignored.
-
-Classify the surface (`node scripts/proof.mjs plan`), then run `node scripts/proof.mjs run`.
-**`proof.mjs run`'s own PR comment — its structured deferred note — is the only proof channel.** Never
-hand-write skip prose or a "proof skipped: …" one-line note. When proof cannot run (no UI surface,
-missing prerequisite, pipeline bug), run `node scripts/proof.mjs run` anyway and let it post the honest
-`env-unavailable`/`pipeline-error` note (doctor output is embedded so a human can fix the env). The
-upload env is daemon-injected — do not source `.env`; run `node scripts/proof.mjs doctor` to see what
-is missing. A TUI diff lacking the scenario authored in Step 5 earns a `scenario-missing`
-note (exit 1 — proof is required for TUI). **Read [`references/proof-capture.md`](references/proof-capture.md)** for the full
-surface/doctor gates, outcome classes, and non-fatal contract. Do not run the finalize sequence here
-(it already ran in Steps 8–9).
-
-## Step 12: Stop cleanly
-
-<!-- delete claim if present; remove bossd stop-hooks; "$LOCK" release "$BLI_RUNID" -->
-
-Every terminal state that acquired the worktree lock (Step 1) — including the Step 2.5 `foreign` yield
-— must arrive here. If this run posted a claim comment and it still exists, delete `CLAIM_COMMENT_ID`.
-Decide `OUTCOME` before the following optional post-terminal extension phase; it may not change that
-outcome, the exit code, any tracker or PR write, or the final `REVIEW_READY` / `BLOCKED` / `NO_CHANGE`
-line. Keep the worktree lock until the phase completes.
-
-### Post-terminal notes extensions (repo opt-in)
-
-Resolve the extension helper, then discover the `notes` role:
-
-```bash
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
-NOTES_JSON=$(node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role notes --json)
-```
-
-If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
-extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
-
-```bash
-NOTES_RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-build-notes.XXXXXX")
-NOTES_OBSERVATIONS="$NOTES_RUN_TMP/observations.md"
-```
-
-Before dispatch, the orchestrator that still owns the completed run writes at most five
-secret-scrubbed candidate observations to `NOTES_OBSERVATIONS`, with a maximum 8 KiB file size.
-Keep each candidate to a short problem statement plus a file/skill/command pointer. Never copy a
-transcript, command output, user-provided content, credentials, tokens, or other secrets; an empty
-file is valid. This artifact is the only run-history source sent across the fresh-subagent boundary.
-
-Dispatch descriptors in ascending `(order, name)` order as fresh, **awaited** subagents. Bound each by
-`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms). Load each extension by **reading the
-descriptor's `skillPath` from disk** (`dir` is its directory), passing both `skillPath` and `dir` in
-the worker brief, and requiring relative extension resources to resolve from `dir`. Pass that `SKILL.md`
-content into the dispatch as the extension's instructions — never by its bare descriptor `name` via the
-Skill tool, which refuses a skill declaring `disable-model-invocation: true`.
-Each receives:
-
-```json
-{
-  "role": "notes",
-  "core": "boss-build",
-  "context": {
-    "mode": "<interactive if this run involved operator interaction; otherwise headless>",
-    "core": "boss-build",
-    "outcome": "<OUTCOME>",
-    "repoId": "<BOSS_REPO_ID when present; otherwise null>",
-    "observationPath": "<NOTES_OBSERVATIONS>"
-  },
-  "runTmp": "<NOTES_RUN_TMP>",
-  "outPath": "<NOTES_RUN_TMP>/notes-<extension-name>.json"
-}
-```
-
-Validate each result with `node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" validate --role notes --file
-"<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
-discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
-append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
-post-opt-in terminal path. This phase is non-fatal in every case.
-Then remove bossd Stop-hook entries so bossd does not double-finalize:
-
-```bash
-BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
-if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
-node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"
-```
-
-(A no-op under `BOSSD_MANAGED=0` — bossd installed no Stop-hooks.) Finally, release the worktree lock:
-
-```bash
-"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"
-```
-
-(The startup `HELD_BY_PEER` yield is the one exit that does **not** reach Step 12 — it never owned the
-lock.)
-
-Pick the terminal state honestly — **REVIEW_READY only with no deferred required item** (Hard rules);
-else BLOCKED. Output the terminal state (`REVIEW_READY` / `BLOCKED` / `NO_CHANGE`) with the ticket id,
-PR URL, and (for BLOCKED) the blocker summary naming the item.
-
-## Troubleshooting (status rollback + red flags)
-
-The authoritative **status-rollback table** (which situation lands the ticket/PR in which state) and
-the **red-flags catalog** (the rationalizations that mean "stop and correct") live in
-**[`references/troubleshooting.md`](references/troubleshooting.md)** — read it when a terminal state is
-ambiguous or you catch yourself talking past a hard rule.
+Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
+(status-rollback table + red-flags catalog).
 
 ## Cron gate
 
-When this skill is scheduled as an unattended implementation cron, register the exact self-contained
+When this skill is scheduled as an unattended implementation cron, register the self-contained
 gate command from [`references/cron-gate.md`](references/cron-gate.md) on the job (scheduler UI,
 `GateCommand`) so the run
 only fires when there is a candidate, spending **zero** agent tokens otherwise. It is a deliberately

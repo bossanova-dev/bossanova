@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -87,7 +89,79 @@ func skillsCmd() *cobra.Command {
 	return cmd
 }
 
-const binarySkillsDriftWarning = "⚠ drift — this boss binary's embedded skills are older than services/boss/internal/skillinstall/skills/; rebuild with `make build`, then run `boss skills install`"
+// binarySkillsDriftWarning names the COMPLETE remedy, and neither half is
+// optional.
+//
+// `plugins`: bin/bossd-plugin-claude carries its own mirror of the skill payload
+// and calls EnsureUpdated on the installed tree at daemon startup. Rebuilding and
+// reinstalling only the CLI therefore looks fixed until the next daemon start,
+// which restores the old skills from the stale plugin binary.
+//
+// `./bin/boss`: this warning fires whenever the RUNNING binary's payload is older
+// than the source tree, and that binary is often a globally installed one (say
+// /opt/homebrew/bin/boss) invoked from inside the checkout. `make build plugins`
+// writes the rebuilt CLI to ./bin/boss and leaves the global copy untouched, so an
+// unqualified `boss skills install` would re-run the same stale executable and
+// re-extract its old payload — the remedy would silently not work. Naming the
+// rebuilt binary explicitly is what makes the instruction true from any $PATH.
+// (The sibling warnings below stay unqualified on purpose: there the running
+// binary's payload is already current and only the installed tree is behind.)
+//
+// Both commands are anchored at the repository root rather than the cwd, because
+// FindSourceRoot searches PARENT directories: the warning fires just as readily
+// from services/boss/cmd as from the root, and there a bare `make build plugins`
+// would run against the nested directory's Makefile (or none) while `./bin/boss`
+// would name a binary that does not exist. Deriving the root from srcRoot makes
+// the printed commands correct from anywhere in the checkout.
+//
+// Must stay a single line — it is printed verbatim to stderr and, indented, to
+// `boss skills check`.
+func binarySkillsDriftWarning(srcRoot string) string {
+	root := repoRootFromSourceRoot(srcRoot)
+	return fmt.Sprintf(
+		"⚠ drift — this boss binary's embedded skills are older than %s/skills;"+
+			" rebuild with `make -C %s build plugins`, then run `%s skills install`",
+		srcRoot, shellQuote(root), shellQuote(filepath.Join(root, "bin", "boss")),
+	)
+}
+
+// shellQuote makes an interpolated path safe to paste into a shell. The remedy
+// above advertises commands built from a real checkout path, and a checkout under
+// e.g. `/home/me/Boss Nova` would otherwise split into multiple arguments, so
+// neither command would reach the intended directory or binary.
+//
+// Quoting is conditional so the overwhelmingly common ordinary path stays
+// readable; the safe set is the conservative one used by POSIX shell-quoting
+// helpers (shlex.quote), and anything outside it — whitespace, glob characters,
+// `$`, backticks, quotes — takes the single-quoted form, where the only character
+// needing escaping is a literal single quote.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	const safeExtra = "_@%+=:,./-"
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case strings.ContainsRune(safeExtra, r):
+		default:
+			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
+	}
+	return s
+}
+
+// repoRootFromSourceRoot inverts FindSourceRoot's filepath.Join(root,
+// SourceRelPath): it climbs one directory per SourceRelPath segment, so it stays
+// correct if that constant ever gains or loses a segment, and it uses
+// filepath.Dir rather than string trimming so the platform separator is handled.
+func repoRootFromSourceRoot(srcRoot string) string {
+	root := srcRoot
+	for range strings.Split(libskillinstall.SourceRelPath, "/") {
+		root = filepath.Dir(root)
+	}
+	return root
+}
 
 // skillSourceStatus compares the running binary's embedded skills against the
 // canonical source tree when this process runs from a repository checkout.
@@ -114,11 +188,11 @@ func skillSourceStatus() (srcRoot string, found, stale bool, err error) {
 // warnBinarySkillsDrift emits the non-fatal stale-binary warning after a
 // refresh. A missing source tree is normal for consuming repositories.
 func warnBinarySkillsDrift() {
-	_, found, stale, err := skillSourceStatus()
+	srcRoot, found, stale, err := skillSourceStatus()
 	if err != nil || !found || !stale {
 		return
 	}
-	_, _ = fmt.Fprintln(os.Stderr, binarySkillsDriftWarning)
+	_, _ = fmt.Fprintln(os.Stderr, binarySkillsDriftWarning(srcRoot))
 }
 
 // runSkillCheck reports the installed-vs-embed and embed-vs-source state for
@@ -180,7 +254,7 @@ func runSkillCheck(out io.Writer, only string) error {
 		}
 		_, _ = fmt.Fprintf(out, "  sources: %s\n  binary: %s\n", srcRoot, currentStale(binaryStale, "current", "STALE"))
 		if binaryStale {
-			_, _ = fmt.Fprintln(out, "  "+binarySkillsDriftWarning)
+			_, _ = fmt.Fprintln(out, "  "+binarySkillsDriftWarning(srcRoot))
 		}
 	}
 	if checkErr != nil {
@@ -193,7 +267,7 @@ func runSkillCheck(out io.Writer, only string) error {
 		} else {
 			_, _ = fmt.Fprintf(out, "  sources: %s\n  binary: %s\n", srcRoot, currentStale(binaryStale, "current", "STALE"))
 			if binaryStale {
-				_, _ = fmt.Fprintln(out, "  "+binarySkillsDriftWarning)
+				_, _ = fmt.Fprintln(out, "  "+binarySkillsDriftWarning(srcRoot))
 			}
 		}
 	}

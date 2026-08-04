@@ -3,7 +3,9 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +13,265 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonbin"
 )
+
+func writeFakeCellarBossd(t *testing.T, home, contents string) string {
+	t.Helper()
+	path := filepath.Join(home, "homebrew", "Cellar", "bossanova", "1.2.3", "bin", "bossd")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create fake Cellar bin dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write fake Cellar bossd: %v", err)
+	}
+	return path
+}
+
+func expectedStagedBossdPath(t *testing.T) string {
+	t.Helper()
+	appDataDir, err := config.DefaultAppDataDir()
+	if err != nil {
+		t.Fatalf("config.DefaultAppDataDir: %v", err)
+	}
+	return daemonbin.StagedPath(appDataDir)
+}
+
+func TestPlatformInstallPointsPlistAtStagedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+
+	if err := platformInstall(sourcePath, false); err != nil {
+		t.Fatalf("platformInstall: %v", err)
+	}
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	plist, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	stagedPath := expectedStagedBossdPath(t)
+	if !strings.Contains(string(plist), "<string>"+stagedPath+"</string>") {
+		t.Errorf("plist does not point at staged path %q:\n%s", stagedPath, plist)
+	}
+	if strings.Contains(string(plist), "/Cellar/") {
+		t.Errorf("plist still contains versioned Cellar path:\n%s", plist)
+	}
+}
+
+func TestPlatformInstallStagesTheBinary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	sourceContents := "version one"
+	sourcePath := writeFakeCellarBossd(t, home, sourceContents)
+
+	if err := platformInstall(sourcePath, false); err != nil {
+		t.Fatalf("platformInstall: %v", err)
+	}
+	stagedPath := expectedStagedBossdPath(t)
+	stagedContents, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("read staged bossd: %v", err)
+	}
+	if string(stagedContents) != sourceContents {
+		t.Errorf("staged bossd contents = %q, want %q", stagedContents, sourceContents)
+	}
+	info, err := os.Stat(stagedPath)
+	if err != nil {
+		t.Fatalf("stat staged bossd: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("staged bossd mode = %#o, want 0755", got)
+	}
+}
+
+func TestPlatformInstallWithoutForceDoesNotMutateStagedBinary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+
+	stagedPath := expectedStagedBossdPath(t)
+	if err := os.MkdirAll(filepath.Dir(stagedPath), 0o700); err != nil {
+		t.Fatalf("create staged bin dir: %v", err)
+	}
+	originalContents := []byte("currently installed version")
+	if err := os.WriteFile(stagedPath, originalContents, 0o755); err != nil {
+		t.Fatalf("write existing staged bossd: %v", err)
+	}
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("create LaunchAgents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing plist"), 0o600); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	sourcePath := writeFakeCellarBossd(t, home, "new version must not be staged")
+	err = platformInstall(sourcePath, false)
+	if err == nil || !strings.Contains(err.Error(), "plist already exists") {
+		t.Fatalf("platformInstall error = %v, want existing-plist refusal", err)
+	}
+	gotContents, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("read staged bossd after refused install: %v", err)
+	}
+	if string(gotContents) != string(originalContents) {
+		t.Errorf("staged bossd changed on refused install: got %q, want %q", gotContents, originalContents)
+	}
+}
+
+func TestPlatformRestartRestagesAndRewritesPlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+
+	if err := platformInstall(sourcePath, false); err != nil {
+		t.Fatalf("platformInstall: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("version two"), 0o755); err != nil {
+		t.Fatalf("update source bossd: %v", err)
+	}
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	legacyPlist, err := generatePlist(sourcePath)
+	if err != nil {
+		t.Fatalf("generate legacy plist: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(legacyPlist), 0o600); err != nil {
+		t.Fatalf("write legacy plist: %v", err)
+	}
+
+	originalExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
+	}
+	t.Cleanup(func() { executablePath = originalExecutablePath })
+
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart: %v", err)
+	}
+	stagedPath := expectedStagedBossdPath(t)
+	stagedContents, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("read restaged bossd: %v", err)
+	}
+	if got, want := string(stagedContents), "version two"; got != want {
+		t.Errorf("restaged bossd contents = %q, want %q", got, want)
+	}
+	plist, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read rewritten plist: %v", err)
+	}
+	if !strings.Contains(string(plist), "<string>"+stagedPath+"</string>") {
+		t.Errorf("rewritten plist does not point at staged path %q:\n%s", stagedPath, plist)
+	}
+	if strings.Contains(string(plist), "/Cellar/") {
+		t.Errorf("rewritten plist still contains versioned Cellar path:\n%s", plist)
+	}
+}
+
+func TestPlatformEnsureRunningStagesFallbackDaemon(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	sourcePath := writeFakeCellarBossd(t, home, "fallback version")
+	// Unix-domain sockets have a short path limit; t.TempDir() paths exceed it.
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("bossd-%d.sock", time.Now().UnixNano()))
+
+	originalExecutablePath := executablePath
+	originalStartDetachedBossd := startDetachedBossd
+	executablePath = func() (string, error) {
+		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = originalExecutablePath
+		startDetachedBossd = originalStartDetachedBossd
+	})
+
+	var startedPath string
+	var listener net.Listener
+	startDetachedBossd = func(path string) error {
+		startedPath = path
+		var err error
+		listener, err = net.Listen("unix", socketPath)
+		return err
+	}
+	t.Cleanup(func() {
+		if listener != nil {
+			_ = listener.Close()
+		}
+	})
+
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if got, want := startedPath, expectedStagedBossdPath(t); got != want {
+		t.Errorf("fallback started %q, want stable staged path %q", got, want)
+	}
+	if got, err := os.ReadFile(expectedStagedBossdPath(t)); err != nil || string(got) != "fallback version" {
+		t.Errorf("staged fallback contents = %q, err = %v", got, err)
+	}
+}
+
+func TestPlatformRestartBootstrapsExistingPlistWhenResolutionFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", "")
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("create LaunchAgents dir: %v", err)
+	}
+	existingPlist := []byte("existing plist remains usable")
+	if err := os.WriteFile(plistPath, existingPlist, 0o600); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	originalExecutablePath := executablePath
+	executablePath = func() (string, error) { return "", errors.New("executable unavailable") }
+	originalRunLaunchctl := runLaunchctl
+	var calls [][]string
+	runLaunchctl = func(args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		executablePath = originalExecutablePath
+		runLaunchctl = originalRunLaunchctl
+	})
+
+	err = platformRestart()
+	if err == nil || !strings.Contains(err.Error(), "bossd not found") {
+		t.Fatalf("platformRestart error = %v, want bossd resolution error", err)
+	}
+	if len(calls) != 2 || calls[0][0] != "bootout" || calls[1][0] != "bootstrap" {
+		t.Fatalf("launchctl calls = %v, want bootout then bootstrap", calls)
+	}
+	gotPlist, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read existing plist: %v", err)
+	}
+	if string(gotPlist) != string(existingPlist) {
+		t.Errorf("existing plist changed on resolution failure: got %q, want %q", gotPlist, existingPlist)
+	}
+}
 
 func TestGeneratePlist(t *testing.T) {
 	plist, err := generatePlist("/usr/local/bin/bossd")

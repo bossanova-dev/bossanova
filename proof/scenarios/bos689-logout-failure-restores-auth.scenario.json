@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "title": "BOS-689 — a failed credential deletion keeps Home visibly signed in and offers logout again",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_LOGOUT_ERROR": "1" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Home retains its signed-in presentation when the injected logout delete fails",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "[l]ogout",
+            "match": "normalized",
+            "label": "the seeded user starts signed in"
+          },
+          "timeoutMs": 15000,
+          "caption": "The fixture supplies synthetic credentials and a deterministic failed-delete seam."
+        },
+        { "key": "l", "caption": "Open the logout confirmation." },
+        {
+          "waitFor": {
+            "text": "Log out proof@example.com?",
+            "match": "normalized",
+            "label": "the confirmation identifies the signed-in fixture user"
+          },
+          "caption": "The action is still a logout, not a sign-in transition."
+        },
+        {
+          "key": "enter",
+          "caption": "Confirm the logout attempt; the e2e store rejects deletion."
+        },
+        {
+          "expect": [
+            {
+              "text": "Logout: e2e memory store: logout failed",
+              "match": "normalized",
+              "label": "the durable deletion failure is surfaced"
+            },
+            {
+              "text": "[l]ogout",
+              "match": "normalized",
+              "label": "Home still offers logout because credentials remain stored"
+            },
+            {
+              "text": "Still signed in as proof@example.com.",
+              "match": "normalized",
+              "label": "the retained synthetic identity remains visible"
+            }
+          ],
+          "caption": "Failure, retained identity, and the restored signed-in affordance are visible in one final frame."
+        }
+      ]
+    }
+  ]
+}

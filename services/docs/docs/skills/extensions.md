@@ -37,6 +37,7 @@ x-boss-extension:
   extends: boss-review
   role: lens
   order: 40
+  lens: go
 ```
 
 - `extends` — the core skill this extension joins. An extension is only accepted when
@@ -46,6 +47,10 @@ x-boss-extension:
 - `order` — optional integer run order, default `100`. Extensions run in ascending
   `(order, name)` order, so runs are reproducible regardless of filesystem
   enumeration.
+- `lens` — optional, and meaningful only for `role: lens`: the id of the review lens, in the
+  repository's own lens registry, that this extension serves. Declaring it is what binds the
+  extension into `boss-review`'s lens phase; an extension that declares none is discovered but
+  never dispatched as a lens.
 
 ### Discovery command
 
@@ -65,19 +70,30 @@ wrong `role`, unreadable frontmatter). With nothing installed it prints
 There are seven roles. Each attaches to a specific core skill and plugs into a
 specific step of that core's pipeline.
 
-| Role            | Extends       | What it adds                                                           | Example extension           |
-| --------------- | ------------- | ---------------------------------------------------------------------- | --------------------------- |
-| `lens`          | `boss-review` | A specialist review lens matched to a subset of changed files.         | `boss-review-golang`        |
-| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.  | `boss-review-thermonuclear` |
-| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).   | `boss-proof-docs`           |
-| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                    | `boss-plan-<reviewer>`      |
-| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON). | `boss-proof-tui`            |
-| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.      | `boss-plan-draft`           |
-| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs (e.g. TDD/SDD).  | `boss-build-superpowers`    |
+| Role            | Extends       | What it adds                                                                           | Example extension           |
+| --------------- | ------------- | -------------------------------------------------------------------------------------- | --------------------------- |
+| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files. | `boss-review-golang`        |
+| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                  | `boss-review-thermonuclear` |
+| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                   | `boss-proof-docs`           |
+| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                    | `boss-plan-<reviewer>`      |
+| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                 | `boss-proof-tui`            |
+| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                      | `boss-plan-draft`           |
+| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs (e.g. TDD/SDD).                  | `boss-build-superpowers`    |
 
 The `plan-reviewer` role has no default Bossanova extension shipped; the example name
 above is illustrative of the `<core>-<suffix>` convention. Every other role has a
 concrete reference extension committed under `.claude/skills/`.
+
+### How a `lens` extension is dispatched
+
+A `lens` extension is dispatched only when it declares which lens it serves. `boss-review`
+discovers the `lens` role once per run and indexes the returned descriptors by the `lens` id each
+one declares, then resolves every matched lens through three tiers: the bound extension, read from
+its descriptor's `skillPath` on disk; then that lens's configured review skill; then that lens's
+inline fallback rubric. A lens with no bound extension simply starts at the second tier, so
+declaring the binding is purely additive — nothing about the lens registry changes. A bound
+extension that fails to run is recorded as skipped and its lens falls through to the next tier
+rather than going unreviewed.
 
 ## Graceful degradation
 

@@ -52,6 +52,36 @@ type Tracker struct {
 	// session that is legitimately blocked.
 	transientAPIError map[string]time.Time // agent_session_id -> last observed
 
+	// stalled records, per agent session ID, the time the poller last concluded
+	// the chat is claimed-working while its agent has made no semantic progress
+	// (no new transcript record) for longer than its phase's threshold (BOS-667).
+	// It lives outside entries for the same reason authFailed does — Update
+	// recreates the Entry on every heartbeat and would wipe a marker the poller
+	// writes on its own cadence. A marker older than StaleThreshold reads as
+	// absent, so a chat whose agent resumed (or died, or was reaped) stops
+	// flagging without anyone having to clear it. This fails toward NOT flagging:
+	// a false "your session is dead" banner on a healthy long build burns
+	// operator trust faster than the missed detection does.
+	stalled map[string]time.Time // agent_session_id -> last observed stalled
+
+	// waiting holds, per agent session ID, the canonical human-readable reason a
+	// chat is parked on an external event rather than actively working
+	// (BOS-668) — e.g. "awaiting checks_passed_ready on acme/widget#123". Empty
+	// / absent means the chat is not waiting. It lives outside entries for the
+	// same reason authFailed and stalled do: Update recreates the Entry on every
+	// heartbeat and would wipe a marker written on its own cadence.
+	//
+	// Unlike those two it carries NO freshness stamp and no StaleThreshold gate.
+	// The auth/transient/stalled markers are re-observed by the 3s tmux poller,
+	// so a timestamp is what lets a marker nobody is re-asserting decay. This one
+	// is derived event-driven inside DisplayStatusComputer.Recompute directly
+	// from the callback store, and that derivation writes the CURRENT truth on
+	// every pass — including writing "" the moment the callback drains. A
+	// timestamp would add a second, slower way to clear a marker that already
+	// clears itself, and would let a genuinely-still-parked chat silently stop
+	// showing its reason merely because nothing recomputed for 15 seconds.
+	waiting map[string]string // agent_session_id -> waiting reason
+
 	// capturedOutput holds, per agent session ID, the bounded final tail the
 	// tmux poller grabbed from a chat pane at process death before reaping it
 	// (BOS-477). It is an ephemeral diagnostic — not durable state — read by the
@@ -97,6 +127,27 @@ type Tracker struct {
 	// EVERY tick, so an ungated hook would re-fire for as long as the banner
 	// stays on screen.
 	onTransientAPIErrorChange func(agentSessionID string)
+
+	// onStalledChange, when non-nil, is invoked after SetStalled whenever the
+	// chat's EFFECTIVE stalled state flips (absent/stale → fresh, or present →
+	// cleared). Separate from onUpdate for the same reason onAuthChange is: a
+	// stalled chat is by definition still reporting CHAT_STATUS_WORKING, so
+	// Update never fires on the transition that matters. The hook resolves
+	// agent_session_id → session and emits a SessionDelta so the cloud/web read
+	// model receives ATTENTION_REASON_AGENT_STALLED. Fired only on a transition,
+	// so the poller's per-tick SetStalled calls don't storm the stream.
+	onStalledChange func(agentSessionID string)
+
+	// onWaitingChange, when non-nil, is invoked after SetWaiting whenever the
+	// chat's waiting REASON actually changes (absent → present, present →
+	// different reason, present → cleared). Separate from onUpdate for the same
+	// reason onStalledChange is: a parked chat still reports
+	// CHAT_STATUS_WORKING, so Update never fires on the transition that matters.
+	// The hook resolves agent_session_id → session and publishes a
+	// ChatStatusDelta so the cloud/web read model sees the chat flip to
+	// CHAT_STATUS_WAITING. Gating on the change is what keeps a PR that sits in
+	// CI for forty minutes from emitting one delta per recompute.
+	onWaitingChange func(agentSessionID string)
 }
 
 // NewTracker creates a new empty Tracker.
@@ -105,6 +156,8 @@ func NewTracker() *Tracker {
 		entries:           make(map[string]*Entry),
 		authFailed:        make(map[string]time.Time),
 		transientAPIError: make(map[string]time.Time),
+		stalled:           make(map[string]time.Time),
+		waiting:           make(map[string]string),
 		capturedOutput:    make(map[string]string),
 	}
 }
@@ -264,6 +317,115 @@ func (t *Tracker) TransientAPIError(agentSessionID string) bool {
 	return time.Since(at) <= StaleThreshold
 }
 
+// SetStalled records or clears the agent-stalled marker for a chat (BOS-667).
+// When stalled is true it stamps the current time; when false it clears any
+// existing marker immediately, so a chat whose agent resumed writing transcript
+// records stops flagging on the very next poll tick. Called by the tmux poller
+// every tick with the current progress-liveness verdict.
+//
+// It fires onStalledChange only when the EFFECTIVE stalled state flips — a fresh
+// marker appearing where there was none (or only a stale one), or a fresh marker
+// being cleared. Because the poller calls this every tick, gating on the
+// transition is what keeps a 34-minute stall from emitting ~680 identical
+// SessionDeltas. Exactly the SetAuthFailed shape.
+func (t *Tracker) SetStalled(agentSessionID string, stalled bool) {
+	t.mu.Lock()
+	prevAt, had := t.stalled[agentSessionID]
+	wasStalled := had && time.Since(prevAt) <= StaleThreshold
+	if stalled {
+		t.stalled[agentSessionID] = time.Now()
+	} else {
+		delete(t.stalled, agentSessionID)
+	}
+	hook := t.onStalledChange
+	shouldFire := (!stalled && had) || (stalled && !wasStalled)
+	t.mu.Unlock()
+
+	if hook != nil && shouldFire {
+		hook(agentSessionID)
+	}
+}
+
+// Stalled reports whether the chat is currently claimed-working with no semantic
+// agent progress past its phase's threshold, and the marker is fresh (observed
+// within StaleThreshold). A stale marker — the poller stopped re-observing it
+// because the agent resumed, the chat was reaped, or the runner stopped
+// answering — is treated as absent so the flag clears itself and never sticks.
+// This fails toward NOT flagging.
+func (t *Tracker) Stalled(agentSessionID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	at, ok := t.stalled[agentSessionID]
+	if !ok {
+		return false
+	}
+	return time.Since(at) <= StaleThreshold
+}
+
+// SetWaiting records (or, when reason is empty, clears) the reason a chat is
+// parked on an external event rather than actively working (BOS-668). The
+// reason is the canonical wording produced by displaystatus.CallbackWaitingReason
+// — callers must not spell it themselves.
+//
+// It fires onWaitingChange only when the stored reason actually changes, which
+// includes absent → present, one reason → a different reason, and present →
+// cleared. The derivation calls this on every recompute, so gating on the change
+// is what stops a long-running wait from emitting an identical delta per pass.
+func (t *Tracker) SetWaiting(agentSessionID, reason string) {
+	t.mu.Lock()
+	prev := t.waiting[agentSessionID]
+	if reason == "" {
+		delete(t.waiting, agentSessionID)
+	} else {
+		t.waiting[agentSessionID] = reason
+	}
+	hook := t.onWaitingChange
+	changed := prev != reason
+	t.mu.Unlock()
+
+	if hook != nil && changed {
+		hook(agentSessionID)
+	}
+}
+
+// Waiting returns the reason the chat is parked on an external event, or "" when
+// it is not waiting. Unlike Stalled there is no freshness gate — see the waiting
+// field's comment for why.
+func (t *Tracker) Waiting(agentSessionID string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.waiting[agentSessionID]
+}
+
+// PromoteWaiting is the single definition of the status a chat is SERVED with
+// once the derivation layer has recorded (or cleared) its waiting reason. Every
+// read surface — the chat/session status RPCs, the stream deltas and the
+// snapshot reader — routes through it so the rule cannot drift between them.
+//
+// Waiting is strictly a refinement of WORKING: a reason on any other reported
+// status is discarded rather than applied, so a marker left behind by a chat
+// that has since asked a question or hit a usage limit can never mask a signal
+// that demands human action.
+func PromoteWaiting(reported pb.ChatStatus, reason string) (pb.ChatStatus, string) {
+	if reason == "" {
+		return reported, ""
+	}
+	switch reported {
+	case pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_WAITING:
+		return pb.ChatStatus_CHAT_STATUS_WAITING, reason
+	default:
+		return reported, ""
+	}
+}
+
+// SetOnWaitingChange wires the callback fired when a chat's waiting reason
+// changes. The wiring lives in cmd/main.go and publishes a ChatStatusDelta.
+func (t *Tracker) SetOnWaitingChange(fn func(agentSessionID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onWaitingChange = fn
+}
+
 // SetOnUpdate wires a callback fired after Update when the chat's status
 // changes. The wiring lives in cmd/main.go and resolves claude_id →
 // sessionID before delegating to DisplayStatusComputer.Recompute. Tests
@@ -301,6 +463,16 @@ func (t *Tracker) SetOnTransientAPIErrorChange(fn func(agentSessionID string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onTransientAPIErrorChange = fn
+}
+
+// SetOnStalledChange wires a callback fired after SetStalled when the chat's
+// effective stalled state flips. The wiring lives in cmd/main.go and resolves
+// agent_session_id → session before emitting a SessionDelta carrying the
+// AGENT_STALLED overlay. Tests usually leave this nil.
+func (t *Tracker) SetOnStalledChange(fn func(agentSessionID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onStalledChange = fn
 }
 
 // Get returns the cached entry for the given claude ID, or nil if not found
@@ -381,12 +553,18 @@ func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
 	_, hadAuthMarker := t.authFailed[agentSessionID]
 	_, hadTransientMarker := t.transientAPIError[agentSessionID]
+	_, hadStalledMarker := t.stalled[agentSessionID]
+	_, hadWaitingMarker := t.waiting[agentSessionID]
 	delete(t.entries, agentSessionID)
 	delete(t.authFailed, agentSessionID)
 	delete(t.transientAPIError, agentSessionID)
+	delete(t.stalled, agentSessionID)
+	delete(t.waiting, agentSessionID)
 	delete(t.capturedOutput, agentSessionID)
 	hook := t.onAuthChange
 	transientHook := t.onTransientAPIErrorChange
+	stalledHook := t.onStalledChange
+	waitingHook := t.onWaitingChange
 	t.mu.Unlock()
 
 	if hook != nil && hadAuthMarker {
@@ -395,12 +573,19 @@ func (t *Tracker) Remove(agentSessionID string) {
 	if transientHook != nil && hadTransientMarker {
 		transientHook(agentSessionID)
 	}
+	if stalledHook != nil && hadStalledMarker {
+		stalledHook(agentSessionID)
+	}
+	if waitingHook != nil && hadWaitingMarker {
+		waitingHook(agentSessionID)
+	}
 }
 
 // Cleanup removes all stale entries (older than StaleThreshold).
 func (t *Tracker) Cleanup() {
 	t.mu.Lock()
 	now := time.Now()
+	var clearedWaitingMarkers []string
 	for id, e := range t.entries {
 		if now.Sub(e.ReceivedAt) > StaleThreshold {
 			delete(t.entries, id)
@@ -409,6 +594,13 @@ func (t *Tracker) Cleanup() {
 			// diagnostic is stale too — drop it here rather than leak it for the
 			// daemon's lifetime.
 			delete(t.capturedOutput, id)
+			// The waiting reason (BOS-668) has no clock of its own, so this is
+			// where it gets collected: a chat that stopped heartbeating is no
+			// longer parked on anything, and nothing would recompute it to "".
+			if _, hadWaiting := t.waiting[id]; hadWaiting {
+				delete(t.waiting, id)
+				clearedWaitingMarkers = append(clearedWaitingMarkers, id)
+			}
 		}
 	}
 	var clearedAuthMarkers []string
@@ -425,8 +617,17 @@ func (t *Tracker) Cleanup() {
 			clearedTransientMarkers = append(clearedTransientMarkers, id)
 		}
 	}
+	var clearedStalledMarkers []string
+	for id, at := range t.stalled {
+		if now.Sub(at) > StaleThreshold {
+			delete(t.stalled, id)
+			clearedStalledMarkers = append(clearedStalledMarkers, id)
+		}
+	}
 	hook := t.onAuthChange
 	transientHook := t.onTransientAPIErrorChange
+	stalledHook := t.onStalledChange
+	waitingHook := t.onWaitingChange
 	t.mu.Unlock()
 
 	if hook != nil {
@@ -434,9 +635,19 @@ func (t *Tracker) Cleanup() {
 			hook(id)
 		}
 	}
+	if waitingHook != nil {
+		for _, id := range clearedWaitingMarkers {
+			waitingHook(id)
+		}
+	}
 	if transientHook != nil {
 		for _, id := range clearedTransientMarkers {
 			transientHook(id)
+		}
+	}
+	if stalledHook != nil {
+		for _, id := range clearedStalledMarkers {
+			stalledHook(id)
 		}
 	}
 }

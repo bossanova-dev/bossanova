@@ -1337,7 +1337,7 @@ func TestSessionSubRowCount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionSubRowCount(tc.sess); got != tc.want {
+			if got := sessionSubRowCount(tc.sess, ""); got != tc.want {
 				t.Errorf("sessionSubRowCount = %d, want %d", got, tc.want)
 			}
 		})

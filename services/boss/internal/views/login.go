@@ -48,20 +48,21 @@ var openLoginVerificationURL = auth.OpenBrowser
 
 // LoginModel handles the interactive device code login flow.
 type LoginModel struct {
-	mgr       *auth.Manager
-	client    client.BossClient
-	ctx       context.Context
-	cancel    context.CancelFunc
-	spinner   spinner.Model
-	phase     loginPhase
-	userCode  string
-	verifyURL string
-	email     string
-	err       error
-	cancelled bool
-	done      bool
-	width     int
-	afterAuth loginCompleteHook
+	mgr         *auth.Manager
+	client      client.BossClient
+	ctx         context.Context
+	cancel      context.CancelFunc
+	spinner     spinner.Model
+	phase       loginPhase
+	userCode    string
+	verifyURL   string
+	email       string
+	err         error
+	cancelled   bool
+	done        bool
+	width       int
+	afterAuth   loginCompleteHook
+	authChanges *authChangeQueue
 
 	cloudAccess       CloudAccessClient
 	checkoutReturnURL string
@@ -85,6 +86,11 @@ func NewLoginModel(mgr *auth.Manager, c client.BossClient, parentCtx context.Con
 
 func (m *LoginModel) SetAfterAuth(hook loginCompleteHook) {
 	m.afterAuth = hook
+}
+
+// SetAuthChangeQueue preserves notification order with other App auth flows.
+func (m *LoginModel) SetAuthChangeQueue(q *authChangeQueue) {
+	m.authChanges = q
 }
 
 // Cancelled returns true if the user cancelled the login flow.
@@ -192,12 +198,14 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginCompleteMsg:
 		m.phase = loginPhaseSuccess
 		m.email = msg.email
-		cmds := []tea.Cmd{func() tea.Msg {
-			if m.client != nil {
-				_ = m.client.NotifyAuthChange(m.ctx, "login")
-			}
-			return nil
-		}}
+		cmds := []tea.Cmd{func() tea.Msg { return nil }}
+		if m.client != nil {
+			// The queued notification can outlive this login view. In particular,
+			// Esc dismisses the success screen and cancels m.ctx while an earlier
+			// logout notification is still ahead of it. The queue supplies its own
+			// timeout, so do not let the view lifecycle cancel this transition.
+			cmds[0] = m.authChanges.notify(context.Background(), m.client, "login")
+		}
 		if m.afterAuth != nil {
 			cmds = append(cmds, func() tea.Msg {
 				m.afterAuth(m.ctx)

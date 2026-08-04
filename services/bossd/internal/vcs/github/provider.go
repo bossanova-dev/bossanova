@@ -227,6 +227,20 @@ func (p *Provider) blockingThreadAuthors(ctx context.Context, repoPath string, p
 	}
 }
 
+// BlockingThreadAuthors reports which of botUsers still own at least one review
+// thread that blocks on this PR (unresolved and not outdated, per
+// reviewThread.blocks). It is the exported form of blockingThreadAuthors, for
+// the realtime webhook path (upstream.ReviewThreadFreshnessProvider), which
+// needs the same freshness signal the poller path gets via
+// promoteBotCommentedReview. It fails closed identically, wrapping
+// vcs.ErrReviewThreadsUnverified.
+//
+// Deliberately a trivial delegation: the two callers must never be able to
+// drift into two different notions of "still blocking".
+func (p *Provider) BlockingThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error) {
+	return p.blockingThreadAuthors(ctx, repoPath, prID, botUsers)
+}
+
 // CreateDraftPR pushes the head branch and creates a draft pull request.
 // It retries up to 3 times with exponential backoff when GitHub's API hasn't
 // finished indexing the pushed branches (common in newly-created repositories).
@@ -657,18 +671,20 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 // while still not gating on the empty review itself.
 //
 // This feeds the display-poller path (ComputeDisplayStatus keys off per-comment
-// State); the realtime path performs an equivalent review-scoped,
-// inline-comment-based promotion in upstream.WebhookDispatcher's
-// enrichReviewComments. Keep both review-scoped and inline-based — but note the
-// thread predicate is NOT shared, and cannot be: that path's own promotion logic
-// consults no review-thread state (its promotion comment says so), so the
-// BOS-665 outdated skip has nothing to apply to there. (Its ReviewID==0 fallback
-// does route through GetReviewComments, and so inherits the skip; its normal
-// branch does not.) Its residual livelock is a different one — it promotes off
-// inline comments with no freshness check — and closing that needs
-// review-submission timestamps threaded into a path that has none by design,
-// tracked as a follow-up. Do not "restore" symmetry by re-blocking on outdated
-// threads here.
+// State); the realtime path performs the equivalent promotion in
+// upstream.WebhookDispatcher's enrichReviewComments. Since BOS-669 the thread
+// predicate IS shared: that path reaches the very same query through
+// BlockingThreadAuthors (the exported form of blockingThreadAuthors), so both
+// paths AND an author-scoped blocking-thread signal with a review-scoped
+// inline-comment signal, and the BOS-665 outdated skip applies identically on
+// both. Keep them that way — do not fork the predicate, and in particular do
+// not "restore" symmetry by re-blocking on outdated threads here.
+//
+// One divergence remains, and it is intentional: what each path does when the
+// thread query cannot be answered. Here an unverifiable state surfaces as
+// vcs.ErrReviewThreadsUnverified and BLOCKS the merge; there it SUPPRESSES the
+// promotion, so no fix loop starts. Opposite surface behaviour, same posture —
+// refuse to act on review state you cannot verify.
 func (p *Provider) promoteBotCommentedReview(ctx context.Context, repoPath string, prID int, r rawReview, authorHasBlockingThread bool) ([]vcs.ReviewComment, error) {
 	if !authorHasBlockingThread {
 		// This bot's threads are all resolved or outdated (or it has none): the

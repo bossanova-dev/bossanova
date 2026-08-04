@@ -23,6 +23,8 @@ import (
 	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -2374,5 +2376,402 @@ func TestTmuxStatusPoller_TransientAPIErrorClearedWhenSessionGone(t *testing.T) 
 
 	if tracker.TransientAPIError(agentSessionID) {
 		t.Error("expected transient-API-error marker cleared when the tmux session is gone")
+	}
+}
+
+// --- BOS-667: agent-stalled progress-liveness detection ---
+//
+// The poller asks the chat's runner "when did this agent last make semantic
+// progress, and what is it waiting on?" on the SAME 3 s tick that already
+// captures the pane, and marks the chat stalled when the answer is stale for
+// its phase. Pane content cannot answer this: an animated spinner is a genuine
+// pane change, which is exactly why the observed 33.8-minute silent stall read
+// as WORKING throughout.
+//
+// Two invariants these tests exist to hold:
+//
+//   - Fail open. known=false, an RPC error, an Unimplemented runner, and a
+//     runner that does not carry the RPC at all must ALL raise nothing. A false
+//     "your session is dead" banner on a healthy long build is worse than the
+//     bug being fixed.
+//   - Claimed-working gate. AWAITING_MODEL is emitted both for a model request
+//     in flight AND for a genuine user turn the agent has not answered yet —
+//     the two are indistinguishable in a single transcript record. A chat a
+//     human just typed into therefore sits in AWAITING_MODEL indefinitely, so
+//     the phase alone must never raise the marker.
+
+const (
+	stallChatID    = "stall-chat"
+	stallSessionID = "stall-sess"
+	stallTmuxName  = "boss-stall"
+	stallWorktree  = "/tmp/stall-worktree"
+	stallPane      = "thinking about it"
+)
+
+// progressProbeClient is a claude runner fake that also answers the optional
+// ProbeProgressLiveness RPC. It can report any phase, known=false, or an error,
+// which is the full matrix the poller must handle.
+type progressProbeClient struct {
+	claudeFakeClient
+
+	mu             sync.Mutex
+	phase          pb.AgentProgressPhase
+	lastProgressAt time.Time
+	known          bool
+	err            error
+
+	probeCalls atomic.Int64
+	lastReq    atomic.Pointer[pb.ProbeProgressLivenessRequest]
+}
+
+func (c *progressProbeClient) ProbeProgressLiveness(_ context.Context, req *pb.ProbeProgressLivenessRequest) (*pb.ProbeProgressLivenessResponse, error) {
+	c.probeCalls.Add(1)
+	c.lastReq.Store(&pb.ProbeProgressLivenessRequest{
+		WorkDir:        req.GetWorkDir(),
+		AgentSessionId: req.GetAgentSessionId(),
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return nil, c.err
+	}
+	resp := &pb.ProbeProgressLivenessResponse{Phase: c.phase, IsKnown: c.known}
+	if !c.lastProgressAt.IsZero() {
+		resp.LastProgressAt = timestamppb.New(c.lastProgressAt)
+	}
+	return resp, nil
+}
+
+// setProgress swaps what the next probe reports, so a test can drive "progress
+// resumed" between two ticks of the same poller.
+func (c *progressProbeClient) setProgress(phase pb.AgentProgressPhase, at time.Time, known bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.phase, c.lastProgressAt, c.known, c.err = phase, at, known, nil
+}
+
+// newStallPoller builds a single-chat poller wired to client. The chat is
+// claimed-working on the first tick (a fresh capture always reads as changed
+// content, which is the WORKING branch).
+func newStallPoller(client agent.AgentRunnerClient) (*Tracker, *TmuxStatusPoller, *mockTmuxFactory) {
+	tracker := NewTracker()
+	tmuxName := stallTmuxName
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			stallChatID: {
+				SessionID:       stallSessionID,
+				AgentSessionID:  stallChatID,
+				AgentName:       "claude",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			stallSessionID: {ID: stallSessionID, WorktreePath: stallWorktree},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: stallPane},
+	}
+	poller := NewTmuxStatusPoller(
+		tracker,
+		chatStore,
+		sessionStore,
+		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
+		map[string]agent.AgentRunnerClient{"claude": client},
+		zerolog.Nop(),
+	)
+	return tracker, poller, factory
+}
+
+func TestTmuxStatusPoller_ProgressStallPerPhaseThresholds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tests := []struct {
+		name        string
+		phase       pb.AgentProgressPhase
+		sinceProgre time.Duration
+		wantStalled bool
+	}{
+		{
+			// The observed incident: a trailing tool_result and then 34 minutes
+			// of nothing while the pane spinner kept animating.
+			name:        "awaiting model past its tight threshold is stalled",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL,
+			sinceProgre: 34 * time.Minute,
+			wantStalled: true,
+		},
+		{
+			name:        "awaiting model inside its tight threshold is not stalled",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL,
+			sinceProgre: 2 * time.Minute,
+			wantStalled: false,
+		},
+		{
+			// A 20-minute `make test-all` writes nothing to the transcript until
+			// it returns. Flagging it would be the expensive false positive.
+			name:        "executing tool inside its generous threshold is not stalled",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
+			sinceProgre: 20 * time.Minute,
+			wantStalled: false,
+		},
+		{
+			name:        "executing tool past its generous threshold is stalled",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
+			sinceProgre: 50 * time.Minute,
+			wantStalled: true,
+		},
+		{
+			name:        "idle phase is never stalled however old",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE,
+			sinceProgre: 6 * time.Hour,
+			wantStalled: false,
+		},
+		{
+			name:        "unspecified phase is never stalled however old",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNSPECIFIED,
+			sinceProgre: 6 * time.Hour,
+			wantStalled: false,
+		},
+		{
+			name:        "unknown phase is never stalled however old",
+			phase:       pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
+			sinceProgre: 6 * time.Hour,
+			wantStalled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &progressProbeClient{}
+			client.setProgress(tt.phase, time.Now().Add(-tt.sinceProgre), true)
+			tracker, poller, _ := newStallPoller(client)
+
+			poller.pollOnce(context.Background())
+
+			if got := tracker.Stalled(stallChatID); got != tt.wantStalled {
+				t.Fatalf("Stalled = %v, want %v", got, tt.wantStalled)
+			}
+			if entry := tracker.Get(stallChatID); entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+				t.Fatalf("chat entry = %+v, want status WORKING — the stall marker must not alter the status", entry)
+			}
+			if client.probeCalls.Load() != 1 {
+				t.Fatalf("ProbeProgressLiveness calls = %d, want 1 (one probe per tick)", client.probeCalls.Load())
+			}
+			if req := client.lastReq.Load(); req.GetWorkDir() != stallWorktree || req.GetAgentSessionId() != stallChatID {
+				t.Fatalf("probe request = {%q, %q}, want {%q, %q}", req.GetWorkDir(), req.GetAgentSessionId(), stallWorktree, stallChatID)
+			}
+		})
+	}
+}
+
+// TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall asserts the
+// FAIL-OPEN direction: every way the progress signal can be unavailable must
+// leave the chat unflagged. The name and the assertion agree deliberately —
+// each case wants Stalled == false.
+func TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	// Old enough that any threshold would fire if the signal were trusted.
+	staleAt := time.Now().Add(-6 * time.Hour)
+
+	tests := []struct {
+		name   string
+		client func() agent.AgentRunnerClient
+	}{
+		{
+			name: "runner reports known=false",
+			client: func() agent.AgentRunnerClient {
+				c := &progressProbeClient{}
+				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, false)
+				return c
+			},
+		},
+		{
+			name: "runner returns an error",
+			client: func() agent.AgentRunnerClient {
+				c := &progressProbeClient{}
+				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, true)
+				c.mu.Lock()
+				c.err = fmt.Errorf("transcript unreadable")
+				c.mu.Unlock()
+				return c
+			},
+		},
+		{
+			name: "runner returns Unimplemented",
+			client: func() agent.AgentRunnerClient {
+				c := &progressProbeClient{}
+				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, true)
+				c.mu.Lock()
+				c.err = grpcstatus.Error(codes.Unimplemented, "ProbeProgressLiveness not implemented")
+				c.mu.Unlock()
+				return c
+			},
+		},
+		{
+			// A runner binary predating the RPC does not satisfy the optional
+			// prober interface at all — the type assertion, not the wire, is
+			// what fails here.
+			name:   "runner does not carry the RPC",
+			client: func() agent.AgentRunnerClient { return &claudeFakeClient{} },
+		},
+		{
+			// known=true with no timestamp is a malformed answer; treat it as
+			// no answer rather than as "last progress at the zero time".
+			name: "runner reports known but omits the timestamp",
+			client: func() agent.AgentRunnerClient {
+				c := &progressProbeClient{}
+				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Time{}, true)
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker, poller, _ := newStallPoller(tt.client())
+
+			poller.pollOnce(context.Background())
+
+			if tracker.Stalled(stallChatID) {
+				t.Fatal("Stalled = true, want false — an unavailable progress signal must fail open and raise nothing")
+			}
+		})
+	}
+}
+
+// TestTmuxStatusPoller_NotClaimedWorkingIsNeverStalled guards the contract fact
+// that AWAITING_MODEL is also what a genuinely idle chat reports once a human
+// has typed a prompt into it. Without the claimed-working gate every idle chat
+// older than five minutes would raise a false "session dead" banner.
+func TestTmuxStatusPoller_NotClaimedWorkingIsNeverStalled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	client := &progressProbeClient{}
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-34*time.Minute), true)
+	tracker, poller, _ := newStallPoller(client)
+
+	// Seed an unchanged capture older than IdleThreshold so this tick resolves
+	// to IDLE rather than WORKING.
+	poller.mu.Lock()
+	poller.prevCaptures[stallChatID] = captureEntry{content: stallPane, at: time.Now().Add(-IdleThreshold - time.Second)}
+	poller.mu.Unlock()
+
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(stallChatID); entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("chat entry = %+v, want status IDLE for this fixture", entry)
+	}
+	if tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = true for an IDLE chat, want false — a stall requires the chat to claim it is working")
+	}
+}
+
+func TestTmuxStatusPoller_StalledMarkerClearedWhenProgressResumes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	client := &progressProbeClient{}
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-34*time.Minute), true)
+	tracker, poller, _ := newStallPoller(client)
+
+	poller.pollOnce(context.Background())
+	if !tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = false after a stale AWAITING_MODEL tick, want true")
+	}
+
+	// The model answered: the transcript grew, so the next probe reports fresh
+	// progress and the marker must drop on the very next tick.
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL, time.Now(), true)
+
+	poller.pollOnce(context.Background())
+	if tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = true after progress resumed, want false")
+	}
+}
+
+// TestTmuxStatusPoller_StalledMarkerDebouncedAcrossIdenticalTicks mirrors the
+// onAuthChange debounce test: the poller calls SetStalled on every 3 s tick, so
+// only the effective-state transitions may reach the reverse stream.
+func TestTmuxStatusPoller_StalledMarkerDebouncedAcrossIdenticalTicks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	client := &progressProbeClient{}
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-34*time.Minute), true)
+	tracker, poller, _ := newStallPoller(client)
+
+	var fires atomic.Int64
+	tracker.SetOnStalledChange(func(string) { fires.Add(1) })
+
+	for range 4 {
+		poller.pollOnce(context.Background())
+	}
+	if got := fires.Load(); got != 1 {
+		t.Fatalf("onStalledChange fires across 4 identical stalled ticks = %d, want 1", got)
+	}
+	if !tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = false, want true")
+	}
+
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL, time.Now(), true)
+	for range 3 {
+		poller.pollOnce(context.Background())
+	}
+	if got := fires.Load(); got != 2 {
+		t.Fatalf("onStalledChange fires after recovery = %d, want 2 (one set, one clear)", got)
+	}
+}
+
+func TestTmuxStatusPoller_StallThresholdsAreConfigurable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	client := &progressProbeClient{}
+	// Well inside the 5-minute default, so only a tightened threshold can flag it.
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-90*time.Second), true)
+	tracker, poller, _ := newStallPoller(client)
+	poller.SetStallThresholds(time.Minute, 45*time.Minute)
+
+	poller.pollOnce(context.Background())
+
+	if !tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = false under a 1-minute awaiting-model threshold, want true — thresholds are not being applied")
+	}
+}
+
+// TestTmuxStatusPoller_StalledMarkerClearedWhenTmuxSessionGone covers the
+// self-healing path: a chat whose pane died must not keep a stale stall marker
+// alive, exactly as the auth and transient-API markers are cleared there.
+func TestTmuxStatusPoller_StalledMarkerClearedWhenTmuxSessionGone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	client := &progressProbeClient{}
+	client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-34*time.Minute), true)
+	tracker, poller, factory := newStallPoller(client)
+
+	poller.pollOnce(context.Background())
+	if !tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = false on the first stale tick, want true")
+	}
+
+	factory.mu.Lock()
+	factory.sessions[stallTmuxName] = false
+	factory.mu.Unlock()
+
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(stallChatID); entry == nil || entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
+		t.Fatalf("chat entry = %+v, want status STOPPED", entry)
+	}
+	if tracker.Stalled(stallChatID) {
+		t.Fatal("Stalled = true after the tmux session vanished, want false")
 	}
 }

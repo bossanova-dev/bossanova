@@ -148,6 +148,48 @@ func (c RepairConfig) SkillName() string {
 	return "boss-repair"
 }
 
+// StallDetectionConfig holds the per-phase thresholds bossd's status poller uses
+// to decide that a chat claiming CHAT_STATUS_WORKING has stopped making semantic
+// progress (BOS-667). The phases come from the agent runner's progress-liveness
+// RPC, and each gets its own threshold because a bare "the transcript hasn't
+// grown in N minutes" signal false-positives on every long tool call:
+//
+//   - AWAITING_MODEL — the agent owes an assistant message, so a model request is
+//     in flight. Nothing but the round-trip should be happening; the threshold is
+//     tight.
+//   - EXECUTING_TOOL — a tool is running and legitimately writes nothing to the
+//     transcript until it returns (a `make test-all` can run for a quarter of an
+//     hour). The threshold is generous.
+//
+// Both defaults are deliberately well above a normal round-trip. They are meant
+// to be tuned with real data: a false "your session is dead" banner burns
+// operator trust faster than the missed detection does, so prefer raising them.
+type StallDetectionConfig struct {
+	AwaitingModelMinutes int `json:"awaiting_model_minutes,omitempty"`
+	ExecutingToolMinutes int `json:"executing_tool_minutes,omitempty"`
+}
+
+// AwaitingModelThreshold returns the configured AWAITING_MODEL stall threshold or
+// the default of 5 minutes. A non-positive value (unset, or a hand-edited
+// settings.json carrying a negative) falls back to the default rather than
+// flagging every chat instantly.
+func (c StallDetectionConfig) AwaitingModelThreshold() time.Duration {
+	if c.AwaitingModelMinutes > 0 {
+		return time.Duration(c.AwaitingModelMinutes) * time.Minute
+	}
+	return 5 * time.Minute
+}
+
+// ExecutingToolThreshold returns the configured EXECUTING_TOOL stall threshold or
+// the default of 45 minutes. Non-positive values fall back to the default for the
+// same reason AwaitingModelThreshold does.
+func (c StallDetectionConfig) ExecutingToolThreshold() time.Duration {
+	if c.ExecutingToolMinutes > 0 {
+		return time.Duration(c.ExecutingToolMinutes) * time.Minute
+	}
+	return 45 * time.Minute
+}
+
 // ManagedAccountsConfig holds account-rotation policy knobs.
 type ManagedAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
@@ -763,6 +805,7 @@ type Settings struct {
 	PostHogHost                    string                `json:"posthog_host,omitempty"`
 	Plugins                        []PluginConfig        `json:"plugins,omitempty"`
 	Repair                         RepairConfig          `json:"repair,omitzero"`
+	StallDetection                 StallDetectionConfig  `json:"stall_detection,omitzero"`
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`

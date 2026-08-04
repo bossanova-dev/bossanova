@@ -199,6 +199,9 @@ func TestAcquireWorkOSRefreshLockDoesNotUseConfiguredAppDataDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireWorkOSRefreshLock() returned error: %v", err)
 	}
+	if lock == nil {
+		t.Fatal("AcquireWorkOSRefreshLock() returned nil lock without an error")
+	}
 	defer func() { _ = lock.Unlock() }()
 
 	if _, err := os.Stat(filepath.Join(appDataDir, workOSRefreshLockFile)); err != nil {

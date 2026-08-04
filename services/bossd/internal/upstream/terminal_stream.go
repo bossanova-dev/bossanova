@@ -272,6 +272,15 @@ type TerminalStreamClient struct {
 	attaches      map[string]*activeAttach
 	streamClosing bool
 
+	// uploads owns BOS-661 chat file uploads. Nil in the legacy tests and
+	// in any daemon whose upload directory could not be created; every
+	// upload frame is then answered with a permanent "not supported"
+	// result rather than being silently dropped. uploadWG tracks the
+	// finish goroutines so teardown can join them before closing the
+	// outbound channel they write to.
+	uploads  uploadManager
+	uploadWG sync.WaitGroup
+
 	// cycleCancel cancels the Run loop's current stream attempt.
 	// CycleStream fires it; Run installs it before each openStream and
 	// clears it afterwards. Guarded by cycleMu (not mu — the attach map's
@@ -304,9 +313,13 @@ type TerminalStreamClient struct {
 type activeAttach struct {
 	id          string
 	sessionName string
-	attach      terminalAttach
-	cancel      context.CancelFunc
-	done        <-chan struct{}
+	// chatID is the chat this attach is bound to. Recorded so a
+	// BOS-661 upload resolves its target chat from the attach registry
+	// instead of trusting an id off the wire.
+	chatID string
+	attach terminalAttach
+	cancel context.CancelFunc
+	done   <-chan struct{}
 }
 
 // TerminalStreamClientConfig bundles the constructor inputs.
@@ -347,6 +360,12 @@ type TerminalStreamClientConfig struct {
 	// AttachFactory, when set, replaces the default tmux.NewTerminalAttach
 	// constructor. Used by tests to drop in a fake-attach implementation.
 	AttachFactory terminalAttachFactory
+
+	// Uploads, when set, enables the BOS-661 chat file upload
+	// subprotocol. Production passes the daemon's *chatupload.Manager;
+	// nil leaves uploads rejected with a permanent result and every
+	// other behaviour identical.
+	Uploads UploadManager
 
 	// Health, when set, enables the BOS-376 positive-liveness path:
 	// openStream waits for a TerminalReady frame before treating the
@@ -427,6 +446,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 		tmuxClient:         cfg.TmuxClient,
 		chats:              cfg.Chats,
 		attachFactory:      factory,
+		uploads:            cfg.Uploads,
 		logger:             cfg.Logger.With().Str("component", "terminal-stream-client").Logger(),
 		clock:              clock,
 		attaches:           make(map[string]*activeAttach),
@@ -675,6 +695,13 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 		cancel()
 		c.cancelAndWaitAttaches(states)
 		<-readerDone
+		// BOS-661: the reader is the only spawner of upload-finish
+		// goroutines, so joining it first makes this wait total. Both
+		// calls MUST precede close(outbound) — a finish still in flight
+		// writes its result there, and CancelAll then drops any upload
+		// whose attach vanished without a pump exit.
+		c.waitUploads()
+		c.cancelAllUploads()
 		<-hbDone
 		<-authWatchDone
 		close(outbound)
@@ -804,6 +831,18 @@ func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.
 		c.handleResize(m.Resize)
 	case *pb.TerminalClientMessage_Close:
 		c.handleClose(m.Close)
+	case *pb.TerminalClientMessage_UploadStart:
+		// BOS-661 chat file upload. The four cases below are the only
+		// inbound messages that touch the filesystem; everything they do
+		// lives in terminal_upload.go so the terminal path above stays
+		// exactly as it was.
+		c.handleUploadStart(ctx, m.UploadStart, outbound)
+	case *pb.TerminalClientMessage_UploadChunk:
+		c.handleUploadChunk(ctx, m.UploadChunk, outbound)
+	case *pb.TerminalClientMessage_UploadFinish:
+		c.handleUploadFinish(ctx, m.UploadFinish, outbound)
+	case *pb.TerminalClientMessage_UploadCancel:
+		c.handleUploadCancel(m.UploadCancel)
 	case *pb.TerminalClientMessage_Ready:
 		// BOS-376: positive proof this stream is bound to a co-located,
 		// Ready bosso pod. Unblocks openStream's readiness gate.
@@ -888,6 +927,7 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	state := &activeAttach{
 		id:          attachID,
 		sessionName: sessionName,
+		chatID:      chatID,
 		attach:      attach,
 		cancel:      cancel,
 	}
@@ -942,6 +982,11 @@ func (c *TerminalStreamClient) runAttachPump(ctx context.Context, state *activeA
 			delete(c.attaches, state.id)
 		}
 		c.mu.Unlock()
+		// BOS-661: this attach is gone, so any partial upload it owns is
+		// unfinishable — drop the bytes rather than leave them on disk
+		// until the janitor. One call covers every way an attach dies: a
+		// browser close, a PTY exit, and stream teardown all end here.
+		c.cancelAttachUploads(state.id)
 	}()
 
 	output := state.attach.Output()

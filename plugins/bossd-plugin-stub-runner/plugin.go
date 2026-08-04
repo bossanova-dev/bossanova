@@ -54,6 +54,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "ProbeRateLimit", Handler: agentProbeRateLimitHandler},
 		{MethodName: "HasWorkingIndicator", Handler: agentHasWorkingIndicatorHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
+		{MethodName: "ProbeProgressLiveness", Handler: agentProbeProgressLivenessHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -79,6 +80,7 @@ type agentRunnerServiceHandler interface {
 	ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error)
 	HasWorkingIndicator(context.Context, *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
+	ProbeProgressLiveness(context.Context, *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 }
 
@@ -228,6 +230,14 @@ func agentLastTurnIsUserHandler(srv any, ctx context.Context, dec func(any) erro
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).LastTurnIsUser(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+}
+
+func agentProbeProgressLivenessHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ProbeProgressLivenessRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).ProbeProgressLiveness(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 func agentTranscriptExistsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

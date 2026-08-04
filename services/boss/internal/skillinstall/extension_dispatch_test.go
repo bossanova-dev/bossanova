@@ -110,6 +110,10 @@ var extensionDispatchSentence = regexp.MustCompile(`[.!?;]\s+`)
 // mention and load verb sit in different clauses.
 var extensionDispatchClause = regexp.MustCompile(`[,;:]\s+|\s+[—–]\s+`)
 
+// whitespaceRun collapses a markdown run of whitespace to one space, so a prose gate can pin a
+// multi-word phrase without also pinning the line breaks prettier chose for it today.
+var whitespaceRun = regexp.MustCompile(`\s+`)
+
 // extensionDispatchAllowlist exempts the passages in the REAL shipped prose that instruct a
 // Skill-tool load, name no `skillPath`, and are nonetheless correct. An entry is a literal
 // substring of the window it clears. The list is shrink-only in spirit: it exists to buy the
@@ -409,16 +413,38 @@ func TestExtensionDispatchAllowlistIsLive(t *testing.T) {
 	}
 }
 
-// extensionDispatchSkillPathSites is the number of times each dispatching core's OWN `SKILL.md`
-// names the `skillPath` mechanism. Each core dispatches extensions from more than one place in some
-// cases (`boss-review` from three, `boss-build` from two), and a presence-only check stays green
+// extensionDispatchSkillPathSites is the number of times each dispatching core's spine names the
+// `skillPath` mechanism. Each core dispatches extensions from more than one place in some cases
+// (`boss-review` from three, `boss-build` from three), and a presence-only check stays green
 // after the clause is deleted from all but one of them — a core can then ship a dispatch site with
 // no mechanism at all while the negative gate above, which only sees passages that DO mention the
 // Skill tool, has nothing to fire on.
 //
 // This is a FLOOR, not a census: it catches deletion, which is the failure mode. If you genuinely
 // consolidate two dispatch sites into one, lower the number here in the same commit and say why.
+//
+// BOS-678 raised `boss-review` 3 → 4: Phase 1 gained a real per-lens Tier-1 dispatch of a
+// discovered `lens` extension bound to a config lens id, which names the mechanism twice
+// (`skillPath` from disk, and `skillPath` + `dir` in the worker brief). Without raising the floor
+// that new site could be deleted again with every test still green.
 var extensionDispatchSkillPathSites = map[string]int{
+	"boss-build":  3,
+	"boss-epic":   1,
+	"boss-plan":   1,
+	"boss-repair": 1,
+	"boss-review": 4,
+}
+
+// extensionDispatchResourceBaseSites counts actual extension-dispatch sites in each core's own
+// SKILL.md. It deliberately excludes explanatory mentions of skillPath that do not dispatch a
+// worker, such as boss-review's lensMap distinction.
+//
+// BOS-678 raised `boss-review` 2 → 3 for the new Phase 1 lens dispatch site, which is a real
+// worker dispatch and therefore must carry the resource-base clause like the Phase R and Phase 8
+// sites do. extensionDispatchResourceBase requires the literal "resolve ... from `dir`" form, so a
+// paraphrased Tier-1 sentence fails here rather than shipping a worker that cannot reach the
+// extension's sibling assets.
+var extensionDispatchResourceBaseSites = map[string]int{
 	"boss-build":  2,
 	"boss-epic":   1,
 	"boss-plan":   1,
@@ -426,34 +452,27 @@ var extensionDispatchSkillPathSites = map[string]int{
 	"boss-review": 3,
 }
 
-// extensionDispatchResourceBaseSites counts actual extension-dispatch sites in each core's own
-// SKILL.md. It deliberately excludes explanatory mentions of skillPath that do not dispatch a
-// worker, such as boss-review's lensMap distinction.
-var extensionDispatchResourceBaseSites = map[string]int{
-	"boss-build":  2,
-	"boss-epic":   1,
-	"boss-plan":   1,
-	"boss-repair": 1,
-	"boss-review": 2,
-}
-
 // TestPublishedCoresNameSkillPathForExtensionDispatch is the POSITIVE half of the gate above,
 // which on its own only recognises the OLD bug. Without this, deleting the path-load clause
 // outright from a core leaves every test green while that core ships no dispatch mechanism at all —
 // staleness and silent deletion both slip through a negative-only pin.
 //
-// The pin is anchored to each core's OWN `SKILL.md`, not to any markdown under its tree: `boss-plan`
-// names `skillPath` in three references covering the draft and plan-reviewer roles, so a tree-wide
-// search would stay green after the clause was deleted from the resident body's notes dispatch.
+// The pin covers only each core's spine, not every markdown file under its tree: `boss-plan` names
+// `skillPath` in three references covering the draft and plan-reviewer roles, so a tree-wide search
+// would stay green after the clause was deleted from its notes dispatch.
 func TestPublishedCoresNameSkillPathForExtensionDispatch(t *testing.T) {
 	for label, fsys := range shippedPayloads(t) {
 		for core, want := range extensionDispatchSkillPathSites {
-			path := filepath.Join("skills", core, "SKILL.md")
-			data, err := fs.ReadFile(fsys, path)
-			if err != nil {
-				t.Fatalf("read %s %s: %v", label, path, err)
+			got := 0
+			for _, rel := range bodyFilesFor(core) {
+				path := filepath.Join("skills", core, rel)
+				data, err := fs.ReadFile(fsys, path)
+				if err != nil {
+					t.Fatalf("read %s %s: %v", label, path, err)
+				}
+				got += len(extensionDispatchRemedy.FindAll(data, -1))
 			}
-			if got := len(extensionDispatchRemedy.FindAll(data, -1)); got < want {
+			if got < want {
 				t.Errorf("%s: core %q names the `skillPath` load %d time(s), want at least %d — a dispatch site lost its mechanism, and the negative gate cannot catch an omission", label, core, got, want)
 			}
 		}
@@ -463,12 +482,18 @@ func TestPublishedCoresNameSkillPathForExtensionDispatch(t *testing.T) {
 func TestPublishedCoresPreserveExtensionResourceBase(t *testing.T) {
 	for label, fsys := range shippedPayloads(t) {
 		for core, want := range extensionDispatchResourceBaseSites {
-			path := filepath.Join("skills", core, "SKILL.md")
-			data, err := fs.ReadFile(fsys, path)
-			if err != nil {
-				t.Fatalf("read %s %s: %v", label, path, err)
+			// BOS-674: count across the core's whole spine, not just SKILL.md — boss-build's
+			// Step 12 dispatch site now lives in references/finalize-and-stop.md.
+			got := 0
+			for _, rel := range bodyFilesFor(core) {
+				path := filepath.Join("skills", core, rel)
+				data, err := fs.ReadFile(fsys, path)
+				if err != nil {
+					t.Fatalf("read %s %s: %v", label, path, err)
+				}
+				got += len(extensionDispatchResourceBase.FindAll(data, -1))
 			}
-			if got := len(extensionDispatchResourceBase.FindAll(data, -1)); got < want {
+			if got < want {
 				t.Errorf("%s: core %q preserves the extension resource base %d time(s), want at least %d — a worker may lose access to sibling extension assets", label, core, got, want)
 			}
 		}
@@ -486,14 +511,152 @@ func TestExtensionContractDocumentsPathLoading(t *testing.T) {
 		t.Fatalf("read extension contract: %v", err)
 	}
 	contract := string(data)
+	// Collapsed before matching: every multi-word phrase this test pins spans prose that a human
+	// rewrap can re-break at a different word. Prettier will not do it for them — `.prettierrc`
+	// leaves `proseWrap` at its `preserve` default, so markdown prose is never reflowed and
+	// `printWidth` does not apply to it — but a hand edit that rewraps a paragraph changing no
+	// words would otherwise red every gate below. Single tokens are matched the same way; there is
+	// no cost, and it keeps the rule "phrases are matched flat" rather than a per-entry judgement
+	// call about how many words are too many.
+	flatContract := whitespaceRun.ReplaceAllString(contract, " ")
 	for _, want := range []string{
 		"disable-model-invocation: true",
 		"skillPath",
 		"relative extension resources",
 		"lensMap",
 	} {
-		if !strings.Contains(contract, want) {
+		if !strings.Contains(flatContract, want) {
 			t.Errorf("docs/skills/extension-contract.md must document %q — extension authors and core authors both build against this file", want)
+		}
+	}
+
+	// BOS-693: the contract is the source of truth cores are authored against, so the
+	// partial-failure rule has to be stated HERE, not only in the cores that got fixed. Both
+	// halves matter: skips are recorded per extension regardless of what its siblings did, and a
+	// core whose extensions must PRODUCE something folds that into its own "succeeded".
+	for _, want := range []struct{ phrase, why string }{
+		{
+			"including when a sibling succeeded",
+			"must state that a failed extension is recorded as a skip even when a sibling succeeds — the pre-693 wording scoped recording to the all-extensions-failed branch, so a partial failure went unrecorded in the very case that suppresses the lower tiers",
+		},
+		{
+			"same definition to both the suppression gate and the fall-through gate",
+			"must require one definition of `succeeded` for both the suppression gate and the fall-through gate — two differently-worded gates for the same decision is how a tier gets silently skipped",
+		},
+		// An output check written as "the artifact exists now" tests SHARED state: siblings are
+		// dispatched against one target, so the first extension to produce something credits
+		// every sibling dispatched after it. The MUST is only sound if the contract also
+		// requires the output to be attributed to the dispatch being classified, and says how.
+		{
+			"Attribute the output to the dispatch being classified",
+			"must require the produced output to be attributed to the dispatch being classified — siblings share one target, so a bare existence check credits a silently-failing extension with a peer's artifact",
+		},
+		{
+			"**Give each dispatch its own target**",
+			"must say HOW to attribute the output — naming the hazard without the remedy leaves each core to invent its own check",
+		},
+		// …and the remedy has to hold on an arbitrary host. A before/after comparison of one
+		// shared target does not: equal bytes are the ordinary output of a deterministic re-run,
+		// and the mtime need not move either where the filesystem's timestamp resolution is
+		// coarser than the rewrite — so a valid dispatch reads as skipped and a lower tier
+		// overwrites its work. A per-dispatch target attributes by construction and, unlike a
+		// provenance marker, needs nothing from the extension: the core picks the path it passes.
+		{
+			"a filesystem whose timestamp resolution is coarser than the rewrite stamps both writes the same",
+			"must state why write-time inequality cannot carry the attribution — a core that reads a coarse-resolution mtime as proof records a valid dispatch as skipped and lets a lower tier overwrite its output",
+		},
+		{
+			"the core chooses the value it passes",
+			"must state that a per-dispatch target needs no agreement from the extensions — otherwise a core reads the remedy as unaffordable and falls back to comparing one shared target",
+		},
+	} {
+		if !strings.Contains(flatContract, want.phrase) {
+			t.Errorf("docs/skills/extension-contract.md %s (missing %q)", want.why, want.phrase)
+		}
+	}
+
+	// The superseded remedy must be GONE, not merely outvoted: a core author who greps the
+	// contract for an attribution rule and finds the mtime sentence still standing beside the
+	// per-dispatch target has been handed back the exact signal this fix removed.
+	for _, banned := range []struct{ phrase, why string }{
+		{
+			"compare the target's modification time across the dispatch",
+			"must not offer timestamp inequality as an attribution remedy — it silently fails on any filesystem whose timestamp resolution is coarser than the rewrite",
+		},
+		{
+			"inspect the target _before_ dispatching and require it to have changed",
+			"must not send a core back to a before/after comparison of one shared target — byte inequality false-skips a deterministic redraft",
+		},
+	} {
+		if strings.Contains(flatContract, banned.phrase) {
+			t.Errorf("docs/skills/extension-contract.md %s (found %q)", banned.why, banned.phrase)
+		}
+	}
+}
+
+// TestExtensionContractDefinesWorkerBrief pins the transport the contract used to name and never
+// explain. Pre-BOS-693 the phrase "worker brief" occurred exactly once in the whole document —
+// inside the loading rule that requires `skillPath` and `dir` to be "carried in the worker brief" —
+// while the only documented thing a dispatched extension receives, the invocation envelope, carries
+// `role`/`core`/`context`/`runTmp`/`outPath` and neither of those two fields. A core author reading
+// the contract therefore had no way to know how a worker obtains its own path or the base its
+// relative resources resolve from, and an extension author could not tell which fields belong to
+// the result protocol. The brief must be defined in its own right, name both descriptor-derived
+// fields plus the loaded instructions, and be shown wrapping the envelope unchanged.
+func TestExtensionContractDefinesWorkerBrief(t *testing.T) {
+	contractPath := filepath.Join(findRepoRoot(t), "docs", "skills", "extension-contract.md")
+	data, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read extension contract: %v", err)
+	}
+	contract := string(data)
+
+	// A single mention is the pre-fix state: the term must be used AND defined.
+	if got := strings.Count(strings.ToLower(contract), "worker brief"); got < 2 {
+		t.Fatalf("docs/skills/extension-contract.md mentions the worker brief %d time(s) — it must define the term, not just name it once as an unexplained transport", got)
+	}
+
+	// Locate the defining section and require the definition to live inside it, so a passing
+	// grep cannot be satisfied by the fields being scattered across unrelated sections.
+	heading := regexp.MustCompile(`(?im)^(#{2,4})\s+.*worker brief.*$`)
+	loc := heading.FindStringSubmatchIndex(contract)
+	if loc == nil {
+		t.Fatalf("docs/skills/extension-contract.md must carry a section heading that defines the worker brief")
+	}
+	// Terminate on the next heading of the SAME or HIGHER level, not on `## ` alone: demoting the
+	// worker-brief heading to `###` would otherwise let the section run on to the next `## ` and
+	// let unrelated prose satisfy the token checks below.
+	level := loc[3] - loc[2]
+	section := contract[loc[1]:]
+	sameOrHigher := regexp.MustCompile(fmt.Sprintf(`(?m)^#{1,%d} `, level))
+	if next := sameOrHigher.FindStringIndex(section); next != nil {
+		section = section[:next[0]]
+	}
+	// Collapsed for the same reason as the loop above: a hand rewrap of this section would
+	// otherwise red the phrase gates below without changing a word. Slice first, then flatten —
+	// flattening first would destroy the line starts the heading terminator matches on.
+	flatSection := whitespaceRun.ReplaceAllString(section, " ")
+
+	for _, want := range []struct{ token, why string }{
+		{"`skillPath`", "the brief must name the descriptor-derived skillPath it carries"},
+		{"`dir`", "the brief must name the descriptor-derived dir that relative extension resources resolve from"},
+		{"relative extension resources", "the brief must state that relative resources resolve from dir"},
+		{"SKILL.md", "the brief must state that it carries the loaded SKILL.md instructions"},
+		{"invocation envelope", "the brief must be shown wrapping the invocation envelope"},
+		// Not the bare word "unchanged", which any sentence in the section could supply by
+		// accident: pin the phrase that actually asserts the envelope is passed through as-is.
+		{"passed through unchanged", "the brief must state that it passes the invocation envelope through unchanged"},
+	} {
+		if !strings.Contains(flatSection, want.token) {
+			t.Errorf("the worker-brief section must contain %q: %s", want.token, want.why)
+		}
+	}
+
+	// The envelope's stable shape is what extension authors build against; the brief must not be
+	// documented as replacing or extending it.
+	for _, field := range []string{"`role`", "`core`", "`context`", "`runTmp`", "`outPath`"} {
+		if !strings.Contains(flatSection, field) {
+			t.Errorf("the worker-brief section must name the unchanged envelope field %s so authors can tell brief plumbing from the result protocol", field)
 		}
 	}
 }
@@ -598,6 +761,16 @@ func TestSkillToolExtensionDispatchesDetection(t *testing.T) {
 			"Load it via the Skill tool with the standard envelope.",
 		"E20 subject in an earlier numbered step": "1. Run `skill-extensions.mjs discover` to enumerate the round extensions.\n" +
 			"2. Load each via the Skill tool.",
+		// E21 is E13 realised. BOS-678 gave Phase 1 a REAL discovered-extension dispatch: a `lens`
+		// extension whose marker declares `lens: <id>` binds to the matching config entry and becomes
+		// that lens's Tier 1. Every Phase 1 window already name-drops `lensMap`, so a Tier-1 sentence
+		// that loads the bound extension by descriptor `name` — citing the config entry as its
+		// justification — is laundered by the window-level carve-out, which is exactly what E13
+		// predicted would happen "if a lens seam ever grows a real discovered-extension binding".
+		// Only the literal `<LENS_SKILL>` template placeholder clears a sentence, so this still fires.
+		"E21 bound lens extension laundered by the lensMap carve-out": "When a discovered lens extension declares a binding matching a `lensMap` entry, load that\n" +
+			"extension by its descriptor `name` via the Skill tool, exactly as the entry's own `skill` is\n" +
+			"loaded.",
 	}
 	for name, content := range matched {
 		t.Run(name, func(t *testing.T) {
@@ -624,6 +797,20 @@ func TestSkillToolExtensionDispatchesDetection(t *testing.T) {
 			"`disable-model-invocation: true`, and the Skill tool refuses such a skill.",
 		"rationale stated before the prohibition": "The Skill tool refuses a skill declaring `disable-model-invocation: true`, so read the\n" +
 			"descriptor's `skillPath` from disk and pass that content into the dispatch.",
+		// The REAL BOS-678 Phase 1 Tier-1 passage, copied verbatim from the shipped core. It is the
+		// counterpart to E21: the same seam, written correctly, must not be flagged. It also pins the
+		// canonical resource-base wording that `extensionDispatchResourceBaseSites` counts — a
+		// paraphrase would fail that floor rather than this fixture, so both halves are held.
+		"the new Phase 1 bound-lens Tier-1 wording": "### Tier 1 — a discovered lens extension bound to this lens id\n" +
+			"\n" +
+			"Load that extension by **reading the descriptor's `skillPath` from disk** (`dir` is its\n" +
+			"directory), passing both `skillPath` and `dir` in the worker brief, and requiring relative extension\n" +
+			"resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions —\n" +
+			"never by its bare descriptor `name` through the Skill tool, which refuses a skill declaring\n" +
+			"`disable-model-invocation: true`.\n" +
+			"Each dispatch is a fresh `general-purpose` subagent, **awaited**, read-only, and receives the\n" +
+			"standard extension invocation envelope, whose `changedFiles` is **this lens's matched subset**, not\n" +
+			"the whole branch:",
 		// The `BASE` bullet is the ONE shape in the real payload the inversion flags wrongly: the
 		// core describes how IT is entered, not how an extension is loaded, and has no `skillPath`
 		// to name. It is cleared by the documented allowlist, not by a pattern.

@@ -48,11 +48,12 @@ type MockDaemon struct {
 	repos           []*pb.Repo
 	sessions        []*pb.Session
 	chats           []*pb.ClaudeChat
-	chatStatuses    map[string]*pb.ChatStatusEntry // keyed by agent_session_id
-	cronJobs        map[string]*pb.CronJob         // keyed by cron job ID
-	githubCallbacks map[string]*pb.GithubCallback  // keyed by callback ID
-	prs             map[string][]*pb.PRSummary     // keyed by repo ID
-	trackerIssues   map[string][]*pb.TrackerIssue  // keyed by repo ID
+	chatStatuses    map[string]*pb.ChatStatusEntry    // keyed by agent_session_id
+	sessionStatuses map[string]*pb.SessionStatusEntry // keyed by session_id
+	cronJobs        map[string]*pb.CronJob            // keyed by cron job ID
+	githubCallbacks map[string]*pb.GithubCallback     // keyed by callback ID
+	prs             map[string][]*pb.PRSummary        // keyed by repo ID
+	trackerIssues   map[string][]*pb.TrackerIssue     // keyed by repo ID
 
 	// broadcasts and broadcastSubscriptions are keyed by their own ids. Neither
 	// stored message carries a body: the daemon clears Broadcast.message on
@@ -330,6 +331,19 @@ func (m *MockDaemon) AddChatStatus(e *pb.ChatStatusEntry) {
 		m.chatStatuses = make(map[string]*pb.ChatStatusEntry)
 	}
 	m.chatStatuses[e.AgentSessionId] = e
+}
+
+// AddSessionStatus records a daemon-heartbeat status for a session (keyed by
+// session_id), so GetSessionStatuses can serve deterministic aggregate statuses
+// — and, for a session parked on an external event, the waiting_reason the home
+// list renders on its own sub-row (BOS-668).
+func (m *MockDaemon) AddSessionStatus(e *pb.SessionStatusEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessionStatuses == nil {
+		m.sessionStatuses = make(map[string]*pb.SessionStatusEntry)
+	}
+	m.sessionStatuses[e.SessionId] = e
 }
 
 // AddPRs adds pull request summaries for a repo to the mock daemon's in-memory store.
@@ -813,8 +827,20 @@ func (m *MockDaemon) GetChatStatuses(_ context.Context, req *connect.Request[pb.
 	return connect.NewResponse(&pb.GetChatStatusesResponse{Statuses: out}), nil
 }
 
-func (m *MockDaemon) GetSessionStatuses(_ context.Context, _ *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
-	return connect.NewResponse(&pb.GetSessionStatusesResponse{}), nil
+func (m *MockDaemon) GetSessionStatuses(_ context.Context, req *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	// Only answer for the ids the caller asked about, mirroring the real daemon.
+	// Unseeded sessions are simply absent (not zero-valued): the home list treats
+	// a missing entry as "no daemon-side status", which is what a session with no
+	// live chat looks like.
+	var out []*pb.SessionStatusEntry
+	for _, id := range req.Msg.SessionIds {
+		if e, ok := m.sessionStatuses[id]; ok {
+			out = append(out, e)
+		}
+	}
+	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: out}), nil
 }
 
 func (m *MockDaemon) ListRepoPRs(_ context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {

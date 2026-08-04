@@ -219,12 +219,21 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 
 	// --- Happy path: setup states ---
 
+	// PRMerged is permitted from every state except the two PR-resolved
+	// terminals (Merged and Closed), mirroring PRClosed: a merged PR is ground
+	// truth and must always be recordable, even on a row whose lifecycle events
+	// never fired (e.g. an agent that pushed its own branch and opened the PR
+	// itself, leaving the session wedged in PushingBranch — BOS-697). Merged is
+	// configured bare, so there is no OnEntry action to skip and no
+	// attempt-count side effect.
 	sm.Configure(CreatingWorktree).
 		Permit(WorktreeCreated, StartingAgent).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(StartingAgent).
 		Permit(AgentStarted, ImplementingPlan).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(ImplementingPlan).
@@ -237,10 +246,12 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 
 	sm.Configure(PushingBranch).
 		Permit(BranchPushed, OpeningDraftPR).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(OpeningDraftPR).
 		Permit(PROpened, AwaitingChecks).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	// --- CI check cycle ---
@@ -308,10 +319,13 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	sm.Configure(Closed)
 
 	// Orphaned is terminal: a daemon restart killed the headless run, so there is
-	// nothing to advance. The only outbound transition mirrors the other terminal
-	// states — a closed PR moves it to Closed. Recovery is a deliberate human
-	// action (a fresh run), never an automatic Unblock/re-dispatch.
+	// nothing to advance. The only outbound transitions mirror the other terminal
+	// states — a resolved PR moves it to Merged or Closed. Recording a factual
+	// merge on a terminal row is not the same as letting a bootstrap-only PR
+	// masquerade as green. Recovery is a deliberate human action (a fresh run),
+	// never an automatic Unblock/re-dispatch.
 	sm.Configure(Orphaned).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed)
 
 	// Finalizing is entered from ImplementingPlan when the Stop hook fires.

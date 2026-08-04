@@ -265,6 +265,53 @@ func TestAppCtrlBOpensBugReport(t *testing.T) {
 	}
 }
 
+func TestAppRoutesLogoutResultToHomeWhileBugReportIsOpen(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewBugReport
+	a.home.loggedIn = true
+	a.home.logoutPending = true
+
+	model, _ := a.Update(logoutMsg{err: errors.New("keychain refused the delete")})
+	got := model.(App)
+
+	if got.activeView != ViewBugReport {
+		t.Fatalf("activeView = %v, want ViewBugReport", got.activeView)
+	}
+	if got.home.logoutPending {
+		t.Fatal("logoutPending remained true after failed logout while modal was open")
+	}
+	if got.home.logoutError != "keychain refused the delete" {
+		t.Fatalf("logoutError = %q, want logout failure", got.home.logoutError)
+	}
+}
+
+func TestAppPreservesDeferredLogoutFailureReturningFromSettings(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewSettings
+	a.home.loggedIn = true
+	a.home.loggedInEmail = "dev@example.com"
+	a.home.logoutPending = true
+
+	model, _ := a.Update(logoutMsg{err: errors.New("keychain refused the delete")})
+	got := model.(App)
+
+	model, _ = got.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	got = model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v, want ViewHome", got.activeView)
+	}
+	if got.home.logoutPending {
+		t.Fatal("logoutPending remained true after failed logout")
+	}
+	if got.home.logoutError != "keychain refused the delete" {
+		t.Fatalf("logoutError = %q, want logout failure after returning from Settings", got.home.logoutError)
+	}
+	if !got.home.loggedIn || got.home.loggedInEmail != "dev@example.com" {
+		t.Fatalf("returning Home after a failed logout dropped signed-in state: loggedIn=%t email=%q", got.home.loggedIn, got.home.loggedInEmail)
+	}
+}
+
 func TestAppCtrlBBlockedWhileHomeBusy(t *testing.T) {
 	ctrlB := tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}
 	tests := []struct {

@@ -1908,8 +1908,12 @@ type ChatStatusDelta struct {
 	LastOutputAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_output_at,json=lastOutputAt,proto3" json:"last_output_at,omitempty"`
 	// Per-chat key. Empty for legacy daemons; new daemons MUST set this.
 	AgentSessionId string `protobuf:"bytes,4,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Short human-readable reason the chat is waiting, e.g.
+	// "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+	// CHAT_STATUS_WAITING.
+	WaitingReason string `protobuf:"bytes,5,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChatStatusDelta) Reset() {
@@ -1966,6 +1970,13 @@ func (x *ChatStatusDelta) GetLastOutputAt() *timestamppb.Timestamp {
 func (x *ChatStatusDelta) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
+	}
+	return ""
+}
+
+func (x *ChatStatusDelta) GetWaitingReason() string {
+	if x != nil {
+		return x.WaitingReason
 	}
 	return ""
 }
@@ -7420,6 +7431,429 @@ func (x *TerminalCloseCommand) GetAttachId() string {
 	return ""
 }
 
+// TerminalUploadStart: bosso → daemon. Opens a new upload on an existing
+// attach. filename is a DISPLAY name only — it MUST NOT contain path
+// separators or `..`; the daemon derives a randomized basename and never
+// honours the client's name on disk.
+type TerminalUploadStart struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	// Opaque client-chosen upload id, unique per attach.
+	UploadId string `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	// Display filename (basename only, no path components).
+	Filename string `protobuf:"bytes,3,opt,name=filename,proto3" json:"filename,omitempty"`
+	// Declared total size in bytes. Rejected above 500 MiB, and the finish
+	// is rejected when the received total does not match exactly.
+	SizeBytes     uint64 `protobuf:"varint,4,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadStart) Reset() {
+	*x = TerminalUploadStart{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[82]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadStart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadStart) ProtoMessage() {}
+
+func (x *TerminalUploadStart) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[82]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadStart.ProtoReflect.Descriptor instead.
+func (*TerminalUploadStart) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{82}
+}
+
+func (x *TerminalUploadStart) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadStart) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+func (x *TerminalUploadStart) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *TerminalUploadStart) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+// TerminalUploadChunk: bosso → daemon. One bounded slice of the file.
+// seq is zero-based and strictly sequential per upload; a gap or a repeat
+// terminates the upload with a TerminalUploadResult error.
+type TerminalUploadChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AttachId      string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	UploadId      string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	Seq           uint64                 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
+	Data          []byte                 `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadChunk) Reset() {
+	*x = TerminalUploadChunk{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadChunk) ProtoMessage() {}
+
+func (x *TerminalUploadChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadChunk.ProtoReflect.Descriptor instead.
+func (*TerminalUploadChunk) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *TerminalUploadChunk) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadChunk) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+func (x *TerminalUploadChunk) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *TerminalUploadChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// TerminalUploadFinish: bosso → daemon. Declares the byte stream complete.
+// The daemon syncs and closes the file only when the received byte count
+// equals the declared size, then submits one chat message naming the path.
+type TerminalUploadFinish struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AttachId      string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	UploadId      string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadFinish) Reset() {
+	*x = TerminalUploadFinish{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadFinish) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadFinish) ProtoMessage() {}
+
+func (x *TerminalUploadFinish) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadFinish.ProtoReflect.Descriptor instead.
+func (*TerminalUploadFinish) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *TerminalUploadFinish) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadFinish) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+// TerminalUploadCancel: bosso → daemon. Abandons an in-flight upload. The
+// daemon removes the partial file. Also synthesised by bosso on WebSocket
+// teardown so a disconnect can never leave partial data behind.
+type TerminalUploadCancel struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	UploadId string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	// Free-form diagnostic (never contains file contents).
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadCancel) Reset() {
+	*x = TerminalUploadCancel{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadCancel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadCancel) ProtoMessage() {}
+
+func (x *TerminalUploadCancel) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadCancel.ProtoReflect.Descriptor instead.
+func (*TerminalUploadCancel) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *TerminalUploadCancel) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadCancel) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+func (x *TerminalUploadCancel) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TerminalUploadAck: daemon → bosso. Sent only AFTER the chunk has been
+// durably accepted by the daemon's writer. This is the backpressure
+// signal the browser's four-chunk window keys on.
+type TerminalUploadAck struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	UploadId string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	// The seq of the chunk that was accepted.
+	Seq uint64 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
+	// Total bytes accepted so far for this upload.
+	BytesReceived uint64 `protobuf:"varint,4,opt,name=bytes_received,json=bytesReceived,proto3" json:"bytes_received,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadAck) Reset() {
+	*x = TerminalUploadAck{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadAck) ProtoMessage() {}
+
+func (x *TerminalUploadAck) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadAck.ProtoReflect.Descriptor instead.
+func (*TerminalUploadAck) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *TerminalUploadAck) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadAck) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+func (x *TerminalUploadAck) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *TerminalUploadAck) GetBytesReceived() uint64 {
+	if x != nil {
+		return x.BytesReceived
+	}
+	return 0
+}
+
+// TerminalUploadResult: daemon → bosso. Terminal outcome for an upload.
+// Exactly one is sent per upload id. On success the daemon has already
+// submitted the path instruction through normal chat delivery.
+type TerminalUploadResult struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	UploadId string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
+	IsOk     bool                   `protobuf:"varint,3,opt,name=is_ok,json=isOk,proto3" json:"is_ok,omitempty"`
+	// Fixed, non-sensitive diagnostic string when is_ok is false. Never
+	// contains file contents or the generated absolute path.
+	ErrorMessage string `protobuf:"bytes,4,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// True when the client may retry the same file (transport/stream loss)
+	// rather than a permanent rejection (too large, bad name, bad order,
+	// or a submit whose delivery could not be confirmed).
+	CanRetry      bool `protobuf:"varint,5,opt,name=can_retry,json=canRetry,proto3" json:"can_retry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalUploadResult) Reset() {
+	*x = TerminalUploadResult{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalUploadResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalUploadResult) ProtoMessage() {}
+
+func (x *TerminalUploadResult) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalUploadResult.ProtoReflect.Descriptor instead.
+func (*TerminalUploadResult) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *TerminalUploadResult) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalUploadResult) GetUploadId() string {
+	if x != nil {
+		return x.UploadId
+	}
+	return ""
+}
+
+func (x *TerminalUploadResult) GetIsOk() bool {
+	if x != nil {
+		return x.IsOk
+	}
+	return false
+}
+
+func (x *TerminalUploadResult) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *TerminalUploadResult) GetCanRetry() bool {
+	if x != nil {
+		return x.CanRetry
+	}
+	return false
+}
+
 // TerminalDataChunk: daemon → bosso. Carried inside TerminalServerMessage.
 // Raw PTY output (including VT escape codes) tagged with the attach_id so
 // bosso can route it to the correct WebSocket subscriber.
@@ -7442,7 +7876,7 @@ type TerminalDataChunk struct {
 
 func (x *TerminalDataChunk) Reset() {
 	*x = TerminalDataChunk{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[82]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7454,7 +7888,7 @@ func (x *TerminalDataChunk) String() string {
 func (*TerminalDataChunk) ProtoMessage() {}
 
 func (x *TerminalDataChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[82]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7467,7 +7901,7 @@ func (x *TerminalDataChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDataChunk.ProtoReflect.Descriptor instead.
 func (*TerminalDataChunk) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{82}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *TerminalDataChunk) GetAttachId() string {
@@ -7513,7 +7947,7 @@ type TerminalAttachExited struct {
 
 func (x *TerminalAttachExited) Reset() {
 	*x = TerminalAttachExited{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[83]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7525,7 +7959,7 @@ func (x *TerminalAttachExited) String() string {
 func (*TerminalAttachExited) ProtoMessage() {}
 
 func (x *TerminalAttachExited) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[83]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7538,7 +7972,7 @@ func (x *TerminalAttachExited) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalAttachExited.ProtoReflect.Descriptor instead.
 func (*TerminalAttachExited) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{83}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *TerminalAttachExited) GetAttachId() string {
@@ -7578,7 +8012,7 @@ type TerminalReady struct {
 
 func (x *TerminalReady) Reset() {
 	*x = TerminalReady{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[84]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7590,7 +8024,7 @@ func (x *TerminalReady) String() string {
 func (*TerminalReady) ProtoMessage() {}
 
 func (x *TerminalReady) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[84]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7603,7 +8037,7 @@ func (x *TerminalReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalReady.ProtoReflect.Descriptor instead.
 func (*TerminalReady) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{84}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{90}
 }
 
 // TerminalPing: bosso → daemon. Application-level liveness probe sent on a
@@ -7620,7 +8054,7 @@ type TerminalPing struct {
 
 func (x *TerminalPing) Reset() {
 	*x = TerminalPing{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[85]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7632,7 +8066,7 @@ func (x *TerminalPing) String() string {
 func (*TerminalPing) ProtoMessage() {}
 
 func (x *TerminalPing) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[85]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7645,7 +8079,7 @@ func (x *TerminalPing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalPing.ProtoReflect.Descriptor instead.
 func (*TerminalPing) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{85}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *TerminalPing) GetSeq() uint64 {
@@ -7666,7 +8100,7 @@ type TerminalPong struct {
 
 func (x *TerminalPong) Reset() {
 	*x = TerminalPong{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[86]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7678,7 +8112,7 @@ func (x *TerminalPong) String() string {
 func (*TerminalPong) ProtoMessage() {}
 
 func (x *TerminalPong) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[86]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7691,7 +8125,7 @@ func (x *TerminalPong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalPong.ProtoReflect.Descriptor instead.
 func (*TerminalPong) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{86}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *TerminalPong) GetSeq() uint64 {
@@ -7715,6 +8149,10 @@ type TerminalClientMessage struct {
 	//	*TerminalClientMessage_Close
 	//	*TerminalClientMessage_Ready
 	//	*TerminalClientMessage_Ping
+	//	*TerminalClientMessage_UploadStart
+	//	*TerminalClientMessage_UploadChunk
+	//	*TerminalClientMessage_UploadFinish
+	//	*TerminalClientMessage_UploadCancel
 	Msg           isTerminalClientMessage_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -7722,7 +8160,7 @@ type TerminalClientMessage struct {
 
 func (x *TerminalClientMessage) Reset() {
 	*x = TerminalClientMessage{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[87]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7734,7 +8172,7 @@ func (x *TerminalClientMessage) String() string {
 func (*TerminalClientMessage) ProtoMessage() {}
 
 func (x *TerminalClientMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[87]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7747,7 +8185,7 @@ func (x *TerminalClientMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalClientMessage.ProtoReflect.Descriptor instead.
 func (*TerminalClientMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{87}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *TerminalClientMessage) GetMsg() isTerminalClientMessage_Msg {
@@ -7811,6 +8249,42 @@ func (x *TerminalClientMessage) GetPing() *TerminalPing {
 	return nil
 }
 
+func (x *TerminalClientMessage) GetUploadStart() *TerminalUploadStart {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_UploadStart); ok {
+			return x.UploadStart
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetUploadChunk() *TerminalUploadChunk {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_UploadChunk); ok {
+			return x.UploadChunk
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetUploadFinish() *TerminalUploadFinish {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_UploadFinish); ok {
+			return x.UploadFinish
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetUploadCancel() *TerminalUploadCancel {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_UploadCancel); ok {
+			return x.UploadCancel
+		}
+	}
+	return nil
+}
+
 type isTerminalClientMessage_Msg interface {
 	isTerminalClientMessage_Msg()
 }
@@ -7839,6 +8313,23 @@ type TerminalClientMessage_Ping struct {
 	Ping *TerminalPing `protobuf:"bytes,6,opt,name=ping,proto3,oneof"`
 }
 
+type TerminalClientMessage_UploadStart struct {
+	// BOS-661 chat file upload (editor-scoped attaches only).
+	UploadStart *TerminalUploadStart `protobuf:"bytes,7,opt,name=upload_start,json=uploadStart,proto3,oneof"`
+}
+
+type TerminalClientMessage_UploadChunk struct {
+	UploadChunk *TerminalUploadChunk `protobuf:"bytes,8,opt,name=upload_chunk,json=uploadChunk,proto3,oneof"`
+}
+
+type TerminalClientMessage_UploadFinish struct {
+	UploadFinish *TerminalUploadFinish `protobuf:"bytes,9,opt,name=upload_finish,json=uploadFinish,proto3,oneof"`
+}
+
+type TerminalClientMessage_UploadCancel struct {
+	UploadCancel *TerminalUploadCancel `protobuf:"bytes,10,opt,name=upload_cancel,json=uploadCancel,proto3,oneof"`
+}
+
 func (*TerminalClientMessage_Attach) isTerminalClientMessage_Msg() {}
 
 func (*TerminalClientMessage_Input) isTerminalClientMessage_Msg() {}
@@ -7851,6 +8342,14 @@ func (*TerminalClientMessage_Ready) isTerminalClientMessage_Msg() {}
 
 func (*TerminalClientMessage_Ping) isTerminalClientMessage_Msg() {}
 
+func (*TerminalClientMessage_UploadStart) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_UploadChunk) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_UploadFinish) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_UploadCancel) isTerminalClientMessage_Msg() {}
+
 // TerminalServerMessage is the daemon → bosso envelope on the new RPC.
 // Despite the name, this is the gRPC REQUEST stream type (bossd is the
 // gRPC client and initiates the stream). Unknown oneof cases are logged
@@ -7862,6 +8361,8 @@ type TerminalServerMessage struct {
 	//	*TerminalServerMessage_Data
 	//	*TerminalServerMessage_Exited
 	//	*TerminalServerMessage_Pong
+	//	*TerminalServerMessage_UploadAck
+	//	*TerminalServerMessage_UploadResult
 	Msg           isTerminalServerMessage_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -7869,7 +8370,7 @@ type TerminalServerMessage struct {
 
 func (x *TerminalServerMessage) Reset() {
 	*x = TerminalServerMessage{}
-	mi := &file_bossanova_v1_stream_proto_msgTypes[88]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7881,7 +8382,7 @@ func (x *TerminalServerMessage) String() string {
 func (*TerminalServerMessage) ProtoMessage() {}
 
 func (x *TerminalServerMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_stream_proto_msgTypes[88]
+	mi := &file_bossanova_v1_stream_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7894,7 +8395,7 @@ func (x *TerminalServerMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalServerMessage.ProtoReflect.Descriptor instead.
 func (*TerminalServerMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{88}
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *TerminalServerMessage) GetMsg() isTerminalServerMessage_Msg {
@@ -7931,6 +8432,24 @@ func (x *TerminalServerMessage) GetPong() *TerminalPong {
 	return nil
 }
 
+func (x *TerminalServerMessage) GetUploadAck() *TerminalUploadAck {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalServerMessage_UploadAck); ok {
+			return x.UploadAck
+		}
+	}
+	return nil
+}
+
+func (x *TerminalServerMessage) GetUploadResult() *TerminalUploadResult {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalServerMessage_UploadResult); ok {
+			return x.UploadResult
+		}
+	}
+	return nil
+}
+
 type isTerminalServerMessage_Msg interface {
 	isTerminalServerMessage_Msg()
 }
@@ -7947,11 +8466,24 @@ type TerminalServerMessage_Pong struct {
 	Pong *TerminalPong `protobuf:"bytes,3,opt,name=pong,proto3,oneof"`
 }
 
+type TerminalServerMessage_UploadAck struct {
+	// BOS-661 chat file upload.
+	UploadAck *TerminalUploadAck `protobuf:"bytes,4,opt,name=upload_ack,json=uploadAck,proto3,oneof"`
+}
+
+type TerminalServerMessage_UploadResult struct {
+	UploadResult *TerminalUploadResult `protobuf:"bytes,5,opt,name=upload_result,json=uploadResult,proto3,oneof"`
+}
+
 func (*TerminalServerMessage_Data) isTerminalServerMessage_Msg() {}
 
 func (*TerminalServerMessage_Exited) isTerminalServerMessage_Msg() {}
 
 func (*TerminalServerMessage_Pong) isTerminalServerMessage_Msg() {}
+
+func (*TerminalServerMessage_UploadAck) isTerminalServerMessage_Msg() {}
+
+func (*TerminalServerMessage_UploadResult) isTerminalServerMessage_Msg() {}
 
 var File_bossanova_v1_stream_proto protoreflect.FileDescriptor
 
@@ -8078,13 +8610,14 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_CREATED\x10\x01\x12\x10\n" +
 	"\fKIND_UPDATED\x10\x02\x12\x10\n" +
-	"\fKIND_DELETED\x10\x03\"\xce\x01\n" +
+	"\fKIND_DELETED\x10\x03\"\xf5\x01\n" +
 	"\x0fChatStatusDelta\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12@\n" +
 	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\x12(\n" +
-	"\x10agent_session_id\x18\x04 \x01(\tR\x0eagentSessionId\"\xe7\x02\n" +
+	"\x10agent_session_id\x18\x04 \x01(\tR\x0eagentSessionId\x12%\n" +
+	"\x0ewaiting_reason\x18\x05 \x01(\tR\rwaitingReason\"\xe7\x02\n" +
 	"\x12ClaudeChatMetadata\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -8574,7 +9107,36 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x04cols\x18\x02 \x01(\rR\x04cols\x12\x12\n" +
 	"\x04rows\x18\x03 \x01(\rR\x04rows\"3\n" +
 	"\x14TerminalCloseCommand\x12\x1b\n" +
-	"\tattach_id\x18\x01 \x01(\tR\battachId\"j\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\"\x8a\x01\n" +
+	"\x13TerminalUploadStart\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x1a\n" +
+	"\bfilename\x18\x03 \x01(\tR\bfilename\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x04 \x01(\x04R\tsizeBytes\"u\n" +
+	"\x13TerminalUploadChunk\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x10\n" +
+	"\x03seq\x18\x03 \x01(\x04R\x03seq\x12\x12\n" +
+	"\x04data\x18\x04 \x01(\fR\x04data\"P\n" +
+	"\x14TerminalUploadFinish\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\"h\n" +
+	"\x14TerminalUploadCancel\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x86\x01\n" +
+	"\x11TerminalUploadAck\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x10\n" +
+	"\x03seq\x18\x03 \x01(\x04R\x03seq\x12%\n" +
+	"\x0ebytes_received\x18\x04 \x01(\x04R\rbytesReceived\"\xa7\x01\n" +
+	"\x14TerminalUploadResult\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12\x13\n" +
+	"\x05is_ok\x18\x03 \x01(\bR\x04isOk\x12#\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage\x12\x1b\n" +
+	"\tcan_retry\x18\x05 \x01(\bR\bcanRetry\"j\n" +
 	"\x11TerminalDataChunk\x12\x1b\n" +
 	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12\x12\n" +
@@ -8588,19 +9150,27 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\fTerminalPing\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\" \n" +
 	"\fTerminalPong\x12\x10\n" +
-	"\x03seq\x18\x01 \x01(\x04R\x03seq\"\xfb\x02\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\"\xa1\x05\n" +
 	"\x15TerminalClientMessage\x12=\n" +
 	"\x06attach\x18\x01 \x01(\v2#.bossanova.v1.TerminalAttachCommandH\x00R\x06attach\x12:\n" +
 	"\x05input\x18\x02 \x01(\v2\".bossanova.v1.TerminalInputCommandH\x00R\x05input\x12=\n" +
 	"\x06resize\x18\x03 \x01(\v2#.bossanova.v1.TerminalResizeCommandH\x00R\x06resize\x12:\n" +
 	"\x05close\x18\x04 \x01(\v2\".bossanova.v1.TerminalCloseCommandH\x00R\x05close\x123\n" +
 	"\x05ready\x18\x05 \x01(\v2\x1b.bossanova.v1.TerminalReadyH\x00R\x05ready\x120\n" +
-	"\x04ping\x18\x06 \x01(\v2\x1a.bossanova.v1.TerminalPingH\x00R\x04pingB\x05\n" +
-	"\x03msg\"\xc5\x01\n" +
+	"\x04ping\x18\x06 \x01(\v2\x1a.bossanova.v1.TerminalPingH\x00R\x04ping\x12F\n" +
+	"\fupload_start\x18\a \x01(\v2!.bossanova.v1.TerminalUploadStartH\x00R\vuploadStart\x12F\n" +
+	"\fupload_chunk\x18\b \x01(\v2!.bossanova.v1.TerminalUploadChunkH\x00R\vuploadChunk\x12I\n" +
+	"\rupload_finish\x18\t \x01(\v2\".bossanova.v1.TerminalUploadFinishH\x00R\fuploadFinish\x12I\n" +
+	"\rupload_cancel\x18\n" +
+	" \x01(\v2\".bossanova.v1.TerminalUploadCancelH\x00R\fuploadCancelB\x05\n" +
+	"\x03msg\"\xd2\x02\n" +
 	"\x15TerminalServerMessage\x125\n" +
 	"\x04data\x18\x01 \x01(\v2\x1f.bossanova.v1.TerminalDataChunkH\x00R\x04data\x12<\n" +
 	"\x06exited\x18\x02 \x01(\v2\".bossanova.v1.TerminalAttachExitedH\x00R\x06exited\x120\n" +
-	"\x04pong\x18\x03 \x01(\v2\x1a.bossanova.v1.TerminalPongH\x00R\x04pongB\x05\n" +
+	"\x04pong\x18\x03 \x01(\v2\x1a.bossanova.v1.TerminalPongH\x00R\x04pong\x12@\n" +
+	"\n" +
+	"upload_ack\x18\x04 \x01(\v2\x1f.bossanova.v1.TerminalUploadAckH\x00R\tuploadAck\x12I\n" +
+	"\rupload_result\x18\x05 \x01(\v2\".bossanova.v1.TerminalUploadResultH\x00R\fuploadResultB\x05\n" +
 	"\x03msgB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
@@ -8616,7 +9186,7 @@ func file_bossanova_v1_stream_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_stream_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 90)
+var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 96)
 var file_bossanova_v1_stream_proto_goTypes = []any{
 	(SessionDelta_Kind)(0),               // 0: bossanova.v1.SessionDelta.Kind
 	(ChatDelta_Kind)(0),                  // 1: bossanova.v1.ChatDelta.Kind
@@ -8704,57 +9274,63 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*TerminalInputCommand)(nil),         // 83: bossanova.v1.TerminalInputCommand
 	(*TerminalResizeCommand)(nil),        // 84: bossanova.v1.TerminalResizeCommand
 	(*TerminalCloseCommand)(nil),         // 85: bossanova.v1.TerminalCloseCommand
-	(*TerminalDataChunk)(nil),            // 86: bossanova.v1.TerminalDataChunk
-	(*TerminalAttachExited)(nil),         // 87: bossanova.v1.TerminalAttachExited
-	(*TerminalReady)(nil),                // 88: bossanova.v1.TerminalReady
-	(*TerminalPing)(nil),                 // 89: bossanova.v1.TerminalPing
-	(*TerminalPong)(nil),                 // 90: bossanova.v1.TerminalPong
-	(*TerminalClientMessage)(nil),        // 91: bossanova.v1.TerminalClientMessage
-	(*TerminalServerMessage)(nil),        // 92: bossanova.v1.TerminalServerMessage
-	nil,                                  // 93: bossanova.v1.WebhookEvent.HeadersEntry
-	(*Session)(nil),                      // 94: bossanova.v1.Session
-	(*ChatStatusEntry)(nil),              // 95: bossanova.v1.ChatStatusEntry
-	(ChatStatus)(0),                      // 96: bossanova.v1.ChatStatus
-	(*timestamppb.Timestamp)(nil),        // 97: google.protobuf.Timestamp
-	(*ClaudeChat)(nil),                   // 98: bossanova.v1.ClaudeChat
-	(*ListReposResponse)(nil),            // 99: bossanova.v1.ListReposResponse
-	(*ListAgentsResponse)(nil),           // 100: bossanova.v1.ListAgentsResponse
-	(*ListRepoPRsResponse)(nil),          // 101: bossanova.v1.ListRepoPRsResponse
-	(*ListTrackerIssuesResponse)(nil),    // 102: bossanova.v1.ListTrackerIssuesResponse
-	(*GetChatTranscriptResponse)(nil),    // 103: bossanova.v1.GetChatTranscriptResponse
-	(*SendChatMessageResponse)(nil),      // 104: bossanova.v1.SendChatMessageResponse
-	(*ListAccountsResponse)(nil),         // 105: bossanova.v1.ListAccountsResponse
-	(*GetRepoSettingsResponse)(nil),      // 106: bossanova.v1.GetRepoSettingsResponse
-	(*UpdateRepoResponse)(nil),           // 107: bossanova.v1.UpdateRepoResponse
-	(*ListCronJobsResponse)(nil),         // 108: bossanova.v1.ListCronJobsResponse
-	(*CreateCronJobResponse)(nil),        // 109: bossanova.v1.CreateCronJobResponse
-	(*UpdateCronJobResponse)(nil),        // 110: bossanova.v1.UpdateCronJobResponse
-	(*RunCronJobNowResponse)(nil),        // 111: bossanova.v1.RunCronJobNowResponse
-	(*AddAccountResponse)(nil),           // 112: bossanova.v1.AddAccountResponse
-	(*RefreshAccountResponse)(nil),       // 113: bossanova.v1.RefreshAccountResponse
-	(*UpdateAccountResponse)(nil),        // 114: bossanova.v1.UpdateAccountResponse
-	(*TestAccountResponse)(nil),          // 115: bossanova.v1.TestAccountResponse
-	(*ListChatsResponse)(nil),            // 116: bossanova.v1.ListChatsResponse
-	(*GetSessionStatusesResponse)(nil),   // 117: bossanova.v1.GetSessionStatusesResponse
-	(*ListCheckSnapshotsResponse)(nil),   // 118: bossanova.v1.ListCheckSnapshotsResponse
-	(*ListPluginsResponse)(nil),          // 119: bossanova.v1.ListPluginsResponse
-	(*GetCronJobResponse)(nil),           // 120: bossanova.v1.GetCronJobResponse
-	(*RepairDoctorResponse)(nil),         // 121: bossanova.v1.RepairDoctorResponse
-	(*CreateGithubCallbackResponse)(nil), // 122: bossanova.v1.CreateGithubCallbackResponse
-	(*ListGithubCallbacksResponse)(nil),  // 123: bossanova.v1.ListGithubCallbacksResponse
-	(*CreateNoteResponse)(nil),           // 124: bossanova.v1.CreateNoteResponse
-	(*GetNoteResponse)(nil),              // 125: bossanova.v1.GetNoteResponse
-	(*ListNotesResponse)(nil),            // 126: bossanova.v1.ListNotesResponse
-	(*UpdateNoteResponse)(nil),           // 127: bossanova.v1.UpdateNoteResponse
-	(*OutputLine)(nil),                   // 128: bossanova.v1.OutputLine
-	(*StateChange)(nil),                  // 129: bossanova.v1.StateChange
-	(*SessionEnded)(nil),                 // 130: bossanova.v1.SessionEnded
-	(*TrackerIssue)(nil),                 // 131: bossanova.v1.TrackerIssue
-	(MergeStrategy)(0),                   // 132: bossanova.v1.MergeStrategy
-	(*SecretUpdate)(nil),                 // 133: bossanova.v1.SecretUpdate
-	(*ChatStatusReport)(nil),             // 134: bossanova.v1.ChatStatusReport
-	(*NoteTagSet)(nil),                   // 135: bossanova.v1.NoteTagSet
-	(*BroadcastSelector)(nil),            // 136: bossanova.v1.BroadcastSelector
+	(*TerminalUploadStart)(nil),          // 86: bossanova.v1.TerminalUploadStart
+	(*TerminalUploadChunk)(nil),          // 87: bossanova.v1.TerminalUploadChunk
+	(*TerminalUploadFinish)(nil),         // 88: bossanova.v1.TerminalUploadFinish
+	(*TerminalUploadCancel)(nil),         // 89: bossanova.v1.TerminalUploadCancel
+	(*TerminalUploadAck)(nil),            // 90: bossanova.v1.TerminalUploadAck
+	(*TerminalUploadResult)(nil),         // 91: bossanova.v1.TerminalUploadResult
+	(*TerminalDataChunk)(nil),            // 92: bossanova.v1.TerminalDataChunk
+	(*TerminalAttachExited)(nil),         // 93: bossanova.v1.TerminalAttachExited
+	(*TerminalReady)(nil),                // 94: bossanova.v1.TerminalReady
+	(*TerminalPing)(nil),                 // 95: bossanova.v1.TerminalPing
+	(*TerminalPong)(nil),                 // 96: bossanova.v1.TerminalPong
+	(*TerminalClientMessage)(nil),        // 97: bossanova.v1.TerminalClientMessage
+	(*TerminalServerMessage)(nil),        // 98: bossanova.v1.TerminalServerMessage
+	nil,                                  // 99: bossanova.v1.WebhookEvent.HeadersEntry
+	(*Session)(nil),                      // 100: bossanova.v1.Session
+	(*ChatStatusEntry)(nil),              // 101: bossanova.v1.ChatStatusEntry
+	(ChatStatus)(0),                      // 102: bossanova.v1.ChatStatus
+	(*timestamppb.Timestamp)(nil),        // 103: google.protobuf.Timestamp
+	(*ClaudeChat)(nil),                   // 104: bossanova.v1.ClaudeChat
+	(*ListReposResponse)(nil),            // 105: bossanova.v1.ListReposResponse
+	(*ListAgentsResponse)(nil),           // 106: bossanova.v1.ListAgentsResponse
+	(*ListRepoPRsResponse)(nil),          // 107: bossanova.v1.ListRepoPRsResponse
+	(*ListTrackerIssuesResponse)(nil),    // 108: bossanova.v1.ListTrackerIssuesResponse
+	(*GetChatTranscriptResponse)(nil),    // 109: bossanova.v1.GetChatTranscriptResponse
+	(*SendChatMessageResponse)(nil),      // 110: bossanova.v1.SendChatMessageResponse
+	(*ListAccountsResponse)(nil),         // 111: bossanova.v1.ListAccountsResponse
+	(*GetRepoSettingsResponse)(nil),      // 112: bossanova.v1.GetRepoSettingsResponse
+	(*UpdateRepoResponse)(nil),           // 113: bossanova.v1.UpdateRepoResponse
+	(*ListCronJobsResponse)(nil),         // 114: bossanova.v1.ListCronJobsResponse
+	(*CreateCronJobResponse)(nil),        // 115: bossanova.v1.CreateCronJobResponse
+	(*UpdateCronJobResponse)(nil),        // 116: bossanova.v1.UpdateCronJobResponse
+	(*RunCronJobNowResponse)(nil),        // 117: bossanova.v1.RunCronJobNowResponse
+	(*AddAccountResponse)(nil),           // 118: bossanova.v1.AddAccountResponse
+	(*RefreshAccountResponse)(nil),       // 119: bossanova.v1.RefreshAccountResponse
+	(*UpdateAccountResponse)(nil),        // 120: bossanova.v1.UpdateAccountResponse
+	(*TestAccountResponse)(nil),          // 121: bossanova.v1.TestAccountResponse
+	(*ListChatsResponse)(nil),            // 122: bossanova.v1.ListChatsResponse
+	(*GetSessionStatusesResponse)(nil),   // 123: bossanova.v1.GetSessionStatusesResponse
+	(*ListCheckSnapshotsResponse)(nil),   // 124: bossanova.v1.ListCheckSnapshotsResponse
+	(*ListPluginsResponse)(nil),          // 125: bossanova.v1.ListPluginsResponse
+	(*GetCronJobResponse)(nil),           // 126: bossanova.v1.GetCronJobResponse
+	(*RepairDoctorResponse)(nil),         // 127: bossanova.v1.RepairDoctorResponse
+	(*CreateGithubCallbackResponse)(nil), // 128: bossanova.v1.CreateGithubCallbackResponse
+	(*ListGithubCallbacksResponse)(nil),  // 129: bossanova.v1.ListGithubCallbacksResponse
+	(*CreateNoteResponse)(nil),           // 130: bossanova.v1.CreateNoteResponse
+	(*GetNoteResponse)(nil),              // 131: bossanova.v1.GetNoteResponse
+	(*ListNotesResponse)(nil),            // 132: bossanova.v1.ListNotesResponse
+	(*UpdateNoteResponse)(nil),           // 133: bossanova.v1.UpdateNoteResponse
+	(*OutputLine)(nil),                   // 134: bossanova.v1.OutputLine
+	(*StateChange)(nil),                  // 135: bossanova.v1.StateChange
+	(*SessionEnded)(nil),                 // 136: bossanova.v1.SessionEnded
+	(*TrackerIssue)(nil),                 // 137: bossanova.v1.TrackerIssue
+	(MergeStrategy)(0),                   // 138: bossanova.v1.MergeStrategy
+	(*SecretUpdate)(nil),                 // 139: bossanova.v1.SecretUpdate
+	(*ChatStatusReport)(nil),             // 140: bossanova.v1.ChatStatusReport
+	(*NoteTagSet)(nil),                   // 141: bossanova.v1.NoteTagSet
+	(*BroadcastSelector)(nil),            // 142: bossanova.v1.BroadcastSelector
 }
 var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	6,   // 0: bossanova.v1.DaemonEvent.snapshot:type_name -> bossanova.v1.DaemonSnapshot
@@ -8827,89 +9403,95 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	73,  // 67: bossanova.v1.OrchestratorCommand.update_note:type_name -> bossanova.v1.UpdateNoteCommand
 	74,  // 68: bossanova.v1.OrchestratorCommand.delete_note:type_name -> bossanova.v1.DeleteNoteCommand
 	81,  // 69: bossanova.v1.OrchestratorCommand.broadcast:type_name -> bossanova.v1.BroadcastCommand
-	94,  // 70: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
+	100, // 70: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
 	12,  // 71: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.ClaudeChatMetadata
-	95,  // 72: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	101, // 72: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	7,   // 73: bossanova.v1.DaemonSnapshot.callback_interests:type_name -> bossanova.v1.CallbackInterest
 	7,   // 74: bossanova.v1.CallbackInterestSet.interests:type_name -> bossanova.v1.CallbackInterest
 	0,   // 75: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
-	94,  // 76: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
+	100, // 76: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
 	1,   // 77: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
 	12,  // 78: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.ClaudeChatMetadata
-	96,  // 79: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
-	97,  // 80: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
-	97,  // 81: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
-	97,  // 82: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
-	94,  // 83: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
+	102, // 79: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
+	103, // 80: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
+	103, // 81: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
+	103, // 82: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
+	100, // 83: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
 	77,  // 84: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
 	25,  // 85: bossanova.v1.CommandResult.wake_chat:type_name -> bossanova.v1.WakeChatResult
-	98,  // 86: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.ClaudeChat
-	99,  // 87: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
-	100, // 88: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
-	101, // 89: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
-	102, // 90: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
-	103, // 91: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
-	104, // 92: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
+	104, // 86: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.ClaudeChat
+	105, // 87: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
+	106, // 88: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
+	107, // 89: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse
+	108, // 90: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
+	109, // 91: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
+	110, // 92: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
 	27,  // 93: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAccountResult
-	105, // 94: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAccountsResponse
-	106, // 95: bossanova.v1.CommandResult.get_repo:type_name -> bossanova.v1.GetRepoSettingsResponse
-	107, // 96: bossanova.v1.CommandResult.update_repo:type_name -> bossanova.v1.UpdateRepoResponse
-	108, // 97: bossanova.v1.CommandResult.list_cron_jobs:type_name -> bossanova.v1.ListCronJobsResponse
-	109, // 98: bossanova.v1.CommandResult.create_cron_job:type_name -> bossanova.v1.CreateCronJobResponse
-	110, // 99: bossanova.v1.CommandResult.update_cron_job:type_name -> bossanova.v1.UpdateCronJobResponse
-	111, // 100: bossanova.v1.CommandResult.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowResponse
-	112, // 101: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAccountResponse
-	113, // 102: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAccountResponse
-	114, // 103: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAccountResponse
-	115, // 104: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAccountResponse
-	116, // 105: bossanova.v1.CommandResult.list_chats:type_name -> bossanova.v1.ListChatsResponse
-	117, // 106: bossanova.v1.CommandResult.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesResponse
-	118, // 107: bossanova.v1.CommandResult.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsResponse
-	119, // 108: bossanova.v1.CommandResult.list_plugins:type_name -> bossanova.v1.ListPluginsResponse
-	120, // 109: bossanova.v1.CommandResult.get_cron_job:type_name -> bossanova.v1.GetCronJobResponse
-	121, // 110: bossanova.v1.CommandResult.repair_doctor:type_name -> bossanova.v1.RepairDoctorResponse
+	111, // 94: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAccountsResponse
+	112, // 95: bossanova.v1.CommandResult.get_repo:type_name -> bossanova.v1.GetRepoSettingsResponse
+	113, // 96: bossanova.v1.CommandResult.update_repo:type_name -> bossanova.v1.UpdateRepoResponse
+	114, // 97: bossanova.v1.CommandResult.list_cron_jobs:type_name -> bossanova.v1.ListCronJobsResponse
+	115, // 98: bossanova.v1.CommandResult.create_cron_job:type_name -> bossanova.v1.CreateCronJobResponse
+	116, // 99: bossanova.v1.CommandResult.update_cron_job:type_name -> bossanova.v1.UpdateCronJobResponse
+	117, // 100: bossanova.v1.CommandResult.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowResponse
+	118, // 101: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAccountResponse
+	119, // 102: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAccountResponse
+	120, // 103: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAccountResponse
+	121, // 104: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAccountResponse
+	122, // 105: bossanova.v1.CommandResult.list_chats:type_name -> bossanova.v1.ListChatsResponse
+	123, // 106: bossanova.v1.CommandResult.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesResponse
+	124, // 107: bossanova.v1.CommandResult.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsResponse
+	125, // 108: bossanova.v1.CommandResult.list_plugins:type_name -> bossanova.v1.ListPluginsResponse
+	126, // 109: bossanova.v1.CommandResult.get_cron_job:type_name -> bossanova.v1.GetCronJobResponse
+	127, // 110: bossanova.v1.CommandResult.repair_doctor:type_name -> bossanova.v1.RepairDoctorResponse
 	61,  // 111: bossanova.v1.CommandResult.empty_trash:type_name -> bossanova.v1.EmptyTrashResult
-	122, // 112: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGithubCallbackResponse
-	123, // 113: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGithubCallbacksResponse
-	124, // 114: bossanova.v1.CommandResult.create_note:type_name -> bossanova.v1.CreateNoteResponse
-	125, // 115: bossanova.v1.CommandResult.get_note:type_name -> bossanova.v1.GetNoteResponse
-	126, // 116: bossanova.v1.CommandResult.list_notes:type_name -> bossanova.v1.ListNotesResponse
-	127, // 117: bossanova.v1.CommandResult.update_note:type_name -> bossanova.v1.UpdateNoteResponse
+	128, // 112: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGithubCallbackResponse
+	129, // 113: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGithubCallbacksResponse
+	130, // 114: bossanova.v1.CommandResult.create_note:type_name -> bossanova.v1.CreateNoteResponse
+	131, // 115: bossanova.v1.CommandResult.get_note:type_name -> bossanova.v1.GetNoteResponse
+	132, // 116: bossanova.v1.CommandResult.list_notes:type_name -> bossanova.v1.ListNotesResponse
+	133, // 117: bossanova.v1.CommandResult.update_note:type_name -> bossanova.v1.UpdateNoteResponse
 	2,   // 118: bossanova.v1.CommandResult.error_code:type_name -> bossanova.v1.CommandResult.ErrorCode
-	94,  // 119: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
+	100, // 119: bossanova.v1.SessionCreateChunk.created:type_name -> bossanova.v1.Session
 	17,  // 120: bossanova.v1.SessionCreateChunk.error:type_name -> bossanova.v1.CreateError
-	128, // 121: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
-	129, // 122: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
-	130, // 123: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
-	131, // 124: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
+	134, // 121: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
+	135, // 122: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
+	136, // 123: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
+	137, // 124: bossanova.v1.CreateSessionCommand.tracker_issue:type_name -> bossanova.v1.TrackerIssue
 	3,   // 125: bossanova.v1.WakeChatResult.outcome:type_name -> bossanova.v1.WakeChatResult.Outcome
-	132, // 126: bossanova.v1.UpdateRepoCommand.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	133, // 127: bossanova.v1.UpdateRepoCommand.linear_key:type_name -> bossanova.v1.SecretUpdate
-	133, // 128: bossanova.v1.UpdateRepoCommand.sentry_key:type_name -> bossanova.v1.SecretUpdate
-	97,  // 129: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
-	97,  // 130: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
-	134, // 131: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
-	97,  // 132: bossanova.v1.CreateGithubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
-	135, // 133: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
-	93,  // 134: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
-	136, // 135: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
-	97,  // 136: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
-	136, // 137: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
-	97,  // 138: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
+	138, // 126: bossanova.v1.UpdateRepoCommand.merge_strategy:type_name -> bossanova.v1.MergeStrategy
+	139, // 127: bossanova.v1.UpdateRepoCommand.linear_key:type_name -> bossanova.v1.SecretUpdate
+	139, // 128: bossanova.v1.UpdateRepoCommand.sentry_key:type_name -> bossanova.v1.SecretUpdate
+	103, // 129: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
+	103, // 130: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
+	140, // 131: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
+	103, // 132: bossanova.v1.CreateGithubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
+	141, // 133: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
+	99,  // 134: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
+	142, // 135: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector
+	103, // 136: bossanova.v1.BroadcastEgress.expires_at:type_name -> google.protobuf.Timestamp
+	142, // 137: bossanova.v1.BroadcastCommand.selector:type_name -> bossanova.v1.BroadcastSelector
+	103, // 138: bossanova.v1.BroadcastCommand.expires_at:type_name -> google.protobuf.Timestamp
 	82,  // 139: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
 	83,  // 140: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
 	84,  // 141: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
 	85,  // 142: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
-	88,  // 143: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
-	89,  // 144: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
-	86,  // 145: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
-	87,  // 146: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
-	90,  // 147: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
-	148, // [148:148] is the sub-list for method output_type
-	148, // [148:148] is the sub-list for method input_type
-	148, // [148:148] is the sub-list for extension type_name
-	148, // [148:148] is the sub-list for extension extendee
-	0,   // [0:148] is the sub-list for field type_name
+	94,  // 143: bossanova.v1.TerminalClientMessage.ready:type_name -> bossanova.v1.TerminalReady
+	95,  // 144: bossanova.v1.TerminalClientMessage.ping:type_name -> bossanova.v1.TerminalPing
+	86,  // 145: bossanova.v1.TerminalClientMessage.upload_start:type_name -> bossanova.v1.TerminalUploadStart
+	87,  // 146: bossanova.v1.TerminalClientMessage.upload_chunk:type_name -> bossanova.v1.TerminalUploadChunk
+	88,  // 147: bossanova.v1.TerminalClientMessage.upload_finish:type_name -> bossanova.v1.TerminalUploadFinish
+	89,  // 148: bossanova.v1.TerminalClientMessage.upload_cancel:type_name -> bossanova.v1.TerminalUploadCancel
+	92,  // 149: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
+	93,  // 150: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
+	96,  // 151: bossanova.v1.TerminalServerMessage.pong:type_name -> bossanova.v1.TerminalPong
+	90,  // 152: bossanova.v1.TerminalServerMessage.upload_ack:type_name -> bossanova.v1.TerminalUploadAck
+	91,  // 153: bossanova.v1.TerminalServerMessage.upload_result:type_name -> bossanova.v1.TerminalUploadResult
+	154, // [154:154] is the sub-list for method output_type
+	154, // [154:154] is the sub-list for method input_type
+	154, // [154:154] is the sub-list for extension type_name
+	154, // [154:154] is the sub-list for extension extendee
+	0,   // [0:154] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_stream_proto_init() }
@@ -9053,18 +9635,24 @@ func file_bossanova_v1_stream_proto_init() {
 	file_bossanova_v1_stream_proto_msgTypes[66].OneofWrappers = []any{}
 	file_bossanova_v1_stream_proto_msgTypes[68].OneofWrappers = []any{}
 	file_bossanova_v1_stream_proto_msgTypes[69].OneofWrappers = []any{}
-	file_bossanova_v1_stream_proto_msgTypes[87].OneofWrappers = []any{
+	file_bossanova_v1_stream_proto_msgTypes[93].OneofWrappers = []any{
 		(*TerminalClientMessage_Attach)(nil),
 		(*TerminalClientMessage_Input)(nil),
 		(*TerminalClientMessage_Resize)(nil),
 		(*TerminalClientMessage_Close)(nil),
 		(*TerminalClientMessage_Ready)(nil),
 		(*TerminalClientMessage_Ping)(nil),
+		(*TerminalClientMessage_UploadStart)(nil),
+		(*TerminalClientMessage_UploadChunk)(nil),
+		(*TerminalClientMessage_UploadFinish)(nil),
+		(*TerminalClientMessage_UploadCancel)(nil),
 	}
-	file_bossanova_v1_stream_proto_msgTypes[88].OneofWrappers = []any{
+	file_bossanova_v1_stream_proto_msgTypes[94].OneofWrappers = []any{
 		(*TerminalServerMessage_Data)(nil),
 		(*TerminalServerMessage_Exited)(nil),
 		(*TerminalServerMessage_Pong)(nil),
+		(*TerminalServerMessage_UploadAck)(nil),
+		(*TerminalServerMessage_UploadResult)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -9072,7 +9660,7 @@ func file_bossanova_v1_stream_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_stream_proto_rawDesc), len(file_bossanova_v1_stream_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   90,
+			NumMessages:   96,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

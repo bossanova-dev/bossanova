@@ -54,6 +54,76 @@ test('extensionMarker returns null when the block is absent', () => {
   assert.equal(extensionMarker(data), null)
 })
 
+test('extensionMarker surfaces the optional lens binding when declared', () => {
+  const { data } = parseFrontmatter(
+    '---\nname: bs-review-golang\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  order: 40\n  lens: go\n---\n',
+  )
+  assert.deepEqual(extensionMarker(data), {
+    extends: 'bs-review',
+    role: 'lens',
+    order: 40,
+    lens: 'go',
+  })
+})
+
+test('extensionMarker omits the lens field entirely when the marker declares none', () => {
+  const { data } = parseFrontmatter(
+    '---\nname: bs-review-round\nx-boss-extension:\n  extends: bs-review\n  role: round\n---\n',
+  )
+  const marker = extensionMarker(data)
+  assert.equal('lens' in marker, false, `expected no lens key, got ${JSON.stringify(marker)}`)
+})
+
+test('extensionMarker ignores a non-string or empty lens binding rather than failing', () => {
+  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
+    const { data } = parseFrontmatter(
+      `---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n${declared}\n---\n`,
+    )
+    const marker = extensionMarker(data)
+    assert.ok(marker, `marker should still resolve for ${declared}`)
+    assert.equal('lens' in marker, false, `${declared}: ${JSON.stringify(marker)}`)
+  }
+})
+
+test('extensionMarker keeps a quoted numeric lens binding as a string', () => {
+  // A config lens id only has to be a non-empty string, so "42" is a legal id. The
+  // quoted marker must survive frontmatter coercion as the string "42" — coercing it
+  // to Number 42 makes extensionMarker drop the field and the lens never dispatches.
+  const { data } = parseFrontmatter(
+    '---\nname: bs-review-42\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  lens: "42"\n---\n',
+  )
+  const marker = extensionMarker(data)
+  assert.equal(marker.lens, '42')
+  assert.equal(typeof marker.lens, 'string')
+})
+
+test('discoverExtensions binds a descriptor to a quoted numeric lens id', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-numeric', [
+    'name: bs-review-numeric',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  lens: "42"',
+  ])
+  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.equal(extensions.length, 1)
+  assert.equal(extensions[0].lens, '42')
+})
+
+test('coercion keeps unquoted integers numeric and quoted ones stringly typed', () => {
+  const marker = (declared) =>
+    extensionMarker(
+      parseFrontmatter(
+        `---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n${declared}\n---\n`,
+      ).data,
+    )
+  // Bare integer -> Number, and extensionMarker honours it as the declared order.
+  assert.equal(marker('  order: 20').order, 20)
+  // Quoted -> string, which is not a valid order, so the default applies.
+  assert.equal(marker('  order: "20"').order, 100)
+})
+
 test('extensionMarker defaults order to 100 when the marker omits it', () => {
   const { data } = parseFrontmatter(
     '---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n---\n',
@@ -122,6 +192,58 @@ test('discoverExtensions omits known cross-role siblings when role is supplied',
     extensions.map((e) => e.name),
     ['bs-plan-house-style'],
   )
+  assert.deepEqual(skipped, [])
+})
+
+// BOS-678: the lens binding is declared extension-side, as an optional `lens: <lensMap id>` key
+// on the marker, so `boss-review` Phase 1 can index discovered lens extensions by the lens entry
+// they serve without adding a key to `.boss-skills.json` `lensMap` (which `skill-config.test.mjs`
+// deep-equals against `DEFAULT_CONFIG`, i.e. against the published payload's defaults).
+test('discoverExtensions carries a declared lens binding onto the descriptor', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-golang', [
+    'name: bs-review-golang',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  order: 40',
+    '  lens: go',
+  ])
+  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.deepEqual(
+    extensions.map((e) => e.lens),
+    ['go'],
+  )
+})
+
+test('discoverExtensions omits the lens field for an unbound extension', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-unbound', [
+    'name: bs-review-unbound',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+  ])
+  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.equal(extensions.length, 1)
+  assert.deepEqual(Object.keys(extensions[0]).sort(), ['dir', 'name', 'order', 'role', 'skillPath'])
+})
+
+test('discoverExtensions does not filter a round extension carrying a stray lens key', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-strayround', [
+    'name: bs-review-strayround',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: round',
+    '  lens: go',
+  ])
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-review-strayround'],
+  )
+  assert.equal(extensions[0].lens, 'go')
   assert.deepEqual(skipped, [])
 })
 
@@ -284,6 +406,21 @@ test('discoverExtensions finds the committed boss-review round extensions repo-l
   )
 })
 
+test('discoverExtensions finds the committed boss-review lens extensions with their bindings', () => {
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-review',
+    root: repoRoot,
+    role: 'lens',
+  })
+  assert.deepEqual(skipped, [])
+  const bound = Object.fromEntries(extensions.map((e) => [e.name, e.lens]))
+  assert.deepEqual(bound, {
+    'boss-review-golang': 'go',
+    'boss-review-tui': 'tui',
+    'boss-review-web': 'web',
+  })
+})
+
 test('discoverExtensions finds the committed boss-build methodology extension repo-local', () => {
   const out = execFileSync(
     'node',
@@ -329,6 +466,57 @@ test('discoverExtensions skips a malformed manifest without throwing', () => {
   const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root })
   assert.deepEqual(extensions, [])
   assert.ok(skipped.some((s) => s.name === 'bs-review-broken'))
+})
+
+// `parseFrontmatter` does not throw on a broken fence — it returns empty `data`, exactly like a
+// SKILL.md whose frontmatter is valid and simply declares no marker. Cores are entitled to ignore
+// the latter (a markerless same-prefix helper is a deliberate non-extension), so collapsing the
+// two would let a genuine Tier-1 extension whose fence is broken, or whose marker is half-written,
+// vanish under that exemption and let the lens report Tier 2 as its intended tier. Each failed
+// declaration therefore needs a reason of its own, distinct from the markerless one.
+test('discoverExtensions separates malformed frontmatter and a partial marker from markerless', () => {
+  const root = scratchRoot()
+  const write = (name, text) => {
+    const dir = path.join(root, '.claude', 'skills', name)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), text)
+  }
+  // A real lens extension whose closing `---` is missing.
+  write(
+    'bs-review-unfenced',
+    '---\nname: bs-review-unfenced\nx-boss-extension:\n  extends: bs-review\n  role: lens\n\n# body\n',
+  )
+  // A real lens extension whose marker omits the required `role`.
+  write(
+    'bs-review-partial',
+    '---\nname: bs-review-partial\nx-boss-extension:\n  extends: bs-review\n  lens: tui\n---\n\n# body\n',
+  )
+  // A deliberate non-extension: valid frontmatter, no marker at all.
+  writeSkill(root, 'bs-review-helper', ['name: bs-review-helper', 'description: a helper'])
+
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+
+  assert.deepEqual(extensions, [])
+  const reasonFor = (name) => skipped.find((s) => s.name === name)?.reason
+  assert.equal(reasonFor('bs-review-helper'), 'missing x-boss-extension marker')
+  assert.equal(reasonFor('bs-review-unfenced'), 'malformed frontmatter: no parseable --- block')
+  assert.equal(
+    reasonFor('bs-review-partial'),
+    'incomplete x-boss-extension marker: needs string "extends" and "role"',
+  )
+  // The markerless exemption a core applies must key off that exact reason, so no failed
+  // declaration may share it.
+  assert.equal(
+    skipped.filter((s) => s.reason === 'missing x-boss-extension marker').length,
+    1,
+    `only the markerless helper may carry the exempt reason, got ${JSON.stringify(skipped)}`,
+  )
+})
+
+test('parseFrontmatter reports whether a delimited block was present', () => {
+  assert.equal(parseFrontmatter('---\nname: x\n---\n\nhello\n').hasFrontmatter, true)
+  assert.equal(parseFrontmatter('no frontmatter here\n').hasFrontmatter, false)
+  assert.equal(parseFrontmatter('---\nname: x\n\nhello\n').hasFrontmatter, false)
 })
 
 // A core loads a discovered extension by reading its descriptor's `skillPath` from disk, so an

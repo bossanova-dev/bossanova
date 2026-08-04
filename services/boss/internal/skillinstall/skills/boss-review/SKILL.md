@@ -112,6 +112,7 @@ test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not fo
 BOSS_REVIEW_TOOLBOX="$BOSS_SKILLS_HOME/boss-review/toolbox"
 SECOND_VOICE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --second-voice "$HOST_AGENT")
 LENSES_JSON=$(printf '%s\n' "$CHANGED" | node "$BOSS_REVIEW_TOOLBOX/bs-review-detect.mjs" --lenses)   # MatchedLens[]
+LENS_REGISTRY_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(loadSkillConfig().lensMap))')   # full effective lensMap; the path reaches node through the env, never the -e source, so quotes/spaces in BOSS_SKILLS_HOME cannot break it; file URL so a relative BOSS_SKILLS_HOME is not read as a bare specifier
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-review.XXXXXX")
 ```
 
@@ -130,6 +131,10 @@ Variable meanings:
   array `[{lens, skill, fallbackRubric, files}]` from the `.boss-skills.json` `lensMap` registry.
   An **empty array** means no specialist pass runs; the round step (Phase R) still reviews
   every changed file. It never gates whether a file is reviewed.
+- `LENS_REGISTRY_JSON` — the **full effective** `lensMap`: the same merged, defaulted registry the
+  `--lenses` match above was computed from, read through the toolbox's own `loadSkillConfig` so a
+  repo shipping no `.boss-skills.json` still yields the complete default registry. It is the
+  superset of `$LENSES_JSON` and is what Phase 1 classifies lens-extension bindings against.
 - `RUN_TMP` — scratch dir for findings JSON and the ledger (removed in Phase 8).
 
 **Empty-diff guard:** if `$CHANGED` is empty, print `bs-review clean: no changes to review.`
@@ -166,21 +171,81 @@ expertise where a dedicated review skill exists; the lens set is **data-driven**
 
 `$LENSES_JSON` is a JSON array of matched lenses; each entry is
 `{ "lens": "<id>", "skill": "<skill>", "fallbackRubric": "<inline rubric>", "files": [<subset>] }`.
-For **each** entry, dispatch a fresh `general-purpose` subagent **in parallel** (one message,
-multiple `Task` calls) using the reviewer template below, substituting `<LENS_SKILL>` = the
-entry's `skill`, `<LENS_FALLBACK>` = the entry's `fallbackRubric`, `<FILE_SUBSET>` = the entry's
-`files`, plus `<MERGE_BASE>` and `<RUN_TMP>`.
 
-Every lens now carries a **real inline fallback rubric** in its `fallbackRubric` (generalizing the
-pattern that previously only the web lens had). If the named `<LENS_SKILL>` cannot be loaded — a
-vendored skill like `golang-pro`/`tui-design` normally resolves in any checkout, but an
-operator-global skill like `impeccable` may be absent off the author's machine — the reviewer
-falls back to that inline rubric and **still runs**; the specialist pass is never silently
-dropped. Record each in the ledger as `lens <skill>: <loaded|fallback-inline-rubric>`.
+Each matched entry is resolved by a **per-lens three-tier** contract — a bound discovered lens
+extension, then the entry's `skill`, then the entry's inline `fallbackRubric` — the same precedence
+shape Phase R uses for rounds. Run the lens-extension discovery **once** for the whole phase, from
+the installed toolbox (never a target-repo `scripts/` path), and index the descriptors it returns by
+the lens id each one declares:
+
+```bash
+BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
+if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
+LENS_EXTENSIONS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role lens --json)
+```
+
+`LENS_EXTENSIONS_JSON.skipped` carries every same-prefix directory discovery **rejected** — a
+missing `SKILL.md`, unreadable or malformed frontmatter, an incomplete or absent `x-boss-extension`
+marker or one extending another core, or a typo'd role. Record each as
+`lens extension <name>: skipped (<reason>)` in the ledger **before** resolving the matched lenses,
+with one exclusion: the exact reason `missing x-boss-extension marker` is not reported. That reason
+is emitted **only** for a SKILL.md whose frontmatter parsed cleanly and declares no marker at all.
+The marker is precisely what separates a genuine extension from an incidental name-prefix collision,
+so such a `boss-review-<suffix>` skill is a deliberate non-extension rather than a failed
+declaration — warning about it would fire on every review, for as long as the helper exists. A
+broken frontmatter fence and a half-written marker are _not_ covered by that exclusion: discovery
+gives each its own reason — `malformed frontmatter: ...` and
+`incomplete x-boss-extension marker: ...` — because both are a genuine extension that failed to
+declare itself, and exempting them would silently drop the very Tier-1 reviewer this ledger exists
+to account for. Every reason other than the exact markerless one is a real misconfiguration and is
+still recorded.
+
+A rejected extension never reaches `.extensions`, and the `lens` binding that would attribute it to
+an entry lives in the very frontmatter that failed to parse, so it is recorded against the phase
+rather than against a lens id. Without that line a repository-configured Tier-1 reviewer disappears
+silently, and the lens it was wired to reports Tier 2 as though that had been its intended tier all
+along. Discovery already drops legitimate cross-role siblings before they reach `skipped`.
+Recording is all that is due: a discovery skip is never fatal, and each affected lens still resolves
+through Tier 2 and then Tier 3.
+
+A descriptor in `LENS_EXTENSIONS_JSON.extensions` may carry an optional `lens` field naming the
+config lens `id` it serves. That field **is** the binding, and it is declared by the extension
+rather than by the registry, so a repo wires a lens extension in without editing its lens config at
+all. A descriptor is **bound** to a matched entry when its `lens` equals that entry's `lens` id.
+
+A descriptor that binds to no matched entry is inert for this run, but the two reasons it can be
+inert are not alike and the ledger must not conflate them. Judge the binding against
+`$LENS_REGISTRY_JSON`, the full **effective** lens registry Phase 0 captured — never against
+`$LENSES_JSON`, which holds only the lenses whose globs matched this diff, and never by reading the
+repo-root `.boss-skills.json` directly. That file is an **override**, not the registry: a repo that
+ships no `.boss-skills.json`, or one whose file omits `lensMap`, still has the full default
+registry, so reading the raw file there would find no `tui` or `web` row and report those
+correctly-bound extensions as misconfigured — the very confusion this split exists to prevent. The
+two cases are:
+
+- Its `lens` names a real `lensMap` id — one `$LENS_REGISTRY_JSON` defines — that simply did not
+  match these changed files. The extension is wired correctly and has nothing to do on this diff;
+  record it as `lens extension <name>: inactive (lens <id> not matched)`. Every non-Go lens
+  extension lands here on a Go-only change, so reporting that as a misconfiguration would cry wolf
+  on most reviews.
+- It carries no `lens` field, or names an id no `$LENS_REGISTRY_JSON` entry defines at all. Nothing
+  can ever bind it, so this is a real misconfiguration; record it as
+  `lens extension <name>: unbound`.
+
+Dispatch every matched lens's resolved reviewer **in parallel** (one message, multiple `Task`
+calls), taking bound descriptors in ascending `(order, name)` order.
+
+Whichever tier runs, merged findings carry the **same** `lens` value — the entry's `skill`. The tier
+that actually ran is recorded in the ledger (`lens <id>: tier1 extension <name>` / `tier2 skill
+<skill>` / `tier3 fallback-inline-rubric`) and may be repeated in the report's reviewer `note`, but
+**never** in a finding: Phase 5 dedupes on `(file, line, title)` and Phase 6 re-runs confirming
+rounds, so a tier that flips between rounds must not present itself as a different reviewer.
 
 If `$LENSES_JSON` is an **empty array**, no specialist pass runs; record
 `lenses: none (covered by whole-branch rounds)` in the ledger. The changed files are still fully
-reviewed by Phase R — an empty lens set never drops a file from review.
+reviewed by Phase R — an empty lens set never drops a file from review. Phase 1 is additive-only in
+every direction: an empty lens set, an empty extension set, and a total Tier-1 failure all degrade
+to "Phase R reviews everything", never to "these files go unreviewed".
 
 <!-- tier: opus (no override) because each lens judges whether changed code is correct and emits
 Critical/Warning findings that gate a PR. Not tiered down. -->
@@ -189,10 +254,76 @@ A lens dispatch stays on the orchestrator's model (Opus): judging whether change
 review judgement, not rubric scoring, and a missed Critical finding is silent, so no cheaper `model:`
 override is applied.
 
+### Tier 1 — a discovered lens extension bound to this lens id
+
+Load that extension by **reading the descriptor's `skillPath` from disk** (`dir` is its
+directory), passing both `skillPath` and `dir` in the worker brief, and requiring relative extension
+resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions —
+never by its bare descriptor `name` through the Skill tool, which refuses a skill declaring
+`disable-model-invocation: true`.
+Each dispatch is a fresh `general-purpose` subagent, read-only, **awaited** — never
+`run_in_background` — and bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms).
+Expiry is one of the skip reasons routed below, so a hung extension degrades that lens to Tier 2
+instead of stalling the phase; awaiting an unbounded dispatch would block the whole review. It
+receives the standard extension invocation envelope, whose `changedFiles` is **this lens's matched
+subset**, not the whole branch:
+
+```json
+{
+  "role": "lens",
+  "core": "boss-review",
+  "context": { "mergeBase": "<MERGE_BASE>", "head": "<HEAD>", "changedFiles": ["<FILE_SUBSET>"] },
+  "runTmp": "<RUN_TMP>",
+  "outPath": "<RUN_TMP>/findings-lens-<entry-index>-<extension-name>.json"
+}
+```
+
+`<entry-index>` is the entry's 0-based position in `$LENSES_JSON`, and it is what makes the path
+unique. The lens id is deliberately **not** in the filename. It could not carry uniqueness anyway:
+`validateConfig` requires only a non-empty string `id`, and `matchLenses` emits one entry per
+registry row without deduping, so a repo whose `lensMap` carries two rows with the same `id`
+produces two matched entries that bind the **same** descriptor. Keyed on the extension name alone —
+or on name and id — both dispatches would write one path in parallel, and one worker would overwrite
+the other's envelope or have its findings validated and merged under the wrong row's `skill`. And
+because that same validation accepts _any_ non-empty string, an id is arbitrary repo-supplied text:
+one containing a path separator (`go/v2`) would silently redirect the envelope into a nested
+directory that does not exist, the worker could not write it, validation would report it missing, and
+the bound Tier-1 extension would be skipped for a reason that has nothing to do with the review. The
+index is generated here and is always a bare integer, so it is safe to interpolate as-is. Every
+dispatch in this phase gets its own `outPath`.
+
+Validate each envelope:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role lens --file "$RUN_TMP/findings-lens-<entry-index>-<extension-name>.json"
+```
+
+When validation passes, merge `items[]` into the findings pool with the entry's `skill` as each
+item's `lens` value, and record the tier taken in the ledger. When validation fails, the subagent
+errors, times out, or the file is missing, record `lens <id> extension <name>: skipped (<reason>)`
+in the ledger.
+
+Decide the fall-through **per lens, once every descriptor bound to it has settled** — never per
+descriptor. Discovery permits more than one descriptor to declare the same `lens`, so a
+per-descriptor rule contradicts itself the moment one of a lens's extensions succeeds and another
+fails: the failure would demand Tier 2 while the success suppresses it, and which one wins would
+depend on read order. A lens **falls through to Tier 2, then Tier 3, only when no descriptor bound
+to it ran successfully**. One success suppresses both lower tiers for that lens, and its siblings'
+skips stay in the ledger as the record of what broke. Suppression is keyed on a dispatch
+**succeeding**, never on a descriptor merely being bound: a lens must never end up unreviewed
+because its extension broke, nor be reviewed twice because one of two extensions did.
+
+### Tier 2 — the lens entry's `skill`
+
+When no bound extension ran successfully for a matched entry, dispatch a fresh `general-purpose`
+subagent using the reviewer template below, substituting `<LENS_SKILL>` = the entry's `skill`,
+`<LENS_FALLBACK>` = the entry's `fallbackRubric`, `<FILE_SUBSET>` = the entry's `files`, plus
+`<MERGE_BASE>` and `<RUN_TMP>`.
+
 `<LENS_SKILL>` is a `.boss-skills.json` `lensMap` config value naming a model-invocable global
 skill, never a discovered extension descriptor, so the template below correctly loads it by name
-via the Skill tool. Discovered extensions are loaded from their descriptor's `skillPath` instead
-(see Phase R).
+via the Skill tool. Discovered lens extensions are loaded from their descriptor's `skillPath`
+instead (Tier 1 above).
 
 Use this exact reviewer prompt template (one per matched lens; substitute `<LENS_SKILL>`,
 `<LENS_FALLBACK>`, `<MERGE_BASE>`, `<FILE_SUBSET>`, `<RUN_TMP>`):
@@ -221,6 +352,16 @@ Subagent (general-purpose), AWAITED, read-only:
 `<FILE_SUBSET>` = the matched lens entry's `files` (the changed files that matched that lens's
 glob in the registry).
 
+### Tier 3 — the lens entry's inline `fallbackRubric`
+
+Tier 3 is not a separate dispatch: it is the `<LENS_FALLBACK>` branch inside the template above.
+Every lens carries a **real inline fallback rubric** in its `fallbackRubric` (generalizing the
+pattern that previously only the web lens had). If the named `<LENS_SKILL>` cannot be loaded — a
+vendored skill like `golang-pro`/`tui-design` normally resolves in any checkout, but an
+operator-global skill like `impeccable` may be absent off the author's machine — the reviewer
+falls back to that inline rubric and **still runs**; the specialist pass is never silently
+dropped. Record the tier reached in the ledger, per the tier-recording rule above.
+
 ## Phase R — Review rounds (discovered; 3-tier fallback contract)
 
 Rounds are whole-branch review passes. Resolve them by strict precedence:
@@ -239,8 +380,9 @@ directory), passing both `skillPath` and `dir` in the worker brief, and requirin
 resources to resolve from `dir`. Pass that `SKILL.md` content into the dispatch as the extension's instructions —
 never by its bare descriptor `name` through the Skill tool, which refuses a skill declaring
 `disable-model-invocation: true`.
-Each dispatch is a fresh `general-purpose` subagent, **awaited**, read-only, and receives
-the standard extension invocation envelope:
+Each dispatch is a fresh `general-purpose` subagent, read-only, **awaited** — never
+`run_in_background` — and bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms), with
+expiry routed through the same skip path, and receives the standard extension invocation envelope:
 
 <!-- tier: opus (no override) because a round extension performs strict whole-branch
 maintainability and cross-model second-opinion reasoning over the diff. Not tiered down. -->
@@ -268,8 +410,8 @@ node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role round --file "$
 ```
 
 When validation passes, merge `items[]` into the findings pool and attach the extension's stable
-reviewer id as each item's `lens` value. When validation fails, the subagent errors, or the file is
-missing, record `extension <name>: skipped (<reason>)` in the ledger and continue. An individual skipped round
+reviewer id as each item's `lens` value. When validation fails, the subagent errors, times out, or
+the file is missing, record `extension <name>: skipped (<reason>)` in the ledger and continue. An individual skipped round
 is non-fatal for the run: it affects the confidence rubric and report evidence, not control flow.
 All-skipped is different — it is the one case that DOES change control flow, and Tier 2 then Tier 3
 must run (see below).

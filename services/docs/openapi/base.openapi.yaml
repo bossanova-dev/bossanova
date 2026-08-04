@@ -10,7 +10,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-07-18'
+  version: '2026-08-04'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API
     served by bosso. Callers select a date-based API version with the

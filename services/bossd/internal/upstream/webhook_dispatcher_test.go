@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -63,6 +64,14 @@ type fakeReviewCommentProvider struct {
 	inlineComments []vcs.ReviewComment
 	err            error
 	inlineErr      error
+	// blockingAuthors is the freshness fixture: the logins BlockingThreadAuthors
+	// reports as still owning a blocking thread on the PR.
+	blockingAuthors map[string]bool
+	// blockingErr makes the freshness query unverifiable.
+	blockingErr error
+	// blockingCalls counts BlockingThreadAuthors invocations, so the promotion
+	// short-circuit is provable rather than merely commented (BOS-669).
+	blockingCalls int
 }
 
 func (f *fakeReviewCommentProvider) GetReviewComments(_ context.Context, repoOriginURL string, prNumber int) ([]vcs.ReviewComment, error) {
@@ -73,6 +82,35 @@ func (f *fakeReviewCommentProvider) GetReviewComments(_ context.Context, repoOri
 func (f *fakeReviewCommentProvider) GetReviewInlineComments(_ context.Context, repoOriginURL string, prNumber int, reviewID int64) ([]vcs.ReviewComment, error) {
 	f.inlineCalls = append(f.inlineCalls, reviewCommentCall{repoOriginURL: repoOriginURL, prNumber: prNumber, reviewID: reviewID})
 	return f.inlineComments, f.inlineErr
+}
+
+func (f *fakeReviewCommentProvider) BlockingThreadAuthors(_ context.Context, _ string, _ int, botUsers map[string]bool) (map[string]bool, error) {
+	f.blockingCalls++
+	if f.blockingErr != nil {
+		return nil, f.blockingErr
+	}
+	blocking := make(map[string]bool)
+	for login := range botUsers {
+		if f.blockingAuthors[login] {
+			blocking[login] = true
+		}
+	}
+	return blocking, nil
+}
+
+// commentsOnlyReviewProvider implements ReviewCommentProvider and
+// ReviewInlineCommentProvider but NOT ReviewThreadFreshnessProvider, so the
+// realtime path cannot establish freshness at all.
+type commentsOnlyReviewProvider struct {
+	inlineComments []vcs.ReviewComment
+}
+
+func (f *commentsOnlyReviewProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+
+func (f *commentsOnlyReviewProvider) GetReviewInlineComments(_ context.Context, _ string, _ int, _ int64) ([]vcs.ReviewComment, error) {
+	return f.inlineComments, nil
 }
 
 func TestWebhookDispatcherRoutesPRPullRequestEvent(t *testing.T) {
@@ -346,8 +384,10 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewPromotesFromFetchedComments(t
 			Body:   "handle the nil case",
 			State:  vcs.ReviewStateChangesRequested,
 		}},
+		blockingAuthors: map[string]bool{"chatgpt-codex-connector[bot]": true},
 	}
-	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
 		EventType:     "pull_request_review",
@@ -361,6 +401,9 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewPromotesFromFetchedComments(t
 	if len(reviews.inlineCalls) != 1 {
 		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
 	}
+	if reviews.blockingCalls != 1 {
+		t.Fatalf("BlockingThreadAuthors call count = %d, want 1 for a promote candidate", reviews.blockingCalls)
+	}
 	if len(emitter.calls) != 1 {
 		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
 	}
@@ -373,6 +416,281 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewPromotesFromFetchedComments(t
 	}
 	if len(review.Comments) != 1 || review.Comments[0].State != vcs.ReviewStateChangesRequested {
 		t.Fatalf("review comments = %+v, want fetched changes-requested comment", review.Comments)
+	}
+	if !strings.Contains(logs.String(), "realtime review promoted to changes-requested") {
+		t.Fatalf("expected the promotion log line, got: %s", logs.String())
+	}
+}
+
+// TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenAuthorHasNoBlockingThread
+// is BOS-669's named scenario: a delayed or redelivered bot COMMENTED review
+// whose anchored hunk was rewritten in the interim. Its author owns no blocking
+// thread any more, so promoting it would restart a fix loop over feedback that
+// is already moot. The review must stay COMMENTED — and the event must still be
+// emitted, comments intact, because suppression is not a drop.
+func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenAuthorHasNoBlockingThread(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "handle the nil case",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+		// The author owns no blocking thread: every thread it raised is now
+		// resolved or outdated.
+		blockingAuthors: map[string]bool{},
+	}
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if reviews.blockingCalls != 1 {
+		t.Fatalf("BlockingThreadAuthors call count = %d, want 1", reviews.blockingCalls)
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1: a suppressed promotion must not drop the event", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented (stale feedback must not promote)", review.State)
+	}
+	if len(review.Comments) != 1 || review.Comments[0].Body != "handle the nil case" {
+		t.Fatalf("review comments = %+v, want the fetched comments retained", review.Comments)
+	}
+	if !strings.Contains(logs.String(), "realtime review promotion suppressed: author has no blocking review thread") {
+		t.Fatalf("expected the freshness-suppression log line, got: %s", logs.String())
+	}
+}
+
+// TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenThreadsUnverifiable
+// pins BOS-669 Q1: an unverifiable freshness query suppresses the promotion
+// rather than guessing. The batch is NOT dropped — the existing error branch
+// discards every event in the batch, which would take a genuine native
+// CHANGES_REQUESTED review down with it.
+func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWhenThreadsUnverifiable(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "handle the nil case",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+		blockingErr: fmt.Errorf("%w: GraphQL thread query failed", vcs.ErrReviewThreadsUnverified),
+	}
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1: an unverifiable query must not drop the batch", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented (unverifiable freshness must not promote)", review.State)
+	}
+	if !strings.Contains(logs.String(), "realtime review promotion suppressed: review-thread freshness unverifiable") {
+		t.Fatalf("expected the unverifiable-suppression log line, got: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), `"level":"warn"`) {
+		t.Fatalf("expected WARN level for an unverifiable freshness query, got: %s", logs.String())
+	}
+}
+
+// TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWithoutFreshnessCapability
+// covers a provider that implements review-comment fetching but not
+// ReviewThreadFreshnessProvider: freshness cannot be established, so the
+// promotion is suppressed — no panic, no dropped event.
+func TestDispatch_ReviewSubmittedCommentedBotReviewNotPromotedWithoutFreshnessCapability(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &commentsOnlyReviewProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "handle the nil case",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+	}
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.New(&logs))
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented (no freshness capability must not promote)", review.State)
+	}
+	if !strings.Contains(logs.String(), "realtime review promotion suppressed: no review-thread freshness capability") {
+		t.Fatalf("expected the absent-capability log line, got: %s", logs.String())
+	}
+}
+
+// TestDispatch_ReviewSubmittedNativeChangesRequestedSkipsFreshnessQuery pins
+// that freshness gates the PROMOTION, never a native state. A review GitHub
+// itself reports as changes_requested is emitted unchanged and costs no thread
+// query — mirroring the poller side (8700e8b6b).
+func TestDispatch_ReviewSubmittedNativeChangesRequestedSkipsFreshnessQuery(t *testing.T) {
+	payload := loadFixture(t, "pull_request_review_changes_requested.json")
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
+		// Deliberately empty: were the gate to run, it would suppress — and a
+		// native CHANGES_REQUESTED must never be suppressible.
+		blockingAuthors: map[string]bool{},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if reviews.blockingCalls != 0 {
+		t.Fatalf("BlockingThreadAuthors call count = %d, want 0 for a native changes-requested review", reviews.blockingCalls)
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateChangesRequested {
+		t.Fatalf("ReviewSubmitted.State = %v, want ChangesRequested unchanged", review.State)
+	}
+}
+
+// TestDispatch_ReviewSubmittedNonCandidateReviewsSkipFreshnessQuery is the
+// ACK-latency mitigation, pinned rather than merely commented: the extra GitHub
+// round-trip must be short-circuited away for any review that could not be
+// promoted anyway.
+func TestDispatch_ReviewSubmittedNonCandidateReviewsSkipFreshnessQuery(t *testing.T) {
+	tests := []struct {
+		name           string
+		author         string
+		inlineComments []vcs.ReviewComment
+	}{
+		{
+			name:   "bot commented review with no actionable inline comments",
+			author: "chatgpt-codex-connector[bot]",
+			inlineComments: []vcs.ReviewComment{{
+				Author: "chatgpt-codex-connector[bot]",
+				Body:   "nice work",
+				State:  vcs.ReviewStateCommented,
+			}},
+		},
+		{
+			name:   "human commented review with inline feedback",
+			author: "human-reviewer",
+			inlineComments: []vcs.ReviewComment{{
+				Author: "human-reviewer",
+				Body:   "non-blocking question",
+				State:  vcs.ReviewStateChangesRequested,
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+				review := body["review"].(map[string]any)
+				review["state"] = "commented"
+				review["body"] = ""
+				user := review["user"].(map[string]any)
+				user["login"] = tc.author
+			})
+
+			refresher := &fakePRRefresher{}
+			emitter := &fakeEmitter{}
+			reviews := &fakeReviewCommentProvider{
+				inlineComments:  tc.inlineComments,
+				blockingAuthors: map[string]bool{tc.author: true},
+			}
+			dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+			err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+				EventType:     "pull_request_review",
+				RepoOriginUrl: "https://github.com/recurser/bossanova",
+				PullRequest:   345,
+				Payload:       payload,
+			})
+			if err != nil {
+				t.Fatalf("Dispatch returned error: %v", err)
+			}
+			if reviews.blockingCalls != 0 {
+				t.Fatalf("BlockingThreadAuthors call count = %d, want 0 for a non-candidate review", reviews.blockingCalls)
+			}
+			review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+			if !ok {
+				t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+			}
+			if review.State != vcs.ReviewStateCommented {
+				t.Fatalf("ReviewSubmitted.State = %v, want Commented", review.State)
+			}
+		})
 	}
 }
 
@@ -511,8 +829,11 @@ func TestDispatch_ReviewSubmittedCommentedBotReviewStaysCommentedWhenNoActionabl
 // TestDispatch_ReviewSubmittedCommentedBotReviewWithBenignBodyStaysCommented
 // pins the realtime-path half of BOS-254: a bot COMMENTED review whose summary
 // body is benign prose ("LGTM") with no changes-requested inline comments is
-// NOT promoted — the realtime path has no review-thread context, so it must not
-// promote on a substantive body alone.
+// NOT promoted. The body is never consulted: benign prose cannot be told apart
+// from a change request, so promoting on a substantive body alone would
+// false-block. Note this holds independently of review-thread freshness — the
+// review-scoped inline-comment term fails first, so the freshness query is not
+// even reached.
 func TestDispatch_ReviewSubmittedCommentedBotReviewWithBenignBodyStaysCommented(t *testing.T) {
 	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
 		review := body["review"].(map[string]any)

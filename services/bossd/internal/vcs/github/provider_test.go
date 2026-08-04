@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/upstream"
 )
 
 func TestParsePRNumberFromURL(t *testing.T) {
@@ -1618,6 +1619,70 @@ func TestGetReviewComments_GraphQLMissingEndCursor(t *testing.T) {
 	}
 }
 
+// TestBlockingThreadAuthors_DelegatesToUnexportedForm pins that the exported
+// wrapper the realtime webhook path consumes
+// (upstream.ReviewThreadFreshnessProvider) is the *same* predicate the poller
+// path uses, not a second implementation that can drift: it must return exactly
+// what blockingThreadAuthors returns for the same fixture, including the
+// BOS-665 outdated skip (BOS-669).
+func TestBlockingThreadAuthors_DelegatesToUnexportedForm(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				fakeThread{resolved: false, outdated: false, author: "cursor[bot]"},
+				fakeThread{resolved: false, outdated: true, author: "chatgpt-codex-connector[bot]"},
+			), nil
+		}
+		return "", fmt.Errorf("unexpected gh call: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	bots := map[string]bool{"cursor[bot]": true, "chatgpt-codex-connector[bot]": true}
+
+	exported, err := p.BlockingThreadAuthors(context.Background(), "owner/repo", 1, bots)
+	if err != nil {
+		t.Fatalf("BlockingThreadAuthors returned error: %v", err)
+	}
+	if len(exported) != 1 || !exported["cursor[bot]"] {
+		t.Fatalf("BlockingThreadAuthors = %v, want only cursor[bot] (the outdated thread must not block)", exported)
+	}
+
+	unexported, err := p.blockingThreadAuthors(context.Background(), "owner/repo", 1, bots)
+	if err != nil {
+		t.Fatalf("blockingThreadAuthors returned error: %v", err)
+	}
+	if len(exported) != len(unexported) {
+		t.Fatalf("exported = %v, unexported = %v: the wrapper must not diverge", exported, unexported)
+	}
+	for login, blocking := range unexported {
+		if exported[login] != blocking {
+			t.Fatalf("exported[%q] = %t, unexported[%q] = %t: the wrapper must not diverge", login, exported[login], login, blocking)
+		}
+	}
+}
+
+// TestBlockingThreadAuthors_FailsClosedOnGHFailure pins that the exported
+// wrapper inherits the fail-closed posture verbatim: an unreadable thread state
+// must surface as vcs.ErrReviewThreadsUnverified so the realtime path can
+// suppress the promotion rather than guess (BOS-669 Q1).
+func TestBlockingThreadAuthors_FailsClosedOnGHFailure(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return "", fmt.Errorf("gh api graphql: exit status 1: network error")
+		}
+		return "", fmt.Errorf("unexpected gh call: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	blocking, err := p.BlockingThreadAuthors(context.Background(), "owner/repo", 1, map[string]bool{"cursor[bot]": true})
+	if !errors.Is(err, vcs.ErrReviewThreadsUnverified) {
+		t.Fatalf("err = %v, want it to wrap vcs.ErrReviewThreadsUnverified", err)
+	}
+	if blocking != nil {
+		t.Errorf("blocking = %v, want nil alongside an unverified thread state", blocking)
+	}
+}
+
 func TestGetReviewComments_NoBotReviews(t *testing.T) {
 	var graphQLCalled bool
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
@@ -1936,6 +2001,16 @@ func TestGetReviewObservation_ReadFailurePropagates(t *testing.T) {
 // Compile-time check that the GitHub provider supplies the optional raw-review
 // observation the merge gate type-asserts for.
 var _ vcs.ReviewObserver = (*Provider)(nil)
+
+// Compile-time check that the GitHub provider supplies the optional
+// review-thread freshness signal the realtime webhook path type-asserts for
+// (BOS-669). Asserted here, in the provider's own test binary, rather than in
+// production code: upstream declares the interface and must not gain a
+// dependency on this package, and this package must not gain one on upstream.
+// If the method set ever drifts, main.go's existing ghProvider wiring would
+// silently stop satisfying it and every promotion would be suppressed — this
+// turns that into a build failure.
+var _ upstream.ReviewThreadFreshnessProvider = (*Provider)(nil)
 
 // TestGetReviewComments_SupersededBotReviewSkipsThreadQuery pins that a bot
 // whose COMMENTED review has been superseded by a newer APPROVED one is not

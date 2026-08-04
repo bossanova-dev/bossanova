@@ -184,11 +184,21 @@ test('a missing/stale sentinel routes to the safe branch: no Linear write, non-z
   assert.ok(SKILL.includes('exit 1'), 'the dispatch-failure branch must exit non-zero')
 })
 
-test('an ok sentinel is re-verified against a present, non-empty plan file before upload', () => {
+test('an ok sentinel accepts only a path that resolves to the expected non-empty plan file before upload', () => {
   assert.match(
     HEADLESS_SECTION,
-    /PLAN_FILE"\s+!=\s+"\$PLAN_PATH"/,
-    'an ok sentinel must be rejected unless payload.planPath equals PLAN_PATH',
+    /PLAN_FILE_RAW="\$\(printf '%s' "\$READ" \| jq -r '\.payload\.planPath \/\/ empty'\)"/,
+    'the raw sentinel path must be retained for path-equivalence validation',
+  )
+  assert.match(
+    HEADLESS_SECTION,
+    /resolve\(reportedPath\)!==resolve\(expectedPath\)/,
+    'an ok sentinel path must resolve to exactly the expected plan path',
+  )
+  assert.match(
+    HEADLESS_SECTION,
+    /process\.stdout\.write\(expectedPath\)/,
+    'a validated equivalent path must normalize to the canonical relative PLAN_PATH',
   )
   assert.match(
     HEADLESS_SECTION,
@@ -197,8 +207,8 @@ test('an ok sentinel is re-verified against a present, non-empty plan file befor
   )
   assert.match(
     HEADLESS_SECTION,
-    /metadata `planPath` must also equal `PLAN_PATH`/,
-    'the returned metadata planPath must match the validated sentinel path',
+    /metadata `planPath`\s+resolves to `PLAN_PATH`/,
+    'the returned metadata planPath must resolve to the validated sentinel path',
   )
   assert.match(
     PHASE_4_SECTION,
@@ -307,6 +317,185 @@ test('the interactive draft step resolves through discovery and the Fallback con
     `${SKILL}\n${INTERACTIVE}\n${BRIEF}`,
     /Invoke `(?:plan-eng-review|superpowers:writing-plans)`/g,
     'boss-plan core and references must not directly invoke plan-eng-review or superpowers:writing-plans',
+  )
+})
+
+test('BOS-693: one draft-success predicate governs skip recording and tier fall-through', () => {
+  // The pre-693 Phase 4 used two different, undefined criteria for the same decision: Tier 1 fell
+  // through only when "every discovered extension failed to load or returned no valid envelope",
+  // while Tiers 2/3 entered when "no extension ran successfully". An extension that loaded, returned
+  // a valid envelope, and then never wrote the plan satisfies the second and not the first — so the
+  // drafting layer could be silently dropped with no plan on disk and no skip recorded.
+  assert.match(
+    INTERACTIVE,
+    /draft success predicate/i,
+    'interactive-mode.md must name one draft success predicate for the Tier-1 gate',
+  )
+  // (a) valid result AND (b) the requested non-empty plan actually produced at `planPath`.
+  assert.match(
+    INTERACTIVE,
+    /valid[\s\S]{0,160}\bAND\b[\s\S]{0,200}non-empty[\s\S]{0,80}`planPath`/,
+    'the draft success predicate must require BOTH a valid result and a non-empty plan at `planPath`',
+  )
+  assert.match(
+    INTERACTIVE,
+    /valid envelope\s+that wrote no plan/i,
+    'interactive-mode.md must state that a valid envelope without the plan is not a success',
+  )
+  // Every failed dispatch is recorded as it is classified — a succeeding sibling does not excuse
+  // omitting its failed peers from the ledger.
+  assert.match(
+    INTERACTIVE,
+    /extension <name>: skipped \(<reason>\)/,
+    'interactive-mode.md must keep the standard skip-ledger entry',
+  )
+  assert.match(
+    INTERACTIVE,
+    /including when a sibling succeeded/i,
+    'a failed draft dispatch must still be recorded when a sibling extension succeeds',
+  )
+  // The SAME predicate gates both "suppress tiers 2/3" and "enter Tier 2/Tier 3", so the two can
+  // never drift apart again.
+  assert.ok(
+    count(INTERACTIVE, 'succeeded under the draft success predicate') >= 3,
+    'the Tier-1 suppression gate and both Tier-2/Tier-3 entry gates must cite the same draft success predicate',
+  )
+  assert.match(
+    INTERACTIVE,
+    /fall through to Tier 2, then\s+Tier 3/,
+    'interactive-mode.md must keep the Tier-2/Tier-3 fall-through',
+  )
+  assert.doesNotMatch(
+    INTERACTIVE,
+    /If at least one extension ran successfully/i,
+    'the suppression gate must not use the undefined "ran successfully" criterion',
+  )
+  assert.doesNotMatch(
+    INTERACTIVE,
+    /if no extension ran successfully/i,
+    'the Tier-2/Tier-3 entry gates must not use the undefined "ran successfully" criterion',
+  )
+
+  // The headless brief's Step 5 is the *shared* drafting spec that interactive-mode.md points at
+  // for Tier 3, and it is the whole draft resolution on the headless path. It carried both defects
+  // verbatim, so fixing only interactive-mode.md would leave the shared spec contradicting it.
+  assert.match(
+    BRIEF,
+    /draft success predicate/i,
+    'headless-drafting-brief.md Step 5 must carry the same draft success predicate',
+  )
+  assert.match(
+    BRIEF,
+    /valid[\s\S]{0,160}\bAND\b[\s\S]{0,200}non-empty[\s\S]{0,80}`PLAN_PATH`/,
+    'the shared drafting spec must require BOTH a valid result and a non-empty plan at `PLAN_PATH`',
+  )
+  assert.match(
+    BRIEF,
+    /including when a sibling succeeded/i,
+    'the shared drafting spec must record a failed dispatch even when a sibling succeeds',
+  )
+  assert.ok(
+    count(BRIEF, 'succeeded under the draft success predicate') >= 3,
+    'the shared drafting spec must gate Tier-1 suppression and both Tier-2/Tier-3 entries on the same predicate',
+  )
+  assert.doesNotMatch(
+    `${BRIEF}\n${SKILL}`,
+    /(?:If at least one|if no) extension ran successfully/i,
+    'no boss-plan draft site may keep the undefined "ran successfully" criterion',
+  )
+
+  // The always-resident Fallback contract is in context before any reference is loaded, so it must
+  // not state a looser definition of "succeeded" than the references do.
+  assert.match(
+    SKILL,
+    /succeeded\*\* only when its\s+result is valid \*\*AND\*\* the requested non-empty plan exists/i,
+    'SKILL.md must define a Tier-1 draft success as a valid result AND the produced plan',
+  )
+  assert.match(
+    SKILL,
+    /for every failed dispatch, including when a sibling\s+succeeded/i,
+    'SKILL.md must record every failed draft dispatch, not only the all-failed case',
+  )
+  assert.doesNotMatch(
+    SKILL,
+    /If every discovered extension failed,\s+record/i,
+    'SKILL.md must not scope draft skip recording to the all-extensions-failed branch',
+  )
+
+  // The predicate's second conjunct is a test of SHARED state: every sibling is dispatched with the
+  // same plan path. "A plan is there now" therefore says nothing about the extension being
+  // classified — once one sibling writes the plan, every later sibling that returns a valid
+  // envelope and writes nothing reads as a success, keeps its skip out of the ledger, and holds
+  // tiers 2/3 suppressed. That is the same false-success class the predicate exists to close, one
+  // level down, so each site must attribute the output to the dispatch it is classifying.
+  for (const [name, text] of [
+    ['interactive-mode.md', INTERACTIVE],
+    ['headless-drafting-brief.md', BRIEF],
+    ['SKILL.md', SKILL],
+  ]) {
+    assert.match(
+      text.replace(/\s+/g, ' '),
+      /written by (\*\*)?th(is|at)(\*\*)? dispatch/i,
+      `${name} must attribute the produced plan to the dispatch being classified, not merely to the shared plan path`,
+    )
+  }
+  for (const [name, text] of [
+    ['interactive-mode.md', INTERACTIVE],
+    ['headless-drafting-brief.md', BRIEF],
+  ]) {
+    const flat = text.replace(/\s+/g, ' ')
+    assert.match(
+      flat,
+      /is a test of shared state, not of this extension/i,
+      `${name} must say why the bare existence check is insufficient`,
+    )
+    // …and the remedy has to be the dispatch TARGET, not a before/after comparison of one shared
+    // path. Both halves of that comparison fail on some host these published skills legitimately
+    // run on: identical bytes are the ordinary output of a deterministic redraft (a retry after a
+    // failed upload), which a byte check records as a skip and drops to a lower tier that overwrites
+    // a valid plan; and on a filesystem whose timestamp resolution is coarser than the rewrite, the
+    // mtime does not advance either, so the same valid dispatch reads as skipped. Give each dispatch
+    // its own path and the existence check attributes by construction, whatever the bytes say.
+    assert.match(
+      flat,
+      /Per-dispatch plan target/i,
+      `${name} must hand each draft dispatch its own plan target`,
+    )
+    assert.match(
+      flat,
+      /unique to the dispatch you are about to classify/i,
+      `${name} must state that the per-dispatch target is unique to the dispatch being classified`,
+    )
+    assert.match(
+      flat,
+      /copy the file produced by the \*\*first\*\* dispatch that succeeded under the predicate below/i,
+      `${name} must promote the winning per-dispatch plan onto the real plan target`,
+    )
+    assert.doesNotMatch(
+      flat,
+      /modification time to have moved/i,
+      `${name} must not use timestamp inequality as proof that this dispatch wrote the plan`,
+    )
+    assert.match(
+      flat,
+      /modification time need not advance/i,
+      `${name} must say why an mtime comparison cannot carry the attribution`,
+    )
+    assert.match(
+      flat,
+      /timestamp\s*resolution is coarser than the rewrite/i,
+      `${name} must name the coarse-timestamp filesystem that defeats an mtime comparison`,
+    )
+    assert.match(
+      flat,
+      /Identical bytes are the ordinary output of a deterministic redraft/i,
+      `${name} must say why a byte comparison cannot carry the attribution either`,
+    )
+  }
+  assert.match(
+    SKILL.replace(/\s+/g, ' '),
+    /per-dispatch plan path that dispatch alone was given[\s\S]{0,120}never at a path a peer could have written/i,
+    'the always-resident Fallback contract must not state a looser attribution rule than the references',
   )
 })
 

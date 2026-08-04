@@ -24,6 +24,7 @@ go_test(
     embed = [":github"],
     deps = [
         "//lib/bossalib/vcs",
+        "//services/bossd/internal/upstream",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

@@ -224,6 +224,67 @@ test('the PR sentinels and sticky markers stay byte-identical', () => {
   assert.ok(SKILL.includes('<!-- bs-sweep-security:state -->'), 'state sticky marker documented')
 })
 
+test('untagged commits after the injector take the BLOCKED branch (both mirrors)', () => {
+  // The `|| echo "note: …(continuing)"` on the add-pr-numbers.sh call absorbs benign setup
+  // failures, so on its own it would also swallow a real "commits left untagged" failure.
+  // The post-condition guard below it is what makes the sweep stop. It MUST be an
+  // `if … then … fi` (a trailing `&& { …; }` compound returns non-zero and aborts the block
+  // under `set -e`) and MUST use `grep -qv`, which succeeds when ANY line lacks the tag.
+  for (const [label, skill] of [
+    ['source', SKILL],
+    ['codex mirror', CODEX],
+  ]) {
+    const commitsLine =
+      'COMMITS="$(git log "origin/$BASE_BRANCH".."refs/heads/$SESSION_BRANCH" --oneline)"'
+    const untaggedLine = String.raw`UNTAGGED="$(printf '%s' "$COMMITS" | grep -v "\[#$PR_NUMBER\]" || true)"`
+    // Against the BRANCH REF, not HEAD — HEAD is detached mid-rebase, so a HEAD-scoped
+    // range would be empty on a stranded rebase and the guard would pass on nothing.
+    assert.ok(
+      skill.includes(commitsLine) && skill.includes(untaggedLine),
+      `${label} must fail closed when the branch range is unreadable`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /git log "origin\/\$BASE_BRANCH"\.\.HEAD --oneline \| grep -qv/,
+      `${label} must not scan HEAD, which is detached during a stranded rebase`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /if git log "origin\/\$BASE_BRANCH"\.\."refs\/heads\/\$SESSION_BRANCH" --oneline \| grep -qv/,
+      `${label} must not hide git log failures inside an if-condition pipeline`,
+    )
+    assert.match(
+      skill,
+      /if \[ -n "\$UNTAGGED" \]; then[\s\S]{0,80}?BLOCKED: commits remain untagged[\s\S]{0,60}?teardown[\s\S]{0,40}?exit 1/,
+      `${label} must take the BLOCKED teardown branch when commits remain untagged`,
+    )
+    // The injector rewrites history, so the guard only proves a LOCAL property unless the
+    // branch is re-pushed. Without this the PR still carries the untagged commits.
+    assert.match(
+      skill,
+      /BLOCKED: commits remain untagged[\s\S]{0,400}?git push --force-with-lease origin "\$SESSION_BRANCH"[\s\S]{0,40}?BLOCKED: failed to push the tagged/,
+      `${label} must force-push the rewritten branch after the untagged guard passes`,
+    )
+    assert.match(
+      skill,
+      /git push --force-with-lease origin "\$SESSION_BRANCH"[\s\S]{0,800}?CURRENT_SHA="\$\(git rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"/,
+      `${label} must persist the tagged branch SHA after the history-rewriting push`,
+    )
+    assert.match(
+      skill,
+      /CURRENT_SHA="\$\(git rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"[\s\S]{0,160}?DECISION="\$\(node "\$GATE" decide-action "\$STATE_FILE" "\$CURRENT_SHA" 3\)"[\s\S]{0,160}?PRIOR_ATTEMPTS="\$\(printf '%s' "\$DECISION" \| jq -r '\.priorAttempts'\)"/,
+      `${label} must reset the retry decision from the tagged branch SHA`,
+    )
+    // …and must BLOCK if that push fails. A softened `|| true` would restore the exact bug
+    // the guard exists to prevent: a local verdict of "all tagged" over an untagged remote.
+    assert.doesNotMatch(
+      skill,
+      /git push --force-with-lease origin "\$SESSION_BRANCH"\s*\|\|\s*true/,
+      `${label} must not soften the force-push failure to a no-op`,
+    )
+  }
+})
+
 test('the 3-attempt poison-pill budget is preserved', () => {
   assert.match(SKILL, /\b3\b.{0,40}no-progress|3 no-progress|at most \*\*3\*\*/i)
 })

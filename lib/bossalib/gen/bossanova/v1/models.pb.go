@@ -890,6 +890,10 @@ const (
 	// Agent emitted a login-required signal ("Not logged in" / "Please run
 	// /login"); driver should trigger login-rotation recovery.
 	AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED AttentionReason = 5
+	// Chat reports CHAT_STATUS_WORKING but the agent has made no semantic
+	// progress (no new transcript record) for longer than its phase's threshold —
+	// a silently-dead turn behind a still-animating spinner.
+	AttentionReason_ATTENTION_REASON_AGENT_STALLED AttentionReason = 6
 )
 
 // Enum value maps for AttentionReason.
@@ -901,6 +905,7 @@ var (
 		3: "ATTENTION_REASON_REVIEW_REQUESTED",
 		4: "ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE",
 		5: "ATTENTION_REASON_AGENT_AUTH_FAILED",
+		6: "ATTENTION_REASON_AGENT_STALLED",
 	}
 	AttentionReason_value = map[string]int32{
 		"ATTENTION_REASON_UNSPECIFIED":                 0,
@@ -909,6 +914,7 @@ var (
 		"ATTENTION_REASON_REVIEW_REQUESTED":            3,
 		"ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE": 4,
 		"ATTENTION_REASON_AGENT_AUTH_FAILED":           5,
+		"ATTENTION_REASON_AGENT_STALLED":               6,
 	}
 )
 
@@ -1150,6 +1156,10 @@ const (
 	ChatStatus_CHAT_STATUS_STOPPED     ChatStatus = 3
 	ChatStatus_CHAT_STATUS_QUESTION    ChatStatus = 4
 	ChatStatus_CHAT_STATUS_LIMITED     ChatStatus = 5
+	// The chat is blocked on an external event — a registered GitHub callback,
+	// a background poll tick — rather than computing. Distinct from WORKING so an
+	// operator can tell "blocked on CI for 82 minutes" apart from "hung".
+	ChatStatus_CHAT_STATUS_WAITING ChatStatus = 6
 )
 
 // Enum value maps for ChatStatus.
@@ -1161,6 +1171,7 @@ var (
 		3: "CHAT_STATUS_STOPPED",
 		4: "CHAT_STATUS_QUESTION",
 		5: "CHAT_STATUS_LIMITED",
+		6: "CHAT_STATUS_WAITING",
 	}
 	ChatStatus_value = map[string]int32{
 		"CHAT_STATUS_UNSPECIFIED": 0,
@@ -1169,6 +1180,7 @@ var (
 		"CHAT_STATUS_STOPPED":     3,
 		"CHAT_STATUS_QUESTION":    4,
 		"CHAT_STATUS_LIMITED":     5,
+		"CHAT_STATUS_WAITING":     6,
 	}
 )
 
@@ -5113,14 +5125,15 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x16DISPLAY_INTENT_WARNING\x10\x02\x12\x19\n" +
 	"\x15DISPLAY_INTENT_DANGER\x10\x03\x12\x18\n" +
 	"\x14DISPLAY_INTENT_MUTED\x10\x04\x12\x17\n" +
-	"\x13DISPLAY_INTENT_INFO\x10\x05*\x8a\x02\n" +
+	"\x13DISPLAY_INTENT_INFO\x10\x05*\xae\x02\n" +
 	"\x0fAttentionReason\x12 \n" +
 	"\x1cATTENTION_REASON_UNSPECIFIED\x10\x00\x12)\n" +
 	"%ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS\x10\x01\x12)\n" +
 	"%ATTENTION_REASON_AWAITING_HUMAN_INPUT\x10\x02\x12%\n" +
 	"!ATTENTION_REASON_REVIEW_REQUESTED\x10\x03\x120\n" +
 	",ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE\x10\x04\x12&\n" +
-	"\"ATTENTION_REASON_AGENT_AUTH_FAILED\x10\x05*\xdf\x02\n" +
+	"\"ATTENTION_REASON_AGENT_AUTH_FAILED\x10\x05\x12\"\n" +
+	"\x1eATTENTION_REASON_AGENT_STALLED\x10\x06*\xdf\x02\n" +
 	"\rDisplayStatus\x12\x1e\n" +
 	"\x1aDISPLAY_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13DISPLAY_STATUS_IDLE\x10\x01\x12\x1b\n" +
@@ -5150,7 +5163,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15WORKFLOW_STEP_HANDOFF\x10\x03\x12\x18\n" +
 	"\x14WORKFLOW_STEP_RESUME\x10\x04\x12\x18\n" +
 	"\x14WORKFLOW_STEP_VERIFY\x10\x05\x12\x16\n" +
-	"\x12WORKFLOW_STEP_LAND\x10\x06*\xa4\x01\n" +
+	"\x12WORKFLOW_STEP_LAND\x10\x06*\xbd\x01\n" +
 	"\n" +
 	"ChatStatus\x12\x1b\n" +
 	"\x17CHAT_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
@@ -5158,7 +5171,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x10CHAT_STATUS_IDLE\x10\x02\x12\x17\n" +
 	"\x13CHAT_STATUS_STOPPED\x10\x03\x12\x18\n" +
 	"\x14CHAT_STATUS_QUESTION\x10\x04\x12\x17\n" +
-	"\x13CHAT_STATUS_LIMITED\x10\x05*\xba\x01\n" +
+	"\x13CHAT_STATUS_LIMITED\x10\x05\x12\x17\n" +
+	"\x13CHAT_STATUS_WAITING\x10\x06*\xba\x01\n" +
 	"\rCronJobStatus\x12\x1f\n" +
 	"\x1bCRON_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14CRON_JOB_STATUS_IDLE\x10\x01\x12\x1b\n" +

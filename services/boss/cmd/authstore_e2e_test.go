@@ -104,3 +104,33 @@ func TestResolveE2ETokenStoreSeedsReloginMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestE2ELogoutErrorFixture(t *testing.T) {
+	for _, value := range []string{"", "0", "false", "off"} {
+		t.Run("falsey "+value, func(t *testing.T) {
+			t.Setenv("BOSS_AUTH_E2E_EMAIL", "proof@example.com")
+			t.Setenv("BOSS_AUTH_E2E_LOGOUT_ERROR", value)
+			store := resolveE2ETokenStore()
+			if err := store.Delete(); err != nil {
+				t.Fatalf("Delete() error = %v, want nil", err)
+			}
+			if _, err := store.Load(); err == nil {
+				t.Fatal("Load after successful Delete = nil error, want no tokens")
+			}
+		})
+	}
+
+	t.Run("enabled preserves seeded credentials", func(t *testing.T) {
+		t.Setenv("BOSS_AUTH_E2E_EMAIL", "proof@example.com")
+		t.Setenv("BOSS_AUTH_E2E_LOGOUT_ERROR", "1")
+		store := resolveE2ETokenStore()
+		err := store.Delete()
+		if err == nil || err.Error() != "e2e memory store: logout failed" {
+			t.Fatalf("Delete() error = %v, want fixed non-secret failure", err)
+		}
+		tokens, loadErr := store.Load()
+		if loadErr != nil || tokens.Email != "proof@example.com" {
+			t.Fatalf("Load after failed Delete = (%+v, %v), want retained seeded identity", tokens, loadErr)
+		}
+	})
+}

@@ -143,6 +143,19 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// waiting-callback: one session parked on an armed GitHub callback next to
+		// one genuinely working session, for the BOS-668 proof scenario. The home
+		// STATUS column must read "waiting" (INFO, no spinner) with the reason
+		// "waiting · awaiting checks_passed_ready on acme/my-app#668" on its own
+		// sub-row, and the chat picker must show the same reason line above a
+		// "waiting" chat row — not the "stopped" badge a missing WAITING case
+		// used to produce. Carries the same cloud-access e2e pin as demo so boss
+		// lands on the home session list.
+		"waiting-callback": {
+			World:      WaitingCallbackWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// errored-status: two errored (orphaned + blocked) sessions whose live
 		// chat is working, for the BOS-430 session-list proof scenario. The home
 		// STATUS column must show the real "working" status recolored red (danger)

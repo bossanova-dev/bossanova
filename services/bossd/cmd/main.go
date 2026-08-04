@@ -3,16 +3,21 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +29,7 @@ import (
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/chatdelivery"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	"github.com/recurser/bossalib/errortrack"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -47,6 +53,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/callback"
+	"github.com/recurser/bossd/internal/chatupload"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -61,6 +68,7 @@ import (
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	"github.com/recurser/bossd/internal/tccprobe"
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
@@ -551,7 +559,12 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	server.HydrateAgentObservability(h.chatStatusTracker, pbSess, chats)
 }
 
-func publishAuthFailedSessionDelta(
+// publishAgentMarkerSessionDelta re-hydrates the session owning agentSessionID
+// and publishes it as a SessionDelta{UPDATED}. It is marker-agnostic — the
+// hydrator re-runs HydrateAgentObservability, which recomputes every agent
+// overlay (auth-failed and, since BOS-667, agent-stalled) from the tracker — so
+// both the auth and stalled change hooks share it.
+func publishAgentMarkerSessionDelta(
 	ctx context.Context,
 	agentSessionID string,
 	hydrator *streamSessionHydrator,
@@ -567,7 +580,7 @@ func publishAuthFailedSessionDelta(
 	}
 	row, err := hydrator.rawSessions.Get(ctx, chat.SessionID)
 	if err != nil {
-		logger.Debug().Err(err).Str("session_id", chat.SessionID).Msg("auth-change: session lookup failed")
+		logger.Debug().Err(err).Str("session_id", chat.SessionID).Msg("agent-marker change: session lookup failed")
 		return
 	}
 	pbSess := server.SessionToProto(row)
@@ -772,10 +785,342 @@ func logRotationLaneAvailability(logger zerolog.Logger, hasSeams, rotationEnable
 		Msg("rotation lane availability (HasLiveRotationSeams)")
 }
 
+func protectedRootsFor(home string, paths []string) []string {
+	roots := []string{
+		filepath.Join(home, "Documents"),
+		filepath.Join(home, "Desktop"),
+		filepath.Join(home, "Downloads"),
+	}
+	var selected []string
+	for _, root := range roots {
+		for _, candidate := range paths {
+			relative, err := filepath.Rel(root, candidate)
+			if err != nil {
+				continue
+			}
+			if relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				selected = append(selected, root)
+				break
+			}
+		}
+	}
+	return selected
+}
+
+const protectedRootResolutionTimeout = 3 * time.Second
+
+var errSymlinkResolutionTimedOut = errors.New("symlink resolution timed out")
+
+type symlinkResolver func(string) (string, error)
+
+// symlinkResolutionWorkerTracker retains resolver lifecycle handles so callers
+// can include workers that outlive the shared resolution deadline in daemon
+// shutdown coordination.
+type symlinkResolutionWorkerTracker func(<-chan struct{})
+
+type symlinkResolutionResult struct {
+	index int
+	path  string
+	err   error
+}
+
+// protectedRootsForResolved keeps lexical matches, then resolves every
+// candidate under one shared deadline. EvalSymlinks can itself wait on a macOS
+// TCC prompt, so at most three goroutines may be left blocked after timeout.
+func protectedRootsForResolved(home string, paths []string, timeout time.Duration, resolve symlinkResolver) ([]string, []tccprobe.Result) {
+	return protectedRootsForResolvedWithTracker(home, paths, timeout, resolve, nil)
+}
+
+func protectedRootsForResolvedWithTracker(home string, paths []string, timeout time.Duration, resolve symlinkResolver, track symlinkResolutionWorkerTracker) ([]string, []tccprobe.Result) {
+	if timeout <= 0 {
+		timeout = protectedRootResolutionTimeout
+	}
+	return protectedRootsForResolvedAtWithTracker(home, paths, timeout, time.Now().Add(timeout), time.Now, resolve, track)
+}
+
+// protectedRootsForResolvedAt makes the deadline boundary testable. A result
+// already buffered when timeout handling starts is retained; every other
+// candidate is reported blocked without launching queued work.
+func protectedRootsForResolvedAt(home string, paths []string, timeout time.Duration, deadline time.Time, now func() time.Time, resolve symlinkResolver) ([]string, []tccprobe.Result) {
+	return protectedRootsForResolvedAtWithTracker(home, paths, timeout, deadline, now, resolve, nil)
+}
+
+func protectedRootsForResolvedAtWithTracker(home string, paths []string, timeout time.Duration, deadline time.Time, now func() time.Time, resolve symlinkResolver, track symlinkResolutionWorkerTracker) ([]string, []tccprobe.Result) {
+	roots := protectedRootsFor(home, paths)
+	workerLimit := min(3, len(paths))
+	if workerLimit == 0 {
+		return roots, nil
+	}
+
+	completed := make(chan symlinkResolutionResult, workerLimit)
+	results := make([]symlinkResolutionResult, len(paths))
+	finished := make([]bool, len(paths))
+
+	next, active := 0, 0
+	start := func(index int) {
+		active++
+		done := safego.Go(zerolog.Nop(), func() {
+			path, err := resolveSymlinkCandidate(paths[index], resolve)
+			completed <- symlinkResolutionResult{index: index, path: path, err: err}
+		})
+		if track != nil {
+			track(done)
+		}
+	}
+	timedOut := false
+	for next < len(paths) && active < workerLimit {
+		if !now().Before(deadline) {
+			timedOut = true
+			break
+		}
+		start(next)
+		next++
+	}
+
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+resolutionLoop:
+	for !timedOut && active > 0 {
+		select {
+		case result := <-completed:
+			active--
+			results[result.index] = result
+			finished[result.index] = true
+			if next >= len(paths) {
+				continue
+			}
+			if !now().Before(deadline) {
+				timedOut = true
+				break resolutionLoop
+			}
+			start(next)
+			next++
+		case <-timer.C:
+			timedOut = true
+			break resolutionLoop
+		}
+	}
+
+	if timedOut {
+		drainCompletedResolutions(completed, results, finished)
+	}
+	roots = mergeResolvedRoots(home, roots, results, finished)
+
+	var diagnostics []tccprobe.Result
+	for index, result := range results {
+		if !finished[index] || result.err == nil {
+			continue
+		}
+		status := tccprobe.StatusError
+		if errors.Is(result.err, fs.ErrPermission) {
+			status = tccprobe.StatusDenied
+		}
+		diagnostics = append(diagnostics, tccprobe.Result{
+			Path:   paths[index],
+			Status: status,
+			Err:    result.err,
+		})
+	}
+	if timedOut {
+		for index, candidate := range paths {
+			if finished[index] {
+				continue
+			}
+			diagnostics = append(diagnostics, tccprobe.Result{
+				Path:   candidate,
+				Status: tccprobe.StatusBlocked,
+				Err:    fmt.Errorf("%w after %s for %s", errSymlinkResolutionTimedOut, timeout, candidate),
+			})
+		}
+	}
+	return roots, diagnostics
+}
+
+// resolveSymlinkCandidate resolves a path that may end in a not-yet-created
+// worktree leaf. EvalSymlinks requires every component to exist, so resolve
+// the longest existing ancestor and retain the unresolved suffix instead.
+func resolveSymlinkCandidate(candidate string, resolve symlinkResolver) (string, error) {
+	resolved, err := resolve(candidate)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return resolved, err
+	}
+
+	ancestor, suffix, err := longestExistingAncestor(candidate)
+	if err != nil {
+		return "", err
+	}
+	resolvedAncestor, err := resolve(ancestor)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{resolvedAncestor}, suffix...)...), nil
+}
+
+func longestExistingAncestor(candidate string) (string, []string, error) {
+	ancestor := filepath.Clean(candidate)
+	var suffix []string
+	for {
+		_, err := os.Lstat(ancestor)
+		if err == nil {
+			return ancestor, suffix, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", nil, err
+		}
+
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", nil, err
+		}
+		suffix = append([]string{filepath.Base(ancestor)}, suffix...)
+		ancestor = parent
+	}
+}
+
+func drainCompletedResolutions(completed <-chan symlinkResolutionResult, results []symlinkResolutionResult, finished []bool) {
+	for {
+		select {
+		case result := <-completed:
+			results[result.index] = result
+			finished[result.index] = true
+		default:
+			return
+		}
+	}
+}
+
+func mergeResolvedRoots(home string, roots []string, results []symlinkResolutionResult, finished []bool) []string {
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		seen[root] = struct{}{}
+	}
+	for index, result := range results {
+		if !finished[index] || result.err != nil {
+			continue
+		}
+		for _, root := range protectedRootsFor(home, []string{result.path}) {
+			if _, exists := seen[root]; exists {
+				continue
+			}
+			seen[root] = struct{}{}
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+type daemonStateWriter func(string, daemonstate.Metadata) error
+
+// persistTCCProbeResults rewrites the daemon identity record with the actual
+// bounded probes performed by bossd. Persistence is observational: a state
+// write failure is logged but never allowed to abort startup.
+func persistTCCProbeResults(
+	logger zerolog.Logger,
+	appDataDir string,
+	metadata daemonstate.Metadata,
+	results []tccprobe.Result,
+	write daemonStateWriter,
+) daemonstate.Metadata {
+	metadata.TCCProbeCompleted = true
+	metadata.TCCProbeResults = make([]daemonstate.TCCProbeResult, 0, len(results))
+	for _, result := range results {
+		persisted := daemonstate.TCCProbeResult{
+			Path:   result.Path,
+			Status: persistedTCCProbeStatus(result.Status),
+		}
+		if result.Err != nil {
+			persisted.Diagnostic = result.Err.Error()
+		}
+		metadata.TCCProbeResults = append(metadata.TCCProbeResults, persisted)
+	}
+	if err := write(appDataDir, metadata); err != nil {
+		logger.Warn().Err(err).Msg("startup diagnostics could not persist protected-folder probe results")
+	}
+	return metadata
+}
+
+func persistedTCCProbeStatus(status tccprobe.Status) daemonstate.TCCProbeStatus {
+	switch status {
+	case tccprobe.StatusOK:
+		return daemonstate.TCCProbeStatusOK
+	case tccprobe.StatusDenied:
+		return daemonstate.TCCProbeStatusDenied
+	case tccprobe.StatusBlocked:
+		return daemonstate.TCCProbeStatusBlocked
+	case tccprobe.StatusAbsent:
+		return daemonstate.TCCProbeStatusAbsent
+	case tccprobe.StatusError:
+		return daemonstate.TCCProbeStatusError
+	default:
+		// Fail closed if the probe package gains a status before persistence is
+		// updated; doctor must not present an unknown observation as healthy.
+		return daemonstate.TCCProbeStatusBlocked
+	}
+}
+
+func stagedBinaryStale(runningPath, stagedPath, sourcePath string) (bool, error) {
+	runningResolved, err := filepath.EvalSymlinks(runningPath)
+	if err != nil {
+		return false, fmt.Errorf("resolve running executable: %w", err)
+	}
+	stagedResolved, err := filepath.EvalSymlinks(stagedPath)
+	if err != nil {
+		if os.IsNotExist(err) && filepath.Clean(runningPath) != filepath.Clean(stagedPath) {
+			return false, nil
+		}
+		return false, fmt.Errorf("resolve staged executable: %w", err)
+	}
+	if runningResolved != stagedResolved {
+		return false, nil
+	}
+
+	sourceResolved, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		return false, fmt.Errorf("resolve source executable: %w", err)
+	}
+	if sourceResolved == runningResolved {
+		return false, nil
+	}
+
+	runningDigest, err := executableDigest(runningResolved)
+	if err != nil {
+		return false, fmt.Errorf("hash running executable: %w", err)
+	}
+	sourceDigest, err := executableDigest(sourceResolved)
+	if err != nil {
+		return false, fmt.Errorf("hash source executable: %w", err)
+	}
+	return runningDigest != sourceDigest, nil
+}
+
+func executableDigest(path string) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	// #nosec G304 -- paths are the running daemon and the bossd executable found on PATH.
+	// owner=@recurser review-by=2027-02-04 issue=BOS-696
+	file, err := os.Open(path)
+	if err != nil {
+		return digest, err
+	}
+	defer func() { _ = file.Close() }()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return digest, err
+	}
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
+}
+
 func run(opts runOpts) error {
 	// Human-friendly console logging plus rotated file at $XDG_STATE_HOME/bossanova/logs/bossd.log.
 	logCloser := bossalog.Setup("bossd")
 	defer func() { _ = logCloser.Close() }()
+	var startupDiagnosticWorkerDone []<-chan struct{}
 
 	settings, err := config.Load()
 	if err != nil {
@@ -810,7 +1155,11 @@ func run(opts runOpts) error {
 		}
 		return fmt.Errorf("acquire singleton lock: %w", err)
 	}
-	defer func() { _ = lockFile.Close() }()
+	var daemonMetadataWritten bool
+	var daemonMetadataDir string
+	defer func() {
+		cleanupDaemonShutdownState(lockFile, daemonMetadataWritten, daemonMetadataDir)
+	}()
 
 	socketPath := opts.socketPath
 	if socketPath == "" {
@@ -830,17 +1179,19 @@ func run(opts runOpts) error {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
 	appDataDir := filepath.Dir(dbPath)
-	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+	daemonMetadata := daemonstate.Metadata{
 		PID:            os.Getpid(),
 		ExecutablePath: executablePath,
 		SettingsPath:   settingsPath,
 		SocketPath:     socketPath,
 		StartedAt:      time.Now().UTC(),
 		FileLimitSoft:  achievedFileLimitSoft,
-	}); err != nil {
+	}
+	if err := daemonstate.Write(appDataDir, daemonMetadata); err != nil {
 		return err
 	}
-	defer func() { _ = daemonstate.Remove(appDataDir) }()
+	daemonMetadataDir = appDataDir
+	daemonMetadataWritten = true
 
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -929,6 +1280,16 @@ func run(opts runOpts) error {
 	displayComputer := status.NewDisplayStatusComputer(
 		rawSessions, displayTracker, chatStatusTracker, agentChats, rawWorkflows, log.Logger,
 	)
+	// Waiting derivation (BOS-668): a chat whose only outstanding work is an
+	// armed GitHub PR callback is parked, not working. The lookup is the ONLY
+	// evidence source — without it the computer leaves every chat working — and
+	// it reads the callback store directly rather than widening the computer's
+	// constructor, so a daemon built without callbacks simply never waits.
+	displayComputer.SetWaitingLookup(status.WaitingLookupFunc(
+		func(ctx context.Context, agentSessionID string) (string, error) {
+			return callback.WaitingReasonForChat(ctx, githubCallbacks, agentSessionID, time.Now())
+		},
+	))
 	// THE single session state-transition seam (BOS-557). Roughly two dozen call
 	// sites write sessions.state, through Update plus the conditional and orphan
 	// methods; all of them hold this decorated store, so attaching the standing-
@@ -1018,12 +1379,19 @@ func run(opts runOpts) error {
 		// fresh status alongside any session-level UPDATED delta the
 		// recompute below emits via displayComputer.SetOnUpdate.
 		if entry := chatStatusTracker.Get(agentSessionID); entry != nil {
+			// The waiting marker (BOS-668) is derived by the recompute BELOW,
+			// so this delta carries the previous pass's marker. That is the
+			// right trade: publishing promptly matters more than a one-tick-old
+			// reason, and SetOnWaitingChange re-publishes the moment the
+			// derivation actually flips the chat.
+			st, reason := status.PromoteWaiting(entry.Status, chatStatusTracker.Waiting(agentSessionID))
 			streamBus.Publish(upstream.StreamEvent{
 				Status: &upstream.StatusEvent{
 					Status: &bossanovav1.ChatStatusDelta{
 						SessionId:      chat.SessionID,
 						AgentSessionId: agentSessionID,
-						Status:         entry.Status,
+						Status:         st,
+						WaitingReason:  reason,
 						LastOutputAt:   timestamppb.New(entry.LastOutputAt),
 					},
 				},
@@ -1040,6 +1408,47 @@ func run(opts runOpts) error {
 				chatRotator.OnChatStatus(agentSessionID, entry.Status, entry.ResetAt)
 			}
 		}
+	})
+
+	// Republish a chat's status when its WAITING derivation flips (BOS-668).
+	// Entering or leaving "parked on an external event" is not a tracker Update
+	// — the heartbeat still says WORKING throughout — so without this hook the
+	// stream would carry the change only on the chat's next unrelated
+	// transition. The tracker fires it exactly on a real reason change, so a PR
+	// that sits armed for an hour produces one event, not one per poll.
+	chatStatusTracker.SetOnWaitingChange(func(agentSessionID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
+		if err != nil || chat == nil {
+			return
+		}
+		entry := chatStatusTracker.Get(agentSessionID)
+		if entry == nil {
+			// The tracker dropped the chat on its way out — Cleanup collecting a
+			// pane that stopped heartbeating past StaleThreshold, or an explicit
+			// Remove — and fired this hook as it cleared the marker. There is no
+			// chat status left to publish a delta for, but the SESSION's persisted
+			// composite may still read "waiting", and nothing else would ever
+			// clear it: sweepWaitingChats iterates tracker entries and this one is
+			// gone, so the next recompute would otherwise wait for an unrelated
+			// session-store write or a daemon restart. Recompute here so a dead
+			// pane stops claiming an external event is still pending.
+			_ = displayComputer.Recompute(ctx, chat.SessionID)
+			return
+		}
+		st, reason := status.PromoteWaiting(entry.Status, chatStatusTracker.Waiting(agentSessionID))
+		streamBus.Publish(upstream.StreamEvent{
+			Status: &upstream.StatusEvent{
+				Status: &bossanovav1.ChatStatusDelta{
+					SessionId:      chat.SessionID,
+					AgentSessionId: agentSessionID,
+					Status:         st,
+					WaitingReason:  reason,
+					LastOutputAt:   timestamppb.New(entry.LastOutputAt),
+				},
+			},
+		})
 	})
 
 	// Emit a structured audit log each time a chat enters or leaves the
@@ -1350,6 +1759,72 @@ func run(opts runOpts) error {
 		verified, rejected := config.VerifyConfiguredPlugins(pluginCfgs)
 		logPluginRejections(rejected)
 		pluginCfgs = verified
+	}
+
+	if runtime.GOOS == "darwin" {
+		workingPaths := []string{settings.WorktreeBaseDir}
+		registeredRepos, err := repos.List(context.Background())
+		if err != nil {
+			log.Warn().Err(err).Msg("startup diagnostics could not list repositories; checking the worktree base only")
+		} else {
+			for _, repo := range registeredRepos {
+				workingPaths = append(workingPaths, repo.LocalPath, repo.WorktreeBaseDir)
+			}
+		}
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Warn().Err(err).Msg("startup diagnostics could not resolve the user home; skipping protected-folder checks")
+		} else {
+			protectedRoots, resolutionDiagnostics := protectedRootsForResolvedWithTracker(home, workingPaths, protectedRootResolutionTimeout, filepath.EvalSymlinks, func(done <-chan struct{}) {
+				startupDiagnosticWorkerDone = append(startupDiagnosticWorkerDone, done)
+			})
+			probeResults := tccprobe.ProbeWithTracker(context.Background(), protectedRoots, tccprobe.DefaultTimeout, func(done <-chan struct{}) {
+				startupDiagnosticWorkerDone = append(startupDiagnosticWorkerDone, done)
+			})
+			persistTCCProbeResults(log.Logger, appDataDir, daemonMetadata, append(probeResults, resolutionDiagnostics...), daemonstate.Write)
+			for _, result := range resolutionDiagnostics {
+				message := "startup protected-folder diagnostic: symlink resolution blocked before probe"
+				switch result.Status {
+				case tccprobe.StatusOK, tccprobe.StatusAbsent:
+					continue
+				case tccprobe.StatusBlocked:
+					// Keep the default blocked-resolution diagnostic.
+				case tccprobe.StatusDenied:
+					message = "startup protected-folder diagnostic: symlink resolution denied before probe"
+				case tccprobe.StatusError:
+					message = "startup protected-folder diagnostic: symlink resolution failed before probe"
+				}
+				log.Error().Err(result.Err).
+					Str("candidate", result.Path).
+					Msg(message)
+			}
+			for _, result := range probeResults {
+				if result.Status != tccprobe.StatusBlocked && result.Status != tccprobe.StatusDenied {
+					continue
+				}
+				log.Error().Err(result.Err).
+					Str("executable", executablePath).
+					Str("root", result.Path).
+					Msgf("bossd cannot read %s: macOS is withholding access for this binary. Answer the pending permission dialog, or grant Files-and-Folders/Full Disk Access to %s, then run 'boss daemon restart'.", result.Path, executablePath)
+			}
+		}
+
+		stagedAppDataDir, err := config.DefaultAppDataDir()
+		if err != nil {
+			log.Warn().Err(err).Msg("startup diagnostics could not resolve the stable bossd staging directory")
+		} else if sourcePath, err := exec.LookPath(daemonbin.BossdName); err == nil {
+			stagedPath := daemonbin.StagedPath(stagedAppDataDir)
+			stale, compareErr := stagedBinaryStale(executablePath, stagedPath, sourcePath)
+			if compareErr != nil {
+				log.Warn().Err(compareErr).Str("staged", stagedPath).Msg("startup diagnostics could not compare the staged bossd with the binary on PATH")
+			} else if stale {
+				log.Warn().
+					Str("running", executablePath).
+					Str("source", sourcePath).
+					Msg("staged bossd is stale; run 'boss daemon restart' to pick up the newer binary on PATH")
+			}
+		}
 	}
 
 	if err := pluginHost.Start(context.Background(), pluginCfgs, settings); err != nil {
@@ -1674,7 +2149,7 @@ func run(opts runOpts) error {
 		// turn (including mid-run pauses awaiting a background subagent), so without
 		// this a paused run would be finalized — opening a junk PR and Blocking a
 		// still-working session. Same criterion the stranded-cron sweep uses.
-		RunIsOver: lifecycle.CronRunIsOver,
+		RunCompletionEvidence: lifecycle.CronRunCompletionEvidence,
 	})
 	lifecycle.SetCronCompletionNotifier(cronGate)
 	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun
@@ -1787,6 +2262,13 @@ func run(opts runOpts) error {
 			defer shutdownWG.Done()
 			<-done
 		}()
+	}
+	// Startup symlink resolution is bounded, but macOS may leave a resolver
+	// blocked on a TCC prompt after its diagnostic deadline. Include every
+	// worker handle in daemon shutdown coordination instead of losing those
+	// lifecycle signals when startup continues.
+	for _, done := range startupDiagnosticWorkerDone {
+		trackDone(done)
 	}
 
 	// Auto-start the repair plugin synchronously. If the plugin is loaded
@@ -1919,6 +2401,14 @@ func run(opts runOpts) error {
 
 	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
 	tmuxStatusPoller.SetQuestionSignals(questionSignals)
+	// BOS-667: per-phase stall thresholds come from settings.json so an operator
+	// with an unusually slow tool step can widen them without a rebuild. Zero /
+	// absent values fall back to the built-in defaults inside SetStallThresholds
+	// rather than firing instantly, so an untouched settings.json is safe.
+	tmuxStatusPoller.SetStallThresholds(
+		settings.StallDetection.AwaitingModelThreshold(),
+		settings.StallDetection.ExecutingToolThreshold(),
+	)
 	lifecycle.SetQuestionSignals(questionSignals)
 
 	// --- Server ---
@@ -1991,7 +2481,7 @@ func run(opts runOpts) error {
 	chatStatusTracker.SetOnAuthChange(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		publishAuthFailedSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
+		publishAgentMarkerSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
 		// BOS-316: on an auth-failed SET transition, dispatch the auto-rotator so a
 		// typed 401 pane rotates to a healthy account with zero LLM turns. This hook
 		// also fires on the CLEAR (recovery) transition, on which there is nothing to
@@ -2004,6 +2494,19 @@ func run(opts runOpts) error {
 		if chatRotator != nil && chatStatusTracker.AuthFailed(agentSessionID) {
 			chatRotator.OnAuthFailed(agentSessionID)
 		}
+	})
+
+	// BOS-667: republish the session on every agent-stalled transition, for the
+	// same reason as the auth hook above — the cloud/web read model is fed solely
+	// by the reverse stream, and a stalled chat's status stays WORKING, so nothing
+	// else would ever emit a delta carrying the AGENT_STALLED attention. The
+	// tracker's SetStalled debounce means only real edges reach here. Unlike auth
+	// there is no automated remedy to dispatch: a stall has no single known cause,
+	// so the daemon surfaces it and leaves the decision to a human.
+	chatStatusTracker.SetOnStalledChange(func(agentSessionID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		publishAgentMarkerSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
 	})
 
 	// BOS-518: dispatch the bounded auto-resume consumer on every transient-API
@@ -2022,6 +2525,40 @@ func run(opts runOpts) error {
 		}
 	})
 	transientResumeHookInstalled = true
+
+	// --- BOS-661 chat file uploads ---
+	//
+	// The manager owns the daemon-local upload directory (0700, 0600 files
+	// inside) and the streamed writes the TerminalStream feeds it. It is
+	// built here, before the upstream block, for two reasons: the terminal
+	// stream client below takes it as a dependency, and the stale-file
+	// janitor must run even on a daemon with no upstream configured, so a
+	// directory left behind by a previous run is still swept.
+	//
+	// Fail-soft: an unusable upload directory disables uploads (every
+	// upload frame is answered with a permanent "not supported" result)
+	// rather than refusing to start the daemon over an optional feature.
+	chatUploads := &chatUploadSender{}
+	// Reclaim the pre-move upload directory. Nothing sweeps it now that the
+	// manager points at the system temp dir, so without this the files a
+	// previous daemon left under the app data dir — inside the user's checkout,
+	// on a dev-mode layout — would sit there forever.
+	if legacyErr := removeLegacyChatUploadDir(appDataDir); legacyErr != nil {
+		log.Warn().Err(legacyErr).Msg("could not fully remove the legacy chat upload directory")
+	}
+	chatUploadMgr, chatUploadErr := chatupload.NewManager(chatUploadDir(), chatUploads)
+	if chatUploadErr != nil {
+		log.Warn().Err(chatUploadErr).Msg("chat file uploads disabled: upload directory unavailable")
+		chatUploadMgr = nil
+	}
+	// Converted explicitly rather than assigned: handing the terminal
+	// stream client a typed-nil *chatupload.Manager would read as a
+	// non-nil interface at its `uploads == nil` guard and panic on the
+	// first upload frame.
+	var chatUploadManager upstream.UploadManager
+	if chatUploadMgr != nil {
+		chatUploadManager = chatUploadMgr
+	}
 
 	var streamClient *upstream.StreamClient
 	var terminalStreamClient *upstream.TerminalStreamClient
@@ -2250,9 +2787,11 @@ func run(opts runOpts) error {
 			entries := chatStatusTracker.Snapshot()
 			out := make([]*bossanovav1.ChatStatusEntry, 0, len(entries))
 			for agentSessionID, e := range entries {
+				st, reason := status.PromoteWaiting(e.Status, chatStatusTracker.Waiting(agentSessionID))
 				out = append(out, &bossanovav1.ChatStatusEntry{
 					AgentSessionId: agentSessionID,
-					Status:         e.Status,
+					Status:         st,
+					WaitingReason:  reason,
 					LastOutputAt:   timestamppb.New(e.LastOutputAt),
 				})
 			}
@@ -2468,6 +3007,10 @@ func run(opts runOpts) error {
 			AuthState:     authState,
 			TmuxClient:    tmuxClient,
 			Chats:         upstream.NewChatStoreLookup(agentChats),
+			// BOS-661: the streamed chat-upload receiver. Nil when the
+			// upload directory could not be created, which leaves every
+			// upload frame answered with a permanent rejection.
+			Uploads: chatUploadManager,
 			// BOS-376 self-heal wiring. Health is the positive-liveness
 			// signal; ReRegister + CloseIdle are the watchdog's paired
 			// re-dial hooks. reRegister rotates the DaemonStream session
@@ -2589,6 +3132,20 @@ func run(opts runOpts) error {
 	// archive-and-notify path as the dependabot auto-archive above.
 	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
 
+	// The webhook is not the only path to Merged (BOS-697). The display
+	// poller's terminal reconcile lands it whenever the merge webhook never
+	// arrives — and also backs MergeSession's synchronous post-merge refresh —
+	// so it needs the same archiver, or those merges never auto-archive.
+	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+
+	// Heal rows that reached Merged while the archive hook was unreachable
+	// (BOS-697). Wired here rather than into the builder chain above because
+	// srv — and therefore ArchiveSessionAndNotify — does not exist until now;
+	// the option mutates the resolver in place, so the periodic reconcile picks
+	// it up. The startup reconcile above runs without it, which only defers the
+	// heal to the first tick.
+	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+
 	// Rebase the repo's other in-flight branches onto the base a merged PR just
 	// advanced, when the repo opted in (BOS-521). Wired on the merged-webhook
 	// path so it also covers PRs merged outside boss.
@@ -2610,6 +3167,11 @@ func run(opts runOpts) error {
 	if creatorAdapter != nil {
 		creatorAdapter.Server = srv
 	}
+	// Same post-hoc wiring for the BOS-661 upload manager's chat sender:
+	// the manager was built above (the terminal stream client needs it),
+	// but its one output is a verified SendChatMessage, which only exists
+	// now. Bound before any stream runs, so no upload can outrun it.
+	chatUploads.setServer(srv)
 
 	// Start poller and dispatcher.
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
@@ -2618,6 +3180,16 @@ func run(opts runOpts) error {
 	// runs goroutines that outlive any single RPC handler. pollerCancel is
 	// invoked during shutdown, draining all armed polls.
 	lifecycle.SetDaemonCtx(pollerCtx)
+
+	// BOS-661 stale-upload janitor. Started here rather than beside the
+	// manager because it needs the daemon-scoped pollerCtx (cancelled first
+	// during shutdown, then joined via shutdownWG). It prunes completed
+	// uploads past the retention TTL and abandoned in-flight ones, so a
+	// client that disconnects mid-transfer cannot accumulate disk usage.
+	if chatUploadMgr != nil {
+		trackedGo(func() { chatUploadMgr.RunJanitor(pollerCtx, chatupload.DefaultJanitorInterval) })
+	}
+
 	pollerEvents := poller.Run(pollerCtx)
 	merged := mergeSessionEvents(pollerCtx, pollerEvents, webhookEventCh)
 	trackDone(poller.Done())
@@ -2967,6 +3539,7 @@ func run(opts runOpts) error {
 				return
 			case <-ticker.C:
 				chatStatusTracker.Cleanup()
+				sweepWaitingChats(pollerCtx, chatStatusTracker, agentChats, displayComputer)
 			}
 		}
 	})
@@ -3270,6 +3843,17 @@ func run(opts runOpts) error {
 
 	log.Info().Msg("daemon stopped")
 	return nil
+}
+
+// cleanupDaemonShutdownState removes this daemon's handoff metadata before
+// releasing the singleton lock. A replacement that acquires the lock may write
+// its own metadata immediately, so deleting after Close could remove the
+// replacement's record.
+func cleanupDaemonShutdownState(lockFile io.Closer, daemonMetadataWritten bool, daemonMetadataDir string) {
+	if daemonMetadataWritten {
+		_ = daemonstate.Remove(daemonMetadataDir)
+	}
+	_ = lockFile.Close()
 }
 
 func daemonDistinctID() string {

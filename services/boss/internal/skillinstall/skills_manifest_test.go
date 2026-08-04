@@ -231,6 +231,28 @@ func shippedPayloads(t *testing.T) map[string]fs.FS {
 	}
 }
 
+// coreBodyFiles names the payload files that together carry a core's step-by-step spine, for the
+// gates that must follow an instruction wherever it lives rather than only into `SKILL.md`.
+//
+// BOS-674 extracted boss-build's Steps 8-12 — including the Step 12 post-terminal notes dispatch
+// site and its toolbox resolver — out of the always-resident body and into
+// `references/finalize-and-stop.md`, so a SKILL.md-only read reports the site as deleted when it
+// merely moved. The list stays EXPLICIT rather than becoming a tree-wide walk of `references/`:
+// a tree-wide search would stay green after a clause was deleted from a core that names it in
+// unrelated references too (see TestPublishedCoresNameSkillPathForExtensionDispatch).
+var coreBodyFiles = map[string][]string{
+	"boss-build": {"SKILL.md", "references/finalize-and-stop.md"},
+}
+
+// bodyFilesFor returns the payload-relative files that make up core's spine, defaulting to the
+// resident body alone for cores that have not extracted a step range.
+func bodyFilesFor(core string) []string {
+	if files, ok := coreBodyFiles[core]; ok {
+		return files
+	}
+	return []string{"SKILL.md"}
+}
+
 // baseMergeCandidate captures every `git merge` / `git pull` invocation together with its
 // argument tail, so baseMergeDirectives can decide whether the operands name the branch's BASE
 // ref. `git merge-base` and `git rebase` cannot match: the pattern requires whitespace directly
@@ -560,16 +582,27 @@ func TestPublishedCoreNotesHelpersResolveFromHomeWhenSkillsHomeIsUnset(t *testin
 	for label, fsys := range shippedPayloads(t) {
 		for _, core := range cores {
 			t.Run(label+"/"+core.name, func(t *testing.T) {
-				content, err := fs.ReadFile(fsys, "skills/"+core.name+"/SKILL.md")
-				if err != nil {
-					t.Fatalf("read skill: %v", err)
-				}
-				for _, rootedHome := range []string{`"/.claude/skills"`, `"/.codex/skills"`, `:-/.claude/skills`, `=/.codex/skills`} {
-					if strings.Contains(string(content), rootedHome) {
-						t.Fatalf("published skill contains rooted helper home %q", rootedHome)
+				// BOS-674: the notes section may live in an extracted spine file rather than
+				// SKILL.md (boss-build's Step 12 moved to references/finalize-and-stop.md).
+				// The rooted-home ban applies to every spine file; the resolver is read from
+				// whichever one carries the section.
+				const notesHeading = "### Post-terminal notes extensions (repo opt-in)"
+				var content string
+				for _, rel := range bodyFilesFor(core.name) {
+					data, err := fs.ReadFile(fsys, "skills/"+core.name+"/"+rel)
+					if err != nil {
+						t.Fatalf("read %s: %v", rel, err)
+					}
+					for _, rootedHome := range []string{`"/.claude/skills"`, `"/.codex/skills"`, `:-/.claude/skills`, `=/.codex/skills`} {
+						if strings.Contains(string(data), rootedHome) {
+							t.Fatalf("published skill %s contains rooted helper home %q", rel, rootedHome)
+						}
+					}
+					if content == "" && strings.Contains(string(data), notesHeading) {
+						content = string(data)
 					}
 				}
-				resolver := notesToolboxResolver(t, string(content), core.name, core.toolbox)
+				resolver := notesToolboxResolver(t, content, core.name, core.toolbox)
 
 				home := t.TempDir()
 				want := filepath.Join(home, ".codex", "skills", core.name, "toolbox")

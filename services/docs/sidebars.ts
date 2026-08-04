@@ -21,7 +21,10 @@ const sidebars: SidebarsConfig = {
       items: [
         'guides/account-rotation',
         'guides/agent-plugins',
+        'guides/github-callbacks',
+        'guides/broadcasts',
         'guides/mcp',
+        'guides/notes',
         'guides/setup-scripts',
         'guides/pr-lifecycle',
         'guides/scheduled-sessions',

@@ -142,6 +142,46 @@ WEB_DEPS_STAMP := node_modules/.modules.yaml
 SKILLS_SRC_DIR := services/boss/internal/skillinstall/skills
 SKILLS_PLUGIN_DIR := plugins/bossd-plugin-claude/skilldata/skills
 
+# Non-Go payload files pulled into binaries by `go:embed`. The Go build cache
+# keys on their contents, but only once `go build` is actually invoked — and
+# make will not invoke it unless the payload files are prerequisites of the
+# binary that embeds them. Without these lists, editing a skill or a migration
+# leaves make with no newer prerequisite, it skips the recipe, and `make build`
+# silently ships a stale payload (BOS-676). Each list is therefore wired onto
+# the rule of the binary that embeds it.
+#
+# `find` runs at parse time like the VERSION/COMMIT shell-outs above; the
+# `2>/dev/null` keeps a missing private-only directory (services/bosso is
+# stripped from the public mirror) expanding to an empty list rather than
+# printing a find error.
+#
+# The containing directories are listed alongside the files, because a file list
+# only covers *edits*. Deleting a payload file drops it out of the list and every
+# surviving prerequisite keeps its old mtime, so make would call the target up to
+# date and ship an embed that still contains the deleted file — the same
+# self-concealing loop, reached from the other direction. Unlinking bumps the
+# directory's mtime, so naming the directories catches deletion (and addition).
+#
+# BOSS_SKILL_FILES: `go:embed all:skills` takes every file type, dotfiles
+# included, so this is an unfiltered recursive walk — do not filter by suffix.
+BOSS_SKILL_FILES := $(shell find $(SKILLS_SRC_DIR) -type f 2>/dev/null)
+# The payload roots are named unconditionally, not discovered: a discovered list
+# goes empty when the whole directory is deleted or renamed, which would leave the
+# rule with no payload prerequisite at all and silently reinstate the stale-embed
+# bug. Named, make instead fails loudly with "No rule to make target".
+BOSS_SKILL_DIRS := $(SKILLS_SRC_DIR) $(shell find $(SKILLS_SRC_DIR) -type d 2>/dev/null)
+BOSSD_MIGRATION_FILES := $(shell find services/bossd/migrations -type f -name '*.sql' 2>/dev/null)
+BOSSD_MIGRATION_DIRS := services/bossd/migrations
+BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
+# Named, not wildcarded, for the same reason. Safe in the public mirror, where
+# services/bosso is stripped: this list is only ever consumed inside the existing
+# `ifneq ($(wildcard services/bosso/go.mod),)` guard.
+BOSSO_MIGRATION_DIRS := services/bosso/migrations services/bosso/migrations_postgres
+# A single known file, so it is named rather than discovered. No directory entry
+# is needed: `go:embed bossd-question.js` names one file, so deleting it fails the
+# compile loudly instead of silently shipping a stale embed.
+OPENCODE_HOOK_FILES := plugins/bossd-plugin-opencode/bossd-question.js
+
 
 claude:
 	claude --dangerously-skip-permissions
@@ -255,8 +295,7 @@ deps:
 		echo "    golangci-lint: $$want already installed"; \
 	else \
 		echo "    golangci-lint: installing $$want..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh \
-			| sh -s -- -b "$$gobin" $$want; \
+		want="$$want" gobin="$$gobin" scripts/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
 	fi
 	@if command -v gremlins >/dev/null 2>&1; then \
 		echo "    gremlins: already installed"; \
@@ -435,11 +474,11 @@ endif
 ## build: Build service binaries (generates protos first if needed)
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
-$(BIN_DIR)/boss: $(GEN_STAMP)
+$(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
-$(BIN_DIR)/bossd: $(GEN_STAMP)
+$(BIN_DIR)/bossd: $(GEN_STAMP) $(BOSSD_MIGRATION_DIRS) $(BOSSD_MIGRATION_FILES)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
@@ -448,7 +487,7 @@ $(BIN_DIR)/mcp: $(GEN_STAMP)
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/mcp; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
-$(BIN_DIR)/bosso: $(GEN_STAMP)
+$(BIN_DIR)/bosso: $(GEN_STAMP) $(BOSSO_MIGRATION_DIRS) $(BOSSO_MIGRATION_FILES)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
 endif
 
@@ -475,6 +514,10 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 # bossd-plugin-claude embeds the boss skill payload; refresh the mirror before
 # linking so the plugin binary and the boss CLI ship identical bytes.
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
+
+# bossd-plugin-opencode embeds its question hook; list it so an edit relinks the
+# binary. Prerequisite-only (no recipe) so the pattern rule above still builds it.
+$(BIN_DIR)/bossd-plugin-opencode: $(OPENCODE_HOOK_FILES)
 
 ## test-native-ledger: run ledger rows whose disposition is default-run (today-parity).
 ## These are the bazel-`manual` targets today's `make test` still had to cover
@@ -736,8 +779,7 @@ deps-golangci:
 		echo "    golangci-lint: $$want already installed"; \
 	else \
 		echo "    golangci-lint: installing $$want..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh \
-			| sh -s -- -b "$$gobin" $$want; \
+		want="$$want" gobin="$$gobin" scripts/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
 	fi
 
 ## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)

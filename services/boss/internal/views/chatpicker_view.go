@@ -112,6 +112,16 @@ func (m ChatPickerModel) renderChatList() string {
 		b.WriteString("\n\n")
 	}
 
+	// Why a chat here is parked on an external event (BOS-668). Informational,
+	// not a warning: the session is healthy, it is simply blocked on something
+	// outside the agent's control, so it renders in the info style below the
+	// usage-limited line rather than alongside it. waitingLineHeight reserves
+	// these two lines in tableHeight.
+	if line := m.waitingReasonLine(); line != "" {
+		b.WriteString(chatPickerContentBlock(styleStatusInfo.Render(line)))
+		b.WriteString("\n\n")
+	}
+
 	// The session's machine-local HTTP endpoints (BOS-474), directly above the
 	// chat table with no blank line between, so the ports read as belonging to
 	// this session. Written raw (not via lipgloss) to keep the OSC 8 envelopes

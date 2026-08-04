@@ -8,6 +8,7 @@
 package tuidriver
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -226,21 +227,57 @@ func (d *Driver) Done() <-chan struct{} {
 	return d.done
 }
 
+// closeWaitTimeout bounds each teardown wait in Close. A pty read wedged in the
+// kernel never returns, so readLoop never closes d.done; before BOS-698 that
+// deadlocked Close's caller until the 300s Bazel test timeout killed the whole
+// target with a message that named nothing.
+const closeWaitTimeout = 5 * time.Second
+
+// waitClosed blocks until ch is closed or d elapses, reporting whether ch
+// closed in time.
+func waitClosed(ch <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 // Close sends Ctrl+C, waits for the process to exit, and cleans up.
+//
+// Every wait is bounded (BOS-698). On expiry Close deliberately does NOT return
+// early: closing the pty is itself what usually unblocks a wedged readLoop, so
+// bailing out would strand the very goroutine the bound exists to rescue.
+// Instead Close finishes the teardown and reports each stalled loop in its
+// returned error, joined with any pty close error. All current callers discard
+// that error; a caller that checks it now learns the driver did not shut down
+// cleanly instead of hanging forever.
 func (d *Driver) Close() error {
 	_ = d.SendCtrlC()
-	timer := time.NewTimer(3 * time.Second)
-	select {
-	case <-d.done:
-		timer.Stop()
-	case <-timer.C:
+
+	var errs []error
+
+	// Graceful window: give a Ctrl-C-aware process time to run its shutdown
+	// handler before force-killing it.
+	if !waitClosed(d.done, 3*time.Second) {
 		_ = d.cmd.Process.Kill()
-		<-d.done
+		if !waitClosed(d.done, closeWaitTimeout) {
+			errs = append(errs, fmt.Errorf("tuidriver: readLoop did not exit within %s after Kill", closeWaitTimeout))
+		}
 	}
+
 	// Reap the child process to prevent zombies.
 	_ = d.cmd.Wait()
-	// Close the PTY — readLoop has already exited (d.done closed).
-	err := d.pty.Close()
+
+	// Close the PTY. On the normal path readLoop has already exited (d.done
+	// closed); on the stalled path this close is also what unblocks its read.
+	if err := d.pty.Close(); err != nil {
+		errs = append(errs, err)
+	}
+
 	// Unblock responseLoop's vt.Read by closing the vt emulator's internal
 	// pipe writer directly. vt.Close() would also set an unsynchronized
 	// `closed` bool the race detector flags against vt.Read; io.PipeWriter
@@ -249,8 +286,11 @@ func (d *Driver) Close() error {
 	if closer, ok := d.vt.InputPipe().(io.Closer); ok {
 		_ = closer.Close()
 	}
-	<-d.respDone
-	return err
+	if !waitClosed(d.respDone, closeWaitTimeout) {
+		errs = append(errs, fmt.Errorf("tuidriver: responseLoop did not exit within %s", closeWaitTimeout))
+	}
+
+	return errors.Join(errs...)
 }
 
 // clampUint16 narrows a terminal dimension (rows/cols — always small and

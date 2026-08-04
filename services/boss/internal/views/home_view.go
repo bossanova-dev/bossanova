@@ -185,14 +185,17 @@ func (h HomeModel) guestCloudOfferVisible() bool {
 }
 
 // logoutErrorLine renders a failed logout, or "" when the last one succeeded.
-// Placed alongside cloudGateLine rather than in the reserved footer block: like
-// that line it is transient, and reserving table height for a state that is
-// almost always absent would shrink the board permanently.
+// The populated-session footer reserves this block whenever it is visible, so
+// its second line cannot be clipped below a full table.
 func (h HomeModel) logoutErrorLine() string {
 	if h.logoutError == "" {
 		return ""
 	}
-	return renderError("Logout: "+h.logoutError, h.statusWrapWidth())
+	message := "Logout: " + h.logoutError
+	if h.loggedIn && h.loggedInEmail != "" {
+		message += "\nStill signed in as " + h.loggedInEmail + "."
+	}
+	return renderError(message, h.statusWrapWidth())
 }
 
 func (h HomeModel) renderDaemonError() string {
@@ -407,6 +410,11 @@ func (h HomeModel) sessionTableFooterLineCount() int {
 		// renderSessionTableFooter puts a newline between the action bar and
 		// this multi-line warning, so reserve that separator too.
 		lines += 1 + strings.Count(relogin, "\n") + 1
+	}
+	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
+		// The logout error follows the action bar (and any re-login warning),
+		// with a separator that is also a rendered row.
+		lines += 1 + strings.Count(logoutErr, "\n") + 1
 	}
 	return lines
 }

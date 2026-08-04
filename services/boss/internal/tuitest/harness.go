@@ -119,6 +119,7 @@ type harnessConfig struct {
 	args                          []string
 	loggedInEmail                 string
 	e2eLoginEmail                 string
+	e2eLogoutError                bool
 	e2eCloudAccessSequence        []E2ECloudAccessState
 	e2eCloudCheckoutURL           string
 	e2eCloudCheckoutError         bool
@@ -265,6 +266,14 @@ func WithLoggedInUser(email string) Option {
 func WithE2ELogin(email string) Option {
 	return func(c *harnessConfig) {
 		c.e2eLoginEmail = email
+	}
+}
+
+// WithE2ELogoutError makes the e2e token store reject logout without removing
+// its seeded credentials, so TUI tests can exercise failed keychain deletion.
+func WithE2ELogoutError() Option {
+	return func(c *harnessConfig) {
+		c.e2eLogoutError = true
 	}
 }
 
@@ -441,6 +450,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	if cfg.e2eLoginEmail != "" {
 		env = append(env, "BOSS_AUTH_E2E_LOGIN_EMAIL="+cfg.e2eLoginEmail)
+	}
+	if cfg.e2eLogoutError {
+		env = append(env, "BOSS_AUTH_E2E_LOGOUT_ERROR=1")
 	}
 	if len(cfg.e2eCloudAccessSequence) > 0 {
 		states := make([]string, 0, len(cfg.e2eCloudAccessSequence))

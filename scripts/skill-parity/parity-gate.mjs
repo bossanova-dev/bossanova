@@ -42,6 +42,16 @@ const EXPECTED_EXTENSIONS = [
     role: 'lens',
     skill: 'boss-review',
     names: ['boss-review-golang', 'boss-review-tui', 'boss-review-web'],
+    // BOS-678: a lens extension declares which `.boss-skills.json` lensMap id it serves through
+    // the optional `lens:` key on its own `x-boss-extension` marker. That declaration IS the
+    // binding boss-review Phase 1 dispatches on, so an absent or mistyped one silently unwires
+    // the extension — discovery keeps listing it, and the lens quietly falls back to its config
+    // skill. Only the `lens` role declares bindings; every other spec omits the key.
+    bindings: {
+      'boss-review-golang': 'go',
+      'boss-review-tui': 'tui',
+      'boss-review-web': 'web',
+    },
   },
   {
     core: 'boss-review',
@@ -206,6 +216,19 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
       findings.push(
         `DRIFT ${skill} ${core}/${role}: discovered [${got.join(', ')}], expected [${[...expected].sort().join(', ')}]`,
       )
+    }
+    // A discovered-but-unbound extension is the failure this catches: the names check above is
+    // blind to it, because the descriptor is still returned. An expected name that went missing
+    // entirely is already reported by that check, so skip it here rather than double-reporting.
+    for (const [name, want] of Object.entries(spec.bindings ?? {})) {
+      const found = extensions.find((e) => e.name === name)
+      if (!found) continue
+      if (found.lens !== want) {
+        const declared = found.lens === undefined ? '(none)' : JSON.stringify(found.lens)
+        findings.push(
+          `DRIFT ${skill} ${core}/${role}: ${name} declares lens ${declared}, expected ${JSON.stringify(want)}`,
+        )
+      }
     }
     if (role !== 'agent-driver' && role !== 'draft' && !ROLE_SCHEMAS[role]) {
       findings.push(`DRIFT ${skill} ${core}/${role}: ROLE_SCHEMAS has no schema for role "${role}"`)

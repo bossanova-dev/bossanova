@@ -28,21 +28,27 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 }
 
 // parseChatStatuses fetches daemon-side heartbeat statuses and converts them
-// into maps keyed by Claude ID.
-func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time) {
+// into maps keyed by Claude ID. The third map carries the reason a chat is
+// parked on an external event (BOS-668) and is populated only for the chats
+// that have one — it stays empty against a daemon too old to stamp the field.
+func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time, map[string]string) {
 	entries, err := c.GetChatStatuses(ctx, sessionID)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	statuses := make(map[string]string, len(entries))
 	lastOutput := make(map[string]time.Time, len(entries))
+	waitingReasons := make(map[string]string)
 	for _, e := range entries {
 		statuses[e.AgentSessionId] = chatStatusString(e.Status)
 		if e.LastOutputAt != nil {
 			lastOutput[e.AgentSessionId] = e.LastOutputAt.AsTime()
 		}
+		if reason := e.GetWaitingReason(); reason != "" {
+			waitingReasons[e.AgentSessionId] = reason
+		}
 	}
-	return statuses, lastOutput
+	return statuses, lastOutput, waitingReasons
 }
 
 func (m ChatPickerModel) listChats() tea.Cmd {
@@ -51,8 +57,8 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 		if err != nil {
 			return chatsListedMsg{err: err}
 		}
-		statuses, lastOutput := parseChatStatuses(m.client, m.ctx, m.sessionID)
-		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput}
+		statuses, lastOutput, waitingReasons := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput, daemonWaitingReasons: waitingReasons}
 	}
 }
 
@@ -95,11 +101,12 @@ func (m ChatPickerModel) refreshStatuses() tea.Cmd {
 		if err != nil {
 			return chatPickerRefreshMsg{}
 		}
-		statuses, lastOutput := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		statuses, lastOutput, waitingReasons := parseChatStatuses(m.client, m.ctx, m.sessionID)
 		return chatPickerRefreshMsg{
-			session:          sess,
-			daemonStatuses:   statuses,
-			daemonLastOutput: lastOutput,
+			session:              sess,
+			daemonStatuses:       statuses,
+			daemonLastOutput:     lastOutput,
+			daemonWaitingReasons: waitingReasons,
 		}
 	}
 }

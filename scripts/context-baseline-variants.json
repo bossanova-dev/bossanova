@@ -1,0 +1,49 @@
+{
+  "prompt": "Reply with exactly: ok",
+  "baseline": "status-quo",
+  "variants": [
+    {
+      "name": "status-quo",
+      "description": "What a NON-CRON bossd-spawned session pays today (interactive, tmux_unattended, --detach): the boss --mcp-config MERGED with repo-root .mcp.json (duplicate bossanova stdio server + Linear + Sentry), plus every skill and agent this machine has installed. Cron spawns are NOT this shape — StrictMcpConfigForSession makes them strict, so they never read repo-root .mcp.json and never pay the duplicate.",
+      "mcpServers": {
+        "boss": { "command": "./bin/mcp" }
+      }
+    },
+    {
+      "name": "status-quo-minus-dup",
+      "description": "Status quo minus the duplicate bossanova stdio registration of the same boss daemon. Strict mode makes the curated config the whole surface, so Linear and Sentry are restated here to hold everything else constant.",
+      "strictMcpConfig": true,
+      "mcpServers": {
+        "boss": { "command": "./bin/mcp" },
+        "bossanova-linear": {
+          "type": "http",
+          "url": "https://mcp.linear.app/mcp",
+          "headers": { "Authorization": "Bearer ${LINEAR_API_KEY}" }
+        },
+        "bossanova-sentry": { "type": "http", "url": "https://mcp.sentry.dev/mcp" }
+      }
+    },
+    {
+      "name": "curated-boss-only",
+      "description": "The boss daemon MCP alone, strictly curated: no Linear, no Sentry, no repo .mcp.json merge.",
+      "strictMcpConfig": true,
+      "mcpServers": {
+        "boss": { "command": "./bin/mcp" }
+      }
+    },
+    {
+      "name": "no-mcp",
+      "description": "No MCP surface at all. --strict-mcp-config with NO --mcp-config would strip the boss server too, so this variant passes an empty-but-valid config document rather than the bare flag.",
+      "strictMcpConfig": true,
+      "mcpServers": {}
+    },
+    {
+      "name": "no-agents",
+      "description": "NULL CONTROL, not a saving. `claude --help` documents --agents as 'JSON object defining custom agents' — it is ADDITIVE, so --agents '{}' defines zero extra agents and cannot remove the installed catalogue. Its delta is 0 by construction; the row's value is proving the harness reproduces a byte-identical prefix at exactly 0. Sizing the agent catalogue needs a different mechanism (--setting-sources / --bare), not this flag.",
+      "agents": "{}",
+      "mcpServers": {
+        "boss": { "command": "./bin/mcp" }
+      }
+    }
+  ]
+}

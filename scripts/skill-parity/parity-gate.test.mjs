@@ -48,6 +48,63 @@ test('injected extension drift reports DRIFT for boss-review', async () => {
   }
 })
 
+// BOS-678: dropping a lens extension's `lens:` marker line unwires it from boss-review Phase 1
+// while discovery still returns the descriptor, so the names check above stays green. Only the
+// binding assertion catches it — this is the "verified by temporarily removing one `lens:` marker
+// line" check from the ticket's acceptance criteria, run mechanically against a scratch copy.
+test('a lens extension that lost its lens binding reports DRIFT', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'parity-bind-'))
+  try {
+    cpSync(join(REPO_ROOT, '.claude', 'skills'), join(tmp, '.claude', 'skills'), {
+      recursive: true,
+    })
+    const victim = join(tmp, '.claude', 'skills', 'boss-review-tui', 'SKILL.md')
+    const before = readFileSync(victim, 'utf8')
+    assert.match(
+      before,
+      /^ {2}lens: tui$/m,
+      'fixture precondition: the marker declares its binding',
+    )
+    writeFileSync(victim, before.replace(/^ {2}lens: tui\n/m, ''))
+
+    const { ok, findings } = await checkExtensionParity({ root: tmp })
+
+    assert.equal(ok, false)
+    const drift = findings.find((f) => f.includes('DRIFT') && f.includes('boss-review-tui'))
+    assert.ok(
+      drift,
+      `expected a DRIFT finding naming boss-review-tui, got: ${findings.join(' | ')}`,
+    )
+    assert.match(drift, /declares lens \(none\), expected "tui"/)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('a lens extension whose binding names the wrong lens id reports DRIFT', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'parity-bind-'))
+  try {
+    cpSync(join(REPO_ROOT, '.claude', 'skills'), join(tmp, '.claude', 'skills'), {
+      recursive: true,
+    })
+    const victim = join(tmp, '.claude', 'skills', 'boss-review-web', 'SKILL.md')
+    const before = readFileSync(victim, 'utf8')
+    writeFileSync(victim, before.replace(/^ {2}lens: web$/m, '  lens: wbe'))
+
+    const { ok, findings } = await checkExtensionParity({ root: tmp })
+
+    assert.equal(ok, false)
+    const drift = findings.find((f) => f.includes('DRIFT') && f.includes('boss-review-web'))
+    assert.ok(
+      drift,
+      `expected a DRIFT finding naming boss-review-web, got: ${findings.join(' | ')}`,
+    )
+    assert.match(drift, /declares lens "wbe", expected "web"/)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('ROLE_SCHEMAS covers lens, round, and surface; driver-shape predicate accepts/rejects', () => {
   assert.ok(ROLE_SCHEMAS.lens, 'ROLE_SCHEMAS.lens should be defined')
   assert.ok(ROLE_SCHEMAS.round, 'ROLE_SCHEMAS.round should be defined')

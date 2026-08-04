@@ -7,6 +7,7 @@ package fixtures
 import (
 	"time"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -28,8 +29,13 @@ type World struct {
 	Sessions     []*pb.Session
 	Chats        []*pb.ClaudeChat
 	ChatStatuses []*pb.ChatStatusEntry
-	CronJobs     []*pb.CronJob
-	Accounts     []*pb.Account
+	// SessionStatuses carries the daemon's aggregate per-session heartbeat. Only
+	// presets that need it seed it — notably waiting-callback, where the home
+	// list's waiting-reason sub-row is read from SessionStatusEntry.waiting_reason
+	// rather than from the Session itself (BOS-668).
+	SessionStatuses []*pb.SessionStatusEntry
+	CronJobs        []*pb.CronJob
+	Accounts        []*pb.Account
 }
 
 // Repos returns the registered repositories. The first entry (repo-1 / my-app)
@@ -489,6 +495,113 @@ func QuestionRowChatStatuses() []*pb.ChatStatusEntry {
 	return []*pb.ChatStatusEntry{
 		{AgentSessionId: "claude-494-working", Status: pb.ChatStatus_CHAT_STATUS_WORKING, LastOutputAt: ts(-2 * time.Minute)},
 		{AgentSessionId: "claude-494-question", Status: pb.ChatStatus_CHAT_STATUS_QUESTION, LastOutputAt: ts(-50 * time.Minute)},
+	}
+}
+
+// WaitingCallbackPRNumber is the PR the BOS-668 waiting session is parked on.
+// Exported so the scenario/regression assertions can bind to the same number the
+// reason string embeds rather than re-typing it.
+const WaitingCallbackPRNumber = 668
+
+// WaitingCallbackTrigger is the armed GitHub callback trigger the BOS-668
+// waiting session is parked on.
+const WaitingCallbackTrigger = "checks_passed_ready"
+
+// WaitingCallbackReason is the canonical reason string for the BOS-668 fixture,
+// composed by the shared displaystatus helper rather than hand-spelled here so
+// the fixture can never drift from the wording the daemon actually emits.
+var WaitingCallbackReason = displaystatus.CallbackWaitingReason(
+	WaitingCallbackTrigger, "acme", "my-app", WaitingCallbackPRNumber,
+)
+
+// WaitingCallbackWorld builds the BOS-668 dataset: one session parked on an
+// armed GitHub callback (rendered "waiting", INFO, no spinner, with the reason
+// on its own sub-row) alongside a second session that is genuinely working.
+//
+// The two states live in SEPARATE sessions deliberately. The session-level
+// aggregate ranks working above waiting, so a single session holding both a
+// parked chat and a busy chat renders "working" — which would hide the very
+// state this fixture exists to show on the home list.
+func WaitingCallbackWorld() World {
+	return World{
+		Repos:           Repos(),
+		Sessions:        WaitingCallbackSessions(),
+		Chats:           WaitingCallbackChats(),
+		ChatStatuses:    WaitingCallbackChatStatuses(),
+		SessionStatuses: WaitingCallbackSessionStatuses(),
+	}
+}
+
+// WaitingCallbackSessions returns the parked session and its working neighbour.
+// The mock daemon serves sessions verbatim (it does not run displaystatus.Compute),
+// so the Display* triple is spelled out here to exactly what the real cascade
+// produces: "waiting" / INFO / no spinner, and "working" / SUCCESS / spinner.
+func WaitingCallbackSessions() []*pb.Session {
+	return []*pb.Session{
+		{
+			Id: "sess-668-waiting", RepoId: "repo-1", RepoDisplayName: "my-app",
+			// The title deliberately avoids the words "waiting" and the trigger
+			// name so the proof assertions bind to the STATUS column and the
+			// reason sub-row, not to a row title that happens to contain them.
+			Title: "Ship the release checklist", BranchName: "boss/release-checklist",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:       i32(WaitingCallbackPRNumber),
+			DisplayLabel:   displaystatus.WaitingLabel,
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+			DisplaySpinner: false,
+			CreatedAt:      ts(-3 * time.Hour),
+			WorktreePath:   "/Users/demo/worktrees/my-app/release-checklist",
+		},
+		{
+			Id: "sess-668-working", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Rebuild the search index", BranchName: "boss/search-index",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			PrNumber:       i32(669),
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+			CreatedAt:      ts(-90 * time.Minute),
+			WorktreePath:   "/Users/demo/worktrees/my-app/search-index",
+		},
+	}
+}
+
+// WaitingCallbackChats returns one chat per session, so each session's aggregate
+// is unambiguous and the chat picker for the parked session shows a single
+// waiting row plus its reason line.
+func WaitingCallbackChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-668-waiting", AgentSessionId: "claude-668-waiting", SessionId: "sess-668-waiting", Title: "Ship the release checklist", CreatedAt: ts(-3 * time.Hour)},
+		{Id: "chat-668-working", AgentSessionId: "claude-668-working", SessionId: "sess-668-working", Title: "Rebuild the search index", CreatedAt: ts(-90 * time.Minute)},
+	}
+}
+
+// WaitingCallbackChatStatuses returns the per-chat heartbeats: the parked chat
+// carries CHAT_STATUS_WAITING plus the reason, the neighbour is working.
+func WaitingCallbackChatStatuses() []*pb.ChatStatusEntry {
+	return []*pb.ChatStatusEntry{
+		{
+			AgentSessionId: "claude-668-waiting",
+			Status:         pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason:  WaitingCallbackReason,
+			LastOutputAt:   ts(-40 * time.Minute),
+		},
+		{AgentSessionId: "claude-668-working", Status: pb.ChatStatus_CHAT_STATUS_WORKING, LastOutputAt: ts(-1 * time.Minute)},
+	}
+}
+
+// WaitingCallbackSessionStatuses returns the aggregate per-session heartbeats.
+// The home list reads the waiting reason from here (SessionStatusEntry), not
+// from the Session, so the sub-row under the parked row only renders when this
+// is seeded.
+func WaitingCallbackSessionStatuses() []*pb.SessionStatusEntry {
+	return []*pb.SessionStatusEntry{
+		{
+			SessionId:     "sess-668-waiting",
+			Status:        pb.ChatStatus_CHAT_STATUS_WAITING,
+			WaitingReason: WaitingCallbackReason,
+		},
+		{SessionId: "sess-668-working", Status: pb.ChatStatus_CHAT_STATUS_WORKING},
 	}
 }
 

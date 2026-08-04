@@ -16,14 +16,12 @@ import (
 	"github.com/recurser/boss/internal/daemon"
 )
 
-var restartDaemon = daemon.Restart
-
 var runBossDaemonRestart = func() error {
-	executable, err := os.Executable()
+	executable, err := bossDaemonRestartExecutable()
 	if err != nil {
 		return err
 	}
-	// #nosec G204 -- <os.Executable()> daemon restart; self path, literal args; no shell
+	// #nosec G204 -- resolved installed CLI or the running direct-path executable; literal args; no shell
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(executable, "daemon", "restart")
 	output, err := cmd.CombinedOutput()
@@ -34,6 +32,13 @@ var runBossDaemonRestart = func() error {
 		return err
 	}
 	return nil
+}
+
+func bossDaemonRestartExecutable() (string, error) {
+	if executable, err := exec.LookPath("boss"); err == nil {
+		return executable, nil
+	}
+	return os.Executable()
 }
 
 var defaultSocketPath = client.DefaultSocketPath
@@ -95,18 +100,26 @@ func restartDaemonForStatus(socketReachableBeforeRestart bool) (daemonRestartRea
 	if err != nil {
 		return daemonRestartReadiness{}, fmt.Errorf("daemon restart: %w", err)
 	}
-	if st != nil && !st.Installed {
-		if err := runBossDaemonRestart(); err != nil {
-			return daemonRestartReadiness{}, fmt.Errorf("restart standalone bossd failed: %w", err)
-		}
-		return daemonRestartReadiness{}, nil
-	}
 	readiness := daemonRestartReadiness{waitForSocketGone: socketReachableBeforeRestart}
 	if st != nil {
 		readiness.oldPID = st.PID
 	}
-	if err := restartDaemon(); err != nil {
+
+	if err := runBossDaemonRestart(); err != nil {
+		if st != nil && !st.Installed {
+			return daemonRestartReadiness{}, fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
 		return daemonRestartReadiness{}, fmt.Errorf("restart daemon failed: %w", err)
+	}
+	if st != nil && !st.Installed {
+		return daemonRestartReadiness{}, nil
+	}
+	if st != nil && st.PID <= 0 {
+		// `boss daemon restart` has already waited until its replacement is
+		// ready. Without a pre-restart PID there is no reliable way for the
+		// TUI to observe the old socket disappearing, so do not repeat that
+		// completed handoff here.
+		return daemonRestartReadiness{}, nil
 	}
 	return readiness, nil
 }

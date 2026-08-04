@@ -493,6 +493,21 @@ service AgentRunnerService {
   // the transcript path the same way it does for TranscriptExists.
   rpc ReadTranscript(ReadTranscriptRequest) returns (ReadTranscriptResponse);
 
+  // ProbeProgressLiveness reports when the agent last made SEMANTIC progress on
+  // a chat (a new transcript record) and which phase that record leaves the
+  // agent in. It exists because pane content is not a progress signal: an
+  // animated spinner keeps changing while the turn behind it is dead, so the
+  // daemon's content-change comparison reads a hung run as "working". Each
+  // plugin resolves the transcript path the same way it does for
+  // TranscriptExists and reads only the tail.
+  //
+  // Fail open: a plugin that does not implement this (codes.Unimplemented), or
+  // that cannot read its transcript, returns is_known=false and the daemon raises
+  // NOTHING. A false "your session is dead" banner on a healthy long build is
+  // worse than the silent stall this detects.
+  rpc ProbeProgressLiveness(ProbeProgressLivenessRequest)
+      returns (ProbeProgressLivenessResponse);
+
   // RotationCapability reports whether this agent supports account rotation and,
   // if so, how its credentials are injected (an env token like
   // CLAUDE_CODE_OAUTH_TOKEN, or a per-account home dir like CODEX_HOME). Agents
@@ -836,6 +851,41 @@ message ReadTranscriptResponse {
   repeated ChatMessage messages = 1;
   string final_assistant_text = 2; // last assistant turn, flattened — the "result"
   bool exists = 3;                 // false when no transcript file is found
+}
+
+// AgentProgressPhase classifies what the agent's most recent transcript record
+// leaves it doing, so the daemon can pick a threshold that fits. A bare "the
+// transcript has not grown in N minutes" signal false-positives on every long
+// tool call; the last record's type disambiguates precisely.
+enum AgentProgressPhase {
+  AGENT_PROGRESS_PHASE_UNSPECIFIED = 0;
+  // The agent owes an assistant message (last record is a tool result or a user
+  // turn): a model request is in flight. This is the shape a silently-dead turn
+  // leaves behind, so it warrants a TIGHT threshold.
+  AGENT_PROGRESS_PHASE_AWAITING_MODEL = 1;
+  // A tool is executing (last record is a tool use). A 15-minute build writes
+  // nothing to the transcript until it returns, so this warrants a GENEROUS
+  // threshold.
+  AGENT_PROGRESS_PHASE_EXECUTING_TOOL = 2;
+  // The turn is complete and the agent is waiting on the human.
+  AGENT_PROGRESS_PHASE_IDLE = 3;
+  // The transcript was readable but its tail maps to no phase above (e.g. a
+  // record type this plugin does not classify).
+  AGENT_PROGRESS_PHASE_UNKNOWN = 4;
+}
+
+message ProbeProgressLivenessRequest {
+  string work_dir = 1;         // worktree path (claude derives the project key from it)
+  string agent_session_id = 2; // chat's agent session UUID
+}
+message ProbeProgressLivenessResponse {
+  // Timestamp of the most recent transcript record. Absent when
+  // is_known=false.
+  google.protobuf.Timestamp last_progress_at = 1;
+  AgentProgressPhase phase = 2;
+  // false = "this runner has no opinion" (unimplemented, unreadable or absent
+  // transcript). The daemon MUST raise nothing when is_known=false.
+  bool is_known = 3;
 }
 
 // AuthKind identifies how an agent's per-account credential is injected into a

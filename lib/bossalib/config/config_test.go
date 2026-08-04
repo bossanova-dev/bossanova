@@ -2266,3 +2266,85 @@ func TestDaemonDisplayName(t *testing.T) {
 		})
 	}
 }
+
+// TestStallDetectionConfig_Thresholds covers the BOS-667 per-phase stall
+// thresholds. They are deliberately generous: bossd raises an attention reason
+// off them, and a false "your session is dead" banner on a healthy long build is
+// worse than a missed detection.
+func TestStallDetectionConfig_Thresholds(t *testing.T) {
+	tests := []struct {
+		name              string
+		cfg               StallDetectionConfig
+		wantAwaitingModel time.Duration
+		wantExecutingTool time.Duration
+	}{
+		{
+			name:              "unset yields the generous defaults",
+			cfg:               StallDetectionConfig{},
+			wantAwaitingModel: 5 * time.Minute,
+			wantExecutingTool: 45 * time.Minute,
+		},
+		{
+			name:              "configured values win",
+			cfg:               StallDetectionConfig{AwaitingModelMinutes: 9, ExecutingToolMinutes: 90},
+			wantAwaitingModel: 9 * time.Minute,
+			wantExecutingTool: 90 * time.Minute,
+		},
+		{
+			name:              "zero falls back to the default",
+			cfg:               StallDetectionConfig{AwaitingModelMinutes: 0, ExecutingToolMinutes: 0},
+			wantAwaitingModel: 5 * time.Minute,
+			wantExecutingTool: 45 * time.Minute,
+		},
+		{
+			name:              "negative falls back to the default rather than firing instantly",
+			cfg:               StallDetectionConfig{AwaitingModelMinutes: -3, ExecutingToolMinutes: -1},
+			wantAwaitingModel: 5 * time.Minute,
+			wantExecutingTool: 45 * time.Minute,
+		},
+		{
+			name:              "one phase configured leaves the other on its default",
+			cfg:               StallDetectionConfig{AwaitingModelMinutes: 2},
+			wantAwaitingModel: 2 * time.Minute,
+			wantExecutingTool: 45 * time.Minute,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.AwaitingModelThreshold(); got != tt.wantAwaitingModel {
+				t.Errorf("AwaitingModelThreshold() = %v, want %v", got, tt.wantAwaitingModel)
+			}
+			if got := tt.cfg.ExecutingToolThreshold(); got != tt.wantExecutingTool {
+				t.Errorf("ExecutingToolThreshold() = %v, want %v", got, tt.wantExecutingTool)
+			}
+		})
+	}
+}
+
+// TestSettings_StallDetectionRoundTrip proves the block is reachable from
+// settings.json — an operator can retune the thresholds without a rebuild.
+func TestSettings_StallDetectionRoundTrip(t *testing.T) {
+	var s Settings
+	raw := `{"worktree_base_dir":"/tmp/wt","stall_detection":{"awaiting_model_minutes":7,"executing_tool_minutes":60}}`
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := s.StallDetection.AwaitingModelThreshold(); got != 7*time.Minute {
+		t.Errorf("AwaitingModelThreshold() = %v, want 7m", got)
+	}
+	if got := s.StallDetection.ExecutingToolThreshold(); got != 60*time.Minute {
+		t.Errorf("ExecutingToolThreshold() = %v, want 60m", got)
+	}
+
+	// A settings.json that predates the block keeps the defaults.
+	var legacy Settings
+	if err := json.Unmarshal([]byte(`{"worktree_base_dir":"/tmp/wt"}`), &legacy); err != nil {
+		t.Fatalf("Unmarshal legacy: %v", err)
+	}
+	if got := legacy.StallDetection.AwaitingModelThreshold(); got != 5*time.Minute {
+		t.Errorf("legacy AwaitingModelThreshold() = %v, want 5m", got)
+	}
+	if got := legacy.StallDetection.ExecutingToolThreshold(); got != 45*time.Minute {
+		t.Errorf("legacy ExecutingToolThreshold() = %v, want 45m", got)
+	}
+}

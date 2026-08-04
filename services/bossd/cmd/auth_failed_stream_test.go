@@ -108,7 +108,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 		logger:            zerolog.Nop(),
 	}
 	tracker.SetOnAuthChange(func(id string) {
-		publishAuthFailedSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
+		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
 	})
 
 	tracker.SetAuthFailed(agentSessionID, true)
@@ -153,6 +153,143 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	removeClearSession := requireSessionDelta(t, removeClearEvent)
 	if removeClearSession.GetAttentionStatus() != nil {
 		t.Fatalf("remove clear delta attention_status = %+v, want nil", removeClearSession.GetAttentionStatus())
+	}
+}
+
+// TestPublishStalledSessionDelta_SetAndClear is the BOS-667 twin of the auth
+// test above, and exists for the same reason: the cloud/web read model is fed
+// ONLY by the reverse stream, and a stalled chat's status stays WORKING, so if
+// the SetOnStalledChange wiring in main.go were dropped or mis-wired nothing
+// else would ever emit a delta carrying AGENT_STALLED — web would show a
+// serenely "working" session forever and every unit test would still pass.
+//
+// It also pins the CLEAR direction, which is the fail-open half of the feature:
+// once progress resumes the marker must disappear from the stream, not linger.
+func TestPublishStalledSessionDelta_SetAndClear(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	bus := upstream.NewStreamBus(zerolog.Nop())
+	defer bus.Close()
+	events := bus.Subscribe(ctx)
+
+	agentSessionID := "agent-stalled-1"
+	sessionID := "sess-stalled-1"
+	repoID := "repo-stalled-1"
+	now := time.Now()
+	sessions := &fakeSessionStore{byID: map[string]*models.Session{
+		sessionID: {
+			ID:        sessionID,
+			RepoID:    repoID,
+			Title:     "stalled stream",
+			State:     machine.ImplementingPlan,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}}
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+		agentSessionID: {ID: "chat-stalled-1", SessionID: sessionID, AgentSessionID: agentSessionID},
+	}}
+	repos := &fakeRepoStore{byID: map[string]*models.Repo{
+		repoID: {ID: repoID, DisplayName: "repo display", OriginURL: "git@github.com:acme/repo.git"},
+	}}
+	tracker := status.NewTracker()
+	hydrator := &streamSessionHydrator{
+		agentChats:        chats,
+		rawSessions:       sessions,
+		repos:             repos,
+		chatStatusTracker: tracker,
+		rotationEvents:    fakeRotationEventStore{},
+		accountLabeler:    fakeStreamAccountLabeler{},
+		logger:            zerolog.Nop(),
+	}
+	tracker.SetOnStalledChange(func(id string) {
+		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
+	})
+
+	tracker.SetStalled(agentSessionID, true)
+	setSession := requireSessionDelta(t, nextStreamEvent(t, events))
+	if got := setSession.GetAttentionStatus().GetReason(); got != bossanovav1.AttentionReason_ATTENTION_REASON_AGENT_STALLED {
+		t.Fatalf("set delta attention reason = %v, want AGENT_STALLED", got)
+	}
+	if got := setSession.GetBlockedReason(); got != "agent-stalled" {
+		t.Fatalf("set delta blocked_reason = %q, want agent-stalled", got)
+	}
+	if got := setSession.GetRepoDisplayName(); got != "repo display" {
+		t.Fatalf("set delta repo_display_name = %q, want repo display", got)
+	}
+
+	tracker.SetStalled(agentSessionID, false)
+	clearSession := requireSessionDelta(t, nextStreamEvent(t, events))
+	if clearSession.GetAttentionStatus() != nil {
+		t.Fatalf("clear delta attention_status = %+v, want nil", clearSession.GetAttentionStatus())
+	}
+	if clearSession.BlockedReason != nil {
+		t.Fatalf("clear delta blocked_reason = %q, want nil", clearSession.GetBlockedReason())
+	}
+
+	// Removing the chat outright (pane gone) must also clear, or a session whose
+	// chat died while stalled would keep the banner with nothing left to check.
+	tracker.SetStalled(agentSessionID, true)
+	_ = nextStreamEvent(t, events)
+	tracker.Remove(agentSessionID)
+	removeClearSession := requireSessionDelta(t, nextStreamEvent(t, events))
+	if removeClearSession.GetAttentionStatus() != nil {
+		t.Fatalf("remove clear delta attention_status = %+v, want nil", removeClearSession.GetAttentionStatus())
+	}
+}
+
+// TestPublishStalledSessionDelta_AuthOutranksStalled pins the priority rule at
+// the STREAM boundary, not just in the hydrator unit test: when a chat is both
+// auth-failed and stalled, the delta web receives must name the actionable
+// reason (/login), never the vaguer symptom.
+func TestPublishStalledSessionDelta_AuthOutranksStalled(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	bus := upstream.NewStreamBus(zerolog.Nop())
+	defer bus.Close()
+	events := bus.Subscribe(ctx)
+
+	agentSessionID := "agent-both-1"
+	sessionID := "sess-both-1"
+	repoID := "repo-both-1"
+	now := time.Now()
+	sessions := &fakeSessionStore{byID: map[string]*models.Session{
+		sessionID: {
+			ID:        sessionID,
+			RepoID:    repoID,
+			Title:     "both markers",
+			State:     machine.ImplementingPlan,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}}
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+		agentSessionID: {ID: "chat-both-1", SessionID: sessionID, AgentSessionID: agentSessionID},
+	}}
+	repos := &fakeRepoStore{byID: map[string]*models.Repo{
+		repoID: {ID: repoID, DisplayName: "repo display", OriginURL: "git@github.com:acme/repo.git"},
+	}}
+	tracker := status.NewTracker()
+	hydrator := &streamSessionHydrator{
+		agentChats:        chats,
+		rawSessions:       sessions,
+		repos:             repos,
+		chatStatusTracker: tracker,
+		rotationEvents:    fakeRotationEventStore{},
+		accountLabeler:    fakeStreamAccountLabeler{},
+		logger:            zerolog.Nop(),
+	}
+	tracker.SetOnStalledChange(func(id string) {
+		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
+	})
+
+	tracker.SetAuthFailed(agentSessionID, true) // no hook wired: publishes nothing
+	tracker.SetStalled(agentSessionID, true)
+	session := requireSessionDelta(t, nextStreamEvent(t, events))
+	if got := session.GetAttentionStatus().GetReason(); got != bossanovav1.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED to outrank AGENT_STALLED", got)
 	}
 }
 

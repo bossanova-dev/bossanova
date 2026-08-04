@@ -190,6 +190,7 @@ go_test(
         "tmuxopts_test.go",
         "toast_test.go",
         "trash_test.go",
+        "waiting_status_test.go",
         "webopen_test.go",
     ],
     data = glob(

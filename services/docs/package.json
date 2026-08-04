@@ -55,17 +55,21 @@
       "fast-xml-parser": "5.10.1",
       "svgo": "3.3.4",
       "gray-matter>js-yaml": "3.15.0",
-      "brace-expansion": "1.1.16",
+      "brace-expansion": "1.1.17",
       "undici": "7.28.0",
       "protobufjs": "7.6.5",
       "ws": "7.5.11",
       "serialize-javascript": "7.0.5",
       "webpack-dev-server": "5.2.6",
       "@opentelemetry/core": "2.8.0",
-      "dompurify": "3.4.11",
+      "dompurify": "3.4.12",
       "http-proxy-middleware": "2.0.10",
       "joi": "17.13.4",
-      "qs": "6.15.2"
+      "qs": "6.15.2",
+      "postcss": "8.5.18",
+      "sockjs>uuid": "11.1.1",
+      "body-parser": "1.20.6",
+      "@babel/core": "7.29.6"
     }
   },
   "scripts": {

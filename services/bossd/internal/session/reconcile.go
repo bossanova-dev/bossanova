@@ -60,6 +60,7 @@ type PRAssociationResolver struct {
 	logger   zerolog.Logger
 	branches LiveBranchResolver
 	cronJobs db.CronJobStore
+	archiver SessionArchiver
 	notify   func(context.Context, *models.Session)
 
 	mu      sync.Mutex
@@ -105,6 +106,25 @@ func (r *PRAssociationResolver) WithCronJobs(cronJobs db.CronJobStore) *PRAssoci
 	return r
 }
 
+// WithArchiver attaches the archive-after-merge automation so the reconciler
+// can heal rows that reached Merged while the archive hook was unreachable —
+// the merged-but-unarchived shape from BOS-697. Nothing else revisits a
+// terminal row (the display poller skips terminal tracker entries and
+// pollableState excludes terminal states), so without this pass those sessions
+// stay unarchived forever. Without an archiver the pass is a no-op. Returns the
+// resolver for chaining.
+//
+// Like the other options it writes the field unguarded, so it must be called
+// before anything that can invoke the sweep concurrently. Its only reader is
+// Reconcile, whose only concurrent caller is the periodic reconcile goroutine
+// (the server's ListSessions path goes through ReconcileSessions, which does
+// not run the sweep). main.go calls this during single-threaded startup wiring,
+// after the Server exists but well before that goroutine starts.
+func (r *PRAssociationResolver) WithArchiver(archiver SessionArchiver) *PRAssociationResolver {
+	r.archiver = archiver
+	return r
+}
+
 // WithUpdateNotifier attaches a callback invoked once per session the
 // reconciler updates (PR association + rename to the PR title). It exists so
 // the PR-title rename reaches the cloud/web: reconcile writes directly through
@@ -141,7 +161,21 @@ func (r *PRAssociationResolver) Reconcile(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("list active sessions: %w", err)
 	}
 
-	return r.ReconcileSessions(ctx, active)
+	updated, err := r.ReconcileSessions(ctx, active)
+
+	// Runs whatever the association pass returned: the sweep heals an unrelated
+	// shape, so a PR-association failure must not silently disable it.
+	//
+	// The merged-but-unarchived sweep hangs off THIS entry point rather than
+	// ReconcileSessions, because only this one sees the whole active set. The
+	// other caller (Server.ListSessions, via reconcileListSessionPRAssociations)
+	// passes rows pre-filtered by NeedsPRAssociation, which requires
+	// PRNumber == nil — a shape a merged row can never have — so running the
+	// sweep there would be structurally dead work on a hot path, and would make
+	// the "bounded by ListActive" reasoning in its doc comment untrue.
+	r.archiveMergedButUnarchived(ctx, active)
+
+	return updated, err
 }
 
 // ReconcileSessions reconciles only the supplied active sessions. It exists for
@@ -194,6 +228,14 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 			updateParams.Title = &title
 		}
 
+		// Un-wedge a session whose PR the agent opened itself, so bossd's
+		// BranchPushed / PROpened never fired (BOS-697). Rides the same write as
+		// the PR association — no extra round-trip.
+		if advanced, ok := adoptedPRState(sess.State); ok {
+			state := int(advanced)
+			updateParams.State = &state
+		}
+
 		clearDraftPRBlockedReasonUpdate(sess.BlockedReason, &updateParams)
 
 		updatedSess, err := r.sessions.Update(ctx, sess.ID, updateParams)
@@ -223,6 +265,114 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 	updated += r.repairStaleCronTitles(ctx, sessions)
 
 	return updated, nil
+}
+
+// archiveMergedButUnarchived archives sessions already sitting at
+// machine.Merged with no ArchivedAt, on repos with the
+// ShouldArchiveSessionsAfterMerge flag on.
+//
+// It heals rows that reached Merged while the archive hook was unreachable —
+// e.g. a session wedged in PushingBranch whose merge webhook the state machine
+// rejected, or one the display poller reconciled on a daemon build that had no
+// archiver on that path (BOS-697). Nothing else revisits a terminal row, so
+// without this pass they stay unarchived forever.
+//
+// Deliberately best-effort and never fails the reconcile: it returns nothing,
+// and the underlying archive is detached and idempotent. Every archive that
+// SUCCEEDS converges to zero work immediately — the sessions it sees are
+// bounded by ListActive (which excludes archived rows) and the Merged filter,
+// so a row it archives is gone from the next pass. A row whose archive keeps
+// failing before Lifecycle.ArchiveSession reaches its sessions.Archive write
+// (an unreadable repo, a worktree that will not archive) stays in the set and
+// is retried every tick, with a Warn line per attempt — deliberate: the shape
+// this heals is durable, so giving up on it silently would be worse than the
+// retry. It is a documented no-op without an archiver (see WithArchiver).
+//
+// Known limits, deliberately not papered over:
+//
+//   - The predicate cannot distinguish a row this pass exists to heal from a
+//     session someone deliberately resurrected on a flag-on repo, because a
+//     resurrect is not durably recorded anywhere — clearing archived_at is all
+//     it writes. ResurrectSession now also clears the terminal state in the same
+//     breath (see the note there), which removes the mid-resurrect race and the
+//     failed-resurrect row that would otherwise sit in this set forever. It does
+//     not make the resurrect a durable override: once the display poller sees
+//     the still-merged PR on a cold tracker it reconciles the row back to Merged
+//     and archives it right there (reconcileNonTerminalToResolved), so that path
+//     — not this sweep — is what re-archives a resurrected session. On a repo
+//     that opted into archive-after-merge that is the flag being applied, but
+//     making a resurrect win would need a persisted resurrect marker, which is
+//     out of scope for BOS-697.
+//   - Turning the repo flag ON backfills. Merged rows accumulated while it was
+//     off are all archived within one tick (worktrees removed, and local
+//     branches reaped when CanAutoDeleteBranches is also on), because the flag
+//     is read per-pass rather than at merge time.
+func (r *PRAssociationResolver) archiveMergedButUnarchived(ctx context.Context, sessions []*models.Session) {
+	if r.archiver == nil {
+		return
+	}
+	for _, sess := range sessions {
+		if sess == nil || sess.ArchivedAt != nil || sess.State != machine.Merged {
+			continue
+		}
+		archiveSessionAfterMergeIfEnabled(ctx, r.repos, r.archiver, r.logger, sess)
+	}
+}
+
+// adoptedPRState returns the state a session should advance to when reconcile
+// adopts an existing PR onto it, and whether an advance applies at all.
+//
+// Only the two "the PR should already exist by now" states are advanced. A
+// session left in PushingBranch or OpeningDraftPR — the shape produced when an
+// agent pushes its own branch and opens the PR itself, so bossd's BranchPushed
+// / PROpened never fire — permits no PR lifecycle event, so it silently drops
+// every check, review and merge event from then on (BOS-697). Replaying the
+// real edges (BranchPushed → PROpened, or PROpened alone) lands it on
+// AwaitingChecks: the same destination planCompleteDestination picks when
+// HasPR is true, and a member of pollableState, so the session resumes
+// receiving events.
+//
+// Every other state is deliberately left alone. ImplementingPlan in particular
+// must stay put: the agent is still working, and PlanComplete routes it to
+// AwaitingChecks via HasPR on its own.
+//
+// The advance also makes the row eligible for the repair plugin, whose
+// lookupSession accepts AwaitingChecks (plugins/bossd-plugin-repair) — the
+// intended consequence of putting a session back on the normal lifecycle, but a
+// behaviour change on CanAutoRepair repos worth naming.
+//
+// Known trade-off: PushingBranch and OpeningDraftPR are also members of
+// strandedReapStates (reconcile_cron.go), so advancing removes the row from the
+// stranded-cron sweep's reap set — AwaitingChecks is out of that set by design
+// (BOS-332). For a dead unattended run the sweep's finalize would also have
+// committed leftover worktree changes and recorded cron_job.last_run_outcome;
+// after this advance it does not. The wedge itself is the bigger loss (the row
+// silently drops every PR event for as long as it sits there), and un-wedging
+// on adopt is what BOS-697 asks for, so the advance is unconditional.
+// A replay that cannot fire returns (current, false) and un-wedges nothing,
+// silently. That is the safe direction — never persist a state the machine
+// would reject — and it is not left unguarded:
+// TestReconcilePRAssociations_AdvancesWedgedStateOnAdopt is the tripwire, so an
+// FSM edit that removes BranchPushed or PROpened goes red there rather than
+// quietly turning this pass off in production.
+func adoptedPRState(current machine.State) (machine.State, bool) {
+	var replay []machine.Event
+	switch current {
+	case machine.PushingBranch:
+		replay = []machine.Event{machine.BranchPushed, machine.PROpened}
+	case machine.OpeningDraftPR:
+		replay = []machine.Event{machine.PROpened}
+	default:
+		return current, false
+	}
+
+	sm := machine.New(current)
+	for _, event := range replay {
+		if err := sm.Fire(event); err != nil {
+			return current, false
+		}
+	}
+	return sm.State(), true
 }
 
 // repairStaleCronTitles renames cron sessions that already have a PR but whose

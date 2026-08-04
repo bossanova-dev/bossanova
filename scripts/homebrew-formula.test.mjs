@@ -66,14 +66,20 @@ test('BOS-627: caveats text contains no `boss mcp install` command to copy', () 
   )
 })
 
-test('BOS-627: caveats still tells users to restart the daemon after `brew upgrade`', () => {
+test('BOS-696: caveats explain why `brew upgrade` requires a daemon restart', () => {
   const caveats = extractCaveats(formula)
 
   assert.match(
     caveats,
     /boss daemon restart/,
-    'BOS-627: caveats lost the `boss daemon restart` guidance. That advice is ' +
-      'real (upgraded binaries need a daemon restart to take effect) and must ' +
-      'survive the caveats rewrite verbatim as a runnable command.',
+    'BOS-696: caveats lost the `boss daemon restart` command users need after ' +
+      'a Homebrew upgrade.',
+  )
+
+  assert.match(
+    caveats,
+    /re-stages bossd at a\s+version-stable real path/,
+    'BOS-696: caveats must explain that restarting re-stages bossd at a ' +
+      'version-stable real path, which keeps macOS privacy permissions matched.',
   )
 })

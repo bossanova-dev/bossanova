@@ -184,6 +184,9 @@ func (s *Store) Load(accountID string) ([]byte, error) {
 // when no entry exists so callers can distinguish a missing entry from a
 // keyring failure.
 func (s *Store) Delete(accountID string) error {
+	unlock := s.locks.lock(accountID)
+	defer unlock()
+
 	ring, err := s.open()
 	if err != nil {
 		return fmt.Errorf("open keyring: %w", err)
@@ -194,5 +197,6 @@ func (s *Store) Delete(accountID string) error {
 		}
 		return fmt.Errorf("delete account credential: %w", err)
 	}
+	s.generations.increment(accountID)
 	return nil
 }

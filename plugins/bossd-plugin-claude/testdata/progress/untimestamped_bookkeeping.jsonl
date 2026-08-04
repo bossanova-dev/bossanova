@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-08-03T15:11:02.114Z","message":{"role":"user","content":"run the full test suite"}}
+{"type":"assistant","timestamp":"2026-08-03T15:11:09.507Z","message":{"role":"assistant","content":[{"type":"text","text":"Running it now."},{"type":"tool_use","id":"toolu_01B","name":"Bash","input":{"command":"make test-all"}}]}}
+{"type":"last-prompt","prompt":"run the full test suite"}
+{"type":"mode","mode":"default"}
+{"type":"permission-mode","permissionMode":"default"}

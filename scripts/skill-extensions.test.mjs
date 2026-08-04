@@ -203,13 +203,30 @@ test('repo-authored notes extensions report recording failures as unsuccessful e
   }
 })
 
+// BOS-674: a core's step-by-step spine is not always one file. boss-build's Steps 8-12 —
+// including the Step 12 post-terminal notes dispatch — were extracted into
+// references/finalize-and-stop.md, so reading SKILL.md alone reports the notes contract as
+// deleted when it merely moved. The list is EXPLICIT rather than a walk of references/, so a
+// clause deleted outright still turns this red. Mirrors `coreBodyFiles` in
+// services/boss/internal/skillinstall/skills_manifest_test.go.
+const CORE_BODY_FILES = {
+  'boss-build': ['SKILL.md', 'references/finalize-and-stop.md'],
+}
+
+const publishedSpine = (root, core) =>
+  (CORE_BODY_FILES[core] ?? ['SKILL.md'])
+    .map((rel) =>
+      fs.readFileSync(
+        path.join(root, 'services', 'boss', 'internal', 'skillinstall', 'skills', core, rel),
+        'utf8',
+      ),
+    )
+    .join('\n')
+
 test('fresh notes workers receive only a bounded completed-run observation artifact', () => {
   const root = path.resolve(import.meta.dirname, '..')
   for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
-    const published = fs.readFileSync(
-      path.join(root, 'services', 'boss', 'internal', 'skillinstall', 'skills', core, 'SKILL.md'),
-      'utf8',
-    )
+    const published = publishedSpine(root, core)
     const extension = fs.readFileSync(
       path.join(root, '.claude', 'skills', `${core}-notes`, 'SKILL.md'),
       'utf8',

@@ -602,6 +602,10 @@ enum AttentionReason {
   // Agent emitted a login-required signal ("Not logged in" / "Please run
   // /login"); driver should trigger login-rotation recovery.
   ATTENTION_REASON_AGENT_AUTH_FAILED = 5;
+  // Chat reports CHAT_STATUS_WORKING but the agent has made no semantic
+  // progress (no new transcript record) for longer than its phase's threshold —
+  // a silently-dead turn behind a still-animating spinner.
+  ATTENTION_REASON_AGENT_STALLED = 6;
 }
 
 // AttentionStatus represents whether and why a session needs human attention.
@@ -677,6 +681,10 @@ enum ChatStatus {
   CHAT_STATUS_STOPPED = 3;
   CHAT_STATUS_QUESTION = 4;
   CHAT_STATUS_LIMITED = 5;
+  // The chat is blocked on an external event — a registered GitHub callback,
+  // a background poll tick — rather than computing. Distinct from WORKING so an
+  // operator can tell "blocked on CI for 82 minutes" apart from "hung".
+  CHAT_STATUS_WAITING = 6;
 }
 
 // ClaudeChat represents a Claude Code conversation associated with a session.

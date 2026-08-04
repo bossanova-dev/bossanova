@@ -757,3 +757,208 @@ func TestCleanup_FiresTransientAPIErrorChangeForRemovedStaleMarkers(t *testing.T
 		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
 	}
 }
+
+// --- BOS-667: agent-stalled marker -------------------------------------------
+//
+// The stalled marker mirrors the auth-failed marker exactly (set/clear, freshness
+// self-heal, edge-triggered hook). These tests are the auth-marker tests with the
+// stalled marker substituted, so any divergence between the two shapes shows up
+// as a diff between the two blocks.
+
+func TestSetStalled_and_Stalled(t *testing.T) {
+	tr := NewTracker()
+
+	if tr.Stalled("chat-1") {
+		t.Fatal("Stalled on unknown chat = true, want false")
+	}
+
+	tr.SetStalled("chat-1", true)
+	if !tr.Stalled("chat-1") {
+		t.Fatal("Stalled after SetStalled(true) = false, want true")
+	}
+
+	// Clearing removes the marker immediately, so a chat whose agent resumed
+	// making progress stops flagging on the very next poll tick.
+	tr.SetStalled("chat-1", false)
+	if tr.Stalled("chat-1") {
+		t.Fatal("Stalled after SetStalled(false) = true, want false")
+	}
+}
+
+// TestSetStalled_FiresOnStalledChangeOnlyOnTransition is the debounce guard: the
+// poller calls SetStalled on EVERY 3s tick, so an ungated hook would emit a
+// SessionDelta every three seconds for as long as the stall persists.
+func TestSetStalled_FiresOnStalledChangeOnlyOnTransition(t *testing.T) {
+	tr := NewTracker()
+	var mu sync.Mutex
+	var fired []string
+	tr.SetOnStalledChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetStalled("chat-1", true) // absent → stalled: one transition
+	tr.SetStalled("chat-1", true) // repeated identical tick: no fire
+	tr.SetStalled("chat-1", true) // repeated identical tick: no fire
+	tr.SetStalled("chat-1", false)
+	tr.SetStalled("chat-1", false) // already clear: no fire
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onStalledChange fired %d times (%v), want 2 (set + clear transitions)", len(got), got)
+	}
+	for _, id := range got {
+		if id != "chat-1" {
+			t.Errorf("onStalledChange fired for %q, want chat-1", id)
+		}
+	}
+}
+
+func TestSetStalled_StaleMarkerCountsAsTransition(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnStalledChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetStalled("chat-1", true) // fire 1 (absent → fresh)
+
+	tr.mu.Lock()
+	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.SetStalled("chat-1", true) // fire 2 (stale/effectively-absent → fresh)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onStalledChange fired %d times, want 2 (a stale marker refreshing is a transition)", got)
+	}
+}
+
+func TestSetStalled_FalseClearsStaleMarkerWithStalledChange(t *testing.T) {
+	tr := NewTracker()
+	var fires int
+	var mu sync.Mutex
+	tr.SetOnStalledChange(func(string) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	})
+
+	tr.SetStalled("chat-1", true)
+	tr.mu.Lock()
+	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.SetStalled("chat-1", false) // fire 2 (stale marker removed)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("onStalledChange fired %d times, want 2 (set + stale clear)", got)
+	}
+}
+
+func TestStalled_Stale(t *testing.T) {
+	tr := NewTracker()
+	tr.SetStalled("chat-1", true)
+
+	tr.mu.Lock()
+	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	if tr.Stalled("chat-1") {
+		t.Fatal("Stalled on stale marker = true, want false")
+	}
+}
+
+func TestRemove_ClearsStalled(t *testing.T) {
+	tr := NewTracker()
+	tr.SetStalled("chat-1", true)
+	tr.Remove("chat-1")
+	if tr.Stalled("chat-1") {
+		t.Fatal("Stalled after Remove = true, want false")
+	}
+}
+
+func TestRemove_FiresOnStalledChangeWhenMarkerCleared(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnStalledChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetStalled("chat-1", true) // set transition
+	tr.Remove("chat-1")           // clear transition
+	tr.Remove("chat-1")           // no marker left, no extra transition
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("onStalledChange fired %d times (%v), want 2", len(got), got)
+	}
+}
+
+func TestCleanup_RemovesStaleStalled(t *testing.T) {
+	tr := NewTracker()
+	tr.SetStalled("fresh", true)
+	tr.SetStalled("stale", true)
+	tr.mu.Lock()
+	tr.stalled["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	tr.mu.RLock()
+	_, freshOK := tr.stalled["fresh"]
+	_, staleOK := tr.stalled["stale"]
+	tr.mu.RUnlock()
+	if !freshOK {
+		t.Error("Cleanup removed a fresh stalled marker")
+	}
+	if staleOK {
+		t.Error("Cleanup kept a stale stalled marker")
+	}
+}
+
+func TestCleanup_FiresOnStalledChangeForRemovedStaleMarkers(t *testing.T) {
+	tr := NewTracker()
+	var fired []string
+	var mu sync.Mutex
+	tr.SetOnStalledChange(func(id string) {
+		mu.Lock()
+		fired = append(fired, id)
+		mu.Unlock()
+	})
+
+	tr.SetStalled("fresh", true)
+	tr.SetStalled("stale", true)
+	tr.mu.Lock()
+	tr.stalled["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	tr.Cleanup()
+
+	mu.Lock()
+	got := append([]string(nil), fired...)
+	mu.Unlock()
+	if len(got) != 3 {
+		t.Fatalf("onStalledChange fired %d times (%v), want 3 (two sets + stale clear)", len(got), got)
+	}
+	if got[2] != "stale" {
+		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
+	}
+}

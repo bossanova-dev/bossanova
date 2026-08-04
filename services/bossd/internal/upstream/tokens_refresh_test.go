@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -145,6 +146,51 @@ func TestKeychainTokensJSONSharedShape(t *testing.T) {
 	if marked.valid() {
 		t.Fatal("a record flagged for re-login must not report valid()")
 	}
+}
+
+func TestLoadKeychainTokensVersionedRecordIsAuthoritative(t *testing.T) {
+	legacy := []byte(`{"access_token":"legacy-access","refresh_token":"legacy-refresh","expires_at":"2099-01-01T00:00:00Z","email":"legacy@example.com"}`)
+	versioned := []byte(`{"version":1,"access_token":"current-access","refresh_token":"current-refresh","expires_at":"2099-01-01T00:00:00Z","email":"current@example.com"}`)
+
+	withRing := func(t *testing.T, ring keyring.Keyring) {
+		t.Helper()
+		original := openKeyring
+		openKeyring = func() (keyring.Keyring, error) { return ring, nil }
+		t.Cleanup(func() { openKeyring = original })
+	}
+
+	t.Run("loads legacy only when authoritative key is absent", func(t *testing.T) {
+		withRing(t, keyring.NewArrayKeyring([]keyring.Item{{Key: legacyTokenKey, Data: legacy}}))
+		tokens, err := loadKeychainTokens()
+		if err != nil || tokens.Email != "legacy@example.com" {
+			t.Fatalf("loadKeychainTokens() = (%+v, %v), want legacy tokens", tokens, err)
+		}
+	})
+
+	t.Run("versioned key wins after an old writer rewrites legacy", func(t *testing.T) {
+		withRing(t, keyring.NewArrayKeyring([]keyring.Item{
+			{Key: legacyTokenKey, Data: legacy},
+			{Key: versionedTokenKey, Data: versioned},
+		}))
+		tokens, err := loadKeychainTokens()
+		if err != nil || tokens.Email != "current@example.com" {
+			t.Fatalf("loadKeychainTokens() = (%+v, %v), want versioned tokens", tokens, err)
+		}
+	})
+
+	t.Run("unsupported version fails closed without replaying legacy", func(t *testing.T) {
+		withRing(t, keyring.NewArrayKeyring([]keyring.Item{
+			{Key: legacyTokenKey, Data: legacy},
+			{Key: versionedTokenKey, Data: []byte(`{"version":999,"access_token":"must-not-load"}`)},
+		}))
+		_, err := loadKeychainTokens()
+		if err == nil {
+			t.Fatal("loadKeychainTokens() error = nil, want unsupported-version failure")
+		}
+		if strings.Contains(err.Error(), "must-not-load") || strings.Contains(err.Error(), "legacy-access") {
+			t.Fatalf("load error leaked credential material: %v", err)
+		}
+	})
 }
 
 func TestKeychainTokenProviderRefreshPreservesEmailAndReturnsSaveError(t *testing.T) {
@@ -1389,7 +1435,7 @@ func TestKeychainTokenProviderRefreshDoesNotSignBackInAfterLogout(t *testing.T) 
 	withTokenRefreshHooks(t, &lockMu)
 
 	loadKeychainTokensFn = func() (*keychainTokens, error) {
-		return nil, keyring.ErrKeyNotFound
+		return nil, fs.ErrNotExist
 	}
 	var saves int
 	saveKeychainTokensFn = func(*keychainTokens) error {

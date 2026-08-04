@@ -25,6 +25,7 @@ go_test(
         "keyvocab_golden_test.go",
         "rawoutput_test.go",
         "response_loop_test.go",
+        "wait_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":tuidriver"],

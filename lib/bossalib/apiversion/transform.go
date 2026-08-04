@@ -99,7 +99,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships seven live transforms in non-decreasing version
+// DefaultRegistry. It ships nine live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -114,9 +114,15 @@ type RefMsg struct {
 // display shape on Session.display_label / display_intent / display_spinner; and
 // RespawnSameAccountOutcomeChange (introduced at V20260723), which down-converts
 // ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT and ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
-// on Session.rotation_events back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY.
+// on Session.rotation_events back to ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY;
+// AgentStalledChange (introduced at V20260803), which neutralizes the
+// ATTENTION_REASON_AGENT_STALLED attention reason; and WaitingChatStatusChange
+// (introduced at V20260804), which maps CHAT_STATUS_WAITING back to
+// CHAT_STATUS_WORKING, clears the accompanying waiting_reason, and restores the
+// working display shape on Session.display_label / display_intent /
+// display_spinner.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260723 (Current) runs zero transforms.
+// request resolved to V20260804 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -125,7 +131,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -313,6 +319,139 @@ func (AgentAuthFailedChange) TransformResponse(method string, msg any) {
 	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
 		if m, ok := msg.(*pb.TransferSessionResponse); ok {
 			m.Session = downconvertAuthFailedSession(m.GetSession())
+		}
+	}
+}
+
+// AgentStalledChange is the production VersionChange introduced at V20260803.
+//
+// At V20260803 the OrchestratorService began serving the AttentionReason value
+// ATTENTION_REASON_AGENT_STALLED (6) on Session.attention_status.reason — a new
+// attention reason raised when a chat reports CHAT_STATUS_WORKING while its
+// agent has made no semantic progress (no new transcript record) for longer than
+// its phase's threshold, i.e. a silently dead turn behind a still-animating
+// spinner. Like AGENT_AUTH_FAILED this attention only fires where the session
+// previously had NO attention at all: before the detector existed such a session
+// just kept spinning. A client pinned to an older version was built before this
+// reason existed and would not know how to render it, so for any request
+// resolved older than V20260803 this change neutralizes the attention back to
+// the prior observable behavior — no attention — by clearing attention_status
+// and the stall-specific blocked_reason.
+//
+// Because the detector only overlays AGENT_STALLED where ComputeAttentionStatus
+// returned no attention (a session already Blocked/Orphaned keeps its own
+// reason), a Session carrying reason==AGENT_STALLED never had a real DB
+// blocked_reason, so clearing blocked_reason here is faithful and cannot erase
+// an unrelated one.
+//
+// It targets EVERY unary OrchestratorService response that embeds one or more
+// *pb.Session messages, keyed by the Connect procedure path: the read/lifecycle
+// set OrphanedStateChange handles (ListSessions, GetSession, Stop, Pause,
+// Resume, Merge, Archive, TransferSession) plus the remaining Session-returning
+// procedures (RetrySession, UpdateSession, LinkSessionPR, RunCronJobNow,
+// CloseSession, ResurrectSession) — the same full set ErroredStatusChange
+// covers. The mutating procedures are NOT theoretical: bossd's UpdateSession /
+// LinkSessionPR handlers hand their response proto to the OnSessionUpdated hook
+// (services/bossd/cmd/main.go), which runs HydrateAgentObservability on it IN
+// PLACE before it is returned, so the very Session those RPCs serve can carry a
+// freshly-overlaid ATTENTION_REASON_AGENT_STALLED. All other methods and
+// message types are no-ops.
+//
+// ProxyCreateSession is deliberately excluded: it is a streaming procedure and
+// the version Interceptor applies transforms on unary responses only (see
+// interceptor.go), matching OrphanedStateChange and AgentAuthFailedChange.
+type AgentStalledChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260803, so
+// it is applied to any request resolved to a strictly older version (Baseline,
+// V20260704, V20260705, V20260706, V20260711, V20260718, V20260723).
+func (AgentStalledChange) Version() Version { return V20260803 }
+
+// downconvertStalledSession returns the Session to place in the response for a
+// pre-V20260803 client. If s carries attention_status.reason ==
+// ATTENTION_REASON_AGENT_STALLED it returns a CLONE with attention_status and
+// blocked_reason cleared (restoring the prior "kept spinning, no attention"
+// behavior); otherwise it returns s unchanged. Cloning is essential: bosso's
+// single-instance registry path holds the same *pb.Session pointers it caches, so
+// mutating in place would corrupt the cached session (and race other readers).
+// Only stalled sessions allocate, keeping the common path clone-free.
+func downconvertStalledSession(s *pb.Session) *pb.Session {
+	if s == nil || s.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.AttentionStatus = nil
+	clone.BlockedReason = nil
+	return clone
+}
+
+// TransformResponse implements VersionChange. It neutralizes an AGENT_STALLED
+// attention on each OrchestratorService response type that carries one or more
+// Sessions, matched by procedure path, rewriting only response-local (cloned)
+// copies so a shared registry pointer is never mutated. It is a no-op for any
+// other method or payload type.
+func (AgentStalledChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = downconvertStalledSession(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
+		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
+		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
+			m.Session = downconvertStalledSession(m.GetSession())
 		}
 	}
 }
@@ -625,6 +764,12 @@ func (LimitedChatStatusChange) TransformResponse(method string, msg any) {
 				m.Statuses[i] = downconvertLimitedSessionStatusEntry(m.Statuses[i])
 			}
 		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertLimitedSessionStatusEntry(m.Statuses[i])
+			}
+		}
 	case bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure:
 		if m, ok := msg.(*pb.ProxyChatListEvent); ok {
 			if snapshot := m.GetSnapshot(); snapshot != nil {
@@ -633,6 +778,222 @@ func (LimitedChatStatusChange) TransformResponse(method string, msg any) {
 				}
 			}
 			if statusDelta := downconvertLimitedChatStatusDelta(m.GetStatusDelta()); statusDelta != m.GetStatusDelta() {
+				m.Event = &pb.ProxyChatListEvent_StatusDelta{StatusDelta: statusDelta}
+			}
+		}
+	}
+}
+
+// WaitingChatStatusChange is the production VersionChange introduced at
+// V20260804.
+//
+// At V20260804 the OrchestratorService began serving ChatStatus
+// CHAT_STATUS_WAITING (6) — a chat blocked on an external event (a registered
+// GitHub callback, a background poll tick) rather than computing — together
+// with the accompanying waiting_reason string on ChatStatusEntry,
+// ChatStatusDelta and SessionStatusEntry. Older clients were built before the
+// enum value and the field existed and would render an unknown value blank, so
+// for those clients this transform maps WAITING back to the prior observable
+// status, CHAT_STATUS_WORKING, and clears waiting_reason.
+//
+// It has two legs. The status leg is DaemonService GetChatStatuses /
+// GetSessionStatuses, the OrchestratorService ProxyGetSessionStatuses proxy of
+// the latter, and the OrchestratorService ProxyStreamChats snapshot and status
+// delta. The display leg is the FULL unary session-bearing OrchestratorService
+// set — the fourteen procedures AgentStalledChange (the immediately preceding
+// change) and ErroredStatusChange enumerate, streaming ProxyCreateSession
+// excluded because the Interceptor only transforms unary responses. WAITING also
+// reaches displaystatus.Compute, where it produces its own "waiting"/INFO/
+// no-spinner composite on Session.display_label / display_intent /
+// display_spinner, and that composite is PERSISTED on the sessions row, so every
+// one of those procedures returns it and an old client would otherwise be handed
+// a label it has never rendered. LimitedChatStatusChange covers only the first
+// eight; that narrower set is a pre-existing gap in an already-released change,
+// not a precedent to copy.
+type WaitingChatStatusChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260804, so
+// it is applied to any request resolved to a strictly older version.
+func (WaitingChatStatusChange) Version() Version { return V20260804 }
+
+// downconvertWaitingChatStatusEntry returns the entry to place in the response
+// for a pre-V20260804 client. Cloning is essential: in bosso's single-instance
+// registry path the response holds the same pointers cached in the in-memory
+// registry, so mutating in place would permanently erase the WAITING state
+// every other (current) client should still see. Only waiting entries allocate.
+func downconvertWaitingChatStatusEntry(e *pb.ChatStatusEntry) *pb.ChatStatusEntry {
+	if e == nil || e.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+		return e
+	}
+	clone, ok := proto.Clone(e).(*pb.ChatStatusEntry)
+	if !ok {
+		return e
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WORKING
+	clone.WaitingReason = ""
+	return clone
+}
+
+func downconvertWaitingSessionStatusEntry(e *pb.SessionStatusEntry) *pb.SessionStatusEntry {
+	if e == nil || e.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+		return e
+	}
+	clone, ok := proto.Clone(e).(*pb.SessionStatusEntry)
+	if !ok {
+		return e
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WORKING
+	clone.WaitingReason = ""
+	return clone
+}
+
+func downconvertWaitingChatStatusDelta(d *pb.ChatStatusDelta) *pb.ChatStatusDelta {
+	if d == nil || d.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+		return d
+	}
+	clone, ok := proto.Clone(d).(*pb.ChatStatusDelta)
+	if !ok {
+		return d
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WORKING
+	clone.WaitingReason = ""
+	return clone
+}
+
+// downconvertWaitingSession restores the display composite a pre-V20260804
+// client used to see for a session whose most notable chat is parked on an
+// external event: that chat reported CHAT_STATUS_WORKING, so the old cascade
+// rendered plain "working". The recompute therefore feeds WORKING back in, which
+// also re-derives the intent (BOS-236 recolors a working session DANGER when its
+// PR needs a fix) rather than hard-coding SUCCESS.
+//
+// It recomputes through displaystatus.Compute, NOT ComputeBase — the opposite of
+// downconvertLimitedSession, and for a positional reason. Changes.Apply runs
+// newest-first, and this is the newest change, so it runs BEFORE every older
+// transform: emitting the full Current composite (BOS-430's errored recolor
+// included) is correct, because a client newer than V20260718 must still see
+// that recolor, and a Baseline client has ErroredStatusChange applied
+// afterwards to strip it. The limited transform is last in the chain and so must
+// avoid re-introducing what earlier transforms already removed.
+//
+// The match is on the exact waiting label rather than a prefix: the waiting
+// composite is generated by a single displaystatus branch with no suffix, and a
+// loose match would rewrite unrelated labels into "working".
+func downconvertWaitingSession(s *pb.Session) *pb.Session {
+	if s == nil || s.GetDisplayLabel() != displaystatus.WaitingLabel {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	out := displaystatus.Compute(displaystatus.Input{
+		Session:    clone,
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+	})
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It down-converts WAITING chat
+// status enum values, clears the accompanying waiting_reason, and restores the
+// pre-waiting display composite on every session-bearing response.
+func (WaitingChatStatusChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = downconvertWaitingSession(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
+		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
+		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
+			m.Session = downconvertWaitingSession(m.GetSession())
+		}
+	case bossanovav1connect.DaemonServiceGetChatStatusesProcedure:
+		if m, ok := msg.(*pb.GetChatStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWaitingChatStatusEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.DaemonServiceGetSessionStatusesProcedure:
+		if m, ok := msg.(*pb.GetSessionStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWaitingSessionStatusEntry(m.Statuses[i])
+			}
+		}
+	// The Orchestrator proxy of the same call. This is the leg that actually
+	// runs in production: apiversion.Interceptor is only ever installed on the
+	// OrchestratorService handler (services/bosso/cmd/main.go), so the two
+	// DaemonService cases above are defensive cover for a future daemon-side
+	// server interceptor while THIS case is the one a live pre-V20260804 client
+	// — the boss TUI in cloud mode, the MCP gateway — reaches. Omitting it would
+	// hand that client an unknown enum value (rendered blank) plus a
+	// waiting_reason string it was never built to display.
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWaitingSessionStatusEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure:
+		if m, ok := msg.(*pb.ProxyChatListEvent); ok {
+			if snapshot := m.GetSnapshot(); snapshot != nil {
+				for i := range snapshot.Statuses {
+					snapshot.Statuses[i] = downconvertWaitingChatStatusEntry(snapshot.Statuses[i])
+				}
+			}
+			if statusDelta := downconvertWaitingChatStatusDelta(m.GetStatusDelta()); statusDelta != m.GetStatusDelta() {
 				m.Event = &pb.ProxyChatListEvent_StatusDelta{StatusDelta: statusDelta}
 			}
 		}

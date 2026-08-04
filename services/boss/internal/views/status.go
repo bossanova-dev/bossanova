@@ -9,6 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -19,6 +20,12 @@ const (
 	statusQuestion = "question"
 	statusStopped  = "stopped"
 	statusLimited  = "limited"
+	// statusWaiting names a chat parked on an EXTERNAL event — an armed PR
+	// callback, say — rather than one making progress (BOS-668). It is bound to
+	// displaystatus.WaitingLabel rather than spelled out so the TUI, the web UI
+	// and the daemon-computed composite label cannot drift apart; the same
+	// package supplies the reason string via CallbackWaitingReason.
+	statusWaiting = displaystatus.WaitingLabel
 )
 
 // newStatusSpinner creates an unstyled spinner for status display.
@@ -38,9 +45,38 @@ func chatStatusString(s pb.ChatStatus) string {
 		return statusQuestion
 	case pb.ChatStatus_CHAT_STATUS_LIMITED:
 		return statusLimited
+	case pb.ChatStatus_CHAT_STATUS_WAITING:
+		// Must NOT fall through to the default: a chat parked on an external
+		// event that reads "stopped" would also be offered [w]ake, which does
+		// nothing for it (chatListActionGroups keys that action off
+		// statusStopped). See BOS-668.
+		return statusWaiting
 	default:
 		return statusStopped
 	}
+}
+
+// waitingHintLine composes the one line the TUI renders for a chat parked on an
+// external event: the canonical label plus the daemon-supplied reason, e.g.
+//
+//	waiting · awaiting checks_passed_ready on acme/widget#123
+//
+// The reason itself is stamped daemon-side by
+// displaystatus.CallbackWaitingReason and arrives on the wire
+// (ChatStatusEntry.waiting_reason / SessionStatusEntry.waiting_reason) — the TUI
+// never re-derives it, so an armed callback with a shape this client has never
+// seen still renders. The web UI composes the IDENTICAL string in
+// services/web/src/sessionStatus.ts (waitingHintLine); BOS-668 requires the two
+// surfaces to read the same, so change them together.
+//
+// Returns "" for an empty reason so every caller can skip the line entirely —
+// no empty row, no layout shift, and (on Home) no unselectable sub-row for the
+// cursor to strand on.
+func waitingHintLine(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return displaystatus.WaitingLabel + " · " + reason
 }
 
 // renderArchivingStatus renders the optimistic "archiving" status with an
@@ -512,6 +548,12 @@ func renderClaudeStatus(status string, sp spinner.Model) string {
 		return styleStatusWarning.Render("? question")
 	case statusLimited:
 		return styleStatusWarning.Render("limited")
+	case statusWaiting:
+		// Informational, and deliberately WITHOUT a spinner: a chat parked on an
+		// external event is not making progress, and animating it is exactly the
+		// false "working" signal BOS-668 exists to remove. Matches the composite
+		// displaystatus.Compute produces for the session row (INFO, no spinner).
+		return styleStatusInfo.Render(statusWaiting)
 	case statusWorking:
 		return styleStatusSuccess.Render(sp.View() + "working")
 	case statusIdle:
@@ -861,15 +903,24 @@ func isHTTPEndpointURL(raw string) bool {
 
 // sessionSubRowCount returns how many NON-SELECTABLE auxiliary rows the Home
 // session list renders directly beneath a session's primary row: the endpoint
-// row (0 or 1) followed by one row per warning hint.
+// row (0 or 1), then the waiting-reason row (0 or 1), then one row per warning
+// hint.
+//
+// waitingReason is the daemon-supplied reason for the session's aggregate
+// waiting state (SessionStatusEntry.waiting_reason), passed in rather than read
+// off the session because the session proto does not carry it — Home holds it
+// in daemonWaitingReasons. Empty means no row, which is the common case.
 //
 // This is the single source of truth for auxiliary-row accounting. Row
 // construction, table height, cursor↔session mapping, and cursor normalization
 // all route through it — if any of them counted independently they could
 // disagree and strand the cursor on an unselectable row (BOS-474).
-func sessionSubRowCount(sess *pb.Session) int {
+func sessionSubRowCount(sess *pb.Session, waitingReason string) int {
 	n := len(sessionWarningHints(sess))
 	if sessionHasEndpointRow(sess) {
+		n++
+	}
+	if waitingHintLine(waitingReason) != "" {
 		n++
 	}
 	return n

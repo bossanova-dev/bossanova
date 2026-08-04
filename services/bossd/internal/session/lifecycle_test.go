@@ -492,6 +492,12 @@ func sameAgentSessionID(left, right *string) bool {
 
 type mockRepoStore struct {
 	repos map[string]*models.Repo
+	// getCalls counts Get lookups, so a test can assert that a code path which
+	// looks a repo up was (or was not) entered. Atomic because the store is
+	// shared with the archive/poll goroutines some tests leave running, not
+	// because archiveSessionAfterMergeIfEnabled's own Get is detached (it runs
+	// on the caller's goroutine; only ArchiveSession is inside safego.Go).
+	getCalls atomic.Int64
 }
 
 func newMockRepoStore() *mockRepoStore {
@@ -512,6 +518,7 @@ func (m *mockRepoStore) Create(_ context.Context, params db.CreateRepoParams) (*
 }
 
 func (m *mockRepoStore) Get(_ context.Context, id string) (*models.Repo, error) {
+	m.getCalls.Add(1)
 	r, ok := m.repos[id]
 	if !ok {
 		return nil, fmt.Errorf("repo %s not found", id)
@@ -3063,6 +3070,61 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 	}
 	if err.Error() != "session sess-1 is not archived" {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestResurrectSessionClearsTerminalStateBeforeAgentStart pins the ordering the
+// BOS-697 merged-but-unarchived sweep depends on: ResurrectSession must leave
+// the terminal state in the same breath as clearing archived_at, before the
+// slow agent start.
+//
+// {archived_at NULL, state Merged} is exactly archiveMergedButUnarchived's
+// predicate, so a resurrect that left that shape standing across StartByAgent
+// would let the reconcile tick archive the session back out from under the
+// agent it is starting — and a StartByAgent failure would leave it wearing that
+// shape forever, so the sweep would undo the resurrect on the very next tick.
+//
+// The agent start is made to fail on purpose: that is what proves the state
+// write happened BEFORE it. With the write back in its old position (after the
+// start) this assertion goes red, because the row would still read Merged.
+func TestResurrectSessionClearsTerminalStateBeforeAgentStart(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	cr.startErr = errors.New("agent start failed")
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		LocalPath:                       "/tmp/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+
+	archivedAt := time.Now()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
+		BaseBranch:   "main",
+		State:        machine.Merged,
+		ArchivedAt:   &archivedAt,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lc.ResurrectSession(ctx, "sess-1"); err == nil {
+		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
+	}
+
+	got := sessions.sessions["sess-1"]
+	if got.ArchivedAt != nil {
+		t.Fatalf("archived_at = %v, want nil (the un-archive already landed)", got.ArchivedAt)
+	}
+	if got.State != machine.ImplementingPlan {
+		t.Fatalf("state = %v, want ImplementingPlan; a failed resurrect must not leave the "+
+			"merged-but-unarchived shape the reconcile sweep archives", got.State)
 	}
 }
 

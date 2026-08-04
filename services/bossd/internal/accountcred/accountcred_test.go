@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/99designs/keyring"
 )
@@ -97,12 +98,94 @@ func TestDeleteThenLoad(t *testing.T) {
 	}
 }
 
+func TestDeleteWaitsForCredentialLock(t *testing.T) {
+	s := storeOver(newFakeKeyring())
+	if err := s.Save("acct-1", []byte("blob")); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- s.WithCredentialLock("acct-1", func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- s.Delete("acct-1") }()
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("Delete completed while credential lock was held: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("WithCredentialLock: %v", err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
 func TestDeleteMissing(t *testing.T) {
 	s := storeOver(newFakeKeyring())
 	err := s.Delete("no-such-account")
 	if !errors.Is(err, ErrCredentialNotFound) {
 		t.Errorf("Delete(missing) err = %v, want ErrCredentialNotFound", err)
 	}
+}
+
+func TestDeleteAdvancesCredentialGenerationOnlyAfterSuccessfulRemove(t *testing.T) {
+	t.Run("successful remove", func(t *testing.T) {
+		s := storeOver(newFakeKeyring())
+		if err := s.Save("acct-1", []byte("opaque-credential")); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		before := s.CredentialGeneration("acct-1")
+
+		if err := s.Delete("acct-1"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if got := s.CredentialGeneration("acct-1"); got != before+1 {
+			t.Errorf("CredentialGeneration after successful Delete = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("missing credential", func(t *testing.T) {
+		s := storeOver(newFakeKeyring())
+		before := s.CredentialGeneration("acct-1")
+
+		err := s.Delete("acct-1")
+		if !errors.Is(err, ErrCredentialNotFound) {
+			t.Fatalf("Delete(missing) error = %v, want ErrCredentialNotFound", err)
+		}
+		if got := s.CredentialGeneration("acct-1"); got != before {
+			t.Errorf("CredentialGeneration after missing Delete = %d, want %d", got, before)
+		}
+	})
+
+	t.Run("remove failure", func(t *testing.T) {
+		f := newFakeKeyring()
+		s := storeOver(f)
+		if err := s.Save("acct-1", []byte("opaque-credential")); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		before := s.CredentialGeneration("acct-1")
+		f.failAll = true
+
+		if err := s.Delete("acct-1"); err == nil {
+			t.Fatal("Delete(remove failure) error = nil, want error")
+		}
+		if got := s.CredentialGeneration("acct-1"); got != before {
+			t.Errorf("CredentialGeneration after failed Delete = %d, want %d", got, before)
+		}
+	})
 }
 
 func TestSaveOverwrites(t *testing.T) {

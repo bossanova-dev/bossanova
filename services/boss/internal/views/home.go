@@ -34,13 +34,20 @@ type HomeModel struct {
 	spinner        spinner.Model
 	sessions       []*pb.Session
 	daemonStatuses map[string]string // session_id → status string from daemon heartbeats
-	table          table.Model
-	err            error
-	status         string
-	loading        bool
-	width          int
-	height         int
-	repoCount      int // number of registered repos (for empty state guidance)
+	// daemonWaitingReasons holds session_id → the daemon's reason for a
+	// waiting aggregate status, e.g. "awaiting checks_passed_ready on
+	// acme/widget#123" (SessionStatusEntry.waiting_reason, BOS-668). Kept
+	// alongside daemonStatuses rather than on the session because the Session
+	// proto carries only the composite label, not why. Empty/absent for every
+	// session that is not parked.
+	daemonWaitingReasons map[string]string
+	table                table.Model
+	err                  error
+	status               string
+	loading              bool
+	width                int
+	height               int
+	repoCount            int // number of registered repos (for empty state guidance)
 
 	// pollFailures counts consecutive failed session polls. The "Cannot
 	// connect to daemon" screen is only shown once it reaches
@@ -87,8 +94,12 @@ type HomeModel struct {
 
 	// Auth
 	authMgr       *auth.Manager // nil means auth not configured
+	authChanges   *authChangeQueue
 	loggedIn      bool
 	loggedInEmail string
+	// authStatusGeneration invalidates a poll that started before a successful
+	// logout, so it cannot restore the deleted credential's presentation.
+	authStatusGeneration uint64
 	// needsRelogin / reloginReason mirror the auth poll's retained
 	// re-login state (BOS-659): credentials are still stored but cannot be
 	// used. Both are cleared by the next clean poll, so a successful login
@@ -125,6 +136,9 @@ type HomeModel struct {
 	// next successful one. Never carries token material: Manager.Logout's
 	// errors wrap the credential-lock and keychain errors only.
 	logoutError string
+	// logoutPending prevents a second confirmation from starting another
+	// keychain delete before the first confirmed logout reports its result.
+	logoutPending bool
 }
 
 // handleLogout records the outcome of the confirmed logout so a failure is
@@ -132,12 +146,24 @@ type HomeModel struct {
 // daemon can be holding, so this really does fail; a discarded error left the
 // board apparently unchanged and still signed in.
 func (h HomeModel) handleLogout(msg logoutMsg) (tea.Model, tea.Cmd) {
+	h.logoutPending = false
 	if msg.err != nil {
 		h.logoutError = msg.err.Error()
+		// A failed logout adds a status block below the session table. Refresh
+		// the cached table height immediately instead of waiting for a poll.
+		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}
 	h.logoutError = ""
-	return h, nil
+	h.loggedIn = false
+	h.loggedInEmail = ""
+	h.needsRelogin = false
+	h.reloginReason = ""
+	h.authStatusGeneration++
+	// The successful result removes the error block and changes the action bar.
+	// Keep the cached table height in sync with the new footer immediately.
+	h.table.SetHeight(h.tableHeight())
+	return h, msg.notify
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
@@ -178,10 +204,27 @@ func (h HomeModel) currentTime() time.Time {
 // bug report.
 func (h HomeModel) DaemonStatuses() map[string]string { return h.daemonStatuses }
 
+// sessionWaitingReason returns the daemon-supplied waiting reason for a
+// session, or "" when it is not parked on an external event. The single
+// accessor every auxiliary-row helper goes through, so the row that
+// buildTableRows emits and the count sessionSubRowCount reports cannot disagree
+// (BOS-474's stranded-cursor failure mode).
+func (h HomeModel) sessionWaitingReason(sess *pb.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return h.daemonWaitingReasons[sess.GetId()]
+}
+
+// subRowCount is sessionSubRowCount bound to this model's waiting reasons.
+func (h HomeModel) subRowCount(sess *pb.Session) int {
+	return sessionSubRowCount(sess, h.sessionWaitingReason(sess))
+}
+
 func (h HomeModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
 	if h.authMgr != nil {
-		cmds = append(cmds, fetchAuthStatus(h.authMgr))
+		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.authStatusGeneration))
 	}
 	return tea.Batch(cmds...)
 }
@@ -275,6 +318,9 @@ func (h HomeModel) handleRepoCount(msg repoCountMsg) (tea.Model, tea.Cmd) {
 }
 
 func (h HomeModel) handleAuthStatus(msg authStatusMsg) (tea.Model, tea.Cmd) {
+	if msg.generation != h.authStatusGeneration {
+		return h, nil
+	}
 	h.loggedIn = msg.loggedIn
 	h.loggedInEmail = msg.email
 	h.needsRelogin = msg.needsRelogin
@@ -317,7 +363,7 @@ func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
 	h.nextSessionPollID++
 	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), tickCmd()}
 	if h.authMgr != nil {
-		cmds = append(cmds, fetchAuthStatus(h.authMgr))
+		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.authStatusGeneration))
 	}
 	if h.loggedIn && h.cloudAccess != nil && (cloudAccessPending(h.cloudStatus) || h.cloudCheckoutPolling) {
 		h.cloudChecking = true
@@ -356,10 +402,11 @@ func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {
 	}
 }
 
-func fetchAuthStatus(mgr *auth.Manager) tea.Cmd {
+func fetchAuthStatus(mgr *auth.Manager, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		status := mgr.Status()
 		return authStatusMsg{
+			generation:    generation,
 			loggedIn:      status.LoggedIn,
 			email:         status.Email,
 			needsRelogin:  status.NeedsRelogin,

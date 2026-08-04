@@ -183,20 +183,20 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has seven versions ordered oldest→newest:
-	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718 and
-	// V20260723. Current is V20260723 (newest behavior) while Default stays
-	// Baseline (header-less callers pin to the oldest version). V20260701 is NOT
-	// a member (example/test use only).
-	if reg.Current() != apiversion.V20260723 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260723)
+	// Production registry has nine versions ordered oldest→newest:
+	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
+	// V20260723, V20260803 and V20260804. Current is V20260804 (newest
+	// behavior) while Default stays Baseline (header-less callers pin to the
+	// oldest version). V20260701 is NOT a member (example/test use only).
+	if reg.Current() != apiversion.V20260804 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260804)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 7 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 7", len(all))
+	if len(all) != 9 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 9", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -218,6 +218,12 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260723) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260723) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260803) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260803) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260804) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260804) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {

@@ -224,3 +224,11 @@ func (p *agentRunnerProxy) MaterializeAccount(ctx context.Context, req *bossanov
 	}
 	return r.MaterializeAccount(ctx, req)
 }
+
+func (p *agentRunnerProxy) ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return r.ProbeProgressLiveness(ctx, req)
+}

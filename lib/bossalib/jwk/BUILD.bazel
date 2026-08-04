@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "jwk",
+    srcs = ["rsa.go"],
+    importpath = "github.com/recurser/bossalib/jwk",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "jwk_test",
+    srcs = ["rsa_test.go"],
+    embed = [":jwk"],
+)

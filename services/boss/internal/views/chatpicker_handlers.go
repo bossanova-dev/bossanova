@@ -49,6 +49,7 @@ func (m ChatPickerModel) handleChatsListed(msg chatsListedMsg) (tea.Model, tea.C
 	m.chats = msg.chats
 	m.daemonStatuses = msg.daemonStatuses
 	m.daemonLastOutput = msg.daemonLastOutput
+	m.daemonWaitingReasons = msg.daemonWaitingReasons
 	// Sort chats by creation time (newest first).
 	sort.Slice(m.chats, func(i, j int) bool {
 		return m.chats[i].CreatedAt.AsTime().After(m.chats[j].CreatedAt.AsTime())
@@ -284,6 +285,11 @@ func (m ChatPickerModel) handleRefresh(msg chatPickerRefreshMsg) (tea.Model, tea
 	}
 	if msg.daemonStatuses != nil {
 		m.daemonStatuses = msg.daemonStatuses
+		// Assigned in the same branch, deliberately: parseChatStatuses returns
+		// both maps together or neither, and a chat whose callback just fired
+		// drops out of the reasons map entirely. Gating on the reasons map being
+		// non-empty would leave a stale reason on screen forever (BOS-668).
+		m.daemonWaitingReasons = msg.daemonWaitingReasons
 	}
 	if msg.daemonLastOutput != nil {
 		m.daemonLastOutput = msg.daemonLastOutput

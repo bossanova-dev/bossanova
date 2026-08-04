@@ -25,7 +25,11 @@ type chatsListedMsg struct {
 	chats            []*pb.ClaudeChat
 	daemonStatuses   map[string]string    // agent_session_id → status string
 	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time
-	err              error
+	// daemonWaitingReasons maps agent_session_id → why the chat is parked on an
+	// external event (BOS-668), e.g. "awaiting checks_passed_ready on
+	// acme/widget#123". Only waiting chats appear.
+	daemonWaitingReasons map[string]string
+	err                  error
 }
 
 // chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
@@ -35,9 +39,10 @@ type chatTitlesBackfilledMsg struct {
 
 // chatPickerRefreshMsg carries refreshed session + daemon statuses for polling.
 type chatPickerRefreshMsg struct {
-	session          *pb.Session
-	daemonStatuses   map[string]string
-	daemonLastOutput map[string]time.Time
+	session              *pb.Session
+	daemonStatuses       map[string]string
+	daemonLastOutput     map[string]time.Time
+	daemonWaitingReasons map[string]string
 }
 
 // chatDeletedMsg signals that a chat was deleted (or failed to delete).

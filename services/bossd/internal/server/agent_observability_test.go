@@ -335,3 +335,84 @@ func TestListSessions_AuthFailedDoesNotOverrideUnrelatedReason(t *testing.T) {
 		t.Errorf("blocked_reason = %q, want %q (unrelated reason preserved)", got.GetBlockedReason(), blockedReason)
 	}
 }
+
+// --- BOS-667: agent-stalled attention overlay ---
+
+// TestHydrateAgentObservability_StalledOverlay is the table-driven contract for
+// the AGENT_STALLED overlay: it fires only on a fresh stalled marker, never
+// outranks a real VCS attention reason, and yields to AGENT_AUTH_FAILED when
+// both markers are live (auth names the fix; "stalled" only names the symptom).
+func TestHydrateAgentObservability_StalledOverlay(t *testing.T) {
+	const agentSessionID = "agent-1"
+	tests := []struct {
+		name           string
+		stalled        bool
+		authFailed     bool
+		preAttention   *pb.AttentionStatus
+		wantReason     pb.AttentionReason
+		wantBlockedRsn string
+	}{
+		{
+			name:           "stalled marker raises AGENT_STALLED",
+			stalled:        true,
+			wantReason:     pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED,
+			wantBlockedRsn: agentStalledBlockedReason,
+		},
+		{
+			name:       "no marker raises nothing",
+			wantReason: pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED,
+		},
+		{
+			name:           "auth-failed outranks stalled",
+			stalled:        true,
+			authFailed:     true,
+			wantReason:     pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+			wantBlockedRsn: agentAuthFailedBlockedReason,
+		},
+		{
+			name:         "existing attention is preserved",
+			stalled:      true,
+			preAttention: &pb.AttentionStatus{NeedsAttention: true, Reason: pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS},
+			wantReason:   pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chats := []*models.AgentChat{{ID: "chat-1", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+			tracker := status.NewTracker()
+			tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+			tracker.SetStalled(agentSessionID, tt.stalled)
+			tracker.SetAuthFailed(agentSessionID, tt.authFailed)
+
+			p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now()), AttentionStatus: tt.preAttention}
+			HydrateAgentObservability(tracker, p, chats)
+
+			if got := p.GetAttentionStatus().GetReason(); got != tt.wantReason {
+				t.Errorf("attention reason = %v, want %v", got, tt.wantReason)
+			}
+			if got := p.GetBlockedReason(); got != tt.wantBlockedRsn {
+				t.Errorf("blocked_reason = %q, want %q", got, tt.wantBlockedRsn)
+			}
+		})
+	}
+}
+
+// TestHydrateAgentObservability_StalledMarkerSelfHealsWhenStale locks the
+// fail-open direction of the overlay: markers age out via status.StaleThreshold,
+// so a poller that stopped ticking (crashed, or the chat went away) must NOT
+// leave a permanent "your session is dead" banner behind.
+func TestHydrateAgentObservability_StalledMarkerSelfHealsWhenStale(t *testing.T) {
+	const agentSessionID = "agent-1"
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	tracker.SetStalled(agentSessionID, true)
+	tracker.SetStalled(agentSessionID, false)
+
+	p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now())}
+	HydrateAgentObservability(tracker, p, chats)
+
+	if p.GetAttentionStatus() != nil {
+		t.Errorf("attention_status = %v, want nil once the stalled marker cleared", p.GetAttentionStatus())
+	}
+}

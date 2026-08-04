@@ -296,6 +296,10 @@ message ChatStatusDelta {
   google.protobuf.Timestamp last_output_at = 3;
   // Per-chat key. Empty for legacy daemons; new daemons MUST set this.
   string agent_session_id = 4;
+  // Short human-readable reason the chat is waiting, e.g.
+  // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+  // CHAT_STATUS_WAITING.
+  string waiting_reason = 5;
 }
 
 // --- Slim metadata types ---
@@ -1169,6 +1173,92 @@ message TerminalCloseCommand {
   string attach_id = 1;
 }
 
+// BOS-661 chat file upload subprotocol.
+//
+// The upload rides the dedicated TerminalStream (never the control-plane
+// DaemonStream and its 128-command queue) so a 500 MiB transfer cannot
+// starve Stop/Pause/Transfer. It is bounded and acknowledged: the browser
+// keeps at most four fixed-size chunks in flight and the daemon answers
+// each durably-written chunk with a TerminalUploadAck. No layer buffers a
+// whole file.
+//
+// Limits are normative and enforced independently in the browser, bosso,
+// and bossd:
+//   * max total size   = 500 * 1024 * 1024 bytes
+//   * max chunk size   = 1024 * 1024 bytes (the existing web-frame cap)
+//   * max in-flight    = 4 chunks
+
+// TerminalUploadStart: bosso → daemon. Opens a new upload on an existing
+// attach. filename is a DISPLAY name only — it MUST NOT contain path
+// separators or `..`; the daemon derives a randomized basename and never
+// honours the client's name on disk.
+message TerminalUploadStart {
+  string attach_id = 1;
+  // Opaque client-chosen upload id, unique per attach.
+  string upload_id = 2;
+  // Display filename (basename only, no path components).
+  string filename = 3;
+  // Declared total size in bytes. Rejected above 500 MiB, and the finish
+  // is rejected when the received total does not match exactly.
+  uint64 size_bytes = 4;
+}
+
+// TerminalUploadChunk: bosso → daemon. One bounded slice of the file.
+// seq is zero-based and strictly sequential per upload; a gap or a repeat
+// terminates the upload with a TerminalUploadResult error.
+message TerminalUploadChunk {
+  string attach_id = 1;
+  string upload_id = 2;
+  uint64 seq = 3;
+  bytes data = 4;
+}
+
+// TerminalUploadFinish: bosso → daemon. Declares the byte stream complete.
+// The daemon syncs and closes the file only when the received byte count
+// equals the declared size, then submits one chat message naming the path.
+message TerminalUploadFinish {
+  string attach_id = 1;
+  string upload_id = 2;
+}
+
+// TerminalUploadCancel: bosso → daemon. Abandons an in-flight upload. The
+// daemon removes the partial file. Also synthesised by bosso on WebSocket
+// teardown so a disconnect can never leave partial data behind.
+message TerminalUploadCancel {
+  string attach_id = 1;
+  string upload_id = 2;
+  // Free-form diagnostic (never contains file contents).
+  string reason = 3;
+}
+
+// TerminalUploadAck: daemon → bosso. Sent only AFTER the chunk has been
+// durably accepted by the daemon's writer. This is the backpressure
+// signal the browser's four-chunk window keys on.
+message TerminalUploadAck {
+  string attach_id = 1;
+  string upload_id = 2;
+  // The seq of the chunk that was accepted.
+  uint64 seq = 3;
+  // Total bytes accepted so far for this upload.
+  uint64 bytes_received = 4;
+}
+
+// TerminalUploadResult: daemon → bosso. Terminal outcome for an upload.
+// Exactly one is sent per upload id. On success the daemon has already
+// submitted the path instruction through normal chat delivery.
+message TerminalUploadResult {
+  string attach_id = 1;
+  string upload_id = 2;
+  bool is_ok = 3;
+  // Fixed, non-sensitive diagnostic string when is_ok is false. Never
+  // contains file contents or the generated absolute path.
+  string error_message = 4;
+  // True when the client may retry the same file (transport/stream loss)
+  // rather than a permanent rejection (too large, bad name, bad order,
+  // or a submit whose delivery could not be confirmed).
+  bool can_retry = 5;
+}
+
 // TerminalDataChunk: daemon → bosso. Carried inside TerminalServerMessage.
 // Raw PTY output (including VT escape codes) tagged with the attach_id so
 // bosso can route it to the correct WebSocket subscriber.
@@ -1233,6 +1323,11 @@ message TerminalClientMessage {
     TerminalCloseCommand close = 4;
     TerminalReady ready = 5;
     TerminalPing ping = 6;
+    // BOS-661 chat file upload (editor-scoped attaches only).
+    TerminalUploadStart upload_start = 7;
+    TerminalUploadChunk upload_chunk = 8;
+    TerminalUploadFinish upload_finish = 9;
+    TerminalUploadCancel upload_cancel = 10;
   }
 }
 
@@ -1245,5 +1340,8 @@ message TerminalServerMessage {
     TerminalDataChunk data = 1;
     TerminalAttachExited exited = 2;
     TerminalPong pong = 3;
+    // BOS-661 chat file upload.
+    TerminalUploadAck upload_ack = 4;
+    TerminalUploadResult upload_result = 5;
   }
 }

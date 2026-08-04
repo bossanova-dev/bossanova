@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-07-18'
+  version: '2026-08-04'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -2863,6 +2863,20 @@ components:
           description: user_settings imported from plugin.proto.
       title: AgentInfo
       additionalProperties: false
+    bossanova.v1.AgentProgressPhase:
+      type: string
+      title: AgentProgressPhase
+      enum:
+        - AGENT_PROGRESS_PHASE_UNSPECIFIED
+        - AGENT_PROGRESS_PHASE_AWAITING_MODEL
+        - AGENT_PROGRESS_PHASE_EXECUTING_TOOL
+        - AGENT_PROGRESS_PHASE_IDLE
+        - AGENT_PROGRESS_PHASE_UNKNOWN
+      description: |-
+        AgentProgressPhase classifies what the agent's most recent transcript record
+         leaves it doing, so the daemon can pick a threshold that fits. A bare "the
+         transcript has not grown in N minutes" signal false-positives on every long
+         tool call; the last record's type disambiguates precisely.
     bossanova.v1.AgentRunnerServiceGetInfoRequest:
       type: object
       title: AgentRunnerServiceGetInfoRequest
@@ -3122,6 +3136,7 @@ components:
         - ATTENTION_REASON_REVIEW_REQUESTED
         - ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE
         - ATTENTION_REASON_AGENT_AUTH_FAILED
+        - ATTENTION_REASON_AGENT_STALLED
       description: AttentionReason represents why a session needs human attention.
     bossanova.v1.AttentionStatus:
       type: object
@@ -3678,6 +3693,7 @@ components:
         - CHAT_STATUS_STOPPED
         - CHAT_STATUS_QUESTION
         - CHAT_STATUS_LIMITED
+        - CHAT_STATUS_WAITING
       description: ChatStatus represents the live status of a Claude Code chat process.
     bossanova.v1.ChatStatusDelta:
       type: object
@@ -3695,6 +3711,13 @@ components:
           type: string
           title: agent_session_id
           description: Per-chat key. Empty for legacy daemons; new daemons MUST set this.
+        waitingReason:
+          type: string
+          title: waiting_reason
+          description: |-
+            Short human-readable reason the chat is waiting, e.g.
+             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+             CHAT_STATUS_WAITING.
       title: ChatStatusDelta
       additionalProperties: false
       description: |-
@@ -3713,6 +3736,13 @@ components:
         lastOutputAt:
           title: last_output_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        waitingReason:
+          type: string
+          title: waiting_reason
+          description: |-
+            Short human-readable reason the chat is waiting, e.g.
+             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+             CHAT_STATUS_WAITING.
       title: ChatStatusEntry
       additionalProperties: false
       description: ChatStatusEntry is a single chat's cached status.
@@ -8639,6 +8669,39 @@ components:
           title: provided
       title: PreflightHeadlessRunResponse
       additionalProperties: false
+    bossanova.v1.ProbeProgressLivenessRequest:
+      type: object
+      properties:
+        workDir:
+          type: string
+          title: work_dir
+          description: worktree path (claude derives the project key from it)
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: chat's agent session UUID
+      title: ProbeProgressLivenessRequest
+      additionalProperties: false
+    bossanova.v1.ProbeProgressLivenessResponse:
+      type: object
+      properties:
+        lastProgressAt:
+          title: last_progress_at
+          description: |-
+            Timestamp of the most recent transcript record. Absent when
+             is_known=false.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        phase:
+          title: phase
+          $ref: '#/components/schemas/bossanova.v1.AgentProgressPhase'
+        isKnown:
+          type: boolean
+          title: is_known
+          description: |-
+            false = "this runner has no opinion" (unimplemented, unreadable or absent
+             transcript). The daemon MUST raise nothing when is_known=false.
+      title: ProbeProgressLivenessResponse
+      additionalProperties: false
     bossanova.v1.ProbeRateLimitRequest:
       type: object
       properties:
@@ -12493,6 +12556,13 @@ components:
           title: status
           description: Best status across all chats (working > idle > stopped)
           $ref: '#/components/schemas/bossanova.v1.ChatStatus'
+        waitingReason:
+          type: string
+          title: waiting_reason
+          description: |-
+            Short human-readable reason the session's chats are waiting, e.g.
+             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+             CHAT_STATUS_WAITING.
       title: SessionStatusEntry
       additionalProperties: false
       description: SessionStatusEntry is an aggregate status for a session.
@@ -13172,6 +13242,39 @@ components:
           title: resize
           required:
             - resize
+        - type: object
+          properties:
+            uploadCancel:
+              title: upload_cancel
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadCancel'
+          title: upload_cancel
+          required:
+            - uploadCancel
+        - type: object
+          properties:
+            uploadChunk:
+              title: upload_chunk
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadChunk'
+          title: upload_chunk
+          required:
+            - uploadChunk
+        - type: object
+          properties:
+            uploadFinish:
+              title: upload_finish
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadFinish'
+          title: upload_finish
+          required:
+            - uploadFinish
+        - type: object
+          properties:
+            uploadStart:
+              title: upload_start
+              description: BOS-661 chat file upload (editor-scoped attaches only).
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadStart'
+          title: upload_start
+          required:
+            - uploadStart
       title: TerminalClientMessage
       additionalProperties: false
       description: |-
@@ -13332,6 +13435,23 @@ components:
           title: pong
           required:
             - pong
+        - type: object
+          properties:
+            uploadAck:
+              title: upload_ack
+              description: BOS-661 chat file upload.
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadAck'
+          title: upload_ack
+          required:
+            - uploadAck
+        - type: object
+          properties:
+            uploadResult:
+              title: upload_result
+              $ref: '#/components/schemas/bossanova.v1.TerminalUploadResult'
+          title: upload_result
+          required:
+            - uploadResult
       title: TerminalServerMessage
       additionalProperties: false
       description: |-
@@ -13339,6 +13459,155 @@ components:
          Despite the name, this is the gRPC REQUEST stream type (bossd is the
          gRPC client and initiates the stream). Unknown oneof cases are logged
          and skipped by bosso for forward compatibility.
+    bossanova.v1.TerminalUploadAck:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+        seq:
+          type:
+            - integer
+            - string
+          title: seq
+          format: int64
+          description: The seq of the chunk that was accepted.
+        bytesReceived:
+          type:
+            - integer
+            - string
+          title: bytes_received
+          format: int64
+          description: Total bytes accepted so far for this upload.
+      title: TerminalUploadAck
+      additionalProperties: false
+      description: |-
+        TerminalUploadAck: daemon → bosso. Sent only AFTER the chunk has been
+         durably accepted by the daemon's writer. This is the backpressure
+         signal the browser's four-chunk window keys on.
+    bossanova.v1.TerminalUploadCancel:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+        reason:
+          type: string
+          title: reason
+          description: Free-form diagnostic (never contains file contents).
+      title: TerminalUploadCancel
+      additionalProperties: false
+      description: |-
+        TerminalUploadCancel: bosso → daemon. Abandons an in-flight upload. The
+         daemon removes the partial file. Also synthesised by bosso on WebSocket
+         teardown so a disconnect can never leave partial data behind.
+    bossanova.v1.TerminalUploadChunk:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+        seq:
+          type:
+            - integer
+            - string
+          title: seq
+          format: int64
+        data:
+          type: string
+          title: data
+          format: byte
+      title: TerminalUploadChunk
+      additionalProperties: false
+      description: |-
+        TerminalUploadChunk: bosso → daemon. One bounded slice of the file.
+         seq is zero-based and strictly sequential per upload; a gap or a repeat
+         terminates the upload with a TerminalUploadResult error.
+    bossanova.v1.TerminalUploadFinish:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+      title: TerminalUploadFinish
+      additionalProperties: false
+      description: |-
+        TerminalUploadFinish: bosso → daemon. Declares the byte stream complete.
+         The daemon syncs and closes the file only when the received byte count
+         equals the declared size, then submits one chat message naming the path.
+    bossanova.v1.TerminalUploadResult:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+        isOk:
+          type: boolean
+          title: is_ok
+        errorMessage:
+          type: string
+          title: error_message
+          description: |-
+            Fixed, non-sensitive diagnostic string when is_ok is false. Never
+             contains file contents or the generated absolute path.
+        canRetry:
+          type: boolean
+          title: can_retry
+          description: |-
+            True when the client may retry the same file (transport/stream loss)
+             rather than a permanent rejection (too large, bad name, bad order,
+             or a submit whose delivery could not be confirmed).
+      title: TerminalUploadResult
+      additionalProperties: false
+      description: |-
+        TerminalUploadResult: daemon → bosso. Terminal outcome for an upload.
+         Exactly one is sent per upload id. On success the daemon has already
+         submitted the path instruction through normal chat delivery.
+    bossanova.v1.TerminalUploadStart:
+      type: object
+      properties:
+        attachId:
+          type: string
+          title: attach_id
+        uploadId:
+          type: string
+          title: upload_id
+          description: Opaque client-chosen upload id, unique per attach.
+        filename:
+          type: string
+          title: filename
+          description: Display filename (basename only, no path components).
+        sizeBytes:
+          type:
+            - integer
+            - string
+          title: size_bytes
+          format: int64
+          description: |-
+            Declared total size in bytes. Rejected above 500 MiB, and the finish
+             is rejected when the received total does not match exactly.
+      title: TerminalUploadStart
+      additionalProperties: false
+      description: |-
+        TerminalUploadStart: bosso → daemon. Opens a new upload on an existing
+         attach. filename is a DISPLAY name only — it MUST NOT contain path
+         separators or `..`; the daemon derives a randomized basename and never
+         honours the client's name on disk.
     bossanova.v1.TestAccountCommand:
       type: object
       properties:

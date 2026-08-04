@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-03T15:11:02.114Z","message":{"role":"user","content":"rename this chat"}}
+{"type":"speculative-decode-batch","timestamp":"2026-08-03T15:11:03.000Z","note":"a record shape a future Claude version adds"}

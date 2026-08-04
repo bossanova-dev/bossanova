@@ -8,13 +8,13 @@ slug: /guides/mcp
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents — Claude Code, Claude Desktop, and any MCP-capable host — drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
 
-The server exposes **44 tools** in three tiers:
+The server exposes **69 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
-| Read-only   | 17    | Always available                   |
-| Mutating    | 18    | Non-destructive writes             |
-| Destructive | 9     | Require `confirm: true` to execute |
+| Read-only   | 24    | Always available                   |
+| Mutating    | 31    | Non-destructive writes             |
+| Destructive | 14    | Require `confirm: true` to execute |
 
 ## Install
 
@@ -122,11 +122,11 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 - **stdio** (default) — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port) serves `/mcp` and `/healthz`, useful for `curl` or a browser-based MCP inspector. Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
-Pass `--read-only` to register only the 17 read-only tools; mutating and destructive tools then never appear in `tools/list`.
+Pass `--read-only` to register only the 24 read-only tools; mutating and destructive tools then never appear in `tools/list`.
 
 ## Destructive tools need confirmation
 
-The 9 destructive tools (`remove_repo`, `remove_session`, `delete_chat`, `empty_trash`, …) refuse to run unless the caller passes `"confirm": true`:
+The 14 destructive tools (`remove_repo`, `remove_session`, `delete_chat`, `empty_trash`, …) refuse to run unless the caller passes `"confirm": true`:
 
 ```
 remove_repo is destructive and requires {"confirm": true}; re-call with confirm set once you are sure
@@ -136,38 +136,53 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 ## Tool reference
 
-### Read-only (17)
+### Read-only (24)
 
-| Tool                   | Description                                                            |
-| ---------------------- | ---------------------------------------------------------------------- |
-| `list_sessions`        | List sessions, optionally filtered by repo, states, or archived flag   |
-| `get_session`          | Get a single session by id                                             |
-| `list_repos`           | List every registered repository                                       |
-| `list_repo_prs`        | List open pull requests for a repository                               |
-| `list_tracker_issues`  | List issues from an external tracker (Linear, Sentry)                  |
-| `resolve_context`      | Resolve repo + session for a working directory                         |
-| `validate_repo_path`   | Validate a local path is a usable git repo                             |
-| `list_chats`           | List agent chats for a session                                         |
-| `get_chat_statuses`    | Get live chat status for a session                                     |
-| `get_session_statuses` | Get best live status across chats for multiple sessions                |
-| `list_check_snapshots` | List recent CI check snapshots for a session                           |
-| `repair_doctor`        | Run daemon repair-doctor diagnostics                                   |
-| `list_agents`          | List loaded agent-runner plugins                                       |
-| `list_plugins`         | List every plugin the daemon attempted to load                         |
-| `list_cron_jobs`       | List every scheduled cron job                                          |
-| `get_cron_job`         | Get a single cron job by id                                            |
-| `get_chat_transcript`  | Return the conversation transcript and final assistant text for a chat |
+| Tool                           | Description                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `list_sessions`                | List sessions, optionally filtered by repo, states, or archived flag                       |
+| `get_session`                  | Get a single session by id                                                                 |
+| `list_repos`                   | List every registered repository                                                           |
+| `list_repo_prs`                | List open pull requests for a repository                                                   |
+| `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                      |
+| `resolve_context`              | Resolve repo + session for a working directory                                             |
+| `validate_repo_path`           | Validate a local path is a usable git repo                                                 |
+| `list_chats`                   | List agent chats for a session                                                             |
+| `get_chat_statuses`            | Get live chat status for a session                                                         |
+| `get_session_statuses`         | Get best live status across chats for multiple sessions                                    |
+| `list_check_snapshots`         | List recent CI check snapshots for a session                                               |
+| `repair_doctor`                | Run daemon repair-doctor diagnostics                                                       |
+| `list_agents`                  | List loaded agent-runner plugins                                                           |
+| `list_plugins`                 | List every plugin the daemon attempted to load                                             |
+| `list_cron_jobs`               | List every scheduled cron job                                                              |
+| `get_cron_job`                 | Get a single cron job by id                                                                |
+| `get_chat_transcript`          | Return the conversation transcript and final assistant text for a chat                     |
+| `list_accounts`                | List registry accounts and cached usage metadata; credentials are never returned           |
+| `get_settings`                 | Get the daemon's global settings — the TUI-editable subset plus each agent's config        |
+| `list_github_callbacks`        | List registered GitHub PR callbacks; the delivery message body is never returned           |
+| `list_notes`                   | List repo-scoped notes, optionally filtered by repo, provenance, tags, or a body substring |
+| `get_note`                     | Get a single note by id, including its full body and normalised tags                       |
+| `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned              |
+| `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned       |
 
-### Mutating (18)
+### Mutating (31)
 
-`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `send_chat_message`
+`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`
 
 `send_chat_message` delivers a follow-up message into a live agent chat via its
 `agent_session_id`; set `wake_if_asleep: true` to wake the agent before delivery.
 
-### Destructive — require `confirm: true` (9)
+The callback, broadcast, and note tool families each have their own guide:
+[GitHub callbacks](https://docs.bossanova.dev/guides/github-callbacks) covers
+`register_github_callback` / `list_github_callbacks` / `delete_github_callback`,
+[Broadcasts](https://docs.bossanova.dev/guides/broadcasts) covers `send_broadcast`,
+`register_broadcast_subscription`, and their list/delete counterparts, and
+[Notes](https://docs.bossanova.dev/guides/notes) covers `create_note`,
+`update_note`, `list_notes`, `get_note`, and `delete_note`.
 
-`remove_repo`, `remove_session`, `close_session`, `merge_session`, `archive_session`, `resurrect_session`, `delete_chat`, `empty_trash`, `delete_cron_job`
+### Destructive — require `confirm: true` (14)
+
+`remove_repo`, `remove_session`, `close_session`, `merge_session`, `archive_session`, `resurrect_session`, `delete_chat`, `empty_trash`, `delete_cron_job`, `remove_account`, `delete_github_callback`, `delete_broadcast`, `delete_broadcast_subscription`, `delete_note`
 
 ## Hosted MCP
 
@@ -175,10 +190,16 @@ A hosted endpoint at `mcp.bossanova.dev` — WorkOS-authenticated and routed to 
 own daemon, so you can drive Bossanova from agents without running `bin/mcp` locally —
 is **coming soon**. Until it ships, use the local `bin/mcp` server described above.
 
-When it ships, the gateway advertises a 35-tool proxiable subset (15 read-only,
-11 mutating, 9 destructive) — every session/repo/chat lifecycle tool, including the
-destructive ones (which still require `confirm: true`) and the cron-job mutators.
-Tools that stay local-only are the ones without a session/daemon-routed backing
-RPC: repo bootstrap (`resolve_context`, `validate_repo_path`, `register_repo`,
-`clone_and_register_repo`), the remaining repo/session metadata writers, and the
-account tools (whose credentials never leave your daemon).
+When it ships, the gateway advertises a 50-tool proxiable subset (18 read-only,
+21 mutating, 11 destructive) — every session/repo/chat lifecycle tool, including the
+destructive ones (which still require `confirm: true`), the cron-job mutators, and
+the GitHub-callback and note tools. `switch_account` is proxiable too: it acts on a
+session's live chat, so it routes like any other session operation.
+
+The other 19 tools stay local-only, because they have no session/daemon-routed
+backing RPC: repo bootstrap (`resolve_context`, `validate_repo_path`,
+`register_repo`, `clone_and_register_repo`), the six account tools
+(`list_accounts`, `add_account`, `refresh_account`, `update_account`,
+`remove_account`, `test_account`) — whose credentials never leave your daemon —
+the six broadcast tools, the daemon settings tools (`get_settings`,
+`update_settings`), and `start_repair_workflow`.

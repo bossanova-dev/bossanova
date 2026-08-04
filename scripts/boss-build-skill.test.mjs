@@ -21,12 +21,30 @@ const RESIDENT_BODY_SKILLS = [`${CORE}/SKILL.md`]
 // this gate.
 const BUILD_MIRRORS = [CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-build']
 
+// BOS-674: Steps 8-12 (tag → green gate → finalize → settle → proof → stop cleanly) were
+// extracted out of the always-resident body into this reference; the body keeps one pointer
+// line per step plus the trigger that sends a reader here. Tests that pin the *instructions*
+// of those steps read the reference. Tests that pin what a reader must be told **without**
+// loading a reference keep reading the body.
+const FINALIZE_REF = 'references/finalize-and-stop.md'
+const finalizeAndStop = (dir = CORE) =>
+  fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8')
+
 test('headless mode + mode-aware proof are present', () => {
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
     assert.match(skill, /BS_HEADLESS/)
-    assert.match(skill, /proof\.mjs plan/)
   }
+  // Mode-aware proof is Step 11, which lives in the finalize-and-stop reference.
+  assert.match(finalizeAndStop(), /proof\.mjs plan/)
+})
+
+test('BOS-703: Preflight allows approximately three hours, not the retired 45-minute cap', () => {
+  const skill = fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
+  const preflight = skill.slice(skill.indexOf('## Preflight'), skill.indexOf('## Step 1:'))
+
+  assert.match(preflight, /~3 hours/i)
+  assert.doesNotMatch(preflight, /~45 min/i)
 })
 
 test('every moved reference is reachable: a body pointer plus an existing file', () => {
@@ -39,6 +57,7 @@ test('every moved reference is reachable: a body pointer plus an existing file',
     'references/proof-capture.md',
     'references/callback-watches.md',
     'references/cron-gate.md',
+    'references/finalize-and-stop.md',
     'references/troubleshooting.md',
     'references/resume-assessment.md',
     'references/standalone-mode.md',
@@ -58,6 +77,83 @@ test('every moved reference is reachable: a body pointer plus an existing file',
         `${reference} must exist under ${skillDir}`,
       )
     }
+  }
+})
+
+test('the resident body stays under the post-extraction ratchet (BOS-674)', () => {
+  // boss-build's SKILL.md is injected whole at turn 0 of every run, so every byte here is
+  // paid on every invocation. BOS-674 extracted Steps 8-12 into
+  // `references/finalize-and-stop.md` and folded the standalone `## Troubleshooting` section
+  // into its existing on-demand-table row, banking the saving behind this ratchet.
+  //
+  // Baselines, because the two disagree and the wrong one is easy to quote: the BOS-670 plan
+  // records 69433 B, but that number had already rotted by the time this landed — the real
+  // pre-extraction body measured **80817 B**.
+  //
+  // DOWNWARD RATCHET. `RATCHET` is the EXACT measured body size and the comparison is inclusive,
+  // so there is zero headroom: any byte added to the resident body turns this red rather than
+  // quietly re-spending part of the ~11.8 KB this extraction banked. A slack allowance ("measured
+  // + N") is precisely the leak this shape exists to close. The pin may only ever move DOWN,
+  // except when a deliberate body edit re-baselines it — and then only to the newly measured
+  // size, with the reason recorded here.
+  const PRE_EXTRACTION_BASELINE = 80817
+  // Re-baselined +271 from the post-extraction 69058 for the per-step reference pointers: the
+  // Steps 8-12 block carried one preamble link for five summary bullets, so a reader working the
+  // bullets could skip the tag injection, the green gate, the deferral gate, proof and the lock
+  // release without ever opening the reference. Each bullet now links the step it summarizes
+  // (5 × 35 B) and the block states the bullets are summaries, not instructions (96 B).
+  // Re-measured -4 after adding the pre-PR Step 12 cleanup route.
+  const RATCHET = 69325 // exact measured resident body
+  assert.ok(
+    RATCHET < PRE_EXTRACTION_BASELINE,
+    'ratchet must stay below the pre-extraction baseline',
+  )
+  for (const skillPath of RESIDENT_BODY_SKILLS) {
+    const bytes = Buffer.byteLength(fs.readFileSync(path.join(rootDir, skillPath)))
+    assert.ok(
+      bytes <= RATCHET,
+      `${skillPath} is ${bytes} bytes; must stay <= ${RATCHET} (post-extraction ratchet) — move situational content into a reference`,
+    )
+  }
+})
+
+test('BOS-674: every extracted step names the reference on its OWN resident line (both mirrors)', () => {
+  // The extraction left five summary bullets in the resident body and ONE preamble link. A
+  // whole-body search for the filename — which is all the reachability test above does — passes
+  // on that single preamble occurrence, so it cannot distinguish "each step points at its
+  // instructions" from "one paragraph does, and the five bullets read as self-contained steps".
+  // That difference is the failure mode: an agent that works the bullets without opening the
+  // reference skips the tag injection, the green gate, the deferral gate, proof, and the lock
+  // release, while every assertion here stays green. Pin the pointer per step, on the step's own
+  // line, in both Go mirrors.
+  for (const dir of BUILD_MIRRORS) {
+    const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    // Slice on markers that must exist: a missing marker makes `indexOf` return -1 and a negative
+    // bound would hand back a slice from elsewhere in the file that could satisfy these checks.
+    const start = body.indexOf('## Steps 8-12:')
+    const end = body.indexOf('## Cron gate')
+    assert.ok(
+      start !== -1 && end > start,
+      `${dir}/SKILL.md must still carry the Steps 8-12 pointer block`,
+    )
+    const lines = body.slice(start, end).split('\n')
+    for (const step of [8, 9, 10, 11, 12]) {
+      const line = lines.find((candidate) =>
+        new RegExp(String.raw`^- \*\*\[?Step ${step}\b`).test(candidate),
+      )
+      assert.ok(line, `${dir}/SKILL.md must keep a resident summary bullet for Step ${step}`)
+      assert.ok(
+        line.includes(FINALIZE_REF),
+        `${dir}/SKILL.md Step ${step}'s resident line must name ${FINALIZE_REF} itself, not lean on the block's single preamble link`,
+      )
+    }
+    // And the bullets must say what they are, so a reader who reaches one first does not take it
+    // for the instruction. Without this the per-step links are navigable but not mandatory.
+    assert.match(
+      body.slice(start, end),
+      /Each bullet is a summary, never the instruction/,
+      `${dir}/SKILL.md must state the Steps 8-12 bullets are summaries, not the instructions`,
+    )
   }
 })
 
@@ -86,6 +182,41 @@ test('methodology extension carries moved SDD/TDD references in both mirrors', (
         `${reference} must exist under ${skillDir}`,
       )
     }
+  }
+})
+
+test('methodology extension returns the commits the tier-1 gate checks for', () => {
+  // The core's Tier-1 "ran successfully" gate requires the commits the extension reported to
+  // appear in the log range snapshotted around the whole dispatch. The extension's own return
+  // object is where a dispatched subagent reads its schema from, so a five-field list there —
+  // omitting the sixth, commits-made field the core's fixed short contract defines — leaves a
+  // successful extension unable to satisfy the gate and classified as having landed nothing.
+  for (const skillDir of [
+    path.join(rootDir, '.claude/skills/boss-build-superpowers'),
+    path.join(rootDir, '.codex/skills/boss-build-superpowers'),
+  ]) {
+    const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
+    const returnObject = skill.slice(
+      skill.indexOf('```json'),
+      skill.indexOf('```', skill.indexOf('```json') + 7),
+    )
+    assert.match(
+      returnObject,
+      /"commitsMade"/,
+      `${skillDir}/SKILL.md return object must carry the commits-made field the tier-1 gate reads`,
+    )
+    // Aggregate, not per-task: one dispatch runs many tasks and returns once, so a
+    // last-task-only list would under-report commits that did land.
+    assert.match(
+      skill.replace(/\s+/g, ' '),
+      /aggregate\*\*: one `<short SHA> <subject>` entry for every commit this dispatch landed/i,
+      `${skillDir}/SKILL.md must state commitsMade aggregates every commit the dispatch landed`,
+    )
+    assert.match(
+      skill.replace(/\s+/g, ' '),
+      /no commit — verification only/i,
+      `${skillDir}/SKILL.md must keep the no-commit note as the per-task carve-out`,
+    )
   }
 })
 
@@ -150,22 +281,32 @@ test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => 
   // daemon-injected (doctor reports gaps) rather than sourced from .env. Pin the clause in
   // BOTH generated mirrors and in the proof-capture reference so it can never regress to
   // the old hand-written-skip-note guidance.
+  // BOS-674: Step 11 now lives in references/finalize-and-stop.md; the resident body carries
+  // only its pointer line. The clause is pinned where the instruction actually is.
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
-    assert.match(
-      skill,
-      /is the only proof channel/i,
-      `${skillPath} Step 11 must name proof.mjs run's note as the only proof channel`,
-    )
-    assert.match(
-      skill,
-      /proof\.mjs doctor/,
-      `${skillPath} Step 11 must point at proof.mjs doctor for a missing env, not sourcing .env`,
-    )
     assert.doesNotMatch(
       skill,
       /set -a; \. \.\/\.env/,
-      `${skillPath} Step 11 must not tell sessions to source .env`,
+      `${skillPath} must not tell sessions to source .env`,
+    )
+  }
+  for (const skillDir of [CORE]) {
+    const step11 = finalizeAndStop(skillDir)
+    assert.match(
+      step11,
+      /is the only proof channel/i,
+      `${skillDir}/${FINALIZE_REF} Step 11 must name proof.mjs run's note as the only proof channel`,
+    )
+    assert.match(
+      step11,
+      /proof\.mjs doctor/,
+      `${skillDir}/${FINALIZE_REF} Step 11 must point at proof.mjs doctor for a missing env, not sourcing .env`,
+    )
+    assert.doesNotMatch(
+      step11,
+      /set -a; \. \.\/\.env/,
+      `${skillDir}/${FINALIZE_REF} Step 11 must not tell sessions to source .env`,
     )
   }
 
@@ -302,7 +443,7 @@ test('runtime helper references are local to methodology extension mirrors', () 
 const claudeBody = () => fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
 
 test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)', () => {
-  const skill = claudeBody()
+  const skill = finalizeAndStop() // BOS-674: Step 8 moved out of the resident body
   const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
   const tagIdx = step8.indexOf('inject-pr-tag')
   const gateIdx = step8.search(/Then run \*\*boss-repair\*\*/)
@@ -318,7 +459,7 @@ test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)',
 })
 
 test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
-  const skill = claudeBody()
+  const skill = finalizeAndStop() // BOS-674: Step 9 moved out of the resident body
   const step9 = skill.slice(skill.indexOf('## Step 9:'), skill.indexOf('## Step 10:'))
   assert.match(step9, /idempotent/i, 'Step 9 must document the idempotent guard')
   // Guarded re-inject: conditional on commits still lacking the tag, not an unconditional rewrite.
@@ -385,14 +526,30 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
       /usually BLOCKED/,
       `${mirror}: wall-clock breaker must not permit REVIEW_READY with an unaddressed required item`,
     )
+    // BOS-674: Steps 9 and 12 moved to references/finalize-and-stop.md, but the invariant is
+    // load-bearing enough that the resident pointer block must restate it — a reader who never
+    // opens the reference still learns that readying and REVIEW_READY are gated on it.
+    const pointers = body.slice(body.indexOf('## Steps 8-12:'), body.indexOf('## Cron gate'))
+    assert.match(
+      pointers,
+      /no required item was deferred/,
+      `${mirror}: the resident Steps 8-12 pointer block must keep the Step 9 deferral gate`,
+    )
+    assert.match(
+      pointers,
+      /REVIEW_READY only with no deferred required item/,
+      `${mirror}: the resident Steps 8-12 pointer block must keep the Step 12 terminal-state gate`,
+    )
+
     // Enforced at the finalize gate (Step 9) and terminal-state selection (Step 12).
-    const step9 = body.slice(body.indexOf('## Step 9:'), body.indexOf('## Step 10:'))
+    const ref = finalizeAndStop(path.dirname(rel))
+    const step9 = ref.slice(ref.indexOf('## Step 9:'), ref.indexOf('## Step 10:'))
     assert.match(
       step9,
       /no required item was deferred/,
       `${mirror}: Step 9 must assert no required item was deferred before readying`,
     )
-    const step12 = body.slice(body.indexOf('## Step 12:'))
+    const step12 = ref.slice(ref.indexOf('## Step 12:'))
     assert.match(
       step12,
       /REVIEW_READY only with no deferred required item/,
@@ -499,7 +656,7 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirror
   // diffs the two copies: the per-mirror phrase checks pass even if one mirror drifts
   // in whitespace/wording or a `make copy-skills` is skipped. Enforce it directly.
   const [canonicalDir, pluginDir] = BUILD_MIRRORS
-  for (const rel of ['SKILL.md', 'references/callback-watches.md']) {
+  for (const rel of ['SKILL.md', 'references/callback-watches.md', FINALIZE_REF]) {
     assert.equal(
       fs.readFileSync(path.join(rootDir, pluginDir, rel), 'utf8'),
       fs.readFileSync(path.join(rootDir, canonicalDir, rel), 'utf8'),
@@ -522,20 +679,34 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
     'reconcile against real', // authoritative reconciliation before acting
     'policy.fallbackPoll', // bounded fallback when callbacks are unavailable
   ]
+  // BOS-674: the wait *sites* (Steps 8/9) moved to references/finalize-and-stop.md, so the
+  // per-site tokens are pinned there; the reflex + adapter seam stay in the resident body.
+  const stepsRef = finalizeAndStop()
   for (const token of bodyTokens) {
-    assert.ok(skill.includes(token), `boss-build SKILL.md must document callback token "${token}"`)
+    assert.ok(
+      skill.includes(token) || stepsRef.includes(token),
+      `boss-build must document callback token "${token}" in SKILL.md or ${FINALIZE_REF}`,
+    )
   }
   // Both wait points (Step 8 green gate, Step 9 re-inject) point at the callback reference.
-  const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
-  const step9 = skill.slice(skill.indexOf('## Step 9:'), skill.indexOf('## Step 10:'))
+  // The pointer is sibling-relative: these steps now live inside `references/` themselves, so a
+  // `references/`-prefixed target would resolve to `references/references/callback-watches.md`.
+  // The link must therefore NOT carry that prefix — assert the resolvable form.
+  const step8 = stepsRef.slice(stepsRef.indexOf('## Step 8:'), stepsRef.indexOf('## Step 9:'))
+  const step9 = stepsRef.slice(stepsRef.indexOf('## Step 9:'), stepsRef.indexOf('## Step 10:'))
   for (const [name, step] of [
     ['Step 8', step8],
     ['Step 9', step9],
   ]) {
     assert.match(
       step,
-      /references\/callback-watches\.md/,
-      `${name} must point the CI/PR wait at references/callback-watches.md`,
+      /\]\(callback-watches\.md\)/,
+      `${name} must point the CI/PR wait at the sibling-relative callback-watches.md`,
+    )
+    assert.doesNotMatch(
+      step,
+      /\]\(references\/callback-watches\.md\)/,
+      `${name} must not use a references/-prefixed link from inside references/ (resolves to references/references/…)`,
     )
   }
 
@@ -630,21 +801,30 @@ test('BOS-514: the finalize-adjacent base sync points at the linear-history inva
   // and deadlocks the PR. Pin one pointer line plus the absence of any base-merge directive.
   for (const dir of BUILD_MIRRORS) {
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    // BOS-674: the base sync itself is Step 8, now in references/finalize-and-stop.md. The
+    // pointer + preflight are pinned there; the base-merge classifier runs over BOTH, so
+    // extraction cannot smuggle a `git merge origin/<base>` past this gate.
+    const steps = finalizeAndStop(dir)
     assert.match(
-      skill,
+      steps,
       /Linear history:/,
-      `${dir}/SKILL.md must point at the linear-history invariant where it syncs with the base`,
+      `${dir}/${FINALIZE_REF} must point at the linear-history invariant where it syncs with the base`,
     )
     assert.match(
-      skill,
+      steps,
       /rev-list --merges --count/,
-      `${dir}/SKILL.md must name the zero-merge-commit preflight`,
+      `${dir}/${FINALIZE_REF} must name the zero-merge-commit preflight`,
     )
-    assert.deepStrictEqual(
-      baseMergeDirectives(skill),
-      [],
-      `${dir}/SKILL.md must not instruct a base merge — sync with the base by rebasing`,
-    )
+    for (const [label, doc] of [
+      [`${dir}/SKILL.md`, skill],
+      [`${dir}/${FINALIZE_REF}`, steps],
+    ]) {
+      assert.deepStrictEqual(
+        baseMergeDirectives(doc),
+        [],
+        `${label} must not instruct a base merge — sync with the base by rebasing`,
+      )
+    }
   }
 })
 
@@ -676,6 +856,282 @@ test('BOS-514: the base-merge classifier catches the spellings it must catch', (
     'git merge --abort  # never merge main into the branch',
   ]) {
     assert.deepStrictEqual(baseMergeDirectives(cmd), [], `${cmd} must not be flagged`)
+  }
+})
+
+test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a sibling succeeds (both mirrors)', () => {
+  // The pre-693 paragraph recorded `extension <name>: skipped (<reason>)` ONLY inside the
+  // all-extensions-failed branch. The partial case — one sibling succeeds, another fails to load —
+  // is exactly the case that suppresses tiers 2 and 3, and nothing told the orchestrator to record
+  // the failures, so a partial failure silently violated the paragraph's own "the ledger must show
+  // which path was taken" requirement. Recording is now per extension, independent of the outcome
+  // of its siblings.
+  for (const dir of BUILD_MIRRORS) {
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    assert.match(
+      skill,
+      /extension <name>: skipped \(<reason>\)/,
+      `${dir}/SKILL.md must keep the standard skip-ledger entry`,
+    )
+    assert.match(
+      skill,
+      /for \*\*every\*\* extension that failed to load or returned no valid result/i,
+      `${dir}/SKILL.md must record a skip for every failed Tier-1 extension, not only in the all-failed branch`,
+    )
+    assert.match(
+      skill,
+      /including when a sibling succeeded/i,
+      `${dir}/SKILL.md must record a failed Tier-1 extension even when a sibling succeeds`,
+    )
+    assert.match(
+      skill,
+      /tiers 2 and 3 are \*\*suppressed\*\*/,
+      `${dir}/SKILL.md must keep successful-extension suppression of the lower tiers`,
+    )
+    assert.match(
+      skill,
+      /fall through to tier 2, then tier 3/i,
+      `${dir}/SKILL.md must keep the all-failed fall-through`,
+    )
+    // The all-failed case must read as an instance of the same per-extension accounting rule, not
+    // as the only branch that records anything.
+    assert.doesNotMatch(
+      skill,
+      /extension failed to load or returned no valid result, record\s+`extension <name>: skipped \(<reason>\)` for each/i,
+      `${dir}/SKILL.md must not scope skip recording to the all-extensions-failed branch`,
+    )
+
+    // The extension contract this branch also tightens says a core whose extensions must PRODUCE
+    // something folds that output check into its own definition of `succeeded`, and uses the SAME
+    // definition on both sides of the gate. This tier's extensions must produce commits (the
+    // commit-before-return contract is handed to every one of them), so `ran successfully` — the
+    // phrase that gates suppression AND fall-through AND tier 3's own entry condition — has to be
+    // defined here rather than left to the reader. Scope the check to the Tier-1 block so a stray
+    // definition elsewhere in a 70KB file cannot satisfy it.
+    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    const tier1Start = step5.indexOf('Tier 1 — discovered methodology extensions')
+    const tier2Start = step5.indexOf('Tier 2 — host built-in')
+    assert.ok(
+      tier1Start !== -1 && tier2Start > tier1Start,
+      `${dir}/SKILL.md Step 5 must still carry the Tier 1 and Tier 2 methodology headings`,
+    )
+    // Collapse whitespace before phrase-matching: these are sentences, and a hand rewrap of the
+    // paragraph re-breaks them at different words. (Prettier will not do it — `.prettierrc` leaves
+    // `proseWrap` at its `preserve` default, so markdown prose is never reflowed for you — but a
+    // regex encoding today's line breaks still goes red on an edit that changed no words.)
+    const tier1 = step5.slice(tier1Start, tier2Start).replace(/\s+/g, ' ')
+    // The shared recompute rule owns the preamble ahead of the numbered tiers, and the two fallback
+    // tiers apply it. Slice each on a marker that must exist — a missing marker makes `indexOf`
+    // return -1, and a negative bound would hand back a slice wide enough for another tier's text
+    // to satisfy a tier-scoped assertion.
+    const tier3LoopStart = step5.indexOf('### Inline TDD methodology (tier 3)')
+    assert.ok(
+      tier3LoopStart > tier2Start,
+      `${dir}/SKILL.md Step 5 must still carry the inline TDD (tier 3) heading after Tier 2`,
+    )
+    const tier3EntryStart = step5.indexOf('3. **Tier 3 — inline TDD methodology.**')
+    assert.ok(
+      tier3EntryStart > tier2Start && tier3EntryStart < tier3LoopStart,
+      `${dir}/SKILL.md Step 5 must still carry the numbered Tier 3 entry between Tier 2 and the loop`,
+    )
+    const preamble = step5.slice(0, tier1Start).replace(/\s+/g, ' ')
+    const tier2 = step5.slice(tier2Start, tier3EntryStart).replace(/\s+/g, ' ')
+    const tier3Entry = step5.slice(tier3EntryStart, tier3LoopStart).replace(/\s+/g, ' ')
+    const tier3Loop = step5.slice(tier3LoopStart).replace(/\s+/g, ' ')
+    assert.match(
+      tier1,
+      /\*\*ran successfully\*\* only when/i,
+      `${dir}/SKILL.md Tier 1 must define "ran successfully" rather than leaving the gate's own term undefined`,
+    )
+    assert.match(
+      tier1,
+      /\*\*Orchestrator verification\*\*/,
+      `${dir}/SKILL.md Tier 1's success definition must fold in the orchestrator verification — the output check that proves the extension's work actually landed`,
+    )
+    assert.match(
+      tier1,
+      /did \*\*not\*\* run successfully/i,
+      `${dir}/SKILL.md Tier 1 must state that a valid result whose work never landed is not a success`,
+    )
+    assert.match(
+      tier1,
+      /one definition on both sides of the gate/i,
+      `${dir}/SKILL.md Tier 1 must require the same definition for suppression and fall-through`,
+    )
+    // Two ways this definition can be right in form and wrong in substance, both pinned:
+    // (a) the verification block's `no commit — verification only` note is a PER-TASK carve-out
+    // inside an implementation loop. Read as a whole-dispatch outcome it would let an extension
+    // land zero commits, pass the gate, and suppress tiers 2 and 3 — the exact "valid result,
+    // produced nothing" shape the sentence beside it calls a failure.
+    assert.match(
+      tier1,
+      /per-task carve-out inside an extension's own loop, never a whole-dispatch outcome/i,
+      `${dir}/SKILL.md Tier 1 must scope the verification-only carve-out to a task inside an extension, never to the whole dispatch`,
+    )
+    // (b) the verification block owns remedies for the states this gate classifies (re-dispatch on
+    // an empty log range; Stop cleanly with BLOCKED on residue that could not be captured). Without
+    // an explicit ordering, the tier gate is a competing route that turns a hard stop into a
+    // fall-through and keeps dispatching on top of uncaptured residue.
+    assert.match(
+      tier1,
+      /remedies first and classify only on what they leave/i,
+      `${dir}/SKILL.md Tier 1 must classify only after the orchestrator verification's own remedies have run`,
+    )
+    assert.match(
+      tier1,
+      /the tier gate below is never reached/i,
+      `${dir}/SKILL.md Tier 1 must state that a verification-driven BLOCKED stop pre-empts the tier gate`,
+    )
+    // (c) the tempting over-correction in the other direction is an exit for a dispatch that found
+    // its whole scope already satisfied. It would be a THIRD outcome, and the accounting paragraph
+    // below, both lower-tier entry gates, and the contract's own "produced nothing is a failed
+    // dispatch … it does not suppress a lower tier" all resolve that state as failure — so the
+    // exit would reinstate the two-gates-one-decision defect this ticket exists to remove. The
+    // no-op case is classified produced-nothing like any other: where no sibling succeeded it
+    // falls through and the lower tier re-checks and also lands nothing, and where a sibling
+    // suppressed the lower tiers nothing re-runs at all. Step 9 verifies the criteria either way.
+    assert.match(
+      tier1,
+      /A dispatch that found its whole scope already satisfied is classified the same way/i,
+      `${dir}/SKILL.md Tier 1 must classify an already-satisfied dispatch as produced-nothing rather than inventing a third outcome`,
+    )
+    // Stated as a positive pin, not an `assert.doesNotMatch` on the wording an exit would use:
+    // a negative on a phrase that appears nowhere is vacuous, and it would only ever catch an
+    // exit re-added in the exact words this branch happened to remove.
+    assert.match(
+      tier1,
+      /would be a third outcome the accounting below, both lower-tier gates, and the extension contract all resolve as failure/i,
+      `${dir}/SKILL.md Tier 1 must record WHY no third outcome exists — the accounting below and both tier gates resolve every non-success as fall-through`,
+    )
+    // (c.i) classifying the no-op as produced-nothing is only cheap if the produced-nothing path
+    // stops short of a deferred required item. The orchestrator verification reaches its
+    // empty-log-range remedy FIRST (this gate defers to it), and that remedy records a deferred
+    // required item after a second no-op — which Step 9 turns into a BLOCKED finalize. So the
+    // already-satisfied dispatch needs the criteria check that withholds the deferred item, and the
+    // paragraph must not claim the cost is bounded by the classification alone.
+    assert.match(
+      tier1,
+      /withholds its deferred required item once you confirm the scope already holds/i,
+      `${dir}/SKILL.md Tier 1 must tie the already-satisfied dispatch's bounded cost to the withheld deferred required item, not to the classification alone`,
+    )
+    assert.match(
+      step5.replace(/\s+/g, ' '),
+      /where \*\*you\*\* confirm every one already holds[\s\S]{0,200}neither a re-dispatch nor a deferred required item/i,
+      `${dir}/SKILL.md Step 5 must withhold the empty-range remedy's deferred required item for a scope you confirmed already satisfied`,
+    )
+    // (c.ii) the same gate read from the other side: a dispatch that committed PART of its scope and
+    // then stopped on a Decide-vs-ABORT condition satisfies "commits present in the log range", and
+    // nothing in the fixed short contract carries a completion field — so landed commits alone would
+    // suppress tiers 2 and 3 and leave the remainder for Step 9 to find as a partial implementation.
+    // One check settles both edges: the scope's criteria against the branch, never the commit count.
+    assert.match(
+      tier1,
+      /a result that stops on a Decide-vs-ABORT condition, or that otherwise reports scope it did not finish, is not one however many commits it landed/i,
+      `${dir}/SKILL.md Tier 1 must refuse an aborted or unfinished result as a valid dispatch result even when commits landed`,
+    )
+    assert.match(
+      tier1,
+      /left part of its scope unimplemented did \*\*not\*\* run successfully/i,
+      `${dir}/SKILL.md Tier 1 must classify a partially-implemented scope as a failed dispatch so the lower tiers finish the remainder`,
+    )
+    assert.match(
+      tier1,
+      /Both edges of this gate turn on that same check — the scope's criteria against the branch, never the commit count/i,
+      `${dir}/SKILL.md Tier 1 must reconcile both edges on one check rather than two commit-count rules`,
+    )
+    // (c.iii) the cheapest form of the already-satisfied case is the one never dispatched: a later
+    // dispatch handed Step 4.5's stale scope after an earlier one closed it. Recomputing before
+    // each dispatch removes the no-op dispatch entirely, and its ledger entry must not read as a
+    // failure. The rule belongs to the tier PREAMBLE, not to Tier 1: stated per path it was added
+    // for siblings only, and the tier fall-through — the path a partially-completed dispatch takes
+    // by construction, since "left part of its scope unimplemented" is now what sends it there —
+    // kept handing tiers 2 and 3 the plan the failed dispatch had already partly committed.
+    // Pin one owner and the three applications, so a fourth path cannot be added without one.
+    assert.match(
+      preamble,
+      /recompute the Step-5 scope immediately before each dispatch\*\* — before each Tier-1 sibling, and again before tier 2 and before tier 3/i,
+      `${dir}/SKILL.md Step 5 must own the scope recompute once, for every dispatch it makes, rather than per tier`,
+    )
+    assert.match(
+      preamble,
+      /a dispatch that did \*\*not\*\*, which still committed whatever part of its scope it got through before falling short/i,
+      `${dir}/SKILL.md Step 5's recompute rule must cover the FAILED dispatch's partial commits, not just a successful sibling's`,
+    )
+    assert.match(
+      preamble,
+      /the lower tiers exist to finish the remainder, and re-implementing work already on the branch is how they produce conflicts and duplicate changes/i,
+      `${dir}/SKILL.md Step 5 must say what a stale scope costs on the tier fall-through specifically`,
+    )
+    assert.match(
+      tier1,
+      /Apply the recompute rule above \*\*per sibling\*\*/i,
+      `${dir}/SKILL.md Tier 1 must apply the shared recompute rule per sibling rather than restating it`,
+    )
+    assert.match(
+      tier1,
+      /extension <name>: not dispatched \(scope already satisfied\)/,
+      `${dir}/SKILL.md Tier 1 must give an undispatched already-satisfied sibling its own ledger entry`,
+    )
+    // Both fallback tiers must take the recomputed remainder. Tier 3 is the one the reviewer's
+    // concrete failure runs through — its loop iterated "each task from the copied plan", which is
+    // every task including the ones the failed Tier-1 dispatch committed.
+    assert.match(
+      tier2,
+      /Hand it the scope the recompute rule above leaves open, not the one the failed Tier-1 dispatch was handed/i,
+      `${dir}/SKILL.md Tier 2 must receive the recomputed remainder, not the failed dispatch's original scope`,
+    )
+    assert.match(
+      tier2,
+      /tier 2: not dispatched \(scope already satisfied\)/,
+      `${dir}/SKILL.md Tier 2 must have a ledger entry for the case where the recompute leaves nothing`,
+    )
+    assert.match(
+      tier3Entry,
+      /against the scope the recompute rule above leaves open/i,
+      `${dir}/SKILL.md Tier 3's entry must scope the inline loop to the recomputed remainder`,
+    )
+    assert.match(
+      tier3Entry,
+      /tier 3: not dispatched \(scope already satisfied\)/,
+      `${dir}/SKILL.md Tier 3 must have a ledger entry for the case where the recompute leaves nothing`,
+    )
+    assert.match(
+      tier3Loop,
+      /For each \*\*remaining\*\* task from the copied plan — the recompute rule above, not the plan as Step 4\.5 handed it, decides which/i,
+      `${dir}/SKILL.md tier 3's loop must iterate the remaining tasks, not every task in the copied plan`,
+    )
+    assert.match(
+      tier3Loop,
+      /carrying _continue from committed state; do not redo committed tasks_/i,
+      `${dir}/SKILL.md tier 3's loop must carry the do-not-redo instruction into each implementation pass`,
+    )
+    // (d) the snapshot's second field is a `task-N` in the per-task form, and this tier's dispatch
+    // unit is a whole extension that may run many tasks inside itself. Left unaddressed, the
+    // orchestrator writes some task's N for a dispatch spanning several — and the recovery path
+    // reads it back to scope both the commit and the re-assessment, so it re-assesses a task that
+    // already passed while the interrupted one stays half-done. The label has to name the dispatch.
+    assert.match(
+      tier1,
+      /Label that snapshot for the dispatch, not for a task inside it/i,
+      `${dir}/SKILL.md Tier 1 must label the snapshot for the whole-extension dispatch, not for a task nested inside it`,
+    )
+    assert.match(
+      tier1,
+      /write `ext-<name>` in the second field where the per-task form writes `task-N`/i,
+      `${dir}/SKILL.md Tier 1 must give the whole-extension snapshot label its concrete form`,
+    )
+    assert.match(
+      tier1,
+      /Recovery under an `ext-<name>` label is extension-wide/i,
+      `${dir}/SKILL.md Tier 1 must say what recovery under the extension-wide label re-assesses`,
+    )
+    // The generic procedure above must not still call the unit a task, or the two read as a
+    // contradiction and a reader following the earlier text labels a multi-task dispatch `task-N`.
+    assert.match(
+      step5,
+      /snapshot-and-check procedure once per \*\*dispatch\*\*/i,
+      `${dir}/SKILL.md Step 5 must state the snapshot's unit as the dispatch, which Tier 1 widens past a single task`,
+    )
   }
 })
 
@@ -1225,7 +1681,7 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /is present[\s\S]{0,260}use the command above\s*\n?\s*unchanged/i,
+      /is present[\s\S]{0,260}recover it with the command\s*\n?\s*above/i,
       `${dir}/SKILL.md must gate the blanket residue recovery on the surviving pre-dispatch snapshot`,
     )
     assert.match(
@@ -1243,8 +1699,34 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /second field is the `task-N`[\s\S]{0,320}Read `N` from the file rather than guessing/i,
-      `${dir}/SKILL.md must make the restarted orchestrator read the interrupted task id, not guess it`,
+      /second field names \*\*which dispatch\*\*[\s\S]{0,600}Read that field from the file rather than guessing/i,
+      `${dir}/SKILL.md must make the restarted orchestrator read the interrupted dispatch id, not guess it`,
+    )
+    // BOS-693 review: Tier 1 labels the snapshot `ext-<name>` for a whole-extension dispatch, but
+    // this restart path — the primary consumer, and the only one a fresh process reaches — used to
+    // declare the second field was always `task-N` and told the reader to extract `N`. Following it
+    // after a Tier-1 interruption scopes the recovery commit and the re-assessment to a task the
+    // snapshot never named, leaving the extension's work only partially recovered. The consumer must
+    // branch on both label forms and give each its own commit scope and re-assessment unit.
+    assert.match(
+      step5,
+      /\*\*branch on which of its two forms\*\*/i,
+      `${dir}/SKILL.md's restart path must branch on the snapshot label form, not assume one`,
+    )
+    assert.match(
+      step5,
+      /`task-N` — a per-task dispatch\. Commit the residue as `chore\(task-N\)` and re-assess task `N`\./,
+      `${dir}/SKILL.md's restart path must give the per-task label its commit scope and re-assessment unit`,
+    )
+    assert.match(
+      step5,
+      /`ext-<name>` — one whole Tier-1 methodology extension[\s\S]{0,200}`chore\(ext-<name>\)`[\s\S]{0,120}entire Step-5 scope/i,
+      `${dir}/SKILL.md's restart path must give the extension label its extension-wide commit scope and re-assessment unit`,
+    )
+    assert.match(
+      step5,
+      /Never assume the per-task form/i,
+      `${dir}/SKILL.md's restart path must forbid defaulting to the per-task label`,
     )
   }
 })

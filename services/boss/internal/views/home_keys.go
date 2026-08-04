@@ -7,10 +7,64 @@
 package views
 
 import (
+	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/client"
 )
+
+// authChangeQueue preserves the order in which local auth transitions finish
+// when their best-effort daemon notifications run asynchronously. A stalled
+// logout must reach bossd before a later login, or the stale logout can clear
+// the daemon's newly refreshed credentials.
+type authChangeQueue struct {
+	mu                  sync.Mutex
+	tail                <-chan struct{}
+	notificationTimeout time.Duration
+}
+
+const defaultAuthChangeNotificationTimeout = 5 * time.Second
+
+func newAuthChangeQueue() *authChangeQueue {
+	done := make(chan struct{})
+	close(done)
+	return &authChangeQueue{
+		tail:                done,
+		notificationTimeout: defaultAuthChangeNotificationTimeout,
+	}
+}
+
+func (q *authChangeQueue) notify(ctx context.Context, c client.BossClient, action string) tea.Cmd {
+	if q == nil {
+		return func() tea.Msg {
+			notifyAuthChange(ctx, c, action, defaultAuthChangeNotificationTimeout)
+			return nil
+		}
+	}
+
+	q.mu.Lock()
+	previous := q.tail
+	done := make(chan struct{})
+	q.tail = done
+	timeout := q.notificationTimeout
+	q.mu.Unlock()
+
+	return func() tea.Msg {
+		defer close(done)
+		<-previous
+		notifyAuthChange(ctx, c, action, timeout)
+		return nil
+	}
+}
+
+func notifyAuthChange(ctx context.Context, c client.BossClient, action string, timeout time.Duration) {
+	notifyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_ = c.NotifyAuthChange(notifyCtx, action)
+}
 
 // handleKey walks the same precedence the inline switch had: the logout
 // confirmation swallows everything, then quit, then the upgrade/restart
@@ -59,9 +113,8 @@ func (h HomeModel) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	confirmed := msg.String() == "y" || msg.String() == "enter"
 	var cmd tea.Cmd
 	h.confirm, cmd = h.confirm.update(msg)
-	if confirmed && cmd != nil {
-		h.loggedIn = false
-		h.loggedInEmail = ""
+	if confirmed && cmd != nil && h.loggedIn {
+		h.logoutPending = true
 	}
 	return h, cmd
 }
@@ -96,6 +149,9 @@ func (h HomeModel) handleLoginKey() (HomeModel, tea.Cmd) {
 	if h.authMgr == nil {
 		return h, nil
 	}
+	if h.logoutPending {
+		return h, nil
+	}
 	if h.loggedIn {
 		authMgr := h.authMgr
 		c := h.client
@@ -109,10 +165,12 @@ func (h HomeModel) handleLoginKey() (HomeModel, tea.Cmd) {
 			if authMgr != nil {
 				err = authMgr.Logout(ctx)
 			}
-			if err == nil {
-				_ = c.NotifyAuthChange(ctx, "logout")
+			if err != nil || c == nil {
+				return logoutMsg{err: err}
 			}
-			return logoutMsg{err: err}
+			return logoutMsg{
+				notify: h.authChanges.notify(ctx, c, "logout"),
+			}
 		})
 		return h, nil
 	}

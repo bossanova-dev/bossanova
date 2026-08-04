@@ -80,8 +80,8 @@ const V20260711 Version = "2026-07-11"
 // those (see displaystatus.PreErroredOutput).
 const V20260718 Version = "2026-07-18"
 
-// V20260723 is the current production API version. It ships the
-// RespawnSameAccountOutcomeChange transform: at V20260723 the
+// V20260723 ships the RespawnSameAccountOutcomeChange transform (it was current
+// until V20260803 superseded it). At V20260723 the
 // OrchestratorService began serving the RotationOutcome values
 // ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT (7) and
 // ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED (8) on
@@ -93,6 +93,33 @@ const V20260718 Version = "2026-07-18"
 // down-converted back to the prior observable value,
 // ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY.
 const V20260723 Version = "2026-07-23"
+
+// V20260803 ships the AgentStalledChange transform (it was current until
+// V20260804 superseded it). At V20260803 the OrchestratorService began
+// serving the AttentionReason value ATTENTION_REASON_AGENT_STALLED (6) on
+// Session.attention_status.reason — a new attention reason raised when a chat
+// reports CHAT_STATUS_WORKING while its agent has made no semantic progress (no
+// new transcript record) for longer than its phase's threshold, i.e. a silently
+// dead turn behind a still-animating spinner. Like AGENT_AUTH_FAILED it only
+// fires where the session previously had NO attention at all: before the
+// detector existed such a session "just kept spinning". Clients pinned to an
+// older version were built before this reason existed, so they are
+// down-converted back to the prior observable behavior — no attention.
+const V20260803 Version = "2026-08-03"
+
+// V20260804 is the current production API version. It ships the
+// WaitingChatStatusChange transform: at V20260804 the OrchestratorService began
+// serving the ChatStatus value CHAT_STATUS_WAITING (6), plus the accompanying
+// waiting_reason string on ChatStatusEntry, ChatStatusDelta and
+// SessionStatusEntry. A chat is WAITING when it is blocked on an external event
+// — a registered GitHub callback, a background poll tick — rather than
+// computing; before the value existed such a chat reported CHAT_STATUS_WORKING
+// with no reason, so "blocked on CI for 82 minutes" and "hung" looked the same.
+// Clients pinned to an older version were built before WAITING existed and
+// would render an unknown enum value blank, so they are down-converted back to
+// the prior observable behavior: CHAT_STATUS_WORKING with an empty
+// waiting_reason.
+const V20260804 Version = "2026-08-04"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -195,10 +222,11 @@ func (r *Registry) Newer(a, b Version) bool {
 
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
-// V20260711, V20260718 and V20260723. Current is V20260723 (the newest released
-// behavior) while Default stays Baseline (the oldest supported version), so a
-// header-less caller is pinned to Baseline and is down-converted by
-// ProductionChanges, and a client that negotiates V20260723 runs zero transforms.
+// V20260711, V20260718, V20260723, V20260803 and V20260804. Current is
+// V20260804 (the newest released behavior) while Default stays Baseline (the
+// oldest supported version), so a header-less caller is pinned to Baseline and
+// is down-converted by ProductionChanges, and a client that negotiates
+// V20260804 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -209,8 +237,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723},
-		V20260723,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804},
+		V20260804,
 		Baseline,
 	)
 	if err != nil {

@@ -39,6 +39,17 @@ type ReviewInlineCommentProvider interface {
 	GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error)
 }
 
+// ReviewThreadFreshnessProvider reports which bot logins still own a blocking
+// review thread on a PR. The realtime path uses it to establish that a bot
+// COMMENTED review's feedback is still live before promoting it to
+// CHANGES_REQUESTED: a delayed or redelivered webhook can arrive after the
+// anchored hunk was rewritten, and promoting then restarts a fix loop over
+// feedback that is already moot (BOS-669). Optional — see
+// reviewAuthorHasBlockingThread for the behaviour when it is absent.
+type ReviewThreadFreshnessProvider interface {
+	BlockingThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) (map[string]bool, error)
+}
+
 // CallbackEvaluator verifies authoritative GitHub state for a PR and fires any
 // matching durable callbacks. The dispatcher invokes it after resolving the
 // affected PR from a webhook. Implemented by callback.Evaluator; optional.
@@ -270,19 +281,39 @@ func (d *WebhookDispatcher) enrichReviewComments(ctx context.Context, repoOrigin
 		review.Comments = append(review.Comments, comments...)
 		// Realtime-path promotion: handleReviewSubmitted gates the fix loop on the
 		// review's summary State, so a bot COMMENTED review with actionable inline
-		// feedback must be promoted here. This is review-scoped and inline-based:
-		// only a review carrying its own changes-requested inline comment(s) is
-		// promoted, so an empty bot COMMENTED review (e.g.
-		// chatgpt-codex-connector[bot]'s per-commit boilerplate) or a benign
-		// body-only review ("LGTM", "No issues found") is never treated as
-		// changes-requested (BOS-254). Unlike the provider path, the realtime path
-		// has no review-thread context, so it deliberately does NOT promote on a
-		// substantive body alone (that would false-promote benign bot prose). This
-		// mirrors the provider-side promotion in github.Provider.GetReviewComments
-		// (which feeds the display-poller path that keys off per-comment State);
-		// keep both review-scoped and inline-based.
-		if review.State == vcs.ReviewStateCommented && hasActionableBotReviewComments(review, comments) {
+		// feedback must be promoted here. The condition ANDs a review-scoped signal
+		// with an author-scoped one, which is structurally the same conjunction the
+		// provider-side promotion applies (github.Provider.promoteBotCommentedReview,
+		// feeding the display-poller path that keys off per-comment State):
+		//
+		//   - review-scoped: only a review carrying its own changes-requested inline
+		//     comment(s) is a candidate, so an empty bot COMMENTED review (e.g.
+		//     chatgpt-codex-connector[bot]'s per-commit boilerplate) or a benign
+		//     body-only review ("LGTM", "No issues found") is never treated as
+		//     changes-requested (BOS-254). The summary body is deliberately not
+		//     consulted: benign prose is indistinguishable from a change request.
+		//   - author-scoped: the author must still own a review thread that blocks
+		//     — unresolved and not outdated. Since BOS-669 both paths read that from
+		//     the same predicate (github.Provider.BlockingThreadAuthors), so a
+		//     delayed or redelivered webhook whose anchored hunk was rewritten in the
+		//     interim no longer restarts a fix loop over moot feedback.
+		//
+		// The switch evaluates its cases in order and stops at the first match, so
+		// the freshness round-trip runs only for a review that would otherwise have
+		// been promoted — the non-candidate case above absorbs everything else.
+		// Keep that ordering: this runs on the webhook acknowledgement path (see
+		// evaluateCallbacks), and the query is a `gh` subprocess, not a cheap call.
+		switch {
+		case review.State != vcs.ReviewStateCommented || !hasActionableBotReviewComments(review, comments):
+			// Not a promote candidate: no freshness query, no decision log.
+		case d.reviewAuthorHasBlockingThread(ctx, repoOriginURL, prNumber, review.Author):
 			review.State = vcs.ReviewStateChangesRequested
+			d.logger.Info().
+				Str("repo_origin_url", repoOriginURL).
+				Int("pull_request", prNumber).
+				Int64("review_id", review.ReviewID).
+				Str("author", review.Author).
+				Msg("realtime review promoted to changes-requested")
 		}
 		enriched[i] = review
 	}
@@ -302,15 +333,65 @@ func reviewNeedsCommentEnrichment(state vcs.ReviewState) bool {
 	return state == vcs.ReviewStateChangesRequested || state == vcs.ReviewStateCommented
 }
 
+// reviewAuthorHasBlockingThread reports whether this review's author still owns
+// a blocking review thread on the PR — the realtime path's freshness check.
+//
+// It returns false, and thereby SUPPRESSES the promotion, whenever freshness
+// cannot be established: the provider does not implement the capability, or the
+// query fails. That is the same posture the poller path takes with
+// vcs.ErrReviewThreadsUnverified — refuse to act on unverifiable review state —
+// even though the resulting behaviour differs (there it blocks a merge; here it
+// declines to start a fix loop). Both refuse to act.
+//
+// Suppressing is the safe direction because two independent lanes still see
+// genuinely-live bot feedback: the merge gate (server.liveMergeBlock ->
+// GetReviewComments) refuses the merge, and the display poller — which
+// recomputes review state through the provider-side promotion — reaches
+// DISPLAY_STATUS_REJECTED, off which the repair plugin dispatches. Neither
+// depends on this promotion, so the cost of a wrong suppression is latency,
+// while the cost of a wrong promotion is the BOS-665 livelock this exists to
+// avoid (BOS-669).
+func (d *WebhookDispatcher) reviewAuthorHasBlockingThread(ctx context.Context, repoOriginURL string, prNumber int, author string) bool {
+	provider, ok := d.reviewComments.(ReviewThreadFreshnessProvider)
+	if !ok {
+		d.logger.Warn().
+			Str("repo_origin_url", repoOriginURL).
+			Int("pull_request", prNumber).
+			Str("author", author).
+			Msg("realtime review promotion suppressed: no review-thread freshness capability")
+		return false
+	}
+	blocking, err := provider.BlockingThreadAuthors(ctx, repoOriginURL, prNumber, map[string]bool{author: true})
+	if err != nil {
+		d.logger.Warn().
+			Err(err).
+			Str("repo_origin_url", repoOriginURL).
+			Int("pull_request", prNumber).
+			Str("author", author).
+			Msg("realtime review promotion suppressed: review-thread freshness unverifiable")
+		return false
+	}
+	if !blocking[author] {
+		d.logger.Info().
+			Str("repo_origin_url", repoOriginURL).
+			Int("pull_request", prNumber).
+			Str("author", author).
+			Msg("realtime review promotion suppressed: author has no blocking review thread")
+		return false
+	}
+	return true
+}
+
 // hasActionableBotReviewComments reports whether a bot's COMMENTED review is
 // review-scoped actionable: it carries its own changes-requested inline
 // comment(s). An empty bot review, or a benign body-only one ("LGTM",
 // "No issues found"), is never actionable, so it is not promoted to
 // CHANGES_REQUESTED (BOS-254). The realtime path intentionally does not consult
-// the summary body: without the provider path's review-thread context it cannot
-// tell benign prose from a change request, so promoting on a substantive body
-// alone would false-block. Kept review-scoped + inline-based, in sync with the
-// provider-side promotion in github.Provider.GetReviewComments.
+// the summary body: benign prose cannot be told apart from a change request, so
+// promoting on a substantive body alone would false-block. This is the
+// review-scoped half of the promotion condition; reviewAuthorHasBlockingThread
+// supplies the author-scoped half, in sync with the provider-side promotion in
+// github.Provider.promoteBotCommentedReview.
 func hasActionableBotReviewComments(review vcs.ReviewSubmitted, comments []vcs.ReviewComment) bool {
 	if !strings.HasSuffix(review.Author, "[bot]") {
 		return false

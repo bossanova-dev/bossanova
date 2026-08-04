@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
@@ -33,11 +34,33 @@ type TmuxStatusPoller struct {
 	// wiring and tests are unaffected until SetQuestionSignals injects a store.
 	questionSignals *questionsignal.Store
 
+	// Per-phase stall thresholds (BOS-667). They differ by an order of
+	// magnitude on purpose: a model round-trip that has owed a response for
+	// minutes is already anomalous, whereas a tool call legitimately runs for
+	// the better part of an hour (`make test-all`). Seeded from
+	// config.StallDetectionConfig defaults and overridable via
+	// SetStallThresholds; a non-positive value falls back to the default rather
+	// than firing instantly.
+	awaitingModelStall time.Duration
+	executingToolStall time.Duration
+
 	mu            sync.Mutex
 	prevCaptures  map[string]captureEntry // agentSessionID -> previous capture
 	missingLogged map[string]struct{}     // agent name -> already-logged "missing client" warning
 
 	done chan struct{} // closed when Run's goroutine exits
+}
+
+// progressLivenessProber is the optional-capability seam for the
+// ProbeProgressLiveness RPC (BOS-667). It is deliberately NOT part of
+// agent.AgentRunnerClient: a runner binary built before the RPC existed still
+// satisfies that interface, and widening it would break every existing client
+// and fake for a signal the poller must fail open on anyway. The poller type-
+// asserts instead, mirroring the headlessCapabilityProfilePreflightClient
+// precedent in internal/agent, so a runner without the RPC simply raises
+// nothing.
+type progressLivenessProber interface {
+	ProbeProgressLiveness(context.Context, *pb.ProbeProgressLivenessRequest) (*pb.ProbeProgressLivenessResponse, error)
 }
 
 type captureEntry struct {
@@ -55,17 +78,37 @@ func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.
 	if agentClients == nil {
 		agentClients = map[string]agent.AgentRunnerClient{}
 	}
+	defaults := config.StallDetectionConfig{}
 	return &TmuxStatusPoller{
-		tracker:       tracker,
-		chats:         chats,
-		sessions:      sessions,
-		tmux:          tmux,
-		agentClients:  agentClients,
-		logger:        logger,
-		prevCaptures:  make(map[string]captureEntry),
-		missingLogged: make(map[string]struct{}),
-		done:          make(chan struct{}),
+		tracker:            tracker,
+		chats:              chats,
+		sessions:           sessions,
+		tmux:               tmux,
+		agentClients:       agentClients,
+		logger:             logger,
+		awaitingModelStall: defaults.AwaitingModelThreshold(),
+		executingToolStall: defaults.ExecutingToolThreshold(),
+		prevCaptures:       make(map[string]captureEntry),
+		missingLogged:      make(map[string]struct{}),
+		done:               make(chan struct{}),
 	}
+}
+
+// SetStallThresholds overrides the per-phase progress-stall thresholds from
+// settings (config.StallDetectionConfig). Call before Run/Bootstrap. A
+// non-positive value leaves that phase on its default, so a partially
+// configured settings.json can never collapse a threshold to zero and flag
+// every working chat.
+func (p *TmuxStatusPoller) SetStallThresholds(awaitingModel, executingTool time.Duration) {
+	defaults := config.StallDetectionConfig{}
+	if awaitingModel <= 0 {
+		awaitingModel = defaults.AwaitingModelThreshold()
+	}
+	if executingTool <= 0 {
+		executingTool = defaults.ExecutingToolThreshold()
+	}
+	p.awaitingModelStall = awaitingModel
+	p.executingToolStall = executingTool
 }
 
 // SetQuestionSignals injects the structured question-signal store (BOS-485).
@@ -149,12 +192,14 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
+			p.tracker.SetStalled(chat.AgentSessionID, false)
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
+			p.tracker.SetStalled(chat.AgentSessionID, false)
 			continue
 		}
 		// With remain-on-exit armed (BOS-477), a chat whose agent process exited
@@ -170,6 +215,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			p.tracker.SetAuthFailed(chat.AgentSessionID, false)
 			p.tracker.SetTransientAPIError(chat.AgentSessionID, false)
+			p.tracker.SetStalled(chat.AgentSessionID, false)
 			continue
 		}
 		activeChats = append(activeChats, chat)
@@ -283,6 +329,18 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// the pane is neither a live question nor freshly changed.
 		if wouldBeIdle && p.paneShowsWorking(ctx, chat, content) {
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		}
+
+		// Progress liveness (BOS-667). Gated on the chat CLAIMING to be working:
+		// AWAITING_MODEL is what the transcript looks like both for a model
+		// request in flight and for a user turn the agent has not answered yet,
+		// so an idle chat someone typed into would otherwise raise a false
+		// "session dead" banner forever. A LIMITED pane is a known, surfaced
+		// wait — not a stall — so it clears too.
+		if status == pb.ChatStatus_CHAT_STATUS_WORKING && !paneLimited {
+			p.tracker.SetStalled(agentSessionID, p.progressStalled(ctx, chat, now))
+		} else {
+			p.tracker.SetStalled(agentSessionID, false)
 		}
 
 		if paneLimited {
@@ -411,6 +469,12 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		// whose turn died on a 5xx banner is flagged from the first bootstrap
 		// pass rather than waiting a poll tick.
 		p.tracker.SetTransientAPIError(chat.AgentSessionID, statusdetect.IsTransientAPIError([]byte(content)))
+		// Bootstrap deliberately does NOT probe progress liveness: a chat
+		// restored from the DB has no observed working claim yet, and the first
+		// pollOnce three seconds later raises the marker if it is genuinely
+		// stalled. Clearing here keeps a marker from a previous process from
+		// outliving its chat (a no-op when none is set).
+		p.tracker.SetStalled(chat.AgentSessionID, false)
 
 		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
@@ -577,6 +641,60 @@ func (p *TmuxStatusPoller) limitState(ctx context.Context, chat *models.AgentCha
 		resetAt = r.AsTime()
 	}
 	return true, resetAt
+}
+
+// progressStalled asks the chat's runner when the agent last made semantic
+// progress and applies the threshold for the reported phase. Everything that is
+// not an affirmative "known, timestamped, and past its phase threshold" answer
+// returns false — a missing client, a missing session row, a runner without the
+// RPC, an RPC error (including Unimplemented), known=false, a missing
+// timestamp, and the IDLE/UNSPECIFIED/UNKNOWN phases all fail OPEN. A false
+// stall banner on a healthy long build costs more operator trust than the
+// silent stall this detects.
+func (p *TmuxStatusPoller) progressStalled(ctx context.Context, chat *models.AgentChat, now time.Time) bool {
+	if chat == nil || p.sessions == nil {
+		return false
+	}
+	client, ok := p.agentClients[chat.AgentName]
+	if !ok {
+		p.logMissingAgentOnce(chat.AgentName)
+		return false
+	}
+	prober, ok := client.(progressLivenessProber)
+	if !ok {
+		return false
+	}
+	sess, err := p.sessions.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		return false
+	}
+	resp, err := prober.ProbeProgressLiveness(ctx, &pb.ProbeProgressLivenessRequest{
+		WorkDir:        sess.WorktreePath,
+		AgentSessionId: chatResumeSessionID(chat),
+	})
+	if err != nil || resp == nil || !resp.GetIsKnown() {
+		return false
+	}
+	ts := resp.GetLastProgressAt()
+	if ts == nil {
+		return false
+	}
+
+	var threshold time.Duration
+	switch resp.GetPhase() {
+	case pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL:
+		threshold = p.awaitingModelStall
+	case pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL:
+		threshold = p.executingToolStall
+	default:
+		// IDLE means the agent owes nothing, and UNSPECIFIED/UNKNOWN mean the
+		// runner could not classify the tail. Neither is evidence of a stall.
+		return false
+	}
+	if threshold <= 0 {
+		return false
+	}
+	return now.Sub(ts.AsTime()) > threshold
 }
 
 func chatResumeSessionID(chat *models.AgentChat) string {

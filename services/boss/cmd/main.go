@@ -632,6 +632,13 @@ func daemonCmd() *cobra.Command {
 	d.AddCommand(
 		install,
 		&cobra.Command{
+			Use:   "doctor",
+			Short: "Diagnose the bossd daemon install: staged binary, LaunchAgent path, and macOS folder permissions",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonDoctor(cmd)
+			},
+		},
+		&cobra.Command{
 			Use:   "uninstall",
 			Short: "Uninstall the bossd LaunchAgent",
 			RunE: func(cmd *cobra.Command, args []string) error {

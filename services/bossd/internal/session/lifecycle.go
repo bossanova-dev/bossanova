@@ -2908,6 +2908,23 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		return fmt.Errorf("resurrect session: %w", err)
 	}
 
+	// Leave the terminal state in the same breath as clearing archived_at,
+	// BEFORE the slow agent start below (BOS-697). A row wearing
+	// {archived_at NULL, state Merged} is exactly what
+	// archiveMergedButUnarchived (reconcile.go) heals, so a resurrect that
+	// left that shape standing across StartByAgent would invite the reconcile
+	// tick to archive the session back out from under the agent it is starting
+	// — and a StartByAgent failure below would leave it wearing that shape
+	// forever. Writing the live state here also un-wedges the row for its own
+	// sake: a terminal state permits no lifecycle event, so nothing else could
+	// ever move it.
+	implementingState := int(machine.ImplementingPlan)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &implementingState,
+	}); err != nil {
+		return fmt.Errorf("clear terminal state on resurrect: %w", err)
+	}
+
 	// Start Claude process, resuming previous session if available.
 	var resume *string
 	if session.AgentSessionID != nil {
@@ -2929,11 +2946,10 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		return fmt.Errorf("start claude: %w", err)
 	}
 
-	// Update Claude session ID.
-	implementingState := int(machine.ImplementingPlan)
+	// Update Claude session ID. The state was already written above, with the
+	// un-archive, so this write no longer carries it.
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		AgentSessionID: strPtr(claudeSessionID),
-		State:          &implementingState,
 	}); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}

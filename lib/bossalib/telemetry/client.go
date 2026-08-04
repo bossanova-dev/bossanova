@@ -110,7 +110,7 @@ func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID str
 	if !IsAllowed(event) || distinctID == "" {
 		return
 	}
-	props := FilterProperties(properties)
+	props := FilterProperties(event, properties)
 	props["app"] = c.cfg.App
 	props["environment"] = c.cfg.Environment
 	if err := c.inner.Enqueue(posthog.Capture{
@@ -151,10 +151,10 @@ func (c *postHogClient) Close() {
 	}
 }
 
-func FilterProperties(properties map[string]any) map[string]any {
+func FilterProperties(event Event, properties map[string]any) map[string]any {
 	filtered := make(map[string]any, len(properties))
 	for key, value := range properties {
-		if !isAllowedProperty(key) || !isSafeScalar(value) {
+		if !IsAllowedProperty(event, key) || !isSafeScalar(value) {
 			continue
 		}
 		filtered[key] = value
@@ -163,36 +163,16 @@ func FilterProperties(properties map[string]any) map[string]any {
 }
 
 func FilterIdentifyProperties(properties map[string]any) map[string]any {
-	filtered := FilterProperties(properties)
+	filtered := make(map[string]any, len(properties))
+	for key, value := range properties {
+		if IsAllowedIdentifyProperty(key) && isSafeScalar(value) {
+			filtered[key] = value
+		}
+	}
 	if email, ok := properties["email"]; ok && isSafeScalar(email) {
 		filtered["email"] = email
 	}
 	return filtered
-}
-
-func isAllowedProperty(key string) bool {
-	switch key {
-	case "action",
-		"authenticated",
-		"can_create_checkout",
-		"checkout_action",
-		"checkout_started",
-		"cloud_access_state",
-		"command",
-		"context_has_error",
-		"denial_reason",
-		"entry_point",
-		"ok",
-		"product_area",
-		"report_id",
-		"resume",
-		"source",
-		"status",
-		"step",
-		"workos_org_id":
-		return true
-	}
-	return false
 }
 
 func isSafeScalar(value any) bool {

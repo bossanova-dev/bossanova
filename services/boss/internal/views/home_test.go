@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -1956,7 +1957,6 @@ func TestHomeRestartIgnoresPollFailuresUntilSuccess(t *testing.T) {
 }
 
 func TestRestartDaemonCmdWaitsForSocketReachable(t *testing.T) {
-	oldRestartDaemon := restartDaemon
 	oldRunBossDaemonRestart := runBossDaemonRestart
 	oldDefaultSocketPath := defaultSocketPath
 	oldSocketReachable := daemonSocketReachable
@@ -1964,7 +1964,6 @@ func TestRestartDaemonCmdWaitsForSocketReachable(t *testing.T) {
 	oldPollInterval := restartPollInterval
 	oldWaitTimeout := restartWaitTimeout
 	defer func() {
-		restartDaemon = oldRestartDaemon
 		runBossDaemonRestart = oldRunBossDaemonRestart
 		defaultSocketPath = oldDefaultSocketPath
 		daemonSocketReachable = oldSocketReachable
@@ -1973,11 +1972,7 @@ func TestRestartDaemonCmdWaitsForSocketReachable(t *testing.T) {
 		restartWaitTimeout = oldWaitTimeout
 	}()
 
-	restartDaemon = func() error { return nil }
-	runBossDaemonRestart = func() error {
-		t.Fatal("runBossDaemonRestart called for installed daemon")
-		return nil
-	}
+	runBossDaemonRestart = func() error { return nil }
 	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true}, nil }
 	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
 	restartPollInterval = time.Nanosecond
@@ -2004,7 +1999,6 @@ func TestRestartDaemonCmdWaitsForSocketReachable(t *testing.T) {
 }
 
 func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
-	oldRestartDaemon := restartDaemon
 	oldRunBossDaemonRestart := runBossDaemonRestart
 	oldDefaultSocketPath := defaultSocketPath
 	oldSocketReachable := daemonSocketReachable
@@ -2012,7 +2006,6 @@ func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
 	oldPollInterval := restartPollInterval
 	oldWaitTimeout := restartWaitTimeout
 	defer func() {
-		restartDaemon = oldRestartDaemon
 		runBossDaemonRestart = oldRunBossDaemonRestart
 		defaultSocketPath = oldDefaultSocketPath
 		daemonSocketReachable = oldSocketReachable
@@ -2021,11 +2014,7 @@ func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
 		restartWaitTimeout = oldWaitTimeout
 	}()
 
-	restartDaemon = func() error { return nil }
-	runBossDaemonRestart = func() error {
-		t.Fatal("runBossDaemonRestart called for installed daemon")
-		return nil
-	}
+	runBossDaemonRestart = func() error { return nil }
 	daemonGetStatus = func() (*daemon.Status, error) {
 		return &daemon.Status{Installed: true, Running: true, PID: 1234}, nil
 	}
@@ -2042,7 +2031,7 @@ func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
 		case 1:
 			return true // pre-restart socket was reachable
 		case 2, 3:
-			return true // old bossd still accepting after restartDaemon returns
+			return true // old bossd still accepting after the restart command returns
 		case 4:
 			return false
 		default:
@@ -2062,8 +2051,42 @@ func TestRestartDaemonCmdWaitsForOldSocketToStopBeforeReachable(t *testing.T) {
 	}
 }
 
+func TestRestartDaemonCmdDoesNotWaitForSocketHandoffWithoutOldPID(t *testing.T) {
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDefaultSocketPath := defaultSocketPath
+	oldSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	defer func() {
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+	}()
+
+	runBossDaemonRestart = func() error { return nil }
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true}, nil
+	}
+	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
+	attempts := 0
+	daemonSocketReachable = func(path string) bool {
+		attempts++
+		return true
+	}
+
+	msg, ok := restartDaemonCmd()().(daemonRestartMsg)
+	if !ok {
+		t.Fatalf("restartDaemonCmd returned %T, want daemonRestartMsg", msg)
+	}
+	if msg.err != nil {
+		t.Fatalf("restartDaemonCmd error = %v, want nil", msg.err)
+	}
+	if attempts != 2 {
+		t.Fatalf("socket probe attempts = %d, want 2", attempts)
+	}
+}
+
 func TestRestartDaemonCmdUsesCLIPathForStandaloneDaemon(t *testing.T) {
-	oldRestartDaemon := restartDaemon
 	oldRunBossDaemonRestart := runBossDaemonRestart
 	oldDefaultSocketPath := defaultSocketPath
 	oldSocketReachable := daemonSocketReachable
@@ -2071,7 +2094,6 @@ func TestRestartDaemonCmdUsesCLIPathForStandaloneDaemon(t *testing.T) {
 	oldPollInterval := restartPollInterval
 	oldWaitTimeout := restartWaitTimeout
 	defer func() {
-		restartDaemon = oldRestartDaemon
 		runBossDaemonRestart = oldRunBossDaemonRestart
 		defaultSocketPath = oldDefaultSocketPath
 		daemonSocketReachable = oldSocketReachable
@@ -2080,11 +2102,6 @@ func TestRestartDaemonCmdUsesCLIPathForStandaloneDaemon(t *testing.T) {
 		restartWaitTimeout = oldWaitTimeout
 	}()
 
-	platformRestartCalled := false
-	restartDaemon = func() error {
-		platformRestartCalled = true
-		return nil
-	}
 	cliRestartCalled := false
 	runBossDaemonRestart = func() error {
 		cliRestartCalled = true
@@ -2108,13 +2125,77 @@ func TestRestartDaemonCmdUsesCLIPathForStandaloneDaemon(t *testing.T) {
 	if !cliRestartCalled {
 		t.Fatal("runBossDaemonRestart was not called for standalone daemon")
 	}
-	if platformRestartCalled {
-		t.Fatal("restartDaemon called for standalone daemon")
+}
+
+func TestRunBossDaemonRestartUsesBossFromPath(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "restart.log")
+	bossPath := filepath.Join(dir, "boss")
+	if err := os.WriteFile(bossPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$BOSS_RESTART_LOG\"\n"), 0o755); err != nil {
+		t.Fatalf("write boss executable: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BOSS_RESTART_LOG", logPath)
+
+	if err := runBossDaemonRestart(); err != nil {
+		t.Fatalf("runBossDaemonRestart() error = %v", err)
+	}
+	output, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read restart log: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "daemon restart" {
+		t.Fatalf("boss args = %q, want %q", got, "daemon restart")
+	}
+}
+
+func TestBossDaemonRestartExecutableFallsBackToRunningBinary(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	got, err := bossDaemonRestartExecutable()
+	if err != nil {
+		t.Fatalf("bossDaemonRestartExecutable: %v", err)
+	}
+	if got != want {
+		t.Fatalf("restart executable = %q, want running executable %q", got, want)
+	}
+}
+
+func TestRestartDaemonCmdUsesCLIPathForInstalledDaemon(t *testing.T) {
+	oldRunBossDaemonRestart := runBossDaemonRestart
+	oldDaemonGetStatus := daemonGetStatus
+	defer func() {
+		runBossDaemonRestart = oldRunBossDaemonRestart
+		daemonGetStatus = oldDaemonGetStatus
+	}()
+
+	cliRestartCalled := false
+	runBossDaemonRestart = func() error {
+		cliRestartCalled = true
+		return nil
+	}
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 1234}, nil
+	}
+
+	readiness, err := restartDaemonForStatus(true)
+	if err != nil {
+		t.Fatalf("restartDaemonForStatus error = %v, want nil", err)
+	}
+	if !cliRestartCalled {
+		t.Fatal("runBossDaemonRestart was not called for installed daemon")
+	}
+	if !readiness.waitForSocketGone || readiness.oldPID != 1234 {
+		t.Fatalf("restart readiness = %+v, want socket handoff from PID 1234", readiness)
 	}
 }
 
 func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
-	oldRestartDaemon := restartDaemon
 	oldRunBossDaemonRestart := runBossDaemonRestart
 	oldDefaultSocketPath := defaultSocketPath
 	oldSocketReachable := daemonSocketReachable
@@ -2122,7 +2203,6 @@ func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
 	oldPollInterval := restartPollInterval
 	oldWaitTimeout := restartWaitTimeout
 	defer func() {
-		restartDaemon = oldRestartDaemon
 		runBossDaemonRestart = oldRunBossDaemonRestart
 		defaultSocketPath = oldDefaultSocketPath
 		daemonSocketReachable = oldSocketReachable
@@ -2131,11 +2211,7 @@ func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
 		restartWaitTimeout = oldWaitTimeout
 	}()
 
-	restartDaemon = func() error { return nil }
-	runBossDaemonRestart = func() error {
-		t.Fatal("runBossDaemonRestart called for installed daemon")
-		return nil
-	}
+	runBossDaemonRestart = func() error { return nil }
 	daemonGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true}, nil }
 	defaultSocketPath = func() (string, error) { return "/tmp/bossd.sock", nil }
 	daemonSocketReachable = func(string) bool { return false }
@@ -4288,7 +4364,12 @@ func TestHomeLogoutFailureIsSurfaced(t *testing.T) {
 		t.Fatal("expected an active logout confirmation with an action")
 	}
 
-	msg := h.confirm.action()
+	updated, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	h = updated.(HomeModel)
+	if h.confirm.active {
+		t.Fatal("confirmation stayed open after accepting logout")
+	}
+	msg := cmd()
 	logout, ok := msg.(logoutMsg)
 	if !ok {
 		t.Fatalf("logout action returned %T, want a logoutMsg carrying the result", msg)
@@ -4302,8 +4383,47 @@ func TestHomeLogoutFailureIsSurfaced(t *testing.T) {
 
 	updated, _ = h.Update(logout)
 	h = updated.(HomeModel)
+	if !h.loggedIn || h.loggedInEmail != "dev@example.com" {
+		t.Fatalf("failed logout changed auth presentation: loggedIn=%t email=%q", h.loggedIn, h.loggedInEmail)
+	}
 	if content := h.View().Content; !strings.Contains(content, "Logout:") {
 		t.Fatalf("failed logout is not rendered anywhere, got: %s", content)
+	}
+	if content := h.View().Content; !strings.Contains(content, "[l]ogout") {
+		t.Fatalf("failed logout no longer offers logout, got: %s", content)
+	}
+}
+
+// TestHomeLogoutFailureRecalculatesTableHeight keeps the full session board
+// above both lines of the failed-logout status. The table caches its height, so
+// merely counting the new footer rows is insufficient unless the result
+// handler applies that count when the asynchronous logout fails.
+func TestHomeLogoutFailureRecalculatesTableHeight(t *testing.T) {
+	h := HomeModel{
+		ctx:           context.Background(),
+		authMgr:       &auth.Manager{},
+		repoCount:     1,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		width:         100,
+		height:        24,
+		sessions:      make([]*pb.Session, 100),
+	}
+	for i := range h.sessions {
+		h.sessions[i] = &pb.Session{Id: fmt.Sprintf("session-%d", i)}
+	}
+	h.buildTableRows()
+	before := h.table.Height()
+
+	updated, _ := h.Update(logoutMsg{err: errors.New("keychain refused the delete")})
+	h = updated.(HomeModel)
+
+	if h.table.Height() >= before {
+		t.Fatalf("logout failure left table height at %d, want reservation below %d", h.table.Height(), before)
+	}
+	// bubbles' Height reports its viewport, excluding Home's one-row header.
+	if got, want := h.table.Height(), h.tableHeight()-1; got != want {
+		t.Fatalf("cached table height = %d, want %d after logout failure", got, want)
 	}
 }
 
@@ -4311,10 +4431,14 @@ func TestHomeLogoutFailureIsSurfaced(t *testing.T) {
 // succeeds must not leave the previous failure on screen.
 func TestHomeLogoutSuccessClearsPriorError(t *testing.T) {
 	h := HomeModel{
-		ctx:       context.Background(),
-		sessions:  []*pb.Session{},
-		repoCount: 1,
-		width:     100,
+		ctx:           context.Background(),
+		sessions:      []*pb.Session{},
+		repoCount:     1,
+		width:         100,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		needsRelogin:  true,
+		reloginReason: auth.ReloginReasonRefreshOutcomeUnknown,
 	}
 
 	updated, _ := h.Update(logoutMsg{err: errors.New("keychain refused the delete")})
@@ -4325,7 +4449,188 @@ func TestHomeLogoutSuccessClearsPriorError(t *testing.T) {
 
 	updated, _ = h.Update(logoutMsg{})
 	h = updated.(HomeModel)
+	if h.loggedIn || h.loggedInEmail != "" || h.needsRelogin || h.reloginReason != "" {
+		t.Fatalf("successful logout did not clear auth presentation: %+v", h)
+	}
 	if content := h.View().Content; strings.Contains(content, "keychain refused the delete") {
 		t.Fatalf("a successful logout left the previous error on screen, got: %s", content)
 	}
+}
+
+func TestHomeLogoutDoesNotStartAnotherDeleteWhilePending(t *testing.T) {
+	store := &countingLogoutTokenStore{}
+	h := HomeModel{
+		ctx:           context.Background(),
+		client:        &stubClient{},
+		authMgr:       auth.NewManager(store, auth.Config{}),
+		sessions:      []*pb.Session{},
+		repoCount:     1,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		width:         100,
+	}
+
+	updated, _ := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	h = updated.(HomeModel)
+	updated, first := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	h = updated.(HomeModel)
+	if first == nil {
+		t.Fatal("first logout confirmation returned no command")
+	}
+
+	updated, second := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	h = updated.(HomeModel)
+	if second != nil || h.confirm.active {
+		t.Fatal("a pending logout must not open another confirmation")
+	}
+
+	updated, _ = h.Update(first())
+	h = updated.(HomeModel)
+	if got := store.deletes; got != 1 {
+		t.Fatalf("Delete calls = %d, want 1", got)
+	}
+	if h.loggedIn {
+		t.Fatal("successful logout must clear signed-in state")
+	}
+}
+
+func TestHomeLogoutReturnsBeforeStalledNotification(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	notifyStarted := make(chan struct{})
+	h := HomeModel{
+		ctx: ctx,
+		client: &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+			if action != "logout" {
+				t.Errorf("NotifyAuthChange action = %q, want logout", action)
+			}
+			close(notifyStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		}},
+		authMgr:       auth.NewManager(&countingLogoutTokenStore{}, auth.Config{}),
+		sessions:      []*pb.Session{},
+		repoCount:     1,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		width:         100,
+	}
+
+	updated, _ := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	h = updated.(HomeModel)
+	updated, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	h = updated.(HomeModel)
+	if cmd == nil {
+		t.Fatal("logout confirmation returned no command")
+	}
+
+	commandResult := make(chan tea.Msg, 1)
+	go func() { commandResult <- cmd() }()
+
+	select {
+	case msg := <-commandResult:
+		logout, ok := msg.(logoutMsg)
+		if !ok {
+			t.Fatalf("logout command returned %T, want a logoutMsg", msg)
+		}
+		if logout.err != nil {
+			t.Fatalf("logout error = %v, want nil", logout.err)
+		}
+		_, notifyCmd := h.Update(logout)
+		if notifyCmd == nil {
+			t.Fatal("successful logout did not schedule NotifyAuthChange")
+		}
+		go notifyCmd()
+		select {
+		case <-notifyStarted:
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("NotifyAuthChange was not dispatched after logout")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("logout command waited for NotifyAuthChange")
+	}
+}
+
+func TestAuthChangeQueueReleasesFollowerAfterTimedOutNotification(t *testing.T) {
+	logoutStarted := make(chan struct{})
+	logoutCanceled := make(chan error, 1)
+	loginStarted := make(chan struct{})
+	q := newAuthChangeQueue()
+	q.notificationTimeout = 10 * time.Millisecond
+	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+		switch action {
+		case "logout":
+			close(logoutStarted)
+			<-ctx.Done()
+			logoutCanceled <- ctx.Err()
+		case "login":
+			close(loginStarted)
+		}
+		return nil
+	}}
+
+	logout := q.notify(context.Background(), c, "logout")
+	login := q.notify(context.Background(), c, "login")
+	go logout()
+
+	select {
+	case <-logoutStarted:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("logout notification did not start")
+	}
+	go login()
+
+	select {
+	case err := <-logoutCanceled:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("logout notification error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("stalled logout notification was not canceled")
+	}
+	select {
+	case <-loginStarted:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("login notification remained blocked after logout timed out")
+	}
+}
+
+func TestHomeLogoutIgnoresAnOlderAuthStatusResult(t *testing.T) {
+	h := HomeModel{
+		sessions:      []*pb.Session{},
+		repoCount:     1,
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+		width:         100,
+	}
+
+	updated, _ := h.Update(logoutMsg{})
+	h = updated.(HomeModel)
+	updated, _ = h.Update(authStatusMsg{loggedIn: true, email: "dev@example.com"})
+	h = updated.(HomeModel)
+
+	if h.loggedIn || h.loggedInEmail != "" {
+		t.Fatalf("stale auth status restored signed-in state: loggedIn=%v email=%q", h.loggedIn, h.loggedInEmail)
+	}
+
+	updated, _ = h.Update(authStatusMsg{generation: h.authStatusGeneration, loggedIn: true, email: "new@example.com"})
+	h = updated.(HomeModel)
+	if !h.loggedIn || h.loggedInEmail != "new@example.com" {
+		t.Fatalf("current auth status was not applied: loggedIn=%v email=%q", h.loggedIn, h.loggedInEmail)
+	}
+}
+
+type countingLogoutTokenStore struct {
+	deletes int
+}
+
+func (s *countingLogoutTokenStore) Save(*auth.Tokens) error { return nil }
+
+func (s *countingLogoutTokenStore) Load() (*auth.Tokens, error) {
+	return &auth.Tokens{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (s *countingLogoutTokenStore) Delete() error {
+	s.deletes++
+	return nil
 }

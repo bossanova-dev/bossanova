@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "daemonbin",
+    srcs = ["daemonbin.go"],
+    importpath = "github.com/recurser/bossalib/daemonbin",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "daemonbin_test",
+    srcs = ["daemonbin_test.go"],
+    deps = [":daemonbin"],
+)

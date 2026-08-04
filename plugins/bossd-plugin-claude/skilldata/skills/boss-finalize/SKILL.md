@@ -249,6 +249,8 @@ git log origin/$BASE_BRANCH..HEAD --oneline
 
 **DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against the PR base branch, not the feature branch.
 
+The script now verifies this post-condition itself: after the rebase it re-checks every commit and exits non-zero, printing the commits it could not tag — typically the ones whose amended message the repo's `commit-msg` hook rejected. Treat a non-zero exit as "the branch is still partly untagged" and fix those commits before pushing. The manual verification below stays as the belt-and-braces check.
+
 **After the script completes, force-push to update the branch:**
 
 ```bash

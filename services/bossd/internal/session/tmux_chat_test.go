@@ -861,6 +861,35 @@ func TestStartTmuxChat_PassesMcpConfigPath(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChat_NonCronSessionGetsStrictMcpConfig is the Part A behavioural
+// tripwire for BOS-672. Harness sess-1 carries no CronJobID — a non-cron,
+// interactive session — so under the pre-Task-1 code, or under a reintroduced
+// `StrictMcpConfig: isCronSession(sess)` bypass at either of this file's two
+// call sites (StartTmuxChat, sendInputToLiveTmuxChat), the captured request
+// would carry StrictMcpConfig=false here. Task 1 routed StartTmuxChat through
+// StrictMcpConfigForSession, which is now unconditionally true, so a non-cron
+// spawn must get strict mode too. This exercises the real call path for the
+// one site (StartTmuxChat) an existing harness makes cheap to assert against;
+// mcp_config_test.go's source-scanning test covers sendInputToLiveTmuxChat and
+// the internal/server sites this harness cannot reach.
+func TestStartTmuxChat_NonCronSessionGetsStrictMcpConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	if got := h.sessions.sessions["sess-1"].CronJobID; got != nil {
+		t.Fatalf("harness precondition broken: sess-1.CronJobID = %v, want nil (non-cron) for this test to be a genuine tripwire", *got)
+	}
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetStrictMcpConfig(); !got {
+		t.Fatalf("BuildInteractiveCommand StrictMcpConfig = %v, want true for a non-cron session (BOS-672: every spawn is strict)", got)
+	}
+}
+
 // withTrustedMcpAndAppData makes ResolveSessionFacts resolve a non-empty McpBin
 // by planting a user-owned (non group/world-writable) `mcp` executable on PATH,
 // and points config at a hermetic temp app-data dir. Returns the app-data dir.

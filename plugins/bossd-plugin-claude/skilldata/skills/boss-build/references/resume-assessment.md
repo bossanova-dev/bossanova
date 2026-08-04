@@ -56,14 +56,17 @@ subject) or **remaining**. Then:
   `"$(git rev-parse --git-dir)/boss-build-pre-dispatch-head"` is consumed on every resolved outcome,
   so it survives a crash and its presence still means a dispatch was in flight from a verified-clean
   tree. **Present** ⇒ everything dirty is that subagent's residue; recover it the way Step 5 does,
-  even though a different process wrote the file, reading the `task-N` to scope the recovery commit
-  to from the file's second field rather than guessing which task was in flight. Only when it is
+  even though a different process wrote the file, reading the `task-N` (or the `ext-<name>` a
+  whole-extension dispatch wrote) to scope the recovery commit to from the file's
+  second field rather than guessing which task was in flight. An `ext-<name>` scopes that recovery
+  to the extension, whose whole scope is re-assessed rather than one task. Only when it is
   **absent** is there no clean-tree guarantee, and then, unlike the Step 5 after-return check, you
   cannot assume every dirty path is residue. Attribute each path before staging it: a path a
   remaining task's brief would plausibly touch is residue; anything else (unrelated scratch, a
   human's in-flight edit, files no plan task names) is **not** — leave it alone and note it, never
   sweep it in. Commit only the attributed paths
-  (`chore(task-N): recover uncommitted subagent work`, substituting the task's number for `N`;
+  (`chore(task-N): recover uncommitted subagent work`, substituting the task's number for `N` —
+  `chore(ext-<name>)` where the snapshot carried an extension label;
   stage exactly those paths, never a blanket `git add -A`), then re-assess — the recovered task may
   already be complete. Whatever cannot be attributed with confidence blocks the run: Step 5 dispatches
   only from a clean tree, so go to **Stop cleanly** with BLOCKED naming those paths rather than

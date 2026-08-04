@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"time"
 
 	"github.com/99designs/keyring"
@@ -25,9 +26,19 @@ var ErrCredentialsUnreadable = errors.New("stored credentials can't be decrypted
 var ErrReloginRequired = errors.New("stored credentials need a new sign-in — run 'boss login'")
 
 const (
-	serviceName = "bossanova"
-	tokenKey    = "workos-tokens"
+	serviceName       = "bossanova"
+	tokenKey          = "workos-tokens" // legacy migration-read key
+	versionedTokenKey = "workos-tokens-v1"
+	tokenRecordV1     = 1
 )
+
+// tokenRecord is the authoritative shared WorkOS keychain payload. The
+// separate versioned key prevents an older binary, which still writes tokenKey,
+// from erasing a terminal re-login guard a current binary persisted.
+type tokenRecord struct {
+	Version int `json:"version"`
+	Tokens
+}
 
 // Enumerated, non-secret re-login reasons persisted on the shared
 // "workos-tokens" keychain record. bossd writes them
@@ -142,30 +153,56 @@ func NewKeychainStore(allowInsecure bool) (*KeychainStore, error) {
 	return &KeychainStore{ring: ring}, nil
 }
 
-// Save serializes tokens to JSON and stores them in the keychain.
+// Save writes an authoritative versioned record before retiring the legacy
+// migration record. A legacy cleanup error remains visible to callers: the
+// new state is durable, but an older writer could otherwise still race it.
 func (s *KeychainStore) Save(tokens *Tokens) error {
-	data, err := json.Marshal(tokens)
+	data, err := json.Marshal(tokenRecord{Version: tokenRecordV1, Tokens: *tokens})
 	if err != nil {
 		return fmt.Errorf("marshal tokens: %w", err)
 	}
-	return s.ring.Set(keyring.Item{
-		Key:         tokenKey,
+	if err := s.ring.Set(keyring.Item{
+		Key:         versionedTokenKey,
 		Data:        data,
 		Label:       "Bossanova",
 		Description: "WorkOS authentication tokens",
-	})
+	}); err != nil {
+		return err
+	}
+	if err := s.ring.Remove(tokenKey); err != nil && !tokenKeyMissing(err) {
+		return err
+	}
+	return nil
 }
 
 // Load reads tokens from the keychain.
 //
-// When the item is missing, returns keyring.ErrKeyNotFound unwrapped so
-// callers can distinguish "no tokens" from "can't decrypt". Any other Get
-// failure (typically a passphrase mismatch after the keyringutil rollout)
-// is wrapped with ErrCredentialsUnreadable.
+// When the item is missing, returns the backend's missing-item error
+// unwrapped so callers can distinguish "no tokens" from "can't decrypt".
+// Any other Get failure (typically a passphrase mismatch after the
+// keyringutil rollout) is wrapped with ErrCredentialsUnreadable.
 func (s *KeychainStore) Load() (*Tokens, error) {
+	item, err := s.ring.Get(versionedTokenKey)
+	if err != nil {
+		if !tokenKeyMissing(err) {
+			return nil, fmt.Errorf("%w: %w", ErrCredentialsUnreadable, err)
+		}
+		return s.loadLegacy()
+	}
+	var record tokenRecord
+	if err := json.Unmarshal(item.Data, &record); err != nil {
+		return nil, fmt.Errorf("%w: unmarshal versioned tokens: %w", ErrCredentialsUnreadable, err)
+	}
+	if record.Version != tokenRecordV1 {
+		return nil, fmt.Errorf("%w: unsupported token record version", ErrCredentialsUnreadable)
+	}
+	return &record.Tokens, nil
+}
+
+func (s *KeychainStore) loadLegacy() (*Tokens, error) {
 	item, err := s.ring.Get(tokenKey)
 	if err != nil {
-		if errors.Is(err, keyring.ErrKeyNotFound) {
+		if tokenKeyMissing(err) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %w", ErrCredentialsUnreadable, err)
@@ -177,7 +214,24 @@ func (s *KeychainStore) Load() (*Tokens, error) {
 	return &tokens, nil
 }
 
-// Delete removes tokens from the keychain.
+// Delete removes the legacy record before the authoritative record. If legacy
+// cleanup fails, callers retain a known authoritative state rather than
+// reporting logout while old writers can still restore credentials.
 func (s *KeychainStore) Delete() error {
-	return s.ring.Remove(tokenKey)
+	legacyErr := s.ring.Remove(tokenKey)
+	if legacyErr != nil && !tokenKeyMissing(legacyErr) {
+		return legacyErr
+	}
+	versionedErr := s.ring.Remove(versionedTokenKey)
+	if versionedErr != nil && !tokenKeyMissing(versionedErr) {
+		return versionedErr
+	}
+	if tokenKeyMissing(legacyErr) && tokenKeyMissing(versionedErr) {
+		return keyring.ErrKeyNotFound
+	}
+	return nil
+}
+
+func tokenKeyMissing(err error) bool {
+	return errors.Is(err, keyring.ErrKeyNotFound) || errors.Is(err, fs.ErrNotExist)
 }

@@ -6,6 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,11 +26,15 @@ import (
 // fakePostHogClient is a minimal posthog.Client used to drive postHogClient.Close.
 type fakePostHogClient struct {
 	closeErr error
+	message  posthog.Message
 }
 
 func (f *fakePostHogClient) Close() error                           { return f.closeErr }
 func (f *fakePostHogClient) CloseWithContext(context.Context) error { return f.closeErr }
-func (f *fakePostHogClient) Enqueue(posthog.Message) error          { return nil }
+func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
+	f.message = message
+	return nil
+}
 func (f *fakePostHogClient) IsFeatureEnabled(posthog.FeatureFlagPayload) (interface{}, error) {
 	return false, nil
 }
@@ -201,8 +213,344 @@ func TestAllowlistRejectsPollingEvents(t *testing.T) {
 	}
 }
 
+func TestCaptureDropsPropertiesRegisteredForAnotherEvent(t *testing.T) {
+	inner := &fakePostHogClient{}
+	client := &postHogClient{inner: inner, cfg: Config{App: "boss", Environment: "test"}}
+
+	client.Capture(context.Background(), EventCLICommandInvoked, "user_1", map[string]any{
+		"command":         "boss sessions",
+		"checkout_action": "create_checkout",
+	})
+
+	capture, ok := inner.message.(posthog.Capture)
+	if !ok {
+		t.Fatalf("Enqueue message = %T, want posthog.Capture", inner.message)
+	}
+	if capture.Properties["command"] != "boss sessions" {
+		t.Fatalf("command = %v, want preserved", capture.Properties["command"])
+	}
+	if _, ok := capture.Properties["checkout_action"]; ok {
+		t.Fatal("checkout_action should be dropped for cli_command_invoked")
+	}
+}
+
+func TestTelemetryDocumentationMatchesRegistry(t *testing.T) {
+	documentation, err := os.ReadFile(filepath.Join(telemetryRepoRoot(t), "docs", "analytics", "events.md"))
+	if err != nil {
+		t.Fatalf("read telemetry documentation: %v", err)
+	}
+
+	documentedEvents := documentedEvents(t, string(documentation))
+	for event, spec := range Registry {
+		documented, ok := documentedEvents[event]
+		if !ok {
+			t.Errorf("documentation does not include %q", event)
+			continue
+		}
+		assertDocumentedSurfacesMatchRegistry(t, event, documented, spec)
+		assertPropertySetsEqual(t, event, documented.properties, documentedProperties(spec))
+	}
+	for event := range documentedEvents {
+		documented := documentedEvents[event]
+		if documentedOnlyHasSurface(documented, "web") {
+			continue
+		}
+		if _, ok := Registry[event]; !ok {
+			t.Errorf("documentation includes unregistered server event %q", event)
+		}
+	}
+}
+
+func TestTelemetryDocumentationMatchesWebAnalyticsEvents(t *testing.T) {
+	documentation, err := os.ReadFile(filepath.Join(telemetryRepoRoot(t), "docs", "analytics", "events.md"))
+	if err != nil {
+		t.Fatalf("read telemetry documentation: %v", err)
+	}
+
+	documented := documentedEvents(t, string(documentation))
+	documentedWebEvents := make(map[Event]struct{})
+	for event, spec := range documented {
+		if documentedHasSurface(spec, "web") {
+			documentedWebEvents[event] = struct{}{}
+		}
+	}
+
+	webEvents := webAnalyticsEvents(t)
+	for event := range webEvents {
+		if _, ok := documentedWebEvents[event]; !ok {
+			t.Errorf("web analytics event %q is missing from documentation", event)
+		}
+	}
+	for event := range documentedWebEvents {
+		if _, ok := webEvents[event]; !ok {
+			t.Errorf("documentation includes web event %q missing from ANALYTICS_EVENTS", event)
+		}
+	}
+}
+
+type documentedEvent struct {
+	surface    string
+	properties map[string]struct{}
+}
+
+func TestDocumentedSurfaceMatchesRegistry(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		registry string
+		want     bool
+	}{
+		{name: "registry surface", document: "daemon", registry: "daemon", want: true},
+		{name: "shared web surface", document: "daemon, web", registry: "daemon", want: true},
+		{name: "wrong non-web surface", document: "tui", registry: "daemon", want: false},
+		{name: "wrong surface with web", document: "tui, web", registry: "daemon", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := documentedSurfacesMatchRegistry(documentedEvent{surface: tt.document}, EventSpec{Surface: tt.registry})
+			if got != tt.want {
+				t.Errorf("documentedSurfacesMatchRegistry(%q, %q) = %t, want %t", tt.document, tt.registry, got, tt.want)
+			}
+		})
+	}
+}
+
+func documentedHasSurface(event documentedEvent, want string) bool {
+	_, ok := surfaceSet(event.surface)[strings.ToLower(want)]
+	return ok
+}
+
+func documentedOnlyHasSurface(event documentedEvent, want string) bool {
+	return documentedHasSurface(event, want) && len(surfaceSet(event.surface)) == 1
+}
+
+func assertDocumentedSurfacesMatchRegistry(t *testing.T, event Event, documented documentedEvent, spec EventSpec) {
+	t.Helper()
+	if !documentedSurfacesMatchRegistry(documented, spec) {
+		t.Errorf("documentation lists %q with surfaces %q, want %q with optional web", event, documented.surface, spec.Surface)
+	}
+}
+
+func documentedSurfacesMatchRegistry(documented documentedEvent, spec EventSpec) bool {
+	got := surfaceSet(documented.surface)
+	want := surfaceSet(spec.Surface)
+	if _, registryIncludesWeb := want["web"]; !registryIncludesWeb {
+		delete(got, "web")
+	}
+	return len(propertySetDifference(got, want)) == 0 && len(propertySetDifference(want, got)) == 0
+}
+
+func surfaceSet(surfaces string) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, surface := range strings.Split(surfaces, ",") {
+		if surface = strings.ToLower(strings.TrimSpace(surface)); surface != "" {
+			set[surface] = struct{}{}
+		}
+	}
+	return set
+}
+
+func documentedEvents(t *testing.T, documentation string) map[Event]documentedEvent {
+	t.Helper()
+
+	events := make(map[Event]documentedEvent)
+	for _, line := range strings.Split(documentation, "\n") {
+		columns := strings.Split(line, "|")
+		if len(columns) < 6 {
+			continue
+		}
+		event, surface := strings.TrimSpace(columns[1]), strings.TrimSpace(columns[2])
+		if event == "Event" || strings.Trim(event, "-") == "" {
+			continue
+		}
+		events[Event(event)] = documentedEvent{
+			surface:    surface,
+			properties: propertySetFromDocumentation(strings.TrimSpace(columns[4])),
+		}
+	}
+	return events
+}
+
+func propertySetFromDocumentation(properties string) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, property := range strings.Split(properties, ",") {
+		if property = strings.TrimSpace(property); property != "" {
+			set[property] = struct{}{}
+		}
+	}
+	return set
+}
+
+func documentedProperties(spec EventSpec) map[string]struct{} {
+	properties := make(map[string]struct{}, len(CommonProperties)+len(spec.Properties))
+	for property := range CommonProperties {
+		properties[property] = struct{}{}
+	}
+	for property := range spec.Properties {
+		properties[property] = struct{}{}
+	}
+	return properties
+}
+
+func assertPropertySetsEqual(t *testing.T, event Event, got, want map[string]struct{}) {
+	t.Helper()
+	if missing := propertySetDifference(want, got); len(missing) > 0 {
+		t.Errorf("documentation for %q is missing properties: %s", event, strings.Join(missing, ", "))
+	}
+	if unexpected := propertySetDifference(got, want); len(unexpected) > 0 {
+		t.Errorf("documentation for %q includes unregistered properties: %s", event, strings.Join(unexpected, ", "))
+	}
+}
+
+func propertySetDifference(left, right map[string]struct{}) []string {
+	difference := make([]string, 0)
+	for property := range left {
+		if _, ok := right[property]; !ok {
+			difference = append(difference, property)
+		}
+	}
+	sort.Strings(difference)
+	return difference
+}
+
+func webAnalyticsEvents(t *testing.T) map[Event]struct{} {
+	t.Helper()
+
+	contents, err := os.ReadFile(filepath.Join(telemetryRepoRoot(t), "services", "web", "src", "analytics", "events.ts"))
+	if err != nil {
+		t.Fatalf("read web analytics events: %v", err)
+	}
+	const declaration = "export const ANALYTICS_EVENT = {"
+	start := strings.Index(string(contents), declaration)
+	if start < 0 {
+		t.Fatalf("ANALYTICS_EVENTS declaration not found")
+	}
+	list := string(contents)[start+len(declaration):]
+	end := strings.Index(list, "} as const")
+	if end < 0 {
+		t.Fatalf("ANALYTICS_EVENT closing declaration not found")
+	}
+
+	events := make(map[Event]struct{})
+	for _, line := range strings.Split(list[:end], "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		event := strings.Trim(strings.TrimSpace(parts[1]), "',")
+		if event == "" {
+			continue
+		}
+		events[Event(event)] = struct{}{}
+	}
+	return events
+}
+
+func TestRegistryCoversEveryEventConstant(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, filepath.Join(telemetryRepoRoot(t), "lib", "bossalib", "telemetry", "events.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse events.go: %v", err)
+	}
+
+	constants, duplicates := eventConstants(t, file)
+	for _, duplicate := range duplicates {
+		t.Errorf("%s and %s use duplicate Event literal %q", duplicate.first, duplicate.second, duplicate.event)
+	}
+	for event, name := range constants {
+		if _, ok := Registry[event]; !ok {
+			t.Errorf("Registry does not include %s (%q)", name, event)
+		}
+	}
+
+	for event := range Registry {
+		if _, ok := constants[event]; !ok {
+			t.Errorf("Registry includes %q without an Event constant", event)
+		}
+	}
+}
+
+type duplicateEventLiteral struct {
+	event         Event
+	first, second string
+}
+
+func eventConstants(t *testing.T, file *ast.File) (map[Event]string, []duplicateEventLiteral) {
+	t.Helper()
+	constants := make(map[Event]string)
+	duplicates := make([]duplicateEventLiteral, 0)
+	ast.Inspect(file, func(node ast.Node) bool {
+		declaration, ok := node.(*ast.GenDecl)
+		if !ok || declaration.Tok != token.CONST {
+			return true
+		}
+		for _, specification := range declaration.Specs {
+			valueSpec, ok := specification.(*ast.ValueSpec)
+			if !ok || len(valueSpec.Names) != 1 || len(valueSpec.Values) != 1 {
+				continue
+			}
+			name := valueSpec.Names[0].Name
+			if !strings.HasPrefix(name, "Event") {
+				continue
+			}
+			literal, ok := valueSpec.Values[0].(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				t.Errorf("%s must use a string literal", name)
+				continue
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				t.Errorf("unquote %s: %v", name, err)
+				continue
+			}
+			event := Event(value)
+			if first, ok := constants[event]; ok {
+				duplicates = append(duplicates, duplicateEventLiteral{event: event, first: first, second: name})
+				continue
+			}
+			constants[event] = name
+		}
+		return false
+	})
+	return constants, duplicates
+}
+
+func TestEventConstantsDetectDuplicateLiterals(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "events.go", `
+package telemetry
+
+const (
+	EventFirst Event = "shared_event"
+	EventSecond Event = "shared_event"
+)
+`, 0)
+	if err != nil {
+		t.Fatalf("parse event constants: %v", err)
+	}
+
+	constants, duplicates := eventConstants(t, file)
+	if got, want := constants["shared_event"], "EventFirst"; got != want {
+		t.Errorf("first Event constant = %q, want %q", got, want)
+	}
+	if len(duplicates) != 1 {
+		t.Fatalf("duplicate Event literals = %d, want 1", len(duplicates))
+	}
+	if got, want := duplicates[0], (duplicateEventLiteral{event: "shared_event", first: "EventFirst", second: "EventSecond"}); got != want {
+		t.Errorf("duplicate Event literal = %#v, want %#v", got, want)
+	}
+}
+
+func telemetryRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	return filepath.Join(filepath.Dir(filename), "..", "..", "..")
+}
+
 func TestFilterPropertiesDropsSensitiveValues(t *testing.T) {
-	props := FilterProperties(map[string]any{
+	props := FilterProperties(EventCLICommandInvoked, map[string]any{
 		"args":          []string{"secret"},
 		"branch":        "main",
 		"branch_name":   "feature",
@@ -215,7 +563,6 @@ func TestFilterPropertiesDropsSensitiveValues(t *testing.T) {
 		"repo_path":     "/Users/dave/repo",
 		"transcript":    "secret transcript",
 		"worktree_path": "/Users/dave/worktree",
-		"ok":            true,
 	})
 
 	for _, key := range []string{"args", "branch", "branch_name", "email", "file", "file_path", "nested", "repo", "repo_path", "transcript", "worktree_path"} {
@@ -223,43 +570,91 @@ func TestFilterPropertiesDropsSensitiveValues(t *testing.T) {
 			t.Fatalf("%s should be dropped", key)
 		}
 	}
-	if props["command"] != "session create" || props["ok"] != true {
+	if props["command"] != "session create" {
 		t.Fatalf("safe properties not preserved: %#v", props)
 	}
 }
 
-func TestFilterPropertiesPreservesAllowedScalarKeys(t *testing.T) {
-	props := FilterProperties(map[string]any{
-		"action":            "login",
-		"authenticated":     true,
-		"command":           "boss login",
-		"context_has_error": false,
-		"ok":                true,
-		"report_id":         "report_123",
-		"resume":            false,
-		"source":            "cli",
-		"status":            "success",
-	})
-
-	for _, key := range []string{"action", "authenticated", "command", "context_has_error", "ok", "report_id", "resume", "source", "status"} {
-		if _, ok := props[key]; !ok {
-			t.Fatalf("%s should be preserved", key)
+func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
+	cases := []struct {
+		event      Event
+		properties map[string]any
+	}{
+		{EventCLICommandInvoked, map[string]any{"command": "boss login", "status": "success", "source": "cli"}},
+		{EventDaemonStarted, map[string]any{"source": "daemon"}},
+		{EventSessionCreated, map[string]any{"source": "tui"}},
+		{EventChatCreated, map[string]any{"source": "tui"}},
+		{EventChatAttached, map[string]any{"action": "attach", "resume": true, "source": "tui"}},
+		{EventAuthChanged, map[string]any{"action": "login", "source": "cli"}},
+		{EventRepairStarted, map[string]any{"source": "cli"}},
+		{EventRepairCompleted, map[string]any{"source": "cli", "status": "success"}},
+		{EventBugReportSubmitted, map[string]any{"authenticated": true, "report_id": "report_123"}},
+		{EventCloudAccessDenied, billingTelemetryProperties()},
+		{EventCloudCheckoutStarted, billingTelemetryProperties()},
+		{EventCloudCheckoutReturned, billingTelemetryProperties()},
+		{EventSignupUserCreated, map[string]any{"source": "auth_jit", "step": "user_created"}},
+		{EventBillingAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
+	}
+	coveredEvents := make(map[Event]map[string]any, len(cases))
+	for _, tc := range cases {
+		coveredEvents[tc.event] = tc.properties
+		if !IsAllowed(tc.event) {
+			t.Errorf("test covers unregistered event %q", tc.event)
 		}
+		for key := range tc.properties {
+			if _, ok := FilterProperties(tc.event, tc.properties)[key]; !ok {
+				t.Fatalf("%s should be preserved for %s", key, tc.event)
+			}
+		}
+	}
+	for event, spec := range Registry {
+		properties, ok := coveredEvents[event]
+		if !ok {
+			t.Errorf("missing preservation coverage for %q", event)
+			continue
+		}
+		for property := range spec.Properties {
+			if _, ok := properties[property]; !ok {
+				t.Errorf("missing preservation coverage for %s property %q", event, property)
+			}
+		}
+	}
+}
+
+func billingTelemetryProperties() map[string]any {
+	return map[string]any{
+		"can_create_checkout": true,
+		"checkout_action":     "create_checkout",
+		"checkout_started":    true,
+		"cloud_access_state":  "active",
+		"denial_reason":       "subscription_required",
+		"entry_point":         "server_checkout_session",
+		"product_area":        "billing",
+		"source":              "server",
+		"workos_org_id":       "org_123",
 	}
 }
 
 func TestFilterIdentifyPropertiesPreservesEmail(t *testing.T) {
 	props := FilterIdentifyProperties(map[string]any{
-		"email":     "person@example.com",
-		"file_path": "/Users/dave/private.txt",
-		"source":    "cli",
+		"email":         "person@example.com",
+		"file_path":     "/Users/dave/private.txt",
+		"product_area":  "billing",
+		"source":        "cli",
+		"status":        "authenticated",
+		"workos_org_id": "org_123",
 	})
 
-	if props["email"] != "person@example.com" {
-		t.Fatalf("email = %v, want person@example.com", props["email"])
-	}
-	if props["source"] != "cli" {
-		t.Fatalf("source = %v, want cli", props["source"])
+	for key, want := range map[string]any{
+		"email":         "person@example.com",
+		"product_area":  "billing",
+		"source":        "cli",
+		"status":        "authenticated",
+		"workos_org_id": "org_123",
+	} {
+		if got := props[key]; got != want {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
 	}
 	if _, ok := props["file_path"]; ok {
 		t.Fatal("file_path should be dropped")
@@ -267,12 +662,11 @@ func TestFilterIdentifyPropertiesPreservesEmail(t *testing.T) {
 }
 
 func TestFilterPropertiesDropsUnsafeValues(t *testing.T) {
-	props := FilterProperties(map[string]any{
+	props := FilterProperties(EventAuthChanged, map[string]any{
 		"action":            []string{"login"},
 		"authenticated":     map[string]any{"value": true},
 		"command":           nil,
 		"context_has_error": struct{ value bool }{value: true},
-		"ok":                true,
 		"source":            "cli",
 	})
 
@@ -281,7 +675,7 @@ func TestFilterPropertiesDropsUnsafeValues(t *testing.T) {
 			t.Fatalf("%s should be dropped", key)
 		}
 	}
-	if props["ok"] != true || props["source"] != "cli" {
+	if props["source"] != "cli" {
 		t.Fatalf("safe scalar properties not preserved: %#v", props)
 	}
 }
@@ -358,17 +752,16 @@ func TestFilterPropertiesBillingFunnelKeysSurvive(t *testing.T) {
 		"checkout_started":    false,
 		"denial_reason":       "subscription_required",
 		"workos_org_id":       "org_123",
-		"step":                "provisioned",
 		"email":               "a@b.com",
 		"nope":                "x",
 	}
 
-	props := FilterProperties(input)
+	props := FilterProperties(EventCloudAccessDenied, input)
 
 	// All billing/funnel keys must survive.
 	for _, key := range []string{
 		"product_area", "entry_point", "cloud_access_state", "checkout_action",
-		"can_create_checkout", "checkout_started", "denial_reason", "workos_org_id", "step",
+		"can_create_checkout", "checkout_started", "denial_reason", "workos_org_id",
 	} {
 		if _, ok := props[key]; !ok {
 			t.Errorf("key %q should survive FilterProperties but was dropped", key)

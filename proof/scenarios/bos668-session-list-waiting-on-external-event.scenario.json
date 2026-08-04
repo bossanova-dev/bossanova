@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "title": "BOS-668 session list and chat picker — a run parked on an armed GitHub callback reads 'waiting' with its reason, not 'stopped' and not 'working'",
+  "fixture": { "preset": "waiting-callback" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the home list STATUS column reads 'waiting' for the parked run, with the reason on its own sub-row, while the genuinely busy neighbour still reads 'working'",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Ship the release checklist",
+            "match": "normalized",
+            "label": "home session list loaded (waiting-callback preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the parked run and its genuinely working neighbour are both listed"
+        },
+        {
+          "expect": {
+            "text": "Rebuild the search index",
+            "match": "normalized",
+            "label": "the genuinely working neighbour is listed"
+          },
+          "caption": "The working session is listed alongside the parked one, so the two states are visible side by side"
+        },
+        {
+          "expect": {
+            "text": "waiting",
+            "match": "normalized",
+            "label": "the STATUS column shows 'waiting' (neither row title contains the word, so this binds to the STATUS column) rather than the 'stopped' a missing WAITING case used to produce"
+          },
+          "caption": "The parked run's STATUS reads 'waiting' — DISPLAY_INTENT_INFO, no spinner, because nothing is moving"
+        },
+        {
+          "expect": {
+            "text": "awaiting checks_passed_ready on acme/my-app#668",
+            "match": "normalized",
+            "label": "the canonical waiting reason renders on its own sub-row under the parked session, naming the trigger and the PR"
+          },
+          "caption": "The reason sub-row names WHAT the run is parked on: trigger checks_passed_ready on acme/my-app#668"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the neighbour still reads 'working', so 'waiting' did not swallow the genuinely busy state"
+          },
+          "caption": "The busy neighbour is unaffected: it still reads 'working' with its spinner"
+        },
+        {
+          "key": "enter",
+          "caption": "Open the parked session's chat picker"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat picker shows the same reason line above a chat whose STATUS reads 'waiting'",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "awaiting checks_passed_ready on acme/my-app#668",
+            "match": "normalized",
+            "label": "the chat picker renders the waiting reason line above the chat table"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker shows the identical reason wording the home list used — one source of truth, two views"
+        },
+        {
+          "expect": {
+            "text": "waiting",
+            "match": "normalized",
+            "label": "the chat row's STATUS column reads 'waiting'"
+          },
+          "caption": "The parked chat's STATUS reads 'waiting': it is healthy and blocked on something outside the agent's control, not dead"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present"
+          },
+          "caption": "The [esc] back action bar renders below the populated chat table"
+        }
+      ]
+    }
+  ]
+}

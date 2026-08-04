@@ -73,6 +73,7 @@ func TestBaseHarnessEnvStripsAuthE2EFamily(t *testing.T) {
 		"BOSS_AUTH_E2E_EMAIL=ambient@example.com",
 		"BOSS_AUTH_E2E_LOGIN_EMAIL=ambient@example.com",
 		"BOSS_AUTH_E2E_NEEDS_RELOGIN=refresh_outcome_unknown",
+		"BOSS_AUTH_E2E_LOGOUT_ERROR=1",
 	}
 	got := BaseHarnessEnv(append([]string{"PATH=/bin"}, stripped...))
 	for _, want := range stripped {

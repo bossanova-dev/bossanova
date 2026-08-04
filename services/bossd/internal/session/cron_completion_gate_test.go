@@ -3,11 +3,13 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/rs/zerolog"
 )
 
 type gateSessionStore struct {
@@ -230,6 +232,36 @@ func TestCronCompletionGateDefersWhenRunNotOver(t *testing.T) {
 
 	gate.NotifyCronAgentStopped("sess-1")
 	assertNoFinalize(t, "FinalizeSession", finalizer.count, 50*time.Millisecond)
+}
+
+func TestCronCompletionGateDefersTmuxUnattendedFalseLiveness(t *testing.T) {
+	dir := t.TempDir()
+	lifecycle := newTestLifecycle(newMockSessionStore(), nil, &mockAgentChatStore{}, nil, nil, newMockAgentRunner(), nil, nil, zerolog.Nop())
+	lifecycle.SetAgentLogsDir(dir)
+	lifecycle.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // false liveness
+	seedLog(t, dir, "agent-live", time.Minute)
+
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+	sessions.sessions["sess-live"] = &models.Session{
+		ID:               "sess-live",
+		IsTmuxUnattended: true,
+		AgentSessionID:   ptr("agent-live"),
+	}
+	var logs syncBuf
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:              sessions,
+		Finalizer:             finalizer,
+		Logger:                zerolog.New(&logs).Level(zerolog.DebugLevel),
+		QuietDelay:            time.Millisecond,
+		RunCompletionEvidence: lifecycle.CronRunCompletionEvidence,
+	})
+
+	gate.NotifyCronAgentStopped("sess-live")
+	assertNoFinalize(t, "FinalizeSession", finalizer.count, 50*time.Millisecond)
+	if !strings.Contains(logs.String(), `"completion_evidence":"tmux_log_active"`) {
+		t.Fatalf("completion evidence log = %q, want tmux_log_active", logs.String())
+	}
 }
 
 // TestCronCompletionGateFinalizesWhenRunOver verifies the fast path is preserved:

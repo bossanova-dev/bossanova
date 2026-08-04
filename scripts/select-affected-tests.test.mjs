@@ -118,6 +118,19 @@ test('selectTargets adds the script tests to published skill sources WITHOUT dro
   )
 })
 
+test('selectTargets adds the script tests to published skill SHELL payloads too', () => {
+  // The published payload also ships executable helpers (*.sh) whose node:test coverage
+  // lives under scripts/. A shell-only payload change must still reach test-scripts, and
+  // must not drop test-boss (the skillinstall manifest test embeds the payload).
+  assert.deepEqual(
+    selectTargets(['services/boss/internal/skillinstall/skills/boss-finalize/add-pr-numbers.sh']),
+    [
+      { kind: 'make', target: 'test-scripts', env: {} },
+      { kind: 'make', target: 'test-boss', env: {} },
+    ],
+  )
+})
+
 test('selectTargets maps guidance docs to manifest checks', () => {
   assert.deepEqual(selectTargets(['docs/guidance/agent-fast-testing.md']), [
     { kind: 'make', target: 'test-manifest', env: {} },

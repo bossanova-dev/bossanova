@@ -354,6 +354,81 @@ func TestPRClosedFromAnyState(t *testing.T) {
 	}
 }
 
+// TestPRMergedFromAnyState pins the BOS-697 fix: a merged PR is ground truth
+// and must always be recordable, so PRMerged reaches Merged from every state
+// except the two PR-resolved terminals (Merged and Closed) — mirroring the
+// PRClosed-from-any-state rule above.
+// Before the fix, PRMerged was permitted only from ImplementingPlan,
+// AwaitingChecks, FixingChecks, GreenDraft, ReadyForReview, Blocked and
+// Finalizing, so a session wedged in PushingBranch (reconcile adopted its PR
+// without advancing the state) silently dropped its merge webhook forever.
+func TestPRMergedFromAnyState(t *testing.T) {
+	mergeableStates := []struct {
+		initial State
+		setup   []Event
+	}{
+		{CreatingWorktree, nil},
+		{StartingAgent, []Event{WorktreeCreated}},
+		{ImplementingPlan, []Event{WorktreeCreated, AgentStarted}},
+		{PushingBranch, []Event{WorktreeCreated, AgentStarted, PlanComplete}},
+		{OpeningDraftPR, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed}},
+		{AwaitingChecks, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened}},
+		{GreenDraft, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed}},
+		{ReadyForReview, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete}},
+	}
+
+	for _, tc := range mergeableStates {
+		t.Run(tc.initial.String(), func(t *testing.T) {
+			m := New(CreatingWorktree)
+			for _, e := range tc.setup {
+				if err := m.Fire(e); err != nil {
+					t.Fatalf("setup Fire(%s): %v", e, err)
+				}
+			}
+			assertState(t, m, tc.initial)
+
+			if !m.CanFire(PRMerged) {
+				t.Fatalf("PRMerged should be permitted from %s", tc.initial)
+			}
+			if err := m.Fire(PRMerged); err != nil {
+				t.Fatalf("Fire(PRMerged): %v", err)
+			}
+			assertState(t, m, Merged)
+		})
+	}
+
+	// The table above only reaches the states the happy-path chain visits, so
+	// it cannot state the whole rule. Assert the rule itself over AllStates:
+	// every state except the two PR-resolved terminals permits PRMerged. This
+	// goes red both ways — a state added without the edge, and an edge added to
+	// Merged/Closed — and it is what keeps the contract in machine.go's comment
+	// from drifting away from the configuration below it.
+	t.Run("every_state", func(t *testing.T) {
+		for _, s := range AllStates() {
+			want := s != Merged && s != Closed
+			if got := New(s).CanFire(PRMerged); got != want {
+				t.Errorf("CanFire(PRMerged) from %s = %v, want %v", s, got, want)
+			}
+		}
+	})
+
+	// Orphaned is not reachable from the happy-path setup chain (Orphan only
+	// fires from ImplementingPlan), and it already permits PRClosed. Recording
+	// a factual merge on it is the same kind of ground-truth write.
+	t.Run(Orphaned.String(), func(t *testing.T) {
+		m := New(Orphaned)
+		assertState(t, m, Orphaned)
+
+		if !m.CanFire(PRMerged) {
+			t.Fatal("PRMerged should be permitted from Orphaned")
+		}
+		if err := m.Fire(PRMerged); err != nil {
+			t.Fatalf("Fire(PRMerged) from Orphaned: %v", err)
+		}
+		assertState(t, m, Merged)
+	})
+}
+
 func TestBlockFromImplementingPlan(t *testing.T) {
 	m := New(CreatingWorktree)
 	for _, e := range []Event{WorktreeCreated, AgentStarted} {

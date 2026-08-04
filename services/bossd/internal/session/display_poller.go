@@ -32,6 +32,7 @@ type DisplayPoller struct {
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
 	completionNotifier SessionCompletionNotifier
+	archiver           SessionArchiver // optional; nil disables archive-after-merge
 	interval           time.Duration
 	logger             zerolog.Logger
 	done               chan struct{}
@@ -78,6 +79,16 @@ func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
 // terminal-state reconciles recovered by the display poller.
 func (p *DisplayPoller) SetCompletionNotifier(n SessionCompletionNotifier) {
 	p.completionNotifier = n
+}
+
+// SetArchiver wires the archive-after-merge automation onto the poller's
+// terminal reconcile, so a session this poller lands on Merged is archived when
+// its repo has ShouldArchiveSessionsAfterMerge on — the same hook the PR-merged
+// webhook runs (BOS-697). Before this, the reconcile was the *only* path to
+// Merged for a daemon that missed the webhook, and it never archived.
+// nil-safe: leaving it unset disables the automation.
+func (p *DisplayPoller) SetArchiver(a SessionArchiver) {
+	p.archiver = a
 }
 
 func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
@@ -458,12 +469,13 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 // notifyCompletion, which is what lets MergeSession's synchronous post-merge
 // refresh settle the task mapping before its RPC returns.
 //
-// It does NOT archive. archive-after-merge lives only on the dispatcher's
-// PRMerged handler, so a daemon that never receives the PR-merged webhook has
-// always depended on the state poller reaching the row first — and once this
-// reconcile lands Merged, pollableState excludes it. That race predates this
-// reconcile being reachable from MergeSession; see the note in
-// dispatcher.handlePRMerged.
+// It archives too, on the merged branch only: reconcileNonTerminalToResolved
+// calls the shared archiveSessionAfterMergeIfEnabled, the same hook the
+// dispatcher's PRMerged handler runs. A daemon that never receives the
+// PR-merged webhook therefore still auto-archives, instead of depending on the
+// state poller reaching the row first (once this reconcile lands Merged,
+// pollableState excludes it). A closed PR never archives, matching the
+// dispatcher's deliberate merge-only rule.
 func (p *DisplayPoller) reconcileTerminalPRForSession(ctx context.Context, sessionID string, prStatus *vcs.PRStatus) error {
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
 		return nil
@@ -536,6 +548,13 @@ func (p *DisplayPoller) reconcileNonTerminalToResolved(ctx context.Context, sess
 		outcome = models.TaskMappingStatusFailed
 	}
 	p.notifyCompletion(ctx, sessionID, outcome)
+	// Merge-only, mirroring the dispatcher: a PR *close* must never archive.
+	// Tested positively (== merged) rather than as "not closed": the caller has
+	// already filtered to merged-or-closed, but a future second caller must not
+	// silently turn an open PR into an archive.
+	if prStatus.State == vcs.PRStateMerged {
+		archiveSessionAfterMergeIfEnabled(ctx, p.repos, p.archiver, p.logger, sess)
+	}
 
 	p.logger.Info().
 		Str("session", sessionID).

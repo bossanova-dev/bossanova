@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tccprobe",
+    srcs = ["tccprobe.go"],
+    importpath = "github.com/recurser/bossd/internal/tccprobe",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "tccprobe_test",
+    srcs = ["tccprobe_test.go"],
+    embed = [":tccprobe"],
+)

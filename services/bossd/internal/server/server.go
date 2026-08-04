@@ -1970,7 +1970,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 
 	for _, p := range pbSessions {
 		_, hasDisplayEntry := entries[p.Id]
-		chatStatus, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
+		chatStatus, _, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
 		if !ok || (!hasDisplayEntry && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED) {
 			continue
 		}
@@ -3780,6 +3780,7 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 		if entry.Status == pb.ChatStatus_CHAT_STATUS_STOPPED && tmuxAlive[id] {
 			entry.Status = pb.ChatStatus_CHAT_STATUS_IDLE
 		}
+		applyWaitingMarker(entry, s.chatStatus.Waiting(id))
 		statuses = append(statuses, entry)
 	}
 
@@ -3814,14 +3815,15 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	statuses := make([]*pb.SessionStatusEntry, 0, len(req.Msg.SessionIds))
 
 	for _, sessionID := range req.Msg.SessionIds {
-		best, ok := s.chatStatusForSession(ctx, sessionID)
+		best, reason, ok := s.chatStatusForSession(ctx, sessionID)
 		if !ok {
 			continue
 		}
 
 		statuses = append(statuses, &pb.SessionStatusEntry{
-			SessionId: sessionID,
-			Status:    best,
+			SessionId:     sessionID,
+			Status:        best,
+			WaitingReason: reason,
 		})
 	}
 
@@ -3840,27 +3842,67 @@ func (s *Server) chatsBySessionForStatuses(ctx context.Context, sessionIDs []str
 	return chatsBySession, true
 }
 
-func (s *Server) chatStatusForSession(ctx context.Context, sessionID string) (pb.ChatStatus, bool) {
+func (s *Server) chatStatusForSession(ctx context.Context, sessionID string) (pb.ChatStatus, string, bool) {
 	if s.chatStatus == nil || s.agentChats == nil {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true
 	}
 	chats, err := s.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
 		s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false
 	}
 	return s.chatStatusFromSessionChats(ctx, chats, true)
 }
 
-func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, bool) {
+// applyWaitingMarker promotes a chat status entry from WORKING to WAITING when
+// the status tracker holds a waiting reason for it (BOS-668). The promotion rule
+// itself lives in status.PromoteWaiting so this RPC, the stream deltas and the
+// snapshot reader cannot drift apart; this wrapper only applies the result to a
+// protobuf entry.
+func applyWaitingMarker(entry *pb.ChatStatusEntry, reason string) {
+	if entry == nil {
+		return
+	}
+	entry.Status, entry.WaitingReason = status.PromoteWaiting(entry.GetStatus(), reason)
+}
+
+// sessionChatStatusRank orders chat statuses for the session-level aggregate:
+// question > limited > working > waiting > idle > stopped. WAITING sits below
+// WORKING on purpose — a session with a genuinely working chat in it is working,
+// even if a sibling is parked on a callback — and above IDLE, because a parked
+// chat is more informative than one merely sitting at a prompt. Any status not
+// listed ranks with STOPPED, matching the pre-BOS-668 fall-through.
+func sessionChatStatusRank(st pb.ChatStatus) int {
+	switch st {
+	case pb.ChatStatus_CHAT_STATUS_QUESTION:
+		return 5
+	case pb.ChatStatus_CHAT_STATUS_LIMITED:
+		return 4
+	case pb.ChatStatus_CHAT_STATUS_WORKING:
+		return 3
+	case pb.ChatStatus_CHAT_STATUS_WAITING:
+		return 2
+	case pb.ChatStatus_CHAT_STATUS_IDLE:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// chatStatusFromSessionChats reduces a session's chats to the one status the
+// session list renders, plus the waiting reason to surface when that status is
+// WAITING. The reduction walks the ordered chats slice rather than the GetBatch
+// map so the winning chat — and therefore the reason — is a function of the
+// data, never of Go's randomized map iteration.
+func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, string, bool) {
 	if s.chatStatus == nil || s.agentChats == nil {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true
 	}
 	if !loaded {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false
 	}
 	if len(chats) == 0 {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true
 	}
 
 	agentSessionIDs := make([]string, len(chats))
@@ -3869,26 +3911,25 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 	}
 	entries := s.chatStatus.GetBatch(agentSessionIDs)
 
-	// Compute best status: question > limited > working > idle > stopped.
-	// LIMITED ranks just below QUESTION, matching displaystatus.Compute and the
-	// DisplayStatusComputer aggregation so the session list and chat picker agree.
+	// Compute best status: question > limited > working > waiting > idle >
+	// stopped. LIMITED ranks just below QUESTION, matching displaystatus.Compute
+	// and the DisplayStatusComputer aggregation so the session list and chat
+	// picker agree.
 	best := pb.ChatStatus_CHAT_STATUS_STOPPED
-	for _, e := range entries {
-		if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
-			best = pb.ChatStatus_CHAT_STATUS_QUESTION
-			break
+	bestReason := ""
+	bestChatID := ""
+	for _, c := range chats {
+		e, ok := entries[c.AgentSessionID]
+		if !ok || e == nil {
+			continue
 		}
-		// QUESTION short-circuits above, so best is never QUESTION here; LIMITED
-		// beats WORKING/IDLE/STOPPED.
-		if e.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {
-			best = pb.ChatStatus_CHAT_STATUS_LIMITED
-		}
-		if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING &&
-			best != pb.ChatStatus_CHAT_STATUS_LIMITED {
-			best = pb.ChatStatus_CHAT_STATUS_WORKING
-		}
-		if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
-			best = pb.ChatStatus_CHAT_STATUS_IDLE
+		st, reason := status.PromoteWaiting(e.Status, s.chatStatus.Waiting(c.AgentSessionID))
+		rank := sessionChatStatusRank(st)
+		bestRank := sessionChatStatusRank(best)
+		// Strictly better wins; an equal-ranked chat only wins the tie when its
+		// id sorts first, so several parked chats always yield the same reason.
+		if rank > bestRank || (rank == bestRank && bestChatID != "" && c.AgentSessionID < bestChatID) {
+			best, bestReason, bestChatID = st, reason, c.AgentSessionID
 		}
 	}
 	// When heartbeats report stopped, fall back to per-chat tmux liveness.
@@ -3903,7 +3944,7 @@ func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models
 			}
 		}
 	}
-	return best, true
+	return best, bestReason, true
 }
 
 // agentAuthFailedBlockedReason is the stable, machine-matchable blocked_reason
@@ -3913,6 +3954,17 @@ const agentAuthFailedBlockedReason = "agent-auth-failed"
 // agentAuthFailedSummary is the human-readable attention summary for a
 // login-required (auth-failed) session.
 const agentAuthFailedSummary = "agent not logged in — run /login to re-authenticate"
+
+// agentStalledBlockedReason is the stable, machine-matchable blocked_reason
+// stamped on a session whose agent claims to be working but has made no
+// transcript progress for longer than its phase's stall threshold (BOS-667).
+const agentStalledBlockedReason = "agent-stalled"
+
+// agentStalledSummary is the human-readable attention summary for a stalled
+// agent. It deliberately does not name a cause: the marker is raised from
+// progress liveness alone, and the observed causes range from a silently
+// dropped auth token to a wedged model request.
+const agentStalledSummary = "agent reports working but has made no progress — check the pane"
 
 // latestAgentActivity returns the newest captured-pane activity time across the
 // session's chats, read from the status tracker's LastOutputAt. LastOutputAt
@@ -3972,6 +4024,22 @@ func sessionAuthFailed(tracker *status.Tracker, chats []*models.AgentChat) bool 
 	return false
 }
 
+// sessionAgentStalled reports whether any of the session's chats currently
+// carries a fresh agent-stalled marker (BOS-667). Like AuthFailed the marker
+// self-heals: the tracker treats one older than status.StaleThreshold as absent,
+// so a poller that stopped ticking cannot leave a permanent banner behind.
+func sessionAgentStalled(tracker *status.Tracker, chats []*models.AgentChat) bool {
+	if tracker == nil {
+		return false
+	}
+	for _, chat := range chats {
+		if tracker.Stalled(chat.AgentSessionID) {
+			return true
+		}
+	}
+	return false
+}
+
 // HydrateBaseAttention populates attention_status from the session's VCS state
 // for the blocked/orphaned reasons that would otherwise be clobbered by the
 // AGENT_AUTH_FAILED overlay on the reverse stream.
@@ -4024,6 +4092,9 @@ func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.R
 // every reverse-stream session UPDATED delta must carry this overlay too, or an
 // unrelated recompute would clobber a live AGENT_AUTH_FAILED back off.
 //
+// It also overlays ATTENTION_REASON_AGENT_STALLED (BOS-667) on the same terms,
+// ranked just below auth — see the switch in the body.
+//
 // Priority: auth is the LOWEST-priority reason — it is overlaid only where
 // ComputeAttentionStatus returned no attention. A session already Blocked or
 // Orphaned keeps its own reason untouched. This is also what makes the
@@ -4041,15 +4112,24 @@ func HydrateAgentObservability(tracker *status.Tracker, p *pb.Session, chats []*
 	if p.GetAttentionStatus() != nil {
 		return // keep an existing, unrelated attention reason
 	}
-	if !sessionAuthFailed(tracker, chats) {
+	// Auth outranks stalled: an auth-failed pane IS a stalled agent, but only the
+	// auth reason names the fix (/login). Raising the vaguer AGENT_STALLED over it
+	// would replace an actionable banner with a symptom.
+	var reason pb.AttentionReason
+	blockedReason, summary := "", ""
+	switch {
+	case sessionAuthFailed(tracker, chats):
+		reason, blockedReason, summary = pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED, agentAuthFailedBlockedReason, agentAuthFailedSummary
+	case sessionAgentStalled(tracker, chats):
+		reason, blockedReason, summary = pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED, agentStalledBlockedReason, agentStalledSummary
+	default:
 		return
 	}
-	br := agentAuthFailedBlockedReason
-	p.BlockedReason = &br
+	p.BlockedReason = &blockedReason
 	p.AttentionStatus = &pb.AttentionStatus{
 		NeedsAttention: true,
-		Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
-		Summary:        agentAuthFailedSummary,
+		Reason:         reason,
+		Summary:        summary,
 		Since:          p.GetUpdatedAt(),
 	}
 }

@@ -220,6 +220,11 @@ func TestE2E_PullRequestReview_CommentedCodexReviewRejectedRealtime(t *testing.T
 		Body:   "handle the nil case",
 		State:  vcs.ReviewStateChangesRequested,
 	}})
+	// The bot's feedback is still live: it owns a thread that is unresolved and
+	// not outdated. Without this the realtime path suppresses the promotion as
+	// stale (BOS-669), which is what TestE2E_PullRequestReview_-
+	// CommentedCodexReviewStaleThreadsNotRejectedRealtime pins.
+	h.Provider.SetBlockingThreadAuthors(345, []string{"chatgpt-codex-connector[bot]"})
 
 	h.PostGitHubWebhook(t, "pull_request_review", commentedCodexReviewFixture(t), 345, repoURL)
 
@@ -238,6 +243,57 @@ func TestE2E_PullRequestReview_CommentedCodexReviewRejectedRealtime(t *testing.T
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// TestE2E_PullRequestReview_CommentedCodexReviewStaleThreadsNotRejectedRealtime
+// is BOS-669 end to end: byte-for-byte the same webhook, review comments and PR
+// state as the promotion test above, differing only in that the bot no longer
+// owns a blocking thread — its feedback was addressed, or the hunk it was
+// anchored to was rewritten before this (delayed or redelivered) delivery
+// arrived. The session must NOT enter the fix loop.
+func TestE2E_PullRequestReview_CommentedCodexReviewStaleThreadsNotRejectedRealtime(t *testing.T) {
+	h := New(t)
+	repoURL := "https://github.com/recurser/bossanova"
+	repoID := h.SeedRepo(t, repoURL)
+	sessionID := h.SeedSession(t, repoID, 345, pb.SessionState_SESSION_STATE_READY_FOR_REVIEW)
+
+	success := vcs.CheckConclusionSuccess
+	mergeable := true
+	h.Provider.SetPRStatus(345, &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		Mergeable:         &mergeable,
+		LatestReviewState: vcs.ReviewStateCommented,
+	})
+	h.Provider.SetCheckResults(345, []vcs.CheckResult{{
+		ID:         "ci",
+		Name:       "ci",
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: &success,
+	}})
+	h.Provider.SetReviewComments(345, []vcs.ReviewComment{{
+		Author: "chatgpt-codex-connector[bot]",
+		Body:   "handle the nil case",
+		State:  vcs.ReviewStateChangesRequested,
+	}})
+	// No SetBlockingThreadAuthors call: every thread this bot raised is now
+	// resolved or outdated.
+
+	h.PostGitHubWebhook(t, "pull_request_review", commentedCodexReviewFixture(t), 345, repoURL)
+
+	// Give the realtime path the same window the promotion test needs to reach
+	// FIXING_CHECKS, then assert it never got there.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		sess, err := h.Sessions.Get(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if pb.SessionState(sess.State) == pb.SessionState_SESSION_STATE_FIXING_CHECKS {
+			t.Fatal("session entered the fix loop on a review whose author owns no blocking thread")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.WaitForSessionState(t, sessionID, pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, 50*time.Millisecond)
 }
 
 func TestE2E_CheckRunCompleted_FailureRealtime(t *testing.T) {

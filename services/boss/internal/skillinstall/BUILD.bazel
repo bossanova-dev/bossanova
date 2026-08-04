@@ -124,6 +124,7 @@ go_library(
         "skills/boss-build/toolbox/toolbox-drift.mjs",
         "skills/boss-plan/toolbox/toolbox-drift.mjs",
         "skills/boss-plan/toolbox/plan-epic-phase25.mjs",
+        "skills/boss-build/references/finalize-and-stop.md",
     ],
     importpath = "github.com/recurser/boss/internal/skillinstall",
     visibility = ["//services/boss:__subpackages__"],

@@ -13,6 +13,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/status",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
@@ -36,11 +37,13 @@ go_test(
         "repair_lease_test.go",
         "tmux_poller_test.go",
         "tracker_test.go",
+        "waiting_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":status"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [
+        "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/migrate",
         "//lib/bossalib/models",
@@ -51,6 +54,8 @@ go_test(
         "//services/bossd/internal/status/questionsignal",
         "//services/bossd/internal/tmux",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

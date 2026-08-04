@@ -18,6 +18,10 @@ import (
 // print to stderr during tests.
 var errE2ENoTokens = errors.New("e2e memory store: no tokens")
 
+// errE2ELogoutFailed is a deterministic, non-secret failed-delete seam for
+// TUI proof scenarios. The failure retains the seeded record.
+var errE2ELogoutFailed = errors.New("e2e memory store: logout failed")
+
 // e2eReloginEmail is the identity a re-login seed retains when no
 // BOSS_AUTH_E2E_EMAIL was supplied. A flagged record keeps its email (that is
 // the point of BOS-659), so the seed must never produce an empty one.
@@ -52,7 +56,16 @@ func resolveE2ETokenStore() auth.TokenStore {
 		tokens.NeedsRelogin = true
 		tokens.ReloginReason = reloginReason
 	}
-	return &memoryTokenStore{tokens: tokens}
+	return &memoryTokenStore{tokens: tokens, failDelete: e2eLogoutFailureEnabled()}
+}
+
+func e2eLogoutFailureEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BOSS_AUTH_E2E_LOGOUT_ERROR"))) {
+	case "", "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 // resolveE2EReloginReason maps BOSS_AUTH_E2E_NEEDS_RELOGIN to an enumerated
@@ -89,8 +102,9 @@ func e2eTokensForEmail(email string) *auth.Tokens {
 // memoryTokenStore is a minimal in-process TokenStore. It satisfies the
 // auth.TokenStore interface and is only reachable under the e2e build tag.
 type memoryTokenStore struct {
-	mu     sync.Mutex
-	tokens *auth.Tokens
+	mu         sync.Mutex
+	tokens     *auth.Tokens
+	failDelete bool
 }
 
 func (m *memoryTokenStore) Save(tokens *auth.Tokens) error {
@@ -112,6 +126,9 @@ func (m *memoryTokenStore) Load() (*auth.Tokens, error) {
 func (m *memoryTokenStore) Delete() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failDelete {
+		return errE2ELogoutFailed
+	}
 	m.tokens = nil
 	return nil
 }

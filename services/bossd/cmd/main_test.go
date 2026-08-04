@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/chatupload"
 	"github.com/recurser/bossd/internal/server"
 )
 
@@ -382,6 +383,29 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 	}
 }
 
+func TestCleanupDaemonShutdownStateKeepsReplacementMetadata(t *testing.T) {
+	appDataDir := t.TempDir()
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{PID: 1}); err != nil {
+		t.Fatalf("write old daemon metadata: %v", err)
+	}
+
+	cleanupDaemonShutdownState(closeFunc(func() error {
+		return daemonstate.Write(appDataDir, daemonstate.Metadata{PID: 2})
+	}), true, appDataDir)
+
+	metadata, err := daemonstate.Read(appDataDir)
+	if err != nil {
+		t.Fatalf("read replacement daemon metadata: %v", err)
+	}
+	if metadata.PID != 2 {
+		t.Fatalf("replacement metadata PID = %d, want 2", metadata.PID)
+	}
+}
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
+
 func TestRunLogsSecurityRejectionForUntrustedConfiguredPlugin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission hardening is a no-op on Windows")
@@ -505,5 +529,83 @@ func TestClampInt32(t *testing.T) {
 				t.Errorf("clampInt32(%d) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestChatUploadSenderMapsUnconfirmedToTheSentinel pins the one mapping the
+// BOS-661 retention decision rests on.
+//
+// chatupload.Finish KEEPS an uploaded file when — and only when — the sender
+// wraps chatupload.ErrDeliveryUnconfirmed, because an unconfirmed submit may
+// already be running in the agent's pane and deleting the file would strand a
+// live prompt on a missing path. Every other undelivered state is a definite
+// non-delivery and the file is removed. If a future edit returned a bare error
+// for DELIVERY_STATE_UNCONFIRMED, the manager would silently start deleting
+// files underneath prompts that had already been submitted, and nothing else
+// in the tree would notice.
+func TestChatUploadSenderMapsUnconfirmedToTheSentinel(t *testing.T) {
+	tests := []struct {
+		name            string
+		stub            sendChatMessageStub
+		wantErr         bool
+		wantUnconfirmed bool
+	}{
+		{
+			name: "delivered",
+			stub: sendChatMessageStub{response: connect.NewResponse(&bossanovav1.SendChatMessageResponse{
+				Delivered: true,
+			})},
+		},
+		{
+			name: "unconfirmed keeps the bytes",
+			stub: sendChatMessageStub{response: connect.NewResponse(&bossanovav1.SendChatMessageResponse{
+				Delivered:     false,
+				DeliveryState: bossanovav1.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED,
+				NoticeText:    "no live composer was drawn",
+			})},
+			wantErr:         true,
+			wantUnconfirmed: true,
+		},
+		{
+			name: "definite non-delivery does not match the sentinel",
+			stub: sendChatMessageStub{response: connect.NewResponse(&bossanovav1.SendChatMessageResponse{
+				Delivered:     false,
+				DeliveryState: bossanovav1.SendChatMessageResponse_DELIVERY_STATE_NOT_SUBMITTED,
+			})},
+			wantErr: true,
+		},
+		{
+			name:    "rpc error",
+			stub:    sendChatMessageStub{err: errors.New("unavailable")},
+			wantErr: true,
+		},
+		{
+			name:    "nil response",
+			stub:    sendChatMessageStub{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sender := &chatUploadSender{}
+			sender.setServer(tt.stub)
+			err := sender.SendChatMessage(context.Background(), "chat-1", "message", true)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("SendChatMessage() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got := errors.Is(err, chatupload.ErrDeliveryUnconfirmed); got != tt.wantUnconfirmed {
+				t.Fatalf("errors.Is(err, ErrDeliveryUnconfirmed) = %v, want %v (err = %v)", got, tt.wantUnconfirmed, err)
+			}
+		})
+	}
+
+	// An unwired server is a definite non-delivery, not an unconfirmed one.
+	unwired := &chatUploadSender{}
+	err := unwired.SendChatMessage(context.Background(), "chat-1", "message", true)
+	if err == nil {
+		t.Fatal("SendChatMessage() with no server error = nil, want error")
+	}
+	if errors.Is(err, chatupload.ErrDeliveryUnconfirmed) {
+		t.Fatal("an unwired sender must not report an unconfirmed delivery; the file would be retained for 24h")
 	}
 }

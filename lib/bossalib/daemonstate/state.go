@@ -11,6 +11,28 @@ import (
 
 const MetadataFileName = "bossd.pid.json"
 
+// TCCProbeStatus is bossd's persisted classification of one macOS
+// protected-root startup probe. String values keep the state file readable and
+// allow this shared package to remain independent of bossd's internal probe
+// implementation.
+type TCCProbeStatus string
+
+const (
+	TCCProbeStatusOK      TCCProbeStatus = "ok"
+	TCCProbeStatusDenied  TCCProbeStatus = "denied"
+	TCCProbeStatusBlocked TCCProbeStatus = "blocked"
+	TCCProbeStatusAbsent  TCCProbeStatus = "absent"
+	TCCProbeStatusError   TCCProbeStatus = "error"
+)
+
+// TCCProbeResult records what the running bossd process observed for one
+// protected root. Diagnostic is informational and intentionally optional.
+type TCCProbeResult struct {
+	Path       string         `json:"path"`
+	Status     TCCProbeStatus `json:"status"`
+	Diagnostic string         `json:"diagnostic,omitempty"`
+}
+
 type Metadata struct {
 	PID            int       `json:"pid"`
 	ExecutablePath string    `json:"executable_path"`
@@ -22,6 +44,12 @@ type Metadata struct {
 	// FD-heavy setup scripts fail with EMFILE is visible without grepping logs
 	// (BOS-465).
 	FileLimitSoft uint64 `json:"file_limit_soft,omitempty"`
+	// TCCProbeResults are the actual bounded startup probes performed by bossd.
+	// Omitted state remains compatible with records written by older versions.
+	TCCProbeResults []TCCProbeResult `json:"tcc_probe_results,omitempty"`
+	// TCCProbeCompleted distinguishes a completed zero-root probe from legacy
+	// state that predates persisted TCC observations.
+	TCCProbeCompleted bool `json:"tcc_probe_completed,omitempty"`
 }
 
 func Path(appDataDir string) string {

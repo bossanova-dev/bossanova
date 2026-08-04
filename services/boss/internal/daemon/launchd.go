@@ -109,6 +109,26 @@ var runLaunchctl = func(args ...string) ([]byte, error) {
 	return exec.Command("launchctl", args...).CombinedOutput()
 }
 
+// startDetachedBossd starts bossd without tying its lifecycle to the caller.
+// It is indirected for fallback-start regression coverage without launching a
+// real daemon from the test process.
+var startDetachedBossd = func(bossdPath string) error {
+	// #nosec G204 -- self-spawn of staged bossd binary; literal args; local-trust
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	cmd := exec.Command(bossdPath)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	// Detach from the parent process.
+	cmd.SysProcAttr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start bossd: %w", err)
+	}
+
+	// Release the child process so it runs independently.
+	_ = cmd.Process.Release()
+	return nil
+}
+
 // bootoutVerifyTimeout bounds the post-bootout re-probe. Deliberately short:
 // this is the error path, and a service that is still loaded after this long is
 // a real failure worth reporting.
@@ -439,11 +459,6 @@ func platformMcpGetStatus() (*Status, error) {
 // platformInstall writes the LaunchAgent plist and loads it via launchctl.
 // When force is false and the plist already exists, it refuses to overwrite.
 func platformInstall(bossdPath string, force bool) error {
-	plist, err := generatePlist(bossdPath)
-	if err != nil {
-		return err
-	}
-
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
@@ -453,6 +468,16 @@ func platformInstall(bossdPath string, force bool) error {
 		if _, err := os.Stat(plistPath); err == nil {
 			return fmt.Errorf("plist already exists at %s (use --force to overwrite)", plistPath)
 		}
+	}
+
+	stagedPath, err := EnsureStaged(bossdPath)
+	if err != nil {
+		return err
+	}
+
+	plist, err := generatePlist(stagedPath)
+	if err != nil {
+		return err
 	}
 
 	// Ensure LaunchAgents directory exists.
@@ -508,26 +533,56 @@ func platformUninstall() error {
 }
 
 func platformRestart() error {
-	if skipLaunchctl() {
-		return nil
-	}
-
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
 	}
+	sourcePath, refreshErr := ResolveBossdPath()
 
 	domainTarget := "gui/" + strconv.Itoa(os.Getuid())
 	// Best-effort clear of any stale load before bootstrapping; errors are
 	// ignored since bootstrap below surfaces any real problem. Uses the label
 	// form (BOS-627), matching the other bootout call sites.
-	_, _ = runLaunchctl("bootout", domainTarget+"/"+Label)
-
-	out, err := runLaunchctl("bootstrap", domainTarget, plistPath)
-	if err != nil {
-		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
+	if !skipLaunchctl() {
+		_, _ = runLaunchctl("bootout", domainTarget+"/"+Label)
 	}
-	return nil
+
+	if refreshErr == nil {
+		var stagedPath string
+		stagedPath, refreshErr = EnsureStaged(sourcePath)
+		if refreshErr == nil {
+			var plist string
+			plist, refreshErr = generatePlist(stagedPath)
+			if refreshErr == nil {
+				// #nosec G304 -- platformServicePath returns the fixed per-user LaunchAgents plist; non-secret local service state.
+				// owner=@recurser review-by=2027-01-18 issue=BOS-28
+				currentPlist, readErr := os.ReadFile(plistPath)
+				switch {
+				case readErr == nil && bytes.Equal(currentPlist, []byte(plist)):
+					// Preserve the existing file when its content is current.
+				case readErr == nil || os.IsNotExist(readErr):
+					if writeErr := os.WriteFile(plistPath, []byte(plist), 0o600); writeErr != nil {
+						refreshErr = fmt.Errorf("rewrite plist: %w", writeErr)
+					}
+				default:
+					refreshErr = fmt.Errorf("read plist before rewrite: %w", readErr)
+				}
+			}
+		}
+	}
+
+	if skipLaunchctl() {
+		// Preserve the test-mode contract: service-manager operations and their
+		// errors are suppressed. Successful resolution still exercises the
+		// file-refresh path above for launchd regression coverage.
+		return nil
+	}
+
+	out, bootstrapErr := runLaunchctl("bootstrap", domainTarget, plistPath)
+	if bootstrapErr != nil {
+		bootstrapErr = fmt.Errorf("launchctl bootstrap: %w: %s", bootstrapErr, strings.TrimSpace(string(out)))
+	}
+	return errors.Join(refreshErr, bootstrapErr)
 }
 
 // platformStop bootouts the LaunchAgent so the running bossd terminates but
@@ -636,10 +691,16 @@ func platformEnsureRunning(socketPath string) error {
 		}
 	}
 
-	// Fall back to starting bossd directly as a background process.
-	bossdPath, err := ResolveBossdPath()
+	// Fall back to starting bossd directly as a background process. Stage it
+	// first so this path, used when no LaunchAgent is installed, also preserves
+	// macOS TCC's resolved-executable-path grant across package upgrades.
+	sourcePath, err := ResolveBossdPath()
 	if err != nil {
 		return fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
+	}
+	bossdPath, err := EnsureStaged(sourcePath)
+	if err != nil {
+		return fmt.Errorf("stage fallback daemon: %w", err)
 	}
 
 	// Final guard before spawning: don't race a daemon that just came up.
@@ -647,19 +708,9 @@ func platformEnsureRunning(socketPath string) error {
 		return nil
 	}
 
-	// #nosec G204 -- self-spawn of ResolveBossdPath()-discovered bossd binary; literal args; local-trust
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command(bossdPath)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	// Detach from the parent process.
-	cmd.SysProcAttr = nil
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start bossd: %w", err)
+	if err := startDetachedBossd(bossdPath); err != nil {
+		return err
 	}
-
-	// Release the child process so it runs independently.
-	_ = cmd.Process.Release()
 
 	if !waitForSocket(socketPath, LifecycleStartupTimeout) {
 		return fmt.Errorf("daemon started but socket not ready after %s at %s", LifecycleStartupTimeout, socketPath)

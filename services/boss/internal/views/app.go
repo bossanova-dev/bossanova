@@ -16,6 +16,7 @@ import (
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
 	client            client.BossClient
+	authChanges       *authChangeQueue
 	auth              *auth.Manager
 	telemetry         telemetry.Client
 	afterAuth         loginCompleteHook
@@ -106,8 +107,11 @@ func NewApp(c client.BossClient, authMgr *auth.Manager) App {
 	ctx := context.Background()
 	settings := config.DefaultSettings()
 	home := NewHomeModel(c, ctx, authMgr)
+	authChanges := newAuthChangeQueue()
+	home.authChanges = authChanges
 	app := App{
 		client:       c,
+		authChanges:  authChanges,
 		auth:         authMgr,
 		ctx:          ctx,
 		ptyManager:   bosspty.NewManager(),
@@ -238,6 +242,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		a.handleWindowSize(msg)
+	case logoutMsg:
+		// Logout actions originate in Home but can finish while a modal is
+		// active. Route the result to the retained Home model so a failed
+		// logout clears logoutPending and remains visible after returning.
+		return a.updateHome(msg)
 	case tea.KeyMsg:
 		if cmd, handled := a.handleGlobalKey(msg); handled {
 			return a, cmd

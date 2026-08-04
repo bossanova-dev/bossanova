@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -40,6 +41,103 @@ func writeSkillSources(t *testing.T, root string, fsys fs.FS) string {
 		t.Fatal(err)
 	}
 	return srcRoot
+}
+
+// assertNamesFullSkillRebuildRemedy pins the *complete* remedy at every site that
+// surfaces the stale-embed warning. Naming only `make build` is not enough:
+// bin/bossd-plugin-claude embeds its own mirror of the skill payload and calls
+// EnsureUpdated on the installed tree at daemon startup, so rebuilding the CLI
+// alone lets a later daemon start restore the old skills. Nor is a bare
+// `boss skills install` enough: the warning can be emitted by a globally installed
+// binary, which `make build plugins` does not replace, so the unqualified command
+// would re-run the stale executable. Asserting all three parts makes an incomplete
+// message impossible to satisfy.
+//
+// Both commands are pinned ROOT-ANCHORED (`make -C <root> …`, `<root>/bin/boss …`)
+// rather than as bare `make build plugins` / `./bin/boss skills install`. The
+// warning fires from any directory below the root, where the cwd-relative forms
+// address the wrong Makefile and a nonexistent binary — and a bare substring is
+// satisfied by exactly the message this guards against, so it would be vacuous.
+//
+// Either spelling of root is accepted. The warning is built from os.Getwd(),
+// which on macOS reports the unresolved /var/... that t.TempDir() handed out,
+// while a platform or Go version that resolved it would report /private/var/...
+// instead. Both are the same directory, and pinning one spelling would red on a
+// perfectly correct message; the assertion stays strict because it still requires
+// the full root-anchored command with an exact absolute path.
+func assertNamesFullSkillRebuildRemedy(t *testing.T, got, root string) {
+	t.Helper()
+	roots := []string{root}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != root {
+		roots = append(roots, resolved)
+	}
+	for _, form := range []string{"make -C %s build plugins", "%s/bin/boss skills install"} {
+		// Temp roots are shell-safe, so the message carries them unquoted; the
+		// quoted form is covered directly by TestBinarySkillsDriftWarningQuotes*.
+		matched := false
+		for _, candidate := range roots {
+			if strings.Contains(got, fmt.Sprintf(form, candidate)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("output = %q, want the stale-binary warning to name %q for one of %v", got, form, roots)
+		}
+	}
+}
+
+// A single test pins the warning's literal text against a synthetic srcRoot, so a
+// future edit that drops `plugins`, drops the `-C`/root anchoring, or breaks the
+// message onto two lines reds here immediately rather than degrading the per-site
+// assertions above into a weaker substring check. The srcRoot is synthetic (not a
+// TempDir) so the expectation is exact and symlink-independent.
+func TestBinarySkillsDriftWarningPinsFullRemedy(t *testing.T) {
+	srcRoot := filepath.Join("/repo", libskillinstall.SourceRelPath)
+	const want = "⚠ drift — this boss binary's embedded skills are older than /repo/services/boss/internal/skillinstall/skills;" +
+		" rebuild with `make -C /repo build plugins`, then run `/repo/bin/boss skills install`"
+	got := binarySkillsDriftWarning(srcRoot)
+	if got != want {
+		t.Fatalf("binarySkillsDriftWarning(%q) = %q, want %q", srcRoot, got, want)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("binarySkillsDriftWarning must stay a single line, got %q", got)
+	}
+}
+
+// A checkout path with whitespace or shell metacharacters must survive being
+// pasted into a shell: unquoted, `make -C /home/me/Boss Nova build plugins` splits
+// into separate arguments and neither command reaches the intended directory or
+// binary. The ordinary path stays unquoted so the common message is readable.
+func TestBinarySkillsDriftWarningQuotesUnsafeRoots(t *testing.T) {
+	for _, tc := range []struct {
+		name, root, wantMake, wantBoss string
+	}{
+		{"ordinary path is left unquoted", "/repo", "make -C /repo build plugins", "`/repo/bin/boss skills install`"},
+		{"space is quoted", "/home/me/Boss Nova", "make -C '/home/me/Boss Nova' build plugins", "`'/home/me/Boss Nova/bin/boss' skills install`"},
+		{"single quote is escaped", "/home/o'brien/repo", `make -C '/home/o'\''brien/repo' build plugins`, "`'/home/o'\\''brien/repo/bin/boss' skills install`"},
+		{"metacharacter is quoted", "/repo$(whoami)", "make -C '/repo$(whoami)' build plugins", "`'/repo$(whoami)/bin/boss' skills install`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := binarySkillsDriftWarning(filepath.Join(tc.root, libskillinstall.SourceRelPath))
+			if !strings.Contains(got, tc.wantMake) {
+				t.Fatalf("warning for root %q = %q, want it to contain %q", tc.root, got, tc.wantMake)
+			}
+			if !strings.Contains(got, tc.wantBoss) {
+				t.Fatalf("warning for root %q = %q, want it to contain %q", tc.root, got, tc.wantBoss)
+			}
+		})
+	}
+}
+
+// repoRootFromSourceRoot must invert FindSourceRoot's join exactly; a drift here
+// would silently send operators to the wrong directory.
+func TestRepoRootFromSourceRootInvertsFindSourceRootJoin(t *testing.T) {
+	for _, root := range []string{"/repo", "/nested/checkout/repo"} {
+		if got := repoRootFromSourceRoot(filepath.Join(root, libskillinstall.SourceRelPath)); got != root {
+			t.Fatalf("repoRootFromSourceRoot for root %q = %q, want %q", root, got, root)
+		}
+	}
 }
 
 func TestRunSkillCheck(t *testing.T) {
@@ -100,9 +198,7 @@ func TestRunSkillCheck(t *testing.T) {
 		if err := runSkillCheck(&out, ""); err == nil {
 			t.Fatal("runSkillCheck stale binary returned nil")
 		}
-		if !strings.Contains(out.String(), "make build") {
-			t.Fatalf("output = %q", out.String())
-		}
+		assertNamesFullSkillRebuildRemedy(t, out.String(), root)
 	})
 
 	t.Run("stale binary fails without an agent on PATH", func(t *testing.T) {
@@ -118,9 +214,7 @@ func TestRunSkillCheck(t *testing.T) {
 		if err := runSkillCheck(&out, ""); err == nil {
 			t.Fatal("runSkillCheck stale binary without agents returned nil")
 		}
-		if !strings.Contains(out.String(), "make build") {
-			t.Fatalf("output = %q", out.String())
-		}
+		assertNamesFullSkillRebuildRemedy(t, out.String(), root)
 	})
 
 	t.Run("continues after one payload cannot be read", func(t *testing.T) {
@@ -188,9 +282,7 @@ func TestRunSkillSyncWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "make build") {
-		t.Fatalf("stderr = %q, want stale-binary warning", got)
-	}
+	assertNamesFullSkillRebuildRemedy(t, string(got), root)
 }
 
 func TestRunSkillSyncUpToDateWritesNothing(t *testing.T) {

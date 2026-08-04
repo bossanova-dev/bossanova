@@ -57,6 +57,33 @@ func IsQuestionLabel(label string) bool {
 	return label == QuestionLabel
 }
 
+// WaitingLabel is the display label emitted when a chat is parked on an
+// external event (BOS-668) rather than actively working. It carries no spinner:
+// the whole point of the state is that nothing is moving.
+const WaitingLabel = "waiting"
+
+// IsWaitingLabel reports whether label is the display status used for a chat
+// blocked on an external event.
+func IsWaitingLabel(label string) bool {
+	return label == WaitingLabel
+}
+
+// CallbackWaitingReason renders the canonical human-readable reason for a chat
+// parked on an armed GitHub callback:
+//
+//	awaiting checks_passed_ready on acme/widget#123
+//
+// This is THE definition of that wording (BOS-668) — the daemon derives it, the
+// TUI and the web UI render it, and none of them re-spell it. Returns "" when
+// any component is missing, so callers can treat the empty string as "no
+// waiting reason known" rather than emitting a half-formed sentence.
+func CallbackWaitingReason(trigger, repoOwner, repoName string, prNumber int) string {
+	if trigger == "" || repoOwner == "" || repoName == "" || prNumber <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("awaiting %s on %s/%s#%d", trigger, repoOwner, repoName, prNumber)
+}
+
 // Package-level label constants shared between the base cascade producer
 // (prOutput) and the errored-recolor guard (isMutedTerminalPR) so the literal
 // text lives in exactly one place.
@@ -189,7 +216,13 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 		strings.HasPrefix(servedLabel, "usage-limited"):
 		return pb.DisplayIntent_DISPLAY_INTENT_WARNING
 	case servedLabel == "initializing",
-		servedLabel == "merging":
+		servedLabel == "merging",
+		// Defence in depth: WaitingChatStatusChange (V20260804) already rewrites
+		// a waiting composite away for every client old enough to reach this
+		// down-convert, so in practice "waiting" never arrives here — but if the
+		// change ordering ever shifts, the base intent must be INFO, not the
+		// served DANGER.
+		IsWaitingLabel(servedLabel):
 		return pb.DisplayIntent_DISPLAY_INTENT_INFO
 	case servedLabel == "stopped":
 		return pb.DisplayIntent_DISPLAY_INTENT_MUTED
@@ -264,6 +297,14 @@ func baseStatus(in Input) Output {
 	// QUESTION above still wins, but the archive beats the merged PR label.
 	if in.Session != nil && in.Session.ArchivePending {
 		return Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
+	}
+	// BOS-668: a chat parked on an external event occupies exactly the slot
+	// WORKING used to — above the workflow/PR-derived labels, below the
+	// transient in-flight overrides — so a parked chat neither claims to be
+	// working nor falls back to a stale PR label. It sits immediately above
+	// WORKING because waiting is the more specific truth about the same chat.
+	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING {
+		return Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS

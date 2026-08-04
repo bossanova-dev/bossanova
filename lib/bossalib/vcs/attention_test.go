@@ -4,9 +4,41 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 )
+
+// TestAttentionReasonMirrorsProto pins every AttentionReason constant to the
+// proto enum number it mirrors. The enum is hand-mirrored across
+// lib/bossalib/vcs/attention.go and proto/bossanova/v1/models.proto, and
+// bossd's attentionStatusToProto casts one straight to the other, so a value
+// added to only one side (or renumbered on either) silently mislabels every
+// session's attention reason. Compare numerically rather than by name: a cast
+// is exactly what production does.
+func TestAttentionReasonMirrorsProto(t *testing.T) {
+	tests := []struct {
+		name string
+		got  AttentionReason
+		want pb.AttentionReason
+	}{
+		{"unspecified", AttentionReasonUnspecified, pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED},
+		{"blocked max attempts", AttentionReasonBlockedMaxAttempts, pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS},
+		{"awaiting human input", AttentionReasonAwaitingHumanInput, pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT},
+		{"review requested", AttentionReasonReviewRequested, pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED},
+		{"merge conflict unresolvable", AttentionReasonMergeConflictUnresolvable, pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE},
+		{"agent auth failed", AttentionReasonAgentAuthFailed, pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED},
+		{"agent stalled", AttentionReasonAgentStalled, pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if int(tt.got) != int(tt.want) {
+				t.Errorf("%s = %d, want proto value %d", tt.name, int(tt.got), int(tt.want))
+			}
+		})
+	}
+}
 
 func TestComputeAttentionStatus(t *testing.T) {
 	now := time.Now()

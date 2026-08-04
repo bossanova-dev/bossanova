@@ -4610,8 +4610,12 @@ type ChatStatusEntry struct {
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
 	Status         ChatStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.ChatStatus" json:"status,omitempty"`
 	LastOutputAt   *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_output_at,json=lastOutputAt,proto3" json:"last_output_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Short human-readable reason the chat is waiting, e.g.
+	// "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+	// CHAT_STATUS_WAITING.
+	WaitingReason string `protobuf:"bytes,4,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChatStatusEntry) Reset() {
@@ -4663,6 +4667,13 @@ func (x *ChatStatusEntry) GetLastOutputAt() *timestamppb.Timestamp {
 		return x.LastOutputAt
 	}
 	return nil
+}
+
+func (x *ChatStatusEntry) GetWaitingReason() string {
+	if x != nil {
+		return x.WaitingReason
+	}
+	return ""
 }
 
 type GetChatStatusesResponse struct {
@@ -4755,9 +4766,13 @@ func (x *GetSessionStatusesRequest) GetSessionIds() []string {
 
 // SessionStatusEntry is an aggregate status for a session.
 type SessionStatusEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Status        ChatStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.ChatStatus" json:"status,omitempty"` // Best status across all chats (working > idle > stopped)
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Status    ChatStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.ChatStatus" json:"status,omitempty"` // Best status across all chats (working > idle > stopped)
+	// Short human-readable reason the session's chats are waiting, e.g.
+	// "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+	// CHAT_STATUS_WAITING.
+	WaitingReason string `protobuf:"bytes,3,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4804,6 +4819,13 @@ func (x *SessionStatusEntry) GetStatus() ChatStatus {
 		return x.Status
 	}
 	return ChatStatus_CHAT_STATUS_UNSPECIFIED
+}
+
+func (x *SessionStatusEntry) GetWaitingReason() string {
+	if x != nil {
+		return x.WaitingReason
+	}
+	return ""
 }
 
 type GetSessionStatusesResponse struct {
@@ -10259,20 +10281,22 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x18ReportChatStatusResponse\"7\n" +
 	"\x16GetChatStatusesRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\xaf\x01\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\xd6\x01\n" +
 	"\x0fChatStatusEntry\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12@\n" +
-	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\"T\n" +
+	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\x12%\n" +
+	"\x0ewaiting_reason\x18\x04 \x01(\tR\rwaitingReason\"T\n" +
 	"\x17GetChatStatusesResponse\x129\n" +
 	"\bstatuses\x18\x01 \x03(\v2\x1d.bossanova.v1.ChatStatusEntryR\bstatuses\"<\n" +
 	"\x19GetSessionStatusesRequest\x12\x1f\n" +
 	"\vsession_ids\x18\x01 \x03(\tR\n" +
-	"sessionIds\"e\n" +
+	"sessionIds\"\x8c\x01\n" +
 	"\x12SessionStatusEntry\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\"Z\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12%\n" +
+	"\x0ewaiting_reason\x18\x03 \x01(\tR\rwaitingReason\"Z\n" +
 	"\x1aGetSessionStatusesResponse\x12<\n" +
 	"\bstatuses\x18\x01 \x03(\v2 .bossanova.v1.SessionStatusEntryR\bstatuses\"n\n" +
 	"\x16DeliverVCSEventRequest\x12&\n" +

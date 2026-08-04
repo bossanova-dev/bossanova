@@ -36,6 +36,10 @@ type ChatPickerModel struct {
 	highlightID      string               // agent session ID to auto-highlight after detach
 	daemonStatuses   map[string]string    // agent_session_id → status string from daemon heartbeats
 	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time from daemon
+	// daemonWaitingReasons maps agent_session_id → why that chat is parked on an
+	// external event (BOS-668). Rendered as the session-detail waiting line so an
+	// operator can see WHY a chat is idle-looking without opening it.
+	daemonWaitingReasons map[string]string
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat

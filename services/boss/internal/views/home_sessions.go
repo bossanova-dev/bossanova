@@ -198,7 +198,7 @@ func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
 	}
 	row := 0
 	for i, sess := range h.sessions {
-		next := row + 1 + sessionSubRowCount(sess)
+		next := row + 1 + h.subRowCount(sess)
 		if cursor >= row && cursor < next {
 			return i, true
 		}
@@ -212,7 +212,7 @@ func (h HomeModel) primarySessionRows() []int {
 	row := 0
 	for _, sess := range h.sessions {
 		rows = append(rows, row)
-		row += 1 + sessionSubRowCount(sess)
+		row += 1 + h.subRowCount(sess)
 	}
 	return rows
 }
@@ -220,7 +220,7 @@ func (h HomeModel) primarySessionRows() []int {
 func (h HomeModel) tableDataRowCount() int {
 	rows := len(h.sessions)
 	for _, sess := range h.sessions {
-		rows += sessionSubRowCount(sess)
+		rows += h.subRowCount(sess)
 	}
 	return rows
 }
@@ -257,7 +257,7 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 		if i == sessionIndex {
 			return row
 		}
-		row += 1 + sessionSubRowCount(sess)
+		row += 1 + h.subRowCount(sess)
 	}
 	return -1
 }
@@ -363,6 +363,7 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.sessions = msg.sessions
 	h.latchValueDeliveredIfNeeded()
 	h.daemonStatuses = msg.daemonStatuses
+	h.daemonWaitingReasons = msg.daemonWaitingReasons
 	h.applyMergedOptimisticOverride()
 	h.reconcileArchivingSessions()
 	h.buildTableRows()
@@ -422,6 +423,10 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 
 		// Fetch daemon-side heartbeat statuses for cross-instance display.
 		var daemonStatuses map[string]string
+		// Reasons are sparse — only a session parked on an external event carries
+		// one — so the map is only populated for the entries that have one, and
+		// stays nil against a daemon too old to stamp the field (BOS-668).
+		var daemonWaitingReasons map[string]string
 		if len(sessions) > 0 {
 			ids := make([]string, len(sessions))
 			for i, s := range sessions {
@@ -432,15 +437,22 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 				daemonStatuses = make(map[string]string, len(entries))
 				for _, e := range entries {
 					daemonStatuses[e.SessionId] = chatStatusString(e.Status)
+					if reason := e.GetWaitingReason(); reason != "" {
+						if daemonWaitingReasons == nil {
+							daemonWaitingReasons = make(map[string]string, 1)
+						}
+						daemonWaitingReasons[e.SessionId] = reason
+					}
 				}
 			}
 		}
 
 		return sessionListMsg{
-			homeGeneration: homeGeneration,
-			pollID:         pollID,
-			sessions:       sessions,
-			daemonStatuses: daemonStatuses,
+			homeGeneration:       homeGeneration,
+			pollID:               pollID,
+			sessions:             sessions,
+			daemonStatuses:       daemonStatuses,
+			daemonWaitingReasons: daemonWaitingReasons,
 		}
 	}
 }

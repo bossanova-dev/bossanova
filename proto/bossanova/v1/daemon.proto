@@ -868,6 +868,10 @@ message ChatStatusEntry {
   string agent_session_id = 1;
   ChatStatus status = 2;
   google.protobuf.Timestamp last_output_at = 3;
+  // Short human-readable reason the chat is waiting, e.g.
+  // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+  // CHAT_STATUS_WAITING.
+  string waiting_reason = 4;
 }
 
 message GetChatStatusesResponse {
@@ -882,6 +886,10 @@ message GetSessionStatusesRequest {
 message SessionStatusEntry {
   string session_id = 1;
   ChatStatus status = 2;       // Best status across all chats (working > idle > stopped)
+  // Short human-readable reason the session's chats are waiting, e.g.
+  // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
+  // CHAT_STATUS_WAITING.
+  string waiting_reason = 3;
 }
 
 message GetSessionStatusesResponse {

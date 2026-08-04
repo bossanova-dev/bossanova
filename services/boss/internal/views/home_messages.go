@@ -17,7 +17,12 @@ type sessionListMsg struct {
 	pollID         uint64
 	sessions       []*pb.Session
 	daemonStatuses map[string]string // session_id → status string
-	err            error
+	// daemonWaitingReasons carries session_id → why the session is parked on an
+	// external event (BOS-668), e.g. "awaiting checks_passed_ready on
+	// acme/widget#123". Only populated for sessions whose aggregate status is
+	// waiting; nil on an older daemon that does not stamp the field.
+	daemonWaitingReasons map[string]string
+	err                  error
 }
 
 // homeGenerationSequence gives each HomeModel a process-unique identity. It
@@ -33,8 +38,9 @@ type repoCountMsg struct {
 
 // authStatusMsg carries the result of checking auth status.
 type authStatusMsg struct {
-	loggedIn bool
-	email    string
+	generation uint64
+	loggedIn   bool
+	email      string
 	// needsRelogin reports stored-but-unusable credentials (BOS-659): the
 	// email above is the retained identity, but the daemon can no longer
 	// refresh, so Home offers [l]ogin and explains why. Distinct from
@@ -79,7 +85,8 @@ type daemonRestartMsg struct {
 // holding, so it genuinely fails; before BOS-659 the TUI discarded the error
 // and the board simply stayed signed in with no explanation.
 type logoutMsg struct {
-	err error
+	err    error
+	notify tea.Cmd
 }
 
 // tickMsg signals a polling refresh.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -86,6 +87,115 @@ func DeriveInterests(ctx context.Context, store interestLister) ([]*pb.CallbackI
 		return out[i].GetPrNumber() < out[j].GetPrNumber()
 	})
 	return out, nil
+}
+
+// ChatCallbackInterest is the single external event one chat is currently
+// parked on: the deterministic winner among that chat's live callbacks. It is a
+// read-only projection of models.GithubCallback — deriving it never touches the
+// callback write path or the schema.
+type ChatCallbackInterest struct {
+	ID        string
+	Trigger   models.GithubCallbackTrigger
+	RepoOwner string
+	RepoName  string
+	PRNumber  int
+	State     models.GithubCallbackState
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// WaitingReason renders the canonical waiting wording for this interest,
+// delegating to displaystatus so the daemon, the TUI, and the web UI all spell
+// it identically (BOS-668). A nil interest has no reason.
+func (i *ChatCallbackInterest) WaitingReason() string {
+	if i == nil {
+		return ""
+	}
+	return displaystatus.CallbackWaitingReason(string(i.Trigger), i.RepoOwner, i.RepoName, i.PRNumber)
+}
+
+// ActiveInterestForChat returns the single live callback targetChatID is parked
+// on, or nil when the chat has none.
+//
+// "Live" is the same nonTerminalCallbackStates set the daemon advertises
+// upstream (active, leased, triggered): a callback that has been delivered,
+// canceled, or expired holds no further interest in any event, so a chat with
+// only those is not waiting. A triggered callback is deliberately still counted
+// — the event has fired but the prompt has not landed yet, so the chat really
+// is still parked, and the state self-corrects one delivery later.
+//
+// State alone is not enough, so rows past expires_at are skipped as of now.
+// Expiry is only swept lazily (the list RPC and the delivery worker's
+// ExpireOverdue tick, DefaultPollInterval apart), so an overdue callback still
+// reads as active/leased/triggered in the store for up to a full poll interval.
+// Without this guard the chat would keep rendering "waiting for an event that
+// can no longer fire" for that window — the same reasoning, and the same
+// predicate, as db.SQLiteGithubCallbackStore.AcquireLease and TriggerGroup.
+//
+// A chat may hold several live callbacks (several PRs, several triggers). The
+// winner is the OLDEST by created_at, tie-broken by the lexicographically
+// smallest id — the interest the chat has been parked on longest, and a total
+// order over a set with no natural precedence. The comparison is done here
+// rather than leaning on the store's ORDER BY so the rule is testable and
+// cannot drift with a query change; map iteration is never involved.
+func ActiveInterestForChat(ctx context.Context, store interestLister, targetChatID string, now time.Time) (*ChatCallbackInterest, error) {
+	if targetChatID == "" {
+		return nil, nil
+	}
+	var best *models.GithubCallback
+	for _, state := range nonTerminalCallbackStates {
+		s := state
+		chatID := targetChatID
+		cbs, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &chatID, State: &s})
+		if err != nil {
+			return nil, fmt.Errorf("list %s github callbacks for chat %s: %w", s, targetChatID, err)
+		}
+		for _, c := range cbs {
+			if c == nil {
+				continue
+			}
+			if !now.Before(c.ExpiresAt) {
+				continue
+			}
+			if best == nil || earlierCallback(c, best) {
+				best = c
+			}
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return &ChatCallbackInterest{
+		ID:        best.ID,
+		Trigger:   best.Trigger,
+		RepoOwner: best.RepoOwner,
+		RepoName:  best.RepoName,
+		PRNumber:  best.PRNumber,
+		State:     best.State,
+		CreatedAt: best.CreatedAt,
+		ExpiresAt: best.ExpiresAt,
+	}, nil
+}
+
+// earlierCallback reports whether a sorts before b under the documented
+// deterministic rule: oldest created_at first, ties broken by smallest id.
+func earlierCallback(a, b *models.GithubCallback) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	return a.ID < b.ID
+}
+
+// WaitingReasonForChat is the one-call form of ActiveInterestForChat used by the
+// status derivation: it returns the canonical waiting reason for the chat, or ""
+// when the chat is not parked on any live callback that is still un-expired as
+// of now.
+func WaitingReasonForChat(ctx context.Context, store interestLister, targetChatID string, now time.Time) (string, error) {
+	interest, err := ActiveInterestForChat(ctx, store, targetChatID, now)
+	if err != nil {
+		return "", err
+	}
+	return interest.WaitingReason(), nil
 }
 
 // interestsEqual reports whether two interest sets are identical. Both operands

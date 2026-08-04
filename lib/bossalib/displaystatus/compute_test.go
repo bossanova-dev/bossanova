@@ -856,3 +856,82 @@ func TestComputeBaseOmitsErroredOverlay(t *testing.T) {
 		t.Errorf("ComputeBase(%+v) = %+v, want equal to Compute() %+v", normal, ComputeBase(normal), Compute(normal))
 	}
 }
+
+// --- BOS-668: waiting on an external event ---
+
+func TestCallbackWaitingReason_CanonicalWording(t *testing.T) {
+	got := CallbackWaitingReason("checks_passed_ready", "acme", "widget", 123)
+	const want = "awaiting checks_passed_ready on acme/widget#123"
+	if got != want {
+		t.Fatalf("CallbackWaitingReason = %q, want %q", got, want)
+	}
+}
+
+func TestCallbackWaitingReason_IncompleteInputYieldsNoReason(t *testing.T) {
+	cases := []struct {
+		name                    string
+		trigger, owner, repoNam string
+		pr                      int
+	}{
+		{name: "no trigger", owner: "acme", repoNam: "widget", pr: 1},
+		{name: "no owner", trigger: "merged", repoNam: "widget", pr: 1},
+		{name: "no name", trigger: "merged", owner: "acme", pr: 1},
+		{name: "no pr", trigger: "merged", owner: "acme", repoNam: "widget"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CallbackWaitingReason(tc.trigger, tc.owner, tc.repoNam, tc.pr); got != "" {
+				t.Fatalf("CallbackWaitingReason = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestBaseStatus_WaitingChatStatus(t *testing.T) {
+	got := Compute(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING})
+	want := Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
+	if got != want {
+		t.Fatalf("Compute(WAITING) = %+v, want %+v", got, want)
+	}
+	if WaitingLabel != "waiting" {
+		t.Fatalf("WaitingLabel = %q, want waiting", WaitingLabel)
+	}
+}
+
+func TestBaseStatus_WaitingLosesToQuestionAndLimited(t *testing.T) {
+	// The chat-status cascade already resolves a single winning status before
+	// Compute is called; these assert the label ordering inside baseStatus so a
+	// future reorder cannot silently promote waiting above a human-action state.
+	if got := Compute(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION}); got.Label != QuestionLabel {
+		t.Fatalf("QUESTION = %q, want %q", got.Label, QuestionLabel)
+	}
+	if got := Compute(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED}); got.Label != "usage-limited" {
+		t.Fatalf("LIMITED = %q, want usage-limited", got.Label)
+	}
+}
+
+func TestBaseStatus_WaitingWinsOverPRDerivedLabels(t *testing.T) {
+	// Waiting sits exactly where working sat: above the workflow/PR-derived
+	// labels, so a parked chat does not fall back to a stale "✓ passing".
+	sess := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
+	if got := Compute(Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}); got.Label != WaitingLabel {
+		t.Fatalf("waiting over passing PR = %q, want %q", got.Label, WaitingLabel)
+	}
+	// ...but the transient in-flight overrides still win, exactly as for working.
+	setup := &pb.Session{DisplaySettingUp: true}
+	if got := Compute(Input{Session: setup, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}); got.Label != "initializing" {
+		t.Fatalf("initializing over waiting = %q, want initializing", got.Label)
+	}
+}
+
+func TestPreErroredBlockedIntent_WaitingIsInfo(t *testing.T) {
+	sess := &pb.Session{
+		State:         pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayLabel:  WaitingLabel,
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+	}
+	got := PreErroredOutput(sess)
+	if got.Intent != pb.DisplayIntent_DISPLAY_INTENT_INFO {
+		t.Fatalf("PreErroredOutput(waiting).Intent = %v, want INFO", got.Intent)
+	}
+}

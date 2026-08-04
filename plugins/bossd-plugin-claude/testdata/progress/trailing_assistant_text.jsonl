@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-08-03T15:11:02.114Z","message":{"role":"user","content":"what does this package do?"}}
+{"type":"assistant","timestamp":"2026-08-03T15:11:41.002Z","message":{"role":"assistant","content":[{"type":"text","text":"It reads Claude Code transcripts."}]}}

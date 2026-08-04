@@ -1554,6 +1554,120 @@ func TestDisplayPollerRetriesTerminalReconcileAfterStoreError(t *testing.T) {
 	}
 }
 
+// TestDisplayPollerReconcileArchivesOnMergedOnly pins the BOS-697 archive gap:
+// archive-after-merge used to live only on the dispatcher's PRMerged handler,
+// so a daemon that never received the merge webhook (or whose session was
+// wedged in a state the handler could not fire from) reconciled to Merged via
+// the display poller and was never archived. The hook is merge-only — a closed
+// PR must never archive, matching the dispatcher's deliberate rule.
+func TestDisplayPollerReconcileArchivesOnMergedOnly(t *testing.T) {
+	cases := []struct {
+		name        string
+		prState     vcs.PRState
+		archiveFlag bool
+		wantState   machine.State
+		wantArchive bool
+	}{
+		{"merged with flag on", vcs.PRStateMerged, true, machine.Merged, true},
+		{"merged with flag off", vcs.PRStateMerged, false, machine.Merged, false},
+		{"closed with flag on", vcs.PRStateClosed, true, machine.Closed, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			tracker := status.NewDisplayTracker()
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                              "repo-1",
+				OriginURL:                       "owner/repo",
+				ShouldArchiveSessionsAfterMerge: tc.archiveFlag,
+			}
+			// PushingBranch is the wedged shape from the bug report: reconcile
+			// adopted the agent's own PR without advancing the state.
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:       "sess-1",
+				RepoID:   "repo-1",
+				PRNumber: intPtr(42),
+				State:    machine.PushingBranch,
+			}
+			vp.nextPRStatus = &vcs.PRStatus{State: tc.prState, HeadSHA: "sha-resolved"}
+
+			arch := newFakeArchiver()
+			poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, zerolog.Nop())
+			poller.SetArchiver(arch)
+
+			if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+				t.Fatalf("RefreshPR returned error: %v", err)
+			}
+
+			if got := sessions.sessions["sess-1"].State; got != tc.wantState {
+				t.Fatalf("state = %v, want %v", got, tc.wantState)
+			}
+
+			if tc.wantArchive {
+				select {
+				case id := <-arch.calls:
+					if id != "sess-1" {
+						t.Fatalf("archived %q, want sess-1", id)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("session was not archived after the poller reconciled it to Merged")
+				}
+				return
+			}
+			select {
+			case id := <-arch.calls:
+				t.Fatalf("session %q archived when it should not have been", id)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestDisplayPollerReconcileWithoutArchiverIsNoOp confirms the archive hook is
+// nil-safe: an unwired archiver disables the automation rather than panicking.
+func TestDisplayPollerReconcileWithoutArchiverIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		OriginURL:                       "owner/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: intPtr(42),
+		State:    machine.PushingBranch,
+	}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, zerolog.Nop())
+
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Fatalf("state = %v, want Merged", got)
+	}
+}
+
+// unconfiguredMachineState is a state value the state machine has no
+// configuration for — the shape a corrupt or forward-versioned session row
+// takes. It is the only remaining way reconcileNonTerminalToResolved's CanFire
+// guard can trip: since BOS-697 every real non-terminal state (Orphaned
+// included) permits PRMerged, and the two resolved terminals are filtered out
+// upstream by isResolvedTerminalState.
+const unconfiguredMachineState = machine.State(99)
+
 func TestDisplayPollerDoesNotMarkTerminalWhenMachineCannotFireResolvedPREvent(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -1567,7 +1681,7 @@ func TestDisplayPollerDoesNotMarkTerminalWhenMachineCannotFireResolvedPREvent(t 
 		ID:       "sess-1",
 		RepoID:   "repo-1",
 		PRNumber: intPtr(42),
-		State:    machine.Orphaned,
+		State:    unconfiguredMachineState,
 	}
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "sha-merged"}
 
@@ -1578,8 +1692,8 @@ func TestDisplayPollerDoesNotMarkTerminalWhenMachineCannotFireResolvedPREvent(t 
 		t.Fatalf("RefreshPR returned error: %v", err)
 	}
 
-	if sessions.sessions["sess-1"].State != machine.Orphaned {
-		t.Fatalf("state = %v, want Orphaned", sessions.sessions["sess-1"].State)
+	if sessions.sessions["sess-1"].State != unconfiguredMachineState {
+		t.Fatalf("state = %v, want the unconfigured state left untouched", sessions.sessions["sess-1"].State)
 	}
 	if entry := tracker.Get("sess-1"); entry != nil && isTerminalDisplayStatus(entry.Status) {
 		t.Fatalf("tracker marked terminal despite unresolved persisted state")

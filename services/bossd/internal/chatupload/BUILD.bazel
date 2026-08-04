@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chatupload",
+    srcs = ["chatupload.go"],
+    importpath = "github.com/recurser/bossd/internal/chatupload",
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
+go_test(
+    name = "chatupload_test",
+    srcs = ["chatupload_test.go"],
+    embed = [":chatupload"],
+)

@@ -298,24 +298,28 @@ func TestRecoverStrandedCronSessions_TmuxUnattended_Routed(t *testing.T) {
 	}
 }
 
-func TestRecoverStrandedCronSessions_NoLog_LivenessDead_Routed(t *testing.T) {
-	// A logless cron run (e.g. Codex, or a failed tmux pipe-pane) has no durable
-	// idle evidence, but a wired liveness checker confirms the agent is gone — so
-	// the sweep reaps it instead of leaving it stranded forever.
+func TestRecoverStrandedCronSessions_NoLog_LivenessDead_LiveTmuxPane_Skipped(t *testing.T) {
+	// A cron run is tmux-hosted even when it is not marked tmux_unattended. A
+	// confirmed live pane overrides false aggregate liveness when pipe-pane never
+	// wrote a log.
 	dir := t.TempDir()
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
-	sessions.sessions["s1"] = strandedCronSession("s1", "a1")              // no log written
+	lc.tmux = stubTmuxForSweep(true, "")
+	tmuxName := "boss-s1-a1"
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
+	}}
+	s := strandedCronSession("s1", "a1")
+	s.IsTmuxUnattended = false
+	sessions.sessions["s1"] = s // no log written
 
 	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("routed=%d, want 1", n)
-	}
-	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
-		t.Fatalf("reaped=%v, want [s1]", got)
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d notifier=%d, want 0/0 (live tmux pane defers despite false liveness)", n, rec.count())
 	}
 }
 
@@ -333,22 +337,104 @@ func TestRecoverStrandedCronSessions_NoLog_LivenessAlive_Skipped(t *testing.T) {
 	}
 }
 
-func TestRecoverStrandedCronSessions_FreshLog_LivenessDead_Routed(t *testing.T) {
-	// Fresh log mtime but the agent is confirmed gone (it died moments before a
-	// daemon restart) -> reaped immediately rather than waiting out the idle
-	// threshold. This is the restart fast-path.
+func TestRecoverStrandedCronSessions_FreshLog_LivenessDead_Skipped(t *testing.T) {
+	// A fresh cron log is durable evidence that the tmux-hosted run may still be
+	// active. False liveness cannot override it.
 	dir := t.TempDir()
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // agent gone
-	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	s := strandedCronSession("s1", "a1")
+	s.IsTmuxUnattended = false
+	sessions.sessions["s1"] = s
 	seedLog(t, dir, "a1", time.Minute) // fresh -> would otherwise look "active"
 
 	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d notifier=%d, want 0/0 (fresh cron log defers despite false liveness)", n, rec.count())
+	}
+}
+
+func TestRecoverStrandedCronSessions_TmuxHostedUnattendedFalseLiveness_Skipped(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*models.Session)
+		seed      func(t *testing.T, dir string)
+	}{
+		{
+			name: "tmux_unattended_fresh_log",
+			configure: func(s *models.Session) {
+				s.CronJobID = nil
+				s.IsTmuxUnattended = true
+			},
+			seed: func(t *testing.T, dir string) {
+				seedLog(t, dir, "a1", time.Minute)
+			},
+		},
+		{
+			name:      "cron_fresh_log",
+			configure: func(*models.Session) {},
+			seed: func(t *testing.T, dir string) {
+				seedLog(t, dir, "a1", time.Minute)
+			},
+		},
+		{
+			name: "detached_fresh_log",
+			configure: func(s *models.Session) {
+				s.CronJobID = nil
+				s.Detach = true
+			},
+			seed: func(t *testing.T, dir string) {
+				seedLog(t, dir, "a1", time.Minute)
+			},
+		},
+		{
+			name: "tmux_unattended_unknown_log",
+			configure: func(s *models.Session) {
+				s.CronJobID = nil
+				s.IsTmuxUnattended = true
+			},
+			seed: func(*testing.T, string) {},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			lc, sessions, _, rec := newSweepLifecycle(t, dir)
+			lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // false liveness
+			s := strandedCronSession("s1", "a1")
+			tc.configure(s)
+			sessions.sessions["s1"] = s
+			tc.seed(t, dir)
+
+			n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 || rec.count() != 0 {
+				t.Fatalf("routed=%d notifier=%d, want 0/0 (tmux run lacks durable completion evidence)", n, rec.count())
+			}
+		})
+	}
+}
+
+func TestRecoverStrandedCronSessions_TmuxUnattendedWithoutAgentIDFalseLiveness_StartupRouted(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // false liveness
+	sessions.sessions["s1"] = &models.Session{
+		ID:               "s1",
+		State:            machine.CreatingWorktree,
+		IsTmuxUnattended: true,
+	}
+
+	n, err := lc.RecoverStrandedCronSessionsAtStartup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 || rec.count() != 1 {
-		t.Fatalf("routed=%d notifier=%d, want 1/1 (agent dead reaps despite fresh log)", n, rec.count())
+		t.Fatalf("routed=%d notifier=%d, want 1/1 (restart-stranded pre-agent run)", n, rec.count())
 	}
 }
 
@@ -464,9 +550,9 @@ func TestRecoverStrandedCronSessions_PostAgentPushingBranch_Routed(t *testing.T)
 }
 
 func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_Startup_Routed(t *testing.T) {
-	// A pre-agent CreatingWorktree strand (nil AgentSessionID, liveness dead) is
-	// the restart-frozen case the STARTUP sweep exists to clean up — it must
-	// still route so restart recovery is preserved (BOS-426).
+	// A restart can strand a cron session after persisting CronJobID and
+	// CreatingWorktree, but before creating a pane or agent ID. There is no
+	// in-flight creator after restart, so dead liveness recovers this row.
 	dir := t.TempDir()
 	lc, sessions, _, rec := newSweepLifecycle(t, dir)
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
@@ -483,11 +569,58 @@ func TestRecoverStrandedCronSessions_PreAgentCreatingWorktree_Startup_Routed(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("routed=%d, want 1", n)
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d notifier=%d, want 1/1 (restart-stranded pre-agent cron run)", n, rec.count())
 	}
-	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
-		t.Fatalf("reaped=%v, want [s1]", got)
+}
+
+func TestRecoverStrandedCronSessions_LoglessTmuxExited_Routed(t *testing.T) {
+	// pipe-pane is best effort. When it never creates a log, a confirmed absent
+	// tmux session is independent completion evidence and must eventually reap
+	// the stranded run; false liveness alone remains insufficient.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
+	lc.tmux = stubTmuxForSweep(false, "")
+	tmuxName := "boss-s1-a1"
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
+	}}
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d notifier=%d, want 1/1 (confirmed missing tmux pane)", n, rec.count())
+	}
+}
+
+func TestRecoverStrandedCronSessions_LoglessTmuxReplacementChatExited_Routed(t *testing.T) {
+	// A non-resumable account switch clears the original chat's tmux name and
+	// starts a replacement under a fresh agent-session ID without changing the
+	// parent session's persisted ID. The replacement pane is still the durable
+	// completion evidence for this tmux-hosted unattended run.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
+	lc.tmux = stubTmuxForSweep(false, "")
+	replacementTmuxName := "boss-s1-a2"
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+		"s1": {
+			{SessionID: "s1", AgentSessionID: "a1"}, // switched-from chat; pane name cleared
+			{SessionID: "s1", AgentSessionID: "a2", TmuxSessionName: &replacementTmuxName},
+		},
+	}}
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d notifier=%d, want 1/1 (confirmed missing replacement tmux pane)", n, rec.count())
 	}
 }
 

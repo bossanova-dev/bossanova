@@ -55,6 +55,7 @@ go_test(
         "e2e_webhook_realtime_test.go",
         "harness_test.go",
         "intconv_test.go",
+        "mock_agent_runner_test.go",
         "seams_test.go",
     ],
     embed = [":testharness"],

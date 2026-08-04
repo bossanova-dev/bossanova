@@ -73,24 +73,100 @@ func prefixedHashID(prefix, value string) string {
 	return prefix + "-" + hash[:16]
 }
 
-var allowedEvents = map[Event]struct{}{
-	EventCLICommandInvoked:         {},
-	EventDaemonStarted:             {},
-	EventSessionCreated:            {},
-	EventChatCreated:               {},
-	EventChatAttached:              {},
-	EventAuthChanged:               {},
-	EventRepairStarted:             {},
-	EventRepairCompleted:           {},
-	EventBugReportSubmitted:        {},
-	EventCloudAccessDenied:         {},
-	EventCloudCheckoutStarted:      {},
-	EventCloudCheckoutReturned:     {},
-	EventSignupUserCreated:         {},
-	EventBillingAccountProvisioned: {},
+// EventSpec describes one event's public telemetry contract. Registry is the
+// single source of truth for event names and the scalar properties each event
+// may send.
+type EventSpec struct {
+	Surface     string
+	Description string
+	Properties  map[string]struct{}
+}
+
+// CommonProperties are safe across events. Event-specific properties belong in
+// the corresponding Registry entry.
+var CommonProperties = propertySet("source")
+
+// IdentifyProperties are safe to send with an Identify call. Identify payloads
+// are not events, so their schema is kept separate from the event Registry.
+var IdentifyProperties = propertySet(
+	"action",
+	"authenticated",
+	"can_create_checkout",
+	"checkout_action",
+	"checkout_started",
+	"cloud_access_state",
+	"command",
+	"context_has_error",
+	"denial_reason",
+	"entry_point",
+	"ok",
+	"product_area",
+	"report_id",
+	"resume",
+	"source",
+	"status",
+	"step",
+	"workos_org_id",
+)
+
+// Registry is intentionally exported so tests and tooling can verify the
+// taxonomy. Callers must not mutate it.
+var Registry = map[Event]EventSpec{
+	EventCLICommandInvoked:         {Surface: "cli", Description: "A boss command completed", Properties: propertySet("command", "status")},
+	EventDaemonStarted:             {Surface: "daemon", Description: "A bossd daemon became ready", Properties: propertySet()},
+	EventSessionCreated:            {Surface: "tui", Description: "A session was created", Properties: propertySet()},
+	EventChatCreated:               {Surface: "tui", Description: "A chat was created", Properties: propertySet()},
+	EventChatAttached:              {Surface: "tui", Description: "A chat was attached", Properties: propertySet("action", "resume")},
+	EventAuthChanged:               {Surface: "cli", Description: "CLI authentication changed", Properties: propertySet("action")},
+	EventRepairStarted:             {Surface: "cli", Description: "A repair began", Properties: propertySet()},
+	EventRepairCompleted:           {Surface: "cli", Description: "A repair completed", Properties: propertySet("status")},
+	EventBugReportSubmitted:        {Surface: "cloud", Description: "A bug report was submitted", Properties: propertySet("report_id", "authenticated")},
+	EventCloudAccessDenied:         {Surface: "cloud", Description: "Cloud access was denied", Properties: billingProperties()},
+	EventCloudCheckoutStarted:      {Surface: "cloud", Description: "Cloud checkout started", Properties: billingProperties()},
+	EventCloudCheckoutReturned:     {Surface: "cloud", Description: "Cloud checkout return was processed", Properties: billingProperties()},
+	EventSignupUserCreated:         {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
+	EventBillingAccountProvisioned: {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
+}
+
+func propertySet(properties ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(properties))
+	for _, property := range properties {
+		set[property] = struct{}{}
+	}
+	return set
+}
+
+func billingProperties() map[string]struct{} {
+	return propertySet(
+		"product_area",
+		"cloud_access_state",
+		"entry_point",
+		"can_create_checkout",
+		"checkout_started",
+		"checkout_action",
+		"denial_reason",
+		"workos_org_id",
+	)
 }
 
 func IsAllowed(event Event) bool {
-	_, ok := allowedEvents[event]
+	_, ok := Registry[event]
+	return ok
+}
+
+func IsAllowedProperty(event Event, property string) bool {
+	if _, ok := CommonProperties[property]; ok {
+		return true
+	}
+	spec, ok := Registry[event]
+	if !ok {
+		return false
+	}
+	_, ok = spec.Properties[property]
+	return ok
+}
+
+func IsAllowedIdentifyProperty(property string) bool {
+	_, ok := IdentifyProperties[property]
 	return ok
 }

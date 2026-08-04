@@ -6,6 +6,10 @@
 
 Manage the bossd daemon
 
+### `boss daemon doctor`
+
+Diagnose the bossd daemon install: staged binary, LaunchAgent path, and macOS folder permissions
+
 ### `boss daemon install [flags]`
 
 Install bossd as a background service (launchd on macOS, systemd on Linux)

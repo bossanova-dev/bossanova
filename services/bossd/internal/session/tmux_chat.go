@@ -451,7 +451,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		AppendSystemPrompt: appendPrompt,
 		Model:              spawnModel,
 		McpConfigPath:      mcpConfigPath,
-		StrictMcpConfig:    isCronSession(sess),
+		StrictMcpConfig:    StrictMcpConfigForSession(sess),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -655,7 +655,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		InitialCommand:  input.Command,
 		Model:           sess.Model,
 		McpConfigPath:   mcpConfigPath,
-		StrictMcpConfig: isCronSession(sess),
+		StrictMcpConfig: StrictMcpConfigForSession(sess),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)

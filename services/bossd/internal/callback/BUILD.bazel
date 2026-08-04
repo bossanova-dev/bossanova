@@ -12,6 +12,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/callback",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
         "//lib/bossalib/sqlutil",

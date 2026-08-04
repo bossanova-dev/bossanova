@@ -48,6 +48,43 @@ type ChatStatusReader interface {
 	Get(agentSessionID string) *Entry
 }
 
+// StalledReader reports whether a chat has raised the agent-stalled attention
+// (BOS-667). It is an OPTIONAL capability of the injected ChatStatusReader —
+// *Tracker satisfies it; a test stub need not. When the reader does not satisfy
+// it, no chat is ever treated as stalled, which is the fail-open direction that
+// matters here: the only thing the stalled signal does in this file is SUPPRESS
+// a waiting derivation, so a reader that cannot answer simply derives waiting.
+type StalledReader interface {
+	Stalled(agentSessionID string) bool
+}
+
+// WaitingWriter stores the reason a chat is parked on an external event
+// (BOS-668). Like StalledReader it is an optional capability of the injected
+// ChatStatusReader, so the derivation can hold its result where the TUI and the
+// status RPCs already look without widening NewDisplayStatusComputer.
+type WaitingWriter interface {
+	SetWaiting(agentSessionID, reason string)
+}
+
+// WaitingLookup resolves the canonical reason a chat is parked on an external
+// event, or "" when it is not parked on anything. The bossd wiring backs it with
+// callback.WaitingReasonForChat over the GitHub callback store; keeping it an
+// interface is what stops internal/status from importing internal/callback.
+//
+// An implementation MUST return the wording produced by
+// displaystatus.CallbackWaitingReason rather than spelling it itself.
+type WaitingLookup interface {
+	WaitingReason(ctx context.Context, agentSessionID string) (string, error)
+}
+
+// WaitingLookupFunc adapts a function to WaitingLookup.
+type WaitingLookupFunc func(ctx context.Context, agentSessionID string) (string, error)
+
+// WaitingReason implements WaitingLookup.
+func (f WaitingLookupFunc) WaitingReason(ctx context.Context, agentSessionID string) (string, error) {
+	return f(ctx, agentSessionID)
+}
+
 // DisplayStatusComputer composes a session's unified display status by
 // combining the session row, the in-memory display tracker, the chat status
 // tracker, and the active-workflow store, then persists the result.
@@ -65,6 +102,19 @@ type DisplayStatusComputer struct {
 	// (the display poller's gh-pr-checks results, chat status changes,
 	// workflow transitions) never reach the web UI.
 	onUpdate func(ctx context.Context, sessionID string)
+
+	// waiting, when non-nil, resolves the external event a chat is parked on
+	// (BOS-668). Left nil the computer never derives a waiting state at all and
+	// every chat keeps the status it reported — the pre-BOS-668 behaviour.
+	waiting WaitingLookup
+}
+
+// SetWaitingLookup wires the resolver used to decide whether a working chat is
+// really parked on an external event. Set separately from the constructor
+// because the lookup is backed by the GitHub callback store, which the daemon
+// builds after the computer.
+func (c *DisplayStatusComputer) SetWaitingLookup(l WaitingLookup) {
+	c.waiting = l
 }
 
 // SetOnUpdate wires a post-write callback. Called after Recompute writes a
@@ -176,29 +226,64 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	if c.chats != nil && c.chat != nil {
 		chatList, listErr := c.chats.ListBySession(ctx, sessionID)
 		if listErr == nil {
+			// Pass 1: resolve every chat's status. This is deliberately its own
+			// pass and not fused with the fold below, because deriveChatStatus
+			// is not a pure read — it is also what CLEARS a stale waiting reason
+			// off a chat that has stopped being parked. Short-circuiting the
+			// fold (QUESTION wins outright) must therefore never skip a later
+			// chat's derivation: a session whose first chat asks a question
+			// would otherwise strand a drained callback's reason on a sibling
+			// forever, since Tracker.Update preserves the marker and Cleanup
+			// only fires past StaleThreshold.
+			type resolvedChat struct {
+				status  pb.ChatStatus
+				resetAt time.Time
+			}
+			resolved := make([]resolvedChat, 0, len(chatList))
 			for _, chat := range chatList {
 				e := c.chat.Get(chat.AgentSessionID)
 				if e == nil {
 					continue
 				}
-				if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+				// A working chat parked on an external event reads as WAITING
+				// from here down.
+				resolved = append(resolved, resolvedChat{
+					status:  c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status),
+					resetAt: e.ResetAt,
+				})
+			}
+
+			// Pass 2: fold the resolved statuses into the session-level label.
+			// Pure, so the QUESTION short-circuit costs nothing.
+			for _, r := range resolved {
+				if r.status == pb.ChatStatus_CHAT_STATUS_QUESTION {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_QUESTION
 					chatResetAt = time.Time{}
 					break
 				}
 				// LIMITED ranks just below QUESTION (which short-circuits above),
 				// so it beats WORKING/IDLE/STOPPED but never overrides a question.
-				if e.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {
+				if r.status == pb.ChatStatus_CHAT_STATUS_LIMITED {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_LIMITED
-					chatResetAt = e.ResetAt
+					chatResetAt = r.resetAt
 				}
 				// A QUESTION chat short-circuits the loop above, so chatStatus
 				// is never QUESTION here — WORKING can upgrade STOPPED/IDLE
 				// without guarding against a QUESTION it can't observe.
-				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && chatStatus != pb.ChatStatus_CHAT_STATUS_LIMITED {
+				if r.status == pb.ChatStatus_CHAT_STATUS_WORKING && chatStatus != pb.ChatStatus_CHAT_STATUS_LIMITED {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_WORKING
 				}
-				if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED {
+				// WAITING sits below WORKING in the AGGREGATE (it only upgrades
+				// STOPPED/IDLE, and the WORKING branch above freely overwrites
+				// it) even though it outranks WORKING for a single chat. A
+				// session holding one parked chat and one genuinely working chat
+				// has live work in it and must not read as idle-ish; the parked
+				// chat still carries its own reason for the per-chat view.
+				if r.status == pb.ChatStatus_CHAT_STATUS_WAITING &&
+					(chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED || chatStatus == pb.ChatStatus_CHAT_STATUS_IDLE) {
+					chatStatus = pb.ChatStatus_CHAT_STATUS_WAITING
+				}
+				if r.status == pb.ChatStatus_CHAT_STATUS_IDLE && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_IDLE
 				}
 			}
@@ -236,6 +321,58 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		c.onUpdate(ctx, sessionID)
 	}
 	return nil
+}
+
+// deriveChatStatus resolves one chat's effective status, rewriting a WORKING
+// chat that is parked on an external event to CHAT_STATUS_WAITING and storing
+// the reason on the tracker (BOS-668). It returns reported unchanged for every
+// other status, and always writes the chat's current reason — including "" —
+// so a reason can never outlive the condition that produced it.
+//
+// The precedence it implements, for a single chat, is
+//
+//	LIMITED > QUESTION > STALLED-attention > WAITING > WORKING
+//
+// read as: waiting loses to everything that demands a human. LIMITED and
+// QUESTION are statuses the chat itself reports, so they are simply never
+// rewritten. The stalled attention is different in kind — it rides ON a chat
+// still reporting WORKING — so it has to be checked explicitly, and it is the
+// one guard whose absence would be invisible: a stalled chat that also happens
+// to hold an armed callback would be soothed into "waiting" and its
+// ATTENTION_REASON_AGENT_STALLED would look like the system working as intended.
+//
+// Over-reporting waiting is the failure mode to guard against, so every
+// uncertain path — no lookup wired, a lookup error, an empty reason — resolves
+// to "not waiting".
+func (c *DisplayStatusComputer) deriveChatStatus(ctx context.Context, agentSessionID string, reported pb.ChatStatus) pb.ChatStatus {
+	writer, canWrite := c.chat.(WaitingWriter)
+
+	eligible := reported == pb.ChatStatus_CHAT_STATUS_WORKING && c.waiting != nil
+	if eligible {
+		if stalled, ok := c.chat.(StalledReader); ok && stalled.Stalled(agentSessionID) {
+			eligible = false
+		}
+	}
+
+	reason := ""
+	if eligible {
+		got, err := c.waiting.WaitingReason(ctx, agentSessionID)
+		if err != nil {
+			c.logger.Warn().Err(err).
+				Str("agent_session_id", agentSessionID).
+				Msg("recompute: waiting-reason lookup failed; treating chat as working")
+		} else {
+			reason = got
+		}
+	}
+
+	if canWrite {
+		writer.SetWaiting(agentSessionID, reason)
+	}
+	if reason == "" {
+		return reported
+	}
+	return pb.ChatStatus_CHAT_STATUS_WAITING
 }
 
 // sessionToProto builds a minimal *pb.Session for the display computer's

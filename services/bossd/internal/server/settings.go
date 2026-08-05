@@ -128,6 +128,9 @@ func (s *Server) UpdateSettings(ctx context.Context, req *connect.Request[pb.Upd
 	if err := config.Save(settings); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save settings: %w", err))
 	}
+	if client, ok := s.telemetry.(interface{ Update(config.Settings) }); ok {
+		client.Update(settings)
+	}
 	return connect.NewResponse(&pb.UpdateSettingsResponse{Settings: settingsToProto(settings)}), nil
 }
 

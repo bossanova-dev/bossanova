@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/recurser/bossalib/models"
@@ -83,6 +84,89 @@ func TestNoteStore_CreateGetRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, created) {
 		t.Errorf("get round-trip mismatch:\n got %+v\nwant %+v", got, created)
+	}
+}
+
+func TestNoteStore_CreateIsIdempotentForRepoScopedKey(t *testing.T) {
+
+	store := NewNoteStore(setupTestDB(t))
+	key := "Release review: v2:YS5nb0Ax"
+	first := mustCreateNote(t, store, CreateNoteParams{
+		RepoID:         "repo-1",
+		Body:           "first body",
+		Tags:           []string{"improvement"},
+		IdempotencyKey: &key,
+	})
+	second := mustCreateNote(t, store, CreateNoteParams{
+		RepoID:         "repo-1",
+		Body:           "later retry must not overwrite the first body",
+		Tags:           []string{"different"},
+		IdempotencyKey: &key,
+	})
+	if second.ID != first.ID {
+		t.Fatalf("idempotent create id = %q, want existing note %q", second.ID, first.ID)
+	}
+	if second.Body != first.Body || !reflect.DeepEqual(second.Tags, first.Tags) {
+		t.Fatalf("idempotent retry mutated existing note: %+v", second)
+	}
+
+	otherRepo := mustCreateNote(t, store, CreateNoteParams{
+		RepoID:         "repo-2",
+		Body:           "same key is independent per repo",
+		IdempotencyKey: &key,
+	})
+	if otherRepo.ID == first.ID {
+		t.Fatal("same idempotency key in another repo reused the first note")
+	}
+}
+
+func TestNoteStore_CreateIdempotencyKeyArbitratesConcurrentWriters(t *testing.T) {
+	store := NewNoteStore(setupFileDB(t))
+	key := "Release review: v2:Y29uY3VycmVudC5nb0A0Mg"
+	const writers = 8
+	notes := make(chan *models.Note, writers)
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			note, err := store.Create(context.Background(), CreateNoteParams{
+				RepoID:         "repo-1",
+				Body:           fmt.Sprintf("writer %d", i),
+				IdempotencyKey: &key,
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			notes <- note
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	close(notes)
+	for err := range errs {
+		t.Fatalf("concurrent idempotent create: %v", err)
+	}
+	var firstID string
+	for note := range notes {
+		if firstID == "" {
+			firstID = note.ID
+		} else if note.ID != firstID {
+			t.Fatalf("concurrent idempotent creates returned %q and %q", firstID, note.ID)
+		}
+	}
+	if firstID == "" {
+		t.Fatal("concurrent idempotent creates returned no note")
+	}
+	repoID := "repo-1"
+	stored, err := store.List(context.Background(), ListNotesFilter{RepoID: &repoID})
+	if err != nil {
+		t.Fatalf("list idempotent notes: %v", err)
+	}
+	if len(stored) != 1 || stored[0].ID != firstID {
+		t.Fatalf("stored notes = %+v, want exactly %q", stored, firstID)
 	}
 }
 

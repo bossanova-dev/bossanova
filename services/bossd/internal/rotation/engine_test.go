@@ -3,12 +3,36 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 )
+
+type rotationTelemetryRecorder struct{ properties []map[string]any }
+
+func (r *rotationTelemetryRecorder) Capture(_ context.Context, _ libtelemetry.Event, _ string, props map[string]any) {
+	r.properties = append(r.properties, props)
+}
+func (*rotationTelemetryRecorder) Identify(context.Context, string, map[string]any) {}
+func (*rotationTelemetryRecorder) Alias(context.Context, string, string)            {}
+func (*rotationTelemetryRecorder) Close()                                           {}
+
+func enableRotationTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	s := config.DefaultSettings()
+	s.EventTracingEnabled = true
+	if err := config.Save(s); err != nil {
+		t.Fatal(err)
+	}
+}
 
 var base = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -40,6 +64,57 @@ const claude = "claude"
 
 func newEngineForTest(store *fakeStore, opts ...Option) *Engine {
 	return NewEngine(store, append([]Option{WithClock(fixedClock())}, opts...)...)
+}
+
+func TestDecideTelemetrySwapNoopAndNil(t *testing.T) {
+	enableRotationTelemetry(t)
+	ok, active := models.AccountHealthOK, models.AccountStatusActive
+	store := newFakeStore(mkAcct("capped", 0, ok, active, nil, tp(0)), mkAcct("next", 1, ok, active, nil, tp(-time.Hour)))
+	recorder := &rotationTelemetryRecorder{}
+	eng := newEngineForTest(store, WithTelemetry(recorder))
+	out, err := eng.Decide(context.Background(), Signal{Provider: claude, CappedAccountID: "capped", Kind: UsageLimited, ResetAt: tp(time.Hour), RotationCapable: true})
+	if err != nil || out.Kind != OutcomeRotate {
+		t.Fatalf("Decide = %#v, %v", out, err)
+	}
+	if len(recorder.properties) != 0 {
+		t.Fatalf("Decide must not capture before a switch: %#v", recorder.properties)
+	}
+	eng.CaptureReactiveRotation(context.Background(), claude, "usage_limit")
+	if len(recorder.properties) != 1 || recorder.properties[0]["rotation_reason"] != "usage_limit" || recorder.properties[0]["provider"] != "claude" {
+		t.Fatalf("captures = %#v", recorder.properties)
+	}
+	if _, err := eng.Decide(context.Background(), Signal{Provider: claude, CappedAccountID: "capped", RotationCapable: false}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.properties) != 1 {
+		t.Fatalf("no-op added capture: %#v", recorder.properties)
+	}
+	nilEngine := newEngineForTest(newFakeStore(mkAcct("a", 0, ok, active, nil, tp(0)), mkAcct("b", 1, ok, active, nil, tp(-time.Hour))))
+	if _, err := nilEngine.Decide(context.Background(), Signal{Provider: claude, CappedAccountID: "a", Kind: UsageLimited, ResetAt: tp(time.Hour), RotationCapable: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCaptureProactiveRotationTelemetry(t *testing.T) {
+	enableRotationTelemetry(t)
+	recorder := &rotationTelemetryRecorder{}
+	eng := newEngineForTest(newFakeStore(), WithTelemetry(recorder))
+	eng.CaptureProactiveRotation(context.Background(), claude)
+	if len(recorder.properties) != 1 {
+		t.Fatalf("captures = %#v, want one", recorder.properties)
+	}
+	props := recorder.properties[0]
+	if props["rotation_reason"] != "proactive" || props["provider"] != claude || props["status"] != "rotated" {
+		t.Errorf("properties = %#v", props)
+	}
+}
+
+func TestTelemetryProviderIsBounded(t *testing.T) {
+	for input, want := range map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "plugin-x": "other", "": "other"} {
+		if got := telemetryProvider(input); got != want {
+			t.Errorf("telemetryProvider(%q) = %q, want %q", input, got, want)
+		}
+	}
 }
 
 func TestDecideOrdering(t *testing.T) {

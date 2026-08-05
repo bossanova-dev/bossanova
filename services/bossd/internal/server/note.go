@@ -47,11 +47,12 @@ func (s *Server) CreateNote(ctx context.Context, req *connect.Request[pb.CreateN
 	msg := req.Msg
 
 	note, err := store.Create(ctx, db.CreateNoteParams{
-		RepoID:    msg.RepoId,
-		SessionID: msg.SessionId,
-		ChatID:    msg.ChatId,
-		Body:      msg.Body,
-		Tags:      msg.Tags,
+		RepoID:         msg.RepoId,
+		SessionID:      msg.SessionId,
+		ChatID:         msg.ChatId,
+		Body:           msg.Body,
+		Tags:           msg.Tags,
+		IdempotencyKey: msg.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, noteError("create note", err)

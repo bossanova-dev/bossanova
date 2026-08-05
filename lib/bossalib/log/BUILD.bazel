@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "log",
     srcs = [
+        "discover.go",
         "log.go",
         "tail.go",
     ],
@@ -18,6 +19,7 @@ go_library(
 go_test(
     name = "log_test",
     srcs = [
+        "discover_test.go",
         "log_test.go",
         "perms_unix_test.go",
         "tail_test.go",

@@ -1252,10 +1252,12 @@ func run(opts runOpts) error {
 		log.Logger,
 	).WithSessionStates(rawSessions)
 	accounts := db.NewAccountStore(database)
+	telemetryClient := daemontelemetry.NewClient(settings)
+	defer telemetryClient.Close()
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
 	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
 	// signal invokes it yet.
-	rotationEngine := rotation.NewEngine(accounts, rotation.WithDefaultCooldown(settings.ManagedAccounts.DefaultCooldown()))
+	rotationEngine := rotation.NewEngine(accounts, rotation.WithDefaultCooldown(settings.ManagedAccounts.DefaultCooldown()), rotation.WithTelemetry(telemetryClient))
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	accountCreds := accountcred.New()
@@ -1619,9 +1621,6 @@ func run(opts runOpts) error {
 	}
 	defer errortrackClose()
 
-	telemetryClient := libtelemetry.New(daemontelemetry.ConfigFromSettings(settings))
-	defer telemetryClient.Close()
-
 	// Bossd-owned log dir for agent runs. Lives outside the worktree so a
 	// hostile/buggy plugin can't path-traverse via symlinks. Plugin opens
 	// log files here with O_NOFOLLOW (Task 7).
@@ -1892,6 +1891,7 @@ func run(opts runOpts) error {
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
+	lifecycle.SetTelemetry(telemetryClient)
 	// The lifecycle constructor defaults to a hermetic no-op proof env resolver
 	// (keeps unit tests off the OS keyring); the daemon must inject the real
 	// keyring-backed resolver so proof credentials reach managed session spawns.
@@ -2140,6 +2140,8 @@ func run(opts runOpts) error {
 				CandidateUtil: util[cand.ID],
 			}, nil
 		},
+		CaptureProactiveRotation: rotationEngine.CaptureProactiveRotation,
+		CaptureReactiveRotation:  rotationEngine.CaptureReactiveRotation,
 	})
 	cronGate := session.NewCronCompletionGate(session.CronCompletionGateDeps{
 		Sessions:  sessions,
@@ -2379,6 +2381,7 @@ func run(opts runOpts) error {
 		// Cron gates receive only the scoped proof model key, never the upload token.
 		GateProofEnv: proofenvkeyring.New(log.Logger),
 		Logger:       log.Logger,
+		Telemetry:    telemetryClient,
 	})
 	// NOTE: cronScheduler.Start is intentionally deferred until after the hook
 	// server is bound and lifecycle.SetHookPort has run (below). A tick that
@@ -3040,6 +3043,7 @@ func run(opts runOpts) error {
 	defer sessionPortsTracker.Close()
 
 	srv := server.New(server.Config{
+		AgentLogsDir:      agentLogsDir,
 		Repos:             repos,
 		Sessions:          sessions,
 		Attempts:          attempts,
@@ -3048,6 +3052,7 @@ func run(opts runOpts) error {
 		TaskMappings:      taskMappings,
 		CronJobs:          cronJobs,
 		GithubCallbacks:   githubCallbacks,
+		Telemetry:         telemetryClient,
 		Notes:             notes,
 		Broadcasts:        broadcasts,
 		BroadcastResolver: broadcastResolver,
@@ -3288,6 +3293,7 @@ func run(opts runOpts) error {
 		Deliverer:  callbackDeliverer,
 		Reconciler: callbackEvaluator,
 		Logger:     log.Logger,
+		Telemetry:  telemetryClient,
 	})
 	callbackWorkerDone := safego.Go(log.Logger, func() { callbackWorker.Run(pollerCtx) })
 	trackDone(callbackWorkerDone)
@@ -3315,6 +3321,7 @@ func run(opts runOpts) error {
 		Deliverer:  broadcastDeliverer,
 		Reconciler: broadcastSubscriptionEvaluator,
 		Logger:     log.Logger,
+		Telemetry:  telemetryClient,
 	})
 	broadcastWorkerDone := safego.Go(log.Logger, func() { broadcastWorker.Run(pollerCtx) })
 	trackDone(broadcastWorkerDone)

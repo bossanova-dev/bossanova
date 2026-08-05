@@ -104,6 +104,14 @@ func TestRecompute_Matrix(t *testing.T) {
 			wantSpinner: false,
 		},
 		{
+			name:        "chat waiting wins over PR",
+			chat:        pb.ChatStatus_CHAT_STATUS_WAITING,
+			display:     &DisplayEntry{Status: vcs.DisplayStatusPassing},
+			wantLabel:   "waiting",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+			wantSpinner: true,
+		},
+		{
 			name:        "chat working wins over PR",
 			chat:        pb.ChatStatus_CHAT_STATUS_WORKING,
 			display:     &DisplayEntry{Status: vcs.DisplayStatusPassing},

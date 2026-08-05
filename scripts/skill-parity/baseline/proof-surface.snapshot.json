@@ -9,6 +9,10 @@
       "surface": "docs"
     },
     {
+      "id": "marketing-agent-coordination",
+      "surface": "marketing"
+    },
+    {
       "id": "marketing-changelog",
       "surface": "marketing"
     },

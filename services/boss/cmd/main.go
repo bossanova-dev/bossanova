@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	bossalog "github.com/recurser/bossalib/log"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -34,7 +36,7 @@ func run() error {
 	// rotated log file under $XDG_STATE_HOME/bossanova/logs/boss.log. Stderr
 	// is skipped so the Bubble Tea TUI isn't corrupted by log output. Without
 	// this, bug reports would always ship an empty BossLogTail.
-	logCloser := bossalog.SetupFileOnly("boss")
+	logCloser := setupCommandLogging()
 	defer func() { _ = logCloser.Close() }()
 
 	settings, _ := config.Load()
@@ -141,7 +143,7 @@ func rootCmd() *cobra.Command {
 	addGrouped("mcp", mcpCmd())
 	addGrouped("skills", skillsCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
-	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd(), tailCmd())
 	addGrouped("plugins", pluginCmd())
 	addGrouped("other", versionCmd(), upgradeCmd())
 
@@ -151,6 +153,27 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(resurrectCmd(), newGenSkillCmd())
 
 	return root
+}
+
+// setupCommandLogging keeps boss tail from writing to a file it can read.
+func setupCommandLogging() io.Closer {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--remote" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if arg == "tail" {
+			log.Logger = zerolog.Nop()
+			return io.NopCloser(strings.NewReader(""))
+		}
+		break
+	}
+	return bossalog.SetupFileOnly("boss")
 }
 
 func pluginCmd() *cobra.Command {

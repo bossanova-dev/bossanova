@@ -234,6 +234,52 @@ test('the coverage-neutrality guardrail is stated in both mirrors', () => {
   }
 })
 
+// The kill-set gate is the PRIMARY proof for a Go removal. Coverage proves a line ran;
+// only mutation proves the test asserted anything about it, so a coverage-only gate both
+// admits tests that assert nothing and rejects tests that quietly kill mutants. These
+// assertions stop a future edit from silently reverting to the weaker instrument.
+test('the mutation kill-set guardrail is stated in both mirrors', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    assert.match(skill, /kill-set/i, `${label} must name the kill-set guardrail`)
+    assert.match(skill, /mutants_killed/, `${label} must compare the concrete mutants_killed field`)
+    assert.match(
+      skill,
+      /make mutate-pkg/,
+      `${label} must use the same per-package mutation target as bs-sweep-mutation`,
+    )
+  }
+})
+
+test('a Go removal may not fall back to coverage alone when gremlins is absent', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    assert.match(skill, /HAVE_GREMLINS/, `${label} must probe for gremlins in preflight`)
+    assert.match(
+      skill,
+      /inadmissible|never (?:substitute|fall back)/i,
+      `${label} must make a Go candidate inadmissible when the kill-set proof is unavailable`,
+    )
+  }
+})
+
+test('the removal sentinel reports the kill-set, and shrinking it is a rejection', () => {
+  assert.match(
+    SKILL,
+    /kill-set (?:shrank|≥|>=)/i,
+    'the removed/rejected contract must key on the kill-set',
+  )
+  assert.match(
+    SKILL,
+    /would shrink the kill-set: reject/i,
+    'failure handling must reject a candidate whose removal shrinks the kill-set',
+  )
+})
+
 test('judgment guardrails protect invariant / regression / golden / security tests', () => {
   assert.match(
     SKILL,

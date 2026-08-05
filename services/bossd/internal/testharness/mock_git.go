@@ -24,7 +24,7 @@ type MockWorktreeManager struct {
 	ResurrectCalls                []gitpkg.ResurrectOpts
 	PushCalls                     []pushCall
 	VerifyPushedBranchCalls       []verifyPushedBranchCall
-	EmptyTrashCalls               []emptyTrashCall
+	ReapLocalBranchesCalls        []reapLocalBranchesCall
 	PurgeWorktreeCalls            []purgeWorktreeCall
 	DeleteLocalBranchCalls        []string
 
@@ -169,7 +169,7 @@ type verifyPushedBranchCall struct {
 	SkipFetch    bool
 }
 
-type emptyTrashCall struct {
+type reapLocalBranchesCall struct {
 	RepoPath string
 	Branches []string
 }
@@ -278,9 +278,9 @@ func (m *MockWorktreeManager) Resurrect(ctx context.Context, opts gitpkg.Resurre
 	return nil
 }
 
-func (m *MockWorktreeManager) EmptyTrash(ctx context.Context, repoPath string, branches []string) error {
+func (m *MockWorktreeManager) ReapLocalBranches(ctx context.Context, repoPath string, branches []string) error {
 	m.mu.Lock()
-	m.EmptyTrashCalls = append(m.EmptyTrashCalls, emptyTrashCall{RepoPath: repoPath, Branches: branches})
+	m.ReapLocalBranchesCalls = append(m.ReapLocalBranchesCalls, reapLocalBranchesCall{RepoPath: repoPath, Branches: branches})
 	m.mu.Unlock()
 	return nil
 }

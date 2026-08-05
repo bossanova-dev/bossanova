@@ -5,11 +5,13 @@ go_library(
     srcs = [
         "client.go",
         "events.go",
+        "interceptor.go",
     ],
     importpath = "github.com/recurser/bossalib/telemetry",
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/config",
+        "@com_connectrpc_connect//:connect",
         "@com_github_posthog_posthog_go//:posthog-go",
         "@com_github_rs_zerolog//log",
     ],
@@ -17,7 +19,11 @@ go_library(
 
 go_test(
     name = "telemetry_test",
-    srcs = ["client_test.go"],
+    srcs = [
+        "client_test.go",
+        "events_test.go",
+        "interceptor_test.go",
+    ],
     data = [
         "events.go",
         "//docs/analytics:events.md",
@@ -27,6 +33,7 @@ go_test(
     rundir = ".",
     deps = [
         "//lib/bossalib/config",
+        "@com_connectrpc_connect//:connect",
         "@com_github_posthog_posthog_go//:posthog-go",
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",

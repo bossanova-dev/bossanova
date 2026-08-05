@@ -786,11 +786,12 @@ func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, i
 // repo_id to the owning daemon.
 func (c *RemoteClient) CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
 	resp, err := c.rpc.ProxyCreateNote(ctx, connect.NewRequest(&pb.ProxyCreateNoteRequest{
-		RepoId:    req.GetRepoId(),
-		SessionId: req.SessionId,
-		ChatId:    req.ChatId,
-		Body:      req.GetBody(),
-		Tags:      req.Tags,
+		RepoId:         req.GetRepoId(),
+		SessionId:      req.SessionId,
+		ChatId:         req.ChatId,
+		Body:           req.GetBody(),
+		Tags:           req.Tags,
+		IdempotencyKey: req.IdempotencyKey,
 	}))
 	if err != nil {
 		return nil, err

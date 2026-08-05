@@ -168,6 +168,10 @@ func runNotesAdd(cmd *cobra.Command, c client.BossClient, body string) error {
 	if tags := writeTags(cmd); len(tags) > 0 {
 		req.Tags = tags
 	}
+	if cmd.Flags().Changed("idempotency-key") {
+		key, _ := cmd.Flags().GetString("idempotency-key")
+		req.IdempotencyKey = &key
+	}
 
 	note, err := c.CreateNote(cmd.Context(), req)
 	if err != nil {
@@ -408,6 +412,7 @@ func notesCmd() *cobra.Command {
 	add.Flags().String("session", "", "Session provenance (default: $BOSS_SESSION_ID, else the working directory's session)")
 	add.Flags().String("chat", "", "Chat provenance (default: $BOSS_AGENT_SESSION_ID)")
 	add.Flags().StringArray("tag", nil, "Tag to attach; repeat for several (normalised to lowercase)")
+	add.Flags().String("idempotency-key", "", "Atomically return an existing note with this repo-scoped key instead of creating a duplicate")
 	add.Flags().Bool("json", false, "Emit the created note as a stable JSON schema")
 
 	list := &cobra.Command{

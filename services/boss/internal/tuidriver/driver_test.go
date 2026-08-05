@@ -201,6 +201,26 @@ func TestDriver_CloseAllowsGracefulInterruptCleanup(t *testing.T) {
 	}
 }
 
+// TestDriver_CloseReportsPTYCloseError verifies that Close preserves a PTY
+// close failure. Calling Close again makes the already-closed PTY return that
+// failure; callers need it to learn teardown was not completely clean.
+func TestDriver_CloseReportsPTYCloseError(t *testing.T) {
+	d, err := tuidriver.New(tuidriver.Options{
+		Command: "true",
+		Width:   80,
+		Height:  24,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := d.Close(); err == nil {
+		t.Fatal("second Close returned nil despite the already-closed PTY")
+	}
+}
+
 func TestDriver_ScreenContains(t *testing.T) {
 	d, err := tuidriver.New(tuidriver.Options{
 		Command: "echo",

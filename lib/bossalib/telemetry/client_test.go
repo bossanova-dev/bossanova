@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/posthog/posthog-go"
 	"github.com/recurser/bossalib/config"
@@ -594,6 +595,14 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventCloudCheckoutReturned, billingTelemetryProperties()},
 		{EventSignupUserCreated, map[string]any{"source": "auth_jit", "step": "user_created"}},
 		{EventBillingAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
+		{EventCloudActionInvoked, map[string]any{"command": "ProxyStopSession", "error_code": "unavailable", "product_area": "sessions", "source": "cloud", "status": "error"}},
+		{EventAccountRotated, map[string]any{"rotation_reason": "usage_limit", "provider": "claude", "status": "rotated", "source": "daemon"}},
+		{EventCronJobFired, map[string]any{"status": "success", "skip_reason": "", "zero_output": false, "source": "daemon"}},
+		{EventPRCallbackDelivered, map[string]any{"trigger": "checks_passed", "status": "delivered", "attempt_count": 1, "source": "daemon"}},
+		{EventBroadcastDelivered, map[string]any{"status": "delivered", "attempt_count": 1, "source": "daemon"}},
+		{EventSessionFinalized, map[string]any{"outcome": "pr_opened", "agent": "claude", "unattended": true, "source": "daemon"}},
+		{EventFeatureViewed, map[string]any{"feature": "sessions", "source": "web"}},
+		{EventFeatureInteraction, map[string]any{"feature": "sessions", "action": "filter_changed", "source": "web"}},
 	}
 	coveredEvents := make(map[Event]map[string]any, len(cases))
 	for _, tc := range cases {
@@ -722,6 +731,9 @@ func TestPostHogConfigUsesSharedLogger(t *testing.T) {
 	}
 	if cfg.Logger == nil {
 		t.Fatal("Logger = nil, want shared logger")
+	}
+	if cfg.ShutdownTimeout != time.Second {
+		t.Fatalf("ShutdownTimeout = %s, want %s", cfg.ShutdownTimeout, time.Second)
 	}
 }
 

@@ -17,6 +17,7 @@ Record a note. `--repo`, `--session` and `--chat` are resolved in this order: th
 **Flags:**
 
 - `--chat` — Chat provenance (default: $BOSS_AGENT_SESSION_ID)
+- `--idempotency-key` — Atomically return an existing note with this repo-scoped key instead of creating a duplicate
 - `--json` — Emit the created note as a stable JSON schema
 - `--repo` — Owning repository id (default: $BOSS_REPO_ID, else the working directory's repo)
 - `--session` — Session provenance (default: $BOSS_SESSION_ID, else the working directory's session)

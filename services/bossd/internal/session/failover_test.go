@@ -15,6 +15,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/rotation"
 )
@@ -66,6 +67,20 @@ func (s *recentAuditStore) RecentBySession(_ context.Context, sessionID string, 
 func enableFailoverProxy(lc *Lifecycle) {
 	on := true
 	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+}
+
+func assertFailoverRotationTelemetry(t *testing.T, recorder *finalizeTelemetryRecorder, reason string) {
+	t.Helper()
+	if len(recorder.captures) != 1 {
+		t.Fatalf("account_rotated captures = %d, want 1", len(recorder.captures))
+	}
+	capture := recorder.captures[0]
+	if capture.event != libtelemetry.EventAccountRotated {
+		t.Fatalf("event = %q, want %q", capture.event, libtelemetry.EventAccountRotated)
+	}
+	if capture.properties["rotation_reason"] != reason || capture.properties["provider"] != "claude" || capture.properties["status"] != "rotated" {
+		t.Fatalf("account_rotated properties = %#v", capture.properties)
+	}
 }
 
 // mapSwitchRegistry resolves a distinct switchAccount per id (unknown ids error),
@@ -600,7 +615,10 @@ func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 func stringPtr(s string) *string { return &s }
 
 func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	f := newRotationFixture(t)
+	recorder := &finalizeTelemetryRecorder{}
+	f.lc.SetTelemetry(recorder)
 	enableFailoverProxy(f.lc)
 	chatStore := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{
@@ -643,10 +661,14 @@ func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
 	if sessAcct := f.sessions.sessions[f.sessionID].AccountID; sessAcct != nil {
 		t.Fatalf("session account = %v, want unchanged nil", sessAcct)
 	}
+	assertFailoverRotationTelemetry(t, recorder, "usage_limit")
 }
 
 func TestCommitFailover_ChatTargetBindsSessionForSameAgentDefault(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	f := newRotationFixture(t)
+	recorder := &finalizeTelemetryRecorder{}
+	f.lc.SetTelemetry(recorder)
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
@@ -667,12 +689,16 @@ func TestCommitFailover_ChatTargetBindsSessionForSameAgentDefault(t *testing.T) 
 	if got := f.sessions.sessions[f.sessionID].AccountID; got == nil || *got != "acct-next" {
 		t.Fatalf("session account = %v, want acct-next", got)
 	}
+	assertFailoverRotationTelemetry(t, recorder, "usage_limit")
 }
 
 // --- CommitFailover: account_id persisted to the SECOND account, one audit ---
 
 func TestCommitFailover_persistsSecondAccountAndAudits(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	f := newRotationFixture(t)
+	recorder := &finalizeTelemetryRecorder{}
+	f.lc.SetTelemetry(recorder)
 	enableFailoverProxy(f.lc)
 	store := &captureAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
@@ -706,6 +732,7 @@ func TestCommitFailover_persistsSecondAccountAndAudits(t *testing.T) {
 	if !strings.Contains(events[0].Detail, "no pane respawn") {
 		t.Fatalf("audit detail should note no pane respawn, got %q", events[0].Detail)
 	}
+	assertFailoverRotationTelemetry(t, recorder, "usage_limit")
 }
 
 // TestCommitFailover_auditsResolvedLabels pins that both audit sides are

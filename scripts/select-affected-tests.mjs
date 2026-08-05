@@ -47,6 +47,59 @@ const bazelGoModuleRules = [
   { root: 'plugins/bossd-plugin-stub-runner/', pattern: '//plugins/bossd-plugin-stub-runner/...' },
 ]
 
+// External inputs: files that live OUTSIDE any Go module but that a test INSIDE one
+// reads at run time. They are the reason a path cannot be waved through as "irrelevant"
+// just because it holds no Go code.
+//
+// This list is load-bearing and must stay exhaustive. The bazel half is mechanically
+// derivable — a sandboxed test can only read what its target declares in `data` — and
+// scripts/select-affected-external-inputs.test.mjs re-derives every cross-tree `data` dep
+// from the BUILD files and fails if one is not covered here. The ledger half cannot be
+// derived that way (those targets are `manual`, so they run unsandboxed and read straight
+// from the worktree), so each entry below cites the test that does the reading.
+//
+// `ledgerModules` is listed separately from `patterns` because the two selections answer
+// different questions: bazel needs the target pattern to test, the native ledger needs the
+// `module` value of the row to run. A file can feed one and not the other.
+const externalInputRules = [
+  {
+    // //lib/bossalib/telemetry:telemetry_test `data` deps; client_test.go reads both files
+    // to assert doc/web/Go analytics-event parity.
+    match: (f) => f.startsWith('docs/analytics/') || f.startsWith('services/web/src/analytics/'),
+    patterns: ['//lib/bossalib/...'],
+    ledgerModules: [],
+  },
+  {
+    // lib/bossalib/apiversion/webversion_test.go reads services/web/src/api.ts. That row is
+    // bazel-`manual` (it escapes the module), so this feeds the LEDGER, not the graph.
+    match: (f) => f === 'services/web/src/api.ts',
+    patterns: [],
+    ledgerModules: ['lib/bossalib'],
+  },
+  {
+    // services/boss/internal/skillinstall reads the published skill trees and their prose
+    // surfaces; //services/boss/internal/skillparity:skillparity_test declares the plugin
+    // mirror as a `data` dep. Both the graph target and the manual row consume these.
+    match: (f) =>
+      f.startsWith('plugins/bossd-plugin-claude/skilldata/') ||
+      f.startsWith('docs/skills/') ||
+      f.startsWith('services/docs/docs/skills/'),
+    patterns: ['//services/boss/...'],
+    ledgerModules: ['services/boss'],
+  },
+  {
+    // services/bossd/internal/testharness spawns plugins/bossd-plugin-codex/testdata fakes.
+    match: (f) => f.startsWith('plugins/bossd-plugin-codex/testdata/'),
+    patterns: ['//services/bossd/...'],
+    ledgerModules: ['services/bossd'],
+  },
+]
+
+// Shared modules: a change here can break a dependent module's NATIVE ledger row, which no
+// `//<module>/...` pattern would rerun. 13 modules require lib/bossalib, and the ledger's
+// boss/bossd rows are integration tests that link it, so a bossalib change runs every row.
+const sharedLedgerModules = new Set(['lib/bossalib'])
+
 // Graph-wide FULL triggers: a change to any of these can affect the entire Go
 // bazel graph (proto codegen, workspace/module graph, bazel config, root make),
 // so the only safe selection is the whole `//...` graph.
@@ -87,6 +140,8 @@ const bazelIrrelevantFiles = new Set([
   'LICENSE',
   'AGENTS.md',
   'CLAUDE.md',
+  'CONCEPTS.md',
+  'TODOS.md',
   '.gitignore',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
@@ -112,6 +167,13 @@ function isBazelIrrelevant(file) {
 //     module) — the fail-safe toward more testing.
 //   - full:false with a sorted, deduped list of `//<module>/...` patterns when the
 //     diff maps cleanly to one or more Go modules (irrelevant files are ignored).
+//   - full:false with an EMPTY patterns list when every changed file is a known
+//     Go-graph-irrelevant path (docs-only / web-only / workflow-only). This is the
+//     same proof the mixed case already relies on: a file that is safe to IGNORE
+//     next to a Go change is equally safe to ignore on its own, so there is no Go
+//     target left to run. Callers MUST treat empty patterns as "run nothing" and
+//     must never splice an empty list into `bazel test` (that would expand to the
+//     whole graph). Only an unrecognized path still forces the FULL fail-safe.
 export function selectBazelAffected(files) {
   if (!files || files.length === 0) {
     return { full: true, patterns: ['//...'], reason: 'empty' }
@@ -129,13 +191,26 @@ export function selectBazelAffected(files) {
       return { full: true, patterns: ['//...'], reason: `graph-wide: ${file}` }
     }
 
+    // External-input rules are ADDITIVE and are checked before the irrelevant list: a file
+    // can both belong to a module (plugins/<p>/testdata) and feed a test in another one, and
+    // a file can be Go-free (docs/analytics) yet still be a declared `data` dep. Missing
+    // either case is what makes an empty selection unsound.
+    let matched = false
+    for (const rule of externalInputRules) {
+      if (!rule.match(file)) continue
+      for (const p of rule.patterns) patterns.add(p)
+      // A rule with ledger-only consumers still counts as matched, so the file never falls
+      // through to the `uncertain` FULL fail-safe below.
+      matched = true
+    }
+
     const moduleRule = bazelGoModuleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       patterns.add(moduleRule.pattern)
       continue
     }
 
-    if (isBazelIrrelevant(file)) {
+    if (matched || isBazelIrrelevant(file)) {
       continue
     }
 
@@ -144,11 +219,57 @@ export function selectBazelAffected(files) {
   }
 
   if (patterns.size === 0) {
-    // Only Go-graph-irrelevant files changed (web-only / docs-only PR).
-    return { full: true, patterns: ['//...'], reason: 'no affected go targets' }
+    // Only Go-graph-irrelevant files changed (web-only / docs-only / workflow-only).
+    // Every one of them was matched by the explicit irrelevant lists above — none
+    // reached the unrecognized fail-safe — so no Go target can be affected and the
+    // correct selection is the EMPTY set, not the whole graph.
+    return { full: false, patterns: [], reason: 'no go-relevant changes' }
   }
 
   return { full: false, patterns: [...patterns].sort(), reason: 'affected' }
+}
+
+// Ledger module roots, derived from the same bazel module rules so the two
+// selections can never drift: `//services/boss/...` -> `services/boss`.
+function patternToModuleRoot(pattern) {
+  return pattern.replace(/^\/\//, '').replace(/\/\.\.\.$/, '')
+}
+
+// selectLedgerModules maps a changed-file list to the ledger `module` values whose
+// native (bazel-`manual`) rows still need to run. Returns { all, modules }:
+//   - all:true  — run every ledger row (graph-wide/uncertain change, i.e. the same
+//     FULL fail-safe selectBazelAffected uses). modules is empty and MUST be ignored.
+//   - all:false — run only rows whose `module` is in `modules` (possibly empty,
+//     meaning no native row needs to run at all).
+export function selectLedgerModules(files) {
+  const affected = selectBazelAffected(files)
+  if (affected.full) {
+    return { all: true, modules: [] }
+  }
+
+  const modules = new Set(affected.patterns.map(patternToModuleRoot))
+
+  // The bazel patterns alone are NOT the ledger's answer. Ledger rows are bazel-`manual`:
+  // they run unsandboxed and read files no target pattern covers, so a file can need a
+  // native row without contributing any pattern (services/web/src/api.ts is the case that
+  // proves it — apiversion's row reads it, and the graph never touches it).
+  for (const rawFile of files || []) {
+    const file = normalizePath(rawFile)
+    if (file === '') continue
+    for (const rule of externalInputRules) {
+      if (rule.match(file)) {
+        for (const m of rule.ledgerModules) modules.add(m)
+      }
+    }
+  }
+
+  // A shared module's own pattern reruns only its own rows, but its dependents' native
+  // integration rows link it too — so widen to every row rather than under-select.
+  if ([...modules].some((m) => sharedLedgerModules.has(m))) {
+    return { all: true, modules: [] }
+  }
+
+  return { all: false, modules: [...modules].sort() }
 }
 
 export function selectTargets(files) {
@@ -357,9 +478,23 @@ if (isMainModule(import.meta.url)) {
     // BOS-370 PR CI path: print the space-joined bazel target patterns on ONE line
     // (either `//...` or e.g. `//services/bossd/... //lib/bossalib/...`). Explicit
     // files may follow `--bazel` for testability; otherwise diff against BASE_REF.
+    //
+    // When nothing Go-relevant changed the pattern list is EMPTY, and printing an
+    // empty line would be indistinguishable from the script having crashed — whose
+    // caller-side fail-safe is a FULL `//...` run. Print the explicit `NONE`
+    // sentinel instead so the caller can tell "provably nothing to test" apart from
+    // "selector failed, test everything".
     const explicitFiles = args.slice(1)
     const files = explicitFiles.length > 0 ? explicitFiles : changedFilesFromGit()
-    console.log(selectBazelAffected(files).patterns.join(' '))
+    const { patterns } = selectBazelAffected(files)
+    console.log(patterns.length === 0 ? 'NONE' : patterns.join(' '))
+  } else if (args[0] === '--ledger-modules') {
+    // Native-ledger selection: print `ALL` (run every row) or a space-joined list
+    // of module roots, or `NONE` when no native row is affected.
+    const explicitFiles = args.slice(1)
+    const files = explicitFiles.length > 0 ? explicitFiles : changedFilesFromGit()
+    const { all, modules } = selectLedgerModules(files)
+    console.log(all ? 'ALL' : modules.length === 0 ? 'NONE' : modules.join(' '))
   } else {
     const files = args.length > 0 ? args : changedFilesFromGit()
     console.log(renderMakeCommands(selectTargets(files)).join('\n'))

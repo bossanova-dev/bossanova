@@ -12,8 +12,10 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	libvcs "github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // FinalizeResult is the outcome of a FinalizeSession call. Outcome maps 1:1
@@ -234,7 +236,38 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		}
 	}
 
+	outcome := "error"
+	switch result.Outcome {
+	case models.CronJobOutcomePRCreated:
+		outcome = "pr_opened"
+	case models.CronJobOutcomeDeletedNoChanges,
+		models.CronJobOutcomePRNoChanges,
+		models.CronJobOutcomeZeroOutput,
+		models.CronJobOutcomeWorktreeGone:
+		outcome = "no_changes"
+	case models.CronJobOutcomePRFailed,
+		models.CronJobOutcomePRSkippedNoGitHub,
+		models.CronJobOutcomeChatSpawnFailed,
+		models.CronJobOutcomeCleanupFailed,
+		models.CronJobOutcomeFailedRecovered,
+		models.CronJobOutcomeFireFailed,
+		models.CronJobOutcomeGated:
+		outcome = "error"
+	}
+	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventSessionFinalized, map[string]any{
+		"outcome": outcome, "agent": telemetryAgent(session.AgentName), "unattended": isUnattendedSession(session),
+	})
+
 	return result, nil
+}
+
+func telemetryAgent(name string) string {
+	switch name {
+	case "claude", "codex", "opencode":
+		return name
+	default:
+		return "other"
+	}
 }
 
 // injectPRTagsAndPush rewrites the session's tagless commit subjects to carry

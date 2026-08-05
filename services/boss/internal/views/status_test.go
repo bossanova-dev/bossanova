@@ -76,6 +76,16 @@ func TestRenderDisplayStatus_ReadsCompositeFields(t *testing.T) {
 			wantContains: "working",
 			wantSpinner:  true,
 		},
+		{
+			name: "info/waiting with spinner",
+			sess: &pb.Session{
+				DisplayLabel:   "waiting",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+				DisplaySpinner: true,
+			},
+			wantContains: "waiting",
+			wantSpinner:  true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

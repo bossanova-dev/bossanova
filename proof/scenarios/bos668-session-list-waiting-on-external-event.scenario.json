@@ -30,7 +30,7 @@
             "match": "normalized",
             "label": "the STATUS column shows 'waiting' (neither row title contains the word, so this binds to the STATUS column) rather than the 'stopped' a missing WAITING case used to produce"
           },
-          "caption": "The parked run's STATUS reads 'waiting' — DISPLAY_INTENT_INFO, no spinner, because nothing is moving"
+          "caption": "The parked run's STATUS reads 'waiting' — DISPLAY_INTENT_INFO with a spinner, while retaining its distinct waiting label"
         },
         {
           "expect": {

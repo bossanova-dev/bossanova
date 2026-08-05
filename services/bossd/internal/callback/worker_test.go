@@ -3,6 +3,7 @@ package callback
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,10 +11,51 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
+
+type callbackTelemetryRecorder struct {
+	events     []libtelemetry.Event
+	properties []map[string]any
+}
+
+func (r *callbackTelemetryRecorder) Capture(_ context.Context, event libtelemetry.Event, _ string, props map[string]any) {
+	r.events = append(r.events, event)
+	r.properties = append(r.properties, props)
+}
+func (*callbackTelemetryRecorder) Identify(context.Context, string, map[string]any) {}
+func (*callbackTelemetryRecorder) Alias(context.Context, string, string)            {}
+func (*callbackTelemetryRecorder) Close()                                           {}
+func enableCallbackTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	s := config.DefaultSettings()
+	s.EventTracingEnabled = true
+	if err := config.Save(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertCallbackTelemetryPropertiesRegistered(t *testing.T, recorder *callbackTelemetryRecorder) {
+	t.Helper()
+	spec := libtelemetry.Registry[libtelemetry.EventPRCallbackDelivered]
+	for _, props := range recorder.properties {
+		for key := range props {
+			if _, common := libtelemetry.CommonProperties[key]; common {
+				continue
+			}
+			if _, allowed := spec.Properties[key]; !allowed {
+				t.Fatalf("unregistered identifying property %q in %#v", key, props)
+			}
+		}
+	}
+}
 
 // clock is a deterministic, advanceable, concurrency-safe time source.
 type clock struct {
@@ -82,6 +124,83 @@ func TestWorker_HappyPath(t *testing.T) {
 	if !strings.Contains(msg, cb.ID) {
 		t.Errorf("delivered message missing callback id %q", cb.ID)
 	}
+}
+
+func TestWorker_TelemetryTerminalOutcomesOnly(t *testing.T) {
+	enableCallbackTelemetry(t)
+	store := newStore(t)
+	clk := newClock(time.Now().UTC())
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "m"})
+	triggerActive(t, store, cb.ID, clk.now())
+	recorder := &callbackTelemetryRecorder{}
+	w := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: newCaptureDeliverer(errors.New("offline")), Now: clk.now, Owner: "worker-1", Logger: zerolog.Nop(), Telemetry: recorder})
+	w.scan(context.Background())
+	if len(recorder.events) != 0 {
+		t.Fatalf("retry captured %d events", len(recorder.events))
+	}
+	for len(recorder.events) == 0 {
+		got, err := store.Get(context.Background(), cb.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.NextAttemptAt == nil {
+			t.Fatal("retry missing next attempt")
+		}
+		clk.advance(got.NextAttemptAt.Sub(clk.now()))
+		w.scan(context.Background())
+	}
+	if len(recorder.events) != 1 || recorder.properties[0]["status"] != "abandoned" || recorder.properties[0]["attempt_count"] != maxDeliveryAttempts {
+		t.Fatalf("captures = %#v", recorder.properties)
+	}
+	assertCallbackTelemetryPropertiesRegistered(t, recorder)
+	w.scan(context.Background())
+	if len(recorder.events) != 1 {
+		t.Fatalf("terminal outcome recaptured: %d", len(recorder.events))
+	}
+
+	store2 := newStore(t)
+	cb2 := mustCreate(t, store2, db.CreateGithubCallbackParams{TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 8, Trigger: models.GithubCallbackTriggerClosed, Message: "m"})
+	triggerActive(t, store2, cb2.ID, clk.now())
+	recorder2 := &callbackTelemetryRecorder{}
+	NewDeliveryWorker(WorkerConfig{Store: store2, Deliverer: newCaptureDeliverer(nil), Now: clk.now, Owner: "worker-2", Logger: zerolog.Nop(), Telemetry: recorder2}).scan(context.Background())
+	if len(recorder2.events) != 1 || recorder2.properties[0]["status"] != "delivered" || recorder2.properties[0]["attempt_count"] != 1 {
+		t.Fatalf("captures = %#v", recorder2.properties)
+	}
+	assertCallbackTelemetryPropertiesRegistered(t, recorder2)
+	NewDeliveryWorker(WorkerConfig{Store: store2, Deliverer: newCaptureDeliverer(nil), Now: clk.now, Owner: "worker-3", Logger: zerolog.Nop()}).scan(context.Background())
+}
+
+func TestWorker_TelemetryNaturalExpiryEmitsAbandonedOnce(t *testing.T) {
+	enableCallbackTelemetry(t)
+	store := newStore(t)
+	base := time.Now().UTC()
+	expires := base.Add(time.Minute)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+	})
+	recorder := &callbackTelemetryRecorder{}
+	w := NewDeliveryWorker(WorkerConfig{
+		Store: store, Deliverer: newCaptureDeliverer(nil), Now: func() time.Time { return expires.Add(time.Second) },
+		Owner: "worker-1", Logger: zerolog.Nop(), Telemetry: recorder,
+	})
+
+	w.scan(context.Background())
+	w.scan(context.Background())
+
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateExpired {
+		t.Fatalf("state = %q, want expired", got)
+	}
+	if len(recorder.events) != 1 || recorder.events[0] != libtelemetry.EventPRCallbackDelivered {
+		t.Fatalf("events = %#v, want one pr_callback_delivered", recorder.events)
+	}
+	want := map[string]any{"trigger": "merged", "status": "abandoned", "attempt_count": 0}
+	for key, value := range want {
+		if recorder.properties[0][key] != value {
+			t.Errorf("property %s = %#v, want %#v", key, recorder.properties[0][key], value)
+		}
+	}
+	assertCallbackTelemetryPropertiesRegistered(t, recorder)
 }
 
 // TestWorker_RetryOnDeliveryFailure verifies a failed delivery increments the

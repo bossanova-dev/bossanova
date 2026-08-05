@@ -6988,9 +6988,12 @@ type CreateNoteRequest struct {
 	Body string `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	// Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
 	// at most 64 bytes each (measured after trimming), else InvalidArgument.
-	Tags          []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Tags []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`
+	// Optional repo-scoped key for an atomic idempotent create. A retry with the
+	// same key returns the original note without changing it.
+	IdempotencyKey *string `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3,oneof" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateNoteRequest) Reset() {
@@ -7056,6 +7059,13 @@ func (x *CreateNoteRequest) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *CreateNoteRequest) GetIdempotencyKey() string {
+	if x != nil && x.IdempotencyKey != nil {
+		return *x.IdempotencyKey
+	}
+	return ""
 }
 
 type CreateNoteResponse struct {
@@ -10483,17 +10493,19 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\" \n" +
 	"\n" +
 	"NoteTagSet\x12\x12\n" +
-	"\x04tags\x18\x01 \x03(\tR\x04tags\"\xb1\x01\n" +
+	"\x04tags\x18\x01 \x03(\tR\x04tags\"\xf3\x01\n" +
 	"\x11CreateNoteRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\"\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tH\x00R\tsessionId\x88\x01\x01\x12\x1c\n" +
 	"\achat_id\x18\x03 \x01(\tH\x01R\x06chatId\x88\x01\x01\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12\x12\n" +
-	"\x04tags\x18\x05 \x03(\tR\x04tagsB\r\n" +
+	"\x04tags\x18\x05 \x03(\tR\x04tags\x12,\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tH\x02R\x0eidempotencyKey\x88\x01\x01B\r\n" +
 	"\v_session_idB\n" +
 	"\n" +
-	"\b_chat_id\"<\n" +
+	"\b_chat_idB\x12\n" +
+	"\x10_idempotency_key\"<\n" +
 	"\x12CreateNoteResponse\x12&\n" +
 	"\x04note\x18\x01 \x01(\v2\x12.bossanova.v1.NoteR\x04note\" \n" +
 	"\x0eGetNoteRequest\x12\x0e\n" +

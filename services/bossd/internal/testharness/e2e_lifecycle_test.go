@@ -2193,7 +2193,7 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 
 	// Seed three sessions. Titles are already hyphen/lowercase so the mock's
 	// sanitize() yields branch names identical to the titles — easy to assert
-	// against in EmptyTrashCalls.
+	// against in ReapLocalBranchesCalls.
 	type seeded struct {
 		id     string
 		branch string
@@ -2224,10 +2224,10 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 	h.SetArchivedAt(t, mid.id, now.Add(-10*24*time.Hour))
 	h.SetArchivedAt(t, recent.id, now.Add(-1*24*time.Hour))
 
-	// Clear the EmptyTrashCalls slice so the post-EmptyTrash assertion only
+	// Clear the ReapLocalBranchesCalls slice so the post-EmptyTrash assertion only
 	// sees calls from the RPC under test (ArchiveSession does not call
 	// EmptyTrash today, but guard against future coupling).
-	h.Git.EmptyTrashCalls = nil
+	h.Git.ReapLocalBranchesCalls = nil
 
 	// Threshold: 7 days ago. After-semantics means anything archived at or
 	// before this timestamp is deleted; anything newer is kept.
@@ -2260,15 +2260,15 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 	}
 
 	// Git cleanup: server groups branches per repo, so we expect one
-	// EmptyTrash call containing old + mid (order matches ListArchived's
+	// ReapLocalBranches call containing old + mid (order matches ListArchived's
 	// created_at DESC, but we don't want to couple to that — check as a set).
-	if len(h.Git.EmptyTrashCalls) != 1 {
-		t.Fatalf("expected 1 git EmptyTrash call, got %d: %+v",
-			len(h.Git.EmptyTrashCalls), h.Git.EmptyTrashCalls)
+	if len(h.Git.ReapLocalBranchesCalls) != 1 {
+		t.Fatalf("expected 1 git ReapLocalBranches call, got %d: %+v",
+			len(h.Git.ReapLocalBranchesCalls), h.Git.ReapLocalBranchesCalls)
 	}
-	call := h.Git.EmptyTrashCalls[0]
+	call := h.Git.ReapLocalBranchesCalls[0]
 	if len(call.Branches) != 2 {
-		t.Fatalf("expected 2 branches in EmptyTrash call, got %d: %+v",
+		t.Fatalf("expected 2 branches in ReapLocalBranches call, got %d: %+v",
 			len(call.Branches), call.Branches)
 	}
 	branches := map[string]bool{call.Branches[0]: true, call.Branches[1]: true}
@@ -2277,7 +2277,7 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 			old.branch, mid.branch, call.Branches)
 	}
 	if branches[recent.branch] {
-		t.Fatalf("recent session's branch %q must NOT appear in EmptyTrash call", recent.branch)
+		t.Fatalf("recent session's branch %q must NOT appear in ReapLocalBranches call", recent.branch)
 	}
 }
 

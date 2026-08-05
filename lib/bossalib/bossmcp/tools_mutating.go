@@ -715,7 +715,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_note",
-		Description: "Record a note against a repository — durable free-text a later run can harvest, e.g. what an investigation concluded. The note is REPO-scoped: session_id and chat_id are provenance only, so archiving or deleting that session never removes the note. The body is stored verbatim, must be non-empty and is capped at 64 KiB. Tags are normalised on write (trimmed, lowercased, de-duplicated, returned in ascending order), at most 32 of at most 64 bytes each. The body is NOT a secret and is returned in full by this and every read tool.",
+		Description: "Record a note against a repository — durable free-text later runs can harvest. Notes are REPO-scoped: session_id and chat_id are provenance only, so deleting that session never removes the note. Body: verbatim, non-empty, max 64 KiB. Tags are normalised on write (max 32 x 64 bytes). The body is NOT a secret and is returned in full by this and every read tool.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateNoteArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.CreateNoteRequest{
@@ -730,6 +730,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.ChatID != "" {
 			v := args.ChatID
 			req.ChatId = &v
+		}
+		if args.IdempotencyKey != "" {
+			v := args.IdempotencyKey
+			req.IdempotencyKey = &v
 		}
 		note, err := backend.CreateNote(ctx, req)
 		if err != nil {
@@ -839,14 +843,15 @@ type RegisterBroadcastSubscriptionArgs struct {
 }
 
 // CreateNoteArgs is the typed argument struct for create_note. repo_id and body
-// are required; session_id and chat_id are provenance only and are left UNSET
-// when omitted rather than sent blank.
+// are required; session_id and chat_id are provenance only. Optional fields are
+// left UNSET when omitted rather than sent blank.
 type CreateNoteArgs struct {
-	RepoID    string   `json:"repo_id" jsonschema:"the repo the note belongs to (required); notes are repo-scoped. Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound"`
-	SessionID string   `json:"session_id,omitempty" jsonschema:"the session recording the note (provenance only; the note outlives the session)"`
-	ChatID    string   `json:"chat_id,omitempty" jsonschema:"the chat recording the note (provenance only)"`
-	Body      string   `json:"body" jsonschema:"the note text (required); stored verbatim, must be non-empty and at most 64 KiB"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"tags to file the note under; trimmed, lowercased and de-duplicated on write, at most 32 of at most 64 bytes each"`
+	RepoID         string   `json:"repo_id" jsonschema:"the repo the note belongs to (required); notes are repo-scoped. Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound"`
+	SessionID      string   `json:"session_id,omitempty" jsonschema:"the session recording the note (provenance only; the note outlives the session)"`
+	ChatID         string   `json:"chat_id,omitempty" jsonschema:"the chat recording the note (provenance only)"`
+	Body           string   `json:"body" jsonschema:"the note text (required); stored verbatim, must be non-empty and at most 64 KiB"`
+	Tags           []string `json:"tags,omitempty" jsonschema:"tags to file the note under; trimmed, lowercased and de-duplicated on write, at most 32 of at most 64 bytes each"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty" jsonschema:"optional repo-scoped key for an atomic idempotent create; retry with the same key returns the original note unchanged"`
 }
 
 // UpdateNoteArgs is the typed argument struct for update_note. Body and Tags

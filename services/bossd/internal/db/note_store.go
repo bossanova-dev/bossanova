@@ -121,6 +121,20 @@ func optionalTrimmed(s *string) any {
 	return nil
 }
 
+func idempotencyKey(s *string) (any, error) {
+	if s == nil {
+		return nil, nil
+	}
+	key := strings.TrimSpace(*s)
+	if key == "" {
+		return nil, fmt.Errorf("%w: idempotency key must not be empty", ErrNoteInvalid)
+	}
+	if len(key) > NoteMaxIdempotencyKeyLength {
+		return nil, fmt.Errorf("%w: idempotency key exceeds %d bytes", ErrNoteInvalid, NoteMaxIdempotencyKeyLength)
+	}
+	return key, nil
+}
+
 func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (*models.Note, error) {
 	repoID := strings.TrimSpace(params.RepoID)
 	if repoID == "" {
@@ -130,6 +144,10 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 		return nil, err
 	}
 	tags, err := normalizeTags(params.Tags)
+	if err != nil {
+		return nil, err
+	}
+	key, err := idempotencyKey(params.IdempotencyKey)
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +168,34 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
 
-	if _, err := conn.ExecContext(ctx,
-		`INSERT INTO notes (id, repo_id, session_id, chat_id, body, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	result, err := conn.ExecContext(ctx,
+		`INSERT OR IGNORE INTO notes (id, repo_id, session_id, chat_id, body, idempotency_key, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, repoID, optionalTrimmed(params.SessionID), optionalTrimmed(params.ChatID),
-		params.Body, now, now,
-	); err != nil {
+		params.Body, key, now, now,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("insert note: %w", err)
+	}
+	created, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("check note insert result: %w", err)
+	}
+	if created == 0 {
+		if key == nil {
+			return nil, fmt.Errorf("note insert was ignored without an idempotency key")
+		}
+		var existingID string
+		if err := conn.QueryRowContext(ctx,
+			`SELECT id FROM notes WHERE repo_id = ? AND idempotency_key = ?`, repoID, key,
+		).Scan(&existingID); err != nil {
+			return nil, fmt.Errorf("find idempotent note: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return nil, fmt.Errorf("commit idempotent note create: %w", err)
+		}
+		committed = true
+		return getNote(ctx, conn, existingID)
 	}
 	if err := insertNoteTags(ctx, conn, id, tags); err != nil {
 		return nil, err

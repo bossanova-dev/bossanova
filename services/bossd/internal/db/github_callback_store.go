@@ -152,12 +152,22 @@ func (s *SQLiteGithubCallbackStore) Delete(ctx context.Context, id string) error
 	return nil
 }
 
-func (s *SQLiteGithubCallbackStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
+// ExpiredGithubCallback is a callback made terminal by one expiry sweep.
+// It contains only the bounded fields needed for terminal-outcome telemetry.
+type ExpiredGithubCallback struct {
+	Trigger      models.GithubCallbackTrigger
+	AttemptCount int
+}
+
+// ExpireOverdueCallbacks expires overdue callbacks and returns only rows that
+// transitioned in this statement, allowing callers to emit each outcome once.
+func (s *SQLiteGithubCallbackStore) ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGithubCallback, error) {
 	nowStr := sqlutil.FormatTime(now)
-	res, err := s.db.ExecContext(ctx,
+	rows, err := s.db.QueryContext(ctx,
 		`UPDATE github_callbacks
 		 SET state = ?, updated_at = ?
-		 WHERE state IN (?, ?, ?) AND expires_at <= ?`,
+		 WHERE state IN (?, ?, ?) AND expires_at <= ?
+		 RETURNING trigger_event, attempt_count`,
 		string(models.GithubCallbackStateExpired), nowStr,
 		string(models.GithubCallbackStateActive),
 		string(models.GithubCallbackStateLeased),
@@ -165,10 +175,30 @@ func (s *SQLiteGithubCallbackStore) ExpireOverdue(ctx context.Context, now time.
 		nowStr,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("expire overdue github callbacks: %w", err)
+		return 0, nil, fmt.Errorf("expire overdue github callbacks: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	var expired []ExpiredGithubCallback
+	for rows.Next() {
+		var callback ExpiredGithubCallback
+		if err := rows.Scan(&callback.Trigger, &callback.AttemptCount); err != nil {
+			_ = rows.Close()
+			return 0, nil, fmt.Errorf("scan expired github callback: %w", err)
+		}
+		expired = append(expired, callback)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, nil, fmt.Errorf("iterate expired github callbacks: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, nil, fmt.Errorf("close expired github callbacks: %w", err)
+	}
+	return len(expired), expired, nil
+}
+
+func (s *SQLiteGithubCallbackStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
+	n, _, err := s.ExpireOverdueCallbacks(ctx, now)
+	return n, err
 }
 
 func (s *SQLiteGithubCallbackStore) AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error) {

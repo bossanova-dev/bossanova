@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "title": "BOS-710 waiting status — the parked session and its chat retain their external-event reason while showing an active spinner",
+  "fixture": { "preset": "waiting-callback" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the Home session list renders the spinner-enabled waiting status with its reason",
+      "steps": [
+        {
+          "waitFor": "Ship the release checklist",
+          "timeoutMs": 10000,
+          "caption": "Home list loaded with the parked callback session and its animated waiting STATUS"
+        },
+        {
+          "expect": [
+            {
+              "text": "[⣾⣽⣻⢿⡿⣟⣯⣷]\\s+waiting",
+              "match": "regex",
+              "label": "waiting status has a Dot spinner prefix"
+            },
+            {
+              "text": "awaiting checks_passed_ready on acme/my-app#668",
+              "match": "normalized",
+              "label": "waiting reason remains readable"
+            }
+          ]
+        },
+        {
+          "key": "enter",
+          "caption": "Open the parked session to prove its individual waiting chat also shows the spinner"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the chat picker renders a spinner before the waiting chat label without losing its reason",
+      "steps": [
+        {
+          "waitFor": "awaiting checks_passed_ready on acme/my-app#668",
+          "timeoutMs": 10000,
+          "caption": "Chat picker retains the external-event reason above the waiting chat"
+        },
+        {
+          "expect": {
+            "text": "[⣾⣽⣻⢿⡿⣟⣯⣷]\\s+waiting",
+            "match": "regex",
+            "label": "waiting chat has a Dot spinner prefix"
+          }
+        }
+      ]
+    }
+  ]
+}

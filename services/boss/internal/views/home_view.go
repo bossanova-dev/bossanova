@@ -408,8 +408,9 @@ func (h HomeModel) sessionTableFooterLineCount() int {
 	lines := actionBarLineCount(h.width, left, nav, quit)
 	if relogin := h.authReloginLine(); relogin != "" {
 		// renderSessionTableFooter puts a newline between the action bar and
-		// this multi-line warning, so reserve that separator too.
-		lines += 1 + strings.Count(relogin, "\n") + 1
+		// this multi-line warning, so reserve its rendered height and that
+		// separator too.
+		lines += 1 + lipgloss.Height(relogin)
 	}
 	if logoutErr := h.logoutErrorLine(); logoutErr != "" {
 		// The logout error follows the action bar (and any re-login warning),

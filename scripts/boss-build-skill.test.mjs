@@ -3,6 +3,8 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
+import os from 'node:os'
+import { execFileSync } from 'node:child_process'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
@@ -29,6 +31,73 @@ const BUILD_MIRRORS = [CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-
 const FINALIZE_REF = 'references/finalize-and-stop.md'
 const finalizeAndStop = (dir = CORE) =>
   fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8')
+
+test('BOS-711: ownership ranges use the resolved remote base, not a stale local branch', () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-bos-711-'))
+  const git = (...args) => execFileSync('git', args, { cwd: fixture, encoding: 'utf8' }).trim()
+
+  try {
+    git('init', '--initial-branch=main')
+    git('config', 'user.email', 'boss-build-test@example.test')
+    git('config', 'user.name', 'boss-build test')
+    fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'base\n')
+    git('add', 'fixture.txt')
+    git('commit', '-m', 'base')
+    const staleLocalMain = git('rev-parse', 'HEAD')
+
+    fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'remote advance\n')
+    git('commit', '-am', 'remote advance')
+    const remoteMain = git('rev-parse', 'HEAD')
+    git('update-ref', 'refs/remotes/origin/main', remoteMain)
+    git('update-ref', 'refs/remotes/upstream/main', remoteMain)
+    git('switch', '--detach', '--quiet', 'refs/remotes/origin/main')
+    git('branch', '-f', 'main', staleLocalMain)
+
+    assert.equal(git('rev-list', '--count', 'refs/remotes/origin/main..HEAD'), '0')
+    assert.equal(git('rev-list', '--count', 'refs/remotes/upstream/main..HEAD'), '0')
+    assert.equal(git('rev-list', '--count', 'main..HEAD'), '1')
+
+    fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'branch work\n')
+    git('commit', '-am', 'branch work')
+    assert.equal(git('rev-list', '--count', 'refs/remotes/origin/main..HEAD'), '1')
+    assert.equal(git('rev-list', '--count', 'refs/remotes/upstream/main..HEAD'), '1')
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true })
+  }
+
+  for (const dir of BUILD_MIRRORS) {
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    const resume = fs.readFileSync(
+      path.join(rootDir, dir, 'references/resume-assessment.md'),
+      'utf8',
+    )
+    const standalone = fs.readFileSync(
+      path.join(rootDir, dir, 'references/standalone-mode.md'),
+      'utf8',
+    )
+    const review = fs.readFileSync(path.join(rootDir, dir, 'references/review-stack.md'), 'utf8')
+
+    assert.match(
+      skill,
+      /BASE_UPSTREAM="\$\(git rev-parse --abbrev-ref "\$SESSION_BRANCH@\{upstream\}" 2>\/dev\/null\)"/,
+    )
+    assert.match(skill, /BASE_REMOTE="\$\{BASE_UPSTREAM%%\/\*\}"/)
+    assert.match(skill, /BASE_BRANCH="\$\{BASE_UPSTREAM#\*\/\}"/)
+    assert.match(skill, /BASE_REF="refs\/remotes\/\$BASE_REMOTE\/\$BASE_BRANCH"/)
+    assert.match(skill, /git fetch "\$BASE_REMOTE" "\+refs\/heads\/\$BASE_BRANCH:\$BASE_REF"/)
+    assert.match(skill, /git log --oneline "\$BASE_REF\.\.HEAD"/)
+    assert.match(skill, /REVIEW_BASE="\$BASE_REF"/)
+    assert.match(resume, /git (?:diff --stat|log --oneline) "\$BASE_REF(?:\.\.\.|\.\.)HEAD"/)
+    assert.match(standalone, /git switch -c "\$SESSION_BRANCH" "\$BASE_REF"/)
+    assert.match(review, /resume →\s*`\$BASE_REF`/)
+    assert.match(skill, /gh pr create --base "\$BASE_BRANCH"/)
+    assert.doesNotMatch(
+      `${skill}\n${resume}\n${review}`,
+      /\$BASE_BRANCH(?:\.\.\.|\.\.)HEAD|REVIEW_BASE="\$BASE_BRANCH"/,
+      `${dir} must not use the local base-name ref for an ownership, resume, or review range`,
+    )
+  }
+})
 
 test('headless mode + mode-aware proof are present', () => {
   for (const skillPath of RESIDENT_BODY_SKILLS) {
@@ -103,7 +172,9 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // release without ever opening the reference. Each bullet now links the step it summarizes
   // (5 × 35 B) and the block states the bullets are summaries, not instructions (96 B).
   // Re-measured -4 after adding the pre-PR Step 12 cleanup route.
-  const RATCHET = 69325 // exact measured resident body
+  // Re-baselined +710 for BOS-711: preflight must establish the upstream remote-tracking base ref
+  // before any workflow decision can safely distinguish stale local refs from real branch work.
+  const RATCHET = 70035 // exact measured resident body
   assert.ok(
     RATCHET < PRE_EXTRACTION_BASELINE,
     'ratchet must stay below the pre-extraction baseline',
@@ -1766,7 +1837,7 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
       `${dir}/references/resume-assessment.md must carry the standing instruction verbatim`,
     )
     assert.ok(
-      ref.includes('git log --oneline "$BASE_BRANCH..HEAD"'),
+      ref.includes('git log --oneline "$BASE_REF..HEAD"'),
       `${dir}/references/resume-assessment.md must inventory the branch log`,
     )
     assert.match(

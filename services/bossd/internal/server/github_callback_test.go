@@ -3,17 +3,41 @@ package server
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type callbackExpiryTelemetryRecorder struct{ properties []map[string]any }
+
+func (r *callbackExpiryTelemetryRecorder) Capture(_ context.Context, _ libtelemetry.Event, _ string, properties map[string]any) {
+	r.properties = append(r.properties, properties)
+}
+func (*callbackExpiryTelemetryRecorder) Identify(context.Context, string, map[string]any) {}
+func (*callbackExpiryTelemetryRecorder) Alias(context.Context, string, string)            {}
+func (*callbackExpiryTelemetryRecorder) Close()                                           {}
+
+func enableGithubCallbackTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.EventTracingEnabled = true
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("enable telemetry: %v", err)
+	}
+}
 
 // newGithubCallbackServerWithDB builds a Server backed by a real migrated
 // in-memory callback store so the RPC handlers exercise the actual SQL path,
@@ -240,7 +264,10 @@ func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
 }
 
 func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
+	enableGithubCallbackTelemetry(t)
 	srv, sqlDB := newGithubCallbackServerWithDB(t)
+	recorder := &callbackExpiryTelemetryRecorder{}
+	srv.telemetry = recorder
 	ctx := context.Background()
 
 	// Create through the RPC (24h default expiry, active state).
@@ -270,6 +297,15 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	if got := all.Msg.GithubCallbacks[0].State; got != string(models.GithubCallbackStateExpired) {
 		t.Errorf("state = %q, want expired", got)
 	}
+	if len(recorder.properties) != 1 {
+		t.Fatalf("expiry captures = %d, want 1", len(recorder.properties))
+	}
+	if got := recorder.properties[0]["status"]; got != "abandoned" {
+		t.Errorf("status = %v, want abandoned", got)
+	}
+	if got := recorder.properties[0]["attempt_count"]; got != 0 {
+		t.Errorf("attempt_count = %v, want 0", got)
+	}
 
 	// A state=active filter no longer matches the now-expired row.
 	active := string(models.GithubCallbackStateActive)
@@ -289,6 +325,9 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	}
 	if len(byExpired.Msg.GithubCallbacks) != 1 {
 		t.Errorf("expired list = %d, want 1", len(byExpired.Msg.GithubCallbacks))
+	}
+	if len(recorder.properties) != 1 {
+		t.Errorf("repeated list recaptured expiry: %d", len(recorder.properties))
 	}
 }
 

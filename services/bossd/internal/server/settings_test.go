@@ -35,6 +35,20 @@ func newSettingsServer(clients map[string]agent.AgentRunnerClient) *Server {
 	return &Server{agentClients: clients, logger: zerolog.Nop()}
 }
 
+type settingsTelemetryClient struct {
+	updates  int
+	settings config.Settings
+}
+
+func (c *settingsTelemetryClient) Update(settings config.Settings) {
+	c.updates++
+	c.settings = settings
+}
+func (*settingsTelemetryClient) Capture(context.Context, telemetry.Event, string, map[string]any) {}
+func (*settingsTelemetryClient) Identify(context.Context, string, map[string]any)                 {}
+func (*settingsTelemetryClient) Alias(context.Context, string, string)                            {}
+func (*settingsTelemetryClient) Close()                                                           {}
+
 func mustGetSettings(t *testing.T, srv *Server) *pb.GlobalSettings {
 	t.Helper()
 	resp, err := srv.GetSettings(context.Background(), connect.NewRequest(&pb.GetSettingsRequest{}))
@@ -131,6 +145,31 @@ func TestUpdateSettings_PartialAppliesOnlySetFields(t *testing.T) {
 	}
 	if got.GetPosthogProjectToken() != "keep-me" {
 		t.Errorf("posthog token changed unexpectedly: %q", got.GetPosthogProjectToken())
+	}
+}
+
+func TestUpdateSettings_RefreshesTelemetryClient(t *testing.T) {
+	worktree := t.TempDir()
+	seedSettings(t, config.Settings{
+		WorktreeBaseDir: worktree,
+		DefaultAgent:    "claude",
+		Plugins:         []config.PluginConfig{{Name: "claude", Enabled: true}},
+	})
+	telemetryClient := &settingsTelemetryClient{}
+	srv := newSettingsServer(nil)
+	srv.telemetry = telemetryClient
+
+	mustUpdateSettings(t, srv, &pb.UpdateSettingsRequest{
+		EventTracingEnabled: boolptr(true),
+		PosthogProjectToken: strptr("phc-updated"),
+		PosthogHost:         strptr("https://telemetry.example"),
+	})
+
+	if telemetryClient.updates != 1 {
+		t.Fatalf("telemetry updates = %d, want 1", telemetryClient.updates)
+	}
+	if !telemetryClient.settings.EventTracingEnabled || telemetryClient.settings.PostHogProjectToken != "phc-updated" || telemetryClient.settings.PostHogHost != "https://telemetry.example" {
+		t.Fatalf("telemetry settings = %#v", telemetryClient.settings)
 	}
 }
 

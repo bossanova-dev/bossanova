@@ -25,7 +25,7 @@ const SWEEP_SKILLS = [
   'bs-sweep-notes',
   'bs-sweep-plan',
   'bs-sweep-prettify',
-  'bs-sweep-review',
+  'bs-sweep-releases',
   'bs-sweep-security',
   'bs-sweep-sentry',
   'bs-sweep-tests',

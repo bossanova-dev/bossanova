@@ -9,7 +9,9 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -54,7 +56,7 @@ type reconciler interface {
 // workerStore is the subset of db.GithubCallbackStore the worker uses.
 type workerStore interface {
 	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
-	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
+	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []db.ExpiredGithubCallback, error)
 	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
 	ScheduleRetry(ctx context.Context, id, owner string, params db.ScheduleGithubCallbackRetryParams) error
@@ -80,6 +82,7 @@ type DeliveryWorker struct {
 	owner        string
 	pollInterval time.Duration
 	leaseFor     time.Duration
+	telemetry    libtelemetry.Client
 }
 
 // WorkerConfig configures a DeliveryWorker. Store and Deliverer are required;
@@ -93,6 +96,7 @@ type WorkerConfig struct {
 	Owner        string // lease owner id; generated when empty
 	PollInterval time.Duration
 	LeaseFor     time.Duration
+	Telemetry    libtelemetry.Client
 }
 
 // NewDeliveryWorker constructs a DeliveryWorker, applying defaults.
@@ -126,6 +130,7 @@ func NewDeliveryWorker(cfg WorkerConfig) *DeliveryWorker {
 		owner:        owner,
 		pollInterval: poll,
 		leaseFor:     lease,
+		telemetry:    cfg.Telemetry,
 	}
 }
 
@@ -159,8 +164,14 @@ func (w *DeliveryWorker) Run(ctx context.Context) {
 // scan runs one delivery pass.
 func (w *DeliveryWorker) scan(ctx context.Context) {
 	now := w.now()
-	if _, err := w.store.ExpireOverdue(ctx, now); err != nil && ctx.Err() == nil {
+	_, expired, err := w.store.ExpireOverdueCallbacks(ctx, now)
+	if err != nil && ctx.Err() == nil {
 		w.logger.Warn().Err(err).Msg("callback worker: expire overdue failed")
+	}
+	for _, cb := range expired {
+		daemontelemetry.Capture(ctx, w.telemetry, libtelemetry.EventPRCallbackDelivered, map[string]any{
+			"trigger": string(cb.Trigger), "status": "abandoned", "attempt_count": cb.AttemptCount,
+		})
 	}
 
 	triggered := models.GithubCallbackStateTriggered
@@ -213,6 +224,9 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 	}
 	w.logger.Info().Str("callback_id", cb.ID).Str("chat_id", cb.TargetChatID).
 		Msg("callback worker: delivered")
+	daemontelemetry.Capture(ctx, w.telemetry, libtelemetry.EventPRCallbackDelivered, map[string]any{
+		"trigger": string(cb.Trigger), "status": "delivered", "attempt_count": cb.AttemptCount + 1,
+	})
 }
 
 // scheduleRetry records a failed delivery with capped exponential backoff. If

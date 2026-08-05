@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -880,7 +882,7 @@ func (l *Lifecycle) CommitFailover(ctx context.Context, sessionID string, r Fail
 	if agentSessionID, fallbackAccountID, ok := parseProxyChatTarget(sessionID); ok {
 		return l.commitChatFailover(ctx, agentSessionID, fallbackAccountID, r)
 	}
-	return l.RebindAndAudit(ctx, l.accountSwitchBinding, RebindAndAuditParams{
+	if err := l.RebindAndAudit(ctx, l.accountSwitchBinding, RebindAndAuditParams{
 		SessionID:     sessionID,
 		Provider:      r.Provider,
 		Trigger:       r.Trigger,
@@ -889,7 +891,11 @@ func (l *Lifecycle) CommitFailover(ctx context.Context, sessionID string, r Fail
 		ToAccount:     l.resolveAccountLabel(ctx, r.NextAccountID),
 		Outcome:       "ROTATION_OUTCOME_ROTATED",
 		Detail:        "failover proxy: replayed with next account, no pane respawn",
-	})
+	}); err != nil {
+		return err
+	}
+	l.captureFailoverRotation(ctx, r)
+	return nil
 }
 
 func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fallbackAccountID string, r FailoverResult) error {
@@ -901,7 +907,7 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 		return nil
 	}
 	if cb.BindSession {
-		return l.RebindAndAudit(ctx, l.accountSwitchBinding, RebindAndAuditParams{
+		if err := l.RebindAndAudit(ctx, l.accountSwitchBinding, RebindAndAuditParams{
 			SessionID:     cb.SessionID,
 			ChatID:        agentSessionID,
 			Provider:      r.Provider,
@@ -911,7 +917,11 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 			ToAccount:     l.resolveAccountLabel(ctx, r.NextAccountID),
 			Outcome:       "ROTATION_OUTCOME_ROTATED",
 			Detail:        "failover proxy: replayed with next account, no pane respawn",
-		})
+		}); err != nil {
+			return err
+		}
+		l.captureFailoverRotation(ctx, r)
+		return nil
 	}
 	if l.agentChats == nil {
 		return nil
@@ -930,5 +940,19 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 		Outcome:     "ROTATION_OUTCOME_ROTATED",
 		Detail:      "failover proxy: replayed with next account, no pane respawn",
 	})
+	l.captureFailoverRotation(ctx, r)
 	return nil
+}
+
+// captureFailoverRotation records a successful proxy replay only after its new
+// account binding is durable. A 401/403 invalidates the prior account; other
+// proxy failovers are usage-limit rotations.
+func (l *Lifecycle) captureFailoverRotation(ctx context.Context, r FailoverResult) {
+	reason := "usage_limit"
+	if r.Trigger == "ROTATION_TRIGGER_AUTH_INVALIDATED" {
+		reason = "error"
+	}
+	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+		"rotation_reason": reason, "provider": telemetryProvider(r.Provider), "status": "rotated",
+	})
 }

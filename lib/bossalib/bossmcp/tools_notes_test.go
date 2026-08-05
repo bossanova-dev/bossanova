@@ -95,8 +95,8 @@ func TestNoteToolsUnderReadOnly(t *testing.T) {
 }
 
 // TestCreateNoteForwardsEveryField proves create_note marshals the repo,
-// provenance, body and repeated tags into its OWN backend method's request and
-// returns the created note with its body intact.
+// provenance, body, repeated tags and idempotency key into its OWN backend
+// method's request and returns the created note with its body intact.
 func TestCreateNoteForwardsEveryField(t *testing.T) {
 	var got *pb.CreateNoteRequest
 	backend := &fakeBackend{createNote: func(_ context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -106,11 +106,12 @@ func TestCreateNoteForwardsEveryField(t *testing.T) {
 	cs := newConnectedClient(t, backend, Options{})
 
 	res := callNoteToolOK(t, cs, "create_note", map[string]any{
-		"repo_id":    "repo-1",
-		"session_id": "sess-1",
-		"chat_id":    "chat-1",
-		"body":       noteBody,
-		"tags":       []any{"Alpha", "beta"},
+		"repo_id":         "repo-1",
+		"session_id":      "sess-1",
+		"chat_id":         "chat-1",
+		"body":            noteBody,
+		"tags":            []any{"Alpha", "beta"},
+		"idempotency_key": "release-marker",
 	})
 	if got == nil {
 		t.Fatal("backend.CreateNote was never called")
@@ -129,6 +130,9 @@ func TestCreateNoteForwardsEveryField(t *testing.T) {
 	}
 	if len(got.GetTags()) != 2 || got.GetTags()[0] != "Alpha" || got.GetTags()[1] != "beta" {
 		t.Errorf("tags = %v, want [Alpha beta] forwarded for daemon-side normalisation", got.GetTags())
+	}
+	if got.IdempotencyKey == nil || got.GetIdempotencyKey() != "release-marker" {
+		t.Errorf("idempotency_key = %v, want set to release-marker", got.IdempotencyKey)
 	}
 	if out := textOf(t, res); !strings.Contains(out, noteBody) || !strings.Contains(out, "note-1") {
 		t.Errorf("create_note should echo the stored note including its body; got: %s", out)
@@ -155,6 +159,9 @@ func TestCreateNoteOmitsUnsetProvenance(t *testing.T) {
 	}
 	if got.ChatId != nil {
 		t.Errorf("chat_id = %q, want nil when omitted", got.GetChatId())
+	}
+	if got.IdempotencyKey != nil {
+		t.Errorf("idempotency_key = %q, want nil when omitted", got.GetIdempotencyKey())
 	}
 	if len(got.GetTags()) != 0 {
 		t.Errorf("tags = %v, want empty when omitted", got.GetTags())

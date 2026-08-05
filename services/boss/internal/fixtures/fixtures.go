@@ -515,7 +515,7 @@ var WaitingCallbackReason = displaystatus.CallbackWaitingReason(
 )
 
 // WaitingCallbackWorld builds the BOS-668 dataset: one session parked on an
-// armed GitHub callback (rendered "waiting", INFO, no spinner, with the reason
+// armed GitHub callback (rendered "waiting", INFO, with spinner, with the reason
 // on its own sub-row) alongside a second session that is genuinely working.
 //
 // The two states live in SEPARATE sessions deliberately. The session-level
@@ -535,7 +535,7 @@ func WaitingCallbackWorld() World {
 // WaitingCallbackSessions returns the parked session and its working neighbour.
 // The mock daemon serves sessions verbatim (it does not run displaystatus.Compute),
 // so the Display* triple is spelled out here to exactly what the real cascade
-// produces: "waiting" / INFO / no spinner, and "working" / SUCCESS / spinner.
+// produces: "waiting" / INFO / spinner, and "working" / SUCCESS / spinner.
 func WaitingCallbackSessions() []*pb.Session {
 	return []*pb.Session{
 		{
@@ -548,7 +548,7 @@ func WaitingCallbackSessions() []*pb.Session {
 			PrNumber:       i32(WaitingCallbackPRNumber),
 			DisplayLabel:   displaystatus.WaitingLabel,
 			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
-			DisplaySpinner: false,
+			DisplaySpinner: true,
 			CreatedAt:      ts(-3 * time.Hour),
 			WorktreePath:   "/Users/demo/worktrees/my-app/release-checklist",
 		},

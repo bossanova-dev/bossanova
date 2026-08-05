@@ -889,7 +889,7 @@ func TestCallbackWaitingReason_IncompleteInputYieldsNoReason(t *testing.T) {
 
 func TestBaseStatus_WaitingChatStatus(t *testing.T) {
 	got := Compute(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING})
-	want := Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
+	want := Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	if got != want {
 		t.Fatalf("Compute(WAITING) = %+v, want %+v", got, want)
 	}

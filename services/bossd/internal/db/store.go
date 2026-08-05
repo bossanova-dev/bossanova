@@ -578,6 +578,9 @@ type GithubCallbackStore interface {
 	// ExpireOverdue transitions every non-terminal callback whose expires_at is at
 	// or before now to the expired state, returning the number of rows changed.
 	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
+	// ExpireOverdueCallbacks performs the same transition and returns only rows
+	// changed by this sweep for one-shot terminal-outcome reporting.
+	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGithubCallback, error)
 	// AcquireLease claims a callback for delivery on behalf of owner until
 	// now+leaseFor. It promotes an active row to leased and (for recovery) may also
 	// re-claim a leased/triggered row whose lease deadline has passed or that this
@@ -616,6 +619,10 @@ const NoteMaxTagLength = models.NoteMaxTagLength
 // normalisation. Aliases models.
 const NoteMaxTags = models.NoteMaxTags
 
+// NoteMaxIdempotencyKeyLength bounds a caller-supplied idempotency key. It is
+// intentionally large enough for the release sweep's encoded source marker.
+const NoteMaxIdempotencyKeyLength = 2 * 1024
+
 // CreateNoteParams holds the fields for recording a new note. The store derives
 // id and timestamps and normalises tags; validation lives in Create.
 type CreateNoteParams struct {
@@ -630,6 +637,10 @@ type CreateNoteParams struct {
 	Body string
 	// Tags are trimmed, lowercased, and de-duplicated before insert.
 	Tags []string
+	// IdempotencyKey, when set, atomically identifies one note within RepoID.
+	// A retry returns that existing note without mutating its body, tags, or
+	// provenance. Nil retains ordinary append-only note creation.
+	IdempotencyKey *string
 }
 
 // UpdateNoteParams holds the mutable fields of a note. Nil fields are left
@@ -684,8 +695,9 @@ type ListNotesFilter struct {
 // removes the notes that session wrote.
 type NoteStore interface {
 	// Create validates params, normalises tags, and inserts the note with its
-	// tag rows in one transaction. Returns ErrNoteInvalid (wrapped) on
-	// validation failure.
+	// tag rows in one transaction. A non-nil IdempotencyKey atomically returns
+	// the existing repo-scoped note on retry without mutating it. Returns
+	// ErrNoteInvalid (wrapped) on validation failure.
 	Create(ctx context.Context, params CreateNoteParams) (*models.Note, error)
 	// Get returns a note (with its tags) by id, or sql.ErrNoRows if absent.
 	Get(ctx context.Context, id string) (*models.Note, error)

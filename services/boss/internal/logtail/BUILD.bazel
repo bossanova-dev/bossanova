@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "logtail",
+    srcs = [
+        "filter.go",
+        "follow.go",
+        "format.go",
+        "merge.go",
+        "record.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/logtail",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "logtail_test",
+    srcs = [
+        "filter_test.go",
+        "follow_test.go",
+        "format_test.go",
+        "merge_test.go",
+        "record_test.go",
+    ],
+    embed = [":logtail"],
+)

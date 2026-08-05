@@ -133,9 +133,9 @@ type WorktreeManager interface {
 	// setup script if present.
 	Resurrect(ctx context.Context, opts ResurrectOpts) error
 
-	// EmptyTrash deletes remote branches for archived sessions and prunes
-	// stale worktree refs.
-	EmptyTrash(ctx context.Context, repoPath string, branches []string) error
+	// ReapLocalBranches force-deletes LOCAL branches for archived sessions and
+	// prunes stale worktree refs. It never contacts the remote.
+	ReapLocalBranches(ctx context.Context, repoPath string, branches []string) error
 
 	// DeleteLocalBranch force-deletes the LOCAL branch and prunes stale
 	// worktree refs. It never touches the remote (no push --delete). Used by
@@ -1133,7 +1133,7 @@ func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 	if err != nil {
 		// Worktree is corrupted or not a valid git repo — fall back to
 		// removing the directory directly. Stale worktree refs will be
-		// cleaned up by `git worktree prune` during EmptyTrash.
+		// cleaned up by `git worktree prune` during ReapLocalBranches.
 		m.logger.Warn().Err(err).Str("path", worktreePath).
 			Msg("worktree is not a valid git repo, removing directory directly")
 		return removeAndReap()
@@ -1245,35 +1245,38 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 	return nil
 }
 
-// EmptyTrash deletes the remote tracking branches and prunes worktree refs.
-func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []string) error {
+// ReapLocalBranches force-deletes local branches and prunes stale worktree
+// refs. It never contacts or deletes remote branches.
+func (m *Manager) ReapLocalBranches(ctx context.Context, repoPath string, branches []string) error {
 	m.logger.Info().
 		Int("count", len(branches)).
-		Msg("emptying trash")
+		Msg("reaping local branches")
 
-	for _, branch := range branches {
-		// Delete remote branch. Ignore errors (branch may not exist on remote).
-		if _, err := runGit(ctx, repoPath, "push", "origin", "--delete", branch); err != nil {
-			m.logger.Warn().Err(err).Str("branch", branch).Msg("failed to delete remote branch")
-		}
-
-		// Delete local branch.
-		if _, err := runGit(ctx, repoPath, "branch", "-D", branch); err != nil {
-			m.logger.Warn().Err(err).Str("branch", branch).Msg("failed to delete local branch")
-		}
-	}
-
-	// Prune stale worktree references.
+	var errs []error
+	// Prune before deleting: a stale worktree registration makes git branch -D
+	// refuse the branch as checked out. Keep reaping if pruning fails because
+	// the individual branch deletes may still succeed.
 	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
+		errs = append(errs, fmt.Errorf("prune worktrees before reaping local branches: %w", err))
 		m.logger.Warn().Err(err).Msg("failed to prune worktrees")
 	}
 
-	return nil
+	seen := make(map[string]struct{}, len(branches))
+	for _, branch := range branches {
+		if _, ok := seen[branch]; ok {
+			continue
+		}
+		seen[branch] = struct{}{}
+		if err := m.deleteBranchRef(ctx, repoPath, branch); err != nil {
+			errs = append(errs, err)
+			m.logger.Warn().Err(err).Str("branch", branch).Msg("failed to delete local branch")
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // DeleteLocalBranch force-deletes a LOCAL branch and prunes stale worktree
-// refs. Unlike EmptyTrash it never touches the remote — there is no
-// `git push origin --delete`. The `-D` (force) form is deliberate: the caller
+// refs. It never touches the remote. The `-D` (force) form is deliberate: the caller
 // gates deletion on BranchSafeToDelete, and the safe form (`-d`) would wrongly
 // refuse squash/rebase-merged branches whose commits are not literal ancestors
 // of the base.
@@ -1287,6 +1290,26 @@ func (m *Manager) DeleteLocalBranch(ctx context.Context, repoPath, branch string
 	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
 		return fmt.Errorf("prune worktrees before deleting %q: %w", branch, err)
 	}
+	return m.deleteBranchRef(ctx, repoPath, branch)
+}
+
+// deleteBranchRef force-deletes one local branch ref. It intentionally does
+// not prune worktrees or contact a remote, so callers can control pruning
+// frequency. An already-absent ref is successful: trash cleanup is retryable.
+func (m *Manager) deleteBranchRef(ctx context.Context, repoPath, branch string) error {
+	branches, err := runGit(ctx, repoPath, "branch", "--list", "--format=%(refname:short)", branch)
+	if err != nil {
+		return fmt.Errorf("check local branch %q: %w", branch, err)
+	}
+	if strings.TrimSpace(branches) == "" {
+		return nil
+	}
+
+	tipSHA, err := runGit(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("read tip for local branch %q: %w", branch, err)
+	}
+	m.logger.Info().Str("branch", branch).Str("tip_sha", tipSHA).Msg("deleting local branch")
 	if _, err := runGit(ctx, repoPath, "branch", "-D", branch); err != nil {
 		return fmt.Errorf("delete local branch %q: %w", branch, err)
 	}

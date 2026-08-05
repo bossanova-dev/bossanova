@@ -272,6 +272,10 @@ type upload struct {
 
 // NewManager creates the upload directory (0700) and returns a manager.
 func NewManager(dir string, sender ChatMessageSender, opts ...Option) (*Manager, error) {
+	return newManagerWithChmod(dir, sender, os.Chmod, opts...)
+}
+
+func newManagerWithChmod(dir string, sender ChatMessageSender, chmod func(string, fs.FileMode) error, opts ...Option) (*Manager, error) {
 	if dir == "" {
 		return nil, errors.New("chatupload: empty upload directory")
 	}
@@ -314,10 +318,12 @@ func NewManager(dir string, sender ChatMessageSender, opts ...Option) (*Manager,
 	if !info.IsDir() {
 		return nil, fmt.Errorf("chatupload: upload path %q is not a directory", dir)
 	}
-	if info.Mode().Perm() != dirPerm {
-		if err := os.Chmod(dir, dirPerm); err != nil {
-			return nil, fmt.Errorf("chatupload: restrict upload dir permissions: %w", err)
-		}
+	// A matching mode mask is not ownership evidence: another user's 0700
+	// directory looks identical here. Always ask the OS to set the mode so
+	// ownership is proven by its authority check; a foreign-owned directory
+	// fails with EPERM rather than becoming an upload location.
+	if err := chmod(dir, dirPerm); err != nil {
+		return nil, fmt.Errorf("chatupload: restrict upload dir permissions: %w", err)
 	}
 	m := &Manager{
 		dir:         dir,

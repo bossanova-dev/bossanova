@@ -11,7 +11,9 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // githubCallbackError maps a GithubCallbackStore error to a connect error code.
@@ -78,8 +80,14 @@ func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[p
 	// applied anywhere else on the read path, so a callback past its expires_at
 	// would otherwise still surface as active (and match a state=active filter).
 	// Doing it here keeps the listed state honest without a background scheduler.
-	if _, err := store.ExpireOverdue(ctx, time.Now().UTC()); err != nil {
+	if _, expired, err := store.ExpireOverdueCallbacks(ctx, time.Now().UTC()); err != nil {
 		return nil, githubCallbackError("expire overdue github callbacks", err)
+	} else {
+		for _, callback := range expired {
+			daemontelemetry.Capture(ctx, s.telemetry, libtelemetry.EventPRCallbackDelivered, map[string]any{
+				"trigger": string(callback.Trigger), "status": "abandoned", "attempt_count": callback.AttemptCount,
+			})
+		}
 	}
 
 	filter := db.ListGithubCallbacksFilter{

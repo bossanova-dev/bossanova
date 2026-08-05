@@ -13,7 +13,9 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // Default delivery-worker tuning. These mirror callback.DeliveryWorker: the two
@@ -79,7 +81,7 @@ func (f DelivererFunc) Deliver(ctx context.Context, agentSessionID, message stri
 type workerStore interface {
 	List(ctx context.Context, filter db.ListBroadcastsFilter) ([]*models.Broadcast, error)
 	ListDeliveries(ctx context.Context, broadcastID string) ([]*models.BroadcastDelivery, error)
-	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
+	ExpireOverdueDeliveries(ctx context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error)
 	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.BroadcastDelivery, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
 	ScheduleRetry(ctx context.Context, id, owner string, params db.ScheduleBroadcastRetryParams) error
@@ -113,6 +115,7 @@ type DeliveryWorker struct {
 	ownerPrefix  string
 	pollInterval time.Duration
 	leaseFor     time.Duration
+	telemetry    libtelemetry.Client
 }
 
 // WorkerConfig configures a DeliveryWorker. Store and Deliverer are required;
@@ -129,6 +132,7 @@ type WorkerConfig struct {
 	Owner        string // lease-owner PREFIX; generated when empty (see leaseOwner)
 	PollInterval time.Duration
 	LeaseFor     time.Duration
+	Telemetry    libtelemetry.Client
 }
 
 // NewDeliveryWorker constructs a DeliveryWorker, applying defaults.
@@ -161,6 +165,7 @@ func NewDeliveryWorker(cfg WorkerConfig) *DeliveryWorker {
 		ownerPrefix:  prefix,
 		pollInterval: poll,
 		leaseFor:     lease,
+		telemetry:    cfg.Telemetry,
 	}
 }
 
@@ -201,8 +206,15 @@ func (w *DeliveryWorker) Run(ctx context.Context) {
 // broadcast.
 func (w *DeliveryWorker) scan(ctx context.Context) {
 	now := w.now()
-	if _, err := w.store.ExpireOverdue(ctx, now); err != nil && ctx.Err() == nil {
+	_, skipped, err := w.store.ExpireOverdueDeliveries(ctx, now)
+	if err != nil && ctx.Err() == nil {
 		w.logger.Warn().Err(err).Msg("broadcast worker: expire overdue failed")
+	} else if err == nil {
+		for _, delivery := range skipped {
+			daemontelemetry.Capture(ctx, w.telemetry, libtelemetry.EventBroadcastDelivered, map[string]any{
+				"status": "skipped", "attempt_count": delivery.AttemptCount,
+			})
+		}
 	}
 
 	resolved := models.BroadcastStateResolved
@@ -320,6 +332,9 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, b *models.Broadcast, de
 	}
 	w.logger.Info().Str("delivery_id", d.ID).Str("broadcast_id", b.ID).
 		Str("chat_id", d.TargetChatID).Msg("broadcast worker: delivered")
+	daemontelemetry.Capture(ctx, w.telemetry, libtelemetry.EventBroadcastDelivered, map[string]any{
+		"status": "delivered", "attempt_count": d.AttemptCount + 1,
+	})
 	w.completeIfSettled(ctx, b.ID)
 }
 

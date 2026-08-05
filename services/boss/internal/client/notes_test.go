@@ -267,12 +267,14 @@ func TestRemoteClientCreateNote(t *testing.T) {
 	c, fake := newTestRemote(t)
 	sessionID := "sess-1"
 	chatID := "chat-1"
+	idempotencyKey := "release-marker"
 	note, err := c.CreateNote(context.Background(), &pb.CreateNoteRequest{
-		RepoId:    "repo-1",
-		SessionId: &sessionID,
-		ChatId:    &chatID,
-		Body:      "hello",
-		Tags:      []string{"a", "b"},
+		RepoId:         "repo-1",
+		SessionId:      &sessionID,
+		ChatId:         &chatID,
+		Body:           "hello",
+		Tags:           []string{"a", "b"},
+		IdempotencyKey: &idempotencyKey,
 	})
 	if err != nil {
 		t.Fatalf("CreateNote: unexpected error: %v", err)
@@ -289,6 +291,9 @@ func TestRemoteClientCreateNote(t *testing.T) {
 	}
 	if fake.createNoteReq.GetChatId() != chatID {
 		t.Fatalf("CreateNote: chat_id mismatch: got %q", fake.createNoteReq.GetChatId())
+	}
+	if fake.createNoteReq.GetIdempotencyKey() != idempotencyKey {
+		t.Fatalf("CreateNote: idempotency_key mismatch: got %q", fake.createNoteReq.GetIdempotencyKey())
 	}
 	if fake.createNoteReq.GetBody() != "hello" {
 		t.Fatalf("CreateNote: body mismatch: got %q", fake.createNoteReq.GetBody())

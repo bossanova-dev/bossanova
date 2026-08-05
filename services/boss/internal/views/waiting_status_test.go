@@ -34,19 +34,20 @@ func TestChatStatusString_Waiting(t *testing.T) {
 }
 
 // TestRenderClaudeStatus_Waiting checks the per-chat badge: the canonical
-// label, informational styling, and NO spinner — a chat parked on an external
-// event is not making progress, which is the whole point of BOS-668.
+// label, informational styling, and spinner — a chat parked on an external
+// event is active while it awaits the external event.
 func TestRenderClaudeStatus_Waiting(t *testing.T) {
 	sp := newStatusSpinner()
 	got := renderClaudeStatus(statusWaiting, sp)
 	plain := stripANSI(got)
-	if plain != displaystatus.WaitingLabel {
-		t.Fatalf("renderClaudeStatus(waiting) = %q, want %q", plain, displaystatus.WaitingLabel)
+	want := sp.View() + displaystatus.WaitingLabel
+	if plain != want {
+		t.Fatalf("renderClaudeStatus(waiting) = %q, want %q", plain, want)
 	}
-	if strings.Contains(plain, strings.TrimSpace(sp.View())) && strings.TrimSpace(sp.View()) != "" {
-		t.Fatalf("waiting badge must not animate a spinner: %q", plain)
+	if !strings.Contains(plain, strings.TrimSpace(sp.View())) && strings.TrimSpace(sp.View()) != "" {
+		t.Fatalf("waiting badge must animate a spinner: %q", plain)
 	}
-	if got != styleStatusInfo.Render(displaystatus.WaitingLabel) {
+	if got != styleStatusInfo.Render(want) {
 		t.Fatalf("waiting badge must use the info style (DISPLAY_INTENT_INFO parity)")
 	}
 }

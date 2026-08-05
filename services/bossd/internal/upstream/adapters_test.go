@@ -2024,13 +2024,14 @@ func TestCommandHandlerAdapter_Notes(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		sessionID, chatID := "sess-1", "chat-1"
+		sessionID, chatID, idempotencyKey := "sess-1", "chat-1", "release-marker"
 		resp, err := adapter.CreateNote(context.Background(), &pb.CreateNoteCommand{
-			RepoId:    "repo-1",
-			SessionId: &sessionID,
-			ChatId:    &chatID,
-			Body:      "remember this",
-			Tags:      []string{"alpha", "beta"},
+			RepoId:         "repo-1",
+			SessionId:      &sessionID,
+			ChatId:         &chatID,
+			Body:           "remember this",
+			Tags:           []string{"alpha", "beta"},
+			IdempotencyKey: &idempotencyKey,
 		})
 		if err != nil {
 			t.Fatalf("CreateNote returned error: %v", err)
@@ -2050,6 +2051,9 @@ func TestCommandHandlerAdapter_Notes(t *testing.T) {
 		// unset state survives the hop.
 		if got.SessionId == nil || got.GetSessionId() != "sess-1" || got.ChatId == nil || got.GetChatId() != "chat-1" {
 			t.Fatalf("provenance pointers not forwarded: session=%v chat=%v", got.SessionId, got.ChatId)
+		}
+		if got.IdempotencyKey == nil || got.GetIdempotencyKey() != idempotencyKey {
+			t.Fatalf("idempotency key not forwarded: %v", got.IdempotencyKey)
 		}
 	})
 

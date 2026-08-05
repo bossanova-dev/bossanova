@@ -60,6 +60,7 @@ go_library(
         "20260726000001_broadcasts.sql",
         "20260726000002_notes.sql",
         "20260726000003_broadcast_subscriptions.sql",
+        "20260805000000_notes_idempotency_key.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

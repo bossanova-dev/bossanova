@@ -6,8 +6,10 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // now returns the sweep's current time. It defaults to time.Now in production
@@ -19,6 +21,15 @@ func (l *Lifecycle) now() time.Time {
 		return l.clock()
 	}
 	return time.Now()
+}
+
+func telemetryProvider(provider string) string {
+	switch provider {
+	case "claude", "codex", "opencode":
+		return provider
+	default:
+		return "other"
+	}
 }
 
 // SetClockForTest overrides the sweep's time source. Test-only; production
@@ -137,6 +148,9 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 		}
 		l.logger.Info().Str("session", session.ID).Str("next_account_id", outcome.NextAccount.ID).
 			Msg("parked-rotation sweep: resume-at reached; redispatched under fresh account")
+		daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+			"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
+		})
 		return true
 
 	case rotation.OutcomeAllExhausted:

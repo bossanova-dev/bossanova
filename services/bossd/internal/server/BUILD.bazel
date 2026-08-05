@@ -69,6 +69,7 @@ go_library(
         "//services/bossd/internal/session",
         "//services/bossd/internal/sessionports",
         "//services/bossd/internal/status",
+        "//services/bossd/internal/telemetry",
         "//services/bossd/internal/tmux",
         "@com_connectrpc_connect//:connect",
         "@com_github_rs_zerolog//:zerolog",

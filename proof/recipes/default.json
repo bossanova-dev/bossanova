@@ -264,7 +264,7 @@
       "id": "web-session-waiting",
       "surface": "web",
       "title": "Web Session Detail (parked on an external event)",
-      "description": "BOS-668: a session whose first chat is parked on an armed GitHub callback. The sub-header carries the info-styled reason notice 'waiting · awaiting checks_passed_ready on acme/my-app#668' — naming the trigger and the PR — and the chat table below shows that chat's status badge reading 'waiting' (no spinner, since nothing is moving) beside a genuinely working chat that still spins. The parked chat must NOT read 'stopped': the wording matches the TUI's waiting-callback proof scenario byte for byte.",
+      "description": "BOS-668/BOS-710: a session whose first chat is parked on an armed GitHub callback. The sub-header carries the info-styled reason notice 'waiting · awaiting checks_passed_ready on acme/my-app#668' — naming the trigger and the PR — and the chat table below shows that chat's status badge reading 'waiting' with a spinner beside a genuinely working chat that still spins. The parked chat must NOT read 'stopped': the wording matches the TUI's waiting-callback proof scenario byte for byte.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/sessions/sess-e2e-waiting",
@@ -1030,6 +1030,95 @@
       ]
     },
     {
+      "id": "web-shortcut-launcher-new-session",
+      "surface": "web",
+      "title": "Web Shortcut Launcher (new session)",
+      "description": "Keyboard-shortcut launcher follows the new-session wizard state: the Agent picker scene shows Ctrl-X Back and its list controls, then the repository scene omits those AgentSelect-only rows.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/new",
+          "label": "Open new session",
+          "caption": "Start on the repository step"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Repository list",
+          "caption": "Choose a fixture repository to advance the wizard"
+        },
+        {
+          "action": "click",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Choose repository",
+          "caption": "Advance to the Agent picker"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Agent list",
+          "caption": "The AgentSelect step owns the list and Back shortcuts"
+        },
+        {
+          "action": "press",
+          "key": "?",
+          "label": "Open Agent launcher",
+          "caption": "Agent-step shortcuts include Ctrl X Back"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Agent launcher",
+          "caption": "Ctrl, X, and Back are visible with AgentSelect list controls"
+        },
+        {
+          "action": "press",
+          "key": "Escape",
+          "label": "Close launcher",
+          "caption": "Close the Agent-step shortcut sheet"
+        },
+        {
+          "action": "press",
+          "key": "Control+x",
+          "label": "Back to repository",
+          "caption": "Ctrl X invokes the mounted AgentSelect back handler"
+        },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Repository list again",
+          "caption": "The generic repository step has no AgentSelect key handler"
+        },
+        {
+          "action": "press",
+          "key": "?",
+          "label": "Open repository launcher",
+          "caption": "Show the generic wizard launcher without Ctrl X Back"
+        },
+        {
+          "action": "wait",
+          "selector": "[role=\"dialog\"]",
+          "label": "Repository launcher",
+          "caption": "Only global shortcuts remain; the AgentSelect rows are absent"
+        }
+      ]
+    },
+    {
+      "id": "marketing-agent-coordination",
+      "surface": "marketing",
+      "title": "Marketing — Agent Coordination",
+      "description": "Homepage agent-coordination capability band: heading, three capability bullets, and the CLI snippet in its browser frame.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "selector": "section[aria-labelledby=\"agent-coordination-heading\"]",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "marketing-home-scroll",
       "surface": "marketing",
       "title": "Marketing Home Scroll",
@@ -1040,7 +1129,17 @@
       "steps": [
         { "action": "goto", "route": "/", "caption": "Marketing home" },
         { "action": "wait", "selector": "main", "caption": "Marketing home" },
-        { "action": "scroll", "byPx": 900, "caption": "Scroll the page" },
+        {
+          "action": "scroll",
+          "toSelector": "section[aria-labelledby=\"control-heading\"]",
+          "caption": "Remote control with MCP"
+        },
+        { "action": "wait", "timeoutMs": 800 },
+        {
+          "action": "scroll",
+          "toSelector": "section[aria-labelledby=\"agent-coordination-heading\"]",
+          "caption": "Agents that coordinate themselves"
+        },
         { "action": "wait", "timeoutMs": 800 }
       ]
     },
@@ -1057,12 +1156,16 @@
         { "action": "goto", "route": "/", "caption": "Marketing home" },
         { "action": "wait", "selector": "main", "caption": "Marketing home" },
         {
+          "action": "scroll",
+          "toSelector": "section[aria-labelledby=\"agent-coordination-heading\"]",
+          "caption": "Agents that coordinate themselves in light mode"
+        },
+        { "action": "wait", "timeoutMs": 700 },
+        {
           "action": "click",
           "selector": "[data-testid='theme-toggle']",
           "caption": "Theme: dark"
         },
-        { "action": "wait", "timeoutMs": 700 },
-        { "action": "scroll", "byPx": 900, "caption": "Dark headings stay legible" },
         { "action": "wait", "timeoutMs": 700 },
         {
           "action": "click",
@@ -1239,6 +1342,7 @@
         "web-shortcut-launcher",
         "web-shortcut-launcher-detail",
         "web-shortcut-launcher-new-chat",
+        "web-shortcut-launcher-new-session",
         "web-notification-permission-modal",
         "web-notification-settings"
       ]
@@ -1251,7 +1355,8 @@
         "marketing-pricing",
         "marketing-changelog",
         "marketing-home-scroll",
-        "marketing-theme-toggle"
+        "marketing-theme-toggle",
+        "marketing-agent-coordination"
       ]
     },
     {

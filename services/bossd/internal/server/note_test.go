@@ -77,6 +77,24 @@ func TestCreateNote_HappyPathNormalizesTags(t *testing.T) {
 	}
 }
 
+func TestCreateNote_IdempotencyKeyReturnsOriginalNote(t *testing.T) {
+	srv := newNoteServer(t)
+	key := "Release review: v2:YS5nb0Ax"
+	first := mustCreateNoteRPC(t, srv, &pb.CreateNoteRequest{
+		RepoId:         "repo-1",
+		Body:           "first body",
+		IdempotencyKey: &key,
+	})
+	second := mustCreateNoteRPC(t, srv, &pb.CreateNoteRequest{
+		RepoId:         "repo-1",
+		Body:           "retry must not overwrite the first body",
+		IdempotencyKey: &key,
+	})
+	if second.Id != first.Id || second.Body != first.Body {
+		t.Fatalf("idempotent RPC result = %+v, want original %+v", second, first)
+	}
+}
+
 func TestCreateNote_OmittedProvenanceIsEmpty(t *testing.T) {
 	srv := newNoteServer(t)
 	note := mustCreateNoteRPC(t, srv, &pb.CreateNoteRequest{RepoId: "repo-1", Body: "body"})

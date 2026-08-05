@@ -939,6 +939,7 @@ message CreateNoteCommand {
   optional string chat_id    = 3;
   string body = 4;
   repeated string tags = 5;
+  optional string idempotency_key = 6;
 }
 
 // GetNoteCommand reads one note by id. Mirrors daemon.proto's GetNoteRequest.

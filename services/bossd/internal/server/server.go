@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/socketauth"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
@@ -90,6 +91,7 @@ type Server struct {
 	taskMappings    db.TaskMappingStore
 	cronJobs        db.CronJobStore
 	githubCallbacks db.GithubCallbackStore
+	telemetry       libtelemetry.Client
 	// broadcasts persists broadcasts and their per-target deliveries (BOS-556);
 	// broadcastResolver turns a validated selector into the frozen audience.
 	// Both are optional (nil in tests/wiring that does not exercise the
@@ -185,6 +187,7 @@ type Server struct {
 	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
 	listener              net.Listener
 	srv                   *http.Server
+	agentLogsDir          string
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
@@ -216,6 +219,8 @@ var (
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
+	// AgentLogsDir is the daemon-owned directory containing live agent logs.
+	AgentLogsDir string
 	Repos        db.RepoStore
 	Sessions     db.SessionStore
 	Attempts     db.AttemptStore
@@ -226,6 +231,9 @@ type Config struct {
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
 	// May be nil in tests/contexts that do not exercise the callback surface.
 	GithubCallbacks db.GithubCallbackStore
+	// Telemetry records daemon-owned terminal callback outcomes. Optional so
+	// tests and minimal server wiring retain their existing behavior.
+	Telemetry libtelemetry.Client
 	// Broadcasts persists broadcasts and their per-target deliveries (BOS-556).
 	// May be nil in tests/contexts that do not exercise the broadcast RPCs; the
 	// handlers then report CodeUnavailable.
@@ -425,6 +433,7 @@ func New(cfg Config) *Server {
 		taskMappings:    cfg.TaskMappings,
 		cronJobs:        cfg.CronJobs,
 		githubCallbacks: cfg.GithubCallbacks,
+		telemetry:       cfg.Telemetry,
 
 		broadcasts:             cfg.Broadcasts,
 		broadcastResolver:      cfg.BroadcastResolver,
@@ -468,6 +477,7 @@ func New(cfg Config) *Server {
 		logger:             cfg.Logger,
 		fileLimitSoft:      cfg.FileLimitSoft,
 		endpointReader:     cfg.EndpointReader,
+		agentLogsDir:       cfg.AgentLogsDir,
 
 		endpointNamespaceGate: cfg.EndpointNamespaceGate,
 	}
@@ -1354,13 +1364,12 @@ func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID strin
 	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
 		if failedSess.RepoID != "" && failedSess.BranchName != "" {
 			if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
-				// Only delete the branch (remote + local) when a worktree was
-				// actually created. This preserves the property that a
-				// worktree-creation failure (WorktreePath == "") never deletes
-				// the branch — critical for dependabot PR head branches, which
-				// EmptyTrash would otherwise `git push origin --delete`.
+				// Only reap a branch when this create attempt made its worktree.
+				// This preserves the property that a worktree-creation failure
+				// (WorktreePath == "") never deletes the branch — critical for
+				// dependabot PR head branches.
 				if failedSess.WorktreePath != "" {
-					_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
+					_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{failedSess.BranchName})
 				}
 				// Always remove any leftover worktree directory — including when
 				// creation failed before WorktreePath was recorded — so a stale
@@ -2935,7 +2944,7 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	if sess.RepoID != "" && sess.BranchName != "" {
 		repo, err := s.repos.Get(ctx, sess.RepoID)
 		if err == nil {
-			_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{sess.BranchName})
+			_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName})
 		}
 	}
 
@@ -3123,14 +3132,21 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	olderThan := protoToTimestamp(req.Msg.OlderThan)
 
 	// Collect branches to delete, grouped by repo, and delete DB records.
-	repoBranches := make(map[string][]string) // repoID -> branch names
+	repoBranches := make(map[string][]string) // repoID -> unique branch names
+	repoBranchSeen := make(map[string]map[string]struct{})
 	deleted := int32(0)
 	for _, sess := range archived {
 		if olderThan != nil && sess.ArchivedAt != nil && sess.ArchivedAt.After(*olderThan) {
 			continue
 		}
 		if sess.RepoID != "" && sess.BranchName != "" {
-			repoBranches[sess.RepoID] = append(repoBranches[sess.RepoID], sess.BranchName)
+			if repoBranchSeen[sess.RepoID] == nil {
+				repoBranchSeen[sess.RepoID] = make(map[string]struct{})
+			}
+			if _, seen := repoBranchSeen[sess.RepoID][sess.BranchName]; !seen {
+				repoBranches[sess.RepoID] = append(repoBranches[sess.RepoID], sess.BranchName)
+				repoBranchSeen[sess.RepoID][sess.BranchName] = struct{}{}
+			}
 		}
 		if err := s.sessions.Delete(ctx, sess.ID); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete archived session %s: %w", sess.ID, err))
@@ -3147,7 +3163,7 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		if err != nil {
 			continue
 		}
-		_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, branches)
+		_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches)
 	}
 
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil

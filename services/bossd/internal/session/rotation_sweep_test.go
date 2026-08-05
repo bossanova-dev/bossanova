@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
@@ -39,8 +40,11 @@ func newParkedRotationFixture(t *testing.T, resumeAt time.Time) *rotationFixture
 // account is already cooling by resume time). The initial-cap CooldownApplied
 // dedupe must NOT gate the sweep.
 func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, past)
+	recorder := &finalizeTelemetryRecorder{}
+	f.lc.SetTelemetry(recorder)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
 		NextAccount:     &models.Account{ID: "acct-next"},
@@ -79,6 +83,9 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 	}
 	if s.RotationAttemptCount != 1 {
 		t.Errorf("RotationAttemptCount = %d, want 1", s.RotationAttemptCount)
+	}
+	if len(recorder.captures) != 1 || recorder.captures[0].event != libtelemetry.EventAccountRotated || recorder.captures[0].properties["rotation_reason"] != "usage_limit" {
+		t.Fatalf("rotation telemetry = %#v", recorder.captures)
 	}
 }
 

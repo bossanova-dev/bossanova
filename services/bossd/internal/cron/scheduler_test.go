@@ -16,12 +16,54 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 )
+
+type telemetryCapture struct {
+	event      libtelemetry.Event
+	properties map[string]any
+}
+
+type recordingTelemetryClient struct{ captures []telemetryCapture }
+
+func (r *recordingTelemetryClient) Capture(_ context.Context, event libtelemetry.Event, _ string, properties map[string]any) {
+	r.captures = append(r.captures, telemetryCapture{event: event, properties: properties})
+}
+func (*recordingTelemetryClient) Identify(context.Context, string, map[string]any) {}
+func (*recordingTelemetryClient) Alias(context.Context, string, string)            {}
+func (*recordingTelemetryClient) Close()                                           {}
+
+func enableTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.EventTracingEnabled = true
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("enable telemetry: %v", err)
+	}
+}
+
+func assertRegisteredTelemetryProperties(t *testing.T, capture telemetryCapture) {
+	t.Helper()
+	for key := range capture.properties {
+		if !libtelemetry.IsAllowedProperty(capture.event, key) {
+			t.Errorf("captured unregistered property %q for %s", key, capture.event)
+		}
+		for _, identifier := range []string{"account_id", "account_label", "repo", "repo_name", "branch", "pr_number", "session_id", "chat_id", "job_name", "cron_expression", "prompt", "message_body"} {
+			if key == identifier {
+				t.Errorf("captured identifier property %q for %s", key, capture.event)
+			}
+		}
+	}
+}
 
 // --- Mocks ---------------------------------------------------------------
 
@@ -365,6 +407,72 @@ func makeJobWithAgent(id, schedule string, enabled bool, agentName string) *mode
 	job := makeJob(id, schedule, enabled)
 	job.AgentName = agentName
 	return job
+}
+
+func TestFireTelemetryCapturesExactlyOncePerFire(t *testing.T) {
+	enableTelemetry(t)
+
+	tests := []struct {
+		name       string
+		configure  func(*models.CronJob, *fakeCreator)
+		wantStatus string
+		wantSkip   string
+		wantZero   bool
+	}{
+		{name: "success", wantStatus: "success"},
+		{name: "gate skipped", configure: func(job *models.CronJob, _ *fakeCreator) { job.GateCommand = "false" }, wantStatus: "skipped", wantSkip: "gated"},
+		{name: "error", configure: func(_ *models.CronJob, creator *fakeCreator) { creator.err = errors.New("create failed") }, wantStatus: "error"},
+		{name: "zero output", configure: func(job *models.CronJob, _ *fakeCreator) { job.IsZeroOutput = true }, wantStatus: "success", wantZero: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			job := makeJob("telemetry-job", "@every 1m", true)
+			creator := newFakeCreator()
+			if tt.configure != nil {
+				tt.configure(job, creator)
+			}
+			store.put(job)
+			repos := newFakeRepoStore()
+			repos.put(&models.Repo{ID: job.RepoID, DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+			recorder := &recordingTelemetryClient{}
+			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+			s.telemetry = recorder
+
+			_, _, _ = s.fire(context.Background(), job.ID)
+
+			if len(recorder.captures) != 1 {
+				t.Fatalf("captures = %d, want 1", len(recorder.captures))
+			}
+			capture := recorder.captures[0]
+			if capture.event != libtelemetry.EventCronJobFired {
+				t.Fatalf("event = %q, want %q", capture.event, libtelemetry.EventCronJobFired)
+			}
+			if got := capture.properties["status"]; got != tt.wantStatus {
+				t.Errorf("status = %v, want %q", got, tt.wantStatus)
+			}
+			if got := capture.properties["skip_reason"]; got != tt.wantSkip {
+				t.Errorf("skip_reason = %v, want %q", got, tt.wantSkip)
+			}
+			if got := capture.properties["zero_output"]; got != tt.wantZero {
+				t.Errorf("zero_output = %v, want %t", got, tt.wantZero)
+			}
+			assertRegisteredTelemetryProperties(t, capture)
+		})
+	}
+}
+
+func TestFireTelemetryNilClientPreservesResult(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("nil-telemetry", "@every 1m", true)
+	store.put(job)
+	s := newTestScheduler(t, store, newFakeSessionStore(), newFakeCreator())
+	s.telemetry = nil
+
+	session, skipped, err := s.fire(context.Background(), job.ID)
+	if err != nil || skipped != "" || session == nil {
+		t.Fatalf("fire with nil telemetry = (%v, %q, %v), want created session", session, skipped, err)
+	}
 }
 
 // --- Start loads jobs ----------------------------------------------------

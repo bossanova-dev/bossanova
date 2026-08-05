@@ -4846,6 +4846,11 @@ components:
           items:
             type: string
           title: tags
+        idempotencyKey:
+          type:
+            - string
+            - "null"
+          title: idempotency_key
       title: CreateNoteCommand
       additionalProperties: false
       description: |-
@@ -4884,6 +4889,14 @@ components:
           description: |-
             Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
              at most 64 bytes each (measured after trimming), else InvalidArgument.
+        idempotencyKey:
+          type:
+            - string
+            - "null"
+          title: idempotency_key
+          description: |-
+            Optional repo-scoped key for an atomic idempotent create. A retry with the
+             same key returns the original note without changing it.
       title: CreateNoteRequest
       additionalProperties: false
     bossanova.v1.CreateNoteResponse:
@@ -9065,6 +9078,14 @@ components:
           description: |-
             Trimmed, lowercased and de-duplicated before storage. At most 32 tags of
              at most 64 bytes each (measured after trimming), else InvalidArgument.
+        idempotencyKey:
+          type:
+            - string
+            - "null"
+          title: idempotency_key
+          description: |-
+            Optional repo-scoped key for an atomic idempotent create. A retry with the
+             same key returns the original note without changing it.
       title: ProxyCreateNoteRequest
       additionalProperties: false
       description: |-

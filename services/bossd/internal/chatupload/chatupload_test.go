@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -567,31 +569,90 @@ func assertUploadDirEmpty(t *testing.T, m *Manager) {
 
 // A pre-created volume keeps its own mode through os.MkdirAll, so the
 // owner-only guarantee has to be re-asserted rather than assumed.
-func TestNewManagerNarrowsPreExistingWideDir(t *testing.T) {
+func TestNewManagerAcceptsPreExistingDirAndSetsOwnerOnlyMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode fs.FileMode
+	}{
+		{name: "already owner-only", mode: 0o700},
+		{name: "wide", mode: 0o777},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "uploads")
+			if err := os.MkdirAll(dir, tc.mode); err != nil {
+				t.Fatalf("pre-create upload dir: %v", err)
+			}
+			// Defeat umask, so the directory really has the requested mode going in.
+			if err := os.Chmod(dir, tc.mode); err != nil {
+				t.Fatalf("set pre-existing upload dir mode: %v", err)
+			}
+
+			if _, err := NewManager(dir, &fakeSender{}); err != nil {
+				t.Fatalf("NewManager on existing dir: %v", err)
+			}
+
+			info, err := os.Stat(dir)
+			if err != nil {
+				t.Fatalf("stat upload dir: %v", err)
+			}
+			if got := info.Mode().Perm(); got != dirPerm {
+				t.Fatalf("upload dir mode = %o, want %o", got, dirPerm)
+			}
+		})
+	}
+}
+
+func TestNewManagerWithChmodInvokesChmodForAlreadyOwnerOnlyDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "uploads")
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		t.Fatalf("pre-create upload dir: %v", err)
 	}
-	// Defeat umask, so the directory really is world-writable going in.
-	if err := os.Chmod(dir, 0o777); err != nil {
-		t.Fatalf("widen upload dir: %v", err)
-	}
-	if info, err := os.Stat(dir); err != nil {
-		t.Fatalf("stat pre-existing dir: %v", err)
-	} else if info.Mode().Perm() != 0o777 {
-		t.Fatalf("precondition: dir mode = %o, want 777", info.Mode().Perm())
+	if err := os.Chmod(dir, dirPerm); err != nil {
+		t.Fatalf("set pre-existing upload dir mode: %v", err)
 	}
 
-	if _, err := NewManager(dir, &fakeSender{}); err != nil {
-		t.Fatalf("NewManager on existing dir: %v", err)
-	}
-
-	info, err := os.Stat(dir)
+	var gotPath string
+	var gotMode fs.FileMode
+	called := false
+	m, err := newManagerWithChmod(dir, &fakeSender{}, func(path string, mode fs.FileMode) error {
+		called = true
+		gotPath = path
+		gotMode = mode
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("stat upload dir: %v", err)
+		t.Fatalf("newManagerWithChmod: %v", err)
 	}
-	if got := info.Mode().Perm(); got != dirPerm {
-		t.Fatalf("upload dir mode = %o, want %o", got, dirPerm)
+	if m == nil {
+		t.Fatal("newManagerWithChmod returned nil manager")
+	}
+	if !called {
+		t.Fatal("chmod was not called for an already-owner-only directory")
+	}
+	wantPath, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("resolve expected upload dir: %v", err)
+	}
+	if gotPath != wantPath || gotMode != dirPerm {
+		t.Fatalf("chmod(%q, %o), want chmod(%q, %o)", gotPath, gotMode, wantPath, dirPerm)
+	}
+}
+
+func TestNewManagerWithChmodRejectsEPERM(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "uploads")
+	m, err := newManagerWithChmod(dir, &fakeSender{}, func(string, fs.FileMode) error {
+		return syscall.EPERM
+	})
+	if m != nil {
+		t.Fatal("newManagerWithChmod returned a manager after chmod failed")
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("error = %v, want wrapped EPERM", err)
+	}
+	if !strings.Contains(err.Error(), "restrict upload dir permissions") {
+		t.Fatalf("error = %v, want upload-dir permission context", err)
 	}
 }
 

@@ -1029,7 +1029,7 @@ func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
 	return nil
 }
 
-func (m *mockWorktreeManager) EmptyTrash(_ context.Context, _ string, _ []string) error {
+func (m *mockWorktreeManager) ReapLocalBranches(_ context.Context, _ string, _ []string) error {
 	return nil
 }
 

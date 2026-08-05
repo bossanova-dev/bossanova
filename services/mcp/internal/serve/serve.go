@@ -89,12 +89,14 @@ func HTTPWithListenerHook(ctx context.Context, addr string, backend bossmcp.Back
 	// superseded binary can be named as drifted.
 	mux.HandleFunc("/buildinfo", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(BuildInfo{
+		if err := json.NewEncoder(w).Encode(BuildInfo{
 			Version: buildinfo.Version,
 			Commit:  buildinfo.Commit,
 			Date:    buildinfo.Date,
 			Summary: buildinfo.String(),
-		})
+		}); err != nil {
+			log.Printf("mcp: encode build info response: %v", err)
+		}
 	})
 
 	ln, err := net.Listen("tcp", addr)

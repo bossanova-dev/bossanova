@@ -18,7 +18,9 @@ go_library(
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/sqlutil",
+        "//lib/bossalib/telemetry",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/telemetry",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -41,9 +43,11 @@ go_test(
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [
         "//lib/bossalib/broadcast",
+        "//lib/bossalib/config",
         "//lib/bossalib/machine",
         "//lib/bossalib/migrate",
         "//lib/bossalib/models",
+        "//lib/bossalib/telemetry",
         "//services/bossd/internal/db",
         "@com_github_rs_zerolog//:zerolog",
     ],

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,14 +13,96 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
 )
+
+type finalizeTelemetryCapture struct {
+	event      libtelemetry.Event
+	properties map[string]any
+}
+
+type finalizeTelemetryRecorder struct{ captures []finalizeTelemetryCapture }
+
+func (r *finalizeTelemetryRecorder) Capture(_ context.Context, event libtelemetry.Event, _ string, properties map[string]any) {
+	r.captures = append(r.captures, finalizeTelemetryCapture{event: event, properties: properties})
+}
+func (*finalizeTelemetryRecorder) Identify(context.Context, string, map[string]any) {}
+func (*finalizeTelemetryRecorder) Alias(context.Context, string, string)            {}
+func (*finalizeTelemetryRecorder) Close()                                           {}
+
+func enableFinalizeTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	settings := config.DefaultSettings()
+	settings.EventTracingEnabled = true
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("enable telemetry: %v", err)
+	}
+}
+
+func assertFinalizeTelemetry(t *testing.T, recorder *finalizeTelemetryRecorder, wantOutcome string) {
+	t.Helper()
+	if len(recorder.captures) != 1 {
+		t.Fatalf("session_finalized captures = %d, want 1", len(recorder.captures))
+	}
+	capture := recorder.captures[0]
+	if capture.event != libtelemetry.EventSessionFinalized {
+		t.Fatalf("event = %q, want %q", capture.event, libtelemetry.EventSessionFinalized)
+	}
+	if got := capture.properties["outcome"]; got != wantOutcome {
+		t.Errorf("outcome = %v, want %q", got, wantOutcome)
+	}
+	for key := range capture.properties {
+		if !libtelemetry.IsAllowedProperty(capture.event, key) {
+			t.Errorf("captured unregistered property %q for %s", key, capture.event)
+		}
+		for _, identifier := range []string{"account_id", "account_label", "repo", "repo_name", "branch", "pr_number", "session_id", "chat_id", "job_name", "cron_expression", "prompt", "message_body"} {
+			if key == identifier {
+				t.Errorf("captured identifier property %q for %s", key, capture.event)
+			}
+		}
+	}
+}
+
+func TestTelemetryAgentIsBounded(t *testing.T) {
+	for input, want := range map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "customer-plugin-name": "other", "": "other"} {
+		if got := telemetryAgent(input); got != want {
+			t.Errorf("telemetryAgent(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestFinalizeSessionTelemetryNilClientPreservesNoChangesResult(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", WorktreePath: "/tmp/wt-sess1", State: machine.ImplementingPlan,
+	}
+	lc := newTestLifecycle(
+		sessions, repos, nil, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""},
+		newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+	)
+	lc.SetTelemetry(nil)
+
+	result, err := lc.FinalizeSession(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession with nil telemetry: %v", err)
+	}
+	if result.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+}
 
 // TestFinalizeSession_NoOpWhenNotImplementing exercises the idempotency gate:
 // the conditional UPDATE transitions ImplementingPlan→Finalizing; any other
@@ -78,6 +161,7 @@ func TestFinalizeSession_NoOpWhenNotImplementing(t *testing.T) {
 // the outcome is recorded on the cron job row (step 4) and the session's
 // pre-existing hook_token is NOT cleared (step 5 clears only on pr_created).
 func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -102,6 +186,8 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	recorder := &finalizeTelemetryRecorder{}
+	lc.SetTelemetry(recorder)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -110,6 +196,7 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
 	}
+	assertFinalizeTelemetry(t, recorder, "no_changes")
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
 		t.Errorf("expected worktree archived at /tmp/wt-sess1, got %v", wt.archived)
 	}
@@ -472,6 +559,7 @@ func TestFinalizeSession_DeletedNoChangesNotifiesSessionDeleted(t *testing.T) {
 }
 
 func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -504,6 +592,8 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	}
 
 	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	recorder := &finalizeTelemetryRecorder{}
+	lc.SetTelemetry(recorder)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -512,6 +602,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	if res.Outcome != models.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
 	}
+	assertFinalizeTelemetry(t, recorder, "pr_opened")
 	if len(wt.archived) != 0 {
 		t.Fatalf("worktree should be preserved when branch already has PR, got %v", wt.archived)
 	}
@@ -1248,6 +1339,7 @@ func TestFinalizeSession_MarkReadyBackstop_AllowsNonEmptyDiff(t *testing.T) {
 // without this, the helper could return pr_no_changes unconditionally and every
 // other test would still pass.
 func TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -1282,6 +1374,8 @@ func TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges(t *test
 	}
 
 	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	recorder := &finalizeTelemetryRecorder{}
+	lc.SetTelemetry(recorder)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -1290,6 +1384,7 @@ func TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges(t *test
 	if res.Outcome != models.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
 	}
+	assertFinalizeTelemetry(t, recorder, "error")
 	if errors.Is(res.Err, errEmptyDiffRefusedReady) {
 		t.Fatalf("a provider failure must not be classified as the empty-diff refusal: %v", res.Err)
 	}
@@ -1998,6 +2093,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginNoBranchWorkDeletesSession(
 // hard-deleted (no PR is possible) without a FetchBase against the missing
 // origin.
 func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFetch(t *testing.T) {
+	enableFinalizeTelemetry(t)
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -2035,6 +2131,8 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 	}
 
 	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	recorder := &finalizeTelemetryRecorder{}
+	lc.SetTelemetry(recorder)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -2046,6 +2144,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 	if !res.Deleted {
 		t.Error("Deleted should be true for hard-deleted clean-committed cron session")
 	}
+	assertFinalizeTelemetry(t, recorder, "error")
 	if len(wt.fetchedBases) != 0 {
 		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
 	}

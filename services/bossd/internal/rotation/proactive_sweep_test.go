@@ -33,6 +33,7 @@ type proactiveFake struct {
 	candCalls   int            // ProactiveCandidate calls
 	switchCalls []SwitchRequest
 	switchErr   error
+	captures    []string
 }
 
 func newProactiveFake() *proactiveFake {
@@ -99,6 +100,11 @@ func (f *proactiveFake) rotator(now *time.Time) *ChatRotator {
 			f.mu.Unlock()
 			return SwitchResult{SwitchedToLabel: req.AccountID}, f.switchErr
 		},
+		CaptureProactiveRotation: func(_ context.Context, provider string) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.captures = append(f.captures, provider)
+		},
 		Now: func() time.Time { return *now },
 	})
 }
@@ -121,6 +127,12 @@ func (f *proactiveFake) candidateCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.candCalls
+}
+
+func (f *proactiveFake) capturedProactiveRotations() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.captures...)
 }
 
 func enabled(b bool) *bool { return &b }
@@ -157,6 +169,9 @@ func TestSweepProactive_SwitchesIdleHighUtilChat(t *testing.T) {
 	}
 	if sw[0].AgentSessionID != "chat-idle" || sw[0].AccountID != "acct-lo" || !sw[0].Auto {
 		t.Errorf("switch req = %+v, want {AgentSessionID:chat-idle, AccountID:acct-lo, Auto:true}", sw[0])
+	}
+	if captures := f.capturedProactiveRotations(); len(captures) != 1 || captures[0] != "claude" {
+		t.Errorf("proactive captures = %#v, want [claude]", captures)
 	}
 	// The WORKING chat is never probed and never switched.
 	if n := f.probes("acct-hi"); n != 1 {

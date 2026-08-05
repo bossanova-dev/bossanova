@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,9 +14,51 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 )
+
+type telemetryRecorder struct {
+	events     []libtelemetry.Event
+	properties []map[string]any
+}
+
+func (r *telemetryRecorder) Capture(_ context.Context, event libtelemetry.Event, _ string, props map[string]any) {
+	r.events = append(r.events, event)
+	r.properties = append(r.properties, props)
+}
+func (*telemetryRecorder) Identify(context.Context, string, map[string]any) {}
+func (*telemetryRecorder) Alias(context.Context, string, string)            {}
+func (*telemetryRecorder) Close()                                           {}
+
+func enableTelemetry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
+	s := config.DefaultSettings()
+	s.EventTracingEnabled = true
+	if err := config.Save(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertBroadcastTelemetryPropertiesRegistered(t *testing.T, recorder *telemetryRecorder) {
+	t.Helper()
+	spec := libtelemetry.Registry[libtelemetry.EventBroadcastDelivered]
+	for _, props := range recorder.properties {
+		for key := range props {
+			if _, common := libtelemetry.CommonProperties[key]; common {
+				continue
+			}
+			if _, allowed := spec.Properties[key]; !allowed {
+				t.Fatalf("unregistered identifying property %q in %#v", key, props)
+			}
+		}
+	}
+}
 
 // clock is a deterministic, advanceable, concurrency-safe time source.
 type clock struct {
@@ -156,9 +199,15 @@ func (s *fakeStore) ListDeliveries(_ context.Context, broadcastID string) ([]*mo
 }
 
 func (s *fakeStore) ExpireOverdue(_ context.Context, now time.Time) (int, error) {
+	n, _, err := s.ExpireOverdueDeliveries(context.Background(), now)
+	return n, err
+}
+
+func (s *fakeStore) ExpireOverdueDeliveries(_ context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	expired := 0
+	var deliveries []db.ExpiredBroadcastDelivery
 	for _, b := range s.broadcasts {
 		if b.State != models.BroadcastStatePending && b.State != models.BroadcastStateResolved {
 			continue
@@ -174,11 +223,12 @@ func (s *fakeStore) ExpireOverdue(_ context.Context, now time.Time) (int, error)
 			}
 			if d.State == models.BroadcastDeliveryStatePending || d.State == models.BroadcastDeliveryStateLeased {
 				d.State = models.BroadcastDeliveryStateSkipped
+				deliveries = append(deliveries, db.ExpiredBroadcastDelivery{AttemptCount: d.AttemptCount})
 				d.LeaseOwner = nil
 			}
 		}
 	}
-	return expired, nil
+	return expired, deliveries, nil
 }
 
 func (s *fakeStore) AcquireLease(_ context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.BroadcastDelivery, error) {
@@ -389,6 +439,49 @@ func TestWorker_HappyPath(t *testing.T) {
 	if got := store.broadcastState(t); got != models.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
+}
+
+func TestWorker_TelemetryTerminalOutcomesOnly(t *testing.T) {
+	enableTelemetry(t)
+	t.Run("delivered", func(t *testing.T) {
+		store := newFakeStore()
+		clk := newClock(time.Now().UTC())
+		store.addBroadcast("message", clk.now().Add(time.Hour), "chat-1")
+		recorder := &telemetryRecorder{}
+		w := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: newCaptureDeliverer(nil), Now: clk.now, Owner: testOwnerPrefix, Logger: zerolog.Nop(), Telemetry: recorder})
+		w.scan(context.Background())
+		if len(recorder.events) != 1 || recorder.properties[0]["status"] != "delivered" || recorder.properties[0]["attempt_count"] != 1 {
+			t.Fatalf("captures = %#v %#v", recorder.events, recorder.properties)
+		}
+		assertBroadcastTelemetryPropertiesRegistered(t, recorder)
+	})
+	t.Run("retry then expired skip", func(t *testing.T) {
+		store := newFakeStore()
+		clk := newClock(time.Now().UTC())
+		store.addBroadcast("message", clk.now().Add(time.Minute), "chat-1")
+		recorder := &telemetryRecorder{}
+		w := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: newCaptureDeliverer(errors.New("offline")), Now: clk.now, Owner: testOwnerPrefix, Logger: zerolog.Nop(), Telemetry: recorder})
+		w.scan(context.Background())
+		if len(recorder.events) != 0 {
+			t.Fatalf("retry captured %d events, want 0", len(recorder.events))
+		}
+		clk.advance(time.Minute)
+		w.scan(context.Background())
+		if len(recorder.events) != 1 || recorder.properties[0]["status"] != "skipped" || recorder.properties[0]["attempt_count"] != 1 {
+			t.Fatalf("captures = %#v %#v", recorder.events, recorder.properties)
+		}
+		assertBroadcastTelemetryPropertiesRegistered(t, recorder)
+		w.scan(context.Background())
+		if len(recorder.events) != 1 {
+			t.Fatalf("terminal outcome recaptured: %d", len(recorder.events))
+		}
+	})
+	t.Run("nil client", func(t *testing.T) {
+		store := newFakeStore()
+		clk := newClock(time.Now().UTC())
+		store.addBroadcast("message", clk.now().Add(time.Hour), "chat-1")
+		NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: newCaptureDeliverer(nil), Now: clk.now, Owner: testOwnerPrefix, Logger: zerolog.Nop()}).scan(context.Background())
+	})
 }
 
 // TestWorker_RetryBackoffSchedule verifies a failing deliverer keeps the

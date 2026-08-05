@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -109,6 +110,7 @@ type Lifecycle struct {
 	tmux        *tmux.Client
 	provider    vcs.Provider
 	logger      zerolog.Logger
+	telemetry   libtelemetry.Client
 
 	// branchResolver, when set, lets the finalize attach path match PRs
 	// against the worktree's live branch (the agent may have switched
@@ -568,6 +570,9 @@ func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
 // Concurrency: called exactly once during daemon startup, before serving
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
+
+// SetTelemetry installs the optional daemon telemetry sink.
+func (l *Lifecycle) SetTelemetry(client libtelemetry.Client) { l.telemetry = client }
 
 // SetBranchResolver attaches a live-branch resolver used when matching an
 // existing PR to a session whose stored branch may have drifted.

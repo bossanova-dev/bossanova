@@ -32,9 +32,11 @@ import (
 	"github.com/recurser/bossalib/gatecmd"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // DefaultMaxConcurrent is the default cap on simultaneous cron fires.
@@ -75,7 +77,8 @@ type Config struct {
 
 	// NowFunc, if non-nil, overrides time.Now for fire timestamps and
 	// next-run computations. Tests inject a fixed clock here.
-	NowFunc func() time.Time
+	NowFunc   func() time.Time
+	Telemetry libtelemetry.Client
 }
 
 // Scheduler runs scheduled prompt jobs.
@@ -107,7 +110,8 @@ type Scheduler struct {
 	// this in addition to cron.Stop()'s own context.
 	wg sync.WaitGroup
 
-	nowFunc func() time.Time
+	nowFunc   func() time.Time
+	telemetry libtelemetry.Client
 }
 
 type scheduledEntry struct {
@@ -142,10 +146,11 @@ func New(cfg Config) *Scheduler {
 			cron.WithLocation(time.UTC),
 			cron.WithChain(cron.Recover(cronLogger{logger})),
 		),
-		sem:     make(chan struct{}, maxC),
-		entries: make(map[string]scheduledEntry),
-		gating:  make(map[string]struct{}),
-		nowFunc: nowFn,
+		sem:       make(chan struct{}, maxC),
+		entries:   make(map[string]scheduledEntry),
+		gating:    make(map[string]struct{}),
+		nowFunc:   nowFn,
+		telemetry: cfg.Telemetry,
 	}
 }
 
@@ -377,9 +382,21 @@ func (s *Scheduler) fireJob(jobID string) {
 //
 // Skip reasons (non-error skips): "disabled", "db_fetch_error",
 // "overlap_prev_active", "gated".
-func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, string, error) {
+func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Session, skippedReason string, fireErr error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
+	zeroOutput := false
+	defer func() {
+		status := "success"
+		if fireErr != nil {
+			status = "error"
+		} else if skippedReason != "" {
+			status = "skipped"
+		}
+		daemontelemetry.Capture(ctx, s.telemetry, libtelemetry.EventCronJobFired, map[string]any{
+			"status": status, "skip_reason": skippedReason, "zero_output": zeroOutput,
+		})
+	}()
 
 	// Concurrency cap. Block until a slot frees up, honoring ctx.
 	select {
@@ -402,6 +419,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		logger.Info().Msg("fire: job disabled between tick and fire; skipping")
 		return nil, "disabled", nil
 	}
+	zeroOutput = job.IsZeroOutput
 	if reason, active := s.previousRunActive(ctx, job); active {
 		logger.Info().
 			Str("reason", reason).

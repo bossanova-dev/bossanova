@@ -549,11 +549,10 @@ func renderClaudeStatus(status string, sp spinner.Model) string {
 	case statusLimited:
 		return styleStatusWarning.Render("limited")
 	case statusWaiting:
-		// Informational, and deliberately WITHOUT a spinner: a chat parked on an
-		// external event is not making progress, and animating it is exactly the
-		// false "working" signal BOS-668 exists to remove. Matches the composite
-		// displaystatus.Compute produces for the session row (INFO, no spinner).
-		return styleStatusInfo.Render(statusWaiting)
+		// Informational with a spinner: a chat parked on an external event is
+		// actively waiting, while the distinct label preserves that it is not
+		// working. Matches displaystatus.Compute for the session row.
+		return styleStatusInfo.Render(sp.View() + statusWaiting)
 	case statusWorking:
 		return styleStatusSuccess.Render(sp.View() + "working")
 	case statusIdle:

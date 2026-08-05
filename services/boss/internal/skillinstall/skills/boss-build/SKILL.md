@@ -175,11 +175,24 @@ boundary, stop at the nearest honest terminal state. Capture the baseline and br
 ```bash
 START_SHA="$(git rev-parse HEAD)"
 SESSION_BRANCH="$(git branch --show-current)"
-BASE_BRANCH="$(
-  git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null | sed 's#^origin/##'
-)"
-if [ -z "$BASE_BRANCH" ] || [ "$BASE_BRANCH" = "$SESSION_BRANCH" ]; then
+BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
+BASE_REMOTE="${BASE_UPSTREAM%%/*}"
+BASE_BRANCH="${BASE_UPSTREAM#*/}"
+if [ -z "$BASE_UPSTREAM" ] || [ "$BASE_REMOTE" = "$BASE_UPSTREAM" ] || [ "$BASE_BRANCH" = "$SESSION_BRANCH" ]; then
   BASE_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
+  BASE_REMOTE="origin"
+fi
+# BASE_BRANCH is the GitHub API/base-name value only. Git ownership and range decisions must use
+# BASE_REF from its tracking remote, never a bare local branch ref that can be stale in a newly
+# provisioned worktree. An untracked branch uses the default branch at origin.
+BASE_REF="refs/remotes/$BASE_REMOTE/$BASE_BRANCH"
+if ! git fetch "$BASE_REMOTE" "+refs/heads/$BASE_BRANCH:$BASE_REF"; then
+  echo "NO_CHANGE: unable to resolve remote base ref $BASE_REF" >&2
+  exit 0
+fi
+if ! BASE_SHA="$(git rev-parse --verify "$BASE_REF^{commit}")"; then
+  echo "NO_CHANGE: remote base ref $BASE_REF is not a commit" >&2
+  exit 0
 fi
 
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
@@ -257,7 +270,7 @@ Pass `"$BLI_RUNID"` on every later lock call. Refresh the lock with `"$LOCK" hea
 at each step boundary and at the top of long phases (Step 5 implement, Step 8 repair). Release it on
 every terminal state in Step 12.
 
-An **open PR, or commits already ahead of `$BASE_BRANCH`, is NOT a stop condition**. Under
+An **open PR, or commits already ahead of `$BASE_REF`, is NOT a stop condition**. Under
 `BOSSD_MANAGED=1` bossd opens a draft PR + empty `chore: [skip ci] create pull request` commit at
 bootstrap; `=0` has neither. Whether that PR/branch is ours to adopt or foreign is decided in
 **Step 2.5**, once the ticket is known.
@@ -328,8 +341,8 @@ PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/pr-ownership.mjs" number --pr-json "$PR_J
 ```
 
 Determine ownership from the signals — branch name (primary), `[<ISSUE-ID>]` title substring, the
-`Linear issue: <url>` body line — and whether real commits exist ahead of `$BASE_BRANCH`
-(`git log --oneline "$BASE_BRANCH..HEAD"`, ignoring the bootstrap commit). Route:
+`Linear issue: <url>` body line — and whether real commits exist ahead of `$BASE_REF`
+(`git log --oneline "$BASE_REF..HEAD"`, ignoring the bootstrap commit). Route:
 
 | meaning                                                         | route                                                    |
 | --------------------------------------------------------------- | -------------------------------------------------------- |
@@ -645,7 +658,7 @@ here is not a bounded cost: Step 9 finalizes BLOCKED on any deferred required it
 recording one for a scope the branch already satisfies blocks a run that has nothing left to do.
 
 If a subagent **never returns** — a killed process, a host error — the same inventory applies even
-on a **fresh** run, where Step 4.5 never executed: list `git log --oneline "$BASE_BRANCH..HEAD"`,
+on a **fresh** run, where Step 4.5 never executed: list `git log --oneline "$BASE_REF..HEAD"`,
 map it onto the plan's task list, recover the residue, then dispatch **only** the remaining tasks,
 carrying _continue from committed state; do not redo committed tasks_. Which recovery applies turns
 on **the snapshot, not on whether your process restarted** — that is what consuming it on every
@@ -832,7 +845,7 @@ than guessing.
 **Pick the review baseline** from the workspace mode:
 
 - **fresh / bootstrap-only**: `REVIEW_BASE="$START_SHA"` — the diff is this run's new work.
-- **resume**: `REVIEW_BASE="$BASE_BRANCH"` — the work to ship is the whole branch vs base, including a
+- **resume**: `REVIEW_BASE="$BASE_REF"` — the work to ship is the whole branch vs base, including a
   prior run's commits. On a resume `START_SHA == HEAD`, so a `START_SHA` baseline would read "no
   change" and wrongly restore the ticket to the planned state.
 
@@ -908,8 +921,7 @@ node "$RUN_SENTINEL" cleanup "$RUN_DIR"
 **Route on the file verdict.**
 
 - `clean` → proceed to Step 7.
-- `capped` (open must-fix remain) → record the unresolved findings (file:line) in the PR body and go
-  to **Stop cleanly** with `BLOCKED`.
+- `capped` → see the review-stack extension; otherwise record findings and **Stop cleanly** `BLOCKED`.
 - `dispatch-failure` (a **missing/stale** sentinel — the review subagent died or wrote nothing) → the
   safe non-clean branch: record it in the PR body and go to **Stop cleanly** with `BLOCKED`, **never
   clean**.

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -210,19 +212,38 @@ func TestHomeReloginLineStaysWithinThreeRowsAtFloor(t *testing.T) {
 	}
 }
 
-// TestHomeTableHeightReservesReloginWarning keeps a full session board above
-// the retained-credential warning on short terminals. The leading newline
-// separating the action bar from the warning is a rendered row too.
-func TestHomeTableHeightReservesReloginWarning(t *testing.T) {
-	h := reloginHomeModel(make([]*pb.Session, 100))
-	h.height = 24
+// TestHomeTableHeightReservesRenderedReloginWarningAtNarrowWidth keeps a full
+// session board above the soft-wrapped retained-credential warning on short,
+// narrow terminals. The leading newline separating the action bar from the
+// warning is a rendered row too.
+func TestHomeTableHeightReservesRenderedReloginWarningAtNarrowWidth(t *testing.T) {
+	for _, reason := range []string{
+		auth.ReloginReasonRefreshOutcomeUnknown,
+		auth.ReloginReasonRefreshTokenRejected,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			sessions := make([]*pb.Session, 100)
+			for i := range sessions {
+				sessions[i] = &pb.Session{Id: "session", Title: "Active work"}
+			}
+			h := reloginHomeModel(sessions)
+			h.width = 40
+			h.height = 24
+			h.reloginReason = reason
+			h.buildTableRows()
 
-	warningLines := 1 + strings.Count(h.authReloginLine(), "\n") + 1
-	left, nav, quit := h.sessionTableFooterActions()
-	want := clampedTableHeight(h.tableDataRowCount(), h.height,
-		bannerOverhead+1+actionBarPadY+actionBarLineCount(h.width, left, nav, quit)+warningLines)
-	if got := h.tableHeight(); got != want {
-		t.Fatalf("tableHeight() = %d, want %d: action bar plus re-login warning", got, want)
+			warning := h.authReloginLine()
+			left, nav, quit := h.sessionTableFooterActions()
+			footerHeight := actionBarLineCount(h.width, left, nav, quit) + 1 + lipgloss.Height(warning)
+			want := clampedTableHeight(h.tableDataRowCount(), h.height,
+				bannerOverhead+1+actionBarPadY+footerHeight)
+			if got := h.tableHeight(); got != want {
+				t.Fatalf("tableHeight() = %d, want %d: action bar plus rendered re-login warning", got, want)
+			}
+			if got := bannerOverhead + lipgloss.Height(h.View().Content); got > h.height {
+				t.Fatalf("frame height = %d, exceeds terminal height %d", got, h.height)
+			}
+		})
 	}
 }
 

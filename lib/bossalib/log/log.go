@@ -86,15 +86,25 @@ type noopCloser struct{}
 
 func (noopCloser) Close() error { return nil }
 
-// LogPath returns the path to the rotated log file for a service. Returns "" if
-// no suitable state directory can be determined.
-func LogPath(service string) string {
+// Dir returns the directory holding rotated service logs. Returns "" if no
+// suitable state directory can be determined.
+func Dir() string {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "bossanova", "logs", service+".log")
+		return filepath.Join(dir, "bossanova", "logs")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".local", "state", "bossanova", "logs", service+".log")
+	return filepath.Join(home, ".local", "state", "bossanova", "logs")
+}
+
+// LogPath returns the path to the rotated log file for a service. Returns "" if
+// no suitable state directory can be determined.
+func LogPath(service string) string {
+	dir := Dir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, service+".log")
 }

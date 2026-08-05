@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -34,8 +36,8 @@ func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.
 
 	s.cleanupFailedCreateSession(ctx, "sess-1")
 
-	if worktrees.emptyTrashCalls != 0 {
-		t.Fatalf("EmptyTrash calls = %d, want 0", worktrees.emptyTrashCalls)
+	if worktrees.reapLocalBranchesCalls != 0 {
+		t.Fatalf("ReapLocalBranches calls = %d, want 0", worktrees.reapLocalBranchesCalls)
 	}
 	// The leftover worktree directory must still be purged (without deleting the
 	// branch) so a stale dir can't wedge the branch on the next attempt.
@@ -75,14 +77,14 @@ func TestCleanupFailedCreateSessionTrashesBranchWithWorktree(t *testing.T) {
 
 	s.cleanupFailedCreateSession(ctx, "sess-1")
 
-	if worktrees.emptyTrashCalls != 1 {
-		t.Fatalf("EmptyTrash calls = %d, want 1", worktrees.emptyTrashCalls)
+	if worktrees.reapLocalBranchesCalls != 1 {
+		t.Fatalf("ReapLocalBranches calls = %d, want 1", worktrees.reapLocalBranchesCalls)
 	}
 	if got, want := worktrees.repoPath, "/repo"; got != want {
-		t.Fatalf("EmptyTrash repo path = %q, want %q", got, want)
+		t.Fatalf("ReapLocalBranches repo path = %q, want %q", got, want)
 	}
 	if got, want := worktrees.branches[0], "owned-branch"; got != want {
-		t.Fatalf("EmptyTrash branch = %q, want %q", got, want)
+		t.Fatalf("ReapLocalBranches branch = %q, want %q", got, want)
 	}
 	// The directory is also purged on the worktree-created path.
 	if worktrees.purgeCalls != 1 {
@@ -91,6 +93,75 @@ func TestCleanupFailedCreateSessionTrashesBranchWithWorktree(t *testing.T) {
 	if !sessions.deleted["sess-1"] {
 		t.Fatal("session was not deleted")
 	}
+}
+
+func TestEmptyTrashDispatchesReapLocalBranchesOncePerRepo(t *testing.T) {
+	ctx := context.Background()
+	sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
+		"one": {ID: "one", RepoID: "repo-1", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+		"two": {ID: "two", RepoID: "repo-1", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+	}}
+	worktrees := &cleanupWorktreeManager{}
+	s := &Server{
+		repos: &cleanupRepoStore{repos: map[string]*models.Repo{
+			"repo-1": {ID: "repo-1", LocalPath: "/repo"},
+		}},
+		sessions:  sessions,
+		worktrees: worktrees,
+	}
+
+	resp, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{}))
+	if err != nil {
+		t.Fatalf("EmptyTrash: %v", err)
+	}
+	if got, want := resp.Msg.DeletedCount, int32(2); got != want {
+		t.Fatalf("DeletedCount = %d, want %d", got, want)
+	}
+	if got, want := worktrees.reapLocalBranchesCalls, 1; got != want {
+		t.Fatalf("ReapLocalBranches calls = %d, want %d", got, want)
+	}
+	if got, want := worktrees.branches, []string{"shared"}; !sameStrings(got, want) {
+		t.Fatalf("ReapLocalBranches branches = %q, want %q", got, want)
+	}
+}
+
+func TestRemoveSessionDispatchesReapLocalBranches(t *testing.T) {
+	ctx := context.Background()
+	sessions := &cleanupSessionStore{sessions: map[string]*models.Session{
+		"sess-1": {ID: "sess-1", RepoID: "repo-1", BranchName: "session-branch"},
+	}}
+	worktrees := &cleanupWorktreeManager{}
+	s := &Server{
+		repos: &cleanupRepoStore{repos: map[string]*models.Repo{
+			"repo-1": {ID: "repo-1", LocalPath: "/repo"},
+		}},
+		sessions:  sessions,
+		worktrees: worktrees,
+	}
+
+	if _, err := s.RemoveSession(ctx, connect.NewRequest(&pb.RemoveSessionRequest{Id: "sess-1"})); err != nil {
+		t.Fatalf("RemoveSession: %v", err)
+	}
+	if got, want := worktrees.reapLocalBranchesCalls, 1; got != want {
+		t.Fatalf("ReapLocalBranches calls = %d, want %d", got, want)
+	}
+	if got, want := worktrees.branches, []string{"session-branch"}; !sameStrings(got, want) {
+		t.Fatalf("ReapLocalBranches branches = %q, want %q", got, want)
+	}
+}
+
+func cleanupPtr[T any](value T) *T { return &value }
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type cleanupRepoStore struct {
@@ -155,7 +226,13 @@ func (s *cleanupSessionStore) ListByRepoAndPR(context.Context, string, int) ([]*
 	panic("not used")
 }
 func (s *cleanupSessionStore) ListArchived(context.Context, string) ([]*models.Session, error) {
-	panic("not used")
+	archived := make([]*models.Session, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		if sess.ArchivedAt != nil {
+			archived = append(archived, sess)
+		}
+	}
+	return archived, nil
 }
 func (s *cleanupSessionStore) Update(context.Context, string, db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
@@ -188,9 +265,9 @@ func (s *cleanupSessionStore) UpdateRepairBlocked(context.Context, string, time.
 }
 
 type cleanupWorktreeManager struct {
-	emptyTrashCalls int
-	repoPath        string
-	branches        []string
+	reapLocalBranchesCalls int
+	repoPath               string
+	branches               []string
 
 	purgeCalls   int
 	purgeBranch  string
@@ -209,8 +286,8 @@ func (m *cleanupWorktreeManager) Archive(context.Context, string) error {
 func (m *cleanupWorktreeManager) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) EmptyTrash(_ context.Context, repoPath string, branches []string) error {
-	m.emptyTrashCalls++
+func (m *cleanupWorktreeManager) ReapLocalBranches(_ context.Context, repoPath string, branches []string) error {
+	m.reapLocalBranchesCalls++
 	m.repoPath = repoPath
 	m.branches = append([]string(nil), branches...)
 	return nil

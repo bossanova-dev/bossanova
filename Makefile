@@ -5,7 +5,7 @@
 	debt-knip \
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
-	test-native-ledger test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-native-ledger test-native-ledger-affected test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
@@ -524,6 +524,25 @@ $(BIN_DIR)/bossd-plugin-opencode: $(OPENCODE_HOOK_FILES)
 ## natively; run after `bazel test //...`. RACE=1 injects -race into each command.
 test-native-ledger:
 	@node scripts/bazel/run-ledger.mjs --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+
+## test-native-ledger-affected: like test-native-ledger, but only the rows whose
+## module the current diff (BASE_REF...HEAD, default origin/main) actually touches.
+## These rows are native `go test` — no bazel cache, no sandbox — so unlike the
+## bazel graph they cost full wall time on every run regardless of the diff. The
+## release tier still runs the unfiltered `test-native-ledger`, so an
+## under-selection here can never reach a release. A selector failure prints
+## nothing, which the `ALL` default below turns into the full (safe) run.
+test-native-ledger-affected:
+	@MODULES="$$(node scripts/select-affected-tests.mjs --ledger-modules || true)"; \
+	[ -n "$$MODULES" ] || MODULES=ALL; \
+	if [ "$$MODULES" = NONE ]; then \
+		echo "run-ledger: no ledger module affected by this diff — nothing to run"; \
+	elif [ "$$MODULES" = ALL ]; then \
+		node scripts/bazel/run-ledger.mjs --disposition default-run $(if $(filter 1,$(RACE)),--race,); \
+	else \
+		ARGS=""; for m in $$MODULES; do ARGS="$$ARGS --module $$m"; done; \
+		node scripts/bazel/run-ledger.mjs --disposition default-run $$ARGS $(if $(filter 1,$(RACE)),--race,); \
+	fi
 
 ## test: Fast affected test (default) — runs only the tests selected for the files
 ## changed on this branch (test-affected; falls back to test-smoke when nothing maps).

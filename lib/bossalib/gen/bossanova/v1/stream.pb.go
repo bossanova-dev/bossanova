@@ -6310,14 +6310,15 @@ func (x *DeleteGithubCallbackCommand) GetId() string {
 // CreateNoteRequest. Replies with CommandResult carrying a CreateNoteResponse
 // (create_note = 36).
 type CreateNoteCommand struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RepoId        string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	SessionId     *string                `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3,oneof" json:"session_id,omitempty"`
-	ChatId        *string                `protobuf:"bytes,3,opt,name=chat_id,json=chatId,proto3,oneof" json:"chat_id,omitempty"`
-	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Tags          []string               `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RepoId         string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	SessionId      *string                `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3,oneof" json:"session_id,omitempty"`
+	ChatId         *string                `protobuf:"bytes,3,opt,name=chat_id,json=chatId,proto3,oneof" json:"chat_id,omitempty"`
+	Body           string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Tags           []string               `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`
+	IdempotencyKey *string                `protobuf:"bytes,6,opt,name=idempotency_key,json=idempotencyKey,proto3,oneof" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateNoteCommand) Reset() {
@@ -6383,6 +6384,13 @@ func (x *CreateNoteCommand) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *CreateNoteCommand) GetIdempotencyKey() string {
+	if x != nil && x.IdempotencyKey != nil {
+		return *x.IdempotencyKey
+	}
+	return ""
 }
 
 // GetNoteCommand reads one note by id. Mirrors daemon.proto's GetNoteRequest.
@@ -9013,17 +9021,19 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\b_triggerB\b\n" +
 	"\x06_state\"-\n" +
 	"\x1bDeleteGithubCallbackCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\xb1\x01\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\xf3\x01\n" +
 	"\x11CreateNoteCommand\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\"\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tH\x00R\tsessionId\x88\x01\x01\x12\x1c\n" +
 	"\achat_id\x18\x03 \x01(\tH\x01R\x06chatId\x88\x01\x01\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12\x12\n" +
-	"\x04tags\x18\x05 \x03(\tR\x04tagsB\r\n" +
+	"\x04tags\x18\x05 \x03(\tR\x04tags\x12,\n" +
+	"\x0fidempotency_key\x18\x06 \x01(\tH\x02R\x0eidempotencyKey\x88\x01\x01B\r\n" +
 	"\v_session_idB\n" +
 	"\n" +
-	"\b_chat_id\" \n" +
+	"\b_chat_idB\x12\n" +
+	"\x10_idempotency_key\" \n" +
 	"\x0eGetNoteCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\xeb\x01\n" +
 	"\x10ListNotesCommand\x12\x1c\n" +

@@ -8,7 +8,12 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { renderMakeCommands, selectBazelAffected, selectTargets } from './select-affected-tests.mjs'
+import {
+  renderMakeCommands,
+  selectBazelAffected,
+  selectLedgerModules,
+  selectTargets,
+} from './select-affected-tests.mjs'
 
 const repoRoot = path.dirname(fileURLToPath(new URL('../Makefile', import.meta.url)))
 const makefilePath = path.join(repoRoot, 'Makefile')
@@ -274,9 +279,9 @@ for (const [file, pattern] of [
 
 test('selectBazelAffected treats the docusaurus site (services/docs/) as irrelevant', () => {
   const result = selectBazelAffected(['services/docs/docs/api.md'])
-  assert.equal(result.full, true)
-  assert.deepEqual(result.patterns, ['//...'])
-  assert.equal(result.reason, 'no affected go targets')
+  assert.equal(result.full, false)
+  assert.deepEqual(result.patterns, [])
+  assert.equal(result.reason, 'no go-relevant changes')
 })
 
 test('selectBazelAffected ignores Go-graph-irrelevant files mixed with a code change', () => {
@@ -289,16 +294,93 @@ test('selectBazelAffected ignores Go-graph-irrelevant files mixed with a code ch
   })
 })
 
-test('selectBazelAffected falls back to FULL for a web-only change', () => {
+// A diff made up ENTIRELY of proven Go-graph-irrelevant paths selects NOTHING.
+// This is the same proof the mixed case above relies on: a file safe to ignore
+// beside a Go change is safe to ignore alone. Selecting `//...` here (the old
+// behavior) meant a docs-only or workflow-only commit ran the whole graph.
+test('selectBazelAffected selects NOTHING for a web-only change', () => {
   const result = selectBazelAffected(['services/web/src/App.tsx'])
-  assert.equal(result.full, true)
-  assert.deepEqual(result.patterns, ['//...'])
+  assert.equal(result.full, false)
+  assert.deepEqual(result.patterns, [])
+  assert.equal(result.reason, 'no go-relevant changes')
 })
 
-test('selectBazelAffected falls back to FULL for a docs-only change', () => {
+test('selectBazelAffected selects NOTHING for a docs-only change', () => {
   const result = selectBazelAffected(['docs/solutions/build-systems/bazel-sandbox-patterns.md'])
+  assert.equal(result.full, false)
+  assert.deepEqual(result.patterns, [])
+})
+
+test('selectBazelAffected selects NOTHING for a workflow-only change', () => {
+  const result = selectBazelAffected(['.github/workflows/ci.yml', 'TODOS.md'])
+  assert.equal(result.full, false)
+  assert.deepEqual(result.patterns, [])
+})
+
+// The fail-safe must survive the change above: an UNRECOGNIZED path still forces
+// FULL even when every other file in the diff is irrelevant.
+test('selectBazelAffected still fails safe to FULL when an unrecognized file joins irrelevant ones', () => {
+  const result = selectBazelAffected(['docs/a.md', 'weird-new-file.xyz'])
   assert.equal(result.full, true)
   assert.deepEqual(result.patterns, ['//...'])
+  assert.match(result.reason, /uncertain/)
+})
+
+// selectLedgerModules — which native (bazel-`manual`) ledger rows a diff needs.
+test('selectLedgerModules maps a module change to that module root', () => {
+  assert.deepEqual(selectLedgerModules(['services/boss/internal/tuitest/x.go']), {
+    all: false,
+    modules: ['services/boss'],
+  })
+})
+
+test('selectLedgerModules returns the union for a multi-module change', () => {
+  assert.deepEqual(selectLedgerModules(['services/bossd/a.go', 'services/boss/b.go']), {
+    all: false,
+    modules: ['services/boss', 'services/bossd'],
+  })
+})
+
+// lib/bossalib is a SHARED module: the boss/bossd native rows are integration tests that
+// link it, and no `//lib/bossalib/...` pattern reruns them. Scoping a bossalib change to
+// its own row would skip exactly the rows it is most likely to break.
+test('selectLedgerModules widens a shared-module change to every row', () => {
+  assert.deepEqual(selectLedgerModules(['lib/bossalib/b.go']), { all: true, modules: [] })
+  assert.deepEqual(selectLedgerModules(['services/bossd/a.go', 'lib/bossalib/b.go']), {
+    all: true,
+    modules: [],
+  })
+})
+
+test('selectLedgerModules selects no module for a docs-only change', () => {
+  assert.deepEqual(selectLedgerModules(['docs/a.md']), { all: false, modules: [] })
+})
+
+test('selectLedgerModules runs EVERY row on a graph-wide change', () => {
+  assert.deepEqual(selectLedgerModules(['proto/bossanova/v1/x.proto']), { all: true, modules: [] })
+})
+
+test('selectLedgerModules runs EVERY row on an unrecognized file (fail-safe)', () => {
+  assert.deepEqual(selectLedgerModules(['weird-new-file.xyz']), { all: true, modules: [] })
+})
+
+// Every module root the selector can emit must be a real ledger `module` value or
+// a module with no ledger rows — a typo here would silently skip native tests.
+test('selectLedgerModules roots match the ledger module vocabulary', () => {
+  const ledger = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'scripts/bazel/ledger.json'), 'utf8'),
+  )
+  const ledgerModules = new Set(ledger.map((row) => row.module))
+  for (const mod of ledgerModules) {
+    // A change inside a ledger module must reach that module's rows: either by selecting
+    // exactly its root (so `run-ledger.mjs --module <root>` matches), or by widening to
+    // every row when the module is shared.
+    const { all, modules } = selectLedgerModules([`${mod}/some_file.go`])
+    assert.ok(
+      all || modules.includes(mod),
+      `a change in ${mod} must still run that module's ledger rows, got ${JSON.stringify({ all, modules })}`,
+    )
+  }
 })
 
 test('selectBazelAffected fails safe to FULL for an unrecognized file', () => {

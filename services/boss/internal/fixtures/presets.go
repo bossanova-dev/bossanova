@@ -145,7 +145,7 @@ func Presets() map[string]Preset {
 		},
 		// waiting-callback: one session parked on an armed GitHub callback next to
 		// one genuinely working session, for the BOS-668 proof scenario. The home
-		// STATUS column must read "waiting" (INFO, no spinner) with the reason
+		// STATUS column must read "waiting" (INFO, with spinner) with the reason
 		// "waiting · awaiting checks_passed_ready on acme/my-app#668" on its own
 		// sub-row, and the chat picker must show the same reason line above a
 		// "waiting" chat row — not the "stopped" badge a missing WAITING case

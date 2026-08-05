@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
@@ -45,11 +46,11 @@ var ErrHeadlessRunActive = errors.New("headless run in progress")
 // headlessRunActiveMessage builds the actionable refusal a human sees when they
 // attach to a still-running detach run: attaching would duplicate the agent, so
 // point them at the live agent log to tail instead. The path mirrors the daemon's
-// agent-logs convention (~/.bossanova/agent-logs/<agent-session>.log).
-func headlessRunActiveMessage(agentSessionID string) error {
+// agent-logs convention configured by the daemon at startup.
+func headlessRunActiveMessage(agentLogsDir, agentSessionID string) error {
 	return fmt.Errorf(
-		"%w: attaching would duplicate the agent — tail the live run instead: ~/.bossanova/agent-logs/%s.log",
-		ErrHeadlessRunActive, agentSessionID,
+		"%w: attaching would duplicate the agent — tail the live run instead: %s",
+		ErrHeadlessRunActive, filepath.Join(agentLogsDir, agentSessionID+".log"),
 	)
 }
 
@@ -119,7 +120,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		if s.chatStatus != nil {
 			if e := s.chatStatus.Get(agentSessionID); e != nil && e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
 				if deps.Tmux == nil || !deps.Tmux.HasSession(ctx, tmuxName) {
-					return nil, headlessRunActiveMessage(agentSessionID)
+					return nil, headlessRunActiveMessage(s.agentLogsDir, agentSessionID)
 				}
 			}
 		}

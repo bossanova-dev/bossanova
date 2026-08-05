@@ -24,10 +24,16 @@ const fakeBazel = path.join(here, 'testdata', 'fake-bazel')
 
 // `make -n` dry run: returns stdout; nothing executes.
 function makeDryRun(args, extraEnv = {}) {
+  // `make test-race` exports RACE=1 to this suite. Default-contract assertions
+  // must stay default; recursive make also forwards it through MAKEFLAGS. The
+  // race-specific test passes RACE=1 explicitly below.
+  const cleanEnv = { ...process.env }
+  delete cleanEnv.RACE
+  delete cleanEnv.MAKEFLAGS
   return execFileSync('make', ['-n', `BAZEL=${fakeBazel}`, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
-    env: { ...process.env, PATH: process.env.PATH, ...extraEnv },
+    env: { ...cleanEnv, PATH: process.env.PATH, ...extraEnv },
   })
 }
 

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "title": "BOS-692 — narrow Home reserves the fully wrapped retained re-login warning below a populated session board",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+  },
+  "terminal": { "cols": 59, "rows": 24 },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Home fits its populated board, action bar, and soft-wrapped retained-login warning inside a sub-60-column terminal",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Sign in required",
+            "match": "normalized",
+            "label": "the retained re-login warning is visible below the populated Home board"
+          },
+          "timeoutMs": 15000,
+          "caption": "The narrow PTY forces the warning to soft-wrap; Home reserves its rendered height instead of overlapping the board."
+        },
+        {
+          "waitMs": 1500,
+          "caption": "The retained re-login warning stays visible while the seeded Home board completes its initial session refresh."
+        },
+        {
+          "expect": [
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "the populated session board remains visible"
+            },
+            {
+              "text": "Sign in required",
+              "match": "normalized",
+              "label": "the warning is not clipped by the board footer"
+            },
+            {
+              "text": "[l]ogin",
+              "match": "normalized",
+              "label": "the login remedy remains visible in the action bar and warning"
+            }
+          ],
+          "caption": "Board, warning, and remedy stay in non-overlapping order inside the narrow Home frame."
+        }
+      ]
+    }
+  ]
+}

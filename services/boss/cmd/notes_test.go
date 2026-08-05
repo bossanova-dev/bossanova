@@ -191,6 +191,21 @@ func TestNotesAddSendsBodyRepoAndTags(t *testing.T) {
 	}
 }
 
+func TestNotesAddPassesIdempotencyKey(t *testing.T) {
+	stubEnv(t, nil)
+	fake := &fakeNotesClient{note: &pb.Note{Id: "note-1"}}
+	cmd, _ := notesSubCmd(t, "add")
+	setFlag(t, cmd, "repo", "repo-1")
+	setFlag(t, cmd, "idempotency-key", "Release review: v2:YS5nb0Ax")
+
+	if err := runNotesAdd(cmd, fake, "body"); err != nil {
+		t.Fatalf("runNotesAdd() error = %v", err)
+	}
+	if got := fake.created.GetIdempotencyKey(); got != "Release review: v2:YS5nb0Ax" {
+		t.Errorf("idempotency_key = %q", got)
+	}
+}
+
 func TestNotesAddRepeatedTagsAccumulate(t *testing.T) {
 	stubEnv(t, nil)
 	fake := &fakeNotesClient{note: &pb.Note{Id: "note-1"}}

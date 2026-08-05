@@ -9,9 +9,11 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
 	"github.com/recurser/bossd/internal/rotation"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // steeringNotice is the verbatim single-line prefix prepended to the resumed
@@ -290,6 +292,9 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 					outcome.NextAccount.ID, "restart failed", resetPtr)
 				return false
 			}
+			daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+				"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
+			})
 			detail := ""
 			if resetPtr != nil {
 				detail = "resets " + resetPtr.Format("15:04")

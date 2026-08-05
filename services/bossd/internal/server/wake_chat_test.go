@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -100,8 +101,9 @@ func (f *sessionStoreFake) Get(_ context.Context, _ string) (*models.Session, er
 func newWakeTestServer(t *testing.T, chat *models.AgentChat, sess *models.Session, tmuxer *fakeTmuxClient) *Server {
 	t.Helper()
 	return &Server{
-		agentChats: &chatStoreFake{chat: chat},
-		sessions:   &sessionStoreFake{sess: sess},
+		agentLogsDir: filepath.Join(t.TempDir(), "agent-logs"),
+		agentChats:   &chatStoreFake{chat: chat},
+		sessions:     &sessionStoreFake{sess: sess},
 		wakeHook: wakeHook{
 			spawner:     tmuxer,
 			transcripts: &fakeTranscriptOracle{exists: false},
@@ -289,6 +291,17 @@ func TestWakeChatStream_HeadlessRunActive_FailedPrecondition(t *testing.T) {
 	tmuxer.mu.Unlock()
 	if spawnCount != 0 {
 		t.Errorf("expected 0 spawns while headless run active, got %d", spawnCount)
+	}
+}
+
+func TestHeadlessRunActiveMessageUsesConfiguredAgentLogsDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agent-logs")
+	err := headlessRunActiveMessage(dir, "agent-1")
+	if !strings.Contains(err.Error(), filepath.Join(dir, "agent-1.log")) {
+		t.Fatalf("want configured log path, got %q", err)
+	}
+	if strings.Contains(err.Error(), "~/.bossanova/agent-logs") {
+		t.Fatalf("must not use hardcoded path: %q", err)
 	}
 }
 

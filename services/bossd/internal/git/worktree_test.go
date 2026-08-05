@@ -1865,13 +1865,15 @@ func TestResurrect_BaseMissingReturnsError(t *testing.T) {
 	}
 }
 
-func TestEmptyTrash(t *testing.T) {
+func TestReapLocalBranches_NeverDeletesRemoteBranch(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")
 	logger := zerolog.Nop()
 	mgr := NewManager(logger)
+	ctx := context.Background()
 
-	// Create a worktree and archive it (so the branch exists without a worktree).
+	// Push this branch because initTestRepo configures origin but does not push
+	// worktree branches. The precondition makes this regression non-vacuous.
 	result, err := mgr.Create(context.Background(), CreateOpts{
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
@@ -1883,22 +1885,87 @@ func TestEmptyTrash(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := mgr.Archive(context.Background(), result.WorktreePath); err != nil {
-		t.Fatalf("Archive: %v", err)
+	if _, err := runGit(ctx, repoDir, "push", "-u", "origin", result.BranchName); err != nil {
+		t.Fatalf("push branch to origin: %v", err)
 	}
-
-	// EmptyTrash should delete the local branch (no remote in test).
-	if err := mgr.EmptyTrash(context.Background(), repoDir, []string{result.BranchName}); err != nil {
-		t.Fatalf("EmptyTrash: %v", err)
-	}
-
-	// Branch should be gone.
-	out, err := runGit(context.Background(), repoDir, "branch", "--list", result.BranchName)
+	remoteHeadBefore, err := runGit(ctx, repoDir, "ls-remote", "origin", "refs/heads/"+result.BranchName)
 	if err != nil {
-		t.Fatalf("list branches: %v", err)
+		t.Fatalf("read remote branch before reaping: %v", err)
 	}
-	if strings.Contains(out, "trash-test") {
-		t.Errorf("branch should be deleted after empty trash, got: %q", out)
+	if remoteHeadBefore == "" {
+		t.Fatal("remote branch must exist before reaping")
+	}
+
+	// Leave the worktree registered but remove it from disk. Reaping must prune
+	// this stale registration before branch deletion can succeed.
+	if err := os.RemoveAll(result.WorktreePath); err != nil {
+		t.Fatalf("remove worktree directory: %v", err)
+	}
+
+	if err := mgr.ReapLocalBranches(ctx, repoDir, []string{result.BranchName}); err != nil {
+		t.Fatalf("ReapLocalBranches: %v", err)
+	}
+
+	remoteHeadAfter, err := runGit(ctx, repoDir, "ls-remote", "origin", "refs/heads/"+result.BranchName)
+	if err != nil {
+		t.Fatalf("read remote branch after reaping: %v", err)
+	}
+	if remoteHeadAfter != remoteHeadBefore {
+		t.Errorf("remote branch changed after local reaping:\nbefore: %q\nafter:  %q", remoteHeadBefore, remoteHeadAfter)
+	}
+	if out := gitOutput(t, repoDir, "branch", "--list", result.BranchName); out != "" {
+		t.Errorf("local branch should be deleted after reaping, got: %q", out)
+	}
+	if worktrees := gitOutput(t, repoDir, "worktree", "list", "--porcelain"); strings.Contains(worktrees, result.WorktreePath) {
+		t.Errorf("stale worktree registration remains after reaping: %q", worktrees)
+	}
+}
+
+func TestReapLocalBranches_ContinuesAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	// These branches remain checked out in live worktrees, so git branch -D
+	// fails for both even after a prune. The third branch must still be tried.
+	stuckOne, err := mgr.Create(ctx, CreateOpts{
+		RepoPath: repoDir, BaseBranch: "main", WorktreeBaseDir: wtBase, RepoName: "my-repo", Title: "Stuck one",
+	})
+	if err != nil {
+		t.Fatalf("Create first stuck worktree: %v", err)
+	}
+	stuckTwo, err := mgr.Create(ctx, CreateOpts{
+		RepoPath: repoDir, BaseBranch: "main", WorktreeBaseDir: wtBase, RepoName: "my-repo", Title: "Stuck two",
+	})
+	if err != nil {
+		t.Fatalf("Create second stuck worktree: %v", err)
+	}
+	gitOutput(t, repoDir, "branch", "reaped", "main")
+
+	err = mgr.ReapLocalBranches(ctx, repoDir, []string{stuckOne.BranchName, stuckTwo.BranchName, "reaped"})
+	if err == nil {
+		t.Fatal("ReapLocalBranches error = nil, want joined errors for checked-out branches")
+	}
+	if !strings.Contains(err.Error(), stuckOne.BranchName) || !strings.Contains(err.Error(), stuckTwo.BranchName) {
+		t.Errorf("joined error = %v, want both failed branch names", err)
+	}
+	if out := gitOutput(t, repoDir, "branch", "--list", "reaped"); out != "" {
+		t.Errorf("later branch was not deleted after earlier failures: %q", out)
+	}
+}
+
+func TestReapLocalBranches_DedupesAndIgnoresAbsentBranches(t *testing.T) {
+	ctx := context.Background()
+	repoDir := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	gitOutput(t, repoDir, "branch", "doomed", "main")
+
+	if err := mgr.ReapLocalBranches(ctx, repoDir, []string{"absent", "doomed", "doomed"}); err != nil {
+		t.Fatalf("ReapLocalBranches should ignore absent and duplicate branches: %v", err)
+	}
+	if out := gitOutput(t, repoDir, "branch", "--list", "doomed"); out != "" {
+		t.Errorf("doomed branch should be deleted, got: %q", out)
 	}
 }
 

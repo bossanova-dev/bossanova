@@ -432,12 +432,20 @@ func (s *SQLiteBroadcastStore) Delete(ctx context.Context, id string) error {
 // whose owner may be dead behind a parent AcquireLease will never re-admit, and
 // nothing else would ever retire it. The cost is the at-least-once under-report
 // documented on SQLiteBroadcastStore.
-func (s *SQLiteBroadcastStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
+type ExpiredBroadcastDelivery struct {
+	AttemptCount int
+}
+
+// ExpireOverdueDeliveries expires broadcasts and returns only deliveries that
+// became terminal in this transaction. The returned rows let callers emit one
+// terminal-outcome event without re-reading (and potentially double-counting)
+// already-skipped history.
+func (s *SQLiteBroadcastStore) ExpireOverdueDeliveries(ctx context.Context, now time.Time) (int, []ExpiredBroadcastDelivery, error) {
 	nowStr := sqlutil.FormatTime(now)
 
 	conn, err := beginImmediate(ctx, s.db, "broadcast")
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
@@ -451,30 +459,53 @@ func (s *SQLiteBroadcastStore) ExpireOverdue(ctx context.Context, now time.Time)
 		nowStr,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("expire overdue broadcasts: %w", err)
+		return 0, nil, fmt.Errorf("expire overdue broadcasts: %w", err)
 	}
 	n, _ := res.RowsAffected()
 
 	// Cascade to deliveries of every expired broadcast — including any swept by
 	// an earlier pass — so a delivery orphaned by a partial sweep still settles.
 	// skipped is the "target never reached" terminal state.
-	if _, err := conn.ExecContext(ctx,
+	rows, err := conn.QueryContext(ctx,
 		`UPDATE broadcast_deliveries
 		 SET state = ?, lease_owner = NULL, lease_deadline_at = NULL, updated_at = ?
 		 WHERE state IN (?, ?)
-		   AND broadcast_id IN (SELECT id FROM broadcasts WHERE state = ? AND expires_at <= ?)`,
+		   AND broadcast_id IN (SELECT id FROM broadcasts WHERE state = ? AND expires_at <= ?)
+		 RETURNING attempt_count`,
 		models.BroadcastDeliveryStateSkipped.String(), nowStr,
 		models.BroadcastDeliveryStatePending.String(), models.BroadcastDeliveryStateLeased.String(),
 		models.BroadcastStateExpired.String(), nowStr,
-	); err != nil {
-		return 0, fmt.Errorf("skip deliveries of expired broadcasts: %w", err)
+	)
+	if err != nil {
+		return 0, nil, fmt.Errorf("skip deliveries of expired broadcasts: %w", err)
+	}
+	var deliveries []ExpiredBroadcastDelivery
+	for rows.Next() {
+		var delivery ExpiredBroadcastDelivery
+		if err := rows.Scan(&delivery.AttemptCount); err != nil {
+			_ = rows.Close()
+			return 0, nil, fmt.Errorf("scan skipped broadcast delivery: %w", err)
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, nil, fmt.Errorf("iterate skipped broadcast deliveries: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, nil, fmt.Errorf("close skipped broadcast deliveries: %w", err)
 	}
 
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return 0, fmt.Errorf("commit broadcast expiry sweep: %w", err)
+		return 0, nil, fmt.Errorf("commit broadcast expiry sweep: %w", err)
 	}
 	committed = true
-	return int(n), nil
+	return int(n), deliveries, nil
+}
+
+func (s *SQLiteBroadcastStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
+	n, _, err := s.ExpireOverdueDeliveries(ctx, now)
+	return n, err
 }
 
 // AcquireLease claims a delivery for owner until now+leaseFor and returns the

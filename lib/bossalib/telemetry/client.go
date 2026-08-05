@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/posthog/posthog-go"
 	"github.com/recurser/bossalib/config"
@@ -82,8 +83,9 @@ func New(cfg Config) Client {
 
 func postHogConfig(host string) posthog.Config {
 	return posthog.Config{
-		Endpoint: host,
-		Logger:   postHogLogger{},
+		Endpoint:        host,
+		Logger:          postHogLogger{},
+		ShutdownTimeout: time.Second,
 	}
 }
 

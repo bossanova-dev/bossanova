@@ -18,6 +18,7 @@ const preNotesVersion int64 = 20260726000001
 // the access path it serves.
 var noteIndexes = []string{
 	"idx_notes_repo_created",
+	"idx_notes_repo_id_idempotency_key",
 	"idx_notes_session",
 	"idx_note_tags_tag",
 }
@@ -43,13 +44,14 @@ func TestNotesMigrationSchema(t *testing.T) {
 		t.Fatal("notes table missing after migration")
 	}
 	wantNotes := map[string]string{
-		"id":         "TEXT",
-		"repo_id":    "TEXT",
-		"session_id": "TEXT",
-		"chat_id":    "TEXT",
-		"body":       "TEXT",
-		"created_at": "TEXT",
-		"updated_at": "TEXT",
+		"id":              "TEXT",
+		"repo_id":         "TEXT",
+		"session_id":      "TEXT",
+		"chat_id":         "TEXT",
+		"body":            "TEXT",
+		"idempotency_key": "TEXT",
+		"created_at":      "TEXT",
+		"updated_at":      "TEXT",
 	}
 	for col, typ := range wantNotes {
 		got, ok := noteCols[col]
@@ -99,13 +101,14 @@ func TestNotesMigrationNullability(t *testing.T) {
 	want := map[string]broadcastColumn{
 		// A non-INTEGER PRIMARY KEY reports notnull=0 in SQLite unless it also
 		// carries an explicit NOT NULL, so id is asserted via pk.
-		"id":         {declType: "TEXT", notNull: false, pk: true},
-		"repo_id":    {declType: "TEXT", notNull: true},
-		"session_id": {declType: "TEXT", notNull: false},
-		"chat_id":    {declType: "TEXT", notNull: false},
-		"body":       {declType: "TEXT", notNull: true},
-		"created_at": {declType: "TEXT", notNull: true},
-		"updated_at": {declType: "TEXT", notNull: true},
+		"id":              {declType: "TEXT", notNull: false, pk: true},
+		"repo_id":         {declType: "TEXT", notNull: true},
+		"session_id":      {declType: "TEXT", notNull: false},
+		"chat_id":         {declType: "TEXT", notNull: false},
+		"body":            {declType: "TEXT", notNull: true},
+		"idempotency_key": {declType: "TEXT", notNull: false},
+		"created_at":      {declType: "TEXT", notNull: true},
+		"updated_at":      {declType: "TEXT", notNull: true},
 	}
 	assertColumns(t, cols, "notes", want)
 

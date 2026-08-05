@@ -31,6 +31,14 @@ const (
 	EventCloudCheckoutReturned     Event = "cloud_checkout_returned"
 	EventSignupUserCreated         Event = "signup_user_created"
 	EventBillingAccountProvisioned Event = "billing_account_provisioned"
+	EventCloudActionInvoked        Event = "cloud_action_invoked"
+	EventAccountRotated            Event = "account_rotated"
+	EventCronJobFired              Event = "cron_job_fired"
+	EventPRCallbackDelivered       Event = "pr_callback_delivered"
+	EventBroadcastDelivered        Event = "broadcast_delivered"
+	EventSessionFinalized          Event = "session_finalized"
+	EventFeatureViewed             Event = "feature_viewed"
+	EventFeatureInteraction        Event = "feature_interaction"
 )
 
 // FunnelDistinctID is the canonical signup/subscription funnel distinct id:
@@ -126,6 +134,14 @@ var Registry = map[Event]EventSpec{
 	EventCloudCheckoutReturned:     {Surface: "cloud", Description: "Cloud checkout return was processed", Properties: billingProperties()},
 	EventSignupUserCreated:         {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
 	EventBillingAccountProvisioned: {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
+	EventCloudActionInvoked:        {Surface: "cloud", Description: "A mutating cloud RPC completed", Properties: propertySet("command", "status", "product_area", "error_code")},
+	EventAccountRotated:            {Surface: "daemon", Description: "An account rotation selected a replacement", Properties: propertySet("rotation_reason", "provider", "status")},
+	EventCronJobFired:              {Surface: "daemon", Description: "A cron job fire reached an outcome", Properties: propertySet("status", "skip_reason", "zero_output")},
+	EventPRCallbackDelivered:       {Surface: "daemon", Description: "A PR callback reached a terminal delivery outcome", Properties: propertySet("trigger", "status", "attempt_count")},
+	EventBroadcastDelivered:        {Surface: "daemon", Description: "A broadcast delivery reached a terminal outcome", Properties: propertySet("status", "attempt_count")},
+	EventSessionFinalized:          {Surface: "daemon", Description: "A session finalize reached an outcome", Properties: propertySet("outcome", "agent", "unattended")},
+	EventFeatureViewed:             {Surface: "web", Description: "A product surface was viewed", Properties: propertySet("feature")},
+	EventFeatureInteraction:        {Surface: "web", Description: "A client-only product interaction occurred", Properties: propertySet("feature", "action")},
 }
 
 func propertySet(properties ...string) map[string]struct{} {

@@ -882,11 +882,12 @@ func (a *CommandHandlerAdapter) CreateNote(ctx context.Context, cmd *pb.CreateNo
 		return nil, errors.New("create_note: command server not wired")
 	}
 	resp, err := a.Commands.CreateNote(ctx, connect.NewRequest(&pb.CreateNoteRequest{
-		RepoId:    cmd.GetRepoId(),
-		SessionId: cmd.SessionId,
-		ChatId:    cmd.ChatId,
-		Body:      cmd.GetBody(),
-		Tags:      cmd.GetTags(),
+		RepoId:         cmd.GetRepoId(),
+		SessionId:      cmd.SessionId,
+		ChatId:         cmd.ChatId,
+		Body:           cmd.GetBody(),
+		Tags:           cmd.GetTags(),
+		IdempotencyKey: cmd.IdempotencyKey,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create note: %w", err)

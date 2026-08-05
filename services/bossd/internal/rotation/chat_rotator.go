@@ -274,6 +274,11 @@ type ChatRotatorDeps struct {
 	// onto, with its probed utilization, WITHOUT cooling the bound account. Kind ==
 	// ProactiveNone when no candidate qualifies. (BOS-318)
 	ProactiveCandidate func(ctx context.Context, req ProactiveDecideRequest) (ProactiveDecision, error)
+	// CaptureProactiveRotation records a successful pre-cap account switch. It
+	// is optional so rotation policy tests stay independent of telemetry wiring.
+	CaptureProactiveRotation func(ctx context.Context, provider string)
+	// CaptureReactiveRotation records a successful reactive account switch.
+	CaptureReactiveRotation func(ctx context.Context, provider, reason string)
 	// Recorder audits each rotation decision outcome (BOS-176). Nil is safe: the
 	// Recorder's methods are nil-receiver no-ops.
 	Recorder *Recorder
@@ -568,6 +573,9 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		}
 		log.Info().Str("account", res.SwitchedToLabel).Bool("fresh", res.Fresh).
 			Msg("auto-rotate: chat rotated to next account")
+		if r.deps.CaptureReactiveRotation != nil {
+			r.deps.CaptureReactiveRotation(ctx, cc.Provider, "usage_limit")
+		}
 		rotated := auditBase
 		rotated.ToAccount = res.SwitchedToLabel
 		rotated.Outcome = "ROTATION_OUTCOME_ROTATED"
@@ -745,6 +753,9 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 		}
 		log.Info().Str("account", res.SwitchedToLabel).Bool("fresh", res.Fresh).
 			Msg("auto-rotate(auth): chat rotated to next account")
+		if r.deps.CaptureReactiveRotation != nil {
+			r.deps.CaptureReactiveRotation(ctx, cc.Provider, "error")
+		}
 		rotated := auditBase
 		rotated.ToAccount = res.SwitchedToLabel
 		rotated.Outcome = "ROTATION_OUTCOME_ROTATED"
@@ -928,6 +939,9 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 	}
 	log.Info().Str("account", res.SwitchedToLabel).Bool("fresh", res.Fresh).
 		Msg("proactive-sweep: rotated idle chat off soon-to-cap account")
+	if r.deps.CaptureProactiveRotation != nil {
+		r.deps.CaptureProactiveRotation(ctx, cc.Provider)
+	}
 	rotated := AuditEvent{
 		SessionID: cc.SessionID, ChatID: agentSessionID, Provider: cc.Provider,
 		Trigger: triggerUsageLimited, FromAccount: cc.FromLabel, ToAccount: res.SwitchedToLabel,

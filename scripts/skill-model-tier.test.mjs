@@ -59,7 +59,6 @@ function section(body, { heading, prefix }) {
 // `bs-sweep-debt` Phase 3 also route, but they are already gated in their own content tests
 // — duplicating them here would just double the maintenance cost of one edit.
 const ROUTED = [
-  { skill: 'bs-sweep-review', heading: '##', prefix: 'Phase 2:', what: 'triage' },
   { skill: 'bs-sweep-sentry', heading: '##', prefix: 'Phase 2:', what: 'triage' },
   { skill: 'bs-sweep-security', heading: '##', prefix: 'Phase 1.5:', what: 'gosec probe' },
   { skill: 'bs-sweep-security', heading: '##', prefix: 'Phase 2:', what: 'select-batch triage' },
@@ -193,6 +192,6 @@ for (const site of JUDGMENT) {
 // renamed heading shows up as a missing section (asserted per-site) rather than as a table
 // that quietly shrank.
 test('both routing tables are non-empty and cover the expected sites', () => {
-  assert.equal(ROUTED.length, 5, 'the routed table must cover all five routed sections')
+  assert.equal(ROUTED.length, 4, 'the routed table must cover all four routed sections')
   assert.equal(JUDGMENT.length, 8, 'the judgment table must cover all eight stay-on-Opus sections')
 })

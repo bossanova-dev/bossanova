@@ -14,25 +14,105 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
+var (
+	callbackSchemaOnce sync.Once
+	callbackSchemaPath string
+	callbackSchemaErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if callbackSchemaPath != "" {
+		_ = os.Remove(callbackSchemaPath)
+		_ = os.Remove(callbackSchemaPath + "-shm")
+		_ = os.Remove(callbackSchemaPath + "-wal")
+	}
+	os.Exit(code)
+}
+
 // migrationsDir resolves services/bossd/migrations relative to this test file.
 func migrationsDir() string {
 	_, filename, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
 }
 
-// newStore returns a migrated in-memory GithubCallback store (single
-// connection; fine for the sequential unit tests).
+// newStore returns an isolated GithubCallback store. The migration chain is
+// expensive under -race, so it is run once into a closed template database and
+// each sequential unit test receives a copy. Keep the pool at one connection
+// to retain the in-memory fixture's deterministic behavior.
 func newStore(t *testing.T) *db.SQLiteGithubCallbackStore {
 	t.Helper()
-	d, err := db.OpenInMemory()
+	template := callbackSchemaTemplate(t)
+	path := filepath.Join(t.TempDir(), "cb.db")
+	contents, err := os.ReadFile(template)
 	if err != nil {
-		t.Fatalf("open in-memory db: %v", err)
+		t.Fatalf("read callback schema template: %v", err)
 	}
-	if err := migrate.Run(d, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("run migrations: %v", err)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("copy callback schema template: %v", err)
 	}
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("open callback db: %v", err)
+	}
+	d.SetMaxOpenConns(1)
+	d.SetMaxIdleConns(1)
 	t.Cleanup(func() { _ = d.Close() })
 	return db.NewGithubCallbackStore(d)
+}
+
+func callbackSchemaTemplate(t *testing.T) string {
+	t.Helper()
+	callbackSchemaOnce.Do(func() {
+		f, err := os.CreateTemp("", "bossd-callback-schema-*.db")
+		if err != nil {
+			callbackSchemaErr = err
+			return
+		}
+		callbackSchemaPath = f.Name()
+		if err := f.Close(); err != nil {
+			callbackSchemaErr = err
+			return
+		}
+		d, err := db.Open(callbackSchemaPath)
+		if err != nil {
+			callbackSchemaErr = err
+			return
+		}
+		callbackSchemaErr = migrate.Run(d, os.DirFS(migrationsDir()))
+		if err := d.Close(); err != nil && callbackSchemaErr == nil {
+			callbackSchemaErr = err
+		}
+	})
+	if callbackSchemaErr != nil {
+		t.Fatalf("prepare callback schema template: %v", callbackSchemaErr)
+	}
+	return callbackSchemaPath
+}
+
+func TestNewStoreKeepsCallbackRowsIsolated(t *testing.T) {
+	first := newStore(t)
+	mustCreate(t, first, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 1,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "first",
+	})
+
+	second := newStore(t)
+	callbacks, err := second.List(context.Background(), db.ListGithubCallbacksFilter{})
+	if err != nil {
+		t.Fatalf("list callbacks in second store: %v", err)
+	}
+	if len(callbacks) != 0 {
+		t.Fatalf("second store has %d callbacks, want none", len(callbacks))
+	}
+
+	callbacks, err = first.List(context.Background(), db.ListGithubCallbacksFilter{})
+	if err != nil {
+		t.Fatalf("list callbacks in first store: %v", err)
+	}
+	if len(callbacks) != 1 {
+		t.Fatalf("first store has %d callbacks, want 1", len(callbacks))
+	}
 }
 
 // newFileStore returns a migrated file-backed store that supports real

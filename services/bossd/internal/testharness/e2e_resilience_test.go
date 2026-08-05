@@ -147,8 +147,8 @@ func TestE2E_Resilience_CreatePRFails(t *testing.T) {
 	}
 	// Branch was pushed before the PR-create attempt — leave the branch
 	// alone (not auto-cleaned). Confirm no implicit cleanup.
-	if got := len(h.Git.EmptyTrashCalls); got != 0 {
-		t.Fatalf("expected no branch cleanup on PR failure, got %d EmptyTrash calls", got)
+	if got := len(h.Git.ReapLocalBranchesCalls); got != 0 {
+		t.Fatalf("expected no branch cleanup on PR failure, got %d ReapLocalBranches calls", got)
 	}
 }
 

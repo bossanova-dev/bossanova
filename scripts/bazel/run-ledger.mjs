@@ -11,7 +11,8 @@
 //
 // Flags:
 //   --disposition <default-run|explicit-only>  filter (required in practice)
-//   --module <path>                            optional module filter (e.g. services/boss)
+//   --module <path>                            optional module filter (e.g. services/boss);
+//                                              repeatable — the union is selected
 //   --race                                     inject `-race` into each `go test`
 //   --print                                    print commands, do not execute (dry run)
 // Env:
@@ -38,7 +39,7 @@ const ledgerPath = path.join(scriptDir, 'ledger.json')
 const VALID_DISPOSITIONS = new Set(['default-run', 'explicit-only'])
 
 function parseArgs(argv) {
-  const opts = { disposition: null, module: null, race: false, print: false }
+  const opts = { disposition: null, modules: null, race: false, print: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
@@ -46,7 +47,10 @@ function parseArgs(argv) {
         opts.disposition = argv[++i]
         break
       case '--module':
-        opts.module = argv[++i]
+        // Repeatable: `--module a --module b` selects the UNION. A single
+        // `--module` keeps its original meaning, so existing callers are unaffected.
+        opts.modules ??= new Set()
+        opts.modules.add(argv[++i])
         break
       case '--race':
         opts.race = true
@@ -87,14 +91,14 @@ function main() {
 
   const selected = ledger.filter((row) => {
     if (opts.disposition && row.disposition !== opts.disposition) return false
-    if (opts.module && row.module !== opts.module) return false
+    if (opts.modules && !opts.modules.has(row.module)) return false
     return true
   })
 
   if (selected.length === 0) {
     const scope = [
       opts.disposition ? `disposition=${opts.disposition}` : null,
-      opts.module ? `module=${opts.module}` : null,
+      opts.modules ? `module=${[...opts.modules].join(',')}` : null,
     ]
       .filter(Boolean)
       .join(' ')

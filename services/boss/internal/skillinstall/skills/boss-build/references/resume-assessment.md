@@ -5,8 +5,8 @@ whether by a prior bossd-managed or standalone run). The point is to know what a
 before touching anything.
 
 ```bash
-git diff --stat "$BASE_BRANCH"...HEAD
-git log --oneline "$BASE_BRANCH..HEAD"
+git diff --stat "$BASE_REF"...HEAD
+git log --oneline "$BASE_REF..HEAD"
 gh pr view "$PR_NUMBER" --json body -q .body
 ```
 
@@ -31,7 +31,7 @@ leaves the completed tasks already on the branch. On **any** resume or re-dispat
 interruption, inventory that committed state before dispatching anything:
 
 ```bash
-git log --oneline "$BASE_BRANCH..HEAD"
+git log --oneline "$BASE_REF..HEAD"
 # residue from a subagent that died before committing — scoped exactly like the Step 5 check,
 # so the plan deliverable and host artifacts don't read as residue. Exclude the single
 # "$PLAN_DOC" Step 4 copied, never the whole docs/plans directory: a directory-wide exclusion

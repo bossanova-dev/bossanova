@@ -79,3 +79,27 @@ Attach an existing GitHub PR to a session. Use this to repair cron sessions wher
 boss session link-pr abc123 477
 boss session link-pr abc123 https://github.com/owner/repo/pull/477
 ```
+
+### `boss tail [source] [flags]`
+
+Tail daemon logs
+
+Prints recent rotated service logs without needing to locate them on disk. It defaults to bossd; pass boss or bosso to select one source, or use --all to merge all three by timestamp. Use -f to follow new output. Raw non-JSON diagnostics always remain visible, including when filtering.
+
+**Flags:**
+
+- `--all` — merge every service log
+- `--follow`, `-f` — keep reading as the log grows
+- `--json` — emit one parseable JSON object per line
+- `--level` — only records at this level
+- `--lines`, `-n` — physical lines to read per source before filtering (default: 10)
+- `--plugin` — only records from this plugin
+- `--repo` — only records for this repo
+
+```bash
+boss tail
+boss tail -f
+boss tail --all -n 50
+boss tail --plugin dependabot
+boss tail --json | jq 'select(.level=="error")'
+```

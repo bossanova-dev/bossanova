@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -187,6 +189,44 @@ type Engine struct {
 	defaultCooldown time.Duration
 	group           singleflight.Group
 	clock           func() time.Time
+	telemetry       libtelemetry.Client
+}
+
+type decisionResult struct {
+	outcome Outcome
+}
+
+func WithTelemetry(client libtelemetry.Client) Option {
+	return func(e *Engine) { e.telemetry = client }
+}
+
+// CaptureProactiveRotation records a successful pre-cap switch. Candidate
+// selection alone is not a rotation, so the caller invokes this only after the
+// chat switch succeeds.
+func (e *Engine) CaptureProactiveRotation(ctx context.Context, provider string) {
+	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+		"rotation_reason": "proactive", "provider": telemetryProvider(provider), "status": "rotated",
+	})
+}
+
+// CaptureReactiveRotation records a successful reactive account switch. The
+// caller invokes it only after the account has been applied.
+func (e *Engine) CaptureReactiveRotation(ctx context.Context, provider, reason string) {
+	if reason == "" {
+		reason = "usage_limit"
+	}
+	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+		"rotation_reason": reason, "provider": telemetryProvider(provider), "status": "rotated",
+	})
+}
+
+func telemetryProvider(provider string) string {
+	switch provider {
+	case "claude", "codex", "opencode":
+		return provider
+	default:
+		return "other"
+	}
 }
 
 // Option configures an Engine.
@@ -272,16 +312,17 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 
 	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t", sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown)
 	r, err, _ := e.group.Do(key, func() (any, error) {
-		return e.decide(ctx, sig)
+		out, err := e.decide(ctx, sig)
+		return &decisionResult{outcome: out}, err
 	})
 	if err != nil {
 		return Outcome{}, err
 	}
-	out, ok := r.(Outcome)
+	result, ok := r.(*decisionResult)
 	if !ok {
 		return Outcome{}, fmt.Errorf("rotation: singleflight returned unexpected type %T", r)
 	}
-	return out, nil
+	return result.outcome, nil
 }
 
 // SelectProactiveCandidate returns the lowest-utilization account eligible to

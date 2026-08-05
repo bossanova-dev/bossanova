@@ -35,7 +35,7 @@ safe non-clean (BLOCKED) branch, never clean.
 ## Step 6: Whole-branch review loop (bounded, default 3 rounds)
 
 The orchestrator has already picked `REVIEW_BASE` (fresh/bootstrap-only → `$START_SHA`; resume →
-`$BASE_BRANCH`), run the change-detection gate, and committed this run's work tagless (including the
+`$BASE_REF`), run the change-detection gate, and committed this run's work tagless (including the
 `docs/plans/<DATE>-<slug>.md` deliverable). Review the diff `$REVIEW_BASE...HEAD`.
 
 Run a **bounded converging review loop**: a fresh independent reviewer each round, fix the blockers,
@@ -59,6 +59,24 @@ round:
 6. **Oscillation guard.** If the same `file:line` was must-fix this round **and** the immediately
    preceding round and was neither fixed nor verified, stop looping now and take the capped path.
 7. **Increment.** round++; if > `$MAX_ROUNDS`, take the capped path.
+
+### Mechanical remediation extension (after the default cap)
+
+The default cap is a guard against unbounded review churn, not a reason to abandon a clearly
+mechanical correction. When round `$MAX_ROUNDS` would otherwise cap with open **Important** (not
+Critical) findings, grant at most **two** additional repair-and-review rounds only when **every**
+open finding is concrete and bounded: it names a file/line or similarly exact target, has an
+obvious testable correction, requires no product decision or acceptance-criteria reinterpretation,
+and does not involve auth, secrets, credentials, migrations, production/deploy configuration,
+dependencies, or an observable public API change. The same-finding oscillation guard still
+applies, and the wall-clock breaker always wins.
+
+In each extension round, fix only those recorded findings, commit tagless, run their focused tests,
+then dispatch one fresh independent reviewer over the whole branch. A clean result proceeds to Step
+6b normally. A new Critical finding, a finding outside this eligibility set, an oscillation, an
+unresolved must-fix after the two extra rounds, or insufficient wall-clock budget takes the normal
+`capped` → `BLOCKED` path. Record each extension-round disposition in the finding ledger. Never use
+this extension to defer a required item or to broaden the ticket.
 
 Track findings in buckets (in the PR body / working state, fed to the next round's reviewer): `Fixed`
 (file:line + round), `Deferred` (Minor), `Verified (no change)`, `Rejected-with-reasoning` (a finding

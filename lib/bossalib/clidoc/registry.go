@@ -437,6 +437,19 @@ func newRegistry() map[string]Prose {
 		},
 
 		// --- Diagnostics ---
+		"boss tail": {
+			Long: "Prints recent rotated service logs without needing to locate them on disk. " +
+				"It defaults to bossd; pass boss or bosso to select one source, or use " +
+				"--all to merge all three by timestamp. Use -f to follow new output. " +
+				"Raw non-JSON diagnostics always remain visible, including when filtering.",
+			Examples: []Example{
+				{Command: "boss tail"},
+				{Command: "boss tail -f"},
+				{Command: "boss tail --all -n 50"},
+				{Command: "boss tail --plugin dependabot"},
+				{Command: "boss tail --json | jq 'select(.level==\"error\")'"},
+			},
+		},
 		"boss repair doctor": {
 			Long: "Health-checks the auto-repair pipeline. Calls the daemon's " +
 				"`RepairDoctor` RPC and renders a checklist (plugin loaded, `claude` " +

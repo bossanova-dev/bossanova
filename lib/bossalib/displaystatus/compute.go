@@ -58,8 +58,8 @@ func IsQuestionLabel(label string) bool {
 }
 
 // WaitingLabel is the display label emitted when a chat is parked on an
-// external event (BOS-668) rather than actively working. It carries no spinner:
-// the whole point of the state is that nothing is moving.
+// external event (BOS-668) rather than actively working. It carries a spinner
+// so operators can see the wait is active without mislabeling it as working.
 const WaitingLabel = "waiting"
 
 // IsWaitingLabel reports whether label is the display status used for a chat
@@ -304,7 +304,7 @@ func baseStatus(in Input) Output {
 	// working nor falls back to a stale PR label. It sits immediately above
 	// WORKING because waiting is the more specific truth about the same chat.
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING {
-		return Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
+		return Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS

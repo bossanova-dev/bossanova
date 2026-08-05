@@ -37,14 +37,39 @@ func Tail(path string, maxLines int) (string, error) {
 		return "", err
 	}
 
-	size := info.Size()
+	return tailFile(f, info.Size(), maxLines)
+}
+
+// TailAt returns the last maxLines lines contained in the first end bytes of
+// path. Values beyond the current file size are clamped to that size.
+func TailAt(path string, maxLines int, end int64) (string, error) {
+	if maxLines <= 0 || end <= 0 {
+		return "", nil
+	}
+	cleaned := filepath.Clean(path)
+	f, err := os.Open(cleaned)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	return tailFile(f, min(end, info.Size()), maxLines)
+}
+
+func tailFile(f *os.File, size int64, maxLines int) (string, error) {
 	if size == 0 {
 		return "", nil
 	}
 
 	if size <= tailReadAllThreshold {
-		data, err := io.ReadAll(f)
-		if err != nil {
+		data := make([]byte, size)
+		if _, err := f.ReadAt(data, 0); err != nil && !errors.Is(err, io.EOF) {
 			return "", err
 		}
 		return lastLines(data, maxLines), nil

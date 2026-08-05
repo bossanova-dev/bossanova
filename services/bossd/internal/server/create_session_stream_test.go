@@ -1120,7 +1120,7 @@ func (w *setupStreamWorktree) Archive(context.Context, string) error { return ni
 func (w *setupStreamWorktree) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
 	return nil
 }
-func (w *setupStreamWorktree) EmptyTrash(context.Context, string, []string) error            { return nil }
+func (w *setupStreamWorktree) ReapLocalBranches(context.Context, string, []string) error     { return nil }
 func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, string, string) {}
 func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
 func (w *setupStreamWorktree) VerifyCurrentBranch(context.Context, string, string) error     { return nil }

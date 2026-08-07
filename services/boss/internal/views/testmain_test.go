@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/recurser/bossalib/termnorm"
 )
 
 // TestMain isolates the whole views test package from the developer's real
@@ -21,6 +23,21 @@ func TestMain(m *testing.M) {
 	}
 	if err := os.Setenv("BOSS_SETTINGS_PATH", filepath.Join(dir, "settings.json")); err != nil {
 		panic(err)
+	}
+	// Same isolation rule, applied to the network. Any test that drives the
+	// attach model to chatRecordedMsg under a --host destination reaches
+	// attachTmuxEnv, and the real prober would spawn an outbound
+	// `ssh deploy@bastion.example.com …` — which fails only on DNS, so it looks
+	// fine until a resolver that wildcards NXDOMAIN stalls it to the probe's
+	// full bound. Defaulting here rather than inside a per-test helper keeps it
+	// free of ordering coupling: a test that installs its own prober simply
+	// overrides this one and restores back to it.
+	//
+	// The answer mirrors the real probers — absent for an empty TERM (no host
+	// has an entry under that name), fail open otherwise — so it can never
+	// silently rewrite a TERM in a test that is about something else.
+	newRemoteTerminfoProber = func(string) termnorm.Prober {
+		return func(term string) bool { return term != "" }
 	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)

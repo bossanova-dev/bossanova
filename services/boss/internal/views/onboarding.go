@@ -235,7 +235,7 @@ func (m OnboardingModel) View() tea.View {
 	b.WriteString("\n\n")
 
 	if m.err != nil {
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 

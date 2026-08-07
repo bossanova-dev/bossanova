@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,63 +18,6 @@ import (
 	"github.com/recurser/bossd/internal/tccprobe"
 	"github.com/rs/zerolog"
 )
-
-func TestProtectedRootsFor(t *testing.T) {
-	t.Parallel()
-
-	home := filepath.Join(string(filepath.Separator), "Users", "alice")
-	documents := filepath.Join(home, "Documents")
-	desktop := filepath.Join(home, "Desktop")
-	downloads := filepath.Join(home, "Downloads")
-
-	tests := []struct {
-		name  string
-		paths []string
-		want  []string
-	}{
-		{
-			name:  "path under Documents selects Documents",
-			paths: []string{filepath.Join(documents, "projects", "bossanova")},
-			want:  []string{documents},
-		},
-		{
-			name:  "paths under Desktop and Downloads select both roots",
-			paths: []string{filepath.Join(downloads, "repo"), filepath.Join(desktop, "worktrees")},
-			want:  []string{desktop, downloads},
-		},
-		{
-			name:  "unrelated path selects no roots",
-			paths: []string{filepath.Join(home, "Code", "bossanova")},
-		},
-		{
-			name:  "path equal to root selects it",
-			paths: []string{documents},
-			want:  []string{documents},
-		},
-		{
-			name: "duplicate paths under one root collapse",
-			paths: []string{
-				filepath.Join(documents, "repo"),
-				filepath.Join(documents, "repo", "worktrees"),
-				documents,
-			},
-			want: []string{documents},
-		},
-		{
-			name:  "similarly prefixed sibling is excluded",
-			paths: []string{filepath.Join(home, "Documents-old", "repo")},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := protectedRootsFor(home, tt.paths); !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("protectedRootsFor(%q, %q) = %q, want %q", home, tt.paths, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestProtectedRootsForResolvedFollowsSymlinkedCandidates(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
@@ -577,4 +523,47 @@ func writeExecutableFile(t *testing.T, dir, name, contents string) string {
 		t.Fatalf("write executable %s: %v", name, err)
 	}
 	return path
+}
+
+// TestLogProtectedRootProbeResultsUsesTheSharedRemedy is the startup half of
+// the BOS-725 wiring guard (the doctor half is
+// TestRepairDoctorIncludesProtectedRootsCheck). The remedy content itself is
+// pinned in tccprobe, which cannot see this call site — so without this,
+// reverting the log line to the old GUI-only sentence would leave every test
+// green while breaking the acceptance criterion.
+func TestLogProtectedRootProbeResultsUsesTheSharedRemedy(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+	root := filepath.Join(string(filepath.Separator), "Users", "alice", "Documents")
+
+	logProtectedRootProbeResults(logger, []tccprobe.Result{
+		{Path: root, Status: tccprobe.StatusBlocked, Err: context.DeadlineExceeded},
+	}, "/opt/homebrew/bin/bossd")
+
+	got := buf.String()
+	if !strings.Contains(got, tccprobe.Remedy(root, "/opt/homebrew/bin/bossd", tccprobe.StatusBlocked)) {
+		t.Fatalf("log = %q, want it to carry tccprobe.Remedy verbatim", got)
+	}
+	if !strings.Contains(got, `"root":"`+root+`"`) {
+		t.Fatalf("log = %q, want the structured root field retained", got)
+	}
+}
+
+// TestLogProtectedRootProbeResultsSkipsHealthyRoots covers the filter: OK and
+// Absent are not permission failures, and an ERR line for a ~/Desktop that
+// simply does not exist would be a false alarm on every startup.
+func TestLogProtectedRootProbeResultsSkipsHealthyRoots(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logProtectedRootProbeResults(zerolog.New(&buf), []tccprobe.Result{
+		{Path: "/Users/alice/Documents", Status: tccprobe.StatusOK},
+		{Path: "/Users/alice/Desktop", Status: tccprobe.StatusAbsent, Err: fs.ErrNotExist},
+	}, "bossd")
+
+	if buf.Len() != 0 {
+		t.Fatalf("log = %q, want nothing logged for OK/Absent roots", buf.String())
+	}
 }

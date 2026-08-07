@@ -121,14 +121,22 @@ func (m *ChatPickerModel) SetTelemetry(client telemetry.Client) {
 // If highlightAgentSessionID is non-empty, that chat will be auto-highlighted after loading.
 func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID, highlightAgentSessionID string) ChatPickerModel {
 	return ChatPickerModel{
-		client:          c,
-		ctx:             parentCtx,
-		sessionID:       sessionID,
-		highlightID:     highlightAgentSessionID,
-		spinner:         newStatusSpinner(),
-		loading:         true,
-		table:           newBossTable(nil, nil, 0),
-		newTabSupported: hasNewTabSupport(),
+		client:      c,
+		ctx:         parentCtx,
+		sessionID:   sessionID,
+		highlightID: highlightAgentSessionID,
+		spinner:     newStatusSpinner(),
+		loading:     true,
+		table:       newBossTable(nil, nil, 0),
+		// [t]erminal opens the session's worktree path in a LOCAL terminal tab.
+		// Under --host that path is on the remote machine, so the action would
+		// open a directory that does not exist here (or, worse, a same-named one
+		// that does). Fold the remote context into the same flag that already
+		// gates both the key and the action-bar entry, so the affordance
+		// disappears rather than silently doing the wrong thing. Opening an ssh
+		// session into the remote worktree instead is the better UX and is left
+		// as a follow-up.
+		newTabSupported: hasNewTabSupport() && !isRemoteHost(),
 	}
 }
 

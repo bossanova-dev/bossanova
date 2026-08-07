@@ -861,6 +861,41 @@ func TestStartTmuxChat_PassesMcpConfigPath(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig prevents a parent
+// Claude session from supplying MCP wiring to a resumed OpenCode chat. The
+// chat's stored agent is the launch authority, including for MCP capability.
+func TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	withTrustedMcpAndAppData(t)
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "opencode": h.agentFake})
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			SessionID:      "sess-1",
+			AgentSessionID: "opencode-chat-1",
+			AgentName:      "opencode",
+		}},
+	}
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{
+		Prompt:               "/boss-repair",
+		Delivery:             DeliverySubmit,
+		ResumeAgentSessionID: "opencode-chat-1",
+	}, "title", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	got := h.agentFake.LastBuildInteractiveCommand
+	if got.GetMcpConfigPath() != "" {
+		t.Fatalf("McpConfigPath = %q, want empty for resumed OpenCode chat", got.GetMcpConfigPath())
+	}
+	if strings.Contains(got.GetAppendSystemPrompt(), "mcp__boss__") {
+		t.Fatalf("AppendSystemPrompt advertises MCP tools for OpenCode: %q", got.GetAppendSystemPrompt())
+	}
+}
+
 // TestStartTmuxChat_NonCronSessionGetsStrictMcpConfig is the Part A behavioural
 // tripwire for BOS-672. Harness sess-1 carries no CronJobID — a non-cron,
 // interactive session — so under the pre-Task-1 code, or under a reintroduced
@@ -2315,6 +2350,113 @@ func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
 	}
 	if len(h.chats.createCalls) != 0 {
 		t.Fatalf("provider-id live-pane resume must not create duplicate chat rows, got %d", len(h.chats.createCalls))
+	}
+}
+
+func TestStartTmuxChat_RespawnUsesStoredProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	const (
+		logicalAgentSessionID = "agent-session-logical"
+		providerSessionID     = "ses_opencode_provider"
+	)
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:                "chat-opencode",
+			SessionID:         "sess-1",
+			AgentSessionID:    logicalAgentSessionID,
+			ProviderSessionID: ptr(providerSessionID),
+			AgentName:         "opencode",
+		}},
+	}
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: logicalAgentSessionID, Delivery: DeliverySubmit},
+		"T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if id != logicalAgentSessionID {
+		t.Fatalf("returned id = %q, want logical id %q", id, logicalAgentSessionID)
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != providerSessionID {
+		t.Errorf("BuildInteractiveCommand SessionId = %q, want provider id %q", got, providerSessionID)
+	}
+	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
+		t.Error("BuildInteractiveCommand Resume = false, want true")
+	}
+}
+
+func TestStartTmuxChat_FreshLaunchPersistsProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		if req.GetWorkDir() != h.sessions.sessions["sess-1"].WorktreePath {
+			t.Errorf("ResolveInteractiveSessionID WorkDir = %q, want %q", req.GetWorkDir(), h.sessions.sessions["sess-1"].WorktreePath)
+		}
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_opencode_fresh"}, nil
+	}
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if len(h.chats.providerSessionIDUpdates) != 1 {
+		t.Fatalf("provider session updates = %d, want 1", len(h.chats.providerSessionIDUpdates))
+	}
+	got := h.chats.providerSessionIDUpdates[0]
+	if got.agentSessionID != id {
+		t.Errorf("provider update agent session id = %q, want %q", got.agentSessionID, id)
+	}
+	if got.providerSessionID == nil || *got.providerSessionID != "ses_opencode_fresh" {
+		t.Errorf("provider update id = %v, want ses_opencode_fresh", got.providerSessionID)
+	}
+}
+
+func TestStartTmuxChat_FreshLaunchRetriesProviderSessionIDResolution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].AgentName = "opencode"
+	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.agentFake.ConsumesInitialInput = true
+
+	resolveCalls := 0
+	h.agentFake.ResolveInteractiveSessionIDFunc = func(_ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+		resolveCalls++
+		if resolveCalls == 1 {
+			return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+		}
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "ses_opencode_after_startup"}, nil
+	}
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "repair", Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if resolveCalls != 2 {
+		t.Fatalf("ResolveInteractiveSessionID calls = %d, want 2", resolveCalls)
+	}
+	if len(h.chats.providerSessionIDUpdates) != 1 {
+		t.Fatalf("provider session updates = %d, want 1", len(h.chats.providerSessionIDUpdates))
+	}
+	if got := h.chats.providerSessionIDUpdates[0].providerSessionID; got == nil || *got != "ses_opencode_after_startup" {
+		t.Errorf("provider update id = %v, want ses_opencode_after_startup", got)
 	}
 }
 

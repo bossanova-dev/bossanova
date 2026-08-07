@@ -581,20 +581,21 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 // updateTmuxNameErr, etc. forces the corresponding method to return that
 // error instead — used by failure-mode tests for the cron tmux path.
 type mockAgentChatStore struct {
-	mu                     sync.Mutex
-	createCalls            []db.CreateAgentChatParams
-	agentSessionIDUpdates  []agentSessionIDUpdate
-	tmuxNameUpdates        []tmuxNameUpdate
-	accountIDUpdates       []accountIDUpdate
-	deletedAgentSessionIDs []string
-	markStartFailedCalls   []markStartFailedCall
-	chatsBySession         map[string][]*models.AgentChat // returned by ListBySession when set
-	chatsWithTmux          []*models.AgentChat            // returned by ListWithTmuxSession when set
-	createErr              error
-	updateTmuxNameErr      error
-	deleteErr              error
-	listBySessionErr       error // when non-nil, ListBySession returns it
-	listWithTmuxErr        error // when non-nil, ListWithTmuxSession returns it
+	mu                       sync.Mutex
+	createCalls              []db.CreateAgentChatParams
+	agentSessionIDUpdates    []agentSessionIDUpdate
+	tmuxNameUpdates          []tmuxNameUpdate
+	accountIDUpdates         []accountIDUpdate
+	providerSessionIDUpdates []providerSessionIDUpdate
+	deletedAgentSessionIDs   []string
+	markStartFailedCalls     []markStartFailedCall
+	chatsBySession           map[string][]*models.AgentChat // returned by ListBySession when set
+	chatsWithTmux            []*models.AgentChat            // returned by ListWithTmuxSession when set
+	createErr                error
+	updateTmuxNameErr        error
+	deleteErr                error
+	listBySessionErr         error // when non-nil, ListBySession returns it
+	listWithTmuxErr          error // when non-nil, ListWithTmuxSession returns it
 }
 
 type markStartFailedCall struct {
@@ -616,6 +617,11 @@ type agentSessionIDUpdate struct {
 type accountIDUpdate struct {
 	agentSessionID string
 	accountID      *string
+}
+
+type providerSessionIDUpdate struct {
+	agentSessionID    string
+	providerSessionID *string
 }
 
 func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -723,7 +729,22 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 	return m.updateTmuxNameErr
 }
 
-func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
+func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, agentSessionID string, providerSessionID *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.providerSessionIDUpdates = append(m.providerSessionIDUpdates, providerSessionIDUpdate{agentSessionID: agentSessionID, providerSessionID: providerSessionID})
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				chat.ProviderSessionID = providerSessionID
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			chat.ProviderSessionID = providerSessionID
+		}
+	}
 	return nil
 }
 
@@ -912,7 +933,7 @@ func (m *mockWorktreeManager) Archive(ctx context.Context, path string) error {
 	return m.archiveErr
 }
 
-func (m *mockWorktreeManager) PurgeWorktree(_ context.Context, _, _, _, _ string) {}
+func (m *mockWorktreeManager) PurgeWorktree(_ context.Context, _, _, _, _ string) error { return nil }
 
 func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.ResurrectOpts) error {
 	m.resurrected = append(m.resurrected, opts)
@@ -1229,7 +1250,7 @@ func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ contex
 }
 
 // StopByAgent forwards to Stop, ignoring the agent name (see StartByAgent).
-func (m *mockAgentRunner) StopByAgent(_, agentSessionID string) error {
+func (m *mockAgentRunner) StopByAgent(_ context.Context, _, agentSessionID string) error {
 	return m.Stop(agentSessionID)
 }
 
@@ -1438,6 +1459,111 @@ func TestStartSession(t *testing.T) {
 	}
 	if sess.AgentSessionID == nil || *sess.AgentSessionID != "claude-123" {
 		t.Errorf("claude session id = %v, want claude-123", sess.AgentSessionID)
+	}
+}
+
+// TestStartSession_StopsAnAgentSpawnedBeforeALaterBootstrapFailure covers the
+// window between a successful spawn and the end of the bootstrap.
+//
+// StartSession runs under a deadline, and several writes follow the spawn: the
+// AgentSessionID update, the agent_chats insert, the AgentStarted transition,
+// the ImplementingPlan write. A bootstrap that consumed nearly all its deadline
+// earlier can therefore spawn an agent successfully and STILL return an error
+// from the very next write — which both create callers answer by purging the
+// worktree and deleting the row.
+//
+// Neither of those stops the process. The claude and codex plugins deliberately
+// detach a spawned run from the RPC context so it outlives the create call, so
+// without an explicit stop the failure leaves a coding agent running against a
+// worktree that is being deleted, and no row left to find it by.
+//
+// The failure is injected on the AgentSessionID update — the FIRST write after
+// the spawn, so the run is at its least recorded and a stop that keys on the row
+// rather than on the returned id would miss it.
+func TestStartSession_StopsAnAgentSpawnedBeforeALaterBootstrapFailure(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	// The deadline expiring on the first write after the spawn.
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.AgentSessionID != nil {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true})
+	if err == nil {
+		t.Fatal("StartSession returned nil; the post-spawn write was made to fail")
+	}
+
+	// Guard the premise: a test where the spawn never happened would pass the
+	// assertion below for the wrong reason.
+	if len(cr.started) != 1 {
+		t.Fatalf("agent starts = %d, want 1: the run must be spawned for there to be anything to stop", len(cr.started))
+	}
+	if len(cr.stopped) != 1 || cr.stopped[0] != "claude-123" {
+		t.Fatalf("stopped runs = %v, want [claude-123]: a spawned agent outlived the bootstrap that failed after starting it", cr.stopped)
+	}
+	if cr.IsRunningByAgent("claude", "claude-123") {
+		t.Error("the spawned run is still marked running after a failed bootstrap")
+	}
+}
+
+// TestStartSession_LeavesTheAgentRunningOnASuccessfulBootstrap is the other half
+// of the pair above: the stop is bound to StartSession's error exit, so a
+// bootstrap that succeeds must never trip it. Without this, a stop wired to run
+// unconditionally would kill every session it started and still pass the test
+// above.
+func TestStartSession_LeavesTheAgentRunningOnASuccessfulBootstrap(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(cr.stopped) != 0 {
+		t.Fatalf("stopped runs = %v, want none: a successful bootstrap must leave its agent running", cr.stopped)
 	}
 }
 
@@ -2761,6 +2887,30 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 	}
 	if wt.created[0].BaseBranch != "main" {
 		t.Errorf("Create BaseBranch = %q, want main", wt.created[0].BaseBranch)
+	}
+
+	// The fallback creates a FRESH branch, so it owes the same early recording
+	// the fresh-branch arm does (BOS-717). Without it the row keeps an empty
+	// worktree_path, and a bootstrap that fails after this point purges the
+	// worktree, refuses to reap the branch for want of ownership proof, then
+	// deletes the row — stranding the branch so the next retry with the same
+	// explicit name dies on ErrBranchExists.
+	hook := wt.created[0].OnWorktreeReady
+	if hook == nil {
+		t.Fatal("fallback Create got no OnWorktreeReady hook; a failed bootstrap would strand its branch")
+	}
+	// Exercise it to prove it is the recorder and not merely non-nil: the
+	// distinctive values below must reach the session row.
+	hook(ctx, "dave/fre-1176", "/tmp/worktrees/proof-of-ownership")
+	got, err := sessions.Get(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.WorktreePath != "/tmp/worktrees/proof-of-ownership" {
+		t.Errorf("WorktreePath = %q, want the hook-recorded path", got.WorktreePath)
+	}
+	if got.BranchName != "dave/fre-1176" {
+		t.Errorf("BranchName = %q, want dave/fre-1176", got.BranchName)
 	}
 }
 
@@ -5056,10 +5206,11 @@ func TestClearDraftPRBlockedReasonStillClearsItsOwnMarker(t *testing.T) {
 }
 
 // TestCancelBackgroundDraftPRUnblocksTheJoin pins the interlock
-// cleanupFailedCreateSession depends on. That path runs under the process-global
-// start mutex, so it cannot afford to wait out a push it does not want the
-// result of — it cancels the step first, and the join then only covers the
-// unwind.
+// cleanupFailedCreateSession depends on. Since BOS-717 that path no longer holds
+// the (now per-repo) start-path lock, but it does hold the create's per-target
+// lock, and the latency lands on every failed create either way — so it still
+// cannot afford to wait out a push it does not want the result of. It cancels
+// the step first, and the join then only covers the unwind.
 func TestCancelBackgroundDraftPRUnblocksTheJoin(t *testing.T) {
 	ctx := context.Background()
 	_, wt, _, lc := newBackgroundDraftPRFixture(t)

@@ -2,7 +2,6 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -10,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/accountflow"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -58,8 +58,9 @@ const progressTailMax = 8
 type AccountRegisterModel struct {
 	// client is the daemon view the flow stores/tests through (the app's
 	// BossClient satisfies accountflow.AccountClient).
-	client accountflow.AccountClient
-	ctx    context.Context
+	client    accountflow.AccountClient
+	ctx       context.Context
+	telemetry telemetry.Client
 
 	// exec is the subprocess seam. Defaults to the DevNull-stdin variant (Bubble
 	// Tea owns os.Stdin); tests inject a fake.
@@ -115,8 +116,32 @@ func NewAccountRegisterModel(c accountflow.AccountClient, ctx context.Context) A
 	}
 }
 
+// SetTelemetry installs a telemetry client for the completed add-account flow.
+func (m *AccountRegisterModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
+}
+
 // Cancelled reports whether the operator dismissed the flow (esc/ctrl+c).
 func (m AccountRegisterModel) Cancelled() bool { return m.cancelled }
+
+// flowRunning reports whether the background add-account flow has been launched
+// and has not yet reported a result — i.e. a flowDoneMsg is still owed.
+//
+// The provider chooser precedes the launch, and Done/Error are the two states
+// the result already landed in, so everything between them is in flight. App
+// uses this to suppress the global bug-report chord for the duration, because
+// swapping activeView would send that flowDoneMsg to the modal instead (see
+// handleGlobalKey).
+func (m AccountRegisterModel) flowRunning() bool {
+	switch m.state {
+	case registerStateProgress, registerStateAwaitText, registerStateAwaitSecret, registerStateAwaitConfirm:
+		return true
+	case registerStateProvider, registerStateDone, registerStateError:
+		return false
+	default:
+		return false
+	}
+}
 
 // Done reports whether the flow completed successfully (the App then pops back
 // to a refreshed accounts list so the new account appears).
@@ -364,6 +389,12 @@ func (m AccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	// An operator teardown (esc/ctrl+c) cancels the flow context, so the flow
+	// can return an error that is really a cancellation, not a failed add.
+	// A cancelled flow emits nothing.
+	if !m.cancelled {
+		captureTUIAction(m.ctx, m.telemetry, tuiFeatureAccounts, tuiActionAccountAdded, tuiActionStatus(err))
+	}
 	if err != nil {
 		m.err = err
 		m.state = registerStateError
@@ -444,7 +475,7 @@ func (m AccountRegisterModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusSuccess.Render("Account registered.")))
 		b.WriteString("\n")
 	case registerStateError:
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 

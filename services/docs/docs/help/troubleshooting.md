@@ -7,7 +7,7 @@ description: 'A runbook for the most common Bossanova failures: auth, setup scri
 
 This page is organized as a runbook: scan the section that matches what's
 broken, follow the steps. If your problem isn't here, file a report from the
-Terminal UI (TUI) by pressing `ctrl+b` (see [Reporting bugs](#reporting-bugs)).
+Terminal UI (TUI) by pressing `ctrl+g` (see [Reporting bugs](#reporting-bugs)).
 
 For higher-level explanations of how the pieces fit together, see
 [How It Works](../how-it-works.md).
@@ -194,6 +194,20 @@ First, inspect the daemon's diagnostic output:
 boss daemon doctor
 ```
 
+`boss daemon doctor` reports the probe bossd ran at startup, so its verdict is
+as old as the daemon. For a fresh answer, run:
+
+```bash
+boss repair doctor
+```
+
+Its `protected roots readable` check probes on every invocation. Answering a
+pending privacy dialog clears it immediately — no restart, because answering
+unblocks the read that was already in flight. The other two routes still need
+`boss daemon restart`: a System Settings grant does not reach a running
+process, and a root the daemon found at startup keeps being probed until the
+daemon restarts, even after you move the repository off it.
+
 Answer any pending macOS privacy dialog. If no dialog appears, grant the
 staged daemon binary access in macOS Privacy & Security settings (for example,
 Full Disk Access):
@@ -208,9 +222,25 @@ Then restart the daemon:
 boss daemon restart
 ```
 
+A Full Disk Access grant is not applied to an already-running process, so the
+restart is required for that route.
+
 After every `brew upgrade`, run the same restart. It refreshes the staged
 daemon copy at that stable real path, preserving the path macOS TCC associates
 with the permission.
+
+#### On a headless Mac (no display)
+
+Both routes above need someone at the screen: a pending privacy dialog cannot
+be answered over SSH, and System Settings needs a GUI. On a host reached only
+over SSH, the option that works unattended is to **move the repository and the
+worktree base out of the TCC-guarded folders** — `~/Documents`, `~/Desktop`
+and `~/Downloads`. A repository at, say, `~/src/...` needs no grant at all, and
+cannot re-break on the next upgrade. Reinstalling the binary is not a fix: TCC
+keys the grant to the installed path, not to the bytes.
+
+If you must use the GUI route on a headless host, reach it over Screen Sharing
+or push the grant with MDM.
 
 ## Workspace and worktree
 
@@ -454,7 +484,9 @@ remote round trip: run them from a shell that's already connected, or run the
 
 ## Reporting bugs
 
-Press `ctrl+b` from anywhere in the TUI to open the bug report form.
+Press `ctrl+g` from anywhere in the TUI to open the bug report form. `ctrl+b`
+remains a temporary deprecated alias outside tmux, but tmux consumes it as its
+default prefix, so use `ctrl+g` instead.
 It collects:
 
 - `boss` version and commit

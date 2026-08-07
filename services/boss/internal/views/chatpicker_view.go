@@ -28,7 +28,11 @@ func (m ChatPickerModel) isArchiving() bool {
 // session itself may still have loaded, so the archive affordance stays
 // reachable from here.
 func (m ChatPickerModel) renderErrState() string {
-	body := renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n"
+	// A --host tunnel that drops mid-session fails every chat RPC with the
+	// forwarded socket's dial error, which is neither actionable nor true of
+	// the remote machine — rpcErrorMessage shows the reconnecting affordance
+	// instead (BOS-724).
+	body := renderError(rpcErrorMessage(m.err), m.width) + "\n"
 	switch {
 	case m.isArchiving():
 		body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(

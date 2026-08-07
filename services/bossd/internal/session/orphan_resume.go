@@ -158,14 +158,14 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	if err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: commit restart failed; releasing claim")
-		l.stopOrphanedRestart(spawnSess.AgentName, newID, session.ID)
+		l.stopOrphanedRestart(ctx, spawnSess.AgentName, newID, session.ID)
 		l.releaseOrphanResumeClaim(ctx, claimStore, session.ID, orphanReason, priorAgentSession)
 		return false
 	}
 	if !committed {
 		l.logger.Warn().Str("session", session.ID).
 			Msg("orphan-resume sweep: restart handoff lost ownership; stopping replacement")
-		l.stopOrphanedRestart(spawnSess.AgentName, newID, session.ID)
+		l.stopOrphanedRestart(ctx, spawnSess.AgentName, newID, session.ID)
 		// RetrySession can clear the marker after this sweep has claimed the row
 		// without starting a replacement itself. Release that markerless claim
 		// (while retaining Retry's cleared marker) so the dead prior agent is
@@ -177,7 +177,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	if err := l.syncResumedPrimaryChat(ctx, session, priorAgentSessionID, newID); err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: persist resumed primary chat failed; re-parking Orphaned")
-		l.stopOrphanedRestart(spawnSess.AgentName, newID, session.ID)
+		l.stopOrphanedRestart(ctx, spawnSess.AgentName, newID, session.ID)
 		// Restore the complete orphan shape only while this handoff still owns
 		// the new agent ID. A later completion, archive, or manual intervention
 		// wins the conditional rollback and remains untouched.
@@ -239,11 +239,11 @@ func (l *Lifecycle) syncResumedPrimaryChat(ctx context.Context, session *models.
 	return nil
 }
 
-func (l *Lifecycle) stopOrphanedRestart(agentName, newID, sessionID string) {
+func (l *Lifecycle) stopOrphanedRestart(ctx context.Context, agentName, newID, sessionID string) {
 	if l.agentRunner == nil || !l.agentRunner.IsRunningByAgent(agentName, newID) {
 		return
 	}
-	if err := l.agentRunner.StopByAgent(agentName, newID); err != nil {
+	if err := l.agentRunner.StopByAgent(ctx, agentName, newID); err != nil {
 		l.logger.Warn().Err(err).Str("session", sessionID).Str("resume_id", newID).
 			Msg("orphan-resume sweep: stop after persistence failure failed")
 	}

@@ -46,12 +46,21 @@ func terminfoPresent(term string) bool {
 	return exec.CommandContext(ctx, "infocmp", term).Run() == nil
 }
 
+// Prober reports whether a terminfo entry for term exists on the host that
+// matters for the caller.
+type Prober func(term string) bool
+
 // Resolvable reports whether term's terminfo entry is present on this host.
 func Resolvable(term string) bool { return probe(term) }
 
 // Effective returns term when its terminfo entry resolves, else FallbackTERM.
 func Effective(term string) string {
-	if probe(term) {
+	return EffectiveWith(term, probe)
+}
+
+// EffectiveWith returns term when p resolves it, else FallbackTERM.
+func EffectiveWith(term string, p Prober) string {
+	if p(term) {
 		return term
 	}
 	return FallbackTERM
@@ -61,13 +70,20 @@ func Effective(term string) string {
 // env has no TERM it appends TERM=FallbackTERM. The caller's slice is never
 // mutated.
 func Normalize(env []string) []string {
+	return NormalizeWith(env, probe)
+}
+
+// NormalizeWith returns a copy of env with TERM set to EffectiveWith(currentTERM, p).
+// When env has no TERM it appends TERM=FallbackTERM. The caller's slice is never
+// mutated.
+func NormalizeWith(env []string, p Prober) []string {
 	out := make([]string, len(env), len(env)+1)
 	copy(out, env)
 	for i, e := range out {
 		if !strings.HasPrefix(e, "TERM=") {
 			continue
 		}
-		out[i] = "TERM=" + Effective(strings.TrimPrefix(e, "TERM="))
+		out[i] = "TERM=" + EffectiveWith(strings.TrimPrefix(e, "TERM="), p)
 		return out
 	}
 	return append(out, "TERM="+FallbackTERM)

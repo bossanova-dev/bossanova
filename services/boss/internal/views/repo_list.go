@@ -240,7 +240,7 @@ func (m RepoListModel) tableHeight() int {
 func (m RepoListModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

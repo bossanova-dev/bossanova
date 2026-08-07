@@ -203,11 +203,19 @@ func (h HomeModel) renderDaemonError() string {
 	if remediation == "" {
 		remediation = daemonDownRemediation()
 	}
-	return renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.statusWrapWidth()) +
+	summary := fmt.Sprintf("Cannot connect to daemon (%v)", h.err)
+	if affordance, ok := hostDialAffordance(h.err); ok {
+		// The dial error names the forwarded socket on THIS machine, which says
+		// nothing about the host that stopped answering — so the summary names
+		// the destination instead, and the affordance carries the reason.
+		summary = "Cannot reach the daemon on " + remoteHostDestination()
+		remediation = affordance
+	}
+	return renderError(summary, h.statusWrapWidth()) +
 		"\n\n" +
 		lipgloss.NewStyle().Padding(0, 2).Render(remediation) +
 		"\n" +
-		styleActionBar.Render("Press q to quit.")
+		actionBarWidth(h.width, nil, []string{"[q]uit"})
 }
 
 func (h HomeModel) renderLoading() string {

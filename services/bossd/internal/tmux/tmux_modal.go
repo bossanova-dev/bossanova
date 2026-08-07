@@ -105,7 +105,11 @@ func composerRowIndex(pane, marker string) int {
 	}
 	lines := strings.Split(pane, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(trimComposerRowPrefix(lines[i]), marker) {
+		trimmed := strings.TrimSpace(lines[i])
+		// Check the unmodified row first. OpenCode's composer glyph (┃) is
+		// also a valid box-border rune, so trimming before this check would
+		// erase a real OpenCode composer and make every send time out.
+		if strings.HasPrefix(trimmed, marker) || strings.HasPrefix(trimComposerRowPrefix(trimmed), marker) {
 			return i
 		}
 	}

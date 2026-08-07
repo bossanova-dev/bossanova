@@ -30,6 +30,10 @@ type MockWorktreeManager struct {
 
 	// DeleteLocalBranchErr is returned by DeleteLocalBranch when non-nil.
 	DeleteLocalBranchErr error
+	// PurgeWorktreeErr is returned by PurgeWorktree when non-nil, standing in
+	// for the one case the real manager reports: a purge that never ran because
+	// the shared clone was busy. Callers must then skip the branch reap.
+	PurgeWorktreeErr error
 	// BranchSafeToDeleteResult is returned by BranchSafeToDelete when
 	// BranchSafeToDeleteFn is nil (default false).
 	BranchSafeToDeleteResult bool
@@ -308,7 +312,7 @@ func (m *MockWorktreeManager) BranchSafeToDelete(ctx context.Context, repoPath, 
 	return result, nil
 }
 
-func (m *MockWorktreeManager) PurgeWorktree(_ context.Context, repoPath, repoName, worktreeBaseDir, branch string) {
+func (m *MockWorktreeManager) PurgeWorktree(_ context.Context, repoPath, repoName, worktreeBaseDir, branch string) error {
 	m.mu.Lock()
 	m.PurgeWorktreeCalls = append(m.PurgeWorktreeCalls, purgeWorktreeCall{
 		RepoPath:        repoPath,
@@ -316,7 +320,9 @@ func (m *MockWorktreeManager) PurgeWorktree(_ context.Context, repoPath, repoNam
 		WorktreeBaseDir: worktreeBaseDir,
 		Branch:          branch,
 	})
+	err := m.PurgeWorktreeErr
 	m.mu.Unlock()
+	return err
 }
 
 func (m *MockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error {

@@ -55,6 +55,12 @@ func parseToken(raw []byte) (string, bool) {
 // ReadToken reads and validates the token without creating it. Clients use
 // this so a missing file (daemon not initialized) is distinguishable from a
 // malformed one.
+//
+// Note: an existing-but-empty token file is deliberately ErrTokenInvalid, not
+// ErrTokenMissing — that distinction is "no file" vs. "a file, but it's
+// garbage", and only os.ErrNotExist means the former. This differs from
+// ValidateToken, where there is no file to be present/absent in the first
+// place, so an empty string there means "nothing was supplied" (ErrTokenMissing).
 func ReadToken(socketPath string) (string, error) {
 	raw, err := os.ReadFile(TokenPath(socketPath))
 	if errors.Is(err, os.ErrNotExist) {
@@ -64,6 +70,24 @@ func ReadToken(socketPath string) (string, error) {
 		return "", fmt.Errorf("socketauth: read token: %w", err)
 	}
 	tok, ok := parseToken(raw)
+	if !ok {
+		return "", ErrTokenInvalid
+	}
+	return tok, nil
+}
+
+// ValidateToken canonicalises and validates a token obtained from a source
+// other than the co-located token file (e.g. fetched from a remote daemon over
+// SSH for a forwarded socket). It returns ErrTokenInvalid for anything that is
+// not exactly 64 lowercase-hex characters after trimming surrounding
+// whitespace, and ErrTokenMissing when the input is empty/whitespace-only
+// (mirroring ReadToken's "no file there at all" case, since there is no file
+// here to distinguish "empty" from "absent").
+func ValidateToken(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", ErrTokenMissing
+	}
+	tok, ok := parseToken([]byte(raw))
 	if !ok {
 		return "", ErrTokenInvalid
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -279,6 +280,96 @@ func TestRun_GracefulShutdown_CancelsStartupStrandedCronRecovery(t *testing.T) {
 	case <-recoveryStopped:
 	default:
 		t.Fatal("startup stranded-cron recovery was not cancelled before shutdown completed")
+	}
+}
+
+// TestRun_StartupBootstrapReapPrecedesCronRecovery pins the ORDER of the two
+// startup recovery passes (BOS-717). Both select pre-agent rows
+// (CreatingWorktree/StartingAgent) and both claim one with a conditional state
+// transition, so running them concurrently is not corrupting but IS a coin flip:
+// whichever won decided whether a half-created session was reclaimed as a failed
+// bootstrap (Blocked + worktree/branch cleanup) or finalized as a completed cron
+// run — and finalize is the wrong answer for a row whose worktree may never have
+// been created. The bootstrap reaper must therefore complete first; rows it
+// declines still fall through to the cron sweep, so ordering narrows nothing.
+//
+// Run them as two goroutines again and this fails: the cron seam observes
+// reapDone still false.
+func TestRun_StartupBootstrapReapPrecedesCronRecovery(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	cronRan := make(chan struct{})
+	done := make(chan error, 1)
+
+	var mu sync.Mutex
+	reapDone := false
+	reapFirst := false
+
+	go func() {
+		done <- run(runOpts{
+			stopSig:    stopSig,
+			dbPath:     filepath.Join(baseDir, "bossd.db"),
+			socketPath: filepath.Join(baseDir, "bossd.sock"),
+			plugins:    []config.PluginConfig{},
+			onReady:    func() { close(ready) },
+			startupStrandedBootstrapReap: func(context.Context) (int, error) {
+				// Hold the pass open briefly: if the two ran concurrently the
+				// cron seam would observe reapDone false during this window.
+				time.Sleep(150 * time.Millisecond)
+				mu.Lock()
+				reapDone = true
+				mu.Unlock()
+				return 0, nil
+			},
+			startupStrandedCronRecovery: func(context.Context) (int, error) {
+				mu.Lock()
+				reapFirst = reapDone
+				mu.Unlock()
+				close(cronRan)
+				return 0, nil
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state")
+	}
+	select {
+	case <-cronRan:
+	case <-time.After(10 * time.Second):
+		t.Fatal("startup stranded-cron recovery did not run")
+	}
+
+	mu.Lock()
+	ordered := reapFirst
+	mu.Unlock()
+	if !ordered {
+		t.Fatal("stranded-cron recovery ran before the stranded-bootstrap reap finished; " +
+			"the two startup passes must be sequential, reaper first")
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return after SIGTERM")
 	}
 }
 

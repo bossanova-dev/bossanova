@@ -1391,6 +1391,49 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	}
 }
 
+func TestHomeActionBarsKeepBugReportShortcutHidden(t *testing.T) {
+	tests := []struct {
+		name string
+		home HomeModel
+	}{
+		{
+			name: "no repositories",
+			home: HomeModel{ctx: context.Background(), loading: false, repoCount: 0},
+		},
+		{
+			name: "no sessions",
+			home: HomeModel{ctx: context.Background(), loading: false, repoCount: 1},
+		},
+		{
+			name: "session table",
+			home: HomeModel{
+				ctx:       context.Background(),
+				loading:   false,
+				repoCount: 1,
+				sessions:  []*pb.Session{{Id: "session-1", Title: "Active work"}},
+			},
+		},
+		{
+			name: "daemon error",
+			home: HomeModel{
+				ctx:     context.Background(),
+				loading: false,
+				err:     errors.New("daemon unavailable"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := tt.home
+			h.buildTableRows()
+			if got := h.View().Content; strings.Contains(got, "[ctrl+g] report a bug") {
+				t.Fatalf("Home action bar exposes hidden Ctrl+G report action: %s", got)
+			}
+		})
+	}
+}
+
 func TestHomeLogoutConfirmationVisibleInEmptyNoRepoState(t *testing.T) {
 	h := HomeModel{
 		ctx:           context.Background(),

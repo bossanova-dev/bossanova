@@ -32,6 +32,15 @@ type fakeDaemon struct {
 	outputs      []pushedOutput
 	stateChanges []pushedStateChange
 	ended        []pushedEnded
+
+	// stalls records every SetRPCStall/SetRPCStallFor call in order, so a test
+	// can assert both the window and its procedure scope.
+	stalls []recordedStall
+}
+
+type recordedStall struct {
+	procedure string
+	window    time.Duration
 }
 
 type pushedOutput struct {
@@ -83,6 +92,12 @@ func (d *fakeDaemon) TryPushSessionEnded(id string, final pb.SessionState, _ tim
 	}
 	d.ended = append(d.ended, pushedEnded{id, final})
 	return nil
+}
+func (d *fakeDaemon) SetRPCStall(window time.Duration) {
+	d.stalls = append(d.stalls, recordedStall{window: window})
+}
+func (d *fakeDaemon) SetRPCStallFor(procedure string, window time.Duration) {
+	d.stalls = append(d.stalls, recordedStall{procedure: procedure, window: window})
 }
 
 // fakeTUI is a programmable tui for protocol tests.
@@ -485,7 +500,8 @@ func TestDaemonUnknownActionListsValid(t *testing.T) {
 	mustBeErr(t, resps[0], "unknown daemon action")
 	msg, _ := resps[0]["error"].(string)
 	for _, a := range []string{"add_session", "add_repo", "add_chat", "add_cron_job",
-		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended"} {
+		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended",
+		"set_rpc_stall"} {
 		if !strings.Contains(msg, a) {
 			t.Fatalf("unknown-action error should list %q; got %q", a, msg)
 		}
@@ -615,11 +631,12 @@ func TestCapabilitiesOp(t *testing.T) {
 		t.Fatalf("ops not sorted: %v", ops)
 	}
 	actions := toStringSlice(t, resps[0]["daemonActions"])
-	if len(actions) != 9 || !isSorted(actions) {
-		t.Fatalf("want 9 sorted daemon actions, got %v", actions)
+	if len(actions) != 10 || !isSorted(actions) {
+		t.Fatalf("want 10 sorted daemon actions, got %v", actions)
 	}
 	for _, a := range []string{"add_session", "add_repo", "add_chat", "add_cron_job",
-		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended"} {
+		"add_prs", "add_tracker_issues", "push_output", "state_change", "session_ended",
+		"set_rpc_stall"} {
 		if !sortedContains(actions, a) {
 			t.Fatalf("daemonActions missing %q: %v", a, actions)
 		}
@@ -655,4 +672,58 @@ func isSorted(xs []string) bool {
 		}
 	}
 	return true
+}
+
+// TestDaemonSetRPCStall drives the BOS-723 fault-injection action end to end:
+// a blanket wedge, a procedure-scoped wedge, and the explicit clear a scenario
+// uses to show the TUI recovering unaided.
+func TestDaemonSetRPCStall(t *testing.T) {
+	d := &fakeDaemon{}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"set_rpc_stall","stallMs":1500}`,
+		`{"id":2,"op":"daemon","action":"set_rpc_stall","stallMs":4000,"procedure":"RecordChat"}`,
+		`{"id":3,"op":"daemon","action":"set_rpc_stall","stallMs":0}`,
+	)
+	if len(resps) != 3 {
+		t.Fatalf("want 3 responses, got %d", len(resps))
+	}
+	for i, r := range resps {
+		mustBeOK(t, r)
+		if r["screen"] != "home" {
+			t.Fatalf("response %d screen = %v, want the settled screen", i, r["screen"])
+		}
+	}
+	want := []recordedStall{
+		{window: 1500 * time.Millisecond},
+		{procedure: "RecordChat", window: 4 * time.Second},
+		{window: 0},
+	}
+	if len(d.stalls) != len(want) {
+		t.Fatalf("stalls = %+v, want %+v", d.stalls, want)
+	}
+	for i := range want {
+		if d.stalls[i] != want[i] {
+			t.Fatalf("stall %d = %+v, want %+v", i, d.stalls[i], want[i])
+		}
+	}
+}
+
+// TestDaemonSetRPCStallRejectsBadWindows asserts the two payloads that can only
+// be authoring mistakes are refused loudly rather than silently coerced: a
+// negative window (0 is the documented clear) and one no scenario step could
+// outlast.
+func TestDaemonSetRPCStallRejectsBadWindows(t *testing.T) {
+	d := &fakeDaemon{}
+	resps := runDaemonReqs(t, d,
+		`{"id":1,"op":"daemon","action":"set_rpc_stall","stallMs":-5}`,
+		`{"id":2,"op":"daemon","action":"set_rpc_stall","stallMs":90000}`,
+	)
+	if len(resps) != 2 {
+		t.Fatalf("want 2 responses, got %d", len(resps))
+	}
+	mustBeErr(t, resps[0], "must not be negative")
+	mustBeErr(t, resps[1], "exceeds the 60000 ms maximum")
+	if len(d.stalls) != 0 {
+		t.Fatalf("a rejected payload still wedged the daemon: %+v", d.stalls)
+	}
 }

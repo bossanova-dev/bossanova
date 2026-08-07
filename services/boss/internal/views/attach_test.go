@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	bosspty "github.com/recurser/boss/internal/pty"
@@ -29,6 +30,12 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(c.in); got != c.want {
 			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestAgentDisplayName(t *testing.T) {
+	if got := agentDisplayName("opencode"); got != "OpenCode" {
+		t.Errorf("agentDisplayName(opencode) = %q, want OpenCode", got)
 	}
 }
 
@@ -193,6 +200,299 @@ func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string
 	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
 }
 
+// blockingRecordChatStub stands in for a wedged daemon: RecordChat parks until
+// the test releases it. Any implementation that calls it from inside Update
+// parks the whole Bubble Tea loop with it.
+type blockingRecordChatStub struct {
+	stubClient
+	release chan struct{}
+}
+
+// newBlockingRecordChatStub returns a stub whose RecordChat blocks until the
+// test ends, releasing it from t.Cleanup so no goroutine is left parked.
+func newBlockingRecordChatStub(t *testing.T) *blockingRecordChatStub {
+	t.Helper()
+	s := &blockingRecordChatStub{release: make(chan struct{})}
+	t.Cleanup(func() { close(s.release) })
+	return s
+}
+
+func (s *blockingRecordChatStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+	<-s.release
+	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
+}
+
+// updateWithin runs Update on a goroutine and fails the test if it has not
+// returned within d. Bounding it this way means a regression to a synchronous
+// RecordChat FAILS these tests instead of hanging the package.
+func updateWithin(t *testing.T, m AttachModel, msg tea.Msg, d time.Duration) (AttachModel, tea.Cmd) {
+	t.Helper()
+	type result struct {
+		model tea.Model
+		cmd   tea.Cmd
+	}
+	done := make(chan result, 1)
+	go func() {
+		updated, cmd := m.Update(msg)
+		done <- result{model: updated, cmd: cmd}
+	}()
+	select {
+	case r := <-done:
+		return r.model.(AttachModel), r.cmd
+	case <-time.After(d):
+		t.Fatalf("Update(%T) did not return within %s — the RPC is still running on the update loop", msg, d)
+		return AttachModel{}, nil
+	}
+}
+
+// driveAttachReady runs the two-step launch: Update(attachReadyMsg) now only
+// stages RecordChat as a tea.Cmd, so everything downstream of the RPC
+// (pendingExec, telemetry, the resume guard) only materialises once that cmd's
+// chatRecordedMsg is fed back in. Returns the model and cmd from the second step.
+func driveAttachReady(t *testing.T, m AttachModel, msg attachReadyMsg) (AttachModel, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.Update(msg)
+	staged := updated.(AttachModel)
+	if cmd == nil {
+		t.Fatal("attachReadyMsg returned a nil cmd, want the off-loop RecordChat cmd")
+	}
+	produced := cmd()
+	recorded, ok := produced.(chatRecordedMsg)
+	if !ok {
+		t.Fatalf("attachReadyMsg cmd produced %T, want chatRecordedMsg", produced)
+	}
+	next, nextCmd := staged.Update(recorded)
+	return next.(AttachModel), nextCmd
+}
+
+// TestAttach_AttachReadyDoesNotBlockOnRecordChat is the core BOS-723 guard: the
+// RecordChat RPC must run inside a tea.Cmd, not inside Update. Against a daemon
+// that never answers, Update must still return promptly (with the cmd that will
+// do the RPC), because a blocked Update reads no keys and repaints nothing.
+func TestAttach_AttachReadyDoesNotBlockOnRecordChat(t *testing.T) {
+	m := NewAttachModel(newBlockingRecordChatStub(t), context.Background(), bosspty.NewManager(), "session-1", "")
+
+	_, cmd := updateWithin(t, m, attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	}, 2*time.Second)
+
+	if cmd == nil {
+		t.Fatal("cmd = nil, want the tea.Cmd that performs RecordChat off the update loop")
+	}
+}
+
+// TestAttach_EscDetachesWhileRecordChatIsInFlight is the user-visible half: with
+// the RPC parked, the model must still process keys, so esc gets the user out
+// instead of leaving Ctrl+C as the only escape.
+func TestAttach_EscDetachesWhileRecordChatIsInFlight(t *testing.T) {
+	m := NewAttachModel(newBlockingRecordChatStub(t), context.Background(), bosspty.NewManager(), "session-1", "")
+
+	staged, _ := updateWithin(t, m, attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	}, 2*time.Second)
+	if !staged.launching {
+		t.Fatal("launching = false while RecordChat is in flight, want true (the launching line must keep rendering)")
+	}
+
+	updated, _ := updateWithin(t, staged, tea.KeyPressMsg{Code: tea.KeyEscape}, 2*time.Second)
+	if !updated.Detached() {
+		t.Fatal("Detached() = false after esc during an in-flight RecordChat, want true")
+	}
+}
+
+// TestAttach_ChatRecordedErrorRendersDismissableError verifies a failed (e.g.
+// deadline-exceeded) RecordChat lands on the dismissable error frame rather
+// than leaving the launching line up forever.
+func TestAttach_ChatRecordedErrorRendersDismissableError(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	updated, cmd := m.Update(chatRecordedMsg{
+		session: &pb.Session{Id: "session-1"},
+		err:     errors.New("context deadline exceeded"),
+	})
+	got := updated.(AttachModel)
+
+	if cmd != nil {
+		t.Error("cmd != nil after a failed RecordChat, want nil (nothing more to schedule)")
+	}
+	if got.err == nil {
+		t.Fatal("err = nil after a failed RecordChat, want the wrapped error")
+	}
+	view := got.View().Content
+	if !strings.Contains(view, "record chat") {
+		t.Errorf("view = %q, want the wrapped 'record chat' error", view)
+	}
+	if !strings.Contains(view, "[esc] back") {
+		t.Errorf("view = %q, want a dismissable [esc] back affordance", view)
+	}
+	if strings.Contains(view, "Launching") {
+		t.Errorf("view = %q, must not still render the launching line", view)
+	}
+}
+
+// TestAttach_StaleChatRecordedMsgIsDropped guards the hazard the off-loop move
+// introduced: RecordChat can now outlive the model that issued it.
+//
+// esc → chat picker → open a different chat replaces a.attach wholesale
+// (app_routing.go, app_delegate.go) while the abandoned RPC is still in flight.
+// Without the identity check, that late message drives the NEW model with the
+// OLD chat's tmux session name — registering it under the new model's agent
+// session id and scheduling an exec the new model's detach guard does not stop.
+func TestAttach_StaleChatRecordedMsgIsDropped(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	m.agentSessionID = "the-chat-now-open"
+	m.launchID = 7
+
+	updated, cmd := m.Update(chatRecordedMsg{
+		session:  &pb.Session{Id: "session-1"},
+		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-for-the-abandoned-chat"},
+		launchID: 6,
+	})
+	got := updated.(AttachModel)
+
+	if cmd != nil {
+		t.Error("cmd != nil for a stale chatRecordedMsg, want nil (nothing must be scheduled for a chat the user left)")
+	}
+	if got.pendingExec != nil {
+		t.Errorf("pendingExec = %+v for a stale chatRecordedMsg, want nil", got.pendingExec)
+	}
+	if got.tmuxName != "" {
+		t.Errorf("tmuxName = %q, want empty: the abandoned chat's tmux session must not be adopted", got.tmuxName)
+	}
+	if got.err != nil {
+		t.Errorf("err = %v, want nil: a stale result is dropped silently, not surfaced to the user", got.err)
+	}
+}
+
+// TestAttach_ChatRecordedMsgIsDroppedAfterDetach covers the simpler half: the
+// user pressed esc while the RPC was parked, so nothing from it may be acted on.
+// TestAttach_UnstagedModelDropsAnyChatRecordedMsg turns attachLaunchSeq's
+// documented invariant into a gate. The guard is safe only because Add returns
+// the POST-increment value, so a real chatRecordedMsg always carries >= 1 and a
+// model that never staged a launch (launchID at its zero value) matches
+// nothing. Every other launchID assertion hand-sets a non-zero ticket first, so
+// all of them would still pass if the mint changed to a pre-increment scheme or
+// a per-model counter — and a freshly built AttachModel would then start
+// accepting an abandoned attempt's result, which is the whole bug the nonce
+// exists to prevent.
+func TestAttach_UnstagedModelDropsAnyChatRecordedMsg(t *testing.T) {
+	// Rewind the process-wide counter so the FIRST issue is what gets asserted.
+	// A pre-increment mint — the regression this half exists to catch — returns
+	// 0 only on the first Add of the process, and by the time this test runs in
+	// a whole-package run several attach tests have already minted, so without
+	// the rewind the assertion would pass against the very scheme it targets.
+	// Safe to mutate: no test in this package that touches attach runs parallel.
+	prevSeq := attachLaunchSeq.Swap(0)
+	t.Cleanup(func() { attachLaunchSeq.Store(prevSeq) })
+	if got := attachLaunchSeq.Add(1); got == 0 {
+		t.Fatalf("attachLaunchSeq.Add(1) = 0 on the first issue: the mint must never hand out the zero value an unstaged model carries")
+	}
+
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	if m.launchID != 0 {
+		t.Fatalf("a fresh AttachModel has launchID %d, want 0 — this test's premise is that an unstaged model carries the zero value", m.launchID)
+	}
+
+	updated, cmd := m.Update(chatRecordedMsg{
+		session:  &pb.Session{Id: "session-1"},
+		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-from-some-other-attach"},
+		launchID: 1,
+	})
+	got := updated.(AttachModel)
+
+	if cmd != nil {
+		t.Error("cmd != nil: a model that never staged a launch must not act on any result")
+	}
+	if got.pendingExec != nil {
+		t.Errorf("pendingExec = %+v: a model that never staged a launch must not act on any result", got.pendingExec)
+	}
+	if got.tmuxName != "" {
+		t.Errorf("tmuxName = %q, want empty", got.tmuxName)
+	}
+}
+
+func TestAttach_ChatRecordedMsgIsDroppedAfterDetach(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	m.agentSessionID = "chat-1"
+	m.launchID = 3
+	m.detach = true
+
+	updated, cmd := m.Update(chatRecordedMsg{
+		session:  &pb.Session{Id: "session-1"},
+		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-1"},
+		launchID: 3,
+	})
+	got := updated.(AttachModel)
+
+	if cmd != nil {
+		t.Error("cmd != nil after detach, want nil")
+	}
+	if got.pendingExec != nil {
+		t.Errorf("pendingExec = %+v after detach, want nil", got.pendingExec)
+	}
+}
+
+// TestAttach_AbandonedResultCannotReprimeAConsumedLaunch is why the guard keys
+// on a launch nonce rather than on the chat: resuming the chat the user just
+// backed out of gives both attempts the SAME agentSessionID, so a chat-keyed
+// guard would let the abandoned attempt's result through.
+//
+// It would land on a model that has already launched and had its stash
+// consumed by startExecMsg. Which harm lands first depends on what
+// probeTmuxSession answers, so all three assertions below are load-bearing in
+// some environment and the test is red in every one:
+//   - probe says gone (the usual answer where no tmux session exists, e.g. CI):
+//     the resume guard sets errChatSessionGone, overwriting the live model's
+//     state — and since View() checks m.err before m.returned, that replaces an
+//     agent-exited diagnostic screen with a bogus "start a new chat".
+//   - probe says alive or cannot tell: the handler runs on and, because it sets
+//     m.pendingExec unconditionally, re-primes the stash and schedules a second
+//     exec that startExecMsg's pendingExec == nil guard can no longer absorb —
+//     re-running `tmux attach` over whatever the user is looking at.
+func TestAttach_AbandonedResultCannotReprimeAConsumedLaunch(t *testing.T) {
+	// resumeID is empty so the launch reaches pendingExec: the resume path's
+	// probeTmuxSession guard would short-circuit it in a test environment.
+	// The abandoned duplicate below is what carries resume, as it would when
+	// the user re-opens the chat they backed out of.
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	launched, _ := driveAttachReady(t, m, attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   []*pb.ClaudeChat{{}}, // non-empty: no prefill path
+	})
+	if launched.pendingExec == nil {
+		t.Fatal("precondition: the launch did not prime pendingExec, so the assertions below would hold vacuously")
+	}
+	// startExecMsg consumes the stash, exactly as the real launch does.
+	consumed, _ := launched.Update(startExecMsg{})
+	afterExec := consumed.(AttachModel)
+	if afterExec.pendingExec != nil {
+		t.Fatal("precondition: startExecMsg did not consume pendingExec")
+	}
+
+	// The abandoned attempt's result finally arrives. Same chat, same session,
+	// different launch.
+	updated, cmd := afterExec.Update(chatRecordedMsg{
+		session:  &pb.Session{Id: "session-1"},
+		chat:     &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"},
+		launchID: afterExec.launchID - 1,
+		resume:   true,
+	})
+	got := updated.(AttachModel)
+
+	if got.pendingExec != nil {
+		t.Errorf("pendingExec = %+v: an abandoned result re-primed a launch that had already been consumed", got.pendingExec)
+	}
+	if cmd != nil {
+		t.Error("cmd != nil: an abandoned result scheduled a second exec")
+	}
+	if got.err != nil {
+		t.Errorf("err = %v: an abandoned result overwrote the model's state", got.err)
+	}
+}
+
 func TestAttach_ViewUsesOverrideAgentForLaunchLabel(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 	m.SetOverrideAgent("claude")
@@ -218,13 +518,12 @@ func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 	m.SetTelemetry(rec)
 
-	updated, cmd := m.Update(attachReadyMsg{
+	_, cmd := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
 		chats:   nil,
 	})
-	_ = updated.(AttachModel)
 	if cmd == nil {
-		t.Fatal("expected a tick cmd from attachReadyMsg")
+		t.Fatal("expected a tick cmd from chatRecordedMsg")
 	}
 
 	if len(rec.events) != 2 {
@@ -242,23 +541,31 @@ func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
 }
 
 // TestAttach_AttachReadyDefersExec verifies that the launching message stays
-// rendered after attachReadyMsg arrives: m.launching must remain true and
-// m.pendingExec must be primed for the follow-up tick. Without this, the
-// "Launching... Press Ctrl+X to detach" line flashes for only the RPC time.
+// rendered across both halves of the launch — the attachReadyMsg that stages
+// RecordChat and the chatRecordedMsg that lands it: m.launching must remain
+// true and m.pendingExec must be primed for the follow-up tick. Without this,
+// the "Launching... Press Ctrl+X to detach" line flashes for only the RPC time.
 func TestAttach_AttachReadyDefersExec(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 
-	updated, cmd := m.Update(attachReadyMsg{
+	staged, _ := m.Update(attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
 		chats:   nil,
 	})
-	got := updated.(AttachModel)
+	if !staged.(AttachModel).launching {
+		t.Fatal("launching = false while RecordChat is still in flight, want true")
+	}
+
+	got, cmd := driveAttachReady(t, m, attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	})
 
 	if !got.launching {
-		t.Fatal("launching = false after attachReadyMsg, want true (the message must keep rendering)")
+		t.Fatal("launching = false after chatRecordedMsg, want true (the message must keep rendering)")
 	}
 	if got.pendingExec == nil {
-		t.Fatal("pendingExec = nil after attachReadyMsg, want a non-nil stash")
+		t.Fatal("pendingExec = nil after chatRecordedMsg, want a non-nil stash")
 	}
 	if got.pendingExec.tmuxName != "boss-test-chat" {
 		t.Errorf("pendingExec.tmuxName = %q, want %q", got.pendingExec.tmuxName, "boss-test-chat")
@@ -274,13 +581,12 @@ func TestAttach_AttachReadyDefersExec(t *testing.T) {
 func TestAttach_StartExecCompletesLaunch(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 
-	updated, _ := m.Update(attachReadyMsg{
+	primed, _ := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
 		chats:   nil,
 	})
-	primed := updated.(AttachModel)
 	if primed.pendingExec == nil {
-		t.Fatal("precondition: pendingExec not set by attachReadyMsg")
+		t.Fatal("precondition: pendingExec not set by chatRecordedMsg")
 	}
 
 	updated2, cmd := primed.Update(startExecMsg{})
@@ -439,11 +745,13 @@ func indexString(values []string, want string) int {
 func TestAttach_StartExecAfterDetachIsNoop(t *testing.T) {
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
 
-	updated, _ := m.Update(attachReadyMsg{
+	primed, _ := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
 		chats:   nil,
 	})
-	primed := updated.(AttachModel)
+	if primed.pendingExec == nil {
+		t.Fatal("precondition: pendingExec not set, so the noop assertions below would hold vacuously")
+	}
 	primed.detach = true
 
 	updated2, cmd := primed.Update(startExecMsg{})
@@ -469,11 +777,10 @@ func TestAttach_ResumeMissingTmuxSessionShowsDismissableError(t *testing.T) {
 	// resumeID non-empty => resume-attach => pre-check is active.
 	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "agent-uuid-1")
 
-	updated, cmd := m.Update(attachReadyMsg{
+	got, cmd := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
 		chats:   []*pb.ClaudeChat{{}}, // non-empty so no prefill path is taken
 	})
-	got := updated.(AttachModel)
 
 	if cmd != nil {
 		t.Fatal("cmd != nil: a missing tmux session must NOT schedule a tick/exec; want nil")
@@ -529,7 +836,7 @@ func TestAttachTmuxEnvNormalizesTerm(t *testing.T) {
 	// force fallback by pointing probe through termnorm's seam is out of scope
 	// here; assert the helper delegates to termnorm by checking TERM is present
 	// and non-empty (integration correctness is covered by termnorm's own tests).
-	env, eff := attachTmuxEnv(base)
+	env, eff := attachTmuxEnv(base, "")
 	if eff == "" {
 		t.Fatal("effective TERM empty")
 	}
@@ -549,6 +856,7 @@ func TestAttachTmuxEnvNormalizesTerm(t *testing.T) {
 // plus the captured tmux startup output (e.g. a missing-terminfo error).
 func TestRenderTmuxAttachDiagnostic(t *testing.T) {
 	out := renderTmuxAttachDiagnostic(
+		"",
 		"boss-abc-123",
 		"xterm-256color",
 		"missing or unsuitable terminal: xterm-ghostty\n",
@@ -567,7 +875,7 @@ func TestRenderTmuxAttachDiagnostic(t *testing.T) {
 // TestRenderTmuxAttachDiagnosticEmptyWhenNoSignal verifies the diagnostic
 // renders blank when there's no tmux session name to reproduce with.
 func TestRenderTmuxAttachDiagnosticEmptyWhenNoSignal(t *testing.T) {
-	if got := renderTmuxAttachDiagnostic("", "", ""); got != "" {
+	if got := renderTmuxAttachDiagnostic("", "", "", ""); got != "" {
 		t.Fatalf("want empty diagnostic, got %q", got)
 	}
 }
@@ -601,6 +909,7 @@ func TestSanitizeTmuxTail(t *testing.T) {
 // error text still does.
 func TestRenderTmuxAttachDiagnosticSanitizesTail(t *testing.T) {
 	out := renderTmuxAttachDiagnostic(
+		"",
 		"boss-abc-123",
 		"xterm-256color",
 		"\x1b[2J\x1b[31mmissing or unsuitable terminal: xterm-ghostty\x1b[0m\n",

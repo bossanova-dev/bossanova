@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "title": "BOS-714 — under --host the chat picker renders the remote daemon's chats but drops the local-only [t]erminal action",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_HOST_E2E_ATTACH_DESTINATION": "deploy@build-box.invalid" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "The chat picker renders remote state but withholds the action that would open a remote path in a local terminal",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the session board is serving the remote daemon's sessions, so the run is genuinely in a --host context and not an empty shell"
+          },
+          "timeoutMs": 15000,
+          "caption": "Boss is driving a daemon on another machine; the session list renders that machine's work."
+        },
+        {
+          "key": "enter",
+          "caption": "Open the session's chat picker — the view that offers the per-session actions."
+        },
+        {
+          "waitFor": {
+            "text": "CHAT",
+            "match": "normalized",
+            "label": "the chat list header, so the assertions below are read off a rendered chat picker rather than a loading frame"
+          },
+          "timeoutMs": 15000,
+          "caption": "The chat picker lists the remote session's chats."
+        },
+        {
+          "expect": [
+            {
+              "text": "Initial implementation",
+              "match": "normalized",
+              "label": "a real chat row from the daemon renders, so the picker is populated and not degraded to an error"
+            },
+            {
+              "text": "[enter] select",
+              "match": "normalized",
+              "label": "attaching to a chat is still offered — --host removes the local-only action, not the ability to open a chat"
+            },
+            {
+              "text": "[n]ew chat [s]ettings",
+              "match": "normalized",
+              "label": "the actions that still mean something remotely are intact — this is the guard against an empty or collapsed bar, not the [t]erminal assertion, which the regex below carries"
+            },
+            {
+              "text": "^(?![\\s\\S]*\\[t\\]erminal)[\\s\\S]*\\[n\\]ew chat",
+              "match": "regex",
+              "label": "a frame that carries the chat picker's own action bar and no [t]erminal on it: the action opens the session's worktree in a LOCAL terminal tab, and that path is on the remote machine"
+            }
+          ],
+          "caption": "BOS-714: the action bar keeps every action that still means something remotely and drops the one that would open a path that does not exist here."
+        }
+      ]
+    }
+  ]
+}

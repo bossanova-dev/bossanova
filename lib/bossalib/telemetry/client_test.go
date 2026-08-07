@@ -603,6 +603,7 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventSessionFinalized, map[string]any{"outcome": "pr_opened", "agent": "claude", "unattended": true, "source": "daemon"}},
 		{EventFeatureViewed, map[string]any{"feature": "sessions", "source": "web"}},
 		{EventFeatureInteraction, map[string]any{"feature": "sessions", "action": "filter_changed", "source": "web"}},
+		{EventTUIAction, map[string]any{"feature": "accounts", "action": "account_removed", "status": "success", "source": "tui"}},
 	}
 	coveredEvents := make(map[Event]map[string]any, len(cases))
 	for _, tc := range cases {

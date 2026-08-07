@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/loginshell"
 	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/recurser/bossalib/safego"
 )
@@ -204,21 +206,73 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 	return resp, nil
 }
 
-// BuildInteractiveCommand is unsupported: the opencode runner drives the headless
-// one-shot `opencode run` path only. Interactive TUI attach is out of scope for
-// the agent-runner integration (bossd falls back to its non-interactive view),
-// so this returns an empty-but-valid response rather than a fabricated command
-// line. Resume of a headless run is by `--session <id>` on StartRun, not an
-// interactive relaunch.
-//
-// The NONE declaration is honest but currently unreachable: both bossd spawn
-// sites reject an empty argv before they read the declaration, so this response
-// fails the launch rather than reporting a dropped suffix. It is set anyway so
-// the declaration stays correct if this path ever returns a real command line.
-func (s *Server) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+// BuildInteractiveCommand returns the OpenCode TUI command for tmux-hosted
+// chats. OpenCode creates fresh ses_* identifiers itself, so --session is only
+// valid for a resumed chat. Its --prompt option auto-submits, as verified with
+// OpenCode 1.18.4 in a live tmux pane, so startup input must be marked consumed.
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+	args := []string{"opencode"}
+	if req.GetResume() && req.GetSessionId() != "" {
+		args = append(args, "--session", req.GetSessionId())
+	}
+	if s.runner == nil || s.runner.dangerouslySkipPermissions || !autoPermissionSupported(s.runner.cliVersion) {
+		args = append(args, "--dangerously-skip-permissions")
+	} else {
+		args = append(args, "--auto")
+	}
+	// Keep interactive launches aligned with the headless path: an explicit
+	// per-session model wins, otherwise BOSS_PLUGIN_model remains the default.
+	model := req.GetModel()
+	if model == "" && s.runner != nil {
+		model = s.runner.model
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+
+	initialInput := opencodeInitialInput(req)
+	appendSystemPromptSupport := bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE
+	if req.GetAppendSystemPrompt() != "" && initialInput != "" {
+		appendSystemPromptSupport = bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
+	}
+	if initialInput != "" {
+		args = append(args, "--prompt", initialInput)
+	}
+
+	loginShell := ""
+	if s.runner != nil {
+		loginShell = s.runner.loginShell
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		Argv: loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
+		// A live OpenCode 1.18.4 tmux spike showed the full TUI's stable
+		// composer rail glyph (┃); --mini exposes no reliable ready marker.
+		ReadyMarker:               "┃",
+		CommandPrefix:             "/",
+		ConsumesInitialInput:      initialInput != "",
+		AppendSystemPromptSupport: appendSystemPromptSupport,
 	}, nil
+}
+
+func opencodeInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
+	input := req.GetInitialPrompt()
+	command := req.GetInitialCommand()
+	if command != "" {
+		input = "/" + strings.TrimLeft(command, "/$")
+	}
+	if input == "" {
+		return ""
+	}
+	if context := req.GetAppendSystemPrompt(); context != "" {
+		// OpenCode recognizes a custom command only when the prompt starts with
+		// its slash prefix. Keep the command first while still carrying the
+		// daemon context in the same argv prompt.
+		if command != "" {
+			return input + "\n\n" + context
+		}
+		return context + "\n\n" + input
+	}
+	return input
 }
 
 // ResolveInteractiveSessionID binds a chat to its opencode session by finding

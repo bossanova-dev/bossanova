@@ -2763,6 +2763,25 @@ func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
 	})
 }
 
+// TestSendMessage_OpenCodeSubmit verifies the OpenCode rail glyph reaches both
+// the readiness gate and the post-Enter submit verifier. The rail is also a
+// possible box-border rune, so a constant-only host test would miss a send path
+// that times out before typing anything.
+func TestSendMessage_OpenCodeSubmit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{
+		"OpenCode ready\n┃ Type a message\n",
+		"OpenCode ready\n┃\n",
+	}}
+	c := NewClient(WithCommandFactory(fake.factory))
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "run the thing", true, "┃"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+}
+
 // TestSendMessage_Submit_DeliversEntersAndVerifies verifies that submit=true
 // delivers, presses Enter once, and runs the verifier for BOTH payload shapes
 // (BOS-488): a single-line message is typed via literal keystrokes, a multi-line

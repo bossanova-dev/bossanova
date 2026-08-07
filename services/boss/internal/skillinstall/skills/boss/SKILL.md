@@ -13,6 +13,14 @@ The command index below is generated from the `boss` CLI by `make gen-skill`. Do
 
 ## Global Flags
 
+### `--host`
+
+Drive a bossd on another machine over SSH (ssh destination)
+
+### `--host-socket`
+
+Remote bossd socket path, when remote boss is not on the SSH PATH
+
 ### `--remote`
 
 Connect to orchestrator URL instead of local daemon

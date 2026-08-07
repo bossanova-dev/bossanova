@@ -225,6 +225,102 @@ type MockDaemon struct {
 	archiveError  string
 	chatListDelay time.Duration
 	chatListError string
+
+	// rpcStall is the current wedge window applied to unary handlers by
+	// rpcStallInterceptor. See SetRPCStall / SetRPCStallFor in harness.go.
+	rpcStall rpcStall
+	// rpcStallChanged is closed (and replaced) on every stall change so a
+	// handler already parked inside a window re-reads it instead of sleeping out
+	// a stall the scenario has since cleared. Lazily created under m.mu.
+	rpcStallChanged chan struct{}
+}
+
+// rpcStall describes one wedge window: block every matching unary handler until
+// until, where an empty procedure means every procedure. The zero value is "not
+// stalled" (until is the zero time, which is always in the past).
+type rpcStall struct {
+	until     time.Time
+	procedure string
+}
+
+// blocks reports whether this window still applies to procedure at now.
+//
+// procedure is the full Connect path ("/bossanova.v1.DaemonService/RecordChat"),
+// so a scoped window matches on the method segment EXACTLY: a suffix match on
+// "/" + s.procedure. A substring match would make the short name "Chat" wedge
+// RecordChat, ListChats, AddChat and DeleteChat together, which is not what a
+// scenario naming one call means.
+func (s rpcStall) blocks(procedure string, now time.Time) bool {
+	if !now.Before(s.until) {
+		return false
+	}
+	return s.procedure == "" || strings.HasSuffix(procedure, "/"+s.procedure)
+}
+
+// rpcStallInterceptor wedges the mock daemon on demand: it makes matching unary
+// handlers accept the request and then simply not answer until the stall window
+// closes, which is the daemon failure BOS-723's client-side bound exists to
+// survive. It is an interceptor rather than an edit to ~60 handlers so a wedge
+// covers every unary RPC, including ones added later.
+//
+// WrapStreamingHandler is a deliberate pass-through: AttachSession is long-lived
+// by nature and boss does not bound it, so stalling it would model a failure the
+// TUI is not meant to recover from and would break every scenario that wedges
+// the daemon while attached.
+type rpcStallInterceptor struct{ m *MockDaemon }
+
+func (i rpcStallInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		i.m.waitOutRPCStall(ctx, req.Spec().Procedure)
+		return next(ctx, req)
+	}
+}
+
+func (i rpcStallInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (i rpcStallInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
+}
+
+// waitOutRPCStall blocks until the current stall window stops applying to
+// procedure, the window is cleared or replaced, or ctx is done — whichever comes
+// first. It never sleeps past a cancelled context: a client that has already hit
+// its own deadline must not keep a handler goroutine parked.
+func (m *MockDaemon) waitOutRPCStall(ctx context.Context, procedure string) {
+	for {
+		m.mu.Lock()
+		stall := m.rpcStall
+		changed := m.rpcStallChangedLocked()
+		m.mu.Unlock()
+
+		now := time.Now()
+		if !stall.blocks(procedure, now) {
+			return
+		}
+		timer := time.NewTimer(stall.until.Sub(now))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-changed:
+			// The stall was cleared or replaced; re-read it rather than
+			// serving an answer the scenario may still want withheld.
+			timer.Stop()
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+// rpcStallChangedLocked returns the current change-signal channel, creating it
+// on first use. Callers must hold m.mu.
+func (m *MockDaemon) rpcStallChangedLocked() chan struct{} {
+	if m.rpcStallChanged == nil {
+		m.rpcStallChanged = make(chan struct{})
+	}
+	return m.rpcStallChanged
 }
 
 // StartMockDaemon binds a Unix socket and serves the mock DaemonService.
@@ -261,7 +357,12 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		attachActive:           make(map[string]int),
 	}
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(m, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))
+	// Auth first, then the stall: an unauthenticated request should be refused
+	// immediately rather than held for the length of a wedge window.
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(m, connect.WithInterceptors(
+		socketauth.NewServerInterceptor(token),
+		rpcStallInterceptor{m: m},
+	))
 	mux.Handle(path, handler)
 	m.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = m.httpServer.Serve(ln) }()
@@ -800,7 +901,11 @@ func (m *MockDaemon) ListChats(_ context.Context, req *connect.Request[pb.ListCh
 	var out []*pb.ClaudeChat
 	for _, c := range m.chats {
 		if req.Msg.SessionId == "" || c.SessionId == req.Msg.SessionId {
-			out = append(out, c)
+			// Cloned, not shared: connect marshals this response after RUnlock,
+			// and RecordChat backfills TmuxSessionName on the stored message
+			// under the write lock. Handing out the stored pointer races that
+			// write — cloning on the read side is what actually closes it.
+			out = append(out, cloneMsg(c))
 		}
 	}
 	return connect.NewResponse(&pb.ListChatsResponse{Chats: out}), nil
@@ -1308,8 +1413,41 @@ func (m *MockDaemon) MergeSession(context.Context, *connect.Request[pb.MergeSess
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+// RecordChat mints (or returns) the chat row the attach flow needs, including a
+// deterministic tmux session name. The real daemon creates the tmux session as a
+// side effect; the mock cannot and does not — which is exactly the state an
+// attach has to handle, so the flow reaches its own liveness check rather than
+// dying on an Unimplemented RPC before it gets there.
+func (m *MockDaemon) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.chats {
+		if c.AgentSessionId == req.Msg.AgentSessionId {
+			if c.TmuxSessionName == "" {
+				c.TmuxSessionName = mockTmuxSessionName(req.Msg.AgentSessionId)
+			}
+			// Cloned like every other read path here: connect marshals this
+			// after the lock is released, so returning the stored message would
+			// race the backfill above. ListChats clones on its side too — both
+			// are needed, since this is the only writer to a stored chat.
+			return connect.NewResponse(&pb.RecordChatResponse{Chat: cloneMsg(c)}), nil
+		}
+	}
+	chat := &pb.ClaudeChat{
+		SessionId:       req.Msg.SessionId,
+		AgentSessionId:  req.Msg.AgentSessionId,
+		Title:           req.Msg.Title,
+		TmuxSessionName: mockTmuxSessionName(req.Msg.AgentSessionId),
+	}
+	m.chats = append(m.chats, chat)
+	return connect.NewResponse(&pb.RecordChatResponse{Chat: cloneMsg(chat)}), nil
+}
+
+// mockTmuxSessionName derives a stable tmux session name from an agent session
+// id, mirroring the daemon's "one tmux session per chat" naming closely enough
+// for a captured frame to look real.
+func mockTmuxSessionName(agentSessionID string) string {
+	return "boss-chat-" + agentSessionID
 }
 
 func (m *MockDaemon) WakeChat(context.Context, *connect.Request[pb.WakeChatRequest]) (*connect.Response[pb.WakeChatResponse], error) {

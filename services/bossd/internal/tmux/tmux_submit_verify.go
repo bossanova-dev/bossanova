@@ -984,7 +984,7 @@ func lineStillAtPrompt(pane, line string) bool {
 
 // promptMarkers are the leading glyphs an agent's input box renders. Shared by
 // hasPromptMarker and composerContent so the list lives in one place.
-var promptMarkers = []string{"❯", "›", ">"}
+var promptMarkers = []string{"❯", "›", "┃", ">"}
 
 // bottomMostPromptMarkerIdx returns the index of the bottom-most row carrying an
 // input-box prompt marker, or -1 if none is present. It is the live input box:

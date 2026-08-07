@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "title": "BOS-723 — a daemon that accepts the socket and never answers now hits a bound: the board says so and recovers itself, and opening a chat lands on a dismissible error instead of an endless launching line",
+  "fixture": { "preset": "wedged-daemon" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "A wedged daemon takes the board to the named, self-recovering daemon-down screen instead of leaving a stale table on screen forever",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the seeded board is up before anything is wedged, so what follows replaces a working screen"
+          },
+          "timeoutMs": 20000,
+          "caption": "The home session list is populated against a healthy daemon."
+        },
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 55000 },
+          "caption": "The daemon stops answering: it keeps accepting the socket connection but writes no response to any unary RPC. The window is deliberately longer than the wait that follows it, so a slow CI box cannot let the stall lapse mid-wait and turn a real failure into an unexplained timeout."
+        },
+        {
+          "waitFor": {
+            "text": "Cannot connect to daemon",
+            "match": "normalized",
+            "label": "the poll bound fires and the board says the daemon is unreachable — before BOS-723 the polls never returned and this screen was never reached"
+          },
+          "timeoutMs": 45000,
+          "caption": "Three bounded poll failures later the board replaces the stale table with the daemon-down screen."
+        },
+        {
+          "expect": [
+            {
+              "text": "Cannot connect to daemon",
+              "match": "normalized",
+              "label": "the failure is named on screen rather than shown as a frozen table the user cannot tell apart from a quiet one"
+            },
+            {
+              "text": "boss daemon restart",
+              "match": "normalized",
+              "label": "the remediation is a copy-able command, so a user whose daemon really is dead has a way out"
+            },
+            {
+              "text": "boss daemon status",
+              "match": "normalized",
+              "label": "the diagnose-first command is offered alongside the restart, so the user can look before they act"
+            },
+            {
+              "text": "Cannot\\s+connect\\s+to\\s+daemon[\\s\\S]*\\[q\\]uit",
+              "match": "regex",
+              "label": "the action bar is on the SAME frame as the failure: one regex over one screen, so the healthy board's own [q]uit cannot stand in for it — after the bound fired the TUI is still drawing its keys, not hung"
+            }
+          ],
+          "caption": "Named failure, both remediation commands, and a live action bar on one frame."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Opening a chat while the daemon withholds the record-chat answer lands on a bounded, dismissible error frame instead of the endless launching line",
+      "steps": [
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 0 },
+          "caption": "The daemon starts answering again so the user can navigate."
+        },
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the board is back, which is what makes the next navigation a normal one rather than a retry of the failure"
+          },
+          "timeoutMs": 25000,
+          "caption": "The session list repopulates and the cursor is on the first seeded session."
+        },
+        { "key": "enter", "caption": "Open that session's chat picker." },
+        {
+          "waitFor": {
+            "text": "Initial implementation",
+            "match": "normalized",
+            "label": "the chat picker is populated, so the chat about to be opened is a real one"
+          },
+          "timeoutMs": 20000,
+          "caption": "The chat picker lists the session's conversations."
+        },
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 30000, "procedure": "RecordChat" },
+          "caption": "The daemon wedges on exactly the call attaching a chat depends on: RecordChat is accepted and never answered."
+        },
+        { "key": "enter", "caption": "Open the selected chat." },
+        {
+          "waitFor": {
+            "text": "record chat",
+            "match": "normalized",
+            "label": "the withheld RecordChat answer becomes a named, bounded error — without the bound the view stays on 'Launching …' for as long as the daemon stays wedged"
+          },
+          "timeoutMs": 25000,
+          "caption": "The bound fires and the launching line is replaced by the failure it belongs to."
+        },
+        {
+          "expect": [
+            {
+              "text": "record chat",
+              "match": "normalized",
+              "label": "the error names the operation that failed, not just a transport code"
+            },
+            {
+              "text": "record\\s+chat[\\s\\S]*\\[esc\\]\\s+back",
+              "match": "regex",
+              "label": "the way out is on the SAME frame as the record-chat failure: one regex over one screen, so the chat picker's own [esc] back cannot stand in for it — the bounded error frame itself is dismissible, not a dead end"
+            }
+          ],
+          "caption": "A named failure with an escape hatch, reached without the user pressing anything to interrupt it."
+        },
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 55000 },
+          "caption": "The daemon goes fully unresponsive again while the user backs out. As in scene 1 the window outlasts the wait it gates, so scene 3's down-again check cannot be defeated by the stall quietly expiring first."
+        },
+        { "key": "esc", "caption": "Dismiss the error frame." },
+        { "key": "esc", "caption": "Leave the chat picker for the session board." }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "When the daemon starts answering again the board repopulates on its own — no restart, no keypress",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Cannot connect to daemon",
+            "match": "normalized",
+            "label": "the board is genuinely down again, so the repopulation that follows is a recovery and not a screen that never left"
+          },
+          "timeoutMs": 35000,
+          "caption": "Back on the board with the daemon still wedged: the daemon-down screen is showing. The wait is shorter than scene 2's 55s window even after two esc settles, so this can only fail because the screen never arrived — never because the wedge quietly lapsed underneath it."
+        },
+        {
+          "daemon": { "action": "set_rpc_stall", "stallMs": 0 },
+          "caption": "The daemon starts answering again. Nothing else happens: boss is not restarted and no key is pressed for the rest of the scene."
+        },
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the first seeded session is back on the board with no user action — the failure screen was a state boss polls out of, not a dead end"
+          },
+          "timeoutMs": 25000,
+          "caption": "The next successful poll clears the failure streak and the table is drawn again."
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "a real session row from the daemon renders, so the recovered client is genuinely serving data"
+            },
+            {
+              "text": "Fix login bug",
+              "match": "normalized",
+              "label": "a second seeded row confirms the whole board came back, not a single lucky cell"
+            },
+            {
+              "text": "STATUS",
+              "match": "normalized",
+              "label": "the table chrome is back too, so this is the session board and not a fragment of the error screen"
+            }
+          ],
+          "caption": "The board is fully populated again: an unreachable daemon is now a passing state, not a terminal one."
+        }
+      ]
+    }
+  ]
+}

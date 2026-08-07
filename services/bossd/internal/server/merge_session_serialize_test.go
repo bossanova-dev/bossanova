@@ -166,12 +166,11 @@ func serializeMergeServer(t *testing.T, prov vcs.Provider, sessions map[string]*
 		tracker.Set(id, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 	}
 	return &Server{
-		sessions:         &serializeSessionStore{sessions: sessions},
-		repos:            &serializeRepoStore{repos: repos},
-		provider:         prov,
-		displayTracker:   tracker,
-		branchStartLocks: map[string]*branchStartLock{},
-		logger:           zerolog.Nop(),
+		sessions:       &serializeSessionStore{sessions: sessions},
+		repos:          &serializeRepoStore{repos: repos},
+		provider:       prov,
+		displayTracker: tracker,
+		logger:         zerolog.Nop(),
 	}
 }
 

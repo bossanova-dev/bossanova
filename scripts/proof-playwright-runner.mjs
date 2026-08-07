@@ -637,6 +637,26 @@ function webStageScript(recipe) {
           { id: 'chat-e2e-3', agentSessionId: 'claude-e2e-3', title: 'Another chat', status: 'idle', agentName: 'claude' },
         ],
       }, {
+        // BOS-704: archive_pending overrides the rendered label with orange,
+        // spinning "archiving" while the retained DisplayStatus.MERGED (=7)
+        // keeps every non-status cell visibly finished in the sessions proof.
+        id: 'sess-e2e-archiving-merged',
+        title: 'Merged proof session archiving',
+        branchName: 'proof/archive-merged',
+        baseBranch: 'main',
+        daemonId: 'daemon-proof',
+        repoId: 'repo-proof',
+        repoDisplayName: 'bossanova',
+        repoOriginUrl: 'https://github.com/e2e/repo-proof',
+        prNumber: 704,
+        prUrl: 'https://github.com/recurser/bossanova/pull/704',
+        displayStatus: 7,
+        displayLabel: 'archiving',
+        // DisplayIntent.WARNING (=2); displaySpinner comes straight from bossd.
+        displayIntent: 2,
+        displaySpinner: true,
+        archivePending: true,
+      }, {
         // A Quick-Chat session with no PR: the header must show New chat/Archive
         // but NO Merge button and NO "Switch account" control (BOS-365 items 1 & 3).
         id: 'sess-e2e-quick',

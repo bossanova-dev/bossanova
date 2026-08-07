@@ -19,7 +19,7 @@ import (
 // script output.
 func (m NewSessionModel) renderErr() string {
 	var b strings.Builder
-	b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+	b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 	if len(m.setupLines) > 0 {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(colorWarning).Render("Setup script output:"))

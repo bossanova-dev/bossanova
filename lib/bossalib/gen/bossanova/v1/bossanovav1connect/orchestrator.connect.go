@@ -462,7 +462,7 @@ type OrchestratorServiceClient interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
-	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
 }
@@ -1613,7 +1613,7 @@ type OrchestratorServiceHandler interface {
 	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
 	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
 	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
-	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
 }

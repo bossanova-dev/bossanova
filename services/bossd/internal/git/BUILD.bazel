@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/git",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/keyedgate",
         "//lib/bossalib/setupscript",
         "@com_github_rs_zerolog//:zerolog",
     ],
@@ -16,6 +17,7 @@ go_test(
     srcs = [
         "keepcurrent_test.go",
         "worktree_bazel_test.go",
+        "worktree_bootstrap_test.go",
         "worktree_perms_test.go",
         "worktree_test.go",
     ],

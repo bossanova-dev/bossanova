@@ -159,7 +159,8 @@ You can clear that flag manually in `settings.json` if you change your mind.
 
 ### How do I report a bug?
 
-Press `ctrl+b` from anywhere in the TUI to open the bug report form. It
+Press `ctrl+g` from anywhere in the TUI to open the bug report form. `ctrl+b`
+remains a temporary deprecated alias outside tmux. The form
 collects boss/bossd version, OS/arch, per-session daemon heartbeats, the
 current session, your session list, and the tail of `boss.log` and
 `bossd.log`. You add a comment and submit; no source code, diffs, or agent

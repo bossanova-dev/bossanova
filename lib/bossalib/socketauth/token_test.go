@@ -102,3 +102,92 @@ func TestReadToken_CorruptReturnsErrTokenInvalid(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTokenInvalid", err)
 	}
 }
+
+// validHexToken is a canonical 64-char lowercase-hex token used across the
+// ValidateToken table below.
+const validHexToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestValidateToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr error // nil means success
+	}{
+		{
+			name: "valid lowercase hex returned unchanged",
+			raw:  validHexToken,
+			want: validHexToken,
+		},
+		{
+			name: "surrounding whitespace and newline trimmed",
+			raw:  "  \n" + validHexToken + "\n  ",
+			want: validHexToken,
+		},
+		{
+			name:    "empty string is missing",
+			raw:     "",
+			wantErr: ErrTokenMissing,
+		},
+		{
+			name:    "whitespace-only is missing",
+			raw:     "   \n",
+			wantErr: ErrTokenMissing,
+		},
+		{
+			name:    "63 chars is invalid",
+			raw:     strings.Repeat("a", 63),
+			wantErr: ErrTokenInvalid,
+		},
+		{
+			name:    "65 chars is invalid",
+			raw:     strings.Repeat("a", 65),
+			wantErr: ErrTokenInvalid,
+		},
+		{
+			name:    "uppercase hex is invalid",
+			raw:     strings.ToUpper(validHexToken),
+			wantErr: ErrTokenInvalid,
+		},
+		{
+			name:    "non-hex chars is invalid",
+			raw:     strings.Repeat("z", 64),
+			wantErr: ErrTokenInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidateToken(tt.raw)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tt.wantErr)
+				}
+				if trimmed := strings.TrimSpace(tt.raw); trimmed != "" && strings.Contains(err.Error(), trimmed) {
+					t.Fatalf("error message leaked the raw token: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateToken(%q): unexpected err %v", tt.raw, err)
+			}
+			if got != tt.want {
+				t.Fatalf("ValidateToken(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateToken_NeverLeaksTokenInError pins the leak-freedom property
+// against a distinctive, easily-greppable payload rather than relying on the
+// generic 'a'/'z' filler above, which could coincidentally match error text.
+func TestValidateToken_NeverLeaksTokenInError(t *testing.T) {
+	const distinctive = "not-hex-and-definitely-not-64-chars-CANARY"
+	_, err := ValidateToken(distinctive)
+	if err == nil {
+		t.Fatal("expected an error for malformed input")
+	}
+	if strings.Contains(err.Error(), distinctive) {
+		t.Fatalf("error message leaked the token: %v", err)
+	}
+}

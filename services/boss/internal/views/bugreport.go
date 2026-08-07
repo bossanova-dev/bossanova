@@ -1,8 +1,7 @@
-// Bug-report modal. ctrl+b from anywhere in the TUI opens this view; the
-// shortcut is intentionally absent from action bars and help text (easter egg)
-// so it doesn't clutter the UI for users who won't need it. Session, git, and
-// environment context are collected automatically on submit — the user only
-// writes a free-form description.
+// Bug-report modal. ctrl+g from anywhere in the TUI opens this view; ctrl+b is
+// retained as a deprecated alias for one release. The new chord appears in the
+// Home action bar. Session, git, and environment context are collected
+// automatically on submit — the user only writes a free-form description.
 package views
 
 import (
@@ -63,7 +62,7 @@ type bugReportFormData struct {
 	comment string
 }
 
-// BugReportModel is the modal view backing ctrl+b. It wraps the previous view:
+// BugReportModel is the modal view backing ctrl+g. It wraps the previous view:
 // on cancel or auto-dismiss, the caller restores previousView without going
 // through switchViewMsg so existing view state is preserved.
 type BugReportModel struct {
@@ -96,7 +95,7 @@ type BugReportModel struct {
 }
 
 // NewBugReportModel builds a BugReportModel bound to the daemon client and auth
-// manager. previousView is the View the app was on when ctrl+b was pressed;
+// manager. previousView is the View the app was on when ctrl+g was pressed;
 // currentSession is the active session (nil when no session context exists);
 // daemonStatuses is a snapshot of per-chat or per-session daemon heartbeat
 // statuses captured from the active view (nil when the view has none).

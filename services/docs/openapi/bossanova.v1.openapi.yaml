@@ -2610,7 +2610,7 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: ReportBug
       description: |-
-        Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+        Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
          resolves the caller's identity when a bearer token is present.
       operationId: bossanova.v1.OrchestratorService.ReportBug
       parameters:

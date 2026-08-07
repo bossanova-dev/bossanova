@@ -110,6 +110,8 @@ func chatReadyMarker(agentName string) string {
 	switch agentName {
 	case "codex":
 		return "›"
+	case "opencode":
+		return "┃"
 	default:
 		return "❯"
 	}
@@ -128,6 +130,8 @@ func chatCommandPrefix(agentName string) string {
 	switch agentName {
 	case "codex":
 		return "$"
+	case "opencode":
+		return "/"
 	default:
 		return "/"
 	}

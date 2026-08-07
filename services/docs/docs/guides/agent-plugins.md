@@ -90,12 +90,21 @@ name against the registry of loaded plugins keyed by their reported names. Set
 or choose OpenCode per session; the dispatcher resolves it with no extra
 configuration.
 
-### Headless invocation
+### Invocation
 
 For unattended runs the plugin drives the CLI headlessly with
 `opencode run --format json …`. The `--format json` flag makes OpenCode emit a
-JSON event stream that the plugin parses; this is the non-interactive
-invocation `bossd` uses (there is no TUI in the daemon-driven flow).
+JSON event stream that the plugin parses.
+
+Interactive chats launch the OpenCode TUI directly. A new chat lets OpenCode
+create its own `ses_*` identifier; a resumed chat uses `opencode --session
+<ses_id>`. Boss session context and any initial user input are delivered as the
+first user turn through `--prompt`, which OpenCode submits on launch.
+
+OpenCode has no `--mcp-config` equivalent, so boss MCP tools are unavailable
+inside an interactive OpenCode chat. Its TUI status polling also remains
+limited: question and working-state detection do not yet parse OpenCode's pane
+grammar.
 
 ### Permission posture
 

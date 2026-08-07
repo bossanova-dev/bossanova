@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "title": "BOS-716 — Ctrl+G opens the TUI bug-report modal without tmux's Ctrl+B prefix collision",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Ctrl+G opens the bug-report modal",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "The Home session list is visible before the global shortcut is pressed"
+        },
+        { "key": "ctrl+g", "caption": "Press Ctrl+G, the tmux-safe bug-report shortcut" },
+        {
+          "waitFor": "Report a bug",
+          "timeoutMs": 10000,
+          "caption": "Ctrl+G opens the Report a bug modal"
+        },
+        {
+          "expect": [
+            {
+              "text": "Report a bug",
+              "match": "normalized",
+              "label": "Report a bug — modal heading"
+            },
+            {
+              "text": "[enter] submit",
+              "match": "normalized",
+              "label": "[enter] submit — bug-report submit affordance"
+            }
+          ],
+          "caption": "The visible modal includes its heading and submit affordance"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Home advertises the new bug-report shortcut",
+      "steps": [
+        { "key": "esc", "caption": "Dismiss the modal and return Home" },
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "The Home session list is visible again"
+        },
+        {
+          "expect": {
+            "text": "[ctrl+g] report a bug",
+            "match": "normalized",
+            "label": "[ctrl+g] report a bug — discoverable Home key affordance"
+          },
+          "caption": "Home lists the tmux-safe shortcut users should discover"
+        }
+      ]
+    }
+  ]
+}

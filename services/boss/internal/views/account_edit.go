@@ -13,13 +13,20 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // accountEditSavedMsg carries the result of an UpdateAccount call.
+//
+// statusFlip is the status the request asked for when the save was the status
+// row's active⇄disabled toggle, and "" for a label or priority save. It is the
+// only thing that distinguishes the two on the way back, and it is set from the
+// request rather than the response so a failed flip is still attributable.
 type accountEditSavedMsg struct {
-	account *pb.Account
-	err     error
+	account    *pb.Account
+	statusFlip string
+	err        error
 }
 
 // accountEditTestedMsg carries the result of a live TestAccount RPC fired from
@@ -62,12 +69,13 @@ const (
 // ONLY via maskTestError (agenterr redaction) in the read-only Details section
 // — never raw.
 type AccountEditModel struct {
-	client  client.BossClient
-	ctx     context.Context
-	account *pb.Account
-	cursor  int
-	cancel  bool
-	err     error
+	client    client.BossClient
+	ctx       context.Context
+	telemetry telemetry.Client
+	account   *pb.Account
+	cursor    int
+	cancel    bool
+	err       error
 
 	// returnView is the view to pop back to on esc (set by the App wiring).
 	returnView View
@@ -117,6 +125,14 @@ func NewAccountEditModel(c client.BossClient, ctx context.Context, acct *pb.Acco
 	return m
 }
 
+// SetTelemetry installs a telemetry client for the completed status-flip and
+// remove actions reachable from the edit screen. Both are the same logical
+// actions the accounts list instruments, so leaving this screen uninstrumented
+// would make the event's denominator depend on which screen the operator used.
+func (m *AccountEditModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
+}
+
 // seedInputs (re)loads the editable inputs from the current account.
 func (m *AccountEditModel) seedInputs() {
 	if m.account == nil {
@@ -148,6 +164,9 @@ func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// result — a failed save would surface no error.
 	switch msg := msg.(type) {
 	case accountEditSavedMsg:
+		// The status flip's action is captured at the app root
+		// (App.handleAccountEditSavedResult): [esc] is accepted while the save
+		// is in flight, and once App routes away this handler never runs.
 		if msg.err != nil {
 			// Retain the in-flight edits; only surface the error.
 			m.err = msg.err
@@ -163,6 +182,11 @@ func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case accountRemovedMsg:
+		// account_removed is captured at the app root
+		// (App.handleAccountRemoveResult). It used to fire here, on the
+		// premise that exactly one of the list and this screen is the active
+		// view — true, but not enough: neither is active once the operator
+		// escapes out while the RPC is still in flight, and then nobody fired.
 		// Removal succeeded — pop back to the list (mirrors esc). On failure,
 		// keep the form open and surface the error so the operator can retry.
 		if msg.err != nil {
@@ -179,7 +203,7 @@ func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// leave the account unchanged. CREDENTIAL SAFETY: the RPC error text
 			// is masked too — a wrapped daemon/keyring error could echo a
 			// secret-shaped fragment, so it never reaches the screen raw.
-			m.testStatus = "Test failed: " + maskTestError(fmt.Sprintf("%v", msg.err))
+			m.testStatus = "Test failed: " + maskTestError(rpcStatusDetail(msg.err))
 			m.testStatusErr = true
 			return m, nil
 		}
@@ -324,9 +348,12 @@ func (m AccountEditModel) activateRow() (tea.Model, tea.Cmd) {
 		m.editingField = accountEditRowPriority
 		return m, m.priorityInput.Focus()
 	case accountEditRowStatus:
-		next := "disabled"
-		if accountStatusLabel(m.account) == "disabled" {
-			next = "active"
+		// The constants, not literals: accountStatusAction reads this exact
+		// value back off the result message to decide whether the flip is
+		// reported as account_disabled or account_enabled.
+		next := accountStatusDisabled
+		if accountStatusLabel(m.account) == accountStatusDisabled {
+			next = accountStatusActive
 		}
 		return m, m.saveAccount(&pb.UpdateAccountRequest{Id: m.account.GetId(), Status: &next})
 	}
@@ -387,9 +414,13 @@ func (m AccountEditModel) cancelEdit() AccountEditModel {
 // saveAccount issues an UpdateAccount carrying Id plus only the changed field.
 // allowed_models is never populated from this screen.
 func (m AccountEditModel) saveAccount(req *pb.UpdateAccountRequest) tea.Cmd {
+	// Captured from the request before the RPC so the result message can be
+	// attributed to a status flip even when the call failed and no Account came
+	// back. Label/priority saves leave Status nil, so this stays "".
+	statusFlip := req.GetStatus()
 	return func() tea.Msg {
 		acct, err := m.client.UpdateAccount(m.ctx, req)
-		return accountEditSavedMsg{account: acct, err: err}
+		return accountEditSavedMsg{account: acct, statusFlip: statusFlip, err: err}
 	}
 }
 
@@ -414,7 +445,7 @@ func (m AccountEditModel) View() tea.View {
 	b.WriteString("\n\n")
 
 	if m.err != nil {
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 

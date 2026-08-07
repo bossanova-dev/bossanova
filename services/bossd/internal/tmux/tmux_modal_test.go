@@ -82,8 +82,9 @@ func TestModalPaneFixturesMatchPluginOriginals(t *testing.T) {
 // chatReadyMarker() outputs — see services/bossd/internal/server/spawn_chat_tmux.go,
 // where "codex" maps to "›" and every other agent to the default "❯".
 const (
-	composerMarkerCodex  = "›"
-	composerMarkerClaude = "❯"
+	composerMarkerCodex    = "›"
+	composerMarkerClaude   = "❯"
+	composerMarkerOpenCode = "┃"
 )
 
 // assertNoDestructiveTmuxCalls fails if the run emitted any tmux subcommand that
@@ -261,6 +262,12 @@ func TestComposerRowIndexRequiresRowLeadingMarker(t *testing.T) {
 			name:    "indented marker still leads its row",
 			pane:    "• done\n  › \n",
 			marker:  composerMarkerCodex,
+			wantRow: 1,
+		},
+		{
+			name:    "opencode rail is not stripped as a box border",
+			pane:    "OpenCode ready\n┃ Type a message\n",
+			marker:  composerMarkerOpenCode,
 			wantRow: 1,
 		},
 		{

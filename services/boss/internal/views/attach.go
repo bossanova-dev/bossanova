@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
+	"github.com/recurser/boss/internal/remotehost"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/termnorm"
@@ -43,12 +45,20 @@ type startExecMsg struct{}
 
 // attachTmuxEnv returns the environment for the `tmux attach` child with a
 // resolvable TERM (falling back to xterm-256color when the user's TERM has no
-// terminfo entry on this host) plus the effective TERM string for diagnostics.
+// terminfo entry) plus the effective TERM string for diagnostics.
+//
+// The terminfo entry is probed on the machine the tmux client actually runs on:
+// this host for an ordinary attach, the --host destination otherwise. That
+// distinction is the whole point — under --host the client is on the remote
+// machine, so a TERM that resolves here and is missing there starts a tmux that
+// dies with "missing or unsuitable terminal". An empty destination is the local
+// case, which keeps every non---host attach on exactly the path it used before.
+//
 // effectiveTERM is read back from the normalized env itself (rather than
 // re-deriving it from os.Getenv) so the two never disagree, even when base
 // isn't the current process environment (e.g. in tests).
-func attachTmuxEnv(base []string) (env []string, effectiveTERM string) {
-	env = termnorm.Normalize(base)
+func attachTmuxEnv(base []string, destination string) (env []string, effectiveTERM string) {
+	env = termnorm.NormalizeWith(base, hostTerminfoProber(destination))
 	for _, e := range env {
 		if strings.HasPrefix(e, "TERM=") {
 			return env, strings.TrimPrefix(e, "TERM=")
@@ -57,11 +67,75 @@ func attachTmuxEnv(base []string) (env []string, effectiveTERM string) {
 	return env, ""
 }
 
+// hostTerminfoProber returns the probe for the machine whose terminfo actually
+// decides whether tmux can start: the local host for an ordinary attach, the
+// --host machine otherwise. An empty destination is the local case, which keeps
+// every non---host attach on exactly the path it used before.
+//
+// There is deliberately no "the host already looked unreachable, skip it" arm.
+// One was tried and removed: the liveness probe that would supply that verdict
+// runs a bare `ssh -o BatchMode=yes` while this probe rides the tunnel's
+// authenticated master, so the two disagree exactly for the password /
+// uncached-passphrase / touch-key users Tunnel.ControlPath exists to serve —
+// and gating the skip on there being no master instead left a branch that is
+// unreachable wherever multiplexing works, i.e. everywhere but Windows. It
+// bought a bool through this selector to save one bounded, cached, fail-open
+// probe. remotehost.TerminfoPresent already bounds, caches and fails open.
+func hostTerminfoProber(destination string) termnorm.Prober {
+	if destination == "" {
+		return termnorm.Resolvable
+	}
+	return newRemoteTerminfoProber(destination)
+}
+
+// newRemoteTerminfoProber is indirected through a package var for the same
+// reason newPasteUploader (attachpaste.go) is: it is the only way a test can
+// prove the LOCAL path never reaches the ssh machinery at all. Everything a
+// remote prober goes on to do is an ssh call a local test never makes, so
+// "nothing crashed" would otherwise be indistinguishable from "one was built
+// and simply never used" — and the second of those is the bug.
+var newRemoteTerminfoProber = remoteTerminfoProber
+
+// remoteTerminfoPresent is the probe call itself behind a second package var, so
+// the Options this file BUILDS are observable. newRemoteTerminfoProber above is
+// the wrong seam for that: every test stubs it, which means the body below —
+// the only place ControlPath is wired from the tunnel into remotehost — would
+// otherwise never execute under test at all, and dropping that field would leave
+// the suite green while every probe stopped riding the master.
+var remoteTerminfoPresent = remotehost.TerminfoPresent
+
+// remoteTerminfoProber probes destination over ssh, riding the tunnel's
+// multiplexing socket when there is one.
+//
+// The control path is read late — at probe time, not at construction — exactly
+// as remotePasteUploader.options() does it (attachpaste.go), so a prober can
+// never hold a path from a tunnel that has since been replaced.
+//
+// No timeout, cache, or error handling is layered on here: remotehost.
+// TerminfoPresent bounds its own probe, caches per (destination, term) for the
+// process, and fails open on every mode where it could not answer.
+func remoteTerminfoProber(destination string) termnorm.Prober {
+	return func(term string) bool {
+		return remoteTerminfoPresent(context.Background(), remotehost.Options{
+			Destination: destination,
+			ControlPath: remoteHostControlPath(),
+		}, term)
+	}
+}
+
 // pendingExec carries the prepared exec across the launching delay.
-// Populated in the attachReadyMsg handler, consumed in startExecMsg.
+// Populated in the chatRecordedMsg handler, consumed in startExecMsg.
 type pendingExec struct {
-	ptycmd      *bosspty.PTYCommand
-	tmuxName    string
+	ptycmd   *bosspty.PTYCommand
+	tmuxName string
+	// cmd is the very process ptycmd wraps — not a copy of the recipe it was
+	// built from. bosspty.PTYCommand keeps its *exec.Cmd unexported, so without
+	// this handle the two lines that actually wire buildAttachCommand into the
+	// process (its argv and its working directory) are unassertable, and
+	// reverting them to the old local-only body would leave every test in the
+	// package green. Holding the builder's OUTPUT here instead would not help:
+	// it would agree with itself while the exec quietly disagreed with both.
+	cmd         *exec.Cmd
 	prefillPlan string // empty unless first attach with a plan to paste
 }
 
@@ -90,6 +164,48 @@ type attachReadyMsg struct {
 	session *pb.Session
 	chats   []*pb.ClaudeChat
 }
+
+// chatRecordedMsg carries the result of the RecordChat RPC, which runs inside
+// a tea.Cmd rather than inside Update. Calling it on the update loop froze the
+// whole TUI — no keys, no repaint — for as long as the daemon took to answer,
+// so a wedged daemon made esc do nothing and left Ctrl+C as the only way out.
+// session, prefillPlan and resume ride along because the model value in Update
+// is a copy: the closure cannot hand them over by mutating it.
+// launchID identifies the launch attempt this result belongs to, so a result
+// that outlived its own attempt is dropped instead of steering a later one:
+// esc → chat picker → open a chat replaces a.attach wholesale
+// (app_routing.go, app_delegate.go) while the abandoned RecordChat is still in
+// flight, and the late message would otherwise drive the NEW model.
+//
+// It is a nonce rather than the chat id on purpose. Resuming the chat the user
+// just backed out of gives both attempts the same agentSessionID, and that
+// collision is NOT benign: the handler below sets m.pendingExec
+// unconditionally, so a duplicate arriving after startExecMsg already consumed
+// the stash re-primes it — re-running probeTmuxSession (which can overwrite an
+// agent-exited diagnostic screen with errChatSessionGone, since View() checks
+// m.err before m.returned) and scheduling a second exec that startExecMsg's
+// pendingExec == nil guard can no longer absorb. A duplicate landing the other
+// way round, before the model's own result, would apply the abandoned
+// attempt's prefillPlan to a resume that had deliberately gated prefill off.
+type chatRecordedMsg struct {
+	session     *pb.Session
+	chat        *pb.ClaudeChat
+	launchID    uint64
+	prefillPlan string
+	resume      bool
+	err         error
+}
+
+// attachLaunchSeq numbers launch attempts process-wide. It has to be shared
+// rather than per-model: each attach builds a brand-new AttachModel, so a
+// per-model counter would hand every attempt the same first value and defeat
+// the point.
+//
+// Add returns the POST-increment value, so a real chatRecordedMsg never
+// carries 0 and a model that has not staged a launch (launchID still the zero
+// value) therefore matches nothing. Anything changing how the ticket is minted
+// has to preserve that, or an unstaged model starts accepting messages.
+var attachLaunchSeq atomic.Uint64
 
 // attachErrMsg signals a fetch or launch error.
 type attachErrMsg struct {
@@ -128,7 +244,12 @@ type AttachModel struct {
 	// budget covers the entire launch path, not just the post-RPC tail.
 	launchStartedAt time.Time
 
-	// pendingExec is set in the attachReadyMsg handler and consumed by
+	// launchID is this attempt's ticket from attachLaunchSeq, taken when the
+	// off-loop RecordChat is staged. Only the chatRecordedMsg carrying the
+	// same ticket may be applied here; see chatRecordedMsg.
+	launchID uint64
+
+	// pendingExec is set in the chatRecordedMsg handler and consumed by
 	// the startExecMsg handler once the launching-display delay elapses.
 	pendingExec *pendingExec
 
@@ -139,11 +260,20 @@ type AttachModel struct {
 	// though pendingExec (which also carries it) is cleared before the pane
 	// exits.
 	tmuxName string
+	// attachDestination is the --host ssh destination this attach went through,
+	// or "" for a local tmux. Captured at attach time (not re-read at render
+	// time) so the error screen reproduces the transport that actually ran.
+	attachDestination string
 	// tmuxTail is tmux's own startup output (e.g. a missing-terminfo error),
 	// captured via Manager.RecentOutput on a failed attach — before the
 	// process can be evicted — so the error screen can show the real reason
 	// instead of a bare "exit status 1".
 	tmuxTail string
+	// pasteUploader rewrites a pasted local image path into one the remote agent
+	// can open. Non-nil ONLY under --host, and held by pointer so the upload
+	// goroutine's closure and the model copy that later runs cleanup share one
+	// record of the remote directory. See attachpaste.go.
+	pasteUploader *remotePasteUploader
 }
 
 // SetTelemetry installs a telemetry client for successful attach actions.
@@ -217,12 +347,40 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.agentSessionID = uuid.New().String()
 		}
-		chat, err := m.client.RecordChat(m.ctx, m.sessionID, m.agentSessionID, "New chat", m.overrideAgent, resume)
-		if err != nil {
-			m.err = fmt.Errorf("record chat: %w", err)
+		// Off the update loop, not on it: m.launching stays true so View()
+		// keeps rendering the launching line and keys (esc included) keep
+		// being processed while the RPC is in flight.
+		agentSessionID := m.agentSessionID
+		m.launchID = attachLaunchSeq.Add(1)
+		launchID := m.launchID
+		return m, func() tea.Msg {
+			chat, err := m.client.RecordChat(m.ctx, m.sessionID, agentSessionID, "New chat", m.overrideAgent, resume)
+			return chatRecordedMsg{
+				session:     msg.session,
+				chat:        chat,
+				launchID:    launchID,
+				prefillPlan: prefillPlan,
+				resume:      resume,
+				err:         err,
+			}
+		}
+
+	case chatRecordedMsg:
+		// Drop a result that is no longer ours. Now that RecordChat runs off
+		// the update loop it can outlive the attempt that issued it: the user
+		// may have pressed esc (m.detach), or backed out and opened a chat,
+		// which builds a fresh AttachModel this abandoned message would
+		// otherwise drive. Matching on the launch ticket rather than the chat
+		// keeps that exact even when both attempts name the same chat.
+		if m.detach || msg.launchID != m.launchID {
 			return m, nil
 		}
-		tmuxName := chat.GetTmuxSessionName()
+		resume := msg.resume
+		if msg.err != nil {
+			m.err = fmt.Errorf("record chat: %w", msg.err)
+			return m, nil
+		}
+		tmuxName := msg.chat.GetTmuxSessionName()
 		if tmuxName == "" {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
 			return m, nil
@@ -238,7 +396,16 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and leave the user stranded. Surface a dismissable error instead.
 		// New chats (resumeID == "") get a freshly created session from the
 		// daemon, so they are guaranteed alive and skip this check.
-		if resume && !tmuxSessionAlive(tmuxName) {
+		//
+		// Only a probe that positively answered "gone" may fire this. Under
+		// --host the probe can also fail to reach the host at all, and
+		// errChatSessionGone would then tell a user whose remote chat is
+		// perfectly alive that it is unavailable and to start a new one —
+		// exactly the silent-wrong-answer class this ticket exists to remove.
+		// Letting the attach proceed instead surfaces ssh's own error in the
+		// pane, and the diagnostic screen reproduces it with the real ssh
+		// command.
+		if resume && probeTmuxSession(tmuxName) == tmuxProbeGone {
 			m.err = errChatSessionGone
 			m.launching = false
 			return m, nil
@@ -258,22 +425,49 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this synchronously so that, by the time the launching-display
 		// delay elapses, the manager already knows about the session and
 		// the user's Ctrl+X intercept has somewhere to land.
-		// #nosec G204 -- tmux attach -t <name>; const argv, app-generated session id; no shell
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		agentCmd := exec.Command("tmux", "attach", "-t", tmuxName)
-		agentCmd.Dir = msg.session.GetWorktreePath()
-		env, effTERM := attachTmuxEnv(os.Environ())
+		m.attachDestination = remoteHostDestination()
+		attach := buildAttachCommand(m.attachDestination, tmuxName, msg.session.GetWorktreePath())
+		// #nosec G204 -- tmux attach -t <name>, or the same under ssh; const argv
+		// plus an app-generated session id and the user's own --host destination. owner=@recurser review-by=2027-02-07 issue=BOS-714
+		// No local shell either way; the remote leg's shell gets the session name
+		// shell-quoted by buildAttachCommand.
+		agentCmd := exec.Command(attach.argv[0], attach.argv[1:]...)
+		agentCmd.Dir = attach.dir
+		// The destination captured above, not a second remoteHostDestination()
+		// call: the TERM in this env has to be the one the machine running the
+		// argv just built can actually resolve, so the two must name the same
+		// transport (the same reason the paste-uploader gate below reuses it).
+		env, effTERM := attachTmuxEnv(os.Environ(), m.attachDestination)
 		agentCmd.Env = env
 		m.effectiveTERM = effTERM
 		m.manager.RegisterSession(m.agentSessionID, m.sessionID)
 		ptycmd := bosspty.NewPTYCommand(m.manager, m.agentSessionID, agentCmd)
+
+		// A dragged-in image is a LOCAL path, and under --host the agent reading
+		// it is on another machine, so it has to be copied over before the path
+		// means anything. Gated on the destination captured above rather than a
+		// second isRemoteHost() call: the two must name the same transport as the
+		// argv that was just built, and re-reading the package global here would
+		// let a mid-attach change wire an uploader for a host the pane is not
+		// attached to.
+		//
+		// In local mode SetPasteUploader is not called AT ALL — not with nil, not
+		// with a no-op. That un-installed nil is the whole local guarantee: with
+		// it, internal/pty keeps no paste state and its stdin path is the identity
+		// function, so local attach behaviour is byte-identical by construction
+		// rather than by every branch happening to agree.
+		if m.attachDestination != "" {
+			m.pasteUploader = newPasteUploader(m.attachDestination, m.agentSessionID)
+			ptycmd.SetPasteUploader(m.pasteUploader.upload)
+		}
 
 		// Stash everything needed for the deferred exec and stay in the
 		// launching state so View() keeps rendering the Ctrl+X hint.
 		m.pendingExec = &pendingExec{
 			ptycmd:      ptycmd,
 			tmuxName:    tmuxName,
-			prefillPlan: prefillPlan,
+			cmd:         agentCmd,
+			prefillPlan: msg.prefillPlan,
 		}
 
 		// Schedule the actual tea.Exec for whenever the rest of the
@@ -311,21 +505,26 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear the primary screen buffer so Claude content doesn't
 			// linger in scrollback when boss exits alt screen.
 			fmt.Print("\033[2J\033[H\033[3J")
-			// Treat as detach if EITHER signal fires:
-			//   - bosspty intercepted Ctrl+X / Ctrl+] (user-intent signal)
-			//   - the tmux session is still alive (the chat survives even
-			//     if bosspty didn't see the keystroke, e.g. user typed the
-			//     literal `tmux detach` prefix or detached via the menu).
-			detached := pe.ptycmd.Detached || tmuxSessionAlive(pe.tmuxName)
+			// err is handed straight to the verdict, not just carried past it:
+			// the pane's own exit status is the evidence that the tmux client
+			// ran rather than died on startup, and without it a live remote
+			// session alone would classify the failure below as a detach and
+			// skip the diagnostic entirely. See detachedAfterExec (BOS-728).
+			detached := detachedAfterExec(pe.ptycmd.Detached, err, pe.tmuxName)
 			return agentFinishedMsg{err: err, detached: detached}
 		})
 
 	case agentFinishedMsg:
+		// The remote upload directory is dead either way — the user left the
+		// pane, or the pane died — so both outcomes below carry the removal.
+		// It is best-effort and cannot change the outcome it rides along with:
+		// see cleanupRemoteUploads.
+		cleanupUploads := m.cleanupRemoteUploads()
 		if msg.detached {
 			// User pressed Ctrl+X or Ctrl+] — process is still running in
 			// the background; drop back to the caller's view.
 			m.detach = true
-			return m, nil
+			return m, cleanupUploads
 		}
 		m.returned = true
 		m.agentErr = msg.err
@@ -350,10 +549,11 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				m.reportStopped(),
 				tea.Sequence(m.describeLaunch(), m.updateChatTitle()),
+				cleanupUploads,
 			)
 		}
 		// Best-effort: update chat title from JSONL and report stopped status.
-		return m, tea.Batch(m.updateChatTitle(), m.reportStopped())
+		return m, tea.Batch(m.updateChatTitle(), m.reportStopped(), cleanupUploads)
 
 	case chatTitleUpdatedMsg:
 		// Ignored — fire-and-forget.
@@ -385,19 +585,42 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// agentChatTitle and agentTranscriptAbsentOrEmpty read Claude Code's on-disk
+// JSONL transcript under a session's worktree. They are indirected through
+// package vars purely so tests can prove the --host gates SKIP them: a test that
+// only asserts "nothing crashed" passes against the exact bug those gates fix,
+// because reading a nonexistent path does not crash — it quietly answers "no
+// title" and "transcript absent".
+var (
+	agentChatTitle               = agent.ChatTitle
+	agentTranscriptAbsentOrEmpty = agent.TranscriptAbsentOrEmpty
+)
+
 // updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
 // If the session was never used (no real user message), it deletes the orphan record.
 func (m AttachModel) updateChatTitle() tea.Cmd {
 	if m.agentSessionID == "" || m.session == nil {
 		return nil
 	}
+	// Against a remote daemon the worktree — and the transcript inside it — are
+	// on the other machine, so both reads below would answer about a local path
+	// that does not exist. The title backfill would silently no-op forever
+	// (harmless in itself: the remote daemon's tmux poller keeps refreshing
+	// titles server-side, and only ever over "" / "New chat", so a user-set
+	// title is never at risk). The orphan reap is the dangerous one: an absent
+	// local transcript reads as "this chat was never used" and would DELETE the
+	// record of a perfectly live remote chat. Skip both; a nil tea.Cmd is
+	// compacted away by tea.Batch and tea.Sequence.
+	if isRemoteHost() {
+		return nil
+	}
 	agentSessionID := m.agentSessionID
 	worktreePath := m.session.GetWorktreePath()
 	return func() tea.Msg {
-		title := agent.ChatTitle(worktreePath, agentSessionID)
+		title := agentChatTitle(worktreePath, agentSessionID)
 		if title != "" {
 			_ = m.client.UpdateChatTitle(m.ctx, agentSessionID, title)
-		} else if agent.TranscriptAbsentOrEmpty(worktreePath, agentSessionID) {
+		} else if agentTranscriptAbsentOrEmpty(worktreePath, agentSessionID) {
 			// Reap a genuinely-unused orphan ONLY when its transcript is
 			// confirmed absent or zero-length. A non-empty transcript whose
 			// title won't parse — or any read failure — must never delete the
@@ -447,18 +670,6 @@ func (m AttachModel) describeLaunch() tea.Cmd {
 	}
 }
 
-// tmuxSessionAlive reports whether a tmux session by the given name is still
-// running. Used by the attach flow to distinguish a Ctrl+X / Ctrl+] detach
-// (session still alive on the tmux server, claude still running inside) from
-// a real claude exit (session torn down by tmux when its only window's
-// command exited).
-func tmuxSessionAlive(name string) bool {
-	if name == "" {
-		return false
-	}
-	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
-}
-
 // prefillClaudeInput writes the session plan into Claude's TUI input box via
 // a bracketed-paste sequence so the user lands on a ready-to-refine prompt
 // instead of an empty input. Best-effort and non-fatal — a missing prefill
@@ -475,9 +686,9 @@ func tmuxSessionAlive(name string) bool {
 //     prefill that this replaces. We match on the prompt character
 //     rather than the default footer so users with custom statuslines
 //     (which replace the footer entirely) still get the prefill.
-//  3. Write \x1b[200~ + plan + \x1b[201~ to the PTY. Bracketed paste tells
-//     Claude "treat this as paste, not keystrokes," so it lands in the input
-//     box without auto-submitting.
+//  3. Write the plan to the PTY as a bracketed paste, via the shared
+//     bosspty.BracketedPaste — the single construction site for that sequence,
+//     so this and the upload path cannot drift into two spellings of it.
 func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, agentSessionID, plan string) {
 	const (
 		readyMarker      = "❯"
@@ -522,9 +733,7 @@ func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, agentSess
 	// Step 3: paste. Errors are silently dropped — the process may have
 	// exited or detached by now; either way the user can recover by typing
 	// the prompt manually.
-	payload := append([]byte("\x1b[200~"), plan...)
-	payload = append(payload, "\x1b[201~"...)
-	_ = proc.WriteInput(payload)
+	_ = proc.WriteInput(bosspty.BracketedPaste(plan))
 }
 
 // Detached returns true if the user should return to the home screen.
@@ -542,6 +751,8 @@ func agentDisplayName(name string) string {
 		return "Claude Code"
 	case "codex":
 		return "Codex"
+	case "opencode":
+		return "OpenCode"
 	case "":
 		return "agent"
 	default:
@@ -611,20 +822,28 @@ func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel stri
 	return b.String()
 }
 
-// renderTmuxAttachDiagnostic formats a copy-pasteable local `tmux attach`
-// reproduction plus the captured tmux startup output, shown under the bare exit
-// error so a user can see (and reproduce) the underlying tmux failure — most
-// commonly a missing terminfo entry for their TERM. Returns "" when there is no
-// session name to reproduce with.
-func renderTmuxAttachDiagnostic(tmuxName, effectiveTERM, capturedTail string) string {
+// renderTmuxAttachDiagnostic formats a copy-pasteable `tmux attach` reproduction
+// plus the captured tmux startup output, shown under the bare exit error so a
+// user can see (and reproduce) the underlying tmux failure — most commonly a
+// missing terminfo entry for their TERM. Returns "" when there is no session
+// name to reproduce with.
+//
+// destination is the --host ssh destination the attach actually went through, or
+// "" for a local tmux. It is not cosmetic: a local `tmux attach -t <name>`
+// printed under a --host failure is a command that cannot work on the machine
+// the user would paste it into, and it points the terminfo fix at the wrong
+// host. The reproduction therefore mirrors the transport that ran.
+func renderTmuxAttachDiagnostic(destination, tmuxName, effectiveTERM, capturedTail string) string {
 	if tmuxName == "" {
 		return ""
 	}
 	prose := lipgloss.NewStyle().Padding(0, 2)
 	code := lipgloss.NewStyle().Padding(0, 4)
 
-	repro := "tmux attach -t " + tmuxName
+	repro := shellJoin(buildAttachReproArgv(destination, tmuxName))
 	if effectiveTERM != "" {
+		// ssh hands the local TERM to the remote pty, so prefixing the whole
+		// invocation sets the value the remote tmux client will see too.
 		repro = "TERM=" + effectiveTERM + " " + repro
 	}
 
@@ -642,9 +861,27 @@ func renderTmuxAttachDiagnostic(tmuxName, effectiveTERM, capturedTail string) st
 		b.WriteString(code.Render(tail))
 		b.WriteString("\n\n")
 	}
+	terminfoHost := "this host"
+	if destination != "" {
+		// The tmux client is the remote one, so its terminfo database is the
+		// one that has to know the TERM — installing it here fixes nothing.
+		terminfoHost = destination
+	}
 	b.WriteString(prose.Render(
-		"If this is a missing-terminfo error, install the entry on this host\n" +
+		"If this is a missing-terminfo error, install the entry on " + terminfoHost + "\n" +
 			"(" + termnorm.InstallHint + ") or run: export TERM=" + termnorm.FallbackTERM))
+	if destination != "" {
+		// A --host attach can also die by losing the connection mid-pane, which
+		// skips the deferred terminal cleanup and leaves mouse reporting and
+		// bracketed paste set (BOS-650). The remote tmux session survives that,
+		// so say both things: how to un-wedge the terminal, and that the work is
+		// still there to reattach to.
+		b.WriteString("\n\n")
+		b.WriteString(prose.Render(
+			"If the connection dropped mid-attach and this terminal now misbehaves,\n" +
+				"run: boss fix-terminal — the remote tmux session survives the drop, so\n" +
+				"attaching again returns you to the same pane."))
+	}
 	return b.String()
 }
 
@@ -705,8 +942,11 @@ func safeShellToken(s string) bool {
 
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
+		// Attach is where a --host session lives, so a dropped tunnel surfaces
+		// here first; the raw dial error against the forwarded socket made that
+		// read as a frozen session (BOS-724).
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}
@@ -731,7 +971,7 @@ func (m AttachModel) View() tea.View {
 				b.WriteString("\n")
 				b.WriteString(diag)
 			}
-			if diag := renderTmuxAttachDiagnostic(m.tmuxName, m.effectiveTERM, m.tmuxTail); diag != "" {
+			if diag := renderTmuxAttachDiagnostic(m.attachDestination, m.tmuxName, m.effectiveTERM, m.tmuxTail); diag != "" {
 				b.WriteString("\n")
 				b.WriteString(diag)
 			}

@@ -65,14 +65,17 @@ func SeedFirstRunSettings(home, socketPath string) error {
 // into the boss subprocess. Security boundary: scenario files are agent-authored,
 // so only these harness-managed families are permitted — never arbitrary
 // developer env. The E2E families intentionally mirror the prefixes BaseHarnessEnv
-// strips (BOSS_CLOUD_ACCESS_E2E_*, BOSS_GITHUB_APP_E2E_*, BOSS_AUTH_E2E_*): the
-// harness strips them from the ambient environ, then the bridge re-adds only the
-// validated, scenario-requested subset. BOSS_PROOF_UPGRADE_* is a proof-only
+// strips (BOSS_CLOUD_ACCESS_E2E_*, BOSS_GITHUB_APP_E2E_*, BOSS_AUTH_E2E_*,
+// BOSS_HOST_E2E_*): the harness strips them from the ambient environ, then the
+// bridge re-adds only the validated, scenario-requested subset. BOSS_HOST_E2E_* is
+// the --host transport family (BOS-713): it stages the reconnecting wait screen a
+// dropped ssh tunnel produces, which the harness cannot reach for real because it
+// has no network and never runs --host. BOSS_PROOF_UPGRADE_* is a proof-only
 // display toggle family (not an E2E fake): it lets a scenario force a
 // deterministic upgrade-banner state (e.g. the rate-limit line) without draining
 // a real GitHub quota. Values only flip on-screen text, never behavior a user
 // cares about, so forwarding them from an agent-authored scenario is safe.
-var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_PROOF_UPGRADE_"}
+var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_PROOF_UPGRADE_"}
 
 // FilterProofEnv splits a requested env map into allowed (keys that prefix-match
 // ProofEnvWhitelist) and rejected (keys that don't). Env validation lives ONLY
@@ -122,6 +125,29 @@ func BaseHarnessEnv(environ []string) []string {
 			// subprocess's credentials; the bridge re-adds it only when a scenario
 			// asks for it.
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_NEEDS_RELOGIN=") ||
+			// BOS-713: the --host reconnecting-screen seed and its poll count.
+			// Stripped like every other E2E family so an ambient developer value
+			// can never park an unrelated run behind a full-screen blocking wait;
+			// the bridge re-adds them only when a scenario asks for them.
+			strings.HasPrefix(e, "BOSS_HOST_E2E_RECONNECT=") ||
+			strings.HasPrefix(e, "BOSS_HOST_E2E_RECONNECT_POLLS=") ||
+			// BOS-724: the classified failure the reconnecting screen reports.
+			// Stripped with the rest of the pair so an ambient value can never
+			// put a developer's own words on a captured frame.
+			strings.HasPrefix(e, "BOSS_HOST_E2E_RECONNECT_REASON=") ||
+			// BOS-714: the --host remote-context seed. Stripped for the same
+			// reason as the reconnect pair — an ambient developer value would
+			// silently put an unrelated run into a remote context, where attach
+			// shells out over ssh and the local-filesystem affordances vanish.
+			strings.HasPrefix(e, "BOSS_HOST_E2E_ATTACH_DESTINATION=") ||
+			// BOS-723: the e2e-only unary RPC bound. Stripped for the same reason
+			// as the rest of the family — an ambient developer value would apply
+			// to EVERY proof run, and a short bound would fail unrelated
+			// scenarios with a daemon-down screen no step asked for. Only the
+			// wedged-daemon preset's DefaultEnv (appended after this filter) may
+			// set it, so it is deliberately absent from ProofEnvWhitelist too:
+			// scenario-authored env cannot reach into the client's bound.
+			strings.HasPrefix(e, "BOSS_RPC_DEADLINE_E2E=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE=") ||

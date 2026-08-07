@@ -61,6 +61,21 @@ func TestWriteSessionMcpConfig_EmptyMcpBinReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestWriteSessionMcpConfig_OpenCodeReturnsEmpty(t *testing.T) {
+	path, err := WriteSessionMcpConfig(SessionFacts{
+		Agent:          "opencode",
+		AgentSessionID: "abc",
+		McpBin:         "/trusted/mcp",
+		Socket:         "/s.sock",
+	})
+	if err != nil {
+		t.Fatalf("WriteSessionMcpConfig: %v", err)
+	}
+	if path != "" {
+		t.Fatalf("want empty path for OpenCode, got %q", path)
+	}
+}
+
 func TestMcpConfigJSON_ShapeAndServerKey(t *testing.T) {
 	raw, err := mcpConfigJSON("/trusted/mcp", "/run/bossd.sock")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
@@ -36,6 +37,8 @@ func assertNoSensitiveTelemetryProps(t *testing.T, props map[string]any) {
 
 func TestCaptureViewTelemetrySuppressesDisabledSettings(t *testing.T) {
 	withTempConfigHome(t)
+	resetViewTelemetryGate()
+	t.Cleanup(resetViewTelemetryGate)
 	rec := &fakeTelemetry{}
 
 	captureViewTelemetry(context.Background(), rec, telemetry.EventChatAttached, map[string]any{
@@ -84,5 +87,72 @@ func enableViewTelemetryForTest(t *testing.T) {
 	settings.EventTracingEnabled = true
 	if err := config.Save(settings); err != nil {
 		t.Fatalf("config.Save: %v", err)
+	}
+	// The gate is cached with a TTL, so a value read under a previous test's
+	// config home would otherwise leak into this one — in both directions.
+	resetViewTelemetryGate()
+	t.Cleanup(resetViewTelemetryGate)
+}
+
+// resetViewTelemetryGate drops the cached gate. Test-only: tests flip the
+// settings file directly and must not observe a value cached under a previous
+// test's config home.
+func resetViewTelemetryGate() {
+	viewTelemetryGate.mu.Lock()
+	defer viewTelemetryGate.mu.Unlock()
+	viewTelemetryGate.checkedAt = time.Time{}
+	viewTelemetryGate.enabled = false
+}
+
+// TestViewTelemetryGateCachesWithinItsTTL pins that the opt-in gate is not a
+// settings-file read per capture. config.Load is os.ReadFile + json.Unmarshal on
+// Bubble Tea's update goroutine, and the trash delete-all batch drains one
+// session per message, so an uncached gate puts N synchronous disk reads on the
+// path the TUI rubric requires to stay non-blocking.
+//
+// Both halves step the clock explicitly through viewTelemetryEnabledAt rather
+// than sleeping or resetting the gate. Resetting would zero checkedAt, and
+// `now.Sub(time.Time{})` exceeds ANY finite TTL — so the expiry half would pass
+// against a gate that latches forever, which is precisely the failure it claims
+// to catch. Stepping the clock makes viewTelemetryGateTTL load-bearing in both
+// directions, and removes the wall-clock flake of a >3s stall mid-test.
+func TestViewTelemetryGateCachesWithinItsTTL(t *testing.T) {
+	enableViewTelemetryForTest(t)
+	base := time.Now()
+
+	if !viewTelemetryEnabledAt(base) {
+		t.Fatal("gate should be enabled after enableViewTelemetryForTest")
+	}
+	// Flip the file underneath the cache. Within the TTL the gate must NOT
+	// re-read it; an uncached implementation returns false here.
+	settings := config.DefaultSettings()
+	settings.EventTracingEnabled = false
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+	if !viewTelemetryEnabledAt(base.Add(viewTelemetryGateTTL - time.Millisecond)) {
+		t.Fatal("gate re-read the settings file within its TTL; every capture would pay a " +
+			"synchronous os.ReadFile + json.Unmarshal on the Bubble Tea update goroutine")
+	}
+
+	// ...and it must re-read once the TTL elapses, or turning tracing OFF in
+	// general settings would not stop events until the operator restarts.
+	if viewTelemetryEnabledAt(base.Add(viewTelemetryGateTTL)) {
+		t.Fatalf("gate did not re-read the settings file after %s; turning event tracing "+
+			"off in general settings would not take effect until restart", viewTelemetryGateTTL)
+	}
+
+	// The two assertions above step by the TTL itself, so they pin the caching
+	// MECHANISM for any value of it — including one so long the gate never
+	// expires in a real session, which is the sync.Once behaviour the design
+	// deliberately rejected. Bound the value separately.
+	if viewTelemetryGateTTL > 5*time.Second {
+		t.Fatalf("viewTelemetryGateTTL = %s. The gate exists to be re-read while the "+
+			"operator is still looking at the screen: turning event tracing off in general "+
+			"settings must stop events within seconds, not at the next restart.", viewTelemetryGateTTL)
+	}
+	if viewTelemetryGateTTL <= 0 {
+		t.Fatalf("viewTelemetryGateTTL = %s, which disables the cache entirely and puts a "+
+			"synchronous settings read back on every capture", viewTelemetryGateTTL)
 	}
 }

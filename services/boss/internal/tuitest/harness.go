@@ -180,6 +180,54 @@ func (m *MockDaemon) SetArchiveDelay(delay time.Duration) {
 	m.archiveDelay = delay
 }
 
+// SetRPCStall makes every unary handler block for the remainder of a stall
+// window ending d from now. d <= 0 clears the stall immediately, releasing any
+// handler already parked inside the window.
+//
+// This is the wedged daemon a scenario needs: one that accepts the socket
+// connection and then never answers, which is the failure BOS-723's client-side
+// RPC bound exists to survive. AttachSession and the other streams are never
+// stalled (see rpcStallInterceptor). Guarded by m.mu because the daemon is
+// already serving — it is safe to call while requests are in flight.
+func (m *MockDaemon) SetRPCStall(d time.Duration) {
+	m.setRPCStall("", d)
+}
+
+// SetRPCStallFor is SetRPCStall scoped to a single unary method. procedure is
+// the bare method name as declared in the proto (e.g. "RecordChat"): it is
+// matched against the last segment of the full Connect procedure path
+// ("/bossanova.v1.DaemonService/RecordChat") and must equal it exactly, so
+// "Chat" wedges nothing and does NOT wedge RecordChat, ListChats, AddChat or
+// DeleteChat. Every other RPC keeps answering normally.
+//
+// A blanket stall can only ever wedge the FIRST RPC a screen issues, because
+// every later call on that screen is made after the window has closed. The
+// scoped form is what lets a scenario reach a screen normally and then wedge one
+// specific call it makes — e.g. letting the attach view's GetSession/ListChats
+// succeed so the bounded failure lands on RecordChat, where the TUI renders it.
+//
+// A procedure that matches nothing is not an error here: it simply stalls
+// nothing, and the scenario asserting the wedged screen is what catches a typo.
+func (m *MockDaemon) SetRPCStallFor(procedure string, d time.Duration) {
+	m.setRPCStall(procedure, d)
+}
+
+func (m *MockDaemon) setRPCStall(procedure string, d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d <= 0 {
+		m.rpcStall = rpcStall{}
+	} else {
+		m.rpcStall = rpcStall{until: time.Now().Add(d), procedure: procedure}
+	}
+	// Wake every parked handler so it re-reads the new window instead of
+	// sleeping out the old one.
+	if m.rpcStallChanged != nil {
+		close(m.rpcStallChanged)
+	}
+	m.rpcStallChanged = make(chan struct{})
+}
+
 // WithArchiveError makes ArchiveSession fail with the given message.
 func WithArchiveError(message string) Option {
 	return func(c *harnessConfig) {

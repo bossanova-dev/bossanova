@@ -645,11 +645,52 @@ func TestNeedsLocalDaemonStartup(t *testing.T) {
 		}
 	})
 
+	t.Run("host", func(t *testing.T) {
+		t.Setenv("BOSS_SOCKET", "")
+
+		if needsLocalDaemonStartup(hostTestCommand(t)) {
+			t.Fatal("--host command should not run local daemon startup")
+		}
+	})
+
 	t.Run("explicit socket", func(t *testing.T) {
 		t.Setenv("BOSS_SOCKET", "/tmp/boss.sock")
 
 		if needsLocalDaemonStartup(&cobra.Command{Use: "boss"}) {
 			t.Fatal("explicit BOSS_SOCKET should not run local daemon startup")
+		}
+	})
+}
+
+// TestNeedsLocalTmux pins which targets the missing-tmux install screen may
+// block. It is deliberately NOT the same predicate as needsLocalDaemonStartup:
+// three of the four cases below agree with that one and the --remote case does
+// not, so folding the two together would silently stop requiring tmux for a
+// cloud session that attaches through the local tmux server.
+func TestNeedsLocalTmux(t *testing.T) {
+	t.Run("local default needs it", func(t *testing.T) {
+		if !needsLocalTmux(&cobra.Command{Use: "boss"}) {
+			t.Fatal("a local session attaches through the local tmux and must still require it")
+		}
+	})
+
+	t.Run("host does not", func(t *testing.T) {
+		if needsLocalTmux(hostTestCommand(t)) {
+			t.Fatal("--host attaches over ssh to the REMOTE tmux; requiring a local one blocks a valid client machine behind the install screen")
+		}
+	})
+
+	t.Run("remote still does", func(t *testing.T) {
+		if !needsLocalTmux(remoteTestCommand(t)) {
+			t.Fatal("--remote has no ssh destination, so buildAttachCommand returns the LOCAL tmux form: the check must stay")
+		}
+	})
+
+	t.Run("explicit socket still does", func(t *testing.T) {
+		t.Setenv("BOSS_SOCKET", "/tmp/boss.sock")
+
+		if !needsLocalTmux(&cobra.Command{Use: "boss"}) {
+			t.Fatal("BOSS_SOCKET names a LOCAL daemon, whose tmux server is local like any other")
 		}
 	})
 }
@@ -866,6 +907,50 @@ func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
 	}
 }
 
+// TestRunAgentPreflightsSkipsRemoteTransports: the agent probe shells out on
+// *this* machine, so under --host (and --remote) it would look for a CLI that
+// lives on the other end and block the TUI over it. The daemon must not be
+// asked anything either — a local cwd means nothing to a remote ResolveContext.
+func TestRunAgentPreflightsSkipsRemoteTransports(t *testing.T) {
+	oldCheck := checkAgentResolvableForPreflight
+	defer func() { checkAgentResolvableForPreflight = oldCheck }()
+
+	settings := config.Settings{
+		LoginShell: "/bin/sh",
+		Plugins:    []config.PluginConfig{{Name: "claude", Enabled: true}},
+	}
+
+	cases := []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{"host", hostTestCommand(t)},
+		{"remote", remoteTestCommand(t)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &agentPreflightStub{
+				agents:  []client.AgentInfo{{Name: "claude"}},
+				session: &pb.Session{Id: "s", WorktreePath: "/remote/worktree", AgentName: "claude"},
+			}
+			checkAgentResolvableForPreflight = func(_, agent, worktree string) *preflight.Issue {
+				t.Fatalf("the local agent probe must not run: agent=%q worktree=%q", agent, worktree)
+				return nil
+			}
+
+			if err := runAgentPreflights(context.Background(), tc.cmd, stub, settings, "s"); err != nil {
+				t.Fatalf("runAgentPreflights: %v", err)
+			}
+			if stub.listCalled {
+				t.Fatal("ListAgents must not be called for a non-local transport")
+			}
+			if stub.getSessionID != "" || stub.resolveCalled {
+				t.Fatal("no session lookup should happen for a non-local transport")
+			}
+		})
+	}
+}
+
 func TestRunAgentPreflightsSkipsNonCLIBackedPlugins(t *testing.T) {
 	oldCheck := checkAgentResolvableForPreflight
 	defer func() { checkAgentResolvableForPreflight = oldCheck }()
@@ -906,9 +991,11 @@ type agentPreflightStub struct {
 	resolveResp   *pb.ResolveContextResponse
 	getSessionID  string
 	resolveCalled bool
+	listCalled    bool
 }
 
 func (s *agentPreflightStub) ListAgents(context.Context) ([]client.AgentInfo, error) {
+	s.listCalled = true
 	return s.agents, nil
 }
 

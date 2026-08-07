@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/cronutil"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // --- Messages ---
@@ -87,9 +88,10 @@ const cronZeroOutputHelp = "Run with no worktree, branch, or PR — for jobs tha
 
 // CronFormModel is the create/edit form for a scheduled cron job.
 type CronFormModel struct {
-	client client.BossClient
-	ctx    context.Context
-	job    *pb.CronJob // nil = create mode; non-nil = edit mode
+	client    client.BossClient
+	ctx       context.Context
+	telemetry telemetry.Client
+	job       *pb.CronJob // nil = create mode; non-nil = edit mode
 
 	// Loaded repos for the Repo select field.
 	repos      []*pb.Repo
@@ -142,6 +144,11 @@ func NewCronFormModel(c client.BossClient, ctx context.Context) CronFormModel {
 }
 
 // Cancelled reports whether the user dismissed the cron form.
+// SetTelemetry installs a telemetry client for the completed save action.
+func (m *CronFormModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
+}
+
 func (m CronFormModel) Cancelled() bool { return m.cancelled }
 
 // Done reports whether the form was successfully submitted.
@@ -331,6 +338,15 @@ func (m *CronFormModel) buildForm() {
 
 // saveLabel returns the affirmative label for the terminal save Confirm based
 // on whether this is a create or edit operation.
+// cronFormSaveAction maps the form's mode to its tui_action action value:
+// a nil job is a create, a non-nil job is an edit of that job.
+func cronFormSaveAction(job *pb.CronJob) tuiAction {
+	if job == nil {
+		return tuiActionCronJobCreated
+	}
+	return tuiActionCronJobUpdated
+}
+
 func saveLabel(job *pb.CronJob) string {
 	if job == nil {
 		return "Add Scheduled Job"
@@ -503,6 +519,8 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cronFormSavedMsg:
 		m.submitting = false
+		// m.job discriminates the two actions: nil = create, non-nil = edit.
+		captureTUIAction(m.ctx, m.telemetry, tuiFeatureCron, cronFormSaveAction(m.job), tuiActionStatus(msg.err))
 		if msg.err != nil {
 			m.err = msg.err
 			// Deliberately a bare WithHeight, not resizeForm: this message can
@@ -683,7 +701,7 @@ func (m CronFormModel) formPrefix() string {
 	b.WriteString("\n\n")
 
 	if m.err != nil {
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -6,7 +6,6 @@ package views
 // in-flight-marker mutation forward exactly as the inline arm did.
 
 import (
-	"fmt"
 	"sort"
 	"time"
 
@@ -111,7 +110,7 @@ func (m ChatPickerModel) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.C
 		m.deletingAgentSessionID = ""
 	}
 	if msg.err != nil {
-		m.statusMsg = fmt.Sprintf("Delete failed: %v", msg.err)
+		m.statusMsg = rpcStatusMessage("Delete failed", msg.err)
 		m.buildTableRows()
 		return m, nil
 	}
@@ -130,7 +129,7 @@ func (m ChatPickerModel) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.C
 
 func (m ChatPickerModel) handleNewTabResult(msg newTabResultMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		m.statusMsg = fmt.Sprintf("Couldn't open new tab: %v", msg.err)
+		m.statusMsg = rpcStatusMessage("Couldn't open new tab", msg.err)
 		return m, nil
 	}
 	captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventChatAttached, map[string]any{
@@ -144,7 +143,7 @@ func (m ChatPickerModel) handleWebOpenResult(msg webOpenResultMsg) (tea.Model, t
 	if msg.err != nil {
 		// Shared by the [g]ithub and [l]inear shortcuts, so the message
 		// stays generic rather than naming a specific destination.
-		m.statusMsg = fmt.Sprintf("Couldn't open browser: %v", msg.err)
+		m.statusMsg = rpcStatusMessage("Couldn't open browser", msg.err)
 	}
 	return m, nil
 }
@@ -154,8 +153,11 @@ func (m ChatPickerModel) handleMergeResult(msg mergeResultMsg) (tea.Model, tea.C
 		return m, nil // orphan completion from a session the user navigated away from
 	}
 	m.merging = false
+	// No tui_action here: session_merged is captured once in App.handleMergeResult
+	// (app_handlers.go), which sees every mergeResultMsg whether or not this
+	// picker is still on screen.
 	if msg.err != nil {
-		m.statusMsg = fmt.Sprintf("Couldn't merge: %v", msg.err)
+		m.statusMsg = rpcStatusMessage("Couldn't merge", msg.err)
 		return m, nil
 	}
 	// Merge succeeded — stay on the session-detail view showing merged status
@@ -177,8 +179,11 @@ func (m ChatPickerModel) handleArchiveResult(msg archiveResultMsg) (tea.Model, t
 		return m, nil // orphan completion from a session the user navigated away from
 	}
 	m.archiving = false
+	// No tui_action here: session_archived is captured once in
+	// App.handleArchiveResult (app_handlers.go), which sees every
+	// archiveResultMsg whether or not this picker is still on screen.
 	if msg.err != nil {
-		m.statusMsg = "Couldn't archive session: " + msg.err.Error()
+		m.statusMsg = rpcStatusMessage("Couldn't archive session", msg.err)
 		return m, nil
 	}
 	m.archived = true
@@ -188,7 +193,7 @@ func (m ChatPickerModel) handleArchiveResult(msg archiveResultMsg) (tea.Model, t
 
 func (m ChatPickerModel) handleWakeResult(msg wakeResultMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		m.statusMsg = fmt.Sprintf("Wake failed: %v", msg.err)
+		m.statusMsg = rpcStatusMessage("Wake failed", msg.err)
 		return m, nil
 	}
 	switch msg.resp.GetOutcome() {
@@ -221,10 +226,16 @@ func (m ChatPickerModel) handleSwitchAccountsLoaded(msg switchAccountsLoadedMsg)
 
 func (m ChatPickerModel) handleSwitchAccountResult(msg switchAccountResultMsg) (tea.Model, tea.Cmd) {
 	m.switching = false
+	// No tui_action here: account_switched is captured once in
+	// App.handleSwitchAccountResult (app_handlers.go), which sees every
+	// switchAccountResultMsg whether or not this picker is still on screen —
+	// and Esc during an in-flight switch deliberately leaves it.
 	if msg.err != nil {
 		// Surface the daemon's human-readable error (cooling/disabled/other)
-		// on the same notice line used for success.
-		m.switchNotice = msg.err.Error()
+		// on the same notice line used for success. rpcStatusDetail leaves that
+		// answer verbatim and substitutes only when the tunnel carrying it is
+		// the thing that failed.
+		m.switchNotice = rpcStatusDetail(msg.err)
 		return m, nil
 	}
 	m.switchNotice = msg.resp.GetNoticeText()

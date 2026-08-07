@@ -76,10 +76,14 @@ func mcpConfigJSON(mcpBin, socket string) ([]byte, error) {
 // WriteSessionMcpConfig writes a per-spawn MCP config for the chat identified by
 // f.AgentSessionID into the boss app-data dir (NEVER the worktree) and returns
 // its absolute path. It returns "" (no error) when no trusted mcp binary was
-// resolved (f.McpBin == ""), so the chat launches without boss MCP wiring. The
-// file is overwritten on every spawn (keyed by agent-session id).
+// resolved (f.McpBin == "") or the agent cannot consume an MCP config, so the
+// chat launches without boss MCP wiring. The file is overwritten on every
+// supported spawn (keyed by agent-session id).
 func WriteSessionMcpConfig(f SessionFacts) (string, error) {
-	if f.McpBin == "" {
+	// OpenCode has no MCP-config launch option. Withholding the config also
+	// prevents BuildAppendSystemPrompt from advertising mcp__boss__* tools that
+	// the launched chat cannot use.
+	if f.McpBin == "" || f.Agent == "opencode" {
 		return "", nil
 	}
 	dir, err := mcpConfigDir()

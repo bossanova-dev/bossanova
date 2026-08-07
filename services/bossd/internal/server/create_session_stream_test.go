@@ -1057,6 +1057,18 @@ type setupStreamWorktree struct {
 
 	createCalls             []gitpkg.CreateOpts
 	createFromExistingCalls []gitpkg.CreateFromExistingBranchOpts
+
+	// Cleanup records (BOS-717): which branches were force-deleted and which
+	// worktrees purged, so a failed-create test can assert the artifacts this
+	// attempt made were actually reclaimed.
+	reapedBranches []string
+	purgedBranches []string
+}
+
+func (w *setupStreamWorktree) cleanupRecords() (reaped, purged []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.reapedBranches...), append([]string(nil), w.purgedBranches...)
 }
 
 func (w *setupStreamWorktree) Create(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -1120,11 +1132,22 @@ func (w *setupStreamWorktree) Archive(context.Context, string) error { return ni
 func (w *setupStreamWorktree) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
 	return nil
 }
-func (w *setupStreamWorktree) ReapLocalBranches(context.Context, string, []string) error     { return nil }
-func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, string, string) {}
-func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
-func (w *setupStreamWorktree) VerifyCurrentBranch(context.Context, string, string) error     { return nil }
-func (w *setupStreamWorktree) Push(context.Context, string, string) error                    { return nil }
+func (w *setupStreamWorktree) ReapLocalBranches(_ context.Context, _ string, branches []string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reapedBranches = append(w.reapedBranches, branches...)
+	return nil
+}
+
+func (w *setupStreamWorktree) PurgeWorktree(_ context.Context, _, _, _, branch string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.purgedBranches = append(w.purgedBranches, branch)
+	return nil
+}
+func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error         { return nil }
+func (w *setupStreamWorktree) VerifyCurrentBranch(context.Context, string, string) error { return nil }
+func (w *setupStreamWorktree) Push(context.Context, string, string) error                { return nil }
 func (w *setupStreamWorktree) PushWithLease(context.Context, string, string, string) (string, error) {
 	return "pushed-head-sha", nil
 }
@@ -1206,8 +1229,8 @@ func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, 
 	}
 	return "agent-session", a.startErr
 }
-func (a *setupStreamAgent) StopByAgent(string, string) error     { return nil }
-func (a *setupStreamAgent) IsRunningByAgent(string, string) bool { return false }
+func (a *setupStreamAgent) StopByAgent(context.Context, string, string) error { return nil }
+func (a *setupStreamAgent) IsRunningByAgent(string, string) bool              { return false }
 
 type setupStreamProvider struct{}
 

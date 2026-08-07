@@ -435,6 +435,75 @@ func TestExecute_Timeout_PreservesDeadline(t *testing.T) {
 	}
 }
 
+// withSetupWaitDelay shortens the pipe-close bound for one test and restores it
+// afterwards, so a case can assert the bound without paying the production five
+// seconds of wall clock. Callers must not t.Parallel: the value is package-wide.
+func withSetupWaitDelay(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := setupWaitDelay
+	setupWaitDelay = d
+	t.Cleanup(func() { setupWaitDelay = prev })
+}
+
+// TestExecute_Timeout_BoundedDespiteSurvivingGrandchild pins the hole the
+// bootstrap deadline exists to close (BOS-717). `sh -c 'sleep 10 & sleep 10'`
+// leaves a backgrounded grandchild holding the write end of the stdout pipe
+// after the deadline kills the shell itself. Stdout/Stderr are not *os.File, so
+// os/exec copies through that pipe: with cmd.WaitDelay unset, cmd.Run blocks
+// until the grandchild exits on its own and Execute overruns its timeout by the
+// grandchild's whole lifetime — which is exactly how one hung setup script
+// wedges a bootstrap that a deadline was supposed to bound.
+func TestExecute_Timeout_BoundedDespiteSurvivingGrandchild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh and sleep binaries assumed")
+	}
+	withSetupWaitDelay(t, 200*time.Millisecond)
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "sleep 10 & sleep 10"}}
+	start := time.Now()
+	_, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: t.TempDir(),
+		Timeout:      200 * time.Millisecond,
+	})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected a DeadlineExceeded error, got %v", err)
+	}
+	// The grandchild lives 10s, so returning well inside that can only mean the
+	// pipe wait was bounded rather than waited out.
+	if elapsed > 5*time.Second {
+		t.Fatalf("deadline not bounded by WaitDelay: elapsed %v", elapsed)
+	}
+}
+
+// TestExecute_SuccessfulScript_SurvivingGrandchildIsNotAFailure guards the
+// regression that kept WaitDelay unset in the first place: once a delay is set,
+// a script that exits 0 but leaves a background process holding the pipe makes
+// Wait report exec.ErrWaitDelay. Surfacing that would turn every working setup
+// script that starts a daemon into a reported setup failure.
+func TestExecute_SuccessfulScript_SurvivingGrandchildIsNotAFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh and sleep binaries assumed")
+	}
+	withSetupWaitDelay(t, 200*time.Millisecond)
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "sleep 10 & exit 0"}}
+	start := time.Now()
+	_, err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: t.TempDir(),
+		Timeout:      10 * time.Second,
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("a successful script that left a background process must not fail: %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("did not return once the pipe wait was bounded: elapsed %v", elapsed)
+	}
+}
+
 // TestExecute_ZeroTimeout_NoDeadline pins the boundary at setupscript.go:153
 // (opts.Timeout > 0). With a zero timeout no deadline is installed, so a
 // fast command must succeed. The CONDITIONALS_BOUNDARY mutant (> 0 → >= 0)

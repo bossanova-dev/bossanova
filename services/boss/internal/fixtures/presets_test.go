@@ -11,7 +11,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"archive-signal", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "login", "onboarding", "question-row", "respawn-history", "rotation-history", "waiting-callback"}
+var allPresetNames = []string{"archive-signal", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "login", "onboarding", "question-row", "respawn-history", "rotation-history", "waiting-callback", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -291,5 +291,28 @@ func TestCloudErrorPresetPinsLongFailure(t *testing.T) {
 	}
 	if len(p.World().Sessions) == 0 {
 		t.Error("cloud-error world has no sessions; the home table must be drawn for the wrap width to track it")
+	}
+}
+
+// TestWedgedDaemonPresetSeedsAWorld guards the premise of the BOS-723 scenario:
+// the daemon-down screen REPLACES the home table, so a preset with an empty
+// world would let scene 1 "pass" against a board that never had rows to lose,
+// and scene 3's recovery would have nothing to repopulate.
+func TestWedgedDaemonPresetSeedsAWorld(t *testing.T) {
+	p, err := LookupPreset("wedged-daemon")
+	if err != nil {
+		t.Fatalf("LookupPreset(wedged-daemon): %v", err)
+	}
+	world := p.World()
+	if len(world.Sessions) == 0 {
+		t.Fatal("wedged-daemon seeds no sessions; the home table would be empty before the wedge")
+	}
+	if len(world.Repos) == 0 {
+		t.Fatal("wedged-daemon seeds no repos; the seeded sessions would have no repo to render under")
+	}
+	// The shrunk client bound is what makes the bounded failure land inside a
+	// step's timeout budget; without it the scenario is unrunnable.
+	if got := p.DefaultEnv["BOSS_RPC_DEADLINE_E2E"]; got == "" {
+		t.Fatal("wedged-daemon must pin BOSS_RPC_DEADLINE_E2E; the 30s production bound outlasts the schema's step cap")
 	}
 }

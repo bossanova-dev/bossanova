@@ -68,6 +68,17 @@ var ErrInvalidSpec = errors.New("invalid setup_script spec")
 // setup script writes to the daemon log.
 const setupOutputTailBytes = 4096
 
+// setupWaitDelay bounds how long Wait keeps waiting once the script's own
+// process is finished — killed after ctx expired, or exited on its own — for
+// the stdout/stderr pipe to close. Long enough that a normally-exiting child's
+// last writes still land in the tail; short enough that a grandchild which
+// survives the script (a spawned daemon, a `pnpm install` service) cannot hold
+// a bootstrap open past its deadline. See the WaitDelay comment in Execute.
+//
+// A var, not a const, only so tests can shorten it: asserting the bound with
+// the production value would cost five seconds of wall clock per case.
+var setupWaitDelay = 5 * time.Second
+
 // tailWriter is an io.Writer that retains only the last max bytes written to
 // it, so a setup script's final output can be surfaced in the error and in the
 // LogOutput sink without buffering the entire (potentially large) stream.
@@ -235,14 +246,18 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) (time.Duration, err
 	sink := io.MultiWriter(output, tail)
 	cmd.Stdout = sink
 	cmd.Stderr = sink
-	// NOTE: cmd.WaitDelay is deliberately left unset. Because Stdout/Stderr are
-	// not *os.File, os/exec uses a pipe whose write end a surviving grandchild
-	// (a `pnpm install` service, a spawned daemon) can hold open, so cmd.Run can
-	// outlive opts.Timeout. Setting WaitDelay bounds that, but it also makes
-	// Wait return exec.ErrWaitDelay for a script that *succeeded* and merely
-	// left a background process holding the pipe — turning a working setup into
-	// a reported failure. Trading a rare hang for a routine false failure needs
-	// its own ticket, not a drive-by in an observability change.
+	// Bound Wait's two sources of unexpected delay: a child that outlives the
+	// kill once ctx is done, and a child that has exited while a surviving
+	// grandchild (a `pnpm install` service, a spawned daemon) still holds the
+	// write end of the pipe. Because Stdout/Stderr are not *os.File, os/exec
+	// copies through a pipe, so without this cmd.Run can block on that pipe
+	// long past opts.Timeout — leaving the caller's bootstrap deadline unable
+	// to bound the setup script it exists to bound (BOS-717).
+	//
+	// The false-failure this trades against is handled below rather than paid:
+	// a script that itself exited 0 and merely left the pipe open reports
+	// exec.ErrWaitDelay, which is recognized and not reported as a failure.
+	cmd.WaitDelay = setupWaitDelay
 
 	if s.Type == TypeLegacy && opts.Warn != nil {
 		opts.Warn("legacy shell-string setup_script detected — rewritten to .boss/setup.sh; re-run 'boss repo settings' to migrate to the structured form")
@@ -251,6 +266,26 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) (time.Duration, err
 	started := time.Now()
 	runErr := cmd.Run()
 	elapsed := time.Since(started)
+
+	// The script ran to a successful exit and only its pipe was still held open
+	// by a surviving grandchild, so cmd.WaitDelay elapsed and Wait reported
+	// exec.ErrWaitDelay. The setup itself succeeded — all that is lost is
+	// whatever the background process would have written after the script
+	// returned — so this must not be turned into a failed setup. The exit-status
+	// check is what keeps it narrow: a script killed at the deadline exits
+	// unsuccessfully and reports an ExitError, which still falls through to the
+	// timeout handling below.
+	//
+	// This is deliberately the OPPOSITE of how bossd's runGitWithTimeout treats
+	// the same error, and the asymmetry is the point: there, stdout IS the
+	// result being parsed, so a read abandoned mid-pipe makes the answer
+	// untrustworthy and must be an error. Here the result is the exit status and
+	// the output is only diagnostics, so a truncated tail costs nothing a caller
+	// relies on.
+	if runErr != nil && errors.Is(runErr, exec.ErrWaitDelay) &&
+		cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		runErr = nil
+	}
 
 	// One materialization of the (bounded) tail feeds both consumers below, so
 	// the blank-only guard cannot drift between them.

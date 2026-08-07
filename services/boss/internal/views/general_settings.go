@@ -729,7 +729,7 @@ func (m GeneralSettingsModel) View() tea.View {
 	var b strings.Builder
 
 	if m.err != nil {
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 

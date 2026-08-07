@@ -757,6 +757,12 @@ type runOpts struct {
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
+
+	// startupStrandedBootstrapReap overrides the startup stranded-bootstrap reap.
+	// Nil uses Lifecycle.ReapStrandedBootstrapSessionsAtStartup. Its counterpart
+	// above exists for shutdown-lifecycle tests; this one also lets a test pin the
+	// ORDER of the two startup passes, which is load-bearing — see where they run.
+	startupStrandedBootstrapReap func(context.Context) (int, error)
 }
 
 // logRotationLaneAvailability emits the single operator-facing startup
@@ -785,26 +791,26 @@ func logRotationLaneAvailability(logger zerolog.Logger, hasSeams, rotationEnable
 		Msg("rotation lane availability (HasLiveRotationSeams)")
 }
 
-func protectedRootsFor(home string, paths []string) []string {
-	roots := []string{
-		filepath.Join(home, "Documents"),
-		filepath.Join(home, "Desktop"),
-		filepath.Join(home, "Downloads"),
-	}
-	var selected []string
-	for _, root := range roots {
-		for _, candidate := range paths {
-			relative, err := filepath.Rel(root, candidate)
-			if err != nil {
-				continue
-			}
-			if relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				selected = append(selected, root)
-				break
-			}
+// logProtectedRootProbeResults emits the operator-facing ERR line for every
+// root the startup probe found Blocked or Denied. OK and Absent are not
+// permission failures and are skipped — not everyone has a ~/Desktop.
+//
+// The message body is tccprobe.Remedy verbatim, which is what keeps the
+// startup log and the RepairDoctor check from drifting apart (BOS-725). Remedy
+// already leads with the root, the executable and "withholding" (the anchor
+// operators grep for), so it is the whole message: prefixing "bossd cannot
+// read <root>" would repeat both and contradict Remedy's own "degraded, not
+// the daemon" framing.
+func logProtectedRootProbeResults(logger zerolog.Logger, results []tccprobe.Result, executablePath string) {
+	for _, result := range results {
+		if result.Status != tccprobe.StatusBlocked && result.Status != tccprobe.StatusDenied {
+			continue
 		}
+		logger.Error().Err(result.Err).
+			Str("executable", executablePath).
+			Str("root", result.Path).
+			Msg(tccprobe.Remedy(result.Path, executablePath, result.Status))
 	}
-	return selected
 }
 
 const protectedRootResolutionTimeout = 3 * time.Second
@@ -846,7 +852,7 @@ func protectedRootsForResolvedAt(home string, paths []string, timeout time.Durat
 }
 
 func protectedRootsForResolvedAtWithTracker(home string, paths []string, timeout time.Duration, deadline time.Time, now func() time.Time, resolve symlinkResolver, track symlinkResolutionWorkerTracker) ([]string, []tccprobe.Result) {
-	roots := protectedRootsFor(home, paths)
+	roots := tccprobe.ProtectedRootsFor(home, paths)
 	workerLimit := min(3, len(paths))
 	if workerLimit == 0 {
 		return roots, nil
@@ -1003,7 +1009,7 @@ func mergeResolvedRoots(home string, roots []string, results []symlinkResolution
 		if !finished[index] || result.err != nil {
 			continue
 		}
-		for _, root := range protectedRootsFor(home, []string{result.path}) {
+		for _, root := range tccprobe.ProtectedRootsFor(home, []string{result.path}) {
 			if _, exists := seen[root]; exists {
 				continue
 			}
@@ -1121,6 +1127,12 @@ func run(opts runOpts) error {
 	logCloser := bossalog.Setup("bossd")
 	defer func() { _ = logCloser.Close() }()
 	var startupDiagnosticWorkerDone []<-chan struct{}
+	// startupProtectedRoots is the symlink-resolved protected-root list the
+	// startup diagnostic derived. It is handed to the server so the RepairDoctor
+	// check probes the same roots the startup path found (BOS-725) — the doctor
+	// only re-derives lexically, and a working path that reaches a protected root
+	// through a symlink is invisible to a lexical match.
+	var startupProtectedRoots []string
 
 	settings, err := config.Load()
 	if err != nil {
@@ -1778,6 +1790,7 @@ func run(opts runOpts) error {
 			protectedRoots, resolutionDiagnostics := protectedRootsForResolvedWithTracker(home, workingPaths, protectedRootResolutionTimeout, filepath.EvalSymlinks, func(done <-chan struct{}) {
 				startupDiagnosticWorkerDone = append(startupDiagnosticWorkerDone, done)
 			})
+			startupProtectedRoots = protectedRoots
 			probeResults := tccprobe.ProbeWithTracker(context.Background(), protectedRoots, tccprobe.DefaultTimeout, func(done <-chan struct{}) {
 				startupDiagnosticWorkerDone = append(startupDiagnosticWorkerDone, done)
 			})
@@ -1798,15 +1811,7 @@ func run(opts runOpts) error {
 					Str("candidate", result.Path).
 					Msg(message)
 			}
-			for _, result := range probeResults {
-				if result.Status != tccprobe.StatusBlocked && result.Status != tccprobe.StatusDenied {
-					continue
-				}
-				log.Error().Err(result.Err).
-					Str("executable", executablePath).
-					Str("root", result.Path).
-					Msgf("bossd cannot read %s: macOS is withholding access for this binary. Answer the pending permission dialog, or grant Files-and-Folders/Full Disk Access to %s, then run 'boss daemon restart'.", result.Path, executablePath)
-			}
+			logProtectedRootProbeResults(log.Logger, probeResults, executablePath)
 		}
 
 		stagedAppDataDir, err := config.DefaultAppDataDir()
@@ -3125,6 +3130,7 @@ func run(opts runOpts) error {
 		Logger:         log.Logger,
 		FileLimitSoft:  achievedFileLimitSoft,
 		EndpointReader: sessionPortsTracker,
+		ProtectedRoots: startupProtectedRoots,
 	})
 
 	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
@@ -3201,15 +3207,49 @@ func run(opts runOpts) error {
 	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, merged) })
 	trackDone(dispatcherDone)
 
-	// Recover cron sessions whose run finished but whose Stop-hook finalize
-	// signal never reached the daemon. Run in the tracked daemon lifecycle: a
-	// startup sweep can enter the full finalize pipeline, so shutdown must cancel
-	// it and wait for it to stop before tearing down the process.
+	// The two startup recovery passes, run in ONE goroutine so they are
+	// sequential. Both are tracked in the daemon lifecycle: either can enter the
+	// full finalize pipeline or do git work, so shutdown must cancel and wait for
+	// them before tearing down the process.
+	//
+	// Sequential is load-bearing, not tidiness. Both passes select pre-agent rows
+	// (CreatingWorktree/StartingAgent) and both claim a row with a conditional
+	// state transition, so concurrently exactly one wins and the other correctly
+	// backs off — no corruption, but the WINNER decided the outcome, and the two
+	// outcomes differ: reclaimed as a failed bootstrap (Blocked + worktree/branch
+	// cleanup) versus finalized as a completed cron run. For a row whose worktree
+	// may never have been created, finalize is the wrong answer — it can classify
+	// the strand as worktree_gone/pr_failed and skip the artifact cleanup
+	// entirely. Restart recovery must not be a coin flip between those.
+	//
+	// The bootstrap reaper goes FIRST because it is the pass that owns rows which
+	// never reached an agent: it declines any row carrying an agent id or a tmux
+	// pane, deferring those to the cron sweep that understands agent liveness.
+	// Ordering it first enforces the ownership split that reaper already
+	// documents, and narrows nothing — rows it declines fall straight through to
+	// the cron sweep below, which finds the rows it did claim already in Blocked
+	// (outside its reap set) and skips them.
+	//
+	// Also distinct in reach: the cron sweep only covers unattended runs, while
+	// the bootstrap reaper also reclaims a plain `boss new` that died
+	// mid-bootstrap, which nothing previously did (BOS-717). Its startup pass
+	// only touches rows that predate this process, so it cannot race a create the
+	// daemon has just accepted.
 	startupRecovery := opts.startupStrandedCronRecovery
 	if startupRecovery == nil {
 		startupRecovery = lifecycle.RecoverStrandedCronSessionsAtStartup
 	}
+	startupBootstrapReap := opts.startupStrandedBootstrapReap
+	if startupBootstrapReap == nil {
+		startupBootstrapReap = lifecycle.ReapStrandedBootstrapSessionsAtStartup
+	}
 	trackedGo(func() {
+		if n, err := startupBootstrapReap(pollerCtx); err != nil {
+			log.Warn().Err(err).Msg("failed to reap stranded bootstrap sessions")
+		} else if n > 0 {
+			log.Info().Int("count", n).Msg("reclaimed sessions stranded in early bootstrap")
+		}
+
 		if n, err := startupRecovery(pollerCtx); err != nil {
 			log.Warn().Err(err).Msg("failed to recover stranded cron sessions")
 		} else if n > 0 {
@@ -3595,6 +3635,14 @@ func run(opts runOpts) error {
 					log.Warn().Err(err).Msg("periodic stranded-cron recovery: failed")
 				} else if n > 0 {
 					log.Info().Int("count", n).Msg("periodic stranded-cron recovery: finalized stranded cron sessions")
+				}
+				// Same cadence, same tick: reclaim bootstraps that outlived the
+				// bootstrap deadline on a daemon that stayed up (BOS-717). Gated
+				// on age > deadline + margin, so a live create is never touched.
+				if n, err := lifecycle.ReapStrandedBootstrapSessionsPeriodic(pollerCtx); err != nil {
+					log.Warn().Err(err).Msg("periodic stranded-bootstrap reap: failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("periodic stranded-bootstrap reap: reclaimed stranded bootstraps")
 				}
 			}
 		}

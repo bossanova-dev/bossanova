@@ -17,9 +17,80 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/keyedgate"
 	"github.com/recurser/bossalib/setupscript"
 	"github.com/rs/zerolog"
 )
+
+// RepoCloneGateTimeout is the clone gate's own ceiling: the window it covers is
+// a handful of git invocations, each already capped at GitCommandTimeout, so a
+// wait beyond this is a wedged holder rather than a queue that will drain.
+//
+// It is deliberately the LOOSER of the two bounds a queued create is subject to.
+// keyedgate derives its wait from the caller's context, and every create on the
+// bootstrap path carries a 10-minute session.BootstrapTimeout, so in practice
+// that deadline is what a queued create fails on — this constant only binds a
+// caller with a longer (or no) deadline, such as a repair or registration path
+// creating a worktree outside a session bootstrap.
+const RepoCloneGateTimeout = 20 * time.Minute
+
+// RepoCloneCleanupGateTimeout is the clone gate's budget for the best-effort
+// CLEANUP operations (PurgeWorktree, ReapLocalBranches) rather than for a
+// create. It is two orders of magnitude shorter, and the difference is not
+// tuning — the two waits mean different things:
+//
+//   - A create that finds the gate held is QUEUED behind another create for the
+//     same clone, and there is no other way for it to get its worktree. Waiting
+//     out the holder is the whole point, so its budget is sized to outlast one.
+//
+//   - A cleanup that finds the gate held has learnt that someone is actively
+//     mutating this clone right now, and it is best-effort by construction: its
+//     callers have already decided the session is dead and are about to drop or
+//     block the row.
+//
+// Giving up is NOT free, and the earlier version of this comment claimed it was.
+// The row naming these artifacts is deleted (the failure cleanups) or moved to
+// Blocked and out of the sweep's state set (the stranded reaper) immediately
+// after, and a surviving branch pushes the next same-titled create onto a
+// `<branch>-2` path — so a skipped cleanup is generally abandoned rather than
+// retried, and both callers log it at Error for exactly that reason. The trade
+// is therefore one abandoned worktree against a stall, not a retry against a
+// stall, and the stall is still much the worse of the two: it is measured on
+// every caller below and bounded by nothing else.
+//
+// The stall is the real hazard, because every cleanup caller runs with NO
+// deadline of its own: the failure cleanups run on context.WithoutCancel, and
+// the stranded-bootstrap reaper on the daemon's poller context. At the
+// create-sized budget one reap could hold the daemon's shared 2-minute ticker
+// (which also drives stranded-cron recovery) for twenty minutes per session,
+// and a failure cleanup could hold its session target lock for forty across
+// purge plus reap — which is the budget session.TargetStartLockTimeout's margin
+// is justified against. Sized so purge plus reap together fit inside that
+// margin.
+const RepoCloneCleanupGateTimeout = 30 * time.Second
+
+// repoCloneGates serializes the MUTATING git window of worktree creation per
+// clone (BOS-717).
+//
+// Two creates in one repo now bootstrap concurrently — that is the point of
+// scoping the session start lock per repo, and it is what AC 1 buys. But both
+// of them run `git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>`
+// against the SAME clone, and a fetch is a ref write: concurrent fetches
+// contend on `refs/remotes/origin/<base>.lock` and the loser dies with "cannot
+// lock ref". Concurrent creates also both read `availableNewBranchName` before
+// either writes, so two same-titled creates can settle on the same branch and
+// the loser fails with ErrBranchExists instead of getting the `-2` suffix the
+// uniquifier exists to hand it.
+//
+// The process-global start mutex used to make all of this impossible by
+// accident, and nothing wrote that property down. This gate restores exactly it
+// and no more: keyed by clone path (so other repos are untouched) and released
+// before the setup script — the long step, and the one a parallel epic actually
+// needs to overlap.
+//
+// Package-level rather than per-Manager because the resource being guarded is a
+// directory on disk, so two Managers over one clone must share the gate.
+var repoCloneGates = &keyedgate.Registry{Name: "repo-clone"}
 
 // ErrBranchExists is returned when a branch with the derived name already
 // exists and the caller did not set Force in CreateOpts.
@@ -110,6 +181,30 @@ var ErrBranchNotPushed = errors.New("local branch tip differs from origin")
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
 
+// GitCommandTimeout bounds a single git invocation (BOS-717). Every git command
+// bossd runs — including the network-touching fetch/ls-remote/push — completes
+// in seconds once the clone is warm; this is a generous ceiling whose only job
+// is to turn "never returns" into a reported error. It matches SetupScriptTimeout
+// so the two per-step ceilings stay legible against the overall bootstrap
+// budget rather than drifting into arbitrary distinct numbers.
+//
+// The one honest exception it caps is the FIRST FetchBase against a very large
+// repository over a slow link, where minutes of transfer is not a hang. Clone
+// already warms the object store (and has its own larger budget below), so that
+// fetch transfers a single branch rather than the repo; if it ever does need its
+// own ceiling, give it runGitWithTimeout rather than raising this one.
+//
+// DERIVED from SetupScriptTimeout rather than restating its value, so the
+// relationship the paragraph above asserts cannot rot into two independently
+// edited numbers.
+const GitCommandTimeout = SetupScriptTimeout
+
+// GitCloneTimeout is the one deliberately larger per-invocation budget: a cold
+// `git clone` of a large repository is honestly minutes of network transfer, so
+// holding it to GitCommandTimeout would break repo registration rather than
+// catch a hang. Cloning is not on the session-bootstrap path.
+const GitCloneTimeout = 30 * time.Minute
+
 // WorktreeManager manages Git worktrees for coding sessions.
 type WorktreeManager interface {
 	// Create creates a new worktree branching from baseBranch.
@@ -127,7 +222,12 @@ type WorktreeManager interface {
 	// PurgeWorktree removes any worktree (registration + on-disk directory) for
 	// branch under worktreeBaseDir without deleting the branch. Best-effort
 	// cleanup after a failed session start; safe when nothing exists.
-	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string)
+	//
+	// A non-nil error means the purge did NOT RUN — callers must then skip the
+	// branch reap, which `git branch -D` refuses while the worktree is still
+	// registered. Its individual steps stay best-effort and are logged, not
+	// returned, so nil does not promise the directory is gone.
+	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error
 
 	// Resurrect re-creates a worktree from an existing branch and runs the
 	// setup script if present.
@@ -332,6 +432,23 @@ type CreateOpts struct {
 	SetupScript       *string   // Optional setup script to run after creation.
 	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
 	Force             bool      // If true, remove any existing branch with the same name.
+
+	// OnWorktreeReady, when non-nil, is called once `git worktree add` has
+	// succeeded and BEFORE the setup script runs, with the branch name this
+	// create settled on and the worktree path.
+	//
+	// It exists so a caller can durably record the branch it now owns while the
+	// slowest, most hang-prone step is still ahead of it (BOS-717). The branch
+	// is usually DERIVED here — from the session title, plus a uniquifying
+	// suffix — so until Create returns, a caller that inserted a row before
+	// calling has no idea what to clean up. A bootstrap killed by its deadline
+	// inside the setup script (the 2026-08-06 incident's exact shape) would
+	// otherwise leave the worktree and branch orphaned with nothing naming them.
+	//
+	// Deliberately after the add, not after the name is chosen: before the add,
+	// this create does not yet own the branch, and recording a name another
+	// create owns would point the failure cleanup at someone else's worktree.
+	OnWorktreeReady func(ctx context.Context, branch, worktreePath string)
 }
 
 // CreateResult holds the output of a successful worktree creation.
@@ -580,14 +697,83 @@ func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []s
 	return nil
 }
 
-// runGit runs a git command in the given directory and returns stdout.
+// runGit runs a git command in the given directory and returns stdout, bounded
+// by GitCommandTimeout.
+//
+// BOS-717: exec.CommandContext alone only inherits whatever deadline the caller
+// happened to carry, and the session bootstrap carried none — so a single git
+// invocation that never returned (a credential helper waiting on a TTY, a
+// wedged network read, a held index.lock) hung the whole create path with no
+// upper bound. The timeout is per invocation and is layered under the caller's
+// own deadline: context.WithTimeout keeps whichever fires first, so a shorter
+// bootstrap budget still wins.
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	return runGitWithTimeout(ctx, GitCommandTimeout, dir, args...)
+}
+
+// gitWaitDelay bounds how long cmd.Run may keep waiting after the process
+// itself is gone (BOS-717).
+//
+// It is what makes the timeout above REAL. cmd.Stdout/cmd.Stderr are
+// *bytes.Buffer rather than *os.File, so os/exec hands git a pipe and copies
+// from it; cmd.Run does not return until every writer closes that pipe.
+// exec.CommandContext kills only the git PID, so a grandchild git spawned and
+// left behind — an ssh transport, or the credential helper waiting on a TTY that
+// runGit's own doc comment names — keeps the pipe open and keeps cmd.Run blocked
+// long past the deadline. Manager.Create holds the per-clone gate across exactly
+// that window, so one such invocation wedges every create for the repo.
+//
+// lib/bossalib/setupscript/setupscript.go deliberately leaves WaitDelay UNSET
+// for the opposite trade, and the difference is the workload: a setup script
+// legitimately starts background services (a dev server, a package-manager
+// daemon) that outlive it holding the pipe, so a WaitDelay there would report a
+// SUCCESSFUL setup as failed routinely. git does not: the commands bossd runs
+// exit synchronously, and git's own background maintenance (`gc --auto
+// --detach`) daemonizes onto /dev/null before returning, so it never holds these
+// pipes. A lingering writer here means something is genuinely stuck.
+//
+// Generous, because it starts counting only AFTER the process has been killed:
+// it is drain time for output already written, not a second command budget. A
+// var so a test can exercise the expiry without sleeping for it.
+var gitWaitDelay = 10 * time.Second
+
+// runGitWithTimeout is runGit with an explicit per-invocation budget, for the
+// handful of commands whose honest worst case exceeds the default (a cold clone
+// of a large repository).
+func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.WaitDelay = gitWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Context attribution comes FIRST, and stays truthful with WaitDelay set:
+		// a killed-by-deadline git reports the deadline, which is the useful fact,
+		// rather than the pipe-drain expiry that followed it. Only a command that
+		// finished on its own terms while a grandchild held the pipes open falls
+		// through to the ErrWaitDelay branch below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Attribute the kill correctly. ctx is derived, so ctx.Err() is
+			// non-nil for BOTH "this invocation used its whole budget" and "the
+			// caller's bootstrap deadline or cancellation killed it 20 seconds
+			// in" — reporting the per-invocation budget in the latter case would
+			// send a reader looking for a five-minute git command that never ran.
+			if parentErr := parent.Err(); parentErr != nil {
+				return "", fmt.Errorf("git %s: %w (caller's context ended): %s", strings.Join(args, " "), parentErr, strings.TrimSpace(stderr.String()))
+			}
+			return "", fmt.Errorf("git %s: %w (after %s): %s", strings.Join(args, " "), ctxErr, timeout, strings.TrimSpace(stderr.String()))
+		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			// git itself finished; a process it left behind held the output pipe
+			// past gitWaitDelay. Say so, because the git command is not the thing
+			// to go looking at — its output was abandoned mid-read, so the result
+			// cannot be trusted either way.
+			return "", fmt.Errorf("git %s: %w: a child process held the output pipe open for more than %s after git exited: %s",
+				strings.Join(args, " "), err, gitWaitDelay, strings.TrimSpace(stderr.String()))
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
@@ -847,9 +1033,26 @@ func (m *Manager) reapBazelOutputBase(base string) {
 // "fatal: '<path>' already exists" and wedge the branch forever (the dependabot
 // repair-session loop). This is a no-op when nothing is on disk.
 //
-// Safe to call unconditionally: the server short-circuits to the existing
-// session for a branch before reaching worktree creation, so reaching here
-// means no live session owns wtPath. All steps are best-effort.
+// Safe to call unconditionally, but no single guard is the reason, and the
+// version of this comment that named only StreamCreateSession's existing-session
+// short-circuit covered one caller out of three. Since BOS-717 the ways in are
+// Create and CreateFromExistingBranch directly, plus PurgeWorktree from the two
+// failed-bootstrap cleanups and the stranded-bootstrap sweep. What each relies
+// on:
+//
+//   - Create with a derived branch (the default): availableNewBranchName has
+//     just settled on a name no local or remote branch holds, so wtPath is
+//     unused by construction. The short-circuit does NOT apply here — it returns
+//     immediately for an empty branch, which is every title-derived create.
+//   - Create with an explicit branch, and CreateFromExistingBranch: the
+//     short-circuit plus the BOS-236 duplicate check, which answer a create
+//     naming a branch some live session holds with that session.
+//   - Create with Force: no guard, by request. Force means "remove any existing
+//     branch of this name", so the caller has asked for the clobber.
+//   - PurgeWorktree: it is only ever handed the branch of a session whose
+//     bootstrap has already failed or been declared dead.
+//
+// All steps are best-effort.
 func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath string) {
 	// Capture the Bazel output base BEFORE the worktree dir (and its in-worktree
 	// `bazel-out` symlink) is removed, then reap it AFTER. Typically a no-op here:
@@ -898,9 +1101,64 @@ func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath strin
 // clean up after a failed session start so a leftover directory can't wedge
 // future attempts (notably the dependabot repair loop). Best-effort and safe
 // when nothing exists. Path derivation matches Create/CreateFromExistingBranch.
-func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) {
+//
+// It takes the per-clone gate (see repoCloneGates), because `worktree remove`
+// and `worktree prune` mutate the SAME shared clone a concurrent create is
+// fetching and adding into — and since BOS-717 this really does run
+// concurrently with live creates: the stranded-bootstrap reaper calls it from
+// the daemon poller by design. The gate is not reentrant, so it is taken HERE
+// rather than in clearStaleWorktree, which Create and CreateFromExistingBranch
+// call directly while already holding it.
+//
+// The error reports whether the purge RAN, not whether it succeeded: the steps
+// inside are best-effort and log their own failures. Only the refused gate
+// returns non-nil, and it is returned rather than swallowed because the caller
+// must then skip the branch reap — see the caller contract on
+// WorktreeManager.PurgeWorktree.
+func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error {
+	release, err := m.acquireCloneGate(ctx, repoPath, "purge worktree")
+	if err != nil {
+		// Skipping is the only safe choice — stalling a caller that has no
+		// deadline of its own is worse — but it is not a free one, and the
+		// error is returned rather than swallowed so the caller can say what
+		// was actually lost. Do NOT restate the old claim that "the next
+		// create for this path clears it anyway": a create whose branch
+		// survived settles on `<branch>-2` and clears THAT path instead.
+		m.logger.Warn().Err(err).Str("repo", repoPath).Str("branch", branch).
+			Msg("purge worktree: could not serialize against the shared clone; skipping (the caller reports what this leaves behind)")
+		return err
+	}
+	defer release()
+
 	wtPath := filepath.Join(worktreeBaseDir, sanitizeDirName(repoName), branch)
 	m.clearStaleWorktree(ctx, repoPath, wtPath)
+	return nil
+}
+
+// acquireCloneGate takes the per-clone gate for a MUTATING operation on the
+// shared clone that is not part of worktree creation, logging a contended wait.
+// op names the caller in that log line.
+//
+// It uses RepoCloneCleanupGateTimeout, NOT the create-sized budget — see there
+// for why a refused cleanup is cheap and a stalled one is not.
+//
+// The gate is capacity-1 and NOT reentrant: only exported entry points may call
+// this, and only ones no already-gated code path can reach. Create and
+// CreateFromExistingBranch hold the gate across windows that call
+// clearStaleWorktree and deleteBranchRef, so those stay ungated bodies.
+func (m *Manager) acquireCloneGate(ctx context.Context, repoPath, op string) (func(), error) {
+	release, waited, err := repoCloneGates.Acquire(ctx, repoPath, RepoCloneCleanupGateTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("serialize git for %s: %w", repoPath, err)
+	}
+	if waited > time.Second {
+		m.logger.Info().
+			Str("repo", repoPath).
+			Str("op", op).
+			Dur("clone_gate_wait", waited).
+			Msg("waited for concurrent git on this repo")
+	}
+	return release, nil
 }
 
 // Create creates a new git worktree with a fresh branch based on baseBranch.
@@ -913,6 +1171,23 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	if opts.BaseBranch == "" {
 		return nil, fmt.Errorf("base branch is required")
 	}
+
+	// Serialize the mutating git window against this clone (see repoCloneGates).
+	// Released explicitly below once `worktree add` has landed, so the setup
+	// script — the long step — runs outside it. The deferred call is the
+	// all-other-exits safety net; release is idempotent, so both firing is fine.
+	releaseClone, cloneWait, err := repoCloneGates.Acquire(ctx, opts.RepoPath, RepoCloneGateTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("serialize git for %s: %w", opts.RepoPath, err)
+	}
+	defer releaseClone()
+	if cloneWait > time.Second {
+		m.logger.Info().
+			Str("repo", opts.RepoPath).
+			Dur("clone_gate_wait", cloneWait).
+			Msg("waited for a concurrent worktree create on this repo")
+	}
+
 	fetchStarted := time.Now()
 	if err := m.FetchBase(ctx, opts.RepoPath, opts.BaseBranch); err != nil {
 		return nil, err
@@ -1005,11 +1280,24 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	}
 	worktreeAddDuration := time.Since(worktreeAddStarted)
 
+	// Tell the caller what it now owns, while the hang-prone setup script is
+	// still ahead of us (BOS-717). See CreateOpts.OnWorktreeReady.
+	if opts.OnWorktreeReady != nil {
+		opts.OnWorktreeReady(ctx, branch, wtPath)
+	}
+
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
 	// downstream step writes into them.
 	if err := ensureGitInfoExclude(ctx, wtPath, bossdManagedExcludePatterns); err != nil {
 		return nil, fmt.Errorf("ensure info/exclude: %w", err)
 	}
+
+	// Everything that touches the shared clone is now done — including
+	// ensureGitInfoExclude, which read-modify-writes $GIT_COMMON_DIR/info/exclude,
+	// a MAIN-CLONE file two overlapping creates would otherwise race on. Release
+	// before the setup script: that step is minutes long, is scoped to the new
+	// worktree, and is exactly what a parallel epic needs to overlap.
+	releaseClone()
 
 	// Run setup script if provided. A setup-script failure is non-fatal: the
 	// worktree itself is valid (the git add above succeeded), so we surface the
@@ -1247,7 +1535,26 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 
 // ReapLocalBranches force-deletes local branches and prunes stale worktree
 // refs. It never contacts or deletes remote branches.
+//
+// Like PurgeWorktree it takes the per-clone gate: `worktree prune` and
+// `branch -D` write refs in the shared clone that a concurrent create is
+// fetching into. The gate is not reentrant, so the ungated body lives in
+// reapLocalBranchesLocked and no already-gated path calls this method.
 func (m *Manager) ReapLocalBranches(ctx context.Context, repoPath string, branches []string) error {
+	release, err := m.acquireCloneGate(ctx, repoPath, "reap local branches")
+	if err != nil {
+		// Returned rather than swallowed: unlike the purge, a refused branch
+		// delete is how an orphaned branch goes unnoticed, and every caller
+		// already logs this error.
+		return err
+	}
+	defer release()
+	return m.reapLocalBranchesLocked(ctx, repoPath, branches)
+}
+
+// reapLocalBranchesLocked is ReapLocalBranches' body, without the clone gate.
+// Callers must already hold the gate for repoPath.
+func (m *Manager) reapLocalBranchesLocked(ctx context.Context, repoPath string, branches []string) error {
 	m.logger.Info().
 		Int("count", len(branches)).
 		Msg("reaping local branches")
@@ -1868,7 +2175,7 @@ func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
 		Str("path", localPath).
 		Msg("cloning repository")
 
-	if _, err := runGit(ctx, ".", "clone", cloneURL, localPath); err != nil {
+	if _, err := runGitWithTimeout(ctx, GitCloneTimeout, ".", "clone", cloneURL, localPath); err != nil {
 		return fmt.Errorf("clone: %w", err)
 	}
 	return nil
@@ -2115,13 +2422,37 @@ func (m *Manager) CountMergeCommits(ctx context.Context, localPath, base, head s
 // propagate as errors. Use e.g. ref="<sha>" and target="refs/remotes/origin/main"
 // to verify a post-merge commit actually landed on the remote base.
 func (m *Manager) IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error) {
+	// Bounded like every other git invocation (BOS-717). This one cannot go
+	// through runGitWithTimeout — it reads the exit code to distinguish "not an
+	// ancestor" (1) from a broken ref (>=128) — so it applies the same budget
+	// itself. Callers include the stranded-bootstrap reaper, which runs on the
+	// daemon's poller context and carries no deadline of its own.
+	ctx, cancel := context.WithTimeout(ctx, GitCommandTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ref, target)
 	cmd.Dir = localPath
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// And bounded the same way runGitWithTimeout is, for the same reason: stderr
+	// is a *bytes.Buffer, so os/exec hands git a PIPE and cmd.Run blocks until
+	// every inheritor of it closes. exec.CommandContext kills only the git PID,
+	// so a grandchild left holding that pipe keeps this call blocked long past
+	// the deadline above — which would make that deadline decorative. See
+	// gitWaitDelay for why git (unlike a setup script) never legitimately leaves
+	// such a process behind.
+	cmd.WaitDelay = gitWaitDelay
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
+	}
+	// The wait-delay expiry is checked BEFORE the exit code, and reported as an
+	// error rather than as an answer. Wait substitutes ErrWaitDelay only for a
+	// nil error, so this is the "git said ancestor, but its output was abandoned
+	// mid-drain" case — and a `true` here is what the stranded-bootstrap reaper
+	// force-deletes a branch on, so a guess is not available.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w: a child process held the output pipe open for more than %s after git exited: %s",
+			ref, target, err, gitWaitDelay, strings.TrimSpace(stderr.String()))
 	}
 	// merge-base --is-ancestor exits 1 when not an ancestor (no error),
 	// and exits ≥128 when refs are bad or the repo is broken.
@@ -2835,6 +3166,17 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 		Str("path", wtPath).
 		Msg("creating worktree from existing branch")
 
+	// Same clone gate as Create, for the same reason: the fetch and the two
+	// `git branch` writes below mutate refs in the shared clone, so a concurrent
+	// create in this repo must not run them at the same time (see
+	// repoCloneGates). Released once `worktree add` lands, before the setup
+	// script.
+	releaseClone, _, err := repoCloneGates.Acquire(ctx, opts.RepoPath, RepoCloneGateTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("serialize git for %s: %w", opts.RepoPath, err)
+	}
+	defer releaseClone()
+
 	// Fetch the branch from origin into its remote-tracking ref first. If the
 	// remote branch is missing, callers may fall back to creating from a local
 	// branch, so do not clear any existing path until this succeeds.
@@ -2879,6 +3221,10 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	if err := ensureGitInfoExclude(ctx, wtPath, bossdManagedExcludePatterns); err != nil {
 		return nil, fmt.Errorf("ensure git info exclude: %w", err)
 	}
+
+	// Shared-clone work is done (ensureGitInfoExclude included — see Create);
+	// let a queued create in this repo proceed while the setup script runs.
+	releaseClone()
 
 	// Run setup script if provided. Non-fatal — see Create for rationale.
 	var setupErr error

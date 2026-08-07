@@ -317,6 +317,7 @@ func (a App) updateCron(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ofm, ok := msg.(cronFormOpenMsg); ok {
 		a.activeView = ViewCronForm
 		a.cronForm = NewCronFormModel(a.client, a.ctx)
+		a.cronForm.SetTelemetry(a.telemetry)
 		a.cronForm.job = ofm.job
 		a.cronForm.width = a.width
 		a.cronForm.height = a.height
@@ -332,6 +333,7 @@ func (a App) updateCronForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		returnView := a.cronList.returnView
 		a.activeView = ViewCron
 		a.cronList = NewCronListModel(a.client, a.ctx)
+		a.cronList.SetTelemetry(a.telemetry)
 		a.cronList.returnView = returnView
 		a.cronList.width = a.width
 		a.cronList.height = a.height
@@ -343,6 +345,7 @@ func (a App) updateCronForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		returnView := a.cronList.returnView
 		a.activeView = ViewCron
 		a.cronList = NewCronListModel(a.client, a.ctx)
+		a.cronList.SetTelemetry(a.telemetry)
 		a.cronList.returnView = returnView
 		a.cronList.width = a.width
 		a.cronList.height = a.height
@@ -382,6 +385,7 @@ func (a App) updateAccountRegister(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// return). ViewAccounts' only entry point is Settings.
 		a.activeView = ViewAccounts
 		a.accountsList = NewAccountsListModel(a.client, a.ctx)
+		a.accountsList.SetTelemetry(a.telemetry)
 		a.accountsList.returnView = ViewSettings
 		a.accountsList.width = a.width
 		a.accountsList.height = a.height

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,11 +114,28 @@ func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ strin
 
 // mockSessionStarter implements SessionStarter for testing.
 type mockSessionStarter struct {
+	mu             sync.Mutex
 	startSessionFn func(ctx context.Context, sessionID string, opts session.StartSessionOpts) error
+	// cleanedUp records the sessions whose bootstrap artifacts were reclaimed,
+	// and the ORDER matters: the row is the only thing naming the worktree and
+	// branch, so cleanup has to happen before the row is deleted.
+	cleanedUp []string
 }
 
 func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error {
 	return m.startSessionFn(ctx, sessionID, opts)
+}
+
+func (m *mockSessionStarter) CleanUpFailedBootstrapArtifacts(_ context.Context, sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanedUp = append(m.cleanedUp, sessionID)
+}
+
+func (m *mockSessionStarter) cleanupRecords() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.cleanedUp...)
 }
 
 type mockDuplicateLiveness struct {
@@ -336,6 +354,56 @@ func TestCreateSession_StartFailurePublishesDelete(t *testing.T) {
 	}
 	if len(notified) != 1 || notified[0] != "sess-x" {
 		t.Fatalf("expected delete notification for sess-x, got %v", notified)
+	}
+}
+
+// TestCreateSession_StartFailureReclaimsBootstrapArtifacts is AC 2 for the
+// task-orchestrator create path (cron, dependabot, /boss-epic).
+//
+// This path only ever deleted the row. That was survivable while a wedged
+// bootstrap hung forever and never reached the failure branch at all; the
+// BOS-717 bootstrap deadline makes it routine, and by then `git worktree add`
+// has usually run — the setup script, the slow step, comes after it. The row is
+// the only thing that names the worktree and branch, so the cleanup has to
+// happen BEFORE the delete or both are orphaned permanently.
+func TestCreateSession_StartFailureReclaimsBootstrapArtifacts(t *testing.T) {
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return context.DeadlineExceeded
+		},
+	}
+	deletes := 0
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-x", RepoID: params.RepoID, Title: params.Title}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id}, nil
+		},
+		deleteFn: func(_ context.Context, _ string) error {
+			// Ordering is the whole point: once the row is gone, nothing names
+			// the worktree or branch to clean up.
+			if got := starter.cleanupRecords(); len(got) == 0 {
+				t.Error("session row deleted before its bootstrap artifacts were reclaimed")
+			}
+			deletes++
+			return nil
+		},
+	}
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
+
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID: "repo-1", Title: "t", BaseBranch: "main",
+	}); err == nil {
+		t.Fatal("expected error from the bootstrap deadline")
+	}
+
+	cleaned := starter.cleanupRecords()
+	if len(cleaned) != 1 || cleaned[0] != "sess-x" {
+		t.Fatalf("bootstrap artifacts reclaimed for %v, want [sess-x] — the worktree and branch are orphaned", cleaned)
+	}
+	if deletes != 1 {
+		t.Fatalf("row deleted %d times, want 1", deletes)
 	}
 }
 
@@ -1183,5 +1251,140 @@ func TestCreateSession_DuplicatePreventionKeepsLiveEarlySessionActive(t *testing
 
 	if !session.IsDuplicateActiveSessionError(err) {
 		t.Fatalf("expected live duplicate error, got %v", err)
+	}
+}
+
+// logSink is a concurrency-safe io.Writer for capturing zerolog output while a
+// create runs on another goroutine.
+type logSink struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (s *logSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *logSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// TestCreateSessionLogsLockWaitsOnTheOrchestratorPath pins AC 3 on the
+// unattended path. Cron, dependabot and /boss-epic creates contend for the SAME
+// two gates as the interactive RPC, but nobody is watching a stream here — so a
+// create wedged waiting for a lock has to be visible in the daemon log, and it
+// has to be visible BEFORE the wait ends rather than only once it does.
+func TestCreateSessionLogsLockWaitsOnTheOrchestratorPath(t *testing.T) {
+	// Not parallel: it lowers the package-level warn threshold.
+	originalThreshold := session.SlowStartLockWaitThreshold
+	session.SlowStartLockWaitThreshold = 10 * time.Millisecond
+	t.Cleanup(func() { session.SlowStartLockWaitThreshold = originalThreshold })
+
+	const (
+		repoID = "repo-lockwait"
+		branch = "bos-717-orchestrator-contended"
+	)
+
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-lockwait", RepoID: params.RepoID, Title: params.Title}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: repoID, BranchName: branch}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(context.Context, string, session.StartSessionOpts) error { return nil },
+	}
+
+	sink := &logSink{}
+	creator := NewSessionCreator(store, starter, "claude", zerolog.New(sink))
+
+	// Hold the target lock so the create below is genuinely blocked.
+	release, _, err := session.AcquireTargetStart(context.Background(), repoID, branch, nil)
+	if err != nil {
+		t.Fatalf("pre-acquire target lock: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, createErr := creator.CreateSession(context.Background(), CreateSessionOpts{
+			RepoID:     repoID,
+			Title:      "contended cron fire",
+			BaseBranch: "main",
+			BranchName: branch,
+		})
+		done <- createErr
+	}()
+
+	// The before-acquire line must appear while the create is STILL blocked —
+	// a line emitted only after the lock is taken tells a responder nothing
+	// about a wait that never ends.
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(sink.String(), "acquiring session start locks") {
+		select {
+		case createErr := <-done:
+			t.Fatalf("create returned (%v) before the pre-acquire line was logged; log:\n%s", createErr, sink.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no pre-acquire line logged while the create was blocked; log:\n%s", sink.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Still blocked, so the line really did precede acquisition.
+	select {
+	case createErr := <-done:
+		t.Fatalf("create completed while the target lock was held: %v", createErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+	released = true
+	if createErr := <-done; createErr != nil {
+		t.Fatalf("create after lock release = %v, want nil", createErr)
+	}
+
+	if !strings.Contains(sink.String(), "session start locks were contended") {
+		t.Fatalf("no contention warning after a blocked acquire; log:\n%s", sink.String())
+	}
+	if !strings.Contains(sink.String(), "target_lock_wait") {
+		t.Fatalf("contention warning did not record the wait; log:\n%s", sink.String())
+	}
+}
+
+// TestCreateSessionLogsAFailedLockAcquireOnTheOrchestratorPath pins the third
+// rung: an acquire that gives up must say so at Error, naming the lock. The
+// caller's error is returned to a scheduler that logs it as a fire failure, so
+// without this the daemon log never names the lock that refused.
+func TestCreateSessionLogsAFailedLockAcquireOnTheOrchestratorPath(t *testing.T) {
+	t.Parallel()
+
+	sink := &logSink{}
+	creator := NewSessionCreator(&mockSessionStore{}, &mockSessionStarter{}, "claude", zerolog.New(sink))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := creator.CreateSession(ctx, CreateSessionOpts{
+		RepoID:     "repo-cancelled",
+		Title:      "cancelled cron fire",
+		BranchName: "bos-717-cancelled",
+	}); err == nil {
+		t.Fatal("CreateSession on a cancelled context returned nil error")
+	}
+	if !strings.Contains(sink.String(), "giving up waiting for the target lock") {
+		t.Fatalf("a refused acquire logged nothing; log:\n%s", sink.String())
 	}
 }

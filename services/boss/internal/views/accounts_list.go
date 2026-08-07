@@ -2,7 +2,6 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -25,6 +25,15 @@ const emptyAccountsMessage = "No managed accounts yet. Add one to let Bossanova 
 type accountsLoadedMsg struct {
 	accounts []*pb.Account
 	err      error
+
+	// refresh marks this result as the answer to a manual [r] usage refresh
+	// (refreshAccountsCmd) rather than the Init load or a post-action
+	// re-fetch. Provenance has to ride ON the message: m.refreshing is shared
+	// model state, and several commands produce this same message type, so an
+	// unrelated load landing while [r] is in flight would otherwise consume
+	// the flag — reporting that load as account_refreshed (with its status,
+	// not the refresh's) and leaving the real refresh result silent.
+	refresh bool
 }
 
 // accountTestedMsg carries the result of a live TestAccount RPC.
@@ -47,8 +56,9 @@ type accountTestedMsg struct {
 // poll loop: accounts change only via explicit user action, so it fetches once
 // in Init and re-fetches after a live test completes.
 type AccountsListModel struct {
-	client client.BossClient
-	ctx    context.Context
+	client    client.BossClient
+	ctx       context.Context
+	telemetry telemetry.Client
 
 	accounts []*pb.Account
 
@@ -120,6 +130,11 @@ func NewAccountsListModel(c client.BossClient, ctx context.Context) AccountsList
 	}
 }
 
+// SetTelemetry installs a telemetry client for completed account actions.
+func (m *AccountsListModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
+}
+
 // Cancelled reports whether the user dismissed the accounts view.
 func (m AccountsListModel) Cancelled() bool { return m.cancel }
 
@@ -155,7 +170,7 @@ func (m AccountsListModel) fetchSessions() tea.Cmd {
 func (m AccountsListModel) refreshAccountsCmd() tea.Cmd {
 	return func() tea.Msg {
 		accounts, err := m.client.ListAccounts(m.ctx, "", true)
-		return accountsLoadedMsg{accounts: accounts, err: err}
+		return accountsLoadedMsg{accounts: accounts, err: err, refresh: true}
 	}
 }
 
@@ -175,19 +190,32 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case accountsLoadedMsg:
-		wasRefreshing := m.refreshing
 		m.loading = false
-		m.refreshing = false
+		// Only a *manual* usage refresh is a user action worth an event; the
+		// initial Init load and the post-action re-fetches are not. Which one
+		// this is comes off msg.refresh, never off m.refreshing: the flag is
+		// shared, so keying on it would let an unrelated load that merely
+		// happened to land first consume the in-flight refresh — clearing the
+		// spinner early, attributing that load's status to account_refreshed,
+		// and emitting nothing at all when the real refresh returned.
+		// account_refreshed itself is captured at the app root
+		// (App.handleAccountsLoadedResult), which keys off the same msg.refresh
+		// flag: [esc] is unguarded here too, so a refresh the operator walked
+		// away from must still report. Clearing the in-flight flag stays here —
+		// it is this model's own spinner state.
+		if msg.refresh {
+			m.refreshing = false
+		}
 		if msg.err != nil {
 			m.err = msg.err
-			if wasRefreshing {
-				m.setStatus(fmt.Sprintf("Usage refresh failed: %v", msg.err), true)
+			if msg.refresh {
+				m.setStatus(rpcStatusMessage("Usage refresh failed", msg.err), true)
 			}
 		} else {
 			m.err = nil
 			m.accounts = msg.accounts
 			m.rebuildTable()
-			if wasRefreshing {
+			if msg.refresh {
 				m.setStatus("Usage refreshed.", false)
 			}
 		}
@@ -202,7 +230,7 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// status line, mirroring the account-detail screen — so maskTestError is
 		// genuinely the ONLY path a last-test error reaches the screen.
 		if msg.err != nil {
-			m.setStatus("Test failed: "+maskTestError(fmt.Sprintf("%v", msg.err)), true)
+			m.setStatus("Test failed: "+maskTestError(rpcStatusDetail(msg.err)), true)
 		} else {
 			detail := maskTestError(msg.detail)
 			if detail == "" {
@@ -230,8 +258,12 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear the in-flight disable/enable pending and reconcile from a fresh
 		// ListAccounts so the STATUS cell reflects the persisted status.
 		delete(m.disabling, msg.id)
+		// account_enabled / account_disabled is captured at the app root
+		// (App.handleAccountStatusResult), not here: [esc] is accepted while
+		// the flip is in flight, and once App routes away this handler never
+		// runs. See the note above the root handlers in app_handlers.go.
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("Status update failed: %v", msg.err), true)
+			m.setStatus(rpcStatusMessage("Status update failed", msg.err), true)
 			m.rebuildTable()
 			return m, nil
 		}
@@ -245,8 +277,12 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case accountRemovedMsg:
 		delete(m.removing, msg.id)
+		// account_removed is captured at the app root
+		// (App.handleAccountRemoveResult) for the same reason as the status
+		// flip above, and so the list and the edit screen — which both handle
+		// this message — cannot double-count it.
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("Remove failed: %v", msg.err), true)
+			m.setStatus(rpcStatusMessage("Remove failed", msg.err), true)
 			m.rebuildTable()
 			return m, nil
 		}
@@ -672,7 +708,7 @@ func accountLastTestCell(a *pb.Account) string {
 func (m AccountsListModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

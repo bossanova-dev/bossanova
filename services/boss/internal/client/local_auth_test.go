@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,5 +127,167 @@ func TestNewLocal_MissingTokenClearErrorOnStream(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "daemon rejected this client") {
 		t.Fatalf("err = %v, want the mapped daemon-rejected error on the stream path", err)
+	}
+}
+
+// TestNewLocalWithToken_ValidTokenReturnsClient guards the constructor's basic
+// shape: a non-nil *LocalClient with socketPath set to exactly what was passed
+// in (not one resolved/rewritten from a co-located token file, since a
+// forwarded socket has none).
+func TestNewLocalWithToken_ValidTokenReturnsClient(t *testing.T) {
+	c := NewLocalWithToken("/tmp/does-not-need-to-exist.sock", "some-token")
+	if c == nil {
+		t.Fatal("NewLocalWithToken returned nil")
+	}
+	if c.socketPath != "/tmp/does-not-need-to-exist.sock" {
+		t.Fatalf("socketPath = %q, want %q", c.socketPath, "/tmp/does-not-need-to-exist.sock")
+	}
+}
+
+// TestNewLocalWithToken_EmptyTokenStillBuildsClient proves an empty token
+// behaves like a missing co-located token file: the client is still built
+// (never nil, never panics) and only fails later at RPC time.
+func TestNewLocalWithToken_EmptyTokenStillBuildsClient(t *testing.T) {
+	c := NewLocalWithToken("/tmp/does-not-need-to-exist.sock", "")
+	if c == nil {
+		t.Fatal("NewLocalWithToken(\"\") returned nil")
+	}
+}
+
+// TestNewLocal_RegressionBothTokenPresenceCases is the refactor's regression
+// guard: NewLocal must keep returning a non-nil client whether or not a
+// bossd.token file sits beside the socket, exactly as before the
+// newLocalClient extraction.
+func TestNewLocal_RegressionBothTokenPresenceCases(t *testing.T) {
+	t.Run("token present", func(t *testing.T) {
+		socketPath := startAuthDaemon(t) // startAuthDaemon calls LoadOrCreateToken
+		c := NewLocal(socketPath)
+		if c == nil {
+			t.Fatal("NewLocal returned nil with a valid co-located token")
+		}
+	})
+
+	t.Run("token absent", func(t *testing.T) {
+		socketPath := startAuthDaemon(t)
+		if err := os.Remove(socketauth.TokenPath(socketPath)); err != nil {
+			t.Fatalf("remove token: %v", err)
+		}
+		c := NewLocal(socketPath)
+		if c == nil {
+			t.Fatal("NewLocal returned nil with no co-located token")
+		}
+	})
+}
+
+// recordingAuthDaemon is like authTestDaemon but records the Authorization
+// header seen on the inbound ListRepos call, so tests can assert exactly what
+// NewLocalWithToken attached (or didn't) without depending on server-side
+// token validation.
+type recordingAuthDaemon struct {
+	bossanovav1connect.UnimplementedDaemonServiceHandler
+	mu     sync.Mutex
+	header string
+	seen   bool
+}
+
+func (d *recordingAuthDaemon) ListRepos(ctx context.Context, req *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error) {
+	d.mu.Lock()
+	d.header = req.Header().Get(socketauth.AuthHeader)
+	d.seen = true
+	d.mu.Unlock()
+	return connect.NewResponse(&pb.ListReposResponse{}), nil
+}
+
+func (d *recordingAuthDaemon) snapshot() (header string, seen bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.header, d.seen
+}
+
+// startRecordingDaemon serves recordingAuthDaemon on a Unix socket with NO
+// auth interceptor of its own — it exists purely to observe what the client
+// sends, not to enforce anything server-side.
+func startRecordingDaemon(t *testing.T) (socketPath string, daemon *recordingAuthDaemon) {
+	t.Helper()
+	socketPath = filepath.Join("/tmp", fmt.Sprintf("boss-client-authrec-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	_ = os.Remove(socketPath)
+
+	daemon = &recordingAuthDaemon{}
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	mux := http.NewServeMux()
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(daemon)
+	mux.Handle(path, handler)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = os.Remove(socketPath)
+	})
+	return socketPath, daemon
+}
+
+// TestNewLocalWithToken_AttachesExplicitTokenAsAuthorizationHeader is the
+// behavioural proof required by BOS-713: the token passed explicitly to
+// NewLocalWithToken (not one read from beside the socket, since a forwarded
+// socket has none) is what actually reaches the wire as the Authorization
+// header, in the "Bearer <token>" shape socketauth.NewClientInterceptor
+// produces.
+func TestNewLocalWithToken_AttachesExplicitTokenAsAuthorizationHeader(t *testing.T) {
+	socketPath, daemon := startRecordingDaemon(t)
+
+	c := NewLocalWithToken(socketPath, "explicit-remote-token")
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	header, seen := daemon.snapshot()
+	if !seen {
+		t.Fatal("daemon never observed the ListRepos call")
+	}
+	want := "Bearer explicit-remote-token"
+	if header != want {
+		t.Fatalf("Authorization header = %q, want %q", header, want)
+	}
+}
+
+// TestNewLocalWithToken_EmptyTokenSendsNoAuthorizationHeader is the negative
+// half of the behavioural proof: an empty token must not synthesize a
+// "Bearer " header (which validHeader would reject anyway, but the client
+// should not even attach the auth interceptor when there's nothing to send).
+func TestNewLocalWithToken_EmptyTokenSendsNoAuthorizationHeader(t *testing.T) {
+	socketPath, daemon := startRecordingDaemon(t)
+
+	c := NewLocalWithToken(socketPath, "")
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	header, seen := daemon.snapshot()
+	if !seen {
+		t.Fatal("daemon never observed the ListRepos call")
+	}
+	if header != "" {
+		t.Fatalf("Authorization header = %q, want empty (no auth interceptor attached)", header)
+	}
+}
+
+// TestNewLocalWithToken_TokenNeverAppearsInRPCError proves the explicit token
+// is never leaked into an error string: a failed RPC against a daemon that
+// actually enforces auth (and rejects this token) must still produce an error
+// message that never contains the raw token value.
+func TestNewLocalWithToken_TokenNeverAppearsInRPCError(t *testing.T) {
+	socketPath := startAuthDaemon(t) // enforces the real co-located token, so ours is wrong
+
+	const secretToken = "super-secret-explicit-token-should-not-leak"
+	c := NewLocalWithToken(socketPath, secretToken)
+	err := c.Ping(context.Background())
+	if err == nil {
+		t.Fatal("Ping succeeded with a token the daemon never issued, want an error")
+	}
+	if strings.Contains(err.Error(), secretToken) {
+		t.Fatalf("error leaked the explicit token: %v", err)
 	}
 }

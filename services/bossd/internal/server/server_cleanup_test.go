@@ -272,6 +272,9 @@ type cleanupWorktreeManager struct {
 	purgeCalls   int
 	purgeBranch  string
 	purgeRepoDir string
+	// purgeErr stands in for a purge that never ran (a contended clone), the one
+	// case the real manager reports back.
+	purgeErr error
 }
 
 func (m *cleanupWorktreeManager) Create(context.Context, gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -292,10 +295,11 @@ func (m *cleanupWorktreeManager) ReapLocalBranches(_ context.Context, repoPath s
 	m.branches = append([]string(nil), branches...)
 	return nil
 }
-func (m *cleanupWorktreeManager) PurgeWorktree(_ context.Context, repoPath, _, _, branch string) {
+func (m *cleanupWorktreeManager) PurgeWorktree(_ context.Context, repoPath, _, _, branch string) error {
 	m.purgeCalls++
 	m.purgeRepoDir = repoPath
 	m.purgeBranch = branch
+	return m.purgeErr
 }
 func (m *cleanupWorktreeManager) EmptyCommit(context.Context, string, string) error {
 	panic("not used")

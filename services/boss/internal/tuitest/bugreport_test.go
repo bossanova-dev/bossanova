@@ -78,8 +78,8 @@ func TestTUI_BugReport_SubmitFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Ctrl+B opens the modal. 0x02 is the byte sent by ctrl+b in a PTY.
-	if err := h.Driver.SendKey(0x02); err != nil {
+	// Ctrl+G opens the modal. 0x07 is the BEL byte sent by ctrl+g in a PTY.
+	if err := h.Driver.SendKey(0x07); err != nil {
 		t.Fatal(err)
 	}
 

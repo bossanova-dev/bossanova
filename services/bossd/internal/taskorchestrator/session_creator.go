@@ -65,6 +65,11 @@ type CreateSessionOpts struct {
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
 type SessionStarter interface {
 	StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error
+	// CleanUpFailedBootstrapArtifacts reclaims the worktree and branch a failed
+	// StartSession left on disk. It is part of the interface rather than an
+	// optional capability because dropping the row without it orphans both
+	// (BOS-717) — a silent skip is exactly the failure this ticket is about.
+	CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string)
 }
 
 // SessionCreator abstracts session creation so the orchestrator can
@@ -196,7 +201,63 @@ func (c *lifecycleSessionCreator) resolveAgentName(requested string) string {
 func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts CreateSessionOpts) (*models.Session, error) {
 	var sess *models.Session
 	agentName := c.resolveAgentName(opts.AgentName)
-	unlockStart := session.LockStartPath()
+	branchName := opts.BranchName
+	if branchName == "" {
+		branchName = opts.HeadBranch
+	}
+
+	// Two locks, in the order session/start_lock.go documents (BOS-717).
+	//
+	// The TARGET lock is held for the whole call, StartSession and its
+	// half-started-row cleanup included. That is what makes an overlapping
+	// dependabot emission for the same PR wait for this attempt's outcome and
+	// then create its own session, rather than being refused as a duplicate of a
+	// row this attempt is about to delete.
+	//
+	// The START-PATH lock only has to make the duplicate check below and the row
+	// insert atomic, so it is released the instant the row lands — never across
+	// the bootstrap. The single process-global mutex this replaces did both jobs
+	// at once and so let one hung bootstrap block every create in the daemon.
+	// Log BEFORE acquiring anything, and log every wait after (BOS-717). This
+	// path contends with the interactive one for the SAME two gates, so it needs
+	// the same ladder: without the before-line a create stuck here is invisible
+	// (no session row, nothing in the log), and an unattended caller — cron,
+	// dependabot, /boss-epic — has no client watching a stream to notice.
+	c.logger.Info().
+		Str("repo", opts.RepoID).
+		Str("branch", branchName).
+		Msg("acquiring session start locks")
+
+	unlockTarget, targetLockWait, lockErr := session.AcquireTargetStart(ctx, opts.RepoID, branchName, opts.PRNumber)
+	if lockErr != nil {
+		c.logger.Error().Err(lockErr).
+			Str("repo", opts.RepoID).
+			Str("branch", branchName).
+			Dur("target_lock_wait", targetLockWait).
+			Msg("session start lock contention: giving up waiting for the target lock")
+		return nil, fmt.Errorf("create session: %w", lockErr)
+	}
+	defer unlockTarget()
+
+	unlockStart, startLockWait, lockErr := session.AcquireStartPath(ctx, opts.RepoID)
+	if lockErr != nil {
+		c.logger.Error().Err(lockErr).
+			Str("repo", opts.RepoID).
+			Str("branch", branchName).
+			Dur("start_lock_wait", startLockWait).
+			Msg("session start lock contention: giving up waiting for the start-path lock")
+		return nil, fmt.Errorf("create session: %w", lockErr)
+	}
+	// A slow-but-successful acquire is the early warning for the wedge, at the
+	// threshold session owns so both entry points agree on what "slow" is.
+	if targetLockWait > session.SlowStartLockWaitThreshold || startLockWait > session.SlowStartLockWaitThreshold {
+		c.logger.Warn().
+			Str("repo", opts.RepoID).
+			Str("branch", branchName).
+			Dur("target_lock_wait", targetLockWait).
+			Dur("start_lock_wait", startLockWait).
+			Msg("session start locks were contended")
+	}
 	startLocked := true
 	defer func() {
 		if startLocked {
@@ -204,10 +265,6 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		}
 	}()
 	var err error
-	branchName := opts.BranchName
-	if branchName == "" {
-		branchName = opts.HeadBranch
-	}
 	if opts.PreventDuplicateActiveSession {
 		err = session.EnsureNoActivePROrBranchSessionWithLiveness(ctx, c.sessions, opts.RepoID, opts.PRNumber, opts.HeadBranch, c.isDuplicateSessionAlive)
 	}
@@ -229,6 +286,10 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
+	// Row inserted — the check-plus-insert the lock guards is complete. Release
+	// before StartSession so the bootstrap below never holds it (BOS-717).
+	unlockStart()
+	startLocked = false
 
 	c.logger.Info().
 		Str("session", sess.ID).
@@ -251,23 +312,29 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		SetupOutput: setupLogWriter{logger: c.logger, sessionID: sess.ID},
 	}); err != nil {
 		// StartSession failed mid-flight (e.g. worktree create, hook config
-		// write, or claude.Start). Drop the half-started session row so it
-		// doesn't surface as a phantom in the home view — empty chat list,
-		// no PR, stuck in an early state — that the user can't recover. The
-		// cron scheduler still records fire_failed via its own caller.
-		if delErr := c.sessions.Delete(ctx, sess.ID); delErr != nil {
+		// write, or claude.Start). Reclaim whatever it left on disk BEFORE
+		// dropping the row — the row is the only thing that names the worktree
+		// and branch, so deleting it first orphans them permanently (BOS-717).
+		// Detached from ctx: a create cancelled mid-bootstrap still owes this,
+		// and so does the delete below — reclaiming the artifacts but leaving
+		// the row pointing at them would be a worse state than either end.
+		cleanupCtx := context.WithoutCancel(ctx)
+		c.lifecycle.CleanUpFailedBootstrapArtifacts(cleanupCtx, sess.ID)
+		// Then drop the half-started session row so it doesn't surface as a
+		// phantom in the home view — empty chat list, no PR, stuck in an early
+		// state — that the user can't recover. The cron scheduler still records
+		// fire_failed via its own caller.
+		if delErr := c.sessions.Delete(cleanupCtx, sess.ID); delErr != nil {
 			c.logger.Warn().Err(delErr).
 				Str("session", sess.ID).
 				Msg("clean up half-started session after StartSession failure")
 		} else if c.onSessionDeleted != nil {
 			// Publish the deletion so the orchestrator read model drops the
 			// row immediately rather than leaving a phantom until reconnect.
-			c.onSessionDeleted(ctx, sess.ID)
+			c.onSessionDeleted(cleanupCtx, sess.ID)
 		}
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}
-	unlockStart()
-	startLocked = false
 
 	// Re-fetch to get updated fields from StartSession (worktree path, branch, state).
 	sess, err = c.sessions.Get(ctx, sess.ID)

@@ -235,33 +235,100 @@ func TestAppTrashRestoreRoutesToChatPicker(t *testing.T) {
 	})
 }
 
-// TestAppCtrlBOpensBugReport covers the ctrl+b guard at app.go:251
-// (`a.activeView == ViewBugReport`). From any non-bug-report view ctrl+b opens
-// the bug report modal; while already in it, ctrl+b is a no-op that stays put.
+// TestAppBugReportGlobalShortcuts covers the ctrl+g guard and its deprecated
+// ctrl+b alias. From any non-bug-report view either opens the bug-report modal;
+// while already in it, either falls through to the active modal.
 //
 // Kills the negation (`==` → `!=`): from Home, a `!=` mutant would take the
 // break and never open the modal, leaving the app on Home.
-func TestAppCtrlBOpensBugReport(t *testing.T) {
+func TestAppBugReportGlobalShortcuts(t *testing.T) {
+	ctrlG := tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl}
 	ctrlB := tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}
-	if ctrlB.String() != "ctrl+b" {
-		t.Fatalf("ctrlB.String() = %q, want %q", ctrlB.String(), "ctrl+b")
+	if ctrlG.String() != "ctrl+g" {
+		t.Fatalf("ctrlG.String() = %q, want %q", ctrlG.String(), "ctrl+g")
 	}
 
+	for _, shortcut := range []struct {
+		name string
+		msg  tea.KeyPressMsg
+	}{
+		{name: "new shortcut", msg: ctrlG},
+		{name: "deprecated alias", msg: ctrlB},
+	} {
+		t.Run(shortcut.name, func(t *testing.T) {
+			for _, view := range allViewConstants {
+				t.Run(view.name, func(t *testing.T) {
+					a := NewApp(nil, nil)
+					a.activeView = view.view
+
+					_, handled := a.handleGlobalKey(shortcut.msg)
+					if view.view == ViewBugReport {
+						if handled {
+							t.Fatalf("%s while already open: handled = true, want false", shortcut.msg.String())
+						}
+						return
+					}
+					if !handled {
+						t.Fatalf("%s from %s was not handled", shortcut.msg.String(), view.name)
+					}
+					if a.activeView != ViewBugReport {
+						t.Fatalf("%s from %s: activeView = %v, want %v", shortcut.msg.String(), view.name, a.activeView, ViewBugReport)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAppBugReportGlobalShortcutsPreserveGuards(t *testing.T) {
+	shortcuts := []tea.KeyPressMsg{
+		{Code: 'g', Mod: tea.ModCtrl},
+		{Code: 'b', Mod: tea.ModCtrl},
+	}
+	for _, shortcut := range shortcuts {
+		t.Run(shortcut.String(), func(t *testing.T) {
+			t.Run("already open falls through", func(t *testing.T) {
+				a := NewApp(nil, nil)
+				a.activeView = ViewBugReport
+				if _, handled := a.handleGlobalKey(shortcut); handled {
+					t.Fatalf("%s while bug report is open: handled = true, want false", shortcut.String())
+				}
+			})
+
+			for _, busy := range []struct {
+				name       string
+				upgrading  bool
+				restarting bool
+			}{
+				{name: "upgrading", upgrading: true},
+				{name: "restarting", restarting: true},
+			} {
+				t.Run(busy.name, func(t *testing.T) {
+					a := NewApp(nil, nil)
+					a.activeView = ViewHome
+					a.home.upgrading = busy.upgrading
+					a.home.restarting = busy.restarting
+					if _, handled := a.handleGlobalKey(shortcut); !handled {
+						t.Fatalf("%s while Home is %s: handled = false, want true", shortcut.String(), busy.name)
+					}
+					if a.activeView != ViewHome {
+						t.Fatalf("%s while Home is %s: activeView = %v, want %v", shortcut.String(), busy.name, a.activeView, ViewHome)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAppCtrlCStillQuitsAndUnrelatedGlobalKeyFallsThrough(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewHome
-	a.width = 80
-
-	model, _ := a.Update(ctrlB)
-	got := model.(App)
-	if got.activeView != ViewBugReport {
-		t.Fatalf("ctrl+b from Home: activeView = %v, want %v", got.activeView, ViewBugReport)
+	if _, handled := a.handleGlobalKey(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); !handled || !a.quitting {
+		t.Fatal("ctrl+c must remain the handled app-global quit shortcut")
 	}
 
-	// Already in the bug report view: ctrl+b must not re-open / leave the view.
-	model, _ = got.Update(ctrlB)
-	got = model.(App)
-	if got.activeView != ViewBugReport {
-		t.Fatalf("ctrl+b within bug report: activeView = %v, want %v", got.activeView, ViewBugReport)
+	a = NewApp(nil, nil)
+	if _, handled := a.handleGlobalKey(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl}); handled {
+		t.Fatal("unrelated ctrl+z must fall through to the active view")
 	}
 }
 
@@ -309,35 +376,6 @@ func TestAppPreservesDeferredLogoutFailureReturningFromSettings(t *testing.T) {
 	}
 	if !got.home.loggedIn || got.home.loggedInEmail != "dev@example.com" {
 		t.Fatalf("returning Home after a failed logout dropped signed-in state: loggedIn=%t email=%q", got.home.loggedIn, got.home.loggedInEmail)
-	}
-}
-
-func TestAppCtrlBBlockedWhileHomeBusy(t *testing.T) {
-	ctrlB := tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl}
-	tests := []struct {
-		name       string
-		upgrading  bool
-		restarting bool
-	}{
-		{name: "upgrading", upgrading: true},
-		{name: "restarting", restarting: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := NewApp(nil, nil)
-			a.activeView = ViewHome
-			a.home.upgrading = tt.upgrading
-			a.home.restarting = tt.restarting
-
-			model, cmd := a.Update(ctrlB)
-			got := model.(App)
-			if cmd != nil {
-				t.Fatalf("ctrl+b while busy returned command %T, want nil", cmd)
-			}
-			if got.activeView != ViewHome {
-				t.Fatalf("ctrl+b while busy: activeView = %v, want %v", got.activeView, ViewHome)
-			}
-		})
 	}
 }
 

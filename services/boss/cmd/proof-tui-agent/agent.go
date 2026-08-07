@@ -41,6 +41,8 @@ type daemonMutator interface {
 	TryPushOutputLine(sessionID, text string, timeout time.Duration) error
 	TryPushStateChange(sessionID string, prev, next pb.SessionState, timeout time.Duration) error
 	TryPushSessionEnded(sessionID string, final pb.SessionState, timeout time.Duration) error
+	SetRPCStall(d time.Duration)
+	SetRPCStallFor(procedure string, d time.Duration)
 }
 
 // daemonPushTimeout bounds a pusher's non-blocking send. A push that cannot be
@@ -60,6 +62,9 @@ var (
 		"add_tracker_issues", // picker-on-demand: visible when the tracker-issue picker opens
 		// pushers (require an attached session)
 		"push_output", "state_change", "session_ended",
+		// fault injection (BOS-723): wedge the daemon so a scenario can watch
+		// the client's RPC bound fire and the TUI recover once it is cleared.
+		"set_rpc_stall",
 	}
 )
 
@@ -115,7 +120,20 @@ type request struct {
 	PreviousState string `json:"previousState"`
 	NewState      string `json:"newState"`
 	FinalState    string `json:"finalState"`
+	// set_rpc_stall payload (BOS-723). StallMs is the length of the wedge
+	// window in milliseconds; exactly 0 (or an absent field) clears the stall.
+	// Procedure optionally narrows the wedge to ONE unary RPC, named by its
+	// bare proto method name and matched exactly, e.g. "RecordChat" (which
+	// therefore does not wedge ListChats). Empty wedges every unary RPC.
+	StallMs   int64  `json:"stallMs"`
+	Procedure string `json:"procedure"`
 }
+
+// maxStallMs bounds one set_rpc_stall window. It matches the scenario schema's
+// per-step timeoutMs cap: a wedge no step could ever outlast is a scenario
+// authoring mistake, and refusing it loudly beats a run that fails every step
+// after it with an unrelated-looking timeout.
+const maxStallMs = 60_000
 
 // Per-op settle-override clamp bounds (milliseconds). Positive request values
 // are clamped into these ranges; non-positive values fall back to the base
@@ -306,7 +324,10 @@ func handleLine(t tui, d daemonMutator, bw *bufio.Writer, line []byte, st settle
 // the poll+settle window; add_prs/add_tracker_issues are picker-on-demand — they
 // only render when the new-session picker opens. Pushers require a non-empty,
 // currently-attached sessionId and use the non-blocking TryPush* so a stalled TUI
-// never wedges the loop. Unknown action → error listing all valid actions.
+// never wedges the loop. set_rpc_stall injects a fault instead of data: it wedges
+// the mock daemon's unary handlers (optionally only one procedure) so a scenario
+// can capture the client's bounded failure and the recovery after it clears.
+// Unknown action → error listing all valid actions.
 func handleDaemonOp(t tui, d daemonMutator, bw *bufio.Writer, req request, st settleConfig) error {
 	settled := func() error {
 		return writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
@@ -415,6 +436,25 @@ func handleDaemonOp(t tui, d daemonMutator, bw *bufio.Writer, req request, st se
 		}
 		if err := d.TryPushSessionEnded(req.SessionID, final, daemonPushTimeout); err != nil {
 			return writeJSON(bw, errorResponse(req.ID, err.Error()))
+		}
+		return settled()
+	case "set_rpc_stall":
+		// Fault injection, not a mutation: wedge (or un-wedge) the mock daemon
+		// so a scenario can capture what boss does when a daemon accepts the
+		// socket and then never answers. Returning the settled screen matches
+		// every other action; the wedge itself takes effect immediately, so the
+		// settle that follows already reflects a stalled daemon.
+		if req.StallMs < 0 {
+			return writeJSON(bw, errorResponse(req.ID, fmt.Sprintf("set_rpc_stall: stallMs must not be negative (got %d); use 0 to clear the stall", req.StallMs)))
+		}
+		if req.StallMs > maxStallMs {
+			return writeJSON(bw, errorResponse(req.ID, fmt.Sprintf("set_rpc_stall: stallMs %d exceeds the %d ms maximum", req.StallMs, maxStallMs)))
+		}
+		window := time.Duration(req.StallMs) * time.Millisecond
+		if req.Procedure == "" {
+			d.SetRPCStall(window)
+		} else {
+			d.SetRPCStallFor(req.Procedure, window)
 		}
 		return settled()
 	default:

@@ -117,8 +117,22 @@ func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *
 }
 
 // Stop sends a stop request to the agent plugin and closes the local tailer.
+//
+// Unbounded by design-inertia rather than intent: it has no context to bound the
+// RPC with. Callers that have one — and anything waiting on the result needs one
+// — should use StopWithContext instead.
 func (r *PluginRunner) Stop(sessionID string) error {
-	_, err := r.client.StopRun(context.Background(), &bossanovav1.StopAgentRunRequest{SessionId: sessionID})
+	return r.StopWithContext(context.Background(), sessionID)
+}
+
+// StopWithContext is Stop with the plugin RPC bounded by ctx, satisfying
+// ContextualStopper.
+//
+// The tailer is closed even when the RPC fails, exactly as Stop has always done:
+// a plugin that did not answer is precisely the case where holding the local
+// tail open leaks a file handle for a run nobody is coming back for.
+func (r *PluginRunner) StopWithContext(ctx context.Context, sessionID string) error {
+	_, err := r.client.StopRun(ctx, &bossanovav1.StopAgentRunRequest{SessionId: sessionID})
 	r.tailer.Close(sessionID)
 	if err != nil {
 		return fmt.Errorf("plugin StopRun: %w", err)

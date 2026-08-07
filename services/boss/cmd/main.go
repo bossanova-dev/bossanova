@@ -38,6 +38,10 @@ func run() error {
 	// this, bug reports would always ship an empty BossLogTail.
 	logCloser := setupCommandLogging()
 	defer func() { _ = logCloser.Close() }()
+	// A --host command leaves a supervised ssh child and a private socket
+	// directory behind. Tearing them down here covers the TUI and every
+	// short-lived CLI command alike, since both exit through run().
+	defer shutdownHostTunnel()
 
 	settings, _ := config.Load()
 	bossEnv := config.EnvOr("BOSS_ENV", "local")
@@ -82,6 +86,18 @@ func rootCmd() *cobra.Command {
 		Short: "Bossanova — autonomous Claude coding sessions",
 		Long:  "Boss manages Claude coding sessions with automatic PR creation, CI fix loops, and code review handling.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Transport selection is validated for every command, ahead of the
+			// bypasses below and ahead of any dial: --host and --remote name
+			// different daemons, so running either one would be a guess.
+			if err := requireSingleTransport(cmd); err != nil {
+				return err
+			}
+			// Likewise for every command: the daemon subtree acts on the local
+			// machine's bossd, so --host must be refused rather than silently
+			// managing the wrong daemon.
+			if err := requireLocalDaemonTarget(cmd); err != nil {
+				return err
+			}
 			// gen-skill regenerates the embedded payload; the `skills` subtree is
 			// itself the explicit, no-prompt installer. Both must bypass the
 			// interactive startup installer/self-heal — otherwise `boss skills
@@ -110,6 +126,9 @@ func rootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().String("remote", "", "Connect to orchestrator URL instead of local daemon")
+	// No -h shorthand: cobra owns -h for --help and redefining it panics.
+	root.PersistentFlags().String("host", "", "Drive a bossd on another machine over SSH (ssh destination)")
+	root.PersistentFlags().String("host-socket", "", "Remote bossd socket path, when remote boss is not on the SSH PATH")
 	root.PersistentFlags().Bool("allow-insecure-keyring", false, "Fall back to the legacy static keyring passphrase when no writable passphrase location is available (insecure)")
 	// Hidden — this is an escape hatch surfaced only in the keyring
 	// helper's error message, not in --help. Users who need it will be
@@ -157,23 +176,38 @@ func rootCmd() *cobra.Command {
 
 // setupCommandLogging keeps boss tail from writing to a file it can read.
 func setupCommandLogging() io.Closer {
-	args := os.Args[1:]
+	if isTailInvocation(os.Args[1:]) {
+		log.Logger = zerolog.Nop()
+		return io.NopCloser(strings.NewReader(""))
+	}
+	return bossalog.SetupFileOnly("boss")
+}
+
+// valuedRootFlags are the root persistent flags whose value is a separate argv
+// element. The scan below must skip that value, or `boss --host <dest> tail`
+// would read <dest> as the subcommand and attach the file logger anyway.
+var valuedRootFlags = map[string]bool{
+	"--remote":      true,
+	"--host":        true,
+	"--host-socket": true,
+}
+
+// isTailInvocation reports whether argv selects `boss tail`, scanning past the
+// root flags that may precede the subcommand. The `--flag=value` form needs no
+// special case: it is a single element and is skipped as an option.
+func isTailInvocation(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--remote" {
+		if valuedRootFlags[arg] {
 			i++
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		if arg == "tail" {
-			log.Logger = zerolog.Nop()
-			return io.NopCloser(strings.NewReader(""))
-		}
-		break
+		return arg == "tail"
 	}
-	return bossalog.SetupFileOnly("boss")
+	return false
 }
 
 func pluginCmd() *cobra.Command {

@@ -22,16 +22,18 @@ import (
 //     to delegateToActiveView". Pointer receiver, so partial state changes made
 //     before the fall-through decision survive into the delegation.
 //     handleSessionList, handleGlobalKey.
-//   - never-returns   → plain pointer-receiver mutator returning nothing; Update
-//     always falls through. handleWindowSize, handleArchiveResult — and ONLY
-//     those two. Giving any other handler this shape would make the signature
-//     lie about the routing.
+//   - never-returns   → returns nothing at all; Update always falls through.
+//     A pointer receiver means it mutates App (handleWindowSize,
+//     handleArchiveResult); a value receiver means it only observes — today,
+//     emits telemetry (handleMergeResult, handleSwitchAccountResult). Those
+//     four and ONLY those four. Giving any other handler this shape would make
+//     the signature lie about the routing.
 
 // handleToastExpire retires the rotation toast. Always returns: the expiry is
 // the toast's own bookkeeping and no sub-model has any use for it.
 //
 // Shaped as always-returns (not a plain mutator) so it cannot be mistaken for
-// one of the two never-returns mutators in the taxonomy above.
+// one of the never-returns handlers in the taxonomy above.
 func (a App) handleToastExpire(msg toastExpireMsg) (tea.Model, tea.Cmd) {
 	a.toast, _ = a.toast.Update(msg)
 	return a, nil
@@ -113,19 +115,37 @@ func (a *App) handleWindowSize(msg tea.WindowSizeMsg) {
 	a.onboarding.width = msg.Width
 }
 
-// handleGlobalKey handles the two app-global chords. Every other key — and
-// ctrl+b while the bug report is already open — reports handled==false so the
-// key still reaches the active view.
+// handleGlobalKey handles the app-global chords. Every other key — and either
+// bug-report shortcut while the report is already open — reports handled==false
+// so the key still reaches the active view.
 func (a *App) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.String() {
 	case "ctrl+c":
 		a.quitting = true
 		return tea.Quit, true
-	case "ctrl+b":
+	case "ctrl+g", "ctrl+b": // ctrl+b remains a deprecated alias for one release.
 		if a.activeView == ViewBugReport {
 			break
 		}
 		if a.activeView == ViewHome && (a.home.upgrading || a.home.restarting) {
+			return nil, true
+		}
+		// Same rule as the Home guard above, for the two views that own an
+		// uninterruptible in-flight operation (BOS-683).
+		//
+		// This chord is app-global: it is handled here, BEFORE delegation, and
+		// reports handled==true, so a view's own input guard cannot block it.
+		// Swapping activeView mid-operation means the eventual cronFormSavedMsg
+		// / flowDoneMsg is delivered only to the bug-report model, which drops
+		// it — losing the telemetry action AND leaving the retained view stuck
+		// (submitting forever, or a registration waiting on a result that
+		// already came and went). Suppressing the chord for the duration is the
+		// cheaper half of the fix: rooting the capture would rescue the event
+		// but not the stuck view.
+		if a.activeView == ViewCronForm && a.cronForm.submitting {
+			return nil, true
+		}
+		if a.activeView == ViewAccountRegister && a.accountRegister.flowRunning() {
 			return nil, true
 		}
 		a.bugReport = NewBugReportModel(a.client, a.ctx, a.auth, a.activeView, a.currentSession(), a.currentDaemonStatuses())
@@ -178,17 +198,55 @@ func (a App) handleRepoAddCompleted(msg repoAddCompletedMsg) (tea.Model, tea.Cmd
 	return a, a.repoList.Init()
 }
 
-// handleArchiveResult reconciles the home archiving override when the archive
-// RPC resolves.
+// The five handlers below capture long-running session and account actions —
+// the chat picker's merge/archive/account-switch, and the accounts list's
+// status flip and removal. All five are captured HERE rather than in the
+// originating view's own result handler, and they capture UNCONDITIONALLY, for
+// one reason:
 //
-// Runs at the app level (not per-view) so an ESC-then-result still reconciles
-// the optimistic state even when the chatpicker is no longer the active view.
+// App.Update is the tea root, so it sees each of these messages exactly once,
+// no matter which view is active — while the originating view sees one only
+// while it is still the active view and (for merge/archive) its orphan guard
+// passes. The picker's key gate swallows every key but Esc during an in-flight
+// merge, archive or account switch, precisely so the operator can navigate away
+// and let the RPC finish in the background, so "the view is gone by the time
+// the result lands" is a designed flow, not an edge case. The accounts list
+// reaches the same state by a blunter route: its [esc] has no in-flight guard
+// at all, so App.updateAccounts routes away on the very next keystroke and the
+// list's own handler never runs again. Capturing at the root is therefore
+// exactly-once by construction: no cross-file condition-and-its-negation
+// invariant to keep in sync, and no action that silently reports nothing
+// because the operator walked away.
 //
-// This handler deliberately does NOT consume the message: it is a plain mutator,
-// so App.Update falls out of its type switch and on into delegateToActiveView
-// (not a Go `fallthrough`), and the chatpicker — if still active — also
-// processes the message and flips its own archiving=false / statusMsg field.
+// Removal is also handled by BOTH the accounts list and the account edit screen.
+// Rooting the capture retires the "only one of the two is ever active, so
+// exactly one fires" argument those two used to share — an invariant that was
+// true right up until neither was active.
+//
+// All five deliberately do NOT consume the message: App.Update falls out of its
+// type switch and on into delegateToActiveView (not a Go `fallthrough`), so a
+// still-active view handles the result exactly as it did before.
+
+// handleMergeResult captures session_merged. Observes only; see the note above.
+func (a App) handleMergeResult(msg mergeResultMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureSession, tuiActionSessionMerged, tuiActionStatus(msg.err))
+}
+
+// handleSwitchAccountResult captures account_switched. Observes only; see the
+// note above. The feature is accounts, not session: this is an account action
+// that happens to be reachable from the chat picker.
+func (a App) handleSwitchAccountResult(msg switchAccountResultMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureAccounts, tuiActionAccountSwitched, tuiActionStatus(msg.err))
+}
+
+// handleArchiveResult captures session_archived and reconciles the home
+// archiving override when the archive RPC resolves.
+//
+// The reconciliation half also has to run at the app level so an ESC-then-result
+// still clears Home's optimistic state even when the chatpicker is no longer the
+// active view; see the note above for why the capture half lives here too.
 func (a *App) handleArchiveResult(msg archiveResultMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureSession, tuiActionSessionArchived, tuiActionStatus(msg.err))
 	if a.home.isArchiving(msg.sessionID) {
 		// The archive RPC resolved. On failure, drop the override entirely so
 		// the real status is shown again. On success the override is retained
@@ -203,6 +261,99 @@ func (a *App) handleArchiveResult(msg archiveResultMsg) {
 			a.home.buildTableRows()
 		}
 	}
+}
+
+// handleAccountStatusResult captures account_enabled / account_disabled.
+// Observes only; see the note above. [space] is a toggle, so this one message
+// carries both directions: msg.status is the status the flip requested.
+func (a App) handleAccountStatusResult(msg accountStatusUpdatedMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureAccounts, accountStatusAction(msg.status), tuiActionStatus(msg.err))
+}
+
+// handleAccountRemoveResult captures account_removed. Observes only; see the
+// note above. Both the accounts list and the account edit screen handle this
+// message, so rooting the capture is also what keeps it from firing twice.
+func (a App) handleAccountRemoveResult(msg accountRemovedMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureAccounts, tuiActionAccountRemoved, tuiActionStatus(msg.err))
+}
+
+// handleAccountsLoadedResult captures account_refreshed. Observes only; see the
+// note above — the accounts list's Esc is unguarded during a [r] refresh too.
+//
+// msg.refresh is the request provenance the message carries: only a manual
+// refresh is a user action worth an event, and keying on it (rather than the
+// list's shared refreshing flag) is what stops an unrelated load that merely
+// landed first from being reported as one.
+func (a App) handleAccountsLoadedResult(msg accountsLoadedMsg) {
+	if !msg.refresh {
+		return
+	}
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureAccounts, tuiActionAccountRefreshed, tuiActionStatus(msg.err))
+}
+
+// handleAccountEditSavedResult captures the account edit screen's status flip.
+// Observes only; see the note above. Its Esc is unguarded too, so
+// App.updateAccountEdit routes away and the save result would otherwise reach
+// only the return view.
+//
+// Only a status flip has an action in the bounded enum; a label or priority
+// save is not one of the instrumented actions and emits nothing.
+func (a App) handleAccountEditSavedResult(msg accountEditSavedMsg) {
+	if msg.statusFlip == "" {
+		return
+	}
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureAccounts, accountStatusAction(msg.statusFlip), tuiActionStatus(msg.err))
+}
+
+// handleCronJobDeletedResult captures cron_job_deleted. Observes only; see the
+// note above — the cron list's Esc is unguarded while the RPC is in flight.
+func (a App) handleCronJobDeletedResult(msg cronJobDeletedMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureCron, tuiActionCronJobDeleted, tuiActionStatus(msg.err))
+}
+
+// handleCronJobUpdatedResult captures cron_job_updated for the list's [space]
+// enabled-state toggle. Observes only; see the note above.
+func (a App) handleCronJobUpdatedResult(msg cronJobUpdatedMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureCron, tuiActionCronJobUpdated, tuiActionStatus(msg.err))
+}
+
+// handleCronRunNowResult captures cron_job_run_now. Observes only; see the note
+// above.
+//
+// status reports whether the run-now RPC itself succeeded. A gate skip
+// (skippedReason) is a successful RPC that declined to fire; the daemon's own
+// cron_job_fired event carries skip_reason, and tui_action's bounded property
+// set deliberately does not duplicate it.
+func (a App) handleCronRunNowResult(msg cronRunNowMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureCron, tuiActionCronJobRunNow, tuiActionStatus(msg.err))
+}
+
+// handleSessionRestoredResult captures session_resurrected. Observes only; see
+// the note above — the trash view hides its action bar during a restore but
+// still lets Esc set cancel, so App.updateTrash routes away mid-RPC.
+func (a App) handleSessionRestoredResult(msg sessionRestoredMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureSession, tuiActionSessionResurrected, tuiActionStatus(msg.err))
+}
+
+// handleSessionDeletedResult captures session_removed for a single confirmed
+// deletion. Observes only; see the note above.
+func (a App) handleSessionDeletedResult(msg sessionDeletedMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureSession, tuiActionSessionRemoved, tuiActionStatus(msg.err))
+}
+
+// handleDeleteProgressResult captures session_removed for one step of the
+// delete-all batch. Observes only; see the note above.
+//
+// The batch drains one session at a time, so one removal is one session_removed
+// — a batch of N emits N events, and a batch that fails on the Kth emits K-1
+// successes plus one error before stopping.
+//
+// Rooting this capture fixes the attribution of the step that is in flight when
+// the operator escapes. It does NOT keep the batch running: only TrashModel's
+// own handler chains the next deleteNext(), so a batch abandoned mid-drain
+// still stalls. That is pre-existing behaviour, untouched here.
+func (a App) handleDeleteProgressResult(msg deleteProgressMsg) {
+	captureTUIAction(a.ctx, a.telemetry, tuiFeatureSession, tuiActionSessionRemoved, tuiActionStatus(msg.err))
 }
 
 // handleStartSubscriptionFlow jumps straight into the login view's cloud

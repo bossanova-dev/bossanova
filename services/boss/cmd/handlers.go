@@ -34,21 +34,26 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// newClient creates either a local or remote client depending on the --remote flag.
-// For local connections, it ensures the daemon is running first.
+// newClient picks the transport: the cloud orchestrator (--remote), a bossd on
+// another machine over an ssh tunnel (--host), or the local daemon. Only the
+// local branch may start a daemon.
 func newClient(cmd *cobra.Command) (client.BossClient, error) {
-	remote, _ := cmd.Root().Flags().GetString("remote")
-	if remote != "" {
+	if remote := remoteURL(cmd); remote != "" {
 		return newRemoteClient(cmd, remote)
+	}
+	if host := hostDestination(cmd); host != "" {
+		return newHostClient(cmd, host)
 	}
 	socketPath, err := client.DefaultSocketPath()
 	if err != nil {
 		return nil, fmt.Errorf("socket path: %w", err)
 	}
 
-	// Skip auto-start when socket is explicitly provided (test mode).
+	// Skip auto-start when socket is explicitly provided (test mode). Routed
+	// through the package var so a test can assert the --host branch never
+	// reaches it.
 	if os.Getenv("BOSS_SOCKET") == "" {
-		if err := daemon.EnsureRunning(socketPath); err != nil {
+		if err := daemonEnsureRunning(socketPath); err != nil {
 			return nil, fmt.Errorf("daemon failed: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
 		}
 	}
@@ -74,11 +79,39 @@ func guardInteractiveStdin(tokenStdin bool) error {
 // remote (--remote) daemon: the setup-token walkthrough and codex device flow
 // mint credentials by running a LOCAL subprocess, so the flow is only coherent
 // against the local daemon. It runs before any client dial or subprocess.
+// The same reasoning applies verbatim to --host: the subprocess would run here,
+// so the credential it mints would never be the remote machine's.
 func requireLocalRegistration(cmd *cobra.Command) error {
 	if remoteURL(cmd) != "" {
 		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--remote) daemon")
 	}
+	if hostDestination(cmd) != "" {
+		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--host) daemon; run it in a shell on that host instead")
+	}
 	return nil
+}
+
+// requireLocalDaemonTarget refuses the `boss daemon` subtree against --host.
+// Those subcommands manage *this* machine's bossd — its LaunchAgent or systemd
+// unit, its process, its socket, its token — by running local subprocesses, so
+// under --host they would silently act on the local daemon while the user was
+// plainly asking about the remote one. `daemon stop` and `daemon uninstall`
+// make that mistake expensive, and `daemon restart` is exactly what a lost
+// connection used to suggest. It runs in the root PersistentPreRunE, before any
+// dial.
+func requireLocalDaemonTarget(cmd *cobra.Command) error {
+	if cmd == nil {
+		return nil
+	}
+	path := cmd.CommandPath()
+	if path != "boss daemon" && !strings.HasPrefix(path, "boss daemon ") {
+		return nil
+	}
+	host := hostDestination(cmd)
+	if host == "" {
+		return nil
+	}
+	return fmt.Errorf("boss daemon commands manage the local bossd and cannot target a remote (--host %s) daemon; run `ssh %s boss daemon ...` on that host instead", host, host)
 }
 
 // runAccountAddClaude drives the interactive `boss account add claude`
@@ -199,8 +232,10 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	// handler itself stays armed from here to teardown. See BOS-650.
 	var tmuxRestore atomic.Pointer[func()]
 	defer installHangupRescueFn(hangupCleanup(&tmuxRestore))()
-	if issue := preflight.CheckTmux(); issue != nil {
-		return views.RunPreflight(*issue)
+	if needsLocalTmux(cmd) {
+		if issue := preflight.CheckTmux(); issue != nil {
+			return views.RunPreflight(*issue)
+		}
 	}
 	if issue := preflight.CheckTerminal(); issue != nil {
 		return views.RunPreflight(*issue)
@@ -216,6 +251,19 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 			return err
 		}
 	}
+	// e2e-only: stage the --host tunnel-dropped screen before the client dials,
+	// so a proof scenario can capture the reconnecting state on a harness with no
+	// network. Compiles to an unconditional nil in production builds.
+	if err := runE2EHostReconnectSeed(); err != nil {
+		if views.IsPreflightCancelled(err) {
+			return nil
+		}
+		return err
+	}
+	// e2e-only: put the TUI into a --host remote context without a tunnel, so a
+	// proof scenario can capture the views that degrade under --host. Compiles to
+	// an empty function in production builds.
+	applyE2EHostAttachSeed()
 	c, err := newClient(cmd)
 	if err != nil {
 		c, err = handleClientStartupError(cmd, err, func() (client.BossClient, error) {
@@ -289,7 +337,14 @@ var cliBackedAgentProviders = map[string]bool{
 }
 
 func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPreflightClient, settings config.Settings, sessionID string) error {
-	if remoteURL(cmd) != "" {
+	// The probe runs `command -v <agent>` in a login shell *here*, against a
+	// worktree path the daemon reported. Neither is local when the daemon is
+	// not: --remote's agents run in the cloud, and --host's run on the other
+	// end of the tunnel, where the CLI is installed and the worktree exists.
+	// Probing the local machine for them would block the TUI over a binary it
+	// was never going to launch — the same reasoning that already skips
+	// daemon.EnsureRunning and preflight.CheckShellTools for both flags.
+	if remoteURL(cmd) != "" || hostDestination(cmd) != "" {
 		return nil
 	}
 	loadedAgents, err := c.ListAgents(ctx)
@@ -309,7 +364,32 @@ func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPrefligh
 }
 
 func needsLocalDaemonStartup(cmd *cobra.Command) bool {
-	return remoteURL(cmd) == "" && os.Getenv("BOSS_SOCKET") == ""
+	return remoteURL(cmd) == "" && hostDestination(cmd) == "" && os.Getenv("BOSS_SOCKET") == ""
+}
+
+// needsLocalTmux reports whether this invocation will run a tmux client on THIS
+// machine, and so whether the missing-tmux install screen is a real blocker.
+//
+// Under --host it is not: the tmux server lives on the remote host, and an
+// attach reaches it as `ssh -t <destination> tmux ...` (views.buildAttachCommand),
+// so the client machine needs ssh and nothing else. Gating the check is what
+// makes that setup usable — an unconditional CheckTmux returns the install
+// screen before the TUI ever starts, which no amount of correct remote setup can
+// get past.
+//
+// Deliberately narrower than needsLocalDaemonStartup, which this must not be
+// folded into despite the similar shape:
+//
+//   - --remote (cloud) still attaches through the LOCAL tmux — remoteHostDestination()
+//     is empty there, so buildAttachCommand returns the local form — and still needs it.
+//   - BOSS_SOCKET names a local daemon (agent worktrees set it), which is a
+//     local tmux server like any other.
+//
+// The rest of boss's local tmux use — new-window in newtab.go, the notification
+// options in tmuxopts.go — is already gated on $TMUX being set, which cannot be
+// true without tmux, so this is the only gate that has to know about --host.
+func needsLocalTmux(cmd *cobra.Command) bool {
+	return hostDestination(cmd) == ""
 }
 
 func agentPreflightTarget(ctx context.Context, c agentPreflightClient, sessionID string) (string, string, error) {
@@ -380,13 +460,39 @@ func remoteURL(cmd *cobra.Command) string {
 	return remote
 }
 
+// hostDestination returns the --host ssh destination, unparsed. An absent flag
+// (bare cobra.Command in a test) reads as empty, like remoteURL.
+func hostDestination(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Root() == nil {
+		return ""
+	}
+	host, _ := cmd.Root().Flags().GetString("host")
+	return host
+}
+
+// hostSocketOverride returns --host-socket, the escape hatch for remotes where
+// `boss` is not on the non-interactive ssh PATH.
+func hostSocketOverride(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Root() == nil {
+		return ""
+	}
+	socket, _ := cmd.Root().Flags().GetString("host-socket")
+	return socket
+}
+
 // waitForDaemon decides what to do when the initial newClient call fails.
 // For a local socket it shows the auto-recovering daemon-wait screen and
 // dials again once the socket is back. For remote/--remote or socket-path
 // failures (which don't auto-recover) it falls back to the static preflight
 // screen and propagates the original error.
+//
+// A --host failure gets its own auto-recovering screen: the supervised ssh
+// tunnel redials on its own, so killing it mid-session must not kill boss.
 func waitForDaemon(cmd *cobra.Command, origErr error) (client.BossClient, error) {
 	issue := *preflight.DaemonIssue(origErr)
+	if host := hostDestination(cmd); host != "" {
+		return waitForHostDaemon(host, origErr)
+	}
 	remote, _ := cmd.Root().Flags().GetString("remote")
 	if remote != "" {
 		return nil, views.RunPreflight(issue)

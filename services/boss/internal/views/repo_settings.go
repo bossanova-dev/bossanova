@@ -760,7 +760,7 @@ func (m RepoSettingsModel) View() tea.View {
 	if m.repo == nil {
 		if m.err != nil {
 			return tea.NewView(
-				renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+				renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 					styleActionBar.Render("[esc] back"),
 			)
 		}
@@ -770,7 +770,7 @@ func (m RepoSettingsModel) View() tea.View {
 	var b strings.Builder
 
 	if m.err != nil {
-		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
 		b.WriteString("\n")
 	}
 

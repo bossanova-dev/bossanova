@@ -193,6 +193,19 @@ func Presets() map[string]Preset {
 				"BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE": LongCloudAccessError,
 			},
 		},
+		// wedged-daemon: DemoWorld against a daemon the scenario can wedge on demand
+		// via the set_rpc_stall daemon action (BOS-723). The DefaultEnv shrinks the
+		// client's unary RPC bound for this e2e build so the bounded failure and the
+		// self-recovery are both observable inside a scenario step's timeout budget;
+		// the cloud-access pin matches demo so boss lands on the home session list.
+		"wedged-daemon": {
+			World:    DemoWorld,
+			SeedKind: SeedAcknowledged,
+			DefaultEnv: map[string]string{
+				"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
+				"BOSS_RPC_DEADLINE_E2E":          "3s",
+			},
+		},
 	}
 }
 

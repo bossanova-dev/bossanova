@@ -194,20 +194,31 @@ func (a App) Init() tea.Cmd {
 //   - Arms that call a `(tea.Cmd, bool)` handler return only when the handler
 //     reports handled==true. A false means the message is app-relevant AND
 //     view-relevant, so it must go on to delegateToActiveView.
-//   - Arms that call a plain pointer-receiver mutator (window size, archive
-//     result) ALWAYS fall through — the mutation is bookkeeping, not
-//     consumption. These two are the ONLY handlers with that shape; keeping it
-//     that way is what lets a reader infer routing from the signature.
+//   - Arms that call a handler returning NOTHING ALWAYS fall through — such a
+//     handler only does bookkeeping (a pointer receiver, mutating App state) or
+//     observes (a value receiver, e.g. a telemetry capture), never consumption.
+//     These FOURTEEN are the ONLY handlers with that shape; keeping it that way
+//     is what lets a reader infer routing from the signature. They are: window
+//     size; the picker's merge / switch-account / archive results; and the
+//     long-running action results whose originating view accepts Esc while the
+//     RPC is in flight — accounts load (manual refresh only), account status,
+//     account remove, account-edit save, cron delete / update / run-now,
+//     session restore / delete / delete-batch progress. Every one of that
+//     second group is a telemetry capture rooted here precisely so escaping
+//     mid-RPC cannot lose the event (BOS-683).
 //
 // Turning a fall-through arm into an unconditional return — or an always-returns
 // arm into a fall-through — is a silent routing regression, not a compile error.
 //
-// app_fallthrough_test.go pins the fall-through direction for all four arms, and
+// Sixteen arms fall through in total — the fourteen never-returns ones above
+// plus the two `(tea.Cmd, bool)` ones when they report handled==false.
+// app_fallthrough_test.go pins the fall-through direction for every one of them,
+// and it pins
 // the consumption direction for the four that do not re-route (toastExpireMsg,
 // heartbeatTickMsg, ctrl+c, and the stale-generation rejection);
 // startSubscriptionFlowMsg is pinned by its own test in app_test.go. Three
 // remain uncovered in the consumption direction — repoAddCompletedMsg,
-// switchViewMsg and ctrl+b — because each re-routes activeView, which destroys
+// switchViewMsg and ctrl+g — because each re-routes activeView, which destroys
 // the witness those tests rely on. Flipping one of those three to fall through
 // is currently invisible.
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -255,8 +266,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleHeartbeat()
 	case repoAddCompletedMsg:
 		return a.handleRepoAddCompleted(msg)
+	case mergeResultMsg:
+		a.handleMergeResult(msg)
+	case switchAccountResultMsg:
+		a.handleSwitchAccountResult(msg)
 	case archiveResultMsg:
 		a.handleArchiveResult(msg)
+	case accountsLoadedMsg:
+		a.handleAccountsLoadedResult(msg)
+	case accountStatusUpdatedMsg:
+		a.handleAccountStatusResult(msg)
+	case accountRemovedMsg:
+		a.handleAccountRemoveResult(msg)
+	case accountEditSavedMsg:
+		a.handleAccountEditSavedResult(msg)
+	case cronJobDeletedMsg:
+		a.handleCronJobDeletedResult(msg)
+	case cronJobUpdatedMsg:
+		a.handleCronJobUpdatedResult(msg)
+	case cronRunNowMsg:
+		a.handleCronRunNowResult(msg)
+	case sessionRestoredMsg:
+		a.handleSessionRestoredResult(msg)
+	case sessionDeletedMsg:
+		a.handleSessionDeletedResult(msg)
+	case deleteProgressMsg:
+		a.handleDeleteProgressResult(msg)
 	case switchViewMsg:
 		return a.handleSwitchView(msg)
 	case startSubscriptionFlowMsg:

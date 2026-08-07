@@ -17,7 +17,7 @@ third parties get involved, and how to disconnect.
 - The agent plugin talks to its provider directly: Claude Code talks to
   Anthropic, and OpenAI Codex CLI talks to OpenAI. Bossanova does not
   proxy or log that traffic.
-- Bug reports (the `ctrl+b` modal) are **opt-in**: they only leave your
+- Bug reports (the `ctrl+g` modal) are **opt-in**: they only leave your
   machine when you press _Submit_.
 - Unless `BOSSD_ORCHESTRATOR_URL` is set, `bossd` is local-only. The Terminal UI (TUI)
   and plugins still work; the web app can't see your sessions.
@@ -116,10 +116,11 @@ This stream is only active while you have the terminal pane open.
 Closing the browser tab tears it down. The PTY itself (and the tmux
 session running underneath) is unaffected.
 
-## Bug reports (opt-in, `ctrl+b`)
+## Bug reports (opt-in, `ctrl+g`)
 
-The TUI's `ctrl+b` modal builds a report payload and posts it to Boss
-Cloud. The payload contains:
+The TUI's `ctrl+g` modal builds a report payload and posts it to Boss Cloud.
+`ctrl+b` remains a temporary deprecated alias outside tmux. The payload
+contains:
 
 - `BossVersion`, `BossCommit`, `Os`, `Arch`, `Terminal` (the `TERM` env var).
 - `DaemonStatuses`: a small map of daemon IDs to status strings.
@@ -137,7 +138,7 @@ When `boss login` is current, the access token is attached as a Bearer
 header so Boss Cloud can record the report against your WorkOS
 identity. If you're not logged in, the report goes through anonymously.
 
-The `ctrl+b` flow is the only path that submits a bug-report payload.
+The bug-report modal flow is the only path that submits a bug-report payload.
 Bossanova does not auto-submit reports on crash, on panic, on stream
 failure, or on plugin error.
 

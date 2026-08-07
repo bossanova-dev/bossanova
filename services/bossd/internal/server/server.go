@@ -152,23 +152,22 @@ type Server struct {
 	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
 	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
 	// interception can be exercised without a real Lifecycle.
-	switchAccountFn  func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
-	agent            agent.AgentRunner
-	agentClients     map[string]agent.AgentRunnerClient
-	worktrees        gitpkg.WorktreeManager
-	provider         vcs.Provider
-	prResolver       PRAssociationResolver
-	pluginHost       *plugin.Host
-	tmux             *tmux.Client
-	chatWakeGroup    singleflight.Group // per-chat idempotency for WakeChat
-	branchStartMu    sync.Mutex
-	branchStartLocks map[string]*branchStartLock
+	switchAccountFn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
+	agent           agent.AgentRunner
+	agentClients    map[string]agent.AgentRunnerClient
+	worktrees       gitpkg.WorktreeManager
+	provider        vcs.Provider
+	prResolver      PRAssociationResolver
+	pluginHost      *plugin.Host
+	tmux            *tmux.Client
+	chatWakeGroup   singleflight.Group // per-chat idempotency for WakeChat
 	// mergeMu guards repoMergeGates. repoMergeGates serializes user-initiated
 	// merges per repo (BOS-439): concurrent MergeSession calls for the same repo
 	// share one local clone (.git/index.lock, refs/heads/<base>), so they must
-	// not run at once. Mirrors the ref-counted-map lifecycle of branchStartLocks,
-	// but acquisition is context-aware (see acquireRepoMerge) so a queued merge
-	// whose caller cancels can bail without merging.
+	// not run at once. Mirrors the ref-counted-map lifecycle of the session
+	// package's start/target gates, but acquisition is context-aware (see
+	// acquireRepoMerge) so a queued merge whose caller cancels can bail without
+	// merging.
 	mergeMu              sync.Mutex
 	repoMergeGates       map[string]*repoMergeGate
 	wakeHook             wakeHook             // test-only: zero in production; see wake_chat.go
@@ -188,19 +187,20 @@ type Server struct {
 	listener              net.Listener
 	srv                   *http.Server
 	agentLogsDir          string
+	// protectedRoots is the symlink-resolved protected-root list the startup
+	// diagnostic derived (BOS-725). The doctor check unions it with its own
+	// lexical derivation so the two surfaces cannot disagree — see
+	// protectedRootsReadableCheck. Nil unless the macOS startup diagnostic ran.
+	protectedRoots []string
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
-}
-
-type branchStartLock struct {
-	mu   sync.Mutex
-	refs int
 }
 
 // repoMergeGate is a per-repo, capacity-1 serialization gate for user-initiated
 // merges (BOS-439). sem is a buffered channel of capacity 1 used as a
 // context-aware mutex; refs counts live acquirers so the map entry can be reaped
-// when the last releases (same lifecycle as branchStartLock).
+// when the last releases (the same lifecycle bossalib/keyedgate implements for
+// the session start/target locks and the per-clone git gate).
 type repoMergeGate struct {
 	sem  chan struct{}
 	refs int
@@ -346,6 +346,12 @@ type Config struct {
 	// (platformEndpointNamespaceGate): fail-closed exact match on Linux, always
 	// satisfied off Linux.
 	EndpointNamespaceGate func(clientNS string) bool
+	// ProtectedRoots is the symlink-resolved protected-root list the macOS
+	// startup diagnostic derived. The doctor check probes these in addition to
+	// the roots it derives lexically, so a working path that only reaches a
+	// protected root through a symlink is still reported (BOS-725). Nil unless
+	// the macOS startup diagnostic ran.
+	ProtectedRoots []string
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -468,7 +474,6 @@ func New(cfg Config) *Server {
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
-		branchStartLocks:   map[string]*branchStartLock{},
 		repoMergeGates:     map[string]*repoMergeGate{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
@@ -478,6 +483,7 @@ func New(cfg Config) *Server {
 		fileLimitSoft:      cfg.FileLimitSoft,
 		endpointReader:     cfg.EndpointReader,
 		agentLogsDir:       cfg.AgentLogsDir,
+		protectedRoots:     cfg.ProtectedRoots,
 
 		endpointNamespaceGate: cfg.EndpointNamespaceGate,
 	}
@@ -596,6 +602,7 @@ func (s *Server) Listen(socketPath string) error {
 		errortrack.Interceptor(),
 	))
 	mux.Handle(path, withCreateSessionWriteDeadlineOverride(handler))
+	registerPprofHandlers(mux)
 
 	s.srv = &http.Server{
 		Handler:           mux,
@@ -1169,45 +1176,17 @@ func installedPluginStatus(p plugin.PluginStatus) pb.InstalledPlugin_Status {
 
 // --- Session Lifecycle ---
 
-func (s *Server) lockBranchStart(repoID, branch string) func() {
-	if repoID == "" || branch == "" {
-		return func() {}
-	}
-	key := repoID + "\x00" + branch
-
-	s.branchStartMu.Lock()
-	if s.branchStartLocks == nil {
-		s.branchStartLocks = map[string]*branchStartLock{}
-	}
-	lock := s.branchStartLocks[key]
-	if lock == nil {
-		lock = &branchStartLock{}
-		s.branchStartLocks[key] = lock
-	}
-	lock.refs++
-	s.branchStartMu.Unlock()
-
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
-
-		s.branchStartMu.Lock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(s.branchStartLocks, key)
-		}
-		s.branchStartMu.Unlock()
-	}
-}
-
 // acquireRepoMerge serializes user-initiated merges per repo (BOS-439). It
 // blocks until it holds the repo's capacity-1 gate, then returns a release func
 // the caller must defer. Acquisition is context-aware: if ctx is cancelled while
 // the gate is held by another merge, it abandons the wait (decrementing its
 // ref/reaping the entry) and returns ctx.Err() with a nil release — the caller
 // must not merge. An empty repoID (no repo to guard) returns a no-op release and
-// nil error. Mirrors lockBranchStart's ref-counted-map lifecycle; the select on
-// a buffered channel mirrors taskorchestrator.autoMergeSem.
+// nil error. The ref-counted map lifecycle and the select on a buffered channel
+// are the same shape as bossalib/keyedgate (and taskorchestrator.autoMergeSem);
+// it is deliberately NOT converted to that package, because unlike the session
+// locks this wait is unbounded by design, and bounding it would change merge
+// behaviour rather than tidy it.
 func (s *Server) acquireRepoMerge(ctx context.Context, repoID string) (release func(), err error) {
 	if repoID == "" {
 		return func() {}, nil
@@ -1343,6 +1322,20 @@ func newHookToken() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
+// cleanupFailedCreateSession tears down a create that never produced a usable
+// session: the artifacts on disk, then the row itself.
+//
+// The artifact half is session.CleanUpBootstrapArtifacts — the same function the
+// task-orchestrator path reaches through Lifecycle.CleanUpFailedBootstrapArtifacts,
+// rather than a second copy of the ownership rule (reap the branch only when the
+// row carries a worktree path) that would have to be kept in step by hand. What
+// remains here is what only the server owns: dropping the row and publishing the
+// deletion.
+//
+// BOS-717 is what makes that rule useful rather than theoretical: gitpkg's
+// OnWorktreeReady hook records the worktree (and the branch it settled on) the
+// moment `git worktree add` lands, so a bootstrap killed later — in the setup
+// script, or by the deadline — still cleans up after itself.
 func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
 	// A background draft-PR create may still be pushing this session's branch
 	// (BOS-540). Stop it before deleting the branch and purging the worktree, or
@@ -1353,32 +1346,26 @@ func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID strin
 	// disconnecting mid-create.
 	//
 	// StopBackgroundDraftPR cancels before joining, which is what keeps this
-	// affordable: every caller reaches here holding the process-global
-	// LockStartPath mutex (released only after this returns), so waiting out a
-	// push and a `gh pr create` we do not want the result of would stall every
-	// other CreateSession in the daemon — the exact latency BOS-540 removed.
+	// affordable: waiting out a push and a `gh pr create` whose result we do not
+	// want would add that latency to every failed create — the exact latency
+	// BOS-540 removed. It no longer stalls creates for OTHER targets: since
+	// BOS-717 the start-path lock is per-repo and is released as soon as the
+	// session row is inserted, so callers reach here holding no start-path lock.
+	// The per-target lock IS still held across this whole function, by design —
+	// that is what makes an overlapping create for the same target wait for this
+	// one's outcome, and it is the hold session.TargetStartLockTimeout's margin
+	// is budgeted against.
 	if s.lifecycle != nil {
 		s.lifecycle.StopBackgroundDraftPR(ctx, sessionID)
 	}
 
-	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
-		if failedSess.RepoID != "" && failedSess.BranchName != "" {
-			if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
-				// Only reap a branch when this create attempt made its worktree.
-				// This preserves the property that a worktree-creation failure
-				// (WorktreePath == "") never deletes the branch — critical for
-				// dependabot PR head branches.
-				if failedSess.WorktreePath != "" {
-					_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{failedSess.BranchName})
-				}
-				// Always remove any leftover worktree directory — including when
-				// creation failed before WorktreePath was recorded — so a stale
-				// directory can't wedge the branch on the next attempt (the
-				// dependabot repair loop). Does NOT delete the branch.
-				s.worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, failedSess.BranchName)
-			}
-		}
-	}
+	// The stores are passed explicitly rather than going through
+	// s.lifecycle.CleanUpFailedBootstrapArtifacts, for two reasons: s.lifecycle
+	// is optional here (it is nil in tests and in cut-down wirings, and losing
+	// artifact cleanup with it would be a silent regression), and that method
+	// also stops the background draft PR, which the line above has already done.
+	session.CleanUpBootstrapArtifacts(ctx, s.logger, s.sessions, s.repos, s.worktrees, sessionID)
+
 	_ = s.sessions.Delete(ctx, sessionID)
 	if s.onSessionDeleted != nil {
 		s.onSessionDeleted(ctx, sessionID)
@@ -1470,8 +1457,8 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// session (the branch_name attach that sendExistingSessionForBranch resolves
 	// below with attached_existing=true). A bare tracker_id create with a fresh
 	// branch has no such local owner and still scans — that is the sibling-branch
-	// duplicate-work case the guard exists to catch. Run before LockStartPath so
-	// a network round-trip never holds the process-global start mutex; the
+	// duplicate-work case the guard exists to catch. Run before AcquireStartPath
+	// so a network round-trip never holds the start-path lock; the
 	// in-flight local dedup (BOS-236) still runs atomically under that lock
 	// below. Fail open on scan error so a transient GitHub outage cannot wedge
 	// the daemon's whole create path.
@@ -1488,30 +1475,77 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		}
 	}
 
+	// Two locks, in the order session/start_lock.go documents: the TARGET lock
+	// (per repo+branch/PR) is held for the whole call, including StartSession and
+	// its failure cleanup, so an overlapping create for the same target waits for
+	// this one's outcome; the START-PATH lock (per repo) is released the moment
+	// the row is inserted, so a wedged bootstrap can never block a create for
+	// another target (BOS-717).
+	var unlockTarget func()
+	targetLocked := false
 	var unlockStart func()
 	var startLockWait time.Duration
 	startLocked := false
-	var unlockBranch func()
-	branchLocked := false
-	if !msg.IsQuickChat {
-		lockWaitStarted := time.Now()
-		unlockStart = session.LockStartPath()
-		startLockWait = time.Since(lockWaitStarted)
-		startLocked = true
-
-		unlockBranch = s.lockBranchStart(msg.RepoId, headBranch)
-		branchLocked = true
-	}
+	// Registered before acquisition (the flags gate them) so an acquire failure
+	// on the second lock still returns without leaking the first.
+	defer func() {
+		if targetLocked {
+			unlockTarget()
+		}
+	}()
 	defer func() {
 		if startLocked {
 			unlockStart()
 		}
 	}()
-	defer func() {
-		if branchLocked {
-			unlockBranch()
+	if !msg.IsQuickChat {
+		// Log BEFORE acquiring anything (BOS-717). start_lock_wait is measured
+		// only once a lock has been taken, so a wait that never ends produced no
+		// log line at all — which is exactly why the 2026-08-06 wedge left zero
+		// diagnostic signal: a create that hung here was invisible, with no
+		// session row and nothing in the daemon log. This line is the trace that
+		// says which repo and branch a stuck create was waiting on.
+		s.logger.Info().
+			Str("repo", msg.RepoId).
+			Str("branch", headBranch).
+			Msg("acquiring session start locks")
+
+		var lockErr error
+		var targetLockWait time.Duration
+		unlockTarget, targetLockWait, lockErr = session.AcquireTargetStart(ctx, msg.RepoId, headBranch, prNumber)
+		if lockErr != nil {
+			s.logger.Error().Err(lockErr).
+				Str("repo", msg.RepoId).
+				Str("branch", headBranch).
+				Dur("target_lock_wait", targetLockWait).
+				Msg("session start lock contention: giving up waiting for the target lock")
+			return connect.NewError(connect.CodeUnavailable, lockErr)
 		}
-	}()
+		targetLocked = true
+
+		unlockStart, startLockWait, lockErr = session.AcquireStartPath(ctx, msg.RepoId)
+		if lockErr != nil {
+			s.logger.Error().Err(lockErr).
+				Str("repo", msg.RepoId).
+				Str("branch", headBranch).
+				Dur("start_lock_wait", startLockWait).
+				Msg("session start lock contention: giving up waiting for the start-path lock")
+			return connect.NewError(connect.CodeUnavailable, lockErr)
+		}
+		startLocked = true
+
+		// A slow-but-successful acquire is the early warning for the failure this
+		// ticket is about; the success line at the end of the RPC records the wait
+		// either way, but only at Info and only once the create has finished.
+		if targetLockWait > session.SlowStartLockWaitThreshold || startLockWait > session.SlowStartLockWaitThreshold {
+			s.logger.Warn().
+				Str("repo", msg.RepoId).
+				Str("branch", headBranch).
+				Dur("target_lock_wait", targetLockWait).
+				Dur("start_lock_wait", startLockWait).
+				Msg("session start locks were contended")
+		}
+	}
 
 	if !msg.IsQuickChat {
 		if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, emitSender{emit}); handled || err != nil {
@@ -1526,7 +1560,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 
 		// BOS-236: dedup against an existing active session for the same tracker issue
 		// (or its PR / branch) so N dispatches for one ticket can't spawn N sessions.
-		// This runs under the process-global LockStartPath mutex acquired above, so the
+		// This runs under the per-repo start-path lock acquired above, so the
 		// check-then-Create below is atomic w.r.t. concurrent daemon-local creates — the
 		// race that triplicated BOS-229. A DB unique index was deliberately NOT used: it
 		// cannot coexist with `force`, which must be able to create a second session for
@@ -1609,9 +1643,15 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	if branchLocked {
-		unlockBranch()
-		branchLocked = false
+	// The start-path lock exists to make the duplicate check above and this
+	// insert atomic against concurrent daemon-local creates (BOS-236). That
+	// invariant is satisfied the moment the row lands, so release it here —
+	// BEFORE StartSession's multi-minute bootstrap (BOS-717). Holding it across
+	// StartSession is what let one hung bootstrap block every subsequent
+	// CreateSession in the daemon. The target lock stays held.
+	if startLocked {
+		unlockStart()
+		startLocked = false
 	}
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
@@ -1688,6 +1728,9 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			// then wait for it to finish before removing the persisted session.
 			_ = pr.Close()
 			<-done
+			// Same cleanup as the start-failure exit below: this discards a
+			// session whose branch git may already have made, and the row's
+			// worktree path is what says whether it did.
 			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
 			return err
 		}
@@ -1709,10 +1752,6 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			Str("title", msg.Title).
 			Msg("start session failed")
 		return createSessionConnectError(fmt.Errorf("start session: %w", err))
-	}
-	if startLocked {
-		unlockStart()
-		startLocked = false
 	}
 
 	// Re-fetch the session to get updated fields from lifecycle.
@@ -2940,11 +2979,20 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 		}
 	}
 
-	// Best-effort git cleanup: delete branch + prune worktree.
+	// Best-effort git cleanup: delete branch + prune worktree. Logged rather than
+	// discarded: since BOS-717 this can fail by being REFUSED the per-clone gate
+	// (a concurrent create in the same repo), and the row is deleted immediately
+	// below, so a silent refusal orphans the branch with nothing left naming it.
 	if sess.RepoID != "" && sess.BranchName != "" {
 		repo, err := s.repos.Get(ctx, sess.RepoID)
 		if err == nil {
-			_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName})
+			if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); reapErr != nil {
+				s.logger.Warn().Err(reapErr).
+					Str("session", req.Msg.Id).
+					Str("repo", repo.LocalPath).
+					Str("branch", sess.BranchName).
+					Msg("remove session: could not delete the local branch; it is left behind")
+			}
 		}
 	}
 
@@ -3157,13 +3205,20 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		deleted++
 	}
 
-	// Best-effort git cleanup: delete branches and prune worktrees per repo.
+	// Best-effort git cleanup: delete branches and prune worktrees per repo. The
+	// rows are already gone by here, so a refused reap (see RemoveSession) leaves
+	// branches nothing names — log it rather than discarding it.
 	for repoID, branches := range repoBranches {
 		repo, err := s.repos.Get(ctx, repoID)
 		if err != nil {
 			continue
 		}
-		_ = s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches)
+		if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
+			s.logger.Warn().Err(reapErr).
+				Str("repo", repo.LocalPath).
+				Strs("branches", branches).
+				Msg("empty trash: could not delete local branches; they are left behind")
+		}
 	}
 
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil

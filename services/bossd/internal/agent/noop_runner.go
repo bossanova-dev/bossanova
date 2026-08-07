@@ -37,6 +37,6 @@ func (NoopRunner) StartByAgent(_ context.Context, _, _, _ string, _ *string, _, 
 	return "", errNoAgentPlugin
 }
 
-func (NoopRunner) StopByAgent(_, _ string) error { return errNoAgentPlugin }
+func (NoopRunner) StopByAgent(_ context.Context, _, _ string) error { return errNoAgentPlugin }
 
 func (NoopRunner) IsRunningByAgent(_, _ string) bool { return false }

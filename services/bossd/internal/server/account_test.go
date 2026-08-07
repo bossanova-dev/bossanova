@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -340,9 +341,12 @@ func TestListAccountsRefreshProbesConcurrently(t *testing.T) {
 // semaphore two refreshes could each start usageProbeConcurrency probes.
 func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
-	accounts := make([]*models.Account, usageProbeConcurrency)
-	for i := range accounts {
-		accounts[i] = &models.Account{ID: fmt.Sprintf("acct-%d", i)}
+	const accountsPerRefresh = usageProbeConcurrency - 1
+	firstAccounts := make([]*models.Account, accountsPerRefresh)
+	secondAccounts := make([]*models.Account, accountsPerRefresh)
+	for i := range firstAccounts {
+		firstAccounts[i] = &models.Account{ID: fmt.Sprintf("first-%d", i)}
+		secondAccounts[i] = &models.Account{ID: fmt.Sprintf("second-%d", i)}
 	}
 	probe := &barrierUsageProbe{
 		arrived: make(chan string, 2*usageProbeConcurrency),
@@ -351,34 +355,61 @@ func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T)
 	srv.usageProbe = probe
 
 	done := make(chan struct{}, 2)
-	for range 2 {
-		go func() {
+	for _, accounts := range [][]*models.Account{firstAccounts, secondAccounts} {
+		go func(accounts []*models.Account) {
 			srv.refreshUsageSnapshots(context.Background(), accounts)
 			done <- struct{}{}
-		}()
+		}(accounts)
 	}
 
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(probe.release) })
+	}
+	var awaitOnce sync.Once
+	awaitRefreshes := func() {
+		awaitOnce.Do(func() {
+			for range 2 {
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("refresh did not return after the probes were released")
+				}
+			}
+		})
+	}
+	t.Cleanup(func() {
+		release()
+		awaitRefreshes()
+	})
+
+	var firstArrived, secondArrived bool
 	for i := 0; i < usageProbeConcurrency; i++ {
 		select {
-		case <-probe.arrived:
+		case accountID := <-probe.arrived:
+			switch {
+			case strings.HasPrefix(accountID, "first-"):
+				firstArrived = true
+			case strings.HasPrefix(accountID, "second-"):
+				secondArrived = true
+			default:
+				t.Fatalf("probe arrived from unexpected account %q", accountID)
+			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("only %d of %d shared probes started", i, usageProbeConcurrency)
 		}
 	}
+	if !firstArrived || !secondArrived {
+		t.Fatalf("shared cap filled without both refreshes participating: first=%t second=%t", firstArrived, secondArrived)
+	}
 	select {
 	case accountID := <-probe.arrived:
 		t.Fatalf("started %q above the daemon-wide limit of %d", accountID, usageProbeConcurrency)
-	default:
+	case <-time.After(250 * time.Millisecond):
 	}
 
-	close(probe.release)
-	for range 2 {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("refresh did not return after the probes were released")
-		}
-	}
+	release()
+	awaitRefreshes()
 }
 
 // TestRefreshUsageSnapshotsStopsSchedulingWhenCancelled ensures a refresh

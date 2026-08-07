@@ -15,7 +15,7 @@
           "caption": "General Settings lists a Daemon name row"
         },
         { "key": "down", "caption": "Move from worktree base directory to poll interval" },
-        { "key": "down", "caption": "Select the Daemon name row" },
+        { "key": "down", "caption": "The unset daemon name shows the machine hostname default" },
         {
           "expect": [
             {
@@ -28,8 +28,7 @@
               "match": "normalized",
               "label": "unset daemon name defaults to the machine hostname"
             }
-          ],
-          "caption": "The unset daemon name shows the machine hostname default"
+          ]
         }
       ]
     },
@@ -47,7 +46,7 @@
         {
           "waitFor": "studio-mini",
           "timeoutMs": 10000,
-          "caption": "The typed name is in the editor"
+          "caption": "The editor carries the restart guidance"
         },
         {
           "expect": [
@@ -61,8 +60,7 @@
               "match": "normalized",
               "label": "restart guidance while editing"
             }
-          ],
-          "caption": "The editor carries the restart guidance"
+          ]
         }
       ]
     },
@@ -74,7 +72,7 @@
         {
           "waitFor": "Daemon name: studio-mini",
           "timeoutMs": 10000,
-          "caption": "The saved daemon name is shown on the row"
+          "caption": "The row shows the custom name and that a restart applies it"
         },
         {
           "expect": [
@@ -83,8 +81,7 @@
               "match": "normalized",
               "label": "saved daemon name with restart guidance"
             }
-          ],
-          "caption": "The row shows the custom name and that a restart applies it"
+          ]
         }
       ]
     }

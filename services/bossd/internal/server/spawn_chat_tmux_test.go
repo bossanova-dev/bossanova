@@ -893,6 +893,28 @@ func TestSpawnChatTmux_RoutesArgvByAgentName(t *testing.T) {
 	}
 }
 
+func TestChatAgentConventions(t *testing.T) {
+	tests := []struct {
+		name          string
+		readyMarker   string
+		commandPrefix string
+	}{
+		{name: "claude", readyMarker: "❯", commandPrefix: "/"},
+		{name: "codex", readyMarker: "›", commandPrefix: "$"},
+		{name: "opencode", readyMarker: "┃", commandPrefix: "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := chatReadyMarker(tt.name); got != tt.readyMarker {
+				t.Errorf("chatReadyMarker(%q) = %q, want %q", tt.name, got, tt.readyMarker)
+			}
+			if got := chatCommandPrefix(tt.name); got != tt.commandPrefix {
+				t.Errorf("chatCommandPrefix(%q) = %q, want %q", tt.name, got, tt.commandPrefix)
+			}
+		})
+	}
+}
+
 // TestSpawnChatTmux_SiblingCodexChatsResolveDistinctProviderIDs is the BOS-290
 // regression: two codex chats in the SAME worktree, launched back-to-back, must
 // bind to DISTINCT provider ids. Each chat's own tmux pane has its own pid, and

@@ -11,7 +11,7 @@ package views
 //   - renderActiveView keeps a default arm ("Unknown view"), and
 //     default-signifies-exhaustive turns that into an opt-out.
 //   - handleSwitchView carries an explicit waiver, because two constants are
-//     genuinely unreachable by a switchViewMsg: ViewBugReport (pushed by ctrl+b)
+//     genuinely unreachable by a switchViewMsg: ViewBugReport (pushed by ctrl+g)
 //     and ViewOnboarding (entered only via SetInitialView). The waiver's own
 //     reason comment names only the first; the notRoutable table below is the
 //     complete list.
@@ -312,7 +312,7 @@ func TestHandleSwitchViewConstructsEveryRoutableView(t *testing.T) {
 	// Views deliberately absent from handleSwitchView's switch, which is why it
 	// carries a waiver. Keep this list and the waiver's reason comment in step.
 	notRoutable := map[View]string{
-		ViewBugReport:  "pushed by ctrl+b in handleGlobalKey, never as a switchViewMsg",
+		ViewBugReport:  "pushed by ctrl+g in handleGlobalKey, never as a switchViewMsg",
 		ViewOnboarding: "only ever entered via SetInitialView at startup",
 	}
 

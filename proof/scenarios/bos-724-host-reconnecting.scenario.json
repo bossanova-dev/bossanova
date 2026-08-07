@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "title": "BOS-724 — a dropped --host ssh tunnel names why it went down instead of going silent, and still recovers to the session board unaided",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_HOST_E2E_RECONNECT": "user@build-box",
+      "BOSS_HOST_E2E_RECONNECT_REASON": "remotehost: ssh tunnel to user@build-box exited: signal: terminated"
+    }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "The reconnecting screen reports the supervisor's own diagnosis, so the user learns why the tunnel dropped without reading source",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Reconnecting to user@build-box",
+            "match": "normalized",
+            "label": "the screen names the ssh destination it is redialling rather than leaving a --host session looking frozen"
+          },
+          "timeoutMs": 15000,
+          "caption": "The forwarded socket stopped answering; boss shows the reconnecting screen instead of a dial error against a local temp path."
+        },
+        {
+          "expect": [
+            {
+              "text": "Last tunnel failure",
+              "match": "normalized",
+              "label": "the retained classification is labelled on screen — before BOS-724 it only ever reached a Debug line the user could not read"
+            },
+            {
+              "text": "signal: terminated",
+              "match": "normalized",
+              "label": "the reason itself is the supervisor's classified exit, which is what makes the next occurrence diagnosable in one step"
+            },
+            {
+              "text": "Boss keeps redialling and resumes automatically",
+              "match": "normalized",
+              "label": "the screen still promises unaided recovery — the diagnosis is added to the affordance, not substituted for it"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "the retained action bar keeps a way out, so a reason line never costs the user their escape hatch"
+            }
+          ],
+          "caption": "Destination, the retained failure reason, the automatic-retry promise, and the escape hatch are all on one frame."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "When the tunnel answers again the TUI proceeds to the remote daemon's session board with no keystroke",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "STATUS",
+            "match": "normalized",
+            "label": "the session board replaces the wait screen on its own — reporting a reason did not turn a recoverable outage into a dead end"
+          },
+          "timeoutMs": 15000,
+          "caption": "The redial succeeded; boss resumes startup against the recovered tunnel rather than making the user relaunch."
+        },
+        {
+          "waitMs": 2000,
+          "caption": "The wait screen releases the alt-screen and Home completes its first session refresh against the recovered client."
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "a real session row from the daemon renders, so the recovered client is genuinely serving data"
+            }
+          ],
+          "caption": "The board is populated: the reconnecting screen handed over to a working client."
+        }
+      ]
+    }
+  ]
+}

@@ -54,29 +54,77 @@ func loadSettingsForSocketPath() (config.Settings, error) {
 type LocalClient struct {
 	rpc        bossanovav1connect.DaemonServiceClient
 	socketPath string
+	// httpClient is the transport the Connect client was built on. It is
+	// retained only so in-package tests can assert its Timeout stays zero (see
+	// newLocalClient); nothing in production reads it.
+	httpClient *http.Client
 }
 
 // Verify LocalClient implements BossClient at compile time.
 var _ BossClient = (*LocalClient)(nil)
 
-// NewLocal creates a LocalClient connected to the daemon via the given Unix socket.
+// NewLocal creates a LocalClient connected to the daemon via the given Unix
+// socket, authenticating with the bossd.token file co-located with socketPath.
+// A missing or unreadable token is not fatal here: it falls through to
+// newLocalClient's own empty-token handling, which still builds a working
+// client that fails at RPC time with an actionable message (see
+// errMapInterceptor) rather than refusing to construct at all.
 func NewLocal(socketPath string) *LocalClient {
+	token, err := socketauth.ReadToken(socketPath)
+	if err != nil {
+		token = ""
+	}
+	return newLocalClient(socketPath, token)
+}
+
+// NewLocalWithToken creates a LocalClient that authenticates with an explicitly
+// supplied token instead of reading one co-located with the socket. A socket
+// forwarded from a remote daemon over SSH has no bossd.token beside it, so the
+// token is fetched from the remote host and passed in here, held in memory only.
+// An empty token behaves like a missing co-located token file: the client is
+// still built and the RPC fails with an actionable CodeUnauthenticated message.
+func NewLocalWithToken(socketPath, token string) *LocalClient {
+	return newLocalClient(socketPath, token)
+}
+
+// newLocalClient is the shared construction body for NewLocal and
+// NewLocalWithToken; only where the token comes from differs between them.
+func newLocalClient(socketPath, token string) *LocalClient {
+	// Timeout is deliberately left unset. http.Client.Timeout covers the entire
+	// response body read, and this same client serves the only two streaming
+	// RPCs on DaemonService (CreateSession and AttachSession) — a wall-clock
+	// timeout here would truncate every attach and every session creation.
+	// Unary calls are bounded per-call instead, by deadlineInterceptor.
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
+			// Honour the caller's context: a cancelled or expired context must
+			// fail the dial rather than block on a wedged daemon's socket.
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 		},
 	}
 
-	// errMapInterceptor is outermost so it maps a CodeUnauthenticated from any
-	// unary RPC (whichever one the TUI/CLI issues first) into a clear message.
-	// The socket auth token (co-located with the socket) is attached inside it;
-	// if the token file is missing or malformed we still build the client — the
-	// RPC then fails with CodeUnauthenticated, which errMapInterceptor turns into
-	// an actionable message.
-	interceptors := []connect.Interceptor{errMapInterceptor{}}
-	if token, err := socketauth.ReadToken(socketPath); err == nil {
+	// Connect applies the first interceptor as the OUTERMOST one. The single
+	// ordering constraint is that errMapInterceptor sits outside the auth
+	// interceptor, so the CodeUnauthenticated the latter provokes reaches the
+	// mapper and becomes a clear message on whichever unary RPC the TUI/CLI
+	// issues first. The relative order of errMapInterceptor and
+	// deadlineInterceptor does NOT matter: deadlineInterceptor words its own
+	// expiry (see rpcdeadline.go), because only it can tell a bound it imposed
+	// from one the caller — or the daemon — set.
+	//
+	// The auth interceptor is attached innermost, and only when there is a token
+	// to send; an empty token (missing/unreadable co-located file, or an explicit
+	// empty string) still builds the client — the RPC then fails with
+	// CodeUnauthenticated, which errMapInterceptor turns into an actionable
+	// message.
+	interceptors := []connect.Interceptor{
+		errMapInterceptor{},
+		deadlineInterceptor{socketPath: socketPath},
+	}
+	if token != "" {
 		interceptors = append(interceptors, socketauth.NewClientInterceptor(token))
 	}
 
@@ -90,14 +138,26 @@ func NewLocal(socketPath string) *LocalClient {
 	return &LocalClient{
 		rpc:        rpc,
 		socketPath: socketPath,
+		httpClient: httpClient,
 	}
 }
 
-// mapClientErr rewrites a daemon CodeUnauthenticated response — which means the
-// socket auth token was missing or stale on this client — into an actionable
-// message, instead of surfacing a raw "unauthenticated" to the TUI/CLI.
+// mapClientErr rewrites a CodeUnauthenticated — the socket auth token was
+// missing or stale on this client — into an actionable message instead of
+// surfacing a raw Connect code to the TUI/CLI.
+//
+// It deliberately does NOT word deadline expiries. Only deadlineInterceptor can
+// tell a bound it imposed from one the caller set, or from a
+// CodeDeadlineExceeded the daemon raised itself, so that wording is built there
+// (see rpcdeadline.go). Routing it through here instead would need a socketPath
+// on both stream wrappers to feed a branch neither can ever reach: the
+// streaming wrappers are pass-throughs, so no stream error is ever bounded by
+// this client.
 func mapClientErr(err error) error {
-	if err != nil && connect.CodeOf(err) == connect.CodeUnauthenticated {
+	if err == nil {
+		return nil
+	}
+	if connect.CodeOf(err) == connect.CodeUnauthenticated {
 		return fmt.Errorf("daemon rejected this client (socket auth token missing or stale); restart the daemon and ensure boss is up to date: %w", err)
 	}
 	return err
@@ -107,8 +167,9 @@ func mapClientErr(err error) error {
 // whichever RPC the TUI/CLI issues first (ListSessions/ListRepos, not the rarely
 // called Ping) surfaces a clear "restart the daemon / update boss" message on a
 // missing or stale socket auth token rather than a raw CodeUnauthenticated. The
-// streaming RPCs (CreateSession/AttachSession) map the same error in their stream
-// wrappers' Err(), since a streaming client interceptor cannot see the open error.
+// streaming RPCs (CreateSession/AttachSession) map the same error in their
+// stream wrappers' Err(), since a streaming client interceptor cannot see the
+// open error.
 type errMapInterceptor struct{}
 
 func (errMapInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {

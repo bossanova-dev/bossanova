@@ -9,6 +9,7 @@ linters:
     - depguard
     - errcheck
     - exhaustive
+    - forbidigo
     - forcetypeassert
     - gocritic
     - gosec
@@ -50,6 +51,21 @@ linters:
               desc: plugins must not import the host mcp gateway; communicate over gRPC
     exhaustive:
       default-signifies-exhaustive: true
+    forbidigo:
+      # BOS-717: the session bootstrap hung forever because its subprocesses had
+      # no deadline. exec.CommandContext is the only form that can be bounded, so
+      # the bare constructor is banned on the daemon paths this ticket hardened.
+      # Setting `forbid` replaces forbidigo's fmt.Print* defaults, which this
+      # repo does not want.
+      #
+      # Deliberately NOT repo-wide: 34 non-test call sites elsewhere (the TUI's
+      # `open`/`tmux`/`osascript` launches, daemon install/uninstall, plugin
+      # spawn) are fire-and-forget or user-cancelled, and rewriting them is a
+      # separate change. The exclusion below narrows the rule to the packages on
+      # the session-bootstrap path; widening it later is a one-line edit.
+      forbid:
+        - pattern: ^exec\.Command$
+          msg: use exec.CommandContext with a deadline — a bare exec.Command cannot be bounded (BOS-717)
     gocritic:
       disabled-checks:
         - singleCaseSwitch # common Bubbletea pattern for key handling
@@ -96,6 +112,28 @@ linters:
         text: "SA5011"
         linters:
           - staticcheck
+      # forbidigo's exec.Command ban applies only to the packages on the session-
+      # bootstrap path (see the forbidigo settings above for why it is not
+      # repo-wide).
+      #
+      # Matched on the DIRECTORY NAME at any depth, deliberately: golangci-lint
+      # v2 reports issue paths relative to the config file (run.relative-path-mode
+      # defaults to `cfg`), so they arrive repo-relative even under
+      # lint-affected.mjs, which runs with the MODULE as cwd — but the pattern
+      # should not have to encode that, and the sibling `path:` rules below would
+      # be the ones to fix if it ever changed. The cost of matching on the name
+      # alone is that services/bosso/internal/server is covered too: intentional
+      # and harmless (it has no bare exec.Command), but a violation there would
+      # be rejected with a message about the bossd bootstrap, so widen this
+      # comment rather than being surprised.
+      - path-except: (^|/)internal/(git|server|session|taskorchestrator)/
+        linters:
+          - forbidigo
+      # Test helpers shell out to git/tooling with no deadline by design; a
+      # hung test is caught by the test timeout, not by a context.
+      - path: _test\.go
+        linters:
+          - forbidigo
       # G704 SSRF false positive: socketIsServing dials the local daemon's own
       # controlled Unix socket path, not user input — a "unix" network dial
       # cannot SSRF. gosec's whole-package taint pass only surfaces it when an

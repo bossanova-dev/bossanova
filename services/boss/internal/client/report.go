@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
 
-// defaultReportURL is the production bosso instance that ctrl+b submissions
+// defaultReportURL is the production bosso instance that ctrl+g submissions
 // reach when BOSS_REPORT_URL is unset. Override for local testing.
 const defaultReportURL = "https://orchestrator.bossanova.dev"
 

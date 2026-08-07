@@ -237,6 +237,32 @@ func TestFollowFromEndSkipsExistingLines(t *testing.T) {
 	}
 }
 
+func TestFollowFromEndReadyReportsInitialOffsets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bossd.log")
+	backlog := []byte(`{"message":"backlog"}` + "\n")
+	if err := os.WriteFile(path, backlog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan InitialOffsets)
+	go func() {
+		_ = FollowFromEndReady(ctx, []Source{{Service: "bossd", Path: path}}, make(chan Record), ready)
+	}()
+	select {
+	case offsets := <-ready:
+		offset, ok := offsets["bossd"]
+		if !ok {
+			t.Fatal("ready offsets missing bossd")
+		}
+		if offset.Offset != int64(len(backlog)) {
+			t.Fatalf("initial offset = %d, want %d", offset.Offset, len(backlog))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FollowFromEndReady did not report initial offsets")
+	}
+}
+
 func TestFollowFromEndReadsNewFileFromBeginning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bossd.log")
 	ctx, cancel := context.WithCancel(context.Background())

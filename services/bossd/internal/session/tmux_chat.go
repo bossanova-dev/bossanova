@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -23,6 +24,11 @@ import (
 )
 
 const defaultAgentCommandPrefix = "/"
+
+const (
+	freshProviderSessionIDResolveDeadline = 2 * time.Second
+	freshProviderSessionIDResolveInterval = 100 * time.Millisecond
+)
 
 var (
 	ErrRepairChatNotReclaimable  = errors.New("repair chat not reclaimable")
@@ -89,7 +95,9 @@ type ChatInput struct {
 	// of minting a fresh one (claude `--resume <id>`), preserving the agent's
 	// memory of earlier attempts. The id is reused as the bossd correlation key
 	// (log path, finalize hook, tmux name, completion arming) so everything
-	// stays keyed on a single id.
+	// stays keyed on a single id. When the prior chat has a provider-owned
+	// session id, StartTmuxChat keeps this logical id for bossd bookkeeping and
+	// passes the provider id to the agent CLI's resume flag.
 	ResumeAgentSessionID string
 }
 
@@ -348,6 +356,22 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// pane instead of tripping the generic duplicate-chat guard.
 	resuming := input.ResumeAgentSessionID != ""
 	agentSessionID := input.ResumeAgentSessionID
+	providerSessionID := agentSessionID
+	var resumedChat *models.AgentChat
+	if resuming {
+		// agentSessionID is bossd's durable correlation key. Providers such as
+		// OpenCode mint a different session id, which is the only value their
+		// resume flag accepts. Keep the former for rows/logs/hooks, but send the
+		// latter to BuildInteractiveCommand when it is already known.
+		if existing, getErr := l.agentChats.GetByAgentSessionID(ctx, agentSessionID); getErr == nil && existing != nil {
+			resumedChat = existing
+			if existing.ProviderSessionID != nil && *existing.ProviderSessionID != "" {
+				providerSessionID = *existing.ProviderSessionID
+			}
+		} else if getErr != nil && !errors.Is(getErr, db.ErrAgentChatNotFound) {
+			return "", fmt.Errorf("get prior agent chat %s: %w", agentSessionID, getErr)
+		}
+	}
 
 	// Step 3: idempotency check — if a previous launch's tmux is still
 	// alive, treat this as a no-op and bubble the existing agent_session_id
@@ -375,6 +399,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// a fresh one.
 	if !resuming {
 		agentSessionID = l.newTmuxChatAgentSessionID()
+		providerSessionID = agentSessionID
 	}
 	tmuxName := tmux.ChatSessionName(sess.RepoID, agentSessionID)
 	logPath := l.agentLogPathFor(agentSessionID)
@@ -387,17 +412,15 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// than the session's stale seed. A chat that never bound its own account
 	// (nil) or model ("") inherits the session's mirrored value.
 	spawnAgentName, spawnModel, spawnAccountID := sess.AgentName, sess.Model, sess.AccountID
-	if resuming && l.agentChats != nil {
-		if existing, gerr := l.agentChats.GetByAgentSessionID(ctx, agentSessionID); gerr == nil && existing != nil {
-			if existing.AgentName != "" {
-				spawnAgentName = existing.AgentName
-			}
-			if existing.Model != "" {
-				spawnModel = existing.Model
-			}
-			if existing.AccountID != nil {
-				spawnAccountID = existing.AccountID
-			}
+	if resumedChat != nil {
+		if resumedChat.AgentName != "" {
+			spawnAgentName = resumedChat.AgentName
+		}
+		if resumedChat.Model != "" {
+			spawnModel = resumedChat.Model
+		}
+		if resumedChat.AccountID != nil {
+			spawnAccountID = resumedChat.AccountID
 		}
 	}
 	// Re-select the runner plugin when the chat's provider differs from the
@@ -439,10 +462,10 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
-	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID)
+	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID, spawnAgentName)
 	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, mcpConfigPath)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:          agentSessionID,
+		SessionId:          providerSessionID,
 		Resume:             resuming,
 		LogPath:            logPath,
 		InitialPrompt:      input.Prompt,
@@ -616,6 +639,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	}
 
 	if cmdResp.GetConsumesInitialInput() {
+		l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, resuming)
 		return agentSessionID, nil
 	}
 
@@ -636,7 +660,51 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", err
 	}
 
+	l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, resuming)
 	return agentSessionID, nil
+}
+
+// persistFreshProviderSessionID binds a newly-created bossd chat to the
+// provider's own session id when the runner exposes one. The association is
+// best-effort: the pane is usable even when an agent's local session store is
+// temporarily unavailable, and a failure to discover it must not turn a
+// successful launch into an orphaned or failed chat.
+func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client agent.AgentRunnerClient, worktreePath, agentSessionID string, resuming bool) {
+	if resuming || client == nil {
+		return
+	}
+
+	// tmux reports a detached pane as soon as it starts, but providers such as
+	// OpenCode write their session row during startup. Keep the launch usable
+	// while polling briefly so a normal slow startup does not permanently lose
+	// the provider id needed for a later --session resume.
+	resolveCtx, cancel := context.WithTimeout(ctx, freshProviderSessionIDResolveDeadline)
+	defer cancel()
+
+	for {
+		resp, err := client.ResolveInteractiveSessionID(resolveCtx, &bossanovav1.ResolveInteractiveSessionIDRequest{
+			WorkDir:            worktreePath,
+			RequestedSessionId: agentSessionID,
+		})
+		if err == nil {
+			providerSessionID := resp.GetSessionId()
+			if resp != nil && resp.GetFound() && providerSessionID != "" && providerSessionID != agentSessionID {
+				if err := l.agentChats.UpdateProviderSessionID(ctx, agentSessionID, &providerSessionID); err != nil {
+					l.logger.Warn().Err(err).Str("agentSessionID", agentSessionID).Str("providerSessionID", providerSessionID).Msg("persist fresh provider session id failed")
+				}
+				return
+			}
+		}
+
+		select {
+		case <-resolveCtx.Done():
+			if err != nil && !errors.Is(resolveCtx.Err(), context.Canceled) {
+				l.logger.Warn().Err(err).Str("agentSessionID", agentSessionID).Msg("resolve fresh provider session id failed")
+			}
+			return
+		case <-time.After(freshProviderSessionIDResolveInterval):
+		}
+	}
 }
 
 func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.AgentRunnerClient, input ChatInput, chat *models.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
@@ -645,7 +713,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 	if chat.TmuxSessionName != nil {
 		tmuxName = *chat.TmuxSessionName
 	}
-	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sess.ID)
+	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sess.ID, chat.AgentName)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:       resumeSessionID,
 		Resume:          true,
@@ -1475,8 +1543,8 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName, mc
 // "" when no trusted mcp binary is resolved. MCP wiring is best-effort: a write
 // failure must never block a chat launch, so it is logged and the chat
 // continues without mcp__boss__* rather than failing.
-func (l *Lifecycle) writeSessionMcpConfig(sess *models.Session, agentSessionID, sessionID string) string {
-	path, err := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, sess.AgentName))
+func (l *Lifecycle) writeSessionMcpConfig(sess *models.Session, agentSessionID, sessionID, agentName string) string {
+	path, err := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, agentName))
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
@@ -117,6 +116,14 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	if m.session == nil {
 		return nil
 	}
+	// Against a remote daemon the JSONL files are on the other machine, so every
+	// read here would answer about a local path that does not exist and the
+	// titles would silently stay "New chat" forever. The remote daemon already
+	// refreshes them server-side (and only ever over "" / "New chat"), so
+	// dropping this local best-effort duplicate loses nothing.
+	if isRemoteHost() {
+		return nil
+	}
 	var needsUpdate []*pb.ClaudeChat
 	for _, c := range m.chats {
 		if c.Title == "" || c.Title == "New chat" {
@@ -130,7 +137,7 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	return func() tea.Msg {
 		updates := make(map[string]string)
 		for _, c := range needsUpdate {
-			title := agent.ChatTitle(worktreePath, c.AgentSessionId)
+			title := agentChatTitle(worktreePath, c.AgentSessionId)
 			if title != "" {
 				updates[c.AgentSessionId] = title
 				_ = m.client.UpdateChatTitle(m.ctx, c.AgentSessionId, title)

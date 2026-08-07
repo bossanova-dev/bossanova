@@ -36,6 +36,7 @@ go_test(
         "main_test.go",
         "mock_daemon_attach_test.go",
         "mock_daemon_notes_test.go",
+        "mock_daemon_rpcstall_test.go",
         "mock_daemon_standalone_test.go",
         "navigation_test.go",
         "newsession_agent_test.go",

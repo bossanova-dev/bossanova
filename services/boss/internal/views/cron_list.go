@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // --- Messages ---
@@ -63,8 +64,9 @@ const cronPollInterval = 2 * time.Second
 
 // CronListModel displays all scheduled cron jobs with CRUD keybindings.
 type CronListModel struct {
-	client client.BossClient
-	ctx    context.Context
+	client    client.BossClient
+	ctx       context.Context
+	telemetry telemetry.Client
 
 	jobs  []*pb.CronJob
 	repos map[string]*pb.Repo // repoID → Repo (for display name)
@@ -115,6 +117,11 @@ func NewCronListModel(c client.BossClient, ctx context.Context) CronListModel {
 		spinner:  newStatusSpinner(),
 		table:    newBossTable(nil, nil, 0),
 	}
+}
+
+// SetTelemetry installs a telemetry client for completed cron actions.
+func (m *CronListModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 // Cancelled reports whether the user dismissed the cron list view.
@@ -182,8 +189,10 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cronJobDeletedMsg:
 		delete(m.deleting, msg.id)
+		// cron_job_deleted is captured at the app root
+		// (App.handleCronJobDeletedResult); see the note there.
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("Delete failed: %v", msg.err), true)
+			m.setStatus(rpcStatusMessage("Delete failed", msg.err), true)
 		} else {
 			m.setStatus("Deleted.", false)
 		}
@@ -191,8 +200,10 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.fetchJobs()
 
 	case cronJobUpdatedMsg:
+		// cron_job_updated is captured at the app root
+		// (App.handleCronJobUpdatedResult); see the note there.
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("Update failed: %v", msg.err), true)
+			m.setStatus(rpcStatusMessage("Update failed", msg.err), true)
 		} else {
 			m.jobs = replaceJob(m.jobs, msg.job)
 			m.rebuildTable()
@@ -202,8 +213,10 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cronRunNowMsg:
 		// RPC done — clear the per-row spinner regardless of outcome.
 		delete(m.running, msg.id)
+		// cron_job_run_now is captured at the app root
+		// (App.handleCronRunNowResult), including the gate-skip reasoning.
 		if msg.err != nil {
-			m.setStatus(fmt.Sprintf("Run failed: %v", msg.err), true)
+			m.setStatus(rpcStatusMessage("Run failed", msg.err), true)
 		} else if msg.skippedReason != "" {
 			m.setStatus(fmt.Sprintf("Skipped: %s", runNowSkipLabel(msg.skippedReason)), true)
 		} else {
@@ -640,7 +653,7 @@ func formatRelFuture(d time.Duration) string {
 func (m CronListModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

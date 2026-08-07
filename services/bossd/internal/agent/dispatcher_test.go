@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -348,7 +350,7 @@ func TestDispatcher_StopByAgent_RoutesToNamedAgent(t *testing.T) {
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if err := d.StopByAgent("codex", "agent-sid-7"); err != nil {
+	if err := d.StopByAgent(context.Background(), "codex", "agent-sid-7"); err != nil {
 		t.Fatalf("StopByAgent: %v", err)
 	}
 	if got := stopSeen["codex"]; got != "agent-sid-7" {
@@ -358,6 +360,80 @@ func TestDispatcher_StopByAgent_RoutesToNamedAgent(t *testing.T) {
 		t.Errorf("claude unexpectedly saw Stop")
 	}
 }
+
+// TestDispatcher_StopByAgent_BoundsAContextualRunner is the guard on the wedge
+// path: a stop issued from a caller that is WAITING on it must be bounded by
+// that caller's deadline.
+//
+// AgentRunner.Stop takes no context, and PluginRunner used to issue its StopRun
+// RPC on context.Background(), so an unresponsive plugin blocked the caller
+// forever. That is fatal for the failed-bootstrap stop, which runs from a defer
+// while StartSession holds the per-target lock.
+//
+// The runner here never returns until its context is done, so a dispatcher that
+// dropped the context would hang this test rather than fail it — the deadline
+// below is what turns that into a reported failure instead of a suite timeout.
+func TestDispatcher_StopByAgent_BoundsAContextualRunner(t *testing.T) {
+	runner := &blockingContextualRunner{}
+	d := NewDispatcher(map[string]AgentRunner{"claude": runner}, func(string) (string, error) {
+		t.Fatalf("lookup must not be called")
+		return "", nil
+	}, "claude", zerolog.Nop())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- d.StopByAgent(ctx, "claude", "agent-sid-7") }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("StopByAgent err = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopByAgent did not honor the caller's deadline; an unresponsive plugin would wedge the create path")
+	}
+	if !runner.sawContext() {
+		t.Error("the runner's contextual stop was never used; StopByAgent fell back to the unbounded Stop")
+	}
+}
+
+// blockingContextualRunner stands in for a plugin that never answers StopRun.
+// It implements ContextualStopper, so the dispatcher must route through
+// StopWithContext and the caller's deadline must end the call.
+type blockingContextualRunner struct {
+	mu         sync.Mutex
+	contextual bool
+}
+
+func (r *blockingContextualRunner) StopWithContext(ctx context.Context, _ string) error {
+	r.mu.Lock()
+	r.contextual = true
+	r.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *blockingContextualRunner) sawContext() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.contextual
+}
+
+func (r *blockingContextualRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+	return sid, nil
+}
+
+// Stop is the unbounded legacy path. Reaching it is the failure this test
+// detects, so make that unmistakable rather than merely slow.
+func (r *blockingContextualRunner) Stop(_ string) error      { select {} }
+func (r *blockingContextualRunner) IsRunning(_ string) bool  { return false }
+func (r *blockingContextualRunner) ExitError(_ string) error { return nil }
+func (r *blockingContextualRunner) Subscribe(_ context.Context, _ string) (<-chan OutputLine, error) {
+	return nil, nil
+}
+func (r *blockingContextualRunner) History(_ string) []OutputLine { return nil }
 
 // stopRecordingRunner is a minimal AgentRunner that records the sessionID
 // passed to Stop. Other methods are no-ops.

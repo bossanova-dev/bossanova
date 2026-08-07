@@ -990,7 +990,7 @@ func (m RepoAddModel) View() tea.View {
 
 	if m.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				actionBarWidth(m.width, []string{"[esc] back"}),
 		)
 	}

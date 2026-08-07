@@ -321,9 +321,140 @@ func TestIsDuplicateActiveSessionError(t *testing.T) {
 	}
 }
 
+// TestLockStartPath is the BOS-717 successor to the original process-global
+// LockStartPath test: the lock is now per-repo and acquired through the
+// context-aware AcquireStartPath, but the base property is unchanged — a second
+// acquire after a release must not deadlock.
 func TestLockStartPath(t *testing.T) {
-	unlock := LockStartPath()
-	unlock()
-	// A second acquire must not deadlock after the first release.
-	LockStartPath()()
+	release, _, err := AcquireStartPath(context.Background(), "repo-1")
+	if err != nil {
+		t.Fatalf("AcquireStartPath: %v", err)
+	}
+	release()
+
+	release, _, err = AcquireStartPath(context.Background(), "repo-1")
+	if err != nil {
+		t.Fatalf("second AcquireStartPath: %v", err)
+	}
+	release()
+}
+
+// TestAcquireStartPathIsPerRepo is the unit-level statement of AC 1: a repo
+// whose start lock is held must not block a create for a DIFFERENT repo. Before
+// BOS-717 the lock was a single process-global mutex, so this could not hold.
+func TestAcquireStartPathIsPerRepo(t *testing.T) {
+	releaseA, _, err := AcquireStartPath(context.Background(), "repo-a")
+	if err != nil {
+		t.Fatalf("acquire repo-a: %v", err)
+	}
+	defer releaseA()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	releaseB, _, err := AcquireStartPath(ctx, "repo-b")
+	if err != nil {
+		t.Fatalf("acquire repo-b while repo-a is held: %v, want nil", err)
+	}
+	releaseB()
+}
+
+// TestAcquireStartPathBoundedByContext proves contention surfaces as an error
+// rather than an untimed hang (AC 3).
+func TestAcquireStartPathBoundedByContext(t *testing.T) {
+	release, _, err := AcquireStartPath(context.Background(), "repo-contended")
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, _, err := AcquireStartPath(ctx, "repo-contended"); err == nil {
+		t.Fatal("contended AcquireStartPath error = nil, want a deadline error")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contended AcquireStartPath error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestAcquireStartPathReleaseFreesTheRepo confirms a released repo lock is
+// immediately re-acquirable — the behaviour this layer owns. The ref-counted
+// map's don't-grow-without-bound invariant is pinned where it now lives, in
+// keyedgate's own TestRegistryReapsEntriesAfterUse.
+func TestAcquireStartPathReleaseFreesTheRepo(t *testing.T) {
+	release, _, err := AcquireStartPath(context.Background(), "repo-reap")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	again, _, err := AcquireStartPath(ctx, "repo-reap")
+	if err != nil {
+		t.Fatalf("re-acquire after release: %v, want nil", err)
+	}
+	again()
+}
+
+// TestAcquireTargetStartSerializesTheSameTarget proves the target lock keeps the
+// "an overlapping create waits for the first create's outcome" contract that the
+// old process-global mutex used to provide, and that it does so per target: a
+// different branch, and a different PR, are never made to wait.
+func TestAcquireTargetStartSerializesTheSameTarget(t *testing.T) {
+	pr42, pr43 := 42, 43
+
+	release, _, err := AcquireTargetStart(context.Background(), "repo-1", "", &pr42)
+	if err != nil {
+		t.Fatalf("acquire PR 42: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, _, err := AcquireTargetStart(ctx, "repo-1", "", &pr42); err == nil {
+		t.Fatal("second acquire for the same PR succeeded; want it to wait")
+	}
+
+	otherCtx, otherCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer otherCancel()
+	releaseOther, _, err := AcquireTargetStart(otherCtx, "repo-1", "", &pr43)
+	if err != nil {
+		t.Fatalf("acquire PR 43 while PR 42 is held: %v, want nil", err)
+	}
+	releaseOther()
+
+	releaseBranch, _, err := AcquireTargetStart(otherCtx, "repo-1", "some-branch", nil)
+	if err != nil {
+		t.Fatalf("acquire branch target while PR 42 is held: %v, want nil", err)
+	}
+	releaseBranch()
+
+	release()
+}
+
+// TestTargetStartKeyPrefersPRNumber pins the key derivation: the PR number is
+// the target identity whenever there is one, and the branch is only the key for
+// a PR-less create.
+//
+// The order matters because the two entry points derive the branch differently.
+// StreamCreateSession resolves it from a GitHub GetPRStatus call and leaves it
+// EMPTY when that call fails, while the task orchestrator takes it from the
+// emitted task — so a branch-first key made two creates for the same PR take
+// different gates exactly when GitHub was flaky. The PR number is verbatim data
+// on both sides, so it cannot diverge that way.
+func TestTargetStartKeyPrefersPRNumber(t *testing.T) {
+	pr := 7
+	if got := targetStartKey("", "b", &pr); got != "" {
+		t.Fatalf("empty repo key = %q, want \"\"", got)
+	}
+	if got := targetStartKey("r", "", nil); got != "" {
+		t.Fatalf("no branch and no PR key = %q, want \"\"", got)
+	}
+	// The regression this ordering fixes: a create that resolved the head branch
+	// and one that did not must still claim the SAME target.
+	if resolved, unresolved := targetStartKey("r", "b", &pr), targetStartKey("r", "", &pr); resolved != unresolved {
+		t.Fatalf("PR key depends on whether the head branch resolved: %q vs %q", resolved, unresolved)
+	}
+	if branchOnly := targetStartKey("r", "b", nil); branchOnly == targetStartKey("r", "b", &pr) {
+		t.Fatalf("branch-only and PR keys collide: %q", branchOnly)
+	}
 }

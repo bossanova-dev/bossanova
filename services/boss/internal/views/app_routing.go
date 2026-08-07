@@ -29,7 +29,7 @@ import (
 // above as already holding everywhere.
 func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 	a.activeView = msg.view
-	switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
+	switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+g, not switchViewMsg
 	case ViewNewSession:
 		cmd := a.enterNewSession()
 		return a, cmd
@@ -54,6 +54,7 @@ func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 		return a, a.sessionSettings.Init()
 	case ViewTrash:
 		a.trash = NewTrashModel(a.client, a.ctx)
+		a.trash.SetTelemetry(a.telemetry)
 		a.trash.returnView = msg.returnView
 		a.trash.width = a.width
 		a.trash.height = a.height
@@ -78,29 +79,34 @@ func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 		return a, a.home.Init()
 	case ViewCron:
 		a.cronList = NewCronListModel(a.client, a.ctx)
+		a.cronList.SetTelemetry(a.telemetry)
 		a.cronList.returnView = msg.returnView
 		a.cronList.width = a.width
 		a.cronList.height = a.height
 		return a, a.cronList.Init()
 	case ViewCronForm:
 		a.cronForm = NewCronFormModel(a.client, a.ctx)
+		a.cronForm.SetTelemetry(a.telemetry)
 		a.cronForm.width = a.width
 		a.cronForm.height = a.height
 		return a, a.cronForm.Init()
 	case ViewAccounts:
 		a.accountsList = NewAccountsListModel(a.client, a.ctx)
+		a.accountsList.SetTelemetry(a.telemetry)
 		a.accountsList.returnView = msg.returnView
 		a.accountsList.width = a.width
 		a.accountsList.height = a.height
 		return a, a.accountsList.Init()
 	case ViewAccountEdit:
 		a.accountEdit = NewAccountEditModel(a.client, a.ctx, msg.account)
+		a.accountEdit.SetTelemetry(a.telemetry)
 		a.accountEdit.returnView = msg.returnView
 		a.accountEdit.width = a.width
 		a.accountEdit.height = a.height
 		return a, a.accountEdit.Init()
 	case ViewAccountRegister:
 		a.accountRegister = NewAccountRegisterModel(a.client, a.ctx)
+		a.accountRegister.SetTelemetry(a.telemetry)
 		a.accountRegister.returnView = msg.returnView
 		a.accountRegister.width = a.width
 		a.accountRegister.height = a.height

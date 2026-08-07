@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "remotehost",
+    srcs = [
+        "remotehost.go",
+        "tunnel.go",
+        "upload.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/remotehost",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/safego",
+        "//lib/bossalib/socketauth",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "remotehost_test",
+    srcs = [
+        "remotehost_test.go",
+        "tunnel_loopback_test.go",
+        "tunnel_test.go",
+        "upload_test.go",
+    ],
+    embed = [":remotehost"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/socketauth",
+        "//services/boss/internal/client",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

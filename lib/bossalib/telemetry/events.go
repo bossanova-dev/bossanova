@@ -39,6 +39,7 @@ const (
 	EventSessionFinalized          Event = "session_finalized"
 	EventFeatureViewed             Event = "feature_viewed"
 	EventFeatureInteraction        Event = "feature_interaction"
+	EventTUIAction                 Event = "tui_action"
 )
 
 // FunnelDistinctID is the canonical signup/subscription funnel distinct id:
@@ -142,6 +143,7 @@ var Registry = map[Event]EventSpec{
 	EventSessionFinalized:          {Surface: "daemon", Description: "A session finalize reached an outcome", Properties: propertySet("outcome", "agent", "unattended")},
 	EventFeatureViewed:             {Surface: "web", Description: "A product surface was viewed", Properties: propertySet("feature")},
 	EventFeatureInteraction:        {Surface: "web", Description: "A client-only product interaction occurred", Properties: propertySet("feature", "action")},
+	EventTUIAction:                 {Surface: "tui", Description: "A TUI feature action reached an outcome", Properties: propertySet("feature", "action", "status")},
 }
 
 func propertySet(properties ...string) map[string]struct{} {

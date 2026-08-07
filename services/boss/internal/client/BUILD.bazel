@@ -10,6 +10,8 @@ go_library(
         "netns_other.go",
         "remote.go",
         "report.go",
+        "rpcdeadline.go",
+        "rpcdeadline_prod.go",
         "session_read_options.go",
     ],
     importpath = "github.com/recurser/boss/internal/client",
@@ -31,12 +33,14 @@ go_test(
     srcs = [
         "agent_test.go",
         "local_auth_test.go",
+        "local_deadline_test.go",
         "local_path_test.go",
         "local_test.go",
         "local_wrappers_test.go",
         "notes_test.go",
         "remote_broadcast_test.go",
         "remote_test.go",
+        "rpcdeadline_prod_test.go",
     ],
     embed = [":client"],
     deps = [

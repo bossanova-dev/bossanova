@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "title": "BOS-713 — a dropped --host ssh tunnel shows a named reconnecting screen that keeps [q]uit available and recovers to the session board unaided",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_HOST_E2E_RECONNECT": "user@build-box" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "The tunnel drop names the ssh destination it is redialling and keeps the user's escape hatch on screen",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Reconnecting to user@build-box",
+            "match": "normalized",
+            "label": "the wait screen names the exact ssh destination boss is redialling, so a user driving several hosts knows which one dropped"
+          },
+          "timeoutMs": 15000,
+          "caption": "The forwarded socket stopped answering; boss shows the reconnecting screen instead of exiting with a dial error."
+        },
+        {
+          "expect": [
+            {
+              "text": "Boss keeps redialling and resumes automatically",
+              "match": "normalized",
+              "label": "the screen promises unaided recovery — the user is told to wait, not to restart boss"
+            },
+            {
+              "text": "will reconnect automatically",
+              "match": "normalized",
+              "label": "the polling footer confirms the screen is actively probing, not frozen"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "the retained action bar keeps a way out, so an indefinite wait never strands the user"
+            },
+            {
+              "text": "ssh user@build-box boss daemon status",
+              "match": "normalized",
+              "label": "the escalation path is a copy-able command against the same destination, for a tunnel that does not come back"
+            }
+          ],
+          "caption": "Destination, the automatic-retry promise, the escape hatch, and the manual check are all on one frame."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "When the tunnel answers again the TUI proceeds to the remote daemon's session board with no keystroke",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "STATUS",
+            "match": "normalized",
+            "label": "the session board replaces the wait screen on its own — recovery needs no input from the user"
+          },
+          "timeoutMs": 15000,
+          "caption": "The redial succeeded; boss resumes startup against the recovered tunnel rather than making the user relaunch."
+        },
+        {
+          "waitMs": 2000,
+          "caption": "The wait screen releases the alt-screen and Home completes its first session refresh against the recovered client."
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "a real session row from the daemon renders, so the recovered client is genuinely serving data"
+            },
+            {
+              "text": "Fix login bug",
+              "match": "normalized",
+              "label": "a second seeded row confirms the whole board came back, not a single lucky cell"
+            }
+          ],
+          "caption": "The board is fully populated: the reconnecting screen handed over to a working client."
+        }
+      ]
+    }
+  ]
+}

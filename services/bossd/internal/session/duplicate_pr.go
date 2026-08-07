@@ -5,19 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossd/internal/db"
 )
 
-var startPathMu sync.Mutex
-
-// LockStartPath serializes daemon-local session starts across entry points.
-func LockStartPath() func() {
-	startPathMu.Lock()
-	return startPathMu.Unlock
-}
+// The per-repo start-path lock this file's dedup checks run under lives in
+// start_lock.go (AcquireStartPath).
 
 // DuplicateActivePRSessionError reports an existing non-archived,
 // non-terminal session for the same repo and PR.

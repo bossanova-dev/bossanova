@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -49,6 +50,129 @@ func TestGetInfo(t *testing.T) {
 	}
 	if len(model.AllowedValues) != 0 {
 		t.Errorf("model.AllowedValues = %v, want empty (string-typed setting)", model.AllowedValues)
+	}
+}
+
+func TestBuildInteractiveCommand(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name        string
+		server      *Server
+		req         *bossanovav1.BuildInteractiveCommandRequest
+		wantArgv    []string
+		wantSupport bossanovav1.AppendSystemPromptSupport
+	}{
+		{
+			name:   "fresh launch carries context and prompt",
+			server: newServer(nil, zerolog.Nop(), WithCLIVersion("1.18.4")),
+			req: &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId:          "ses_fresh",
+				AppendSystemPrompt: "boss context",
+				InitialPrompt:      "implement the plan",
+				Model:              "openai/gpt-5.5",
+			},
+			wantArgv:    []string{"opencode", "--auto", "--model", "openai/gpt-5.5", "--prompt", "boss context\n\nimplement the plan"},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV,
+		},
+		{
+			name:   "command launch keeps slash command before context",
+			server: newServer(nil, zerolog.Nop(), WithCLIVersion("1.18.4")),
+			req: &bossanovav1.BuildInteractiveCommandRequest{
+				AppendSystemPrompt: "boss context",
+				InitialCommand:     "boss-repair watch",
+			},
+			wantArgv:    []string{"opencode", "--auto", "--prompt", "/boss-repair watch\n\nboss context"},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV,
+		},
+		{
+			name:   "resume uses provider session and legacy permission flag",
+			server: newServer(nil, zerolog.Nop(), WithCLIVersion("1.17.11")),
+			req: &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId:      "ses_resume",
+				Resume:         true,
+				InitialCommand: "boss-repair watch",
+			},
+			wantArgv:    []string{"opencode", "--session", "ses_resume", "--dangerously-skip-permissions", "--prompt", "/boss-repair watch"},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		},
+		{
+			name:   "wake-only launch does not submit context",
+			server: newServer(nil, zerolog.Nop(), WithCLIVersion("1.18.4")),
+			req: &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId:          "ses_resume",
+				Resume:             true,
+				AppendSystemPrompt: "boss context",
+			},
+			wantArgv:    []string{"opencode", "--session", "ses_resume", "--auto"},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		},
+		{
+			name:        "unparseable version keeps argv non-empty",
+			server:      newServer(nil, zerolog.Nop(), WithCLIVersion("unknown")),
+			req:         &bossanovav1.BuildInteractiveCommandRequest{},
+			wantArgv:    []string{"opencode", "--dangerously-skip-permissions"},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		},
+		{
+			name:   "empty request model uses plugin default",
+			server: newServer(nil, zerolog.Nop(), WithCLIVersion("1.18.4"), WithModel("anthropic/claude-sonnet")),
+			req:    &bossanovav1.BuildInteractiveCommandRequest{},
+			wantArgv: []string{
+				"opencode", "--auto", "--model", "anthropic/claude-sonnet",
+			},
+			wantSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := tt.server.BuildInteractiveCommand(ctx, tt.req)
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if !slices.Equal(resp.Argv, tt.wantArgv) {
+				t.Errorf("Argv = %q, want %q", resp.Argv, tt.wantArgv)
+			}
+			if len(resp.Argv) == 0 {
+				t.Error("Argv must never be empty")
+			}
+			if resp.ReadyMarker != "┃" {
+				t.Errorf("ReadyMarker = %q, want %q", resp.ReadyMarker, "┃")
+			}
+			if resp.CommandPrefix != "/" {
+				t.Errorf("CommandPrefix = %q, want /", resp.CommandPrefix)
+			}
+			if resp.ConsumesInitialInput != (tt.req.GetInitialPrompt() != "" || tt.req.GetInitialCommand() != "") {
+				t.Errorf("ConsumesInitialInput = %v", resp.ConsumesInitialInput)
+			}
+			if resp.AppendSystemPromptSupport != tt.wantSupport {
+				t.Errorf("AppendSystemPromptSupport = %v, want %v", resp.AppendSystemPromptSupport, tt.wantSupport)
+			}
+			assertAppendSystemPromptDeclarationMatchesArgv(t, tt.req, resp)
+		})
+	}
+}
+
+// assertAppendSystemPromptDeclarationMatchesArgv pins the contract bossd relies
+// on: IN_ARGV is true exactly when the returned --prompt argument contains the
+// boss context. Checking only a table's expected enum would let argv and the
+// declaration drift together without catching a dropped session context.
+func assertAppendSystemPromptDeclarationMatchesArgv(t *testing.T, req *bossanovav1.BuildInteractiveCommandRequest, resp *bossanovav1.BuildInteractiveCommandResponse) {
+	t.Helper()
+	context := req.GetAppendSystemPrompt()
+	carriesContext := false
+	if context != "" {
+		for i, arg := range resp.GetArgv() {
+			if arg == "--prompt" && i+1 < len(resp.GetArgv()) && strings.Contains(resp.GetArgv()[i+1], context) {
+				carriesContext = true
+				break
+			}
+		}
+	}
+	claimed := resp.GetAppendSystemPromptSupport() == bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
+	if carriesContext != claimed {
+		t.Fatalf("append_system_prompt_support %v disagrees with argv %v (context carried = %v)",
+			resp.GetAppendSystemPromptSupport(), resp.GetArgv(), carriesContext)
 	}
 }
 

@@ -58,8 +58,26 @@ type AgentRunner interface {
 type AgentDispatcher interface {
 	AgentRunner
 	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error)
-	StopByAgent(agentName, agentSessionID string) error
+	StopByAgent(ctx context.Context, agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
+}
+
+// ContextualStopper is implemented by runners whose stop can be BOUNDED by the
+// caller's context. AgentRunner.Stop cannot: it takes no context, and
+// PluginRunner.Stop therefore issued its StopRun RPC on context.Background().
+//
+// That was survivable while every stop came from a caller with nothing waiting
+// on it. It stopped being survivable once a failed bootstrap had to stop the run
+// it had just spawned: an unresponsive plugin would block StartSession forever,
+// holding the per-target lock, so the half-started row and its worktree were
+// never cleaned up — the exact daemon-wedge shape BOS-717 exists to remove,
+// reintroduced by the cleanup meant to prevent an orphan.
+//
+// Kept separate from AgentRunner rather than widening Stop, matching how
+// HeadlessCapabilityProfileRunner and friends are layered here: every legacy
+// Stop call stays byte-for-byte unchanged.
+type ContextualStopper interface {
+	StopWithContext(ctx context.Context, agentSessionID string) error
 }
 
 // HeadlessCapabilityProfileRunner is implemented only by runners that can

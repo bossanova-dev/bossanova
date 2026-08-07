@@ -208,6 +208,19 @@ type Lifecycle struct {
 	// cron runs check whether their tmux session has exited.
 	tmuxCompletionPollInterval time.Duration
 
+	// startedAt is when this Lifecycle (and so, in production, this daemon
+	// process) was constructed. The startup stranded-bootstrap reaper uses it to
+	// reclaim only rows that predate the process, which is what makes that pass
+	// unable to race a create the running daemon started (BOS-717/BOS-426).
+	startedAt time.Time
+
+	// bootstrapTimeout overrides BootstrapTimeout, the overall deadline
+	// StartSession runs its worktree/agent bootstrap under (BOS-717). Zero means
+	// "use the constant"; tests shorten it so the deadline path is exercisable in
+	// milliseconds. The stranded-bootstrap reaper derives its age threshold from
+	// the same value (bootstrapReapThreshold) so the two cannot drift.
+	bootstrapTimeout time.Duration
+
 	// settingUpTracker drives the transient "initializing" display status
 	// while a setup script runs. nil in tests that don't exercise it; all
 	// uses are nil-guarded.
@@ -1141,6 +1154,7 @@ func NewLifecycle(
 		provider:                   provider,
 		logger:                     logger,
 		newTmuxChatAgentSessionID:  uuid.NewString,
+		startedAt:                  time.Now(),
 		tmuxCompletionPollInterval: 2 * time.Second,
 		headlessStatusPollInterval: 2 * time.Second,
 		// Default to a hermetic no-op resolver so unit tests never open the real
@@ -1219,6 +1233,302 @@ type StartSessionOpts struct {
 	ZeroOutput bool
 }
 
+// BootstrapTimeout is the overall deadline for a session bootstrap — everything
+// StartSession does between the session row existing and the agent running:
+// fetch, branch probe, worktree add, setup script, agent start, hook config.
+//
+// It is deliberately double gitpkg.SetupScriptTimeout (5 minutes), the largest
+// single step inside it, leaving five further minutes for steps that each take
+// seconds in normal operation. The value is not meant to be tight: a bootstrap
+// still running after ten minutes is not slow, it is stuck. What matters is that
+// the bootstrap has *a* bound at all — before BOS-717 it had none, so one that
+// blocked inside Create() ran forever, held the process-global start lock, and
+// wedged every subsequent CreateSession in the daemon.
+//
+// It is also what bounds how long a create for the same target can be made to
+// wait (TargetStartLockTimeout), and what makes reaping a pre-agent row safe
+// (bootstrapReapThreshold): past this deadline a live create path would already
+// have failed itself.
+//
+// DERIVED from gitpkg.SetupScriptTimeout rather than restating the ten minutes,
+// so "double the largest single step" stays true if that step's budget ever
+// moves — the same reason TargetStartLockTimeout and bootstrapReapThreshold are
+// computed from this constant rather than written out.
+const BootstrapTimeout = 2 * gitpkg.SetupScriptTimeout
+
+// SetBootstrapTimeout overrides BootstrapTimeout for this lifecycle. Zero
+// restores the constant. Tests use it to exercise the deadline path in
+// milliseconds; production leaves it unset.
+func (l *Lifecycle) SetBootstrapTimeout(d time.Duration) { l.bootstrapTimeout = d }
+
+// bootstrapDeadline is the effective bootstrap budget: the override when set,
+// otherwise BootstrapTimeout.
+func (l *Lifecycle) bootstrapDeadline() time.Duration {
+	if l.bootstrapTimeout > 0 {
+		return l.bootstrapTimeout
+	}
+	return BootstrapTimeout
+}
+
+// recordCreatedWorktree returns the gitpkg.CreateOpts.OnWorktreeReady hook that
+// persists what a fresh-branch create just made, as soon as `git worktree add`
+// has landed and BEFORE the setup script runs (BOS-717).
+//
+// Two things go wrong without it, both on the shape the 2026-08-06 incident took
+// (a plain `boss new` / TUI new session, killed while the setup script hung):
+//
+//   - The row has no branch to clean up. A title-only create's branch is derived
+//     inside Create (sanitized title, plus a uniquifying suffix), so branch_name
+//     stays empty until StartSession returns. Neither StreamCreateSession's
+//     failure cleanup nor the stranded-bootstrap reaper could name the worktree
+//     and branch left on disk — both key on branch_name.
+//   - The row has no PROOF the branch is ours to delete. branch_name alone is not
+//     that proof: it is written at insert time from the request, before Create
+//     has checked whether such a branch already exists. worktree_path is, because
+//     it is only ever written after the add succeeded — which is exactly the
+//     rule cleanupFailedCreateSession applies.
+//
+// Wired on every StartSession arm that *creates* a branch rather than checking
+// one out: the fresh-branch arm chosen by `existingBranch == ""`, and the
+// fallback Create the PR/existing-branch arm runs when its checkout fails. Both
+// go through gitpkg.Create, whose `worktree add -b` either makes the branch or
+// fails with ErrBranchExists, so the hook only ever fires for a branch this
+// attempt made — which is what makes it ownership proof rather than a name.
+//
+// CreateFromExistingBranch itself is never handed the hook: it keeps the head
+// branch it was given, so a dependabot head branch can never be made to look
+// like something this attempt created. Leaving the fallback unhooked was not
+// part of that protection but a gap in it — the fallback's branch *is* ours,
+// and without the recording a failed bootstrap purges the worktree, refuses to
+// reap the branch for want of proof, deletes the row, and strands the branch
+// where the next retry collides with it (ErrBranchExists).
+//
+// The write runs on a detached, short-deadline context: the caller's bootstrap
+// context may be a moment from expiring, and recording what to clean up must not
+// be the thing that expires with it.
+func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context, string, string) {
+	return func(ctx context.Context, branch, worktreePath string) {
+		if branch == "" || worktreePath == "" {
+			return
+		}
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
+		defer cancel()
+		if _, err := l.sessions.Update(writeCtx, sessionID, db.UpdateSessionParams{
+			BranchName:   &branch,
+			WorktreePath: &worktreePath,
+		}); err != nil {
+			// Non-fatal: the bootstrap continues and StartSession's own update
+			// records both on the success path. What is lost is only the early
+			// cleanup handle, so say so rather than failing the create.
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("branch", branch).
+				Msg("could not record the created worktree early; a failed bootstrap may leave it orphaned")
+		}
+	}
+}
+
+// worktreeRecordTimeout bounds recordCreatedWorktree's single local DB write.
+const worktreeRecordTimeout = 10 * time.Second
+
+// spawnedRunStopTimeout bounds the stop of a run abandoned by a failed
+// bootstrap. Generous relative to the work (a signal and a tmux kill) because
+// the alternative to waiting is the orphan this exists to prevent.
+const spawnedRunStopTimeout = 30 * time.Second
+
+// stopRunAbandonedByFailedBootstrap stops an agent run this bootstrap already
+// spawned, when a LATER step of the same bootstrap failed (BOS-717).
+//
+// The bootstrap deadline makes this reachable rather than theoretical. Once
+// StartSession has spawned an agent, several writes still follow — the
+// AgentSessionID update, the agent_chats insert, the AgentStarted transition,
+// the ImplementingPlan write — and the deadline can expire across any of them.
+// A spawn that succeeded a moment before the deadline therefore returns an error
+// from a run that is already alive.
+//
+// Both create callers treat that error as a failed bootstrap: they purge the
+// worktree and delete the row. The spawned process does NOT go with it. The
+// claude and codex plugins deliberately detach it from the RPC context so a run
+// survives its create call, so nothing cancels it — leaving a coding agent
+// running against a worktree that is being deleted underneath it, with no row
+// left to find it by.
+//
+// The stop runs on a context DETACHED from the caller's, for the obvious reason:
+// the context that just expired is the one that made this necessary.
+//
+// stopCtx has to reach the plugin RPC, not merely exist. This runs from a defer
+// on StartSession's exit, so a stop that blocks blocks StartSession — which
+// holds the per-target lock across its whole failure cleanup. An unresponsive
+// plugin would therefore wedge the create path for that target indefinitely and
+// leave the half-started row and worktree uncleaned: the daemon-wedge shape this
+// ticket exists to remove, reintroduced by the cleanup meant to prevent an
+// orphan. AgentRunner.Stop takes no context and PluginRunner issued StopRun on
+// context.Background(), so the bound is carried by ContextualStopper, which
+// Dispatcher.StopByAgent prefers for every production runner.
+//
+// The stop is attempted rather than gated on IsRunningByAgent, unlike
+// StopSession. A runner that under-reports a just-spawned detached process would
+// turn that guard into the leak this function exists to close, and the cost of
+// being wrong the other way is one error log for a run that had already exited.
+func (l *Lifecycle) stopRunAbandonedByFailedBootstrap(ctx context.Context, sessionID, agentName, runID string, tmuxHosted bool) {
+	if runID == "" || l.agentRunner == nil {
+		return
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), spawnedRunStopTimeout)
+	defer cancel()
+
+	l.logger.Warn().
+		Str("session", sessionID).
+		Str("claudeSession", runID).
+		Msg("bootstrap failed after the agent started; stopping the spawned run so it cannot outlive the session")
+
+	if err := l.agentRunner.StopByAgent(stopCtx, agentName, runID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("claudeSession", runID).
+			Msg("could not stop the run abandoned by a failed bootstrap; it may still be running against a deleted worktree")
+	}
+
+	// A tmux-hosted run is owned by the tmux server, not by this process, so
+	// stopping the agent does not take its pane with it (StopSession kills the
+	// two separately for the same reason).
+	if tmuxHosted && l.tmux != nil && l.agentChats != nil {
+		l.killAllChatTmuxSessions(stopCtx, sessionID)
+	}
+}
+
+// CleanUpFailedBootstrapArtifacts reclaims the worktree and branch a failed
+// bootstrap left on disk, for a caller that is about to discard the session row
+// (BOS-717).
+//
+// StreamCreateSession has always done this; the task-orchestrator create path
+// (cron, dependabot, /boss-epic) never did — it deleted the row and left
+// whatever was on disk. That was survivable while a wedged bootstrap simply
+// hung: it never reached the failure path at all. The bootstrap deadline makes
+// it routine, so AC 2's "cleans up its worktree and branch" now has to hold on
+// this path too.
+//
+// The ownership rule it applies lives in CleanUpBootstrapArtifacts, which the
+// server's own failed-create cleanup calls too — one copy of a policy that must
+// not diverge between the two entry points onto session creation.
+//
+// Best-effort throughout: a failure to clean up is logged, never returned. The
+// caller's job is to report why the bootstrap failed, not why the mop-up did.
+func (l *Lifecycle) CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string) {
+	// A background draft-PR step may still be pushing this branch (BOS-540);
+	// stop it before deleting the branch out from under it. Ahead of the
+	// wiring guard below, because cancelling an in-flight push is worth doing
+	// even on a lifecycle with no worktree manager to clean up with.
+	l.StopBackgroundDraftPR(ctx, sessionID)
+	CleanUpBootstrapArtifacts(ctx, l.logger, l.sessions, l.repos, l.worktrees, sessionID)
+}
+
+// CleanUpBootstrapArtifacts reclaims the worktree and branch a failed bootstrap
+// left on disk. It is the ONE implementation of that policy: the daemon has two
+// entry points onto session creation (the interactive StreamCreateSession and
+// the task orchestrator), both must mop up identically, and the rule below is
+// subtle enough that two copies would drift into one of them force-deleting a
+// user's branch.
+//
+// The branch is deleted ONLY when the row carries a worktree path, which is
+// written only after `git worktree add` succeeded. branch_name alone proves
+// nothing — it comes from the request, before Create ever checked whether such a
+// branch already existed, so reaping on it would `git branch -D` a pre-existing
+// branch (a Linear suggested branch, a dependabot PR head) and its unpushed
+// commits when a create failed early. The worktree DIRECTORY is removed either
+// way, so a stale directory cannot wedge the next attempt.
+//
+// Purge before reaping, never the other way round: `git branch -D` refuses a
+// branch still checked out in a registered worktree, and ReapLocalBranches'
+// `worktree prune` does not help, because prune only unregisters worktrees whose
+// directory is already gone — exactly not the case here.
+//
+// Which is also why a purge that did not RUN suppresses the reap rather than
+// letting it proceed. A purge skipped for a contended clone leaves the worktree
+// registered, so the reap that follows is refused — and reaping anyway buys
+// nothing but a generic delete failure in the log. Half-applying the ordering is
+// worse than not applying it.
+//
+// Neither half is deferred, and the log says so rather than promising a retry.
+// Both callers delete the session row immediately after this returns, so nothing
+// names the branch or the worktree afterwards.
+//
+// It is tempting to believe the next create for this repo and branch re-clears
+// the directory. It does not, on the path that matters: a suppressed reap leaves
+// the BRANCH alive, so gitpkg.Manager.Create's uniquifier settles the next
+// same-titled create on `<branch>-2` and derives its worktree path from THAT —
+// clearStaleWorktree then clears the -2 path and never touches this one. (An
+// explicit branch name gets ErrBranchExists before a path is computed at all.)
+// Only a Force create or CreateFromExistingBranch, neither of which uniquifies,
+// returns to this exact path. So both halves are abandoned here, and reclaiming
+// them is a manual act — which is why this is logged at Error and names them.
+//
+// It does NOT stop a background draft-PR step; that is the caller's to do
+// (l.StopBackgroundDraftPR / s.lifecycle), and doing it twice is pointless.
+// Best-effort: every failure is logged, none is returned.
+func CleanUpBootstrapArtifacts(
+	ctx context.Context,
+	logger zerolog.Logger,
+	sessions db.SessionStore,
+	repos db.RepoStore,
+	worktrees gitpkg.WorktreeManager,
+	sessionID string,
+) {
+	if worktrees == nil || repos == nil || sessions == nil {
+		return
+	}
+
+	sess, err := sessions.Get(ctx, sessionID)
+	if err != nil {
+		// Distinct from the nothing-to-clean-up cases below: a store read that
+		// FAILED leaves artifacts on disk that nobody will come back for, and
+		// swallowing it into the same bare return is how that goes unnoticed.
+		logger.Warn().Err(err).Str("session", sessionID).
+			Msg("failed-bootstrap cleanup: get session failed; any worktree or branch it left is orphaned")
+		return
+	}
+	if sess == nil || sess.RepoID == "" || sess.BranchName == "" {
+		return
+	}
+	repo, err := repos.Get(ctx, sess.RepoID)
+	if err != nil || repo == nil {
+		logger.Warn().Err(err).Str("session", sessionID).
+			Msg("failed-bootstrap cleanup: get repo failed")
+		return
+	}
+	if err := worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.BranchName); err != nil {
+		// The purge did not run, so the worktree is still registered and
+		// `git branch -D` would refuse the branch. Skip both halves, and say
+		// they are abandoned rather than deferred (see the ordering note above).
+		//
+		// What is named depends on what this cleanup was entitled to touch. With
+		// no recorded worktree path the branch was never ours to reap — it is a
+		// name from the request, possibly a pre-existing branch carrying unpushed
+		// work, which the ownership rule above deliberately protects. Naming it
+		// as abandoned would invite an operator to delete exactly that.
+		event := logger.Error().Err(err).
+			Str("session", sessionID).
+			Str("repo", repo.LocalPath)
+		if sess.WorktreePath != "" {
+			event.Str("branch", sess.BranchName).
+				Str("worktree", sess.WorktreePath).
+				Msg("failed-bootstrap cleanup: worktree purge did not run; abandoning this session's worktree and branch — the row is about to be deleted, so nothing names them again")
+		} else {
+			event.Str("worktree_branch", sess.BranchName).
+				Msg("failed-bootstrap cleanup: worktree purge did not run; abandoning this session's worktree directory — the row is about to be deleted. The branch is left alone: this create never recorded a worktree, so it never owned it")
+		}
+		return
+	}
+	if sess.WorktreePath != "" {
+		if err := worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); err != nil {
+			// Logged rather than discarded: a silently refused delete is how an
+			// orphaned branch goes unnoticed.
+			logger.Warn().Err(err).Str("session", sessionID).Str("branch", sess.BranchName).
+				Msg("failed-bootstrap cleanup: delete branch failed")
+		}
+	}
+}
+
 // StartSession creates a worktree, starts a Claude process, and fires
 // state machine events. It updates the session record with the worktree
 // path, branch name, and Claude session ID.
@@ -1226,7 +1536,16 @@ type StartSessionOpts struct {
 // See StartSessionOpts for how to customize behavior. The zero-value opts
 // preserve historical defaults: a fresh branch, setup script enabled,
 // and an immediate draft PR for sessions without one.
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts StartSessionOpts) error {
+//
+// The whole bootstrap runs under a bootstrapDeadline context (BOS-717). Work
+// that must outlive the call already detaches from this context explicitly:
+// the background draft-PR step runs on context.WithoutCancel, the hookless tmux
+// completion poller on the daemon context, and the headless status watcher on
+// none at all.
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts StartSessionOpts) (retErr error) {
+	ctx, cancel := context.WithTimeout(ctx, l.bootstrapDeadline())
+	defer cancel()
+
 	existingBranch := opts.ExistingBranch
 	forceBranch := opts.ForceBranch
 	skipSetupScript := opts.SkipSetupScript
@@ -1363,6 +1682,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				SetupScript:       setupScript,
 				SetupScriptOutput: setupOutput,
 				Force:             forceBranch,
+				OnWorktreeReady:   l.recordCreatedWorktree(sessionID),
 			})
 		}
 	} else {
@@ -1376,6 +1696,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			SetupScript:       setupScript,
 			SetupScriptOutput: setupOutput,
 			Force:             forceBranch,
+			OnWorktreeReady:   l.recordCreatedWorktree(sessionID),
 		})
 	}
 	if err != nil {
@@ -1435,7 +1756,10 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// Validate after setup against the environment this launch will inherit. A
 	// target branch or setup script may create or replace .env (including
 	// CODEX_HOME / HOME), so the registered checkout is not authoritative.
-	// Roll the unrecorded worktree back if preflight fails.
+	// Roll the worktree back if preflight fails. Since BOS-717 a fresh-branch
+	// create has already recorded it (recordCreatedWorktree), so the caller's
+	// failure cleanup would reach it too — this rollback still runs first and
+	// keeps the error message specific about what it undid.
 	if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
 		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
 		if !ok {
@@ -1631,6 +1955,23 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			questionHookRelease = &questionHookHandedOff
 		}
 	}
+	// An agent is now running for this session, and everything below can still
+	// fail — most of it on the bootstrap deadline this function runs under. Both
+	// create callers answer a StartSession error by purging the worktree and
+	// deleting the row, neither of which stops a detached run, so bind the stop
+	// to this function's EXIT rather than adding it to each of the error returns
+	// between here and the end. See stopRunAbandonedByFailedBootstrap.
+	if claudeSessionID != "" {
+		spawnedRunID := claudeSessionID
+		spawnedTmuxHosted := tmuxHosted
+		spawnedAgentName := session.AgentName
+		defer func() {
+			if retErr != nil {
+				l.stopRunAbandonedByFailedBootstrap(ctx, sessionID, spawnedAgentName, spawnedRunID, spawnedTmuxHosted)
+			}
+		}()
+	}
+
 	if hookResp != nil && !hookResp.GetIsSupported() {
 		l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
 	}
@@ -2696,7 +3037,7 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 	// plugin, so stopping by the stale session agent would miss it.
 	stopSess := l.effectiveSpawnSession(ctx, session)
 	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(stopSess.AgentName, *session.AgentSessionID) {
-		if err := l.agentRunner.StopByAgent(stopSess.AgentName, *session.AgentSessionID); err != nil {
+		if err := l.agentRunner.StopByAgent(ctx, stopSess.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -2749,7 +3090,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	// (BOS-381) so a chat switched to another agent is still stopped.
 	stopSess := l.effectiveSpawnSession(ctx, session)
 	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(stopSess.AgentName, *session.AgentSessionID) {
-		if err := l.agentRunner.StopByAgent(stopSess.AgentName, *session.AgentSessionID); err != nil {
+		if err := l.agentRunner.StopByAgent(ctx, stopSess.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")

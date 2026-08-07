@@ -222,6 +222,18 @@ func (l *Lifecycle) strandedRunIsDead(sess *models.Session) bool {
 // legitimately leave a young-but-dead pre-agent strand that must still be
 // reaped.
 //
+// ORDERING: the daemon runs ReapStrandedBootstrapSessionsAtStartup to completion
+// BEFORE this pass, in the same goroutine (BOS-717). Both select the pre-agent
+// states and both claim a row with a conditional transition, so run concurrently
+// they do not corrupt anything but the winner is arbitrary — and the outcomes
+// differ (Blocked + artifact cleanup vs. finalized as a completed run, which for
+// a row whose worktree may never have existed can report worktree_gone/pr_failed
+// and skip the cleanup). By the time this runs, rows the reaper claimed are in
+// Blocked and therefore outside the reap set below. This pass still owns every
+// pre-agent row the reaper declines — notably one carrying a tmux pane but no
+// agent id, which the reaper defers to the sweep that understands liveness — so
+// the pre-agent states must stay in this set.
+//
 // The wrapper keeps the func(context.Context) (int, error) signature so the
 // opts.startupStrandedCronRecovery seam type is unchanged (BOS-426).
 func (l *Lifecycle) RecoverStrandedCronSessionsAtStartup(ctx context.Context) (int, error) {

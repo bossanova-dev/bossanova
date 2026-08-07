@@ -48,17 +48,18 @@ var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)
 // Tests that exercise the HookToken path inject this via lc.SetAgent.
 // The LastConfigureHookReq field lets callers verify what was passed.
 type fakeAgentForLifecycle struct {
-	LastConfigureHookReq        *bossanovav1.ConfigureFinalizeHookRequest
-	ConfigureHookReqs           []*bossanovav1.ConfigureFinalizeHookRequest
-	LastBuildInteractiveCommand *bossanovav1.BuildInteractiveCommandRequest
-	IsSupported                 bool  // controls ConfigureFinalizeHook response
-	ConfigureHookErr            error // when non-nil, ConfigureFinalizeHook returns it
-	ReadyMarker                 string
-	CommandPrefix               string
-	ConsumesInitialInput        bool
-	OnConfigureHook             func()
-	SuggestPRTitleFunc          func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
-	IgnoredDirtyFiles           []string
+	LastConfigureHookReq            *bossanovav1.ConfigureFinalizeHookRequest
+	ConfigureHookReqs               []*bossanovav1.ConfigureFinalizeHookRequest
+	LastBuildInteractiveCommand     *bossanovav1.BuildInteractiveCommandRequest
+	IsSupported                     bool  // controls ConfigureFinalizeHook response
+	ConfigureHookErr                error // when non-nil, ConfigureFinalizeHook returns it
+	ReadyMarker                     string
+	CommandPrefix                   string
+	ConsumesInitialInput            bool
+	OnConfigureHook                 func()
+	ResolveInteractiveSessionIDFunc func(*bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
+	SuggestPRTitleFunc              func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
+	IgnoredDirtyFiles               []string
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -130,7 +131,10 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 }
 
 func (f *fakeAgentForLifecycle) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
-	return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: req.GetRequestedSessionId() != "", SessionId: req.GetRequestedSessionId()}, nil
+	if f.ResolveInteractiveSessionIDFunc != nil {
+		return f.ResolveInteractiveSessionIDFunc(req)
+	}
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
 }
 
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {

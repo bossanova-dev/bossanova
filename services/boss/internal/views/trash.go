@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // --- Trash View ---
@@ -41,9 +42,10 @@ type deleteProgressMsg struct {
 
 // TrashModel displays archived sessions with restore/delete functionality.
 type TrashModel struct {
-	client  client.BossClient
-	ctx     context.Context
-	spinner spinner.Model
+	client    client.BossClient
+	ctx       context.Context
+	telemetry telemetry.Client
+	spinner   spinner.Model
 
 	sessions []*pb.Session
 	filter   listFilter
@@ -87,6 +89,11 @@ func NewTrashModel(c client.BossClient, ctx context.Context) TrashModel {
 		loading: true,
 		table:   newBossTable(nil, nil, 0),
 	}
+}
+
+// SetTelemetry installs a telemetry client for completed trash actions.
+func (m *TrashModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 func (m TrashModel) Init() tea.Cmd {
@@ -305,6 +312,8 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionRestoredMsg:
 		m.restoring = false
+		// session_resurrected is captured at the app root
+		// (App.handleSessionRestoredResult); see the note there.
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -315,6 +324,8 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionDeletedMsg:
 		m.deleting = false
+		// session_removed is captured at the app root
+		// (App.handleSessionDeletedResult); see the note there.
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -323,6 +334,8 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case deleteProgressMsg:
+		// session_removed for each batch step is captured at the app root
+		// (App.handleDeleteProgressResult), including the per-step accounting.
 		if msg.err != nil {
 			// Stop the batch on the first failure. Sessions deleted before this
 			// one stay pruned (they were removed as their progress messages
@@ -532,7 +545,7 @@ func (m TrashModel) tableHeight() int {
 func (m TrashModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
+			renderError(rpcErrorMessage(m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

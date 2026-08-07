@@ -2,6 +2,7 @@ package pty
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"math"
@@ -56,6 +57,22 @@ type PTYCommand struct {
 	// Set after Run() returns.
 	Detached      bool
 	ProcessExited bool
+
+	// pasteUpload, when non-nil, copies a pasted local image to the machine the
+	// agent runs on (see SetPasteUploader). Nil is local mode.
+	pasteUpload PasteUpload
+
+	// uploadMu guards uploadDone, which holds the safego.Go done channels of
+	// every upload goroutine launched during this attach so teardown can join
+	// them instead of leaking them.
+	uploadMu   sync.Mutex
+	uploadDone []<-chan struct{}
+
+	// enterHold withholds the user's Enter while a paste upload is in flight, so
+	// a turn cannot be submitted with the image removed and no path in its
+	// place. Zero-valued and inert until pasteClaim calls begin, so local mode
+	// never withholds a keystroke.
+	enterHold pasteEnterHold
 
 	inputReady chan struct{}
 }
@@ -156,6 +173,23 @@ func (c *PTYCommand) Run() error {
 	defer cancelR.Close() //nolint:errcheck // best-effort cleanup
 	defer cancelW.Close() //nolint:errcheck // best-effort cleanup
 
+	// Uploads triggered by a pasted image run off the keystroke path, so they
+	// need a lifetime bound to this attach.
+	uploadCtx, cancelUploads := context.WithCancel(context.Background())
+	// Registered BEFORE the stdin-reader stop defer below, so LIFO ordering
+	// runs this AFTER that reader has been joined — no new upload can be
+	// launched while we drain. Cancel first, then wait: PasteUpload runs its
+	// transport under uploadCtx, so cancelling makes an in-flight upload die on
+	// detach, which is why the drain needs no timeout.
+	defer func() {
+		cancelUploads()
+		c.awaitPasteUploads()
+	}()
+
+	// In local mode pasteClaim returns nil, newPasteScanner keeps no state, and
+	// feed below is the identity function.
+	pasteScan := newPasteScanner(c.pasteClaim(uploadCtx, proc))
+
 	inputDone := make(chan error, 1)
 	detachCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -217,12 +251,48 @@ func (c *PTYCommand) Run() error {
 						)
 					}
 
+					// Paste interception sits AFTER the query-reply strip so it
+					// sees exactly the bytes the PTY would have seen, and
+					// BEFORE the detach scan so detach keeps firing on
+					// everything still forwarded — a claimed paste is gone by
+					// then and can never be mistaken for a keypress. In local
+					// mode this is the identity function (nil claim above).
+					//
+					// Detach latency is unchanged in host mode too: a detach
+					// key arriving INSIDE an in-flight paste makes the scanner
+					// flush the buffered body verbatim and return to
+					// passthrough on that same chunk, so the key is in `data`
+					// by the time the scan below runs. Do NOT move that scan
+					// above feed to "fix" this: returning early would leave the
+					// scanner holding carry-over state for bytes it never saw,
+					// and the scan would run on a chunk the scanner may still
+					// claim — the ordering is what keeps "what the agent sees"
+					// and "what detach sees" the same bytes.
+					data = pasteScan.feed(data)
+
 					if len(data) > 0 {
 						if containsDetachSequence(data) {
+							// Detaching abandons the composer, so a submit key
+							// withheld behind an in-flight upload has nothing
+							// left to submit and must not be replayed into a
+							// process being torn down.
+							c.enterHold.discard()
 							close(detachCh)
 							return
 						}
 
+						// Withhold Enter while an upload is in flight — see
+						// pasteEnterHold. Placed AFTER the detach scan so detach
+						// latency is untouched (the scan still sees every byte
+						// the user typed), and after feed for the same reason:
+						// what the agent sees and what detach sees stay the same
+						// bytes, minus only the key being deliberately held.
+						// Inert with no upload pending, so local mode is
+						// unchanged.
+						data = c.enterHold.filter(data)
+					}
+
+					if len(data) > 0 {
 						_ = proc.WriteInput(data)
 					}
 				}

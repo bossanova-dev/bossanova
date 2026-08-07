@@ -230,11 +230,21 @@ func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.C
 	return preflight.PreflightHeadlessCapabilityProfile(ctx, model, extraEnv, profile)
 }
 
-// StopByAgent routes Stop to the named agent runner.
-func (d *Dispatcher) StopByAgent(agentName, agentSessionID string) error {
+// StopByAgent routes Stop to the named agent runner, bounded by ctx.
+//
+// A runner that can honor the deadline (ContextualStopper — PluginRunner, i.e.
+// every production agent) gets it. Anything else falls back to the unbounded
+// Stop, which is sound only because the remaining implementations are local and
+// synchronous: NoopRunner returns an error immediately, and the test fakes
+// return immediately. A future runner that talks to something remote must
+// implement ContextualStopper rather than rely on this fallback.
+func (d *Dispatcher) StopByAgent(ctx context.Context, agentName, agentSessionID string) error {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	if stopper, ok := runner.(ContextualStopper); ok {
+		return stopper.StopWithContext(ctx, agentSessionID)
 	}
 	return runner.Stop(agentSessionID)
 }

@@ -299,7 +299,7 @@ func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.
 }
 
 // StopByAgent forwards to Stop, ignoring agentName (see StartByAgent).
-func (m *MockAgentRunner) StopByAgent(_, agentSessionID string) error {
+func (m *MockAgentRunner) StopByAgent(_ context.Context, _, agentSessionID string) error {
 	return m.Stop(agentSessionID)
 }
 

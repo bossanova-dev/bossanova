@@ -3,6 +3,8 @@ title: Upgrade
 description: Keep Bossanova up to date via Homebrew, the in-app upgrade prompt, or the boss upgrade CLI.
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Upgrade
 
 Bossanova checks for new releases automatically and shows an in-app prompt when
@@ -19,17 +21,21 @@ brew upgrade bossanova-dev/tap/bossanova
 No separate `brew tap` step is required. Restart the daemon so it picks up the
 new `bossd` binary:
 
-```bash
-boss daemon restart
-```
+<CommandTabs
+cli="boss daemon restart"
+/>
 
 Then quit and relaunch `boss` so the TUI uses the new binary. If you use the
 standalone HTTP MCP server, refresh its service to use the new `boss-mcp`
 binary:
 
-```bash
-boss mcp install --force
-```
+<CommandTabs
+cli="boss mcp install --force"
+/>
+
+Upgrade commands act on the local install — the daemon service, the MCP service
+file, and the binary on disk — so none of them has an MCP tool. The **Chat** and
+**MCP** tabs say so explicitly rather than leaving the gap implicit.
 
 ## From the TUI (in-app upgrade)
 
@@ -58,21 +64,25 @@ Bossanova uses day to day — see [Installation](./install.md).)
 
 ## Via the `boss upgrade` CLI
 
-```bash
-# Check whether a newer release is available without installing
-boss upgrade --check
+Check whether a newer release is available without installing:
 
-# Install the latest release (skips the interactive confirmation)
-boss upgrade --yes
-```
+<CommandTabs
+cli="boss upgrade --check"
+/>
 
-Running `boss upgrade` without `--yes` refuses to install non-interactively.
+Install the latest release. `--yes` is required: without it the command refuses
+and exits rather than prompting.
+
+<CommandTabs
+cli="boss upgrade --yes"
+/>
+
 Useful flags:
 
 | Flag              | What it does                                            |
 | ----------------- | ------------------------------------------------------- |
 | `--check`         | Check for an upgrade without installing.                |
-| `--yes`           | Install without the interactive confirmation prompt.    |
+| `--yes`           | Required to install; without it the command refuses.    |
 | `--version <tag>` | Install a specific stable release tag (no prereleases). |
 | `--no-restart`    | Do not restart the daemon after upgrading.              |
 
@@ -91,10 +101,20 @@ curl -fsSL https://bossanova.dev/install.sh | sh
 
 ## Verify the upgrade
 
-```bash
-boss version
-boss repair doctor
-```
+Print the running version:
 
-`boss version` prints the running version; `boss repair doctor` confirms the
-daemon and agent plugins are healthy after the upgrade.
+<CommandTabs
+cli="boss version"
+/>
+
+Confirm the daemon and agent plugins are healthy after the upgrade:
+
+<CommandTabs
+chat='"run the repair doctor"'
+cli="boss repair doctor"
+mcp="repair_doctor"
+/>
+
+`boss version` reports the binary you are actually running; `boss repair doctor`
+is the one check on this page an agent can run for you, so it carries a real
+**Chat** and **MCP** tab.

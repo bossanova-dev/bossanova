@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	gitpkg "github.com/recurser/bossd/internal/git"
 )
 
@@ -187,15 +188,23 @@ func TestCreateSessionBootstrapDeadlineCleansUpATitleDerivedBranch(t *testing.T)
 	}
 }
 
-// TestCreateSessionClientDisconnectReapsTheFreshBranch covers the sibling
+// TestCreateSessionAbandonedBootstrapReapsTheFreshBranch covers the sibling
 // discarding exit: the client goes away mid-create (Ctrl-C during `boss new`, a
-// dropped web stream), so the session is deleted.
+// dropped web stream) and the bootstrap then fails on its own.
 //
-// That path used to call the CONSERVATIVE cleanup entry and throw away the
-// lifecycle result, so a fresh branch git had already made — now nameable,
-// because OnWorktreeReady recorded it — was purged as a worktree but left
-// behind as a branch. Both discarding exits must apply the same ownership rule.
-func TestCreateSessionClientDisconnectReapsTheFreshBranch(t *testing.T) {
+// The reclaim rule is BOS-717's and is unchanged: a fresh branch git had
+// already made — nameable, because OnWorktreeReady recorded it — must be purged
+// as a worktree AND reaped as a branch, not orphaned.
+//
+// INVERTED by BOS-720. This test used to assert the reclaim synchronously,
+// because the DISCONNECT itself deleted the row on the RPC's way out. It no
+// longer does: the RPC is a subscriber now, so its return says nothing about
+// the bootstrap. What deletes the row here is the bootstrap's OWN failure,
+// running on the daemon's context with nobody watching — so the assertion moves
+// from "already done when StreamCreateSession returns" to "done shortly after,
+// even though the client is long gone". The thing being proved is stronger: the
+// cleanup no longer depends on a live client to trigger it.
+func TestCreateSessionAbandonedBootstrapReapsTheFreshBranch(t *testing.T) {
 	t.Parallel()
 
 	const derivedBranch = "bos-717-disconnected"
@@ -205,7 +214,7 @@ func TestCreateSessionClientDisconnectReapsTheFreshBranch(t *testing.T) {
 		if opts.OnWorktreeReady != nil {
 			opts.OnWorktreeReady(ctx, derivedBranch, "/tmp/worktrees/repo/"+derivedBranch)
 		}
-		// Emitting setup output is what gets the server into streamSetupOutput,
+		// Emitting setup output is what gets the server into relaySetupOutput,
 		// where the failing emit below simulates the client going away.
 		if opts.SetupScriptOutput != nil {
 			_, _ = io.WriteString(opts.SetupScriptOutput, "installing deps\n")
@@ -236,12 +245,23 @@ func TestCreateSessionClientDisconnectReapsTheFreshBranch(t *testing.T) {
 		t.Fatal("StreamCreateSession error = nil, want the disconnect error")
 	}
 
-	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
-	if listErr != nil {
-		t.Fatalf("list sessions: %v", listErr)
-	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions len = %d, want 0 (the abandoned session is deleted)", len(sessions))
+	// The bootstrap outlives the RPC, so its cleanup lands after this return.
+	// Poll rather than sleep: the window is microseconds in practice.
+	deadline := time.Now().Add(10 * time.Second)
+	var sessions []*models.Session
+	for {
+		var listErr error
+		sessions, listErr = h.sessions.List(context.Background(), h.repo.ID)
+		if listErr != nil {
+			t.Fatalf("list sessions: %v", listErr)
+		}
+		if len(sessions) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sessions len = %d, want 0 (the failed bootstrap cleans up after itself)", len(sessions))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	reaped, purged := worktrees.cleanupRecords()
@@ -249,7 +269,7 @@ func TestCreateSessionClientDisconnectReapsTheFreshBranch(t *testing.T) {
 		t.Fatalf("purged worktrees = %v, want %q", purged, derivedBranch)
 	}
 	if !slices.Contains(reaped, derivedBranch) {
-		t.Fatalf("reaped branches = %v, want %q — the disconnect exit orphaned the branch", reaped, derivedBranch)
+		t.Fatalf("reaped branches = %v, want %q — the abandoned bootstrap orphaned the branch", reaped, derivedBranch)
 	}
 }
 

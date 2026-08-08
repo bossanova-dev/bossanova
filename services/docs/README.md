@@ -14,9 +14,54 @@ marketing/web vite tree, so we keep them isolated.
 make deps     # one-time: pnpm install --ignore-workspace
 make dev      # http://localhost:3001
 make build    # produces build/
-make test     # typecheck + build (catches broken links and MDX errors)
+make test     # typecheck + unit tests + build (catches broken links and MDX errors)
 make format   # prettier
 ```
+
+## Authoring `<CommandTabs>` examples
+
+Bossanova exposes most operations three ways — a chat prompt to the `/boss`
+skill, the `boss` CLI, and the MCP tool surface. `src/components/CommandTabs.tsx`
+renders all three as one tab group, so a reader can stay on the interface they
+actually use:
+
+```mdx
+import CommandTabs from '@site/src/components/CommandTabs'
+
+<CommandTabs chat='"list my repos"' cli="boss repo ls" mcp="list_repos" />
+```
+
+Conventions, so the examples stay consistent across pages:
+
+- **Chat** entries are quoted natural-language prompts to `/boss` — `"list my
+repos"` — not commands. Write what a reader would actually type at the agent.
+- **Quote the attribute so the example's own quotes survive.** JSX attribute
+  strings are raw — a backslash is not an escape there, so
+  `chat="\"list my repos\""` escapes nothing: the value ends at the second `"`,
+  the rest is re-read as attribute names, and `make build` fails with
+  `Unexpected character \ (U+005C) in attribute name`. Wrap an example
+  containing `"` in single quotes (`chat='"list my repos"'`, as above) and one
+  containing `'` in double quotes. An example needing both has to be reworded.
+- **MCP** entries are the bare tool name, `list_repos`, exactly as registered in
+  `lib/bossalib/bossmcp/manifest.go`. That file is the authoritative list, so
+  check a name there rather than guessing it.
+- **A command with no registered MCP tool omits the `mcp` prop** rather than
+  inventing one. The same goes for `chat`. The tab still renders, carrying an
+  explicit "No equivalent — this command runs locally" note: several commands
+  (`boss daemon install`, `boss fix-terminal`, `boss tail`, and `boss upgrade`)
+  genuinely have no agent-reachable counterpart, and saying so is part of what
+  the docs teach.
+- **Use the component rather than a hand-written `<Tabs>` block.** Docusaurus
+  syncs and persists tab choice per `groupId`, so a reader who picks _Chat_ on
+  one page sees _Chat_ everywhere. One wrong `groupId` at one call site silently
+  breaks that for the whole site. `CommandTabs` owns `groupId="interface"`, kept
+  distinct from the `groupId="os"` platform tabs in `docs/quick-start.md`.
+
+**MDX caveat.** Docusaurus 3 parses `.md` as MDX, so a JSX component works
+inline without renaming the file — but the page needs the `import` line above,
+and any pre-existing `<` or `{` in that page's prose can start erroring once MDX
+takes the file seriously. `make build` (and so `make test`) is what catches
+this; run it after converting a page.
 
 ## Where things live
 

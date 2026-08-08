@@ -1,15 +1,12 @@
 package server
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -148,6 +145,9 @@ type Server struct {
 	repairLease *status.RepairLeaseManager
 	tmuxPoller  *status.TmuxStatusPoller
 	lifecycle   *session.Lifecycle
+	// bootstrapRunner owns session bootstraps: it runs them on the daemon's
+	// context rather than the RPC's, so a client disconnect cannot abort one.
+	bootstrapRunner *session.BootstrapRunner
 	// switchAccountFn is the account-switch seam shared by the SwitchSessionAccount
 	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
 	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
@@ -305,10 +305,15 @@ type Config struct {
 	// display tracker. Satisfied by *session.DisplayPoller. Optional, may be
 	// nil; MergeSession then simply skips the post-merge re-poll and the next
 	// scheduled poll repairs the label instead.
-	PRRefresher        PRRefresher
-	RepairLease        *status.RepairLeaseManager
-	TmuxPoller         *status.TmuxStatusPoller
-	Lifecycle          *session.Lifecycle
+	PRRefresher PRRefresher
+	RepairLease *status.RepairLeaseManager
+	TmuxPoller  *status.TmuxStatusPoller
+	Lifecycle   *session.Lifecycle
+	// BootstrapRunner runs session bootstraps on the daemon's root context.
+	// Optional: when nil and Lifecycle is set, New derives one from Lifecycle so
+	// existing wiring (and tests) keep working — but real daemon wiring MUST
+	// supply one built on the context Shutdown cancels, or bootstraps outlive it.
+	BootstrapRunner    *session.BootstrapRunner
 	Agent              agent.AgentRunner
 	AgentClients       map[string]agent.AgentRunnerClient
 	Worktrees          gitpkg.WorktreeManager
@@ -456,20 +461,22 @@ func New(cfg Config) *Server {
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,
 
-		checkSnapshots: cfg.CheckSnapshots,
-		rotationEvents: cfg.RotationEvents,
-		cronScheduler:  cfg.CronScheduler,
-		cronActivity:   cfg.CronActivity,
-		chatStatus:     cfg.ChatStatus,
-		displayTracker: cfg.DisplayTracker,
-		prRefresher:    cfg.PRRefresher,
-		repairLease:    cfg.RepairLease,
-		tmuxPoller:     cfg.TmuxPoller,
-		lifecycle:      cfg.Lifecycle,
-		agent:          cfg.Agent,
-		agentClients:   cfg.AgentClients,
-		worktrees:      cfg.Worktrees,
-		provider:       cfg.Provider,
+		checkSnapshots:  cfg.CheckSnapshots,
+		rotationEvents:  cfg.RotationEvents,
+		cronScheduler:   cfg.CronScheduler,
+		cronActivity:    cfg.CronActivity,
+		chatStatus:      cfg.ChatStatus,
+		displayTracker:  cfg.DisplayTracker,
+		prRefresher:     cfg.PRRefresher,
+		repairLease:     cfg.RepairLease,
+		tmuxPoller:      cfg.TmuxPoller,
+		lifecycle:       cfg.Lifecycle,
+		bootstrapRunner: cfg.BootstrapRunner,
+
+		agent:        cfg.Agent,
+		agentClients: cfg.AgentClients,
+		worktrees:    cfg.Worktrees,
+		provider:     cfg.Provider,
 
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
@@ -489,6 +496,14 @@ func New(cfg Config) *Server {
 	}
 	if srv.endpointNamespaceGate == nil {
 		srv.endpointNamespaceGate = platformEndpointNamespaceGate
+	}
+	if srv.bootstrapRunner == nil && cfg.Lifecycle != nil {
+		// Fallback for wiring that predates the runner (and for tests that build a
+		// Server from a Lifecycle alone). context.Background() is deliberately the
+		// WRONG context for the daemon — main.go passes the root context Shutdown
+		// cancels — but it is the right one here: a nil runner would panic on the
+		// first non-quick-chat create.
+		srv.bootstrapRunner = session.NewBootstrapRunner(context.Background(), cfg.Lifecycle, cfg.Logger)
 	}
 	return srv
 }
@@ -1566,17 +1581,34 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// cannot coexist with `force`, which must be able to create a second session for
 		// the same tracker. `force` skips the guard entirely.
 		//
-		// This behavioral change is intentionally NOT expressed as an apiversion
-		// (lib/bossalib/apiversion) dated bump: that framework is a response-side,
-		// unary-only down-convert (VersionChange.TransformResponse, applied only in
-		// the interceptor's WrapUnary path) and cannot gate a request-side side
-		// effect on a streaming, daemon-resident RPC. This guard lives in the bossd
-		// DaemonService, which never passes through the bosso OrchestratorService
-		// interceptor, and ProxyCreateSession is a stream that the transform layer
-		// skips by design. A refused create also can't be "down-converted" back into
-		// the duplicate session an old client wanted. `force` is a wire-additive
-		// field, so no deployed client breaks at the protocol level; the only
-		// behavior removed — dispatch-N-get-N-sessions — was the BOS-229 defect.
+		// Neither this guard nor BOS-720's async bootstrap is expressed as an
+		// apiversion (lib/bossalib/apiversion) dated bump, but NOT for the reason
+		// this comment used to give.
+		//
+		// The old wording ("response-side, unary-only … applied only in the
+		// interceptor's WrapUnary path") was overtaken by 1d63becc5, which added
+		// transformingStreamingHandlerConn: apiversion.Interceptor DOES wrap
+		// streaming handlers and applies TransformResponse to every frame a stream
+		// sends (lib/bossalib/apiversion/interceptor.go). ProxyCreateSession is not
+		// skipped.
+		//
+		// Two reasons survive, and they are the real ones:
+		//
+		//  1. This RPC lives in the bossd DaemonService, whose handler installs
+		//     only socketauth and errortrack (see Listen). apiversion.Interceptor
+		//     is installed ONLY on the bosso OrchestratorService handler
+		//     (services/bosso/cmd/main.go), as transform.go's own comment states.
+		//     A daemon-resident RPC cannot be version-gated at all.
+		//  2. On the bosso leg that IS intercepted, a VersionChange can only mutate
+		//     a message IN PLACE — Send() calls changes.Apply and then forwards
+		//     unconditionally, with no way to say "drop this frame". So neither a
+		//     refused create nor a NEW response event could be down-converted, and
+		//     a change in frame ORDERING is outside the mechanism entirely. BOS-720
+		//     therefore adds no new event type and no new field.
+		//
+		// `force` is a wire-additive field, so no deployed client breaks at the
+		// protocol level; the only behavior removed — dispatch-N-get-N-sessions —
+		// was the BOS-229 defect.
 		if !msg.Force {
 			keys, err := s.activeSessionKeysForRepo(ctx, msg.RepoId)
 			if err != nil {
@@ -1657,6 +1689,14 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	// Quick chat sessions skip worktree/branch/PR creation entirely.
 	var startErr error
+	// bootstrapOwnsCleanup records that the failure cleanup has moved to the
+	// BootstrapRunner's OnFailure hook, so the shared failure exit below must
+	// NOT run it a second time. A second pass would be worse than redundant: the
+	// runner releases the target lock once its hooks have run, so by the time
+	// this RPC observes the error an overlapping create for the same target may
+	// already hold the lock and have recreated the branch — which the stale
+	// cleanup would then reap out from under it.
+	bootstrapOwnsCleanup := false
 	if msg.IsQuickChat {
 		// Persist the planning-only signal (BOS-322). Quick chats have no
 		// worktree/branch/PR and skip finalize by design; the flag is the
@@ -1673,10 +1713,6 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		}
 		startErr = s.lifecycle.StartQuickChatSession(ctx, sess.ID)
 	} else {
-		// Create a pipe to stream setup script output to the client.
-		pr, pw := io.Pipe()
-		defer pr.Close() //nolint:errcheck // best-effort cleanup
-
 		// Build the start options. A tmux_unattended session (e.g. /boss-epic) and
 		// a `boss new --detach` run both go through the durable tmux-hosted path
 		// (detach only when tmux is available) and carry a freshly-minted HookToken
@@ -1688,13 +1724,15 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// harmless.
 		startOpts := session.StartSessionOpts{
 			ForceBranch:      msg.ForceBranch,
-			SetupOutput:      pw,
 			Detach:           msg.GetDetach(),
 			IsTmuxUnattended: msg.GetIsTmuxUnattended(),
 			// DeferPR suppresses the up-front draft PR; StartSession gates
 			// createDraftPR on !opts.DeferPR, and the finalize EnsurePR hook
 			// opens a PR later only if the run produces commits.
 			DeferPR: msg.GetDeferPr(),
+			// SetupOutput is deliberately unset: BootstrapRunner.Start
+			// overwrites it with the bootstrap's own non-blocking bus. Setting
+			// it here would reintroduce a writer this caller could stall.
 		}
 		if msg.PrNumber != nil {
 			startOpts.ExistingBranch = headBranch
@@ -1704,46 +1742,112 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		if msg.GetIsTmuxUnattended() || msg.GetDetach() {
 			token, tokenErr := newHookToken()
 			if tokenErr != nil {
-				_ = pr.Close()
 				s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
 				return createSessionConnectError(fmt.Errorf("mint hook token: %w", tokenErr))
 			}
 			startOpts.HookToken = token
 		}
 
-		type lifecycleResult struct {
-			err error
-		}
-		done := make(chan lifecycleResult, 1)
+		// Hand the bootstrap to the daemon-owned runner, and hand it the target
+		// lock with it. From here this RPC is a SUBSCRIBER: it can return, or be
+		// cancelled, without touching the bootstrap.
+		//
+		// Ownership of both the target lock and the failure cleanup moves with
+		// the bootstrap. Releasing the lock here instead would let an
+		// overlapping create for the same target start before this one had
+		// cleaned up its half-started row — the refusal BOS-717's target lock
+		// exists to prevent.
+		releaseTarget := unlockTarget
+		targetLocked = false        // the runner owns it now; the deferred release must not also fire
+		bootstrapOwnsCleanup = true // ...and so does the failure cleanup
+		bootstrap := s.bootstrapRunner.Start(sess.ID, startOpts, session.BootstrapHooks{
+			ReleaseTarget: releaseTarget,
+			OnFailure: func(cleanupCtx context.Context, sessionID string, _ error) {
+				s.cleanupFailedCreateSession(cleanupCtx, sessionID)
+			},
+		})
 
-		go func() {
-			defer pw.Close() //nolint:errcheck // best-effort cleanup
-			err := s.lifecycle.StartSession(ctx, sess.ID, startOpts)
-			done <- lifecycleResult{err: err}
-		}()
+		// Subscribe FIRST, before the accepted emit below. The setup bus only
+		// replays setupBusReplayLines to a late subscriber, and that constant is
+		// sized against "StreamCreateSession subscribes immediately after Start
+		// returns, so the window is microseconds". emit is a network send on the
+		// create stream, so emitting first would stretch that window to a round
+		// of client-side flow control and let a chatty setup script overrun the
+		// ring — silently eating the first lines of output, the exact regression
+		// the replay buffer exists to prevent. Subscribe only registers a
+		// channel; it sends the client nothing, so it cannot reorder what the
+		// client sees.
+		lines, cancelSub := bootstrap.Subscribe()
+		defer cancelSub()
 
-		if err := streamSetupOutput(pr, emitSender{emit}); err != nil {
-			// Client disconnected or the setup-output pipe failed — close the
-			// pipe reader to unblock the goroutine if it's blocked on pw.Write(),
-			// then wait for it to finish before removing the persisted session.
-			_ = pr.Close()
-			<-done
-			// Same cleanup as the start-failure exit below: this discards a
-			// session whose branch git may already have made, and the row's
-			// worktree path is what says whether it did.
-			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+		// The accepted frame (BOS-720). The client now holds a usable session
+		// id in milliseconds; the bootstrap is a background worker whose
+		// progress is `state` + `updated_at`.
+		//
+		// Deliberately the EXISTING SessionCreated event rather than a new
+		// oneof member. Two code facts force that:
+		//   - services/boss/internal/views/newsession_cmds.go's default arm
+		//     used to turn an unrecognised event into a stream error, so a new
+		//     member would hard-break an older `boss` binary against a newer
+		//     bossd;
+		//   - on the bosso leg a new frame type could not be down-converted
+		//     away — apiversion's streaming transform mutates a message in
+		//     place and has no way to drop it.
+		// Re-emitting SessionCreated degrades instead of erroring: an old client
+		// that treats the first as terminal closes early. For the drain-to-EOF
+		// consumers (`boss new`, the MCP socket backend, the hosted MCP
+		// gateway) that costs only the setup output. A pre-BOS-720 *web* bundle
+		// against a new bosso is the one client that also ACTS on it — its
+		// machine went straight to `done` on the first `created` and its launch
+		// effect calls RecordChat — but that fails closed rather than doing
+		// harm: the accepted row's worktree_path is still empty, and
+		// spawnChatTmux stats it and returns ErrWorktreeMissing.
+		//
+		// `boss new` (services/boss/cmd/handlers.go) and MCP create_session
+		// (services/mcp/internal/socketbackend) already drain to EOF with
+		// last-value-wins, so both stay correct against this frame WITHOUT
+		// modification — including the agent_launched signal MCP derives from
+		// Session.agent_session_id, which only the settled frame populates.
+		//
+		// The client still sees the session id before the first line of setup
+		// output: relaySetupOutput runs after this emit, so the ordering comes
+		// from the drain, not from where Subscribe sits.
+		if err := emit(&pb.CreateSessionResponse{
+			Event: &pb.CreateSessionResponse_SessionCreated{
+				SessionCreated: &pb.SessionCreated{Session: SessionToProto(sess)},
+			},
+		}); err != nil {
+			s.logger.Info().Str("session", sess.ID).
+				Msg("create-session client went away before the accepted frame; bootstrap continues")
 			return err
 		}
 
-		// Close the pipe reader to unblock the goroutine if it's still writing.
-		_ = pr.Close()
-
-		// Pipe closed — lifecycle goroutine is done.
-		result := <-done
-		startErr = result.err
+		if err := relaySetupOutput(ctx, lines, bootstrap.Done(), emitSender{emit}); err != nil {
+			// The client went away (or its stream errored). The bootstrap keeps
+			// running on the daemon's context, and the runner owns its outcome
+			// — cleanup on failure and the target-lock release included.
+			//
+			// This is the behavior change BOS-720 exists for: before it, this
+			// exit deleted the session row and reaped the branch of a bootstrap
+			// that was still minutes from finishing.
+			s.logger.Info().Str("session", sess.ID).
+				Msg("create-session client went away; bootstrap continues in the background")
+			return err
+		}
+		// Err is only valid after Done, and relay returns nil on the BUS
+		// closing — which the runner does one defer BEFORE it closes done. So
+		// wait for settlement rather than relying on that ordering: it costs
+		// microseconds here, and without it any future reshuffle of the
+		// runner's defers (flushing setup output before the failure hook, say)
+		// would turn this into a read of a stale nil and report a session
+		// CREATED that in fact failed to start.
+		<-bootstrap.Done()
+		startErr = bootstrap.Err()
 	}
 	if err := startErr; err != nil {
-		s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+		if !bootstrapOwnsCleanup {
+			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+		}
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}
@@ -1794,34 +1898,57 @@ type emitSender struct {
 
 func (e emitSender) Send(resp *pb.CreateSessionResponse) error { return e.emit(resp) }
 
-func streamSetupOutput(r io.Reader, stream createSessionSender) error {
-	reader := bufio.NewReaderSize(r, maxSetupOutputLineBytes+1)
+// relaySetupOutput forwards setup-output lines to the client until the
+// bootstrap settles or the client goes away.
+//
+// It replaces streamSetupOutput, which read an io.Pipe. The difference is not
+// cosmetic: that pipe read was the only thing letting the bootstrap's
+// pw.Write() return, so a stalled client blocked the bootstrap. Here the
+// bootstrap has already moved on and this function only decides what THIS
+// client sees.
+//
+// A line longer than maxSetupOutputLineBytes is truncated rather than failing
+// the stream: the bootstrap is no longer this stream's to fail.
+//
+// ctx releases the handler when the caller goes away without the transport
+// surfacing a send error — the reverse-stream command context, chiefly. Without
+// it a silent setup script could pin this goroutine and its stream slot for the
+// bootstrap's full deadline. Returning early is safe precisely because the
+// bootstrap is no longer coupled to this stream.
+func relaySetupOutput(ctx context.Context, lines <-chan string, done <-chan struct{}, stream createSessionSender) error {
+	send := func(line string) error {
+		if len(line) > maxSetupOutputLineBytes {
+			line = line[:maxSetupOutputLineBytes]
+		}
+		return stream.Send(&pb.CreateSessionResponse{
+			Event: &pb.CreateSessionResponse_SetupOutput{
+				SetupOutput: &pb.SetupScriptOutput{Text: line},
+			},
+		})
+	}
 	for {
-		line, err := reader.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) {
-			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("setup output line exceeds %d bytes", maxSetupOutputLineBytes))
-		}
-		if len(line) > 0 {
-			line = bytes.TrimSuffix(line, []byte("\n"))
-			line = bytes.TrimSuffix(line, []byte("\r"))
-			if len(line) > maxSetupOutputLineBytes {
-				return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("setup output line exceeds %d bytes", maxSetupOutputLineBytes))
-			}
-			if sendErr := stream.Send(&pb.CreateSessionResponse{
-				Event: &pb.CreateSessionResponse_SetupOutput{
-					SetupOutput: &pb.SetupScriptOutput{
-						Text: string(line),
-					},
-				},
-			}); sendErr != nil {
-				return sendErr
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				// Bus closed — the bootstrap has settled and flushed its tail.
 				return nil
 			}
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("read setup output: %w", err))
+			if err := send(line); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-done:
+			// Settled. Drain what the bus buffered before it closed rather than
+			// returning here: the runner closes the bus and THEN done, microseconds
+			// apart, so both cases are ready at once and select picks at random —
+			// returning on done would drop the tail of the setup output at random.
+			for line := range lines {
+				if err := send(line); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 	}
 }

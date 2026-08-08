@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "BOS-718 chat picker — the waiting-reason line starts in the same column as the table caret and the action bar, not one short of them",
+  "fixture": { "preset": "waiting-callback" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the parked session from the home list into its chat picker",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Ship the release checklist",
+            "match": "normalized",
+            "label": "home session list loaded (waiting-callback preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the parked run is listed with its waiting reason"
+        },
+        { "key": "enter", "caption": "Open the parked session's chat picker" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the waiting line, the chat table's caret and the action bar all begin at the same display column",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "awaiting checks_passed_ready on acme/my-app#668",
+            "match": "normalized",
+            "label": "the chat picker renders the waiting reason line above the chat table"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker shows why the run is parked: trigger checks_passed_ready on acme/my-app#668"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}waiting · awaiting checks_passed_ready on acme/my-app#668",
+            "match": "regex",
+            "label": "the waiting line begins after EXACTLY two leading spaces — the chrome column. Whitespace-preserving on purpose: `normalized` collapses the indent away, which is why the sibling BOS-668 scenario cannot prove this. Before BOS-718 there was one space here"
+          },
+          "caption": "The waiting line is indented to the chrome column — two spaces, not one"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}❯",
+            "match": "regex",
+            "label": "the chat table's ❯ caret begins after the same two leading spaces, so the table did NOT move when the prose did"
+          },
+          "caption": "The chat table's selection caret sits in that same column, unchanged"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}\\[enter\\] select",
+            "match": "regex",
+            "label": "the action bar begins after the same two leading spaces, which is the column BOS-718 aligns everything to"
+          },
+          "caption": "The action bar starts in that column too: waiting line, caret and actions now share one left edge"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present below the populated chat table"
+          },
+          "caption": "The [esc] back action bar renders in full — the indent change costs no rows"
+        }
+      ]
+    }
+  ]
+}

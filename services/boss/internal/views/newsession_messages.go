@@ -93,6 +93,14 @@ type setupScriptLineMsg struct {
 	text string
 }
 
+// streamSessionAcceptedMsg carries the accepted (non-terminal) session from the
+// stream — the row exists and is addressable, but its bootstrap is still
+// running (BOS-720). The stream stays open; the settled session arrives later as
+// streamSessionCreatedMsg.
+type streamSessionAcceptedMsg struct {
+	session *pb.Session
+}
+
 // streamSessionCreatedMsg carries the final session from the stream.
 type streamSessionCreatedMsg struct {
 	session *pb.Session

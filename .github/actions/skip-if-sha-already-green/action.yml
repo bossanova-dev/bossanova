@@ -1,0 +1,57 @@
+name: Skip if SHA already green
+description: >
+  Reports whether THIS workflow has already concluded successfully on THIS exact
+  commit, so a second event on the same SHA can inherit the first run's result
+  instead of repeating it.
+
+# Why this exists: both release PRs are opened with `--head main`
+# (create-staging-release.yml / create-production-release.yml), so a production
+# release cut from the same main tip has a BYTE-IDENTICAL head SHA to the staging
+# release that already passed. Measured on 2026-08-07: SHA c6ead945 carried two of
+# every workflow — 2x bazel, 2x smoke, 2x security, 2x codeql, 2x web — for ~$0.29
+# and ~43 min of pure repetition. GitHub keys check runs to the COMMIT, not the PR,
+# so the staging run's green checks are already displayed on the production PR; the
+# re-run adds nothing.
+
+outputs:
+  skip:
+    description: "'true' when a prior successful run of this workflow exists for this commit"
+    value: ${{ steps.probe.outputs.skip }}
+
+runs:
+  using: composite
+  steps:
+    - id: probe
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        # For `pull_request` events `github.sha` is the ephemeral MERGE commit,
+        # which never appears as any run's head_sha — querying it would match
+        # nothing and silently disable the dedup. The PR head is what both the runs
+        # API and the check-runs UI key on.
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        WORKFLOW_NAME: ${{ github.workflow }}
+        RUN_ID: ${{ github.run_id }}
+        REPO: ${{ github.repository }}
+      run: |
+        # Deliberately NOT `set -e`: this gate must FAIL SAFE. Any API hiccup,
+        # missing jq, or unexpected payload has to fall through to skip=false and
+        # run the tests — never to skip=true, which would silently drop coverage.
+        set -uo pipefail
+
+        count=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" 2>/dev/null \
+          | jq --arg name "${WORKFLOW_NAME}" --argjson rid "${RUN_ID}" \
+               '[.workflow_runs[]? | select(.name == $name and .conclusion == "success" and .id != $rid)] | length' \
+               2>/dev/null) || count=""
+
+        case "${count}" in
+          ''|*[!0-9]*) count=0 ;;
+        esac
+
+        if [ "${count}" -gt 0 ]; then
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::${WORKFLOW_NAME} already succeeded on ${HEAD_SHA} (${count} prior run(s)); skipping the heavy jobs — the earlier run's checks are already attached to this commit."
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "No prior successful ${WORKFLOW_NAME} run for ${HEAD_SHA}; running in full."
+        fi

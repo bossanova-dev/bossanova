@@ -388,7 +388,12 @@ func TestChatPickerResponsiveTableKeepsProseAndHTTPReservationsAt72Columns(t *te
 	if got, tableWidth := m.blockWrapWidth(), columnsWidth(m.table.Columns()); got > tableWidth {
 		t.Errorf("blockWrapWidth() = %d, want <= fitted table width %d", got, tableWidth)
 	}
-	if got, avail := m.blockWrapWidth(), m.width-chatPickerBlockPadding*2; got > avail {
+	// The prose inset, not the table's (BOS-718): these blocks are drawn inside
+	// chatPickerProseBlock, so the room they actually have is what
+	// chatPickerProsePadding leaves. Against the table constant this bound is
+	// two columns looser than the invariant it claims and would not catch the
+	// clamp regressing.
+	if got, avail := m.blockWrapWidth(), m.width-chatPickerProsePadding*2; got > avail {
 		t.Errorf("blockWrapWidth() = %d, want <= terminal content width %d", got, avail)
 	}
 	m.session = &pb.Session{Id: "session-1", HttpEndpoints: manyEndpoints(12)}
@@ -1049,6 +1054,10 @@ func TestChatPicker_AgentPickerEnterEmitsOverride(t *testing.T) {
 	}
 }
 
+// TestChatPicker_AgentPickerDefaultsToSessionAgent covers the no-configured-
+// default case, where the session's own agent is the fallback cursor. When a
+// default IS configured it wins instead — see
+// TestChatPicker_AgentPickerPrefersDefaultAgentOverSessionAgent.
 func TestChatPicker_AgentPickerDefaultsToSessionAgent(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
@@ -1077,6 +1086,138 @@ func TestChatPicker_AgentPickerDefaultsToSessionAgent(t *testing.T) {
 	}
 	if sw.agentName != "codex" {
 		t.Errorf("switchViewMsg.agentName = %q, want %q", sw.agentName, "codex")
+	}
+}
+
+// seedAgentPicker builds a chat picker whose session carries sessionAgent, whose
+// configured default is preferred (empty = unset), and whose daemon has loaded
+// the named runners in the given order.
+func seedAgentPicker(sessionAgent, preferred string, loaded []string) ChatPickerModel {
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{Id: "session-1", AgentName: sessionAgent}
+	m.SetPreferredAgent(preferred)
+	agents := make([]client.AgentInfo, len(loaded))
+	for i, name := range loaded {
+		agents[i] = client.AgentInfo{Name: name}
+	}
+	updated, _ := m.Update(agentsMsg{agents: agents})
+	return updated.(ChatPickerModel)
+}
+
+// confirmAgentPickerDefault opens the [n] overlay and presses Enter on whatever
+// the default cursor landed on, returning the updated model and the agent name
+// the emitted switchViewMsg carries.
+func confirmAgentPickerDefault(t *testing.T, m ChatPickerModel) (ChatPickerModel, string) {
+	t.Helper()
+	updated, _ := m.Update(keyPress('n'))
+	m = updated.(ChatPickerModel)
+	if !m.pickingAgent {
+		t.Fatalf("setup: expected pickingAgent=true")
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(ChatPickerModel)
+	if cmd == nil {
+		t.Fatal("expected a switchViewMsg cmd from enter")
+	}
+	out := cmd()
+	sw, ok := out.(switchViewMsg)
+	if !ok {
+		t.Fatalf("expected switchViewMsg, got %T", out)
+	}
+	return m, sw.agentName
+}
+
+// TestChatPicker_AgentPickerPrefersDefaultAgentOverSessionAgent is the
+// regression. sessions.agent_name is written once at create time and never
+// updated, so a session created with one runner used to default every later
+// [n]ew chat to that runner permanently — even after the operator had set a
+// different default and started many chats on it. The configured default now
+// leads.
+func TestChatPicker_AgentPickerPrefersDefaultAgentOverSessionAgent(t *testing.T) {
+	m := seedAgentPicker("opencode", "claude", []string{"claude", "codex", "opencode"})
+
+	_, agentName := confirmAgentPickerDefault(t, m)
+
+	if agentName != "claude" {
+		t.Errorf("agentName = %q, want %q (configured default must beat the session's create-time agent)", agentName, "claude")
+	}
+}
+
+// TestChatPicker_AgentPickerFallsBackToSessionAgentWhenDefaultUnloaded pins the
+// second rung of the precedence: a default naming a runner this daemon has not
+// loaded is not selectable, so the session's agent still serves as the fallback
+// rather than silently dropping to row 0.
+func TestChatPicker_AgentPickerFallsBackToSessionAgentWhenDefaultUnloaded(t *testing.T) {
+	m := seedAgentPicker("codex", "opencode", []string{"claude", "codex"})
+
+	_, agentName := confirmAgentPickerDefault(t, m)
+
+	if agentName != "codex" {
+		t.Errorf("agentName = %q, want %q (unloaded default must fall back to the session agent)", agentName, "codex")
+	}
+}
+
+// TestChatPicker_AgentPickerFallsBackToFirstRowWhenNeitherLoaded pins the last
+// rung: neither the default nor the session agent is loaded, so the cursor
+// lands on row 0 instead of an out-of-range index.
+func TestChatPicker_AgentPickerFallsBackToFirstRowWhenNeitherLoaded(t *testing.T) {
+	m := seedAgentPicker("opencode", "opencode", []string{"claude", "codex"})
+
+	_, agentName := confirmAgentPickerDefault(t, m)
+
+	if agentName != "claude" {
+		t.Errorf("agentName = %q, want %q (first loaded runner)", agentName, "claude")
+	}
+}
+
+// TestChatPicker_AgentPickerPersistsSelection pins the other half of the fix:
+// confirming a pick writes it back through the selection handler, so the next
+// [n] — in this session or any other, and in the new-session wizard, which
+// writes the same setting — opens on the runner last chosen.
+func TestChatPicker_AgentPickerPersistsSelection(t *testing.T) {
+	var saved []string
+	m := seedAgentPicker("codex", "", []string{"claude", "codex"})
+	m.SetAgentSelectionHandler(func(name string) error {
+		saved = append(saved, name)
+		return nil
+	})
+
+	got, agentName := confirmAgentPickerDefault(t, m)
+
+	if agentName != "codex" {
+		t.Fatalf("setup: agentName = %q, want %q", agentName, "codex")
+	}
+	if !slices.Equal(saved, []string{"codex"}) {
+		t.Errorf("saved = %v, want exactly one save of %q", saved, "codex")
+	}
+	if got.preferredAgent != "codex" {
+		t.Errorf("preferredAgent = %q, want %q — the in-memory default must track the pick too", got.preferredAgent, "codex")
+	}
+}
+
+// TestChatPicker_AgentPickerSaveFailureDoesNotBlockChat pins that a settings
+// write that fails is reported on the transient status line and nothing more:
+// the chat the operator asked for still starts, and m.err — which would replace
+// the entire view with an error screen — stays nil.
+func TestChatPicker_AgentPickerSaveFailureDoesNotBlockChat(t *testing.T) {
+	m := seedAgentPicker("codex", "", []string{"claude", "codex"})
+	m.SetAgentSelectionHandler(func(string) error {
+		return errors.New("settings are read-only")
+	})
+
+	got, agentName := confirmAgentPickerDefault(t, m)
+
+	if agentName != "codex" {
+		t.Errorf("agentName = %q, want %q — a failed save must not change the chat's agent", agentName, "codex")
+	}
+	if got.err != nil {
+		t.Errorf("err = %v, want nil — a failed settings write must not take over the view", got.err)
+	}
+	if !strings.Contains(got.statusMsg, "read-only") {
+		t.Errorf("statusMsg = %q, want it to carry the save failure", got.statusMsg)
+	}
+	if got.preferredAgent != "codex" {
+		t.Errorf("preferredAgent = %q, want %q even when the write failed", got.preferredAgent, "codex")
 	}
 }
 
@@ -2371,27 +2512,34 @@ func TestChatPickerBlockWrapWidth(t *testing.T) {
 			columns: chatPickerWrapColumns(38),
 			want:    minStatusWrapWidth,
 		},
+		// The clamp is against the PROSE inset, not the table's (BOS-718):
+		// these blocks are rendered inside chatPickerProseBlock, so the room
+		// they have is what chatPickerProsePadding leaves. Clamping against the
+		// narrower chatPickerBlockPadding would report two columns more than
+		// the terminal can actually show and overhang it — the BOS-530/BOS-532
+		// defect. TestChatPicker_BlocksNeverOverhangNarrowTerminal checks the
+		// rendered consequence; these cases pin the arithmetic.
 		{
-			name:    "narrow terminal clamps to the room left by the block padding",
+			name:    "narrow terminal clamps to the room left by the prose padding",
 			width:   50,
 			columns: chatPickerWrapColumns(116),
-			want:    50 - chatPickerBlockPadding*2,
+			want:    50 - chatPickerProsePadding*2,
 		},
 		{
 			name:    "terminal narrower than the floor clamps below it",
 			width:   40,
 			columns: chatPickerWrapColumns(116),
-			want:    40 - chatPickerBlockPadding*2,
+			want:    40 - chatPickerProsePadding*2,
 		},
 		{
-			name:    "terminal with no room left after the block padding",
-			width:   chatPickerBlockPadding * 2,
+			name:    "terminal with no room left after the prose padding",
+			width:   chatPickerProsePadding * 2,
 			columns: chatPickerWrapColumns(116),
 			want:    0,
 		},
 		{
 			name:    "narrowest terminal the padding guard still admits",
-			width:   chatPickerBlockPadding*2 + 1,
+			width:   chatPickerProsePadding*2 + 1,
 			columns: chatPickerWrapColumns(116),
 			want:    1,
 		},
@@ -2657,8 +2805,9 @@ func TestChatPicker_ResizedTableLeavesRoomForItsInset(t *testing.T) {
 
 // TestChatPicker_BlocksNeverOverhangNarrowTerminal pins the invariant the
 // padding-aware clamp in blockWrapWidth exists to protect: View renders each
-// prose block inside Padding(0, chatPickerBlockPadding) *on top of* the wrap
-// width, so the on-screen block is wider than blockWrapWidth() reports.
+// prose block inside chatPickerProseBlock's Padding(0, chatPickerProsePadding)
+// *on top of* the wrap width, so the on-screen block is wider than
+// blockWrapWidth() reports.
 // TestChatPickerBlockWrapWidth only checks that arithmetic; this checks the
 // rendered result, so widening the outer padding (or adding a third block with
 // its own padding) without teaching blockWrapWidth about it fails here rather
@@ -2666,7 +2815,7 @@ func TestChatPicker_ResizedTableLeavesRoomForItsInset(t *testing.T) {
 // prevent.
 //
 // "Narrow" is deliberate rather than universal: a terminal only a few columns
-// wide cannot show these blocks at all. At m.width <= chatPickerBlockPadding*2
+// wide cannot show these blocks at all. At m.width <= chatPickerProsePadding*2
 // the guard returns 0 and lipgloss treats Width(0) as unconstrained; one column
 // above that, lipgloss has no break point to use and emits the longest
 // unbreakable segment. Either way the block is wider than the terminal. Both
@@ -2692,4 +2841,309 @@ func TestChatPicker_BlocksNeverOverhangNarrowTerminal(t *testing.T) {
 			})
 		}
 	}
+}
+
+// --- BOS-718: the chat picker's prose sits in the same column as its chrome ---
+
+// The terminal size the BOS-718 alignment probes render at. Wide and tall
+// enough that nothing here wraps, truncates or is pushed off screen, so each
+// line's first non-space column is its inset rather than an artefact of a
+// reflow.
+const (
+	alignProbeWidth  = 120
+	alignProbeHeight = 40
+)
+
+// The fixture text each measured line is located by. Distinct from the other
+// fixtures in this file so a probe cannot accidentally anchor on another
+// block's content.
+const (
+	alignWarningText    = "finalize failed (pr_failed): worktree has uncommitted changes"
+	alignWaitingReason  = "awaiting checks_passed_ready on acme/my-app#668"
+	alignRotationDetail = "refreshed auth in place"
+
+	// The warning block wraps at blockWrapWidth (the table's content width), so
+	// the probes anchor on its opening words rather than the whole summary —
+	// short enough to always land intact on the block's FIRST line, which is the
+	// line whose inset is under test. Same reason warningBlockLines anchors on
+	// two words.
+	alignWarningAnchor = "finalize failed"
+)
+
+// seedChatPickerForAlignment builds a chat picker that draws every prose line
+// the view has at once — the finalize/repair warning block, the usage-limited
+// hint, the waiting-reason line, the HTTP endpoint line and the
+// rotation-history block — alongside the chat table and the action bar, so all
+// of their columns can be measured from a single render.
+func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
+	t.Helper()
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{
+			{
+				SessionId:      "session-1",
+				AgentSessionId: "agent-1",
+				Title:          "A chat",
+				AgentName:      "claude",
+				CreatedAt:      timestamppb.Now(),
+			},
+			{
+				SessionId:      "session-1",
+				AgentSessionId: "agent-2",
+				Title:          "Parked chat",
+				AgentName:      "claude",
+				CreatedAt:      timestamppb.Now(),
+			},
+		},
+		// agent-1 limited drives limitedProviderLine; agent-2 waiting plus a
+		// reason drives waitingReasonLine.
+		daemonStatuses:       map[string]string{"agent-1": statusLimited, "agent-2": statusWaiting},
+		daemonWaitingReasons: map[string]string{"agent-2": alignWaitingReason},
+	})
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: alignProbeWidth, Height: alignProbeHeight})
+	m = updated.(ChatPickerModel)
+	m.session = &pb.Session{
+		Id:              "session-1",
+		Title:           "aligned",
+		AttentionStatus: &pb.AttentionStatus{NeedsAttention: true, Summary: alignWarningText},
+		HttpEndpoints: []*pb.HttpEndpoint{
+			{Port: 3000, Url: "http://127.0.0.1:3000"},
+			{Port: 5173, Url: "http://127.0.0.1:5173"},
+		},
+		RotationEvents: []*pb.RotationEvent{{
+			Id:        "rot-1",
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
+			Detail:    alignRotationDetail,
+			CreatedAt: timestamppb.Now(),
+		}},
+	}
+	return m
+}
+
+// lineColumnOf returns the display column (0-based) at which the first rendered
+// line containing needle begins — i.e. the width of its leading run of spaces.
+//
+// Per-line rather than per-block, because the BOS-718 probes measure lines that
+// share one render. OSC 8 envelopes are stripped alongside the SGR escapes so
+// the HTTP endpoint line, the one site that emits them, measures in the same
+// unit as the lipgloss-rendered lines rather than counting escape bytes as
+// columns.
+func lineColumnOf(t *testing.T, rendered, needle string) int {
+	t.Helper()
+	for _, line := range strings.Split(rendered, "\n") {
+		visible := visibleRowText(line)
+		if strings.Contains(visible, needle) {
+			return firstNonSpaceColumn(t, visible)
+		}
+	}
+	t.Fatalf("no rendered line contains %q in:\n%s", needle, visibleRowText(rendered))
+	return -1
+}
+
+// TestChatPicker_StatusLinesAlignWithActionBar is the point of BOS-718: every
+// prose line the chat picker draws must start at the same display column as the
+// action bar, which is the view's chrome column (styleActionBar, renderBanner
+// and styleToast all sit there). Before this, all five sat one column short,
+// because they shared the tables' narrower inset while a table's own cell
+// padding supplied the column they lacked.
+//
+// Both columns are measured from one real render at one width, in the shape
+// TestToast_AlignsWithTableCursorChevron established, so the test states the
+// intent rather than re-asserting a hard-coded indent on both sides. Table
+// driven so a regression names the offending line instead of the first one.
+func TestChatPicker_StatusLinesAlignWithActionBar(t *testing.T) {
+	m := seedChatPickerForAlignment(t)
+	rendered := stripANSI(m.View().Content)
+
+	// The action bar's own line, located by its rightmost group so a prose line
+	// that happens to mention a key name cannot be mistaken for it.
+	want := lineColumnOf(t, rendered, "[esc] back")
+
+	lines := []struct {
+		name   string
+		needle string
+	}{
+		{name: "session warning block", needle: alignWarningAnchor},
+		{name: "usage-limited hint", needle: "usage-limited"},
+		{name: "waiting reason line", needle: alignWaitingReason},
+		// The HTTP line hand-rolls its inset as spaces (lipgloss mangles its
+		// OSC 8 envelopes), so it is the one site a change to the prose column
+		// can leave behind. Anchored on ":3000" rather than "HTTP" so the
+		// assertion also proves the envelopes did not displace the text.
+		{name: "http endpoint line", needle: ":3000"},
+		{name: "rotation history block", needle: alignRotationDetail},
+	}
+	for _, tt := range lines {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lineColumnOf(t, rendered, tt.needle); got != want {
+				t.Errorf("%s starts at column %d, action bar at column %d; want them aligned\n%s",
+					tt.name, got, want, visibleRowText(rendered))
+			}
+		})
+	}
+}
+
+// TestChatPicker_StatusLinesAlignWithTableCaret pins the other half of BOS-718:
+// the prose moved, the tables did not. The chat table's ❯ caret is already in
+// the chrome column (chatPickerBlockPadding plus the cell's own
+// Padding(0, 0, 0, 1)), so asserting the prose equals it proves the fix was a
+// prose-side inset rather than a bump of chatPickerBlockPadding, which would
+// have pushed the caret to column 3 and moved both together.
+func TestChatPicker_StatusLinesAlignWithTableCaret(t *testing.T) {
+	m := seedChatPickerForAlignment(t)
+	rendered := m.View().Content
+
+	caretCol := renderedColumnOf(t, rendered, cursorChevron)
+	for _, needle := range []string{alignWarningAnchor, "usage-limited", alignWaitingReason, ":3000", alignRotationDetail} {
+		if got := lineColumnOf(t, stripANSI(rendered), needle); got != caretCol {
+			t.Errorf("line %q starts at column %d, table caret at column %d; want them aligned\n%s",
+				needle, got, caretCol, visibleRowText(stripANSI(rendered)))
+		}
+	}
+	// And the caret is where it always was. Hard-coded rather than written as
+	// chatPickerBlockPadding+1: derived from the constant it is meant to pin,
+	// this would stay green for *any* value of chatPickerBlockPadding — bump it
+	// to 2 and both the caret and the expectation move to 3 together. 2 is the
+	// chrome column, a fact about the TUI rather than about either constant.
+	if caretCol != 2 {
+		t.Errorf("table caret at column %d, want 2 (chatPickerBlockPadding=%d plus the cell's own left pad of 1); the table moved",
+			caretCol, chatPickerBlockPadding)
+	}
+}
+
+// TestChatPicker_HTTPLineInsetMatchesTheProseConstant pins the hand-rolled
+// inset directly, not just via the rendered view: httpEndpointLine builds its
+// leading spaces itself, so a future edit could restore the table constant
+// there while every lipgloss-rendered line stayed correct.
+func TestChatPicker_HTTPLineInsetMatchesTheProseConstant(t *testing.T) {
+	m := seedChatPickerForAlignment(t)
+	line := visibleRowText(m.httpEndpointLine())
+	got := len(line) - len(strings.TrimLeft(line, " "))
+	if got != chatPickerProsePadding {
+		t.Errorf("httpEndpointLine() inset = %d spaces, want chatPickerProsePadding (%d): %q",
+			got, chatPickerProsePadding, line)
+	}
+	// The prose helper and the hand-rolled inset must agree, which is the
+	// property that actually keeps the line in step.
+	if want := firstNonSpaceColumn(t, chatPickerProseBlock("x")); got != want {
+		t.Errorf("httpEndpointLine() inset = %d, chatPickerProseBlock inset = %d; the two have drifted", got, want)
+	}
+}
+
+// TestChatPickerProseInsetIsWiderThanTheTableInset states the invariant the
+// whole change rests on, so a future edit that collapses the two constants back
+// into one fails here with the reason rather than only as a column mismatch in
+// the render probes: the tables sit one column narrower because each table cell
+// carries its own left pad, and the prose has none to borrow.
+func TestChatPickerProseInsetIsWiderThanTheTableInset(t *testing.T) {
+	if chatPickerBlockPadding != 1 {
+		t.Errorf("chatPickerBlockPadding = %d, want 1; moving it moves the chat table's caret", chatPickerBlockPadding)
+	}
+	// No assertion that chatPickerProsePadding == statusLinePadding: that one
+	// compares the constant against its own definition (`= statusLinePadding`),
+	// so no edit preserving the declaration could make it fire. The two
+	// assertions here compare against values declared elsewhere — a literal, and
+	// the other constant — so each does fail when what it pins moves.
+	if chatPickerProsePadding != chatPickerBlockPadding+1 {
+		t.Errorf("chatPickerProsePadding = %d, want chatPickerBlockPadding+1 (%d): the table's cell pad supplies exactly one column",
+			chatPickerProsePadding, chatPickerBlockPadding+1)
+	}
+}
+
+// TestChatPicker_SingleLineHintsNeverOverhangTheTerminal pins the guard
+// fitProseLine adds, for the reservation invariant tableHeight's doc states:
+// limitedLineHeight and waitingLineHeight each claim a fixed row count, so a
+// line wider than the terminal soft-wraps onto a row nobody reserved.
+//
+// Measured as a width through the real render path — chatPickerProseBlock's
+// inset included, since the inset is what the reservation forgets. Deliberately
+// NOT asserted as lipgloss.Height: chatPickerProseBlock sets no Width, so
+// lipgloss never inserts a newline and Height reports 1 for an overhanging line
+// too. The soft wrap happens in the terminal, where only the column count can
+// see it.
+//
+// Both callers are exercised: dropping fitProseLine from either one alone must
+// fail here.
+func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
+	// Shaped like the real things: waitingHintLine's reason is a daemon-supplied
+	// "owner/repo#N" with no upstream bound on the repo name, and the limited
+	// hint grows with the number of distinct agent names in the session.
+	//
+	// The limited hint (159 columns) overhangs at all four widths below; the
+	// waiting reason (104) overhangs at 40, 61 and 80 but fits at 120, which is
+	// the control — the guard must leave a line that already fits alone.
+	const longReason = "checks_passed_ready on some-very-long-organisation-name/an-equally-long-repository-name#123456"
+	longAgents := []string{
+		"claude-opus-with-a-long-account-label", "codex-gpt-with-a-long-account-label",
+		"opencode-with-a-long-account-label", "another-agent-with-a-long-label",
+	}
+
+	hints := []struct {
+		name string
+		// seed returns a model showing only this hint, and the line it draws.
+		seed func(width int) (ChatPickerModel, string)
+	}{
+		{
+			name: "waiting reason",
+			seed: func(width int) (ChatPickerModel, string) {
+				m := seedChatPickerHint(width, []*pb.ClaudeChat{{
+					SessionId: "session-1", AgentSessionId: "agent-1",
+					Title: "Parked chat", AgentName: "claude", CreatedAt: timestamppb.Now(),
+				}}, map[string]string{"agent-1": statusWaiting},
+					map[string]string{"agent-1": longReason})
+				return m, m.waitingReasonLine()
+			},
+		},
+		{
+			name: "usage-limited hint",
+			seed: func(width int) (ChatPickerModel, string) {
+				chats := make([]*pb.ClaudeChat, 0, len(longAgents))
+				statuses := make(map[string]string, len(longAgents))
+				for i, agent := range longAgents {
+					id := fmt.Sprintf("agent-%d", i)
+					chats = append(chats, &pb.ClaudeChat{
+						SessionId: "session-1", AgentSessionId: id,
+						Title: "Limited chat", AgentName: agent, CreatedAt: timestamppb.Now(),
+					})
+					statuses[id] = statusLimited
+				}
+				m := seedChatPickerHint(width, chats, statuses, nil)
+				return m, m.limitedProviderLine()
+			},
+		},
+	}
+
+	for _, hint := range hints {
+		for _, width := range []int{40, 61, 80, 120} {
+			t.Run(fmt.Sprintf("%s/%d columns", hint.name, width), func(t *testing.T) {
+				m, line := hint.seed(width)
+				if line == "" {
+					t.Fatalf("%s is empty; the fixture no longer drives it", hint.name)
+				}
+				rendered := visibleRowText(chatPickerProseBlock(styleStatusInfo.Render(line)))
+				if got := ansi.StringWidth(rendered); got > width {
+					t.Errorf("rendered %s is %d columns wide in a %d-column terminal: %q",
+						hint.name, got, width, rendered)
+				}
+				// The reservation this width protects, so a failure names it.
+				if got := m.limitedLineHeight() + m.waitingLineHeight(); got != 2 {
+					t.Errorf("reserved rows = %d, want 2 (one hint on screen)", got)
+				}
+			})
+		}
+	}
+}
+
+// seedChatPickerHint builds a sized chat picker showing one status hint.
+func seedChatPickerHint(width int, chats []*pb.ClaudeChat, statuses, reasons map[string]string) ChatPickerModel {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatsListedMsg{
+		chats:                chats,
+		daemonStatuses:       statuses,
+		daemonWaitingReasons: reasons,
+	})
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	return updated.(ChatPickerModel)
 }

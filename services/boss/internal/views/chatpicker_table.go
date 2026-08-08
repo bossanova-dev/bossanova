@@ -130,10 +130,43 @@ func (m ChatPickerModel) limitedProviderLine() string {
 	if len(providers) == 0 {
 		return ""
 	}
-	return "⚠ " + strings.Join(providers, ", ") + " usage-limited"
+	return m.fitProseLine("⚠ " + strings.Join(providers, ", ") + " usage-limited")
+}
+
+// chatPickerProseAvailWidth returns the rendered columns a prose line may
+// occupy inside chatPickerProseBlock's inset — the prose counterpart to
+// chatPickerTableAvailWidth above. 0 means unbounded: no tea.WindowSizeMsg yet,
+// or a terminal the inset alone consumes.
+func (m ChatPickerModel) chatPickerProseAvailWidth() int {
+	return fitAvailWidth(m.width, chatPickerProsePadding)
+}
+
+// fitProseLine truncates a single-line prose hint to that budget. It is the
+// one-row half of the reservation contract tableHeight documents: these two
+// hints claim a fixed row count while carrying unbounded text (a waiting reason
+// embeds a daemon-supplied "owner/repo#N"), and httpEndpointLine already guards
+// its own line the same way for the same reason.
+//
+// Truncates against the terminal rather than blockWrapWidth: these are hints,
+// not blocks, and clamping them to the table's content width would shorten them
+// on wide terminals where they fit perfectly well.
+func (m ChatPickerModel) fitProseLine(s string) string {
+	avail := m.chatPickerProseAvailWidth()
+	if avail <= 0 || ansi.StringWidth(s) <= avail {
+		return s
+	}
+	return ansi.Truncate(s, avail, "…")
 }
 
 // tableHeight returns the height to pass to table.SetHeight.
+//
+// It owns the reservation sum, and with it the invariant every *Height function
+// below depends on: each block must actually occupy the rows it claims here. A
+// line wider than the terminal soft-wraps onto a row nobody reserved and pushes
+// the last chat row or the action bar off screen, so every block is width-bounded
+// at its source — the wrapped blocks by blockWrapWidth, the HTTP line by its own
+// ansi.Truncate, the two single-line hints by fitProseLine. Those three sites
+// cite this one rather than restating the reasoning.
 func (m ChatPickerModel) tableHeight() int {
 	// gap + actionbar padding + actionbar, plus the session warning block
 	// (below the header, above the chat list). Reserving its lines shrinks the
@@ -155,9 +188,11 @@ func (m ChatPickerModel) tableHeight() int {
 // Styled with raw ANSI rather than lipgloss: Render on a string containing an
 // OSC 8 envelope mangles the escape sequence (the same constraint the PR and
 // tracker link renderers document). Only the *styling* needs the raw path
-// though, so the inset is still built from chatPickerBlockPadding rather than
-// hand-synced to it — chatPickerContentBlock's rule reaches this line too, just spelled
-// as spaces.
+// though, so the inset is still built from chatPickerProsePadding rather than
+// hand-synced to it — chatPickerProseBlock's rule reaches this line too, just
+// spelled as spaces. It is the one site a change to the prose column can leave
+// behind, which is what TestChatPicker_StatusLinesAlignWithActionBar's HTTP
+// subtest exists to catch (BOS-718).
 //
 // The result is capped at the terminal width. Nothing upstream bounds how many
 // listeners a worktree exposes (sessionports emits one endpoint per listening
@@ -170,7 +205,7 @@ func (m ChatPickerModel) httpEndpointLine() string {
 	if links == "" {
 		return ""
 	}
-	line := strings.Repeat(" ", chatPickerBlockPadding) + mutedTextOpen + "HTTP" + mutedTextClose + "  " + links
+	line := strings.Repeat(" ", chatPickerProsePadding) + mutedTextOpen + "HTTP" + mutedTextClose + "  " + links
 	if m.width > 0 && ansi.StringWidth(line) > m.width {
 		line = ansi.Truncate(line, m.width, "…")
 	}
@@ -189,15 +224,22 @@ func (m ChatPickerModel) httpLineHeight() int {
 	return 1
 }
 
-// chatPickerBlockPadding is the horizontal inset shared by the chat picker's
-// tables and the wrapped prose blocks that align to them. blockWrapWidth exists
-// so the prose lines up with the table's content, and that alignment only holds
-// while both are inset by the same amount, so they must move together. Apply it
-// through chatPickerContentBlock rather than by hand.
+// chatPickerBlockPadding is the horizontal inset on the chat picker's *tables*
+// — the agent-select, switch-account and chat tables — applied through
+// chatPickerContentBlock rather than by hand.
 //
-// It is not the view's only inset: the status, prompt and notice lines sit at
-// the wider Padding(0, 2) that Home uses, deliberately, because they align to
-// nothing. Do not route those through chatPickerContentBlock.
+// It is deliberately one column narrower than the prose inset beside it
+// (chatPickerProsePadding), and the two no longer move together (BOS-718).
+// bossTableStyles gives every table cell its own Padding(0, 0, 0, 1), so a
+// table drawn inside this 1-column frame lands its ❯ caret on display column 2
+// — the column styleActionBar, renderBanner and styleToast all sit at. Prose
+// carries no such cell pad, so routing prose through this constant drew it at
+// column 1, one short of every other piece of chrome in the view. The table's
+// cell pad supplies the missing column; the prose has to be given it. Bumping
+// this constant instead would move the caret to column 3 and break an alignment
+// that is already correct — see TestChatPicker_ResizedTableLeavesRoomForItsInset
+// and the chatPickerBlockPadding assertions in chatpicker_switch_test.go and
+// app_fallthrough_test.go, which pin the table side un-edited.
 //
 // Unlike Home — where the padding is part of the same style that carries the
 // wrap Width, so lipgloss counts it inside that width — the chat picker passes
@@ -205,32 +247,84 @@ func (m ChatPickerModel) httpLineHeight() int {
 // style.Width(width) with a padding-less style) and only then insets the
 // finished block. The padding is therefore *outside* the wrap width and adds
 // to it on screen, which is why blockWrapWidth clamps against the room left
-// after it rather than against the raw terminal width.
+// after the (wider) prose inset rather than against the raw terminal width.
 const chatPickerBlockPadding = 1
 
-// chatPickerContentBlock insets a rendered block by chatPickerBlockPadding. It
-// is the single place that padding is applied, so a fifth block inherits the
+// chatPickerProsePadding is the horizontal inset on every prose/status line the
+// chat picker draws around its tables: the finalize/repair warning block, the
+// usage-limited hint, the waiting-reason line, the HTTP endpoint line and the
+// rotation-history block. Apply it through chatPickerProseBlock — except in
+// httpEndpointLine, which cannot (see its doc comment).
+//
+// Defined as statusLinePadding rather than a bare 2 because column 2 is one
+// global chrome rule, not a chat-picker fact: Home's status lines
+// (HomeModel.statusLine), styleActionBar, styleTitle, styleError and styleToast
+// all sit there. Two constants holding 2 for the same reason would eventually
+// disagree. Home already runs this exact split — homeTableBlockPadding = 1 for
+// its table, statusLinePadding = 2 for its prose — and BOS-718 brings the chat
+// picker into line with it.
+const chatPickerProsePadding = statusLinePadding
+
+// chatPickerContentBlock insets a rendered table by chatPickerBlockPadding. It
+// is the single place that padding is applied, so a fourth table inherits the
 // rule instead of needing a follow-up commit — which is what the constant's
-// first revision cost, when it shipped with the limited-provider hint still on
-// a bare literal while the doc claimed everything in the column moved together.
+// first revision cost, when it shipped a block on a bare literal while the doc
+// claimed everything in the column moved together. (That straggler was the
+// limited-provider hint, which BOS-718 has since moved to the prose side.)
 //
 // Name-prefixed like the constant: package views is shared by every view, and
 // home, trash and repo_list render the same table-in-a-block shape at the wider
 // statusLinePadding. An unprefixed helper would be reachable from those files
 // and would silently apply the chat picker's inset.
 //
-// httpEndpointLine is the one caller that cannot use this: it emits OSC 8
-// hyperlink escapes, which lipgloss mangles, so it inlines its own inset. See
-// its doc comment.
+// Its only callers are the three tables. Prose goes through chatPickerProseBlock
+// instead (BOS-718): the tables' cell padding supplies the column that prose
+// does not have, so sharing one helper drew the prose one column short.
 func chatPickerContentBlock(s string) string {
 	return lipgloss.NewStyle().Padding(0, chatPickerBlockPadding).Render(s)
+}
+
+// chatPickerProseBlock insets a rendered prose block by chatPickerProsePadding,
+// the chat picker's counterpart to Home's Padding(0, statusLinePadding) status
+// style. Four of the view's five prose sites go through it — the warning block,
+// the usage-limited hint, the waiting-reason line and the rotation-history block
+// — so it is the single place their inset is applied and a fifth inherits the
+// rule rather than needing a follow-up commit. The HTTP endpoint line is the
+// exception, for the reason given below.
+//
+// It is not the view's only route to column 2, and does not claim to be: the
+// confirm prompts, the transient statusMsg line, the switch-account notice, the
+// merged label and the two overlay headers in chatpicker_view.go each build
+// their own lipgloss.NewStyle().Padding(0, 2) because they carry a foreground
+// colour or wrap another style, and none of them is width-clamped by
+// blockWrapWidth. They land in the same column by holding the same number, not
+// by sharing this helper. Routing them through it is a fine follow-up; it is
+// not a prerequisite for the blocks below, which is why BOS-718 left them.
+//
+// Name-prefixed for the same reason chatPickerContentBlock is: package views is
+// shared by every view, and an unprefixed proseBlock would be reachable from
+// home, trash and repo_list, which own their own status styling.
+//
+// httpEndpointLine is the one prose site that cannot use this: it emits OSC 8
+// hyperlink escapes, which lipgloss mangles, so it inlines the same inset as
+// spaces. See its doc comment.
+func chatPickerProseBlock(s string) string {
+	return lipgloss.NewStyle().Padding(0, chatPickerProsePadding).Render(s)
 }
 
 // blockWrapWidth returns the width the chat picker's wrapped prose blocks —
 // the session-warning block and the rotation-history block — wrap at. It
 // mirrors HomeModel.statusWrapWidth (BOS-507/BOS-532): track the rendered
-// table so those blocks line up with the content on screen instead of running
-// to the terminal edge.
+// table so those blocks span roughly the table's content instead of running to
+// the terminal edge.
+//
+// "Track", not "align to": since BOS-718 the blocks start one column right of
+// where the table's frame starts (prose inset 2 vs table inset 1) while wrapping
+// at the table's content width, so only their LEFT edges line up — with the
+// caret and the rest of the chrome, which is the point. Their right edge now
+// falls within a column of the table's rather than on it. That is invisible
+// unless text reaches the right margin, and the left edge is the alignment the
+// view is judged on.
 //
 // Derived from the columns rather than m.table.Width() because the table's
 // width is set from two places with different meanings (buildTableRows uses
@@ -247,19 +341,21 @@ func chatPickerContentBlock(s string) string {
 // there are no columns at all and columnsWidth returns 0, which the floor picks
 // up.
 func (m ChatPickerModel) blockWrapWidth() int {
-	// chatPickerContentBlock insets each block by chatPickerBlockPadding on top
-	// of the width returned here, so a terminal with no columns left after that
-	// inset cannot show a wrapped block at all. Report 0 — lipgloss treats
-	// Width(0) as unconstrained — rather than a width that would only look like
-	// it constrains. This also covers an unknown (0) or negative terminal width,
-	// i.e. no tea.WindowSizeMsg yet.
+	// The prose budget, not the table's: since BOS-718 these blocks sit at
+	// chatPickerProsePadding while the tables stay at the narrower
+	// chatPickerBlockPadding, and clamping against the narrower one would let a
+	// block render two columns wider than the terminal — the BOS-530/BOS-532
+	// overhang defect tableHeight's doc describes. Same rule as Home's
+	// `width <= statusLinePadding*2` guard, with the same constant: both bail at
+	// width <= 4, reporting 0 because lipgloss reads Width(0) as unconstrained,
+	// which is honest about a terminal too narrow to constrain rather than a
+	// bound that only looks like one.
 	//
-	// Same rule as Home's `width <= statusLinePadding*2` guard, just with this
-	// view's smaller constant: Home bails at width <= 4, this at width <= 2. It
-	// is not a claim that a 3-column terminal renders correctly — at avail == 1
-	// lipgloss cannot break a word with no break point, so it emits the longest
-	// unbreakable segment anyway.
-	avail := m.width - chatPickerBlockPadding*2
+	// Bailing is not a claim that a 5-column terminal renders correctly: at
+	// avail == 1 lipgloss has no break point to use and emits the longest
+	// unbreakable segment regardless. What the clamp bounds is the width this
+	// function reports, never the rendered block.
+	avail := m.chatPickerProseAvailWidth()
 	if avail <= 0 {
 		return 0
 	}
@@ -268,9 +364,9 @@ func (m ChatPickerModel) blockWrapWidth() int {
 		w = minStatusWrapWidth
 	}
 	// Clamp to the room the padding leaves, not to m.width: clamping to m.width
-	// would render a block of m.width+2 columns and overhang the terminal by
-	// two columns on a narrow window. The result is still never wider than
-	// m.width, so the "clamped to the terminal width" rule holds.
+	// would render a block of m.width+chatPickerProsePadding*2 columns and
+	// overhang the terminal by that much on a narrow window. The result is still
+	// never wider than m.width, so the "clamped to the terminal width" rule holds.
 	if w > avail {
 		w = avail
 	}
@@ -334,7 +430,7 @@ func (m ChatPickerModel) waitingReasonLine() string {
 			continue
 		}
 		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId]); line != "" {
-			return line
+			return m.fitProseLine(line)
 		}
 	}
 	return ""

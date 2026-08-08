@@ -345,9 +345,13 @@ func (c *StreamClient) dispatchAttach(
 
 // dispatchCreate kicks off a streaming session creation and returns an
 // immediate CommandResult{Ok:true} handshake. The creator goroutine emits
-// SessionCreateChunk events (live setup output, then a terminal created/error)
-// onto outbound until creation finishes or ctx is cancelled. Each chunk is
-// already correlated via command_id by the creator. Mirrors dispatchAttach.
+// SessionCreateChunk events onto outbound until creation finishes or ctx is
+// cancelled. Since BOS-720 the bootstrapping path emits `created` TWICE —
+// accepted (row inserted, bootstrap running), then live setup output, then
+// settled — so a consumer must NOT treat the first `created` as terminal; the
+// deliberately single-frame attach and quick-chat paths still send one. An
+// `error` chunk is always terminal. Each chunk is already correlated via
+// command_id by the creator. Mirrors dispatchAttach.
 func (c *StreamClient) dispatchCreate(
 	ctx context.Context,
 	cmdID string,

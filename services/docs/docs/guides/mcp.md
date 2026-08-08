@@ -1,8 +1,10 @@
 ---
-title: MCP Server (Agent & CLI Control)
+title: MCP Server
 description: Control Bossanova sessions, repos, and cron jobs from AI agents via the Model Context Protocol.
 slug: /guides/mcp
 ---
+
+import CommandTabs from '@site/src/components/CommandTabs';
 
 # MCP Server
 
@@ -38,13 +40,35 @@ never need this. Install the HTTP daemon only if you want an always-on
 browser-based inspector.
 :::
 
-```bash
-boss mcp install        # install and start the local MCP HTTP daemon
-boss mcp status         # show whether the service is installed / running, plus the instance inventory
-boss mcp start          # start or restart the installed service
-boss mcp stop           # stop the managed service and sweep stray/orphaned boss-mcp processes
-boss mcp uninstall      # stop and remove the service file
-```
+Install and start the local MCP HTTP daemon:
+
+<CommandTabs
+cli="boss mcp install"
+/>
+
+Show whether the service is installed and running, plus the instance inventory:
+
+<CommandTabs
+cli="boss mcp status"
+/>
+
+Start or restart the installed service:
+
+<CommandTabs
+cli="boss mcp start"
+/>
+
+Stop the managed service and sweep stray/orphaned `boss-mcp` processes:
+
+<CommandTabs
+cli="boss mcp stop"
+/>
+
+Stop and remove the service file:
+
+<CommandTabs
+cli="boss mcp uninstall"
+/>
 
 `boss mcp install` runs `mcp --http 127.0.0.1:<port>` (serving `/mcp`) under the
 platform user service manager — launchd (`~/Library/LaunchAgents/com.bossanova.mcp.plist`)

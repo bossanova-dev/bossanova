@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "BOS-718 chat picker — the rotation-history block below the action bar starts in the same column as the action bar itself",
+  "fixture": { "preset": "respawn-history" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the session carrying respawn history from the home list into its chat picker",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Auth-wedge respawn demo",
+            "match": "normalized",
+            "label": "home session list loaded (respawn-history preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the session carrying respawn history is selected"
+        },
+        { "key": "enter", "caption": "Open the session's chat-picker detail" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the rotation-history block below the action bar shares the action bar's left edge",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "refreshed auth in place",
+            "match": "normalized",
+            "label": "the rotation-history block rendered below the action bar in the chat-picker view"
+          },
+          "timeoutMs": 10000,
+          "caption": "The rotation-history block is on screen, below the action bar (BOS-432)"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}Rotation history",
+            "match": "regex",
+            "label": "the rotation-history block's header begins after EXACTLY two leading spaces — the chrome column. Before BOS-718 this block was the last column-1 element in an otherwise uniform view"
+          },
+          "caption": "The rotation-history block is indented to the chrome column — two spaces, not one"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}\\[enter\\] select",
+            "match": "regex",
+            "label": "the action bar directly above the block begins after the same two leading spaces"
+          },
+          "caption": "The action bar above it starts in that same column, so the two read as one left edge"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}❯",
+            "match": "regex",
+            "label": "the chat table's ❯ caret begins after the same two leading spaces, so the table did NOT move when the prose did"
+          },
+          "caption": "The chat table's selection caret is unchanged at that column"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present above the rotation-history block"
+          },
+          "caption": "The [esc] back action bar renders in full above the block"
+        }
+      ]
+    }
+  ]
+}

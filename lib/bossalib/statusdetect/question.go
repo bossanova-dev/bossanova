@@ -107,23 +107,269 @@ func stripToolOutput(data []byte) []byte {
 	return toolOutputBlockRe.ReplaceAll(data, nil)
 }
 
-// tipLineRe matches Claude Code's contextual "Tip:" status lines rendered
-// beneath the working/thinking spinner. These are UI chrome, not Claude's
-// words, so any trailing "?" on them must not trigger question detection.
-// Shape seen in the wild:
+// tipPrefix is the literal label that opens a Claude Code "Tip:" footer line.
+const tipPrefix = "Tip:"
+
+// Decoration glyphs Claude Code renders immediately before the "Tip:" label.
+const (
+	tipDecorationToolConnector = '⎿' // U+23BF, the spinner-footer connector
+	tipDecorationBoxCorner     = '└' // U+2514, box-drawing variant of the same
+	tipDecorationReference     = '※' // U+203B, the recap/reference block prefix
+	tipDecorationBullet        = '•' // U+2022
+	tipDecorationMiddleDot     = '·' // U+00B7
+)
+
+// tipDecorations is the closed allowlist of glyphs that may introduce a tip
+// footer line. It is deliberately an allowlist rather than an open "any
+// non-letter rune" rule, because two glyphs MUST NOT be accepted here:
+//
+//   - ⏺ (U+23FA) is Claude's own response marker. "⏺ Tip: consider caching the
+//     result. Does that make sense to you?" is Claude speaking, not UI chrome,
+//     and is guarded by the positive assertion in TestHasQuestionPrompt_ClaudeCodeTips.
+//   - ❯ (U+276F) introduces the input/prompt column, which stripUserPromptLines
+//     already removes; accepting it here would additionally swallow the lines
+//     below a "❯ …Tip:…" prompt.
+var tipDecorations = map[rune]bool{
+	tipDecorationToolConnector: true,
+	tipDecorationBoxCorner:     true,
+	tipDecorationReference:     true,
+	tipDecorationBullet:        true,
+	tipDecorationMiddleDot:     true,
+}
+
+// tipStartDecoration reports whether lineText opens a Claude Code tip footer --
+// leading spaces, an OPTIONAL single decoration glyph from tipDecorations
+// followed by one or more spaces, then the literal "Tip:" -- and returns the
+// decoration rune it opened with (0 for the bare, undecorated form).
+func tipStartDecoration(lineText string) (rune, bool) {
+	rest := strings.TrimLeft(lineText, " ")
+	if strings.HasPrefix(rest, tipPrefix) {
+		return 0, true
+	}
+	r, size := utf8.DecodeRuneInString(rest)
+	if size == 0 || !tipDecorations[r] {
+		return 0, false
+	}
+	afterGlyph := rest[size:]
+	afterSpaces := strings.TrimLeft(afterGlyph, " ")
+	if len(afterSpaces) == len(afterGlyph) {
+		// The decoration must be separated from the label by whitespace, so
+		// prose like "·Tip:" is not treated as chrome.
+		return 0, false
+	}
+	if !strings.HasPrefix(afterSpaces, tipPrefix) {
+		return 0, false
+	}
+	return r, true
+}
+
+// toolOutputContinuationIndent is the indent that makes a line a continuation
+// of the ⎿ tool-output block above it. It mirrors toolOutputBlockRe's `[ ]{4,}`
+// and MUST stay in step with it -- both the width and the fact that the run is
+// contiguous, i.e. the first shallower row ends the block.
+const toolOutputContinuationIndent = "    "
+
+// isTipRuleRune reports whether r is one of the runes a horizontal-rule line
+// may consist of: the box-drawing block (U+2500-U+257F, which covers ─ ━ ═ │ …)
+// plus the ASCII dash and underscore Claude Code uses for the same separator.
+func isTipRuleRune(r rune) bool {
+	return (r >= 0x2500 && r <= 0x257F) || r == '-' || r == '_'
+}
+
+// tipBlockExtraStops are leading runes that end a tip block but are not in
+// optionStopMarkers:
+//
+//   - ☐ (U+2610) opens an AskUserQuestion card title row (see cardHeaderRe).
+//     Without this stop the sweep eats the header, the question text and the
+//     numbered options below it, flipping a LIVE MODAL card to "no question".
+//     That is the costly direction: HasModalPrompt gates delivery (BOS-600), so
+//     a false negative types a message into a pane whose keystrokes are
+//     consumed as selections.
+//   - • (U+2022) opens a fresh bullet row, which is never the wrapped tail of
+//     the line above.
+//
+// This set is deliberately NOT derived from tipDecorations. Three decorations
+// are stops (⎿ and · via optionStopMarkers, • here); the other two, └ (U+2514)
+// and ※ (U+203B), MUST NOT be, because they are absent from optionStopMarkers.
+// A row kept here re-enters countConsecutiveOptionLines, whose optionRe gate
+// accepts any 2+-space-indented row and whose stop set is optionStopMarkers --
+// so a kept "  └  Did you mean …?" row under a selector counts as a live option
+// and fires Pattern 1, flipping HasModalPrompt false->TRUE against base. That
+// modal FALSE POSITIVE is the regression this exclusion exists to prevent; it is
+// pinned by TestHasQuestionPrompt_DecoratedRowUnderSelector.
+//
+// The root cause is pre-existing and lives elsewhere: └ is documented as the
+// box-drawing variant of the ⎿ tool connector yet is missing from
+// optionStopMarkers. Adding it there is the real fix and touches three counters,
+// so it is tracked separately rather than widened into this change.
+var tipBlockExtraStops = map[rune]bool{
+	'☐': true,
+	'•': true,
+}
+
+// maxTipContinuationLines bounds the continuation sweep of ONE tip start line.
+// The bound keeps a stray "Tip:"-prefixed prose or bullet line from erasing an
+// unbounded run of real content beneath it when none of the stop conditions
+// happen to fire.
+//
+// Safety is width-dependent, not absolute: a tip leaks residue only when its
+// body exceeds (maxTipContinuationLines+1) x paneWidth. At the 43 columns
+// bossd's agent panes use that is >172 characters, against a 71-character
+// longest-observed tip ("Did you know you can drag and drop image files into
+// your terminal?"), and it still holds at 20 columns. When it is exceeded the
+// residue produces a spurious ping, not a swallowed question -- the safe
+// direction -- so prefer this bound over widening the sweep.
+const maxTipContinuationLines = 3
+
+// tipBlockStops reports whether lineText terminates a tip block. The stop line
+// itself is KEPT -- it is the next piece of real content, not part of the tip.
+func tipBlockStops(lineText string) bool {
+	trimmed := strings.TrimSpace(lineText)
+	if trimmed == "" {
+		return true
+	}
+	// NOT derived from tipDecorations: └ and ※ open a tip but must not close
+	// one, or a kept decorated row counts as a live option under a selector.
+	// See the tipBlockExtraStops doc comment for the full reasoning.
+	if r, _ := utf8.DecodeRuneInString(trimmed); optionStopMarkers[r] || tipBlockExtraStops[r] {
+		return true
+	}
+	// A numbered option row ("  1. Rebase") opens a selection list. A wrapped
+	// tip continuation never starts "N. ", and swallowing the option run under
+	// a card leaves Pattern 2 with a header and no options -- another silent
+	// HasModalPrompt false negative.
+	if numberedOptionRe.MatchString(lineText) {
+		return true
+	}
+	// A horizontal rule ("────…") closes the footer region.
+	for _, r := range trimmed {
+		if !isTipRuleRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// stripTipLines removes Claude Code's contextual "Tip:" footer BLOCKS so the
+// incidental "?" that ends many of them doesn't trigger question detection.
+// Tips are UI chrome, not Claude's words.
+//
+// Shapes seen in the wild:
 //
 //	"  ⎿  Tip: Did you know you can drag and drop image files …?"
 //	"  Tip: Run /help for a list of commands"
+//	"  ※ Tip: …"
 //
-// Match leading whitespace, an optional ⎿ (U+23BF) connector with its
-// following space(s), then the literal "Tip:" prefix and the rest of the
-// line. Anchored to line start to avoid mid-sentence false positives.
-var tipLineRe = regexp.MustCompile(`(?m)^[ ]*(?:⎿[ ]+)?Tip:[^\n]*`)
-
-// stripTipLines removes Claude Code "Tip:" status lines so the incidental
-// "?" that ends many of them doesn't trigger question detection.
+// A tip is a BLOCK, not a line: bossd captures panes with
+// `tmux capture-pane -p -S -1000` and no `-J`, so a tip wider than the pane
+// (live agent panes are 43 columns) arrives as a start line plus one or more
+// continuation lines -- and the trailing "?" lands on the continuation. The
+// scan therefore drops the start line and the following lines until the block
+// is closed by a blank/whitespace-only line, a line whose first non-space rune
+// is an optionStopMarker (⎿ ⏺ · ✻ ❯), a tip decoration (⎿ └ ※ • ·), ☐, a
+// numbered option row, a horizontal rule, maxTipContinuationLines swept rows,
+// or end of input. The closing line itself is kept. Dropped rows are blanked in
+// place, keeping their newline AND their indent, so neither the line count nor
+// a surrounding tool block's shape changes.
+//
+// One exception: a ⎿-decorated tip is simultaneously a tool-output block
+// header, so its rows first follow toolOutputBlockRe's own rule -- indented 4+
+// spaces and contiguous, the first shallower row ending the tool block for
+// good. This pass removes the ⎿ header stripToolOutput anchors on, so those
+// rows have no second chance to be stripped. Once that run ends, the ordinary
+// bounded prose sweep still applies to the rows below it, so a ⎿ tip's total
+// reach is the contiguous 4+-indented run PLUS up to maxTipContinuationLines
+// further rows.
+//
+// The sweep is deliberately bounded on BOTH ends -- a stop-rune set that covers
+// every glyph that opens new content, and a hard row cap -- because dropping
+// too much is a SILENT failure: a swallowed question never pings a human, and a
+// swallowed AskUserQuestion card opens the BOS-600 delivery gate on a modal
+// pane. Widen the sweep only with a fixture proving the shape is real chrome.
+//
+// Accepted risk (stated precisely, because it is what the bounds do NOT cover):
+// bare prose -- at any indent, opening with none of the stop runes -- rendered
+// within maxTipContinuationLines rows below a tip start with no blank line
+// between, is swallowed. Two shapes fall in that set:
+//
+//   - A conversational question whose ⏺ marker is on an earlier line, e.g. a
+//     wrapped "…Should I continue?" tail. Claude prefixes its own turn with ⏺
+//     and a tip is footer chrome at the very bottom of the pane with only the
+//     composer below it, so a tip does not normally precede Claude's prose.
+//   - A permission prompt's question row ("Claude wants to run a command.
+//     Allow?"), which is bare prose above its ❯ options. The ❯ row itself stops
+//     the sweep, but losing the question row costs Pattern 1 its "?" gate.
+//
+// Both need the tip to render directly ABOVE live prompt content rather than
+// below it as footer chrome, so they are accepted rather than guarded -- there
+// is no rune or indent that distinguishes such a row from a genuine wrapped tip
+// continuation, and guarding by heuristic would reopen the false positive this
+// function exists to close. The row cap keeps the exposure to a few rows PER TIP
+// START LINE (it re-arms on each one) instead of the rest of the buffer; under a
+// ⎿ tip the exposure is instead the contiguous 4+-indented run, which is exactly
+// what stripToolOutput removed before this pass existed.
 func stripTipLines(data []byte) []byte {
-	return tipLineRe.ReplaceAll(data, nil)
+	var out bytes.Buffer
+	inTipBlock := false
+	inToolBlock := false
+	swept := 0
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		lineText := strings.TrimSuffix(line, "\n")
+		// SHAPE-PRESERVING DROP: a removed row is replaced by its own leading
+		// whitespace plus its newline, never by nothing. This pass runs first,
+		// so the later regex passes must still see the buffer they expect:
+		//
+		//   - Keeping the NEWLINE keeps the line count. LastNLines counts lines,
+		//     so deleting rows would slide the 30-line window further back
+		//     through the 1000-line capture and pull stale chrome (an answered
+		//     card's "Chat about this" terminator) into the tail.
+		//   - Keeping the INDENT keeps toolOutputBlockRe's `[ ]{4,}` continuation
+		//     run contiguous. A bare "Tip:" row inside a FOREIGN ⎿ block (one
+		//     headed by a command, not by a tip) would otherwise truncate that
+		//     block at the blank, orphaning every row below it into the tail.
+		//
+		// Both failure modes were measured, and both flip HasModalPrompt to a
+		// FALSE POSITIVE -- the direction that costs the message on BOS-600's
+		// delivery gate. A whitespace-only row is inert everywhere downstream:
+		// every option/marker scan trims and skips it, and optionRe requires a
+		// non-space character.
+		blank := lineText[:len(lineText)-len(strings.TrimLeft(lineText, " \t"))] + line[len(lineText):]
+		if decoration, ok := tipStartDecoration(lineText); ok {
+			inTipBlock = true
+			inToolBlock = decoration == tipDecorationToolConnector
+			swept = 0
+			out.WriteString(blank)
+			continue
+		}
+		if inTipBlock {
+			// A ⎿-headed tip is also a tool-output block header, so its rows
+			// follow toolOutputBlockRe's own rule rather than the bounded prose
+			// sweep: 4+-space indented and CONTIGUOUS, with the first shallower
+			// row ending the block for good. This pass deletes the ⎿ header that
+			// stripToolOutput anchors on, so without this branch every row past
+			// the cap would be orphaned into the tail as ordinary text --
+			// reopening the false positive for a long tool result, and letting a
+			// question card pasted inside one reach the modal patterns. Matching
+			// the regex's contiguity matters just as much: letting the branch
+			// re-engage after a shallower row would skip the stop runes and the
+			// cap entirely and swallow live UI below the tip.
+			if inToolBlock {
+				if strings.HasPrefix(lineText, toolOutputContinuationIndent) {
+					out.WriteString(blank)
+					continue
+				}
+				inToolBlock = false
+			}
+			if swept < maxTipContinuationLines && !tipBlockStops(lineText) {
+				swept++
+				out.WriteString(blank)
+				continue
+			}
+			inTipBlock = false
+		}
+		out.WriteString(line)
+	}
+	return out.Bytes()
 }
 
 // userPromptLineRe matches lines rendered in the "❯ " input/prompt column.
@@ -455,6 +701,26 @@ func hasQuestionPrompt(data []byte, modalOnly bool) bool {
 	if len(clean) == 0 {
 		return false
 	}
+
+	// Remove "Tip:" footer blocks from the FULL buffer BEFORE stripToolOutput.
+	// Order matters: the commonest tip shape is ⎿-connected, so stripToolOutput
+	// would otherwise consume the "  ⎿  Tip: …" START line as a one-line tool
+	// block (its continuation sweep needs a 4+-space indent, which a wrapped tip
+	// continuation usually lacks) and leave the continuation -- carrying the
+	// trailing "?" -- orphaned in the tail with nothing left for stripTipLines to
+	// anchor to. Running the tip scan first keeps whole tip blocks out of every
+	// downstream view.
+	//
+	// This pass subsumes the per-view stripTipLines calls further down, which
+	// currently remove nothing. The per-view transforms are either line-wise
+	// deletions or line-aligned suffix slices, which cannot synthesize a tip
+	// start line -- with one exception, normalizeSelectorCursor, which rewrites
+	// "❯ " to blanks and so can turn "  ❯ Tip: …" into "    Tip: …". That is
+	// harmless because in both views that use it (footerTail, p2Tail) it runs
+	// AFTER stripTipLines, so no synthesized line is ever re-stripped. The
+	// per-view calls are retained as a cheap invariant guard so reordering these
+	// strips cannot silently reopen the bug.
+	clean = stripTipLines(clean)
 
 	// Remove tool-output blocks from the FULL buffer before slicing the tail.
 	// A block's ⎿ header can sit more than 30 lines above the bottom, so

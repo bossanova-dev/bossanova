@@ -4,6 +4,8 @@ description: 'Get notified in an agent chat the moment a pull request merges, cl
 slug: /guides/github-callbacks
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # GitHub PR Callbacks
 
 ## What a callback is
@@ -202,29 +204,71 @@ Flags:
 - `--json` — emit the created callback as a stable JSON schema instead of the
   human-readable confirmation line.
 
-```bash
-# "tell me when PR #123 is merged"
-boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"
+Register a callback for a plain trigger:
 
-# "ping this chat when PR #123 goes green and is ready to merge"
-boss callback add 123 checks_passed_ready --message "PR #123 is green and ready to merge"
+<CommandTabs
+chat='"tell me when PR #123 is merged"'
+cli='boss callback add 123 merged --message "PR #123 merged — pull main and redeploy"'
+mcp="register_github_callback"
+/>
 
-# "let me know if PR #123's checks fail" (full URL — carries its own owner/repo)
-boss callback add https://github.com/acme/widget/pull/123 checks_failed \
-  --message "PR #123 is red — investigate the failing checks"
+Or wait for the PR to go green and leave draft:
 
-# "notify me either way, merged or closed" — one daemon-local group, at most one delivery
-boss callback add 123 merged --group pr-123-outcome --message "PR #123 was merged"
-boss callback add 123 closed --group pr-123-outcome --message "PR #123 was closed without merging"
-```
+<CommandTabs
+chat='"ping this chat when PR #123 goes green and is ready to merge"'
+cli='boss callback add 123 checks_passed_ready --message "PR #123 is green and ready to merge"'
+mcp="register_github_callback"
+/>
+
+A full PR URL carries its own owner/repo:
+
+<CommandTabs
+chat='"let me know if https://github.com/acme/widget/pull/123 fails its checks"'
+cli={`boss callback add https://github.com/acme/widget/pull/123 checks_failed \\
+  --message "PR #123 is red — investigate the failing checks"`}
+mcp="register_github_callback"
+/>
+
+To be notified either way — merged or closed — register both triggers
+against the same daemon-local `--group`, so at most one delivers:
+
+<CommandTabs
+chat='"tell me when PR #123 merges, in callback group pr-123-outcome"'
+cli='boss callback add 123 merged --group pr-123-outcome --message "PR #123 was merged"'
+mcp="register_github_callback"
+/>
+
+<CommandTabs
+chat='"tell me when PR #123 closes without merging, in the same callback group pr-123-outcome"'
+cli='boss callback add 123 closed --group pr-123-outcome --message "PR #123 was closed without merging"'
+mcp="register_github_callback"
+/>
 
 ### `boss callback list`
 
-```bash
-boss callback list
-boss callback list --repo acme/widget --trigger merged
-boss callback list --state active --json
-```
+List every registered callback:
+
+<CommandTabs
+chat='"list the registered github callbacks"'
+cli="boss callback list"
+mcp="list_github_callbacks"
+/>
+
+Narrow the list by repository and trigger:
+
+<CommandTabs
+chat='"list the merged callbacks registered against acme/widget"'
+cli="boss callback list --repo acme/widget --trigger merged"
+mcp="list_github_callbacks"
+/>
+
+Filter by lifecycle state, as machine-readable JSON:
+
+<CommandTabs
+chat='"show me the active callbacks"'
+cli="boss callback list --state active --json"
+mcp="list_github_callbacks"
+/>
 
 Flags: `--chat` (filter by target chat), `--repo` (filter by `owner/repo`),
 `--trigger` (filter by one of the six trigger names), `--state` (filter by
@@ -232,10 +276,13 @@ Flags: `--chat` (filter by target chat), `--repo` (filter by `owner/repo`),
 
 ### `boss callback remove <callback-id>`
 
-```bash
-# ids are 16 hex characters; `boss callback list` prints them
-boss callback remove 9f2c41a7b8e30d55
-```
+IDs are 16 hex characters; `boss callback list` prints them.
+
+<CommandTabs
+chat='"remove callback 9f2c41a7b8e30d55"'
+cli="boss callback remove 9f2c41a7b8e30d55"
+mcp="delete_github_callback"
+/>
 
 Takes `--chat` to route the removal to the owning daemon when going through a
 remote (bosso) client; it's ignored for a local daemon and defaults to

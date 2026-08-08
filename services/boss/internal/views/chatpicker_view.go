@@ -104,7 +104,7 @@ func (m ChatPickerModel) renderChatList() string {
 	// below the worktree-path line, so we add none above here; the trailing
 	// "\n\n" yields the single blank line below, before the chat list.
 	if block := selectedSessionWarningBlock(m.session, m.chats, m.blockWrapWidth()); block != "" {
-		b.WriteString(chatPickerContentBlock(block))
+		b.WriteString(chatPickerProseBlock(block))
 		b.WriteString("\n\n")
 	}
 
@@ -112,7 +112,7 @@ func (m ChatPickerModel) renderChatList() string {
 	// operator can see at a glance which agent hit its cap without scanning the
 	// per-chat STATUS column. Only rendered when at least one chat is limited.
 	if line := m.limitedProviderLine(); line != "" {
-		b.WriteString(chatPickerContentBlock(styleStatusWarning.Render(line)))
+		b.WriteString(chatPickerProseBlock(styleStatusWarning.Render(line)))
 		b.WriteString("\n\n")
 	}
 
@@ -122,7 +122,7 @@ func (m ChatPickerModel) renderChatList() string {
 	// usage-limited line rather than alongside it. waitingLineHeight reserves
 	// these two lines in tableHeight.
 	if line := m.waitingReasonLine(); line != "" {
-		b.WriteString(chatPickerContentBlock(styleStatusInfo.Render(line)))
+		b.WriteString(chatPickerProseBlock(styleStatusInfo.Render(line)))
 		b.WriteString("\n\n")
 	}
 
@@ -154,7 +154,7 @@ func (m ChatPickerModel) renderChatList() string {
 	// rotation history, so sessions that never rotated see nothing.
 	if hist := rotationHistoryBlock(m.session, m.blockWrapWidth(), time.Now()); hist != "" {
 		b.WriteString("\n")
-		b.WriteString(chatPickerContentBlock(hist))
+		b.WriteString(chatPickerProseBlock(hist))
 	}
 
 	return b.String()

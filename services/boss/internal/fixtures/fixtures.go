@@ -36,6 +36,13 @@ type World struct {
 	SessionStatuses []*pb.SessionStatusEntry
 	CronJobs        []*pb.CronJob
 	Accounts        []*pb.Account
+	// CreateSessionScript, when non-empty, scripts the mock daemon's
+	// CreateSession stream instead of its default Unimplemented, with
+	// CreateSessionFrameDelay between consecutive frames. It exists for the
+	// BOS-720 new-session proof: the accepted-then-settled shape is only
+	// observable if the intermediate frames arrive far enough apart to capture.
+	CreateSessionScript     []*pb.CreateSessionResponse
+	CreateSessionFrameDelay time.Duration
 }
 
 // Repos returns the registered repositories. The first entry (repo-1 / my-app)
@@ -756,4 +763,61 @@ func DemoWorld() World {
 		CronJobs: CronJobs(),
 		Accounts: Accounts(),
 	}
+}
+
+// asyncCreateSessionID is the session id the async-create preset's scripted
+// CreateSession stream reports. Scenarios assert on it to prove the accepted
+// frame handed the client a usable id before the bootstrap finished.
+const asyncCreateSessionID = "sess-async-720"
+
+// AsyncCreateSessionTitle is the title the async-create scenario types into the
+// new-session form. The wizard hands the settled session straight to the attach
+// view, which reads its title back over GetSession — so the seeded session below
+// must carry the same string the scenario types, and the scenario asserts on it.
+const AsyncCreateSessionTitle = "Return an accepted session early"
+
+// AsyncCreateWorld is the demo world plus a scripted CreateSession stream in
+// the BOS-720 accepted-then-settled shape: the accepted frame carries the
+// session id in CreatingWorktree with no worktree yet, a setup line follows,
+// and the settled frame carries the post-bootstrap fields the first could not.
+func AsyncCreateWorld() World {
+	settledChatID := "chat-async-720"
+	w := DemoWorld()
+	// The settled session, seeded so the attach view the wizard navigates into
+	// can read it back. Its id and title match the scripted settled frame.
+	w.Sessions = append(w.Sessions, &pb.Session{
+		Id:           asyncCreateSessionID,
+		RepoId:       "repo-5",
+		Title:        AsyncCreateSessionTitle,
+		BranchName:   "bos-720-async-create",
+		BaseBranch:   "main",
+		WorktreePath: "/tmp/worktrees/design-system/bos-720-async-create",
+		AgentName:    "claude",
+		State:        pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+	})
+	w.CreateSessionFrameDelay = 2 * time.Second
+	w.CreateSessionScript = []*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:         asyncCreateSessionID,
+				RepoId:     "repo-5",
+				BranchName: "bos-720-async-create",
+				State:      pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+			}},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "pnpm install --frozen-lockfile"},
+		}},
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:             asyncCreateSessionID,
+				RepoId:         "repo-5",
+				BranchName:     "bos-720-async-create",
+				WorktreePath:   "/tmp/worktrees/design-system/bos-720-async-create",
+				AgentSessionId: &settledChatID,
+				State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			}},
+		}},
+	}
+	return w
 }

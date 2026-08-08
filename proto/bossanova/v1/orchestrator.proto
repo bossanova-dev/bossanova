@@ -512,6 +512,9 @@ message DaemonRepoRef {
   string repo_id = 2;
   bool has_linear_key = 3;
   bool has_sentry_key = 4;
+  // Non-secret, user-facing hostname of the serving daemon, for display only.
+  // May be empty, in which case callers fall back to daemon_id.
+  string daemon_hostname = 5;
 }
 
 message ProxyListReposAggregatedRequest {}

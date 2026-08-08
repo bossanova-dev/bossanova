@@ -2558,13 +2558,16 @@ func (x *AggregatedRepo) GetDaemons() []*DaemonRepoRef {
 // DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local
 // repo_id plus its per-daemon tracker capability (Linear/Sentry creds present).
 type DaemonRepoRef struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DaemonId      string                 `protobuf:"bytes,1,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"`
-	RepoId        string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	HasLinearKey  bool                   `protobuf:"varint,3,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
-	HasSentryKey  bool                   `protobuf:"varint,4,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	DaemonId     string                 `protobuf:"bytes,1,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"`
+	RepoId       string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	HasLinearKey bool                   `protobuf:"varint,3,opt,name=has_linear_key,json=hasLinearKey,proto3" json:"has_linear_key,omitempty"`
+	HasSentryKey bool                   `protobuf:"varint,4,opt,name=has_sentry_key,json=hasSentryKey,proto3" json:"has_sentry_key,omitempty"`
+	// Non-secret, user-facing hostname of the serving daemon, for display only.
+	// May be empty, in which case callers fall back to daemon_id.
+	DaemonHostname string `protobuf:"bytes,5,opt,name=daemon_hostname,json=daemonHostname,proto3" json:"daemon_hostname,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DaemonRepoRef) Reset() {
@@ -2623,6 +2626,13 @@ func (x *DaemonRepoRef) GetHasSentryKey() bool {
 		return x.HasSentryKey
 	}
 	return false
+}
+
+func (x *DaemonRepoRef) GetDaemonHostname() string {
+	if x != nil {
+		return x.DaemonHostname
+	}
+	return ""
 }
 
 type ProxyListReposAggregatedRequest struct {
@@ -9546,12 +9556,13 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"origin_url\x18\x01 \x01(\tR\toriginUrl\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12.\n" +
 	"\x13default_base_branch\x18\x03 \x01(\tR\x11defaultBaseBranch\x125\n" +
-	"\adaemons\x18\x04 \x03(\v2\x1b.bossanova.v1.DaemonRepoRefR\adaemons\"\x91\x01\n" +
+	"\adaemons\x18\x04 \x03(\v2\x1b.bossanova.v1.DaemonRepoRefR\adaemons\"\xba\x01\n" +
 	"\rDaemonRepoRef\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12$\n" +
 	"\x0ehas_linear_key\x18\x03 \x01(\bR\fhasLinearKey\x12$\n" +
-	"\x0ehas_sentry_key\x18\x04 \x01(\bR\fhasSentryKey\"!\n" +
+	"\x0ehas_sentry_key\x18\x04 \x01(\bR\fhasSentryKey\x12'\n" +
+	"\x0fdaemon_hostname\x18\x05 \x01(\tR\x0edaemonHostname\"!\n" +
 	"\x1fProxyListReposAggregatedRequest\"V\n" +
 	" ProxyListReposAggregatedResponse\x122\n" +
 	"\x05repos\x18\x01 \x03(\v2\x1c.bossanova.v1.AggregatedRepoR\x05repos\"5\n" +

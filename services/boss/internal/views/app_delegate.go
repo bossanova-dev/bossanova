@@ -214,10 +214,7 @@ func (a App) updateSessionSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cursor := a.chatPicker.table.Cursor(); cursor >= 0 && cursor < len(a.chatPicker.chats) {
 			highlightID = a.chatPicker.chats[cursor].AgentSessionId
 		}
-		a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.sessionSettings.sessionID, highlightID)
-		a.chatPicker.SetTelemetry(a.telemetry)
-		a.chatPicker.width = a.width
-		a.chatPicker.height = a.height
+		a.chatPicker = a.newChatPickerModel(a.sessionSettings.sessionID, highlightID)
 		a.activeView = ViewChatPicker
 		return a, a.chatPicker.Init()
 	}
@@ -227,10 +224,7 @@ func (a App) updateSessionSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateTrash(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := updateSub(&a.trash, msg)
 	if sessionID := a.trash.RestoredSessionID(); sessionID != "" {
-		a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, "")
-		a.chatPicker.SetTelemetry(a.telemetry)
-		a.chatPicker.width = a.width
-		a.chatPicker.height = a.height
+		a.chatPicker = a.newChatPickerModel(sessionID, "")
 		a.activeView = ViewChatPicker
 		return a, a.chatPicker.Init()
 	}
@@ -275,10 +269,7 @@ func (a App) updateAttach(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.attach.Detached() {
 		sessionID := a.attach.SessionID()
 		agentSessionID := a.attach.AgentSessionID()
-		a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, agentSessionID)
-		a.chatPicker.SetTelemetry(a.telemetry)
-		a.chatPicker.width = a.width
-		a.chatPicker.height = a.height
+		a.chatPicker = a.newChatPickerModel(sessionID, agentSessionID)
 		a.activeView = ViewChatPicker
 		// Batch the attach cleanup cmd (e.g. orphan delete) with the chat picker init.
 		return a, tea.Batch(cmd, a.chatPicker.Init())

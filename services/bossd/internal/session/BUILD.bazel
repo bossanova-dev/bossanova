@@ -8,6 +8,7 @@ go_library(
         "apikey_approval.go",
         "auto_rotate_notice.go",
         "background_draft_pr.go",
+        "bootstrap_runner.go",
         "boss_control.go",
         "clamp_int32.go",
         "conflict_block.go",
@@ -32,6 +33,7 @@ go_library(
         "repo_env.go",
         "rotation.go",
         "rotation_sweep.go",
+        "setupbus.go",
         "stale_pane_proxy.go",
         "start_lock.go",
         "switch_account.go",
@@ -91,6 +93,7 @@ go_test(
         "already_shipped_test.go",
         "apikey_approval_test.go",
         "auto_rotate_notice_test.go",
+        "bootstrap_runner_test.go",
         "boss_control_test.go",
         "cleanup_bootstrap_artifacts_test.go",
         "cron_completion_gate_test.go",
@@ -120,6 +123,7 @@ go_test(
         "rotation_gate_test.go",
         "rotation_sweep_test.go",
         "rotation_test.go",
+        "setupbus_test.go",
         "stale_pane_proxy_test.go",
         "start_lock_test.go",
         "switch_account_test.go",
@@ -133,6 +137,7 @@ go_test(
     ],
     embed = [":session"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    shard_count = 4,  # keep: 121s serial under --config=race
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

@@ -628,9 +628,8 @@ function webStageScript(recipe) {
         // (web-new-chat recipe) can resolve a daemon and list its agents rather
         // than falling back to auto-creating a chat with the session agent.
         daemonId: 'daemon-proof',
-        // BOS-541: mix agent names across chats so ChatListPanel renders the
-        // has-agent-column phone layout — a single agent name (or none)
-        // never exercises the fixed delete-button column at 390px.
+        // Mix agent names so the desktop Agent column visibly carries a per-row
+        // value (BOS-700). Mobile: see the .cell-agent rule in services/web/src/index.css.
         chats: [
           { id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle', agentName: 'claude' },
           { id: 'chat-e2e-2', agentSessionId: 'codex-e2e-2', title: 'A much longer chat title that should wrap onto a second line at 390px', status: 'idle', agentName: 'codex' },
@@ -669,7 +668,12 @@ function webStageScript(recipe) {
         repoId: 'repo-proof-web',
         repoDisplayName: 'bossanova-web',
         repoOriginUrl: 'https://github.com/e2e/repo-proof-web',
-        chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle' }],
+        // BOS-700: a SINGLE-agent session that still names its agent. The
+        // mixed-agent fixture above cannot prove the regression this ticket
+        // fixes — before BOS-700 a one-agent chat list rendered no Agent column
+        // at all — and a chat with no agentName would only render the dash
+        // fallback. This is the still behind Required-proof item 4.
+        chats: [{ id: 'chat-2', agentSessionId: 'claude-2', title: 'Quick chat', status: 'idle', agentName: 'claude' }],
       }, {
         // BOS-668: a session holding one chat parked on an armed GitHub callback
         // next to one genuinely working chat, so the web-session-waiting recipe
@@ -693,12 +697,16 @@ function webStageScript(recipe) {
             agentSessionId: 'claude-e2e-waiting',
             title: 'Ship the release checklist',
             status: 'waiting',
+            // BOS-700: both chats here are Claude chats. Without a name the
+            // now-unconditional Agent column renders a dash in every row of
+            // this BOS-668 still, which reads as missing data.
+            agentName: 'claude',
             // Byte-identical to the TUI fixture's reason (BOS-668): both
             // surfaces render the wording displaystatus.CallbackWaitingReason
             // composes, so the two stills can be compared literally.
             waitingReason: 'awaiting checks_passed_ready on acme/my-app#668',
           },
-          { id: 'chat-e2e-busy', agentSessionId: 'claude-e2e-busy', title: 'Rebuild the search index', status: 'working' },
+          { id: 'chat-e2e-busy', agentSessionId: 'claude-e2e-busy', title: 'Rebuild the search index', status: 'working', agentName: 'claude' },
         ],
       }, {
         // A session carrying a BOS-409 stale-failover-proxy-port audit record

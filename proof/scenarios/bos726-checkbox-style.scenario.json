@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "title": "BOS-726 the TUI renders one checkbox style, [x], on huh multi-selects and hand-rolled rows alike",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the add-repo Automation multi-select renders [x] / [ ], not a dot",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        },
+        { "key": "r", "caption": "Press [r] to open the repository list" },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Repository list loaded; its action bar offers [a]dd"
+        },
+        { "key": "a", "caption": "Press [a] to add a repository" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Add-repo source picker loaded"
+        },
+        { "key": "enter", "caption": "Choose 'Open project' (register a local repo)" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "The add-repo input form is on screen"
+        },
+        { "type": "/tmp/demo-repo", "caption": "Type a repository path" },
+        { "key": "enter", "caption": "Submit the path" },
+        {
+          "waitFor": "Merge strategy",
+          "timeoutMs": 10000,
+          "caption": "The add-repo details form is on screen — the screen from the BOS-726 report"
+        },
+        { "key": "tab", "caption": "Press [tab]: focus moves Name → Setup command" },
+        { "key": "tab", "caption": "Press [tab] again: Setup command → Merge strategy" },
+        {
+          "key": "tab",
+          "caption": "Press [tab] a third time: Merge strategy → Automation, the one huh multi-select in the TUI"
+        },
+        {
+          "waitFor": { "text": "┃ +Automation", "match": "regex" },
+          "timeoutMs": 10000,
+          "caption": "The focus gutter has walked down to the Automation multi-select"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Automation",
+              "match": "regex",
+              "label": "the focus gutter is ON Automation, so this is the focused-state rendering; the same token does NOT match in scene 2, which is what makes the pair prove the blurred half rather than re-assert one screen twice"
+            },
+            {
+              "text": "[x] Auto-merge Dependabot PRs",
+              "match": "normalized",
+              "label": "a default-on automation option renders the shared [x] glyph — before BOS-726 huh's ThemeBase rendered this as [•]"
+            },
+            {
+              "text": "[x] Automatic repair",
+              "match": "normalized",
+              "label": "the second default-on option (defaultRepoAutomation) renders [x] too"
+            },
+            {
+              "text": "[ ] Mark ready for review when checks pass",
+              "match": "normalized",
+              "label": "the default-off option renders [ ], so one still shows both states of the fixed prefix"
+            }
+          ],
+          "caption": "The focused Automation multi-select renders [x] for the two options defaultRepoAutomation() enables and [ ] for the third"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the glyph survives the field losing focus — the half a focused screenshot cannot show",
+      "steps": [
+        {
+          "key": "tab",
+          "caption": "Press [tab] once more: focus leaves Automation for the confirm buttons, blurring the multi-select"
+        },
+        {
+          "waitFor": { "text": "┃ +Add Repository", "match": "regex" },
+          "timeoutMs": 10000,
+          "caption": "The focus gutter has left Automation and landed on the Add Repository / Cancel confirm row"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃ +Add Repository",
+              "match": "regex",
+              "label": "the focus gutter is on the confirm row, NOT on Automation — this is the token that makes the scene prove blur rather than re-assert scene 1's screen. In scene 1 the gutter was on Automation and this did not match"
+            },
+            {
+              "text": "[x] Automatic repair",
+              "match": "normalized",
+              "label": "the blurred multi-select still renders [x]. huh's ThemeBase copies Focused into Blurred before bossHuhTheme runs, so a fix that set only Focused would show [•] here and nowhere else"
+            },
+            {
+              "text": "[ ] Mark ready for review when checks pass",
+              "match": "normalized",
+              "label": "the blurred unselected prefix is unchanged too"
+            },
+            {
+              "text": "Add Repository",
+              "match": "normalized",
+              "label": "focus is on the confirm buttons — this is what took it off Automation"
+            }
+          ],
+          "caption": "With focus on the confirm buttons the Automation field is blurred, and its checkboxes are still [x] / [ ] — the state the focused screenshot in the report could not have caught"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the hand-rolled General Settings rows are unchanged by the nine-site refactor",
+      "steps": [
+        { "key": "esc", "caption": "Press [esc]: leave the details form for the path input" },
+        {
+          "waitFor": "Add a local repository",
+          "timeoutMs": 10000,
+          "caption": "Back on the add-repo input form"
+        },
+        { "key": "esc", "caption": "Press [esc] again: back to the source picker" },
+        {
+          "waitFor": "Open project",
+          "timeoutMs": 10000,
+          "caption": "Back on the add-repo source picker"
+        },
+        {
+          "key": "esc",
+          "caption": "Press [esc]: cancel the add and return to the repository list"
+        },
+        {
+          "waitFor": "[a]dd",
+          "timeoutMs": 10000,
+          "caption": "Back on the repository list"
+        },
+        { "key": "esc", "caption": "Press [esc]: back to the Settings hub" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu is on screen"
+        },
+        { "key": "g", "caption": "Press [g] to open General Settings" },
+        {
+          "waitFor": "[x] Enable desktop notifications for questions",
+          "timeoutMs": 10000,
+          "caption": "General Settings loaded — its rows are the hand-rolled side of the refactor"
+        },
+        {
+          "expect": [
+            {
+              "text": "[x] Enable desktop notifications for questions",
+              "match": "normalized",
+              "label": "a hand-rolled settings row still renders exactly the [x] it did before the nine call sites moved onto renderCheckboxLabel — the refactor changed the definition, not the rendering"
+            },
+            {
+              "text": "Worktree base directory",
+              "match": "normalized",
+              "label": "this is General Settings, not the multi-select screen the first two scenes proved"
+            }
+          ],
+          "caption": "The hand-rolled General Settings checkboxes render the same [x] the huh multi-select now does — one glyph, one definition, two idioms"
+        }
+      ]
+    }
+  ]
+}

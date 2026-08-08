@@ -23,16 +23,24 @@ func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
 
 // buildAgentTable populates m.agentTable from m.agents. Single AGENT
 // column, mirrors the new-session wizard's agent select shape.
+//
+// Cursor precedence is preferredAgent (Settings.DefaultAgent, kept current by
+// every confirmed pick) → the session's own agent → row 0. The configured
+// default has to lead: sessions.agent_name is written once at create time and
+// no code path ever updates it, so seeding from the session alone left a
+// session created with one runner defaulting to that runner for every new chat
+// forever, however many chats you since started on another. The
+// session agent survives as the fallback for the case the default names a
+// runner this daemon has not loaded.
 func (m *ChatPickerModel) buildAgentTable() {
 	names := make([]string, len(m.agents))
 	for i, a := range m.agents {
 		names[i] = a.Name
 	}
-	preferred := ""
-	if m.session != nil {
-		preferred = m.session.AgentName
+	cursor := agentIndex(m.agents, m.preferredAgent)
+	if cursor < 0 && m.session != nil {
+		cursor = agentIndex(m.agents, m.session.AgentName)
 	}
-	cursor := agentIndex(m.agents, preferred)
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -69,6 +77,19 @@ func (m ChatPickerModel) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 		agentName := m.agents[idx].Name
 		m.pickingAgent = false
+		// Persist the pick so the next [n] — and the new-session wizard, which
+		// writes the same setting — opens on this runner. A save failure goes to
+		// statusMsg, not m.err: m.err takes over the whole view with an error
+		// screen, and a settings write that failed must not stop the chat the
+		// operator just asked for. In-memory preferredAgent is updated either
+		// way, so the picker is consistent for this model's lifetime even when
+		// the write did not land.
+		m.preferredAgent = agentName
+		if m.onAgentSelected != nil {
+			if err := m.onAgentSelected(agentName); err != nil {
+				m.statusMsg = rpcStatusMessage("Couldn't save default agent", err)
+			}
+		}
 		sessionID := m.sessionID
 		return m, func() tea.Msg {
 			return switchViewMsg{

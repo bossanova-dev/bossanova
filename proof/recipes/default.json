@@ -236,7 +236,7 @@
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
-      "description": "Product web session-detail header on a session with a passing PR: the Merge button is visible alongside Archive and Open GitHub. No Stop button, no Branch/PR meta rows, no 'Switch account' button, status pill at left. Below it the desktop chat table lists three chats with an Agent column (claude/codex) and the delete column hugging the table's right edge.",
+      "description": "Product web session-detail header on a session with a passing PR: the action row reads Merge, Archive, Edit, Open GitHub — the BOS-700 pencil sits directly right of Archive and left of the GitHub action. No Stop button, no Branch/PR meta rows, no 'Switch account' button, status pill at left. Below it the desktop chat table lists three chats with an Agent column (claude/codex) and the delete column hugging the table's right edge.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 1440, "height": 1000 }
@@ -245,7 +245,7 @@
       "id": "web-session-detail-no-pr",
       "surface": "web",
       "title": "Web Session Detail (no PR / Quick Chat)",
-      "description": "Product web session-detail header on a Quick-Chat session with no PR: it shows the session title, New chat, and Archive, but NO Merge button and NO 'Switch account' button.",
+      "description": "Product web session-detail header on a Quick-Chat session with no PR: it shows the session title, New chat, and Archive, but NO Merge button and NO 'Switch account' button. Below it the desktop chat table carries an Agent column reading 'claude' immediately left of Created — BOS-700 renders it for SINGLE-agent sessions too, where before the ticket the column was dropped entirely.",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-quick",
       "viewport": { "width": 1440, "height": 1000 }
@@ -274,10 +274,77 @@
       "id": "web-session-detail-mobile",
       "surface": "web",
       "title": "Web Session Detail (mobile)",
-      "description": "Session-detail header at phone width (390px): the session title is on its own row above the action buttons, left-aligned and truncating with an ellipsis when long; the action buttons sit on the row below, right-aligned. Icon-only chat buttons. Below it, three stacked chat cards whose top meta row reads '<time> <agent> <status> x' — the delete x buttons form one straight vertical line down the card's right gutter even though the agent labels (claude vs codex) differ in width, and the status pills line up with them (BOS-541).",
+      "description": "Session-detail header at phone width (390px): the session title is on its own row above the action buttons, left-aligned and truncating with an ellipsis when long; the action buttons sit on the row below, right-aligned. Icon-only chat buttons. Below it, three stacked chat cards whose top meta row reads '<time> <status> x' — NO agent name, because the Agent column is desktop-only since BOS-700 even though these chats mix claude and codex. The delete x buttons form one straight vertical line down the card's right gutter and the status pills line up with them (BOS-541).",
       "privacy": "fixture",
       "route": "/sessions/sess-e2e-1",
       "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-session-edit",
+      "surface": "web",
+      "title": "Web Session Edit Page",
+      "description": "BOS-700: open the session title editor from the detail action row's pencil, replace the prefilled title, save, and land back on the session detail page reading the new title. Modelled on the web-repository-edit video recipe — the same narrow form card, Cancel/Update row, and navigate-back-on-save flow.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1",
+          "label": "Open the session",
+          "caption": "Open a session's detail page"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"session-edit-action\"]",
+          "label": "Edit action",
+          "caption": "The edit pencil sits between Archive and Open GitHub"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"session-edit-action\"]",
+          "label": "Open the editor",
+          "caption": "Open the session title editor"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid=\"session-edit-form\"]",
+          "label": "Edit form",
+          "caption": "Standard form card, prefilled with the current title"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"session-title-input\"]",
+          "label": "Focus the title",
+          "caption": "The title field carries the old value"
+        },
+        {
+          "action": "press",
+          "key": "ControlOrMeta+a",
+          "label": "Select the old title",
+          "caption": "Select the old title"
+        },
+        {
+          "action": "type",
+          "selector": "[data-testid=\"session-title-input\"]",
+          "value": "Renamed from the web",
+          "label": "Type the new title",
+          "caption": "Type the new title"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid=\"session-edit-form\"] button[type=\"submit\"]",
+          "label": "Save",
+          "caption": "Save the new title"
+        },
+        {
+          "action": "wait",
+          "selector": ".sub-header-crumb-current:text-is(\"Renamed from the web\")",
+          "label": "Back on the detail page",
+          "caption": "Back on the session detail page, now reading the new title"
+        }
+      ]
     },
     {
       "id": "web-sessions-mobile",
@@ -301,7 +368,7 @@
       "id": "web-repositories",
       "surface": "web",
       "title": "Web Repositories",
-      "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries a drop-down reading 'All daemons', and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (daemon-proof) before 'Proof web repository' (daemon-proof-standby) — and each names its serving daemon in the Daemon column.",
+      "description": "Repositories settings page at desktop width: the Settings / Repositories sub-header carries a drop-down reading 'All daemons', and below it one unified, heading-less list of registered repos with a per-row edit icon and no separate 'GitHub App' section. Rows are alphabetical — 'Proof repository' (Proof daemon) before 'Proof web repository' (Standby daemon) — and each names its serving daemon in the Daemon column.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/repos",
@@ -312,7 +379,7 @@
       "id": "web-repositories-daemon-filter-flow",
       "surface": "web",
       "title": "Web Repositories Daemon Filter Flow",
-      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'daemon-proof-standby' shows as the selected value, and selecting 'All daemons' again restores the full list. Nothing resets the selection on the page's behalf.",
+      "description": "Choosing a daemon in the repository-settings header filter narrows the table and the user chooses when to leave it: both repositories are listed before the selection, only 'Proof web repository' remains while 'Standby daemon' shows as the selected label, and selecting 'All daemons' again restores the full list. Nothing resets the selection on the page's behalf.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -642,7 +709,7 @@
       "id": "web-repositories-mobile",
       "surface": "web",
       "title": "Web Repositories (mobile)",
-      "description": "Repositories at 390px: each card stacks the repository name with its edit action on the first line, the serving daemon id beneath it, and the GitHub connection state ('Connected' / 'Not connected') on the last line — no daemon information is dropped on phones and nothing clips horizontally.",
+      "description": "Repositories at 390px: each card stacks the repository name with its edit action on the first line, the serving daemon name beneath it, and the GitHub connection state ('Connected' / 'Not connected') on the last line — no daemon information is dropped on phones and nothing clips horizontally.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/repos",
@@ -1189,10 +1256,9 @@
       "id": "docs-mcp-guide",
       "surface": "docs",
       "title": "Docs — MCP Guide",
-      "description": "Rendered MCP documentation guide page (services/docs/docs/guides/mcp.md).",
+      "description": "Rendered MCP documentation guide page (services/docs/docs/guides/mcp.md), captured at viewport width so the sidebar entry is in frame alongside the page body.",
       "privacy": "fixture",
       "route": "/guides/mcp",
-      "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
@@ -1229,11 +1295,34 @@
       "id": "docs-github-callbacks-guide",
       "surface": "docs",
       "title": "Docs — GitHub Callbacks Guide",
-      "description": "Rendered GitHub PR callbacks guide page (services/docs/docs/guides/github-callbacks.md).",
+      "description": "Rendered GitHub PR callbacks guide page (services/docs/docs/guides/github-callbacks.md), scrolled to the first <CommandTabs> example and switched to the shared Chat tab so the still shows a quoted natural-language prompt instead of the default boss CLI command.",
       "privacy": "fixture",
-      "route": "/guides/github-callbacks",
-      "selector": "article",
-      "viewport": { "width": 1280, "height": 1000 }
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".theme-tabs-container",
+      "viewport": { "width": 1280, "height": 1000 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/guides/github-callbacks",
+          "caption": "GitHub PR callbacks guide"
+        },
+        { "action": "wait", "selector": ".theme-tabs-container" },
+        {
+          "action": "scroll",
+          "toSelector": ".theme-tabs-container",
+          "caption": "boss callback add example, CLI selected by default"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-cli'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='command-tab-chat']",
+          "caption": "Chat tab selected — quoted natural-language prompt"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-chat'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 }
+      ]
     },
     {
       "id": "docs-broadcasts-guide",
@@ -1254,6 +1343,49 @@
       "route": "/guides/notes",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-command-tabs",
+      "surface": "docs",
+      "title": "Docs — Command Tabs",
+      "description": "The <CommandTabs> block on the notes guide, switching between the Chat, CLI, and MCP tabs.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".theme-tabs-container",
+      "viewport": { "width": 1280, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/guides/notes", "caption": "Notes guide" },
+        { "action": "wait", "selector": ".theme-tabs-container" },
+        {
+          "action": "scroll",
+          "toSelector": ".theme-tabs-container",
+          "caption": "Chat | CLI | MCP, CLI selected by default"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-cli'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='command-tab-chat']",
+          "caption": "Chat tab selected"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-chat'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='command-tab-mcp']",
+          "caption": "MCP tab selected"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-mcp'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='command-tab-cli']",
+          "caption": "CLI tab selected"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-cli'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 }
+      ]
     },
     {
       "id": "docs-agent-runners-guide",
@@ -1294,6 +1426,85 @@
       "route": "/help/troubleshooting",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-remote-daemons-guide",
+      "surface": "docs",
+      "title": "Docs — Remote Daemons Guide",
+      "description": "Rendered Remote Daemons guide page (services/docs/docs/guides/remote-daemons.md).",
+      "privacy": "fixture",
+      "route": "/guides/remote-daemons",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1600 }
+    },
+    {
+      "id": "docs-cli-reference",
+      "surface": "docs",
+      "title": "Docs — CLI Reference",
+      "description": "Rendered CLI Reference page (services/docs/docs/reference/cli-reference.md), including the `boss --host` flag table and its pointer to the Remote Daemons guide.",
+      "privacy": "fixture",
+      "route": "/reference/cli-reference",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-logging-guide",
+      "surface": "docs",
+      "title": "Docs — Logging Guide",
+      "description": "Rendered logging guide page (services/docs/docs/guides/logging.md).",
+      "privacy": "fixture",
+      "route": "/guides/logging",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-quick-start",
+      "surface": "docs",
+      "title": "Docs — Quick Start",
+      "description": "Rendered Quick Start page (services/docs/docs/quick-start.md), showing the macOS / Linux platform tabs and the Chat | CLI | MCP interface tabs as two independent tab groups.",
+      "privacy": "fixture",
+      "route": "/quick-start",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-uninstall",
+      "surface": "docs",
+      "title": "Docs — Uninstall",
+      "description": "Rendered Uninstall page (services/docs/docs/help/uninstall.md).",
+      "privacy": "fixture",
+      "route": "/help/uninstall",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-upgrade-no-equivalent",
+      "surface": "docs",
+      "title": "Docs — Upgrade, MCP tab",
+      "description": "The first <CommandTabs> block on the upgrade page, switched to the MCP tab so the no-equivalent note for a local-only command is visible.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "cropToSelector": ".theme-tabs-container",
+      "viewport": { "width": 1280, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/upgrade", "caption": "Upgrade guide" },
+        { "action": "wait", "selector": ".theme-tabs-container" },
+        {
+          "action": "scroll",
+          "toSelector": ".theme-tabs-container",
+          "caption": "boss daemon restart — CLI selected by default"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-cli'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 },
+        {
+          "action": "click",
+          "selector": "[data-testid='command-tab-mcp']",
+          "caption": "MCP tab selected — no equivalent, this command runs locally"
+        },
+        { "action": "wait", "selector": "[data-testid='command-tab-mcp'][aria-selected='true']" },
+        { "action": "wait", "timeoutMs": 700 }
+      ]
     }
   ],
   "pathRules": [
@@ -1312,6 +1523,7 @@
         "web-session-detail-rotation",
         "web-session-waiting",
         "web-session-detail-mobile",
+        "web-session-edit",
         "web-new-session-mobile",
         "web-repositories",
         "web-repositories-daemon-filter-flow",
@@ -1372,7 +1584,17 @@
     {
       "name": "Docs upgrade guide",
       "patterns": ["services/docs/docs/upgrade"],
-      "recipeIds": ["docs-upgrade"]
+      "recipeIds": ["docs-upgrade", "docs-upgrade-no-equivalent"]
+    },
+    {
+      "name": "Docs Quick Start",
+      "patterns": ["services/docs/docs/quick-start"],
+      "recipeIds": ["docs-quick-start"]
+    },
+    {
+      "name": "Docs Uninstall",
+      "patterns": ["services/docs/docs/help/uninstall"],
+      "recipeIds": ["docs-uninstall"]
     },
     {
       "name": "Docs Setup Scripts guide",
@@ -1386,7 +1608,10 @@
     },
     {
       "name": "Docs GitHub Callbacks guide",
-      "patterns": ["services/docs/docs/guides/github-callbacks"],
+      "patterns": [
+        "services/docs/docs/guides/github-callbacks",
+        "services/docs/src/components/CommandTabs"
+      ],
       "recipeIds": ["docs-github-callbacks-guide"]
     },
     {
@@ -1396,8 +1621,8 @@
     },
     {
       "name": "Docs Notes guide",
-      "patterns": ["services/docs/docs/guides/notes"],
-      "recipeIds": ["docs-notes-guide"]
+      "patterns": ["services/docs/docs/guides/notes", "services/docs/src/components/CommandTabs"],
+      "recipeIds": ["docs-notes-guide", "docs-command-tabs"]
     },
     {
       "name": "Docs Agent Plugins guide",
@@ -1418,6 +1643,21 @@
       "name": "Docs Troubleshooting runbook",
       "patterns": ["services/docs/docs/help/troubleshooting"],
       "recipeIds": ["docs-troubleshooting"]
+    },
+    {
+      "name": "Docs Remote Daemons guide",
+      "patterns": ["services/docs/docs/guides/remote-daemons"],
+      "recipeIds": ["docs-remote-daemons-guide"]
+    },
+    {
+      "name": "Docs CLI Reference",
+      "patterns": ["services/docs/docs/reference/cli-reference"],
+      "recipeIds": ["docs-cli-reference"]
+    },
+    {
+      "name": "Docs Logging guide",
+      "patterns": ["services/docs/docs/guides/logging"],
+      "recipeIds": ["docs-logging-guide"]
     }
   ]
 }

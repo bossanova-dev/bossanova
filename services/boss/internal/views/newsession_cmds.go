@@ -83,29 +83,60 @@ func openCreateStream(c client.BossClient, ctx context.Context, req *pb.CreateSe
 	}
 }
 
-func readNextStreamMsg(stream client.CreateSessionStream) tea.Cmd {
+// readNextStreamMsg reads one meaningful frame off the create stream.
+//
+// accepted is the session the accepted frame carried, or nil before it has
+// arrived. Since BOS-720 the daemon emits SessionCreated TWICE on the
+// bootstrapping path — once when the session row is inserted (accepted; the
+// bootstrap is still running) and once when the bootstrap settles — and only
+// the second is terminal. The command is re-issued per frame, so the state is
+// threaded through the call rather than held in view state.
+//
+// Carrying the session itself rather than a "have we seen one" bit is what
+// keeps the deliberately single-frame paths working: the attach short-circuit
+// and quick chat run no bootstrap, so their one SessionCreated is followed
+// straight by EOF. Reaching EOF holding an accepted session is a completed
+// create — the same drain-to-EOF, last-value-wins rule `boss new` uses — not a
+// truncated stream.
+func readNextStreamMsg(stream client.CreateSessionStream, accepted *pb.Session) tea.Cmd {
 	return func() tea.Msg {
-		// Close the stream on any terminal path (error, EOF, SessionCreated,
-		// unknown event). SetupOutput is the only non-terminal case, where the
-		// caller will schedule another readNextStreamMsg and the stream must stay
-		// open.
-		if !stream.Receive() {
-			_ = stream.Close()
-			if err := stream.Err(); err != nil {
-				return streamErrorMsg{err: err}
+		// Close the stream on any terminal path (error, EOF, the settled
+		// SessionCreated). SetupOutput, the accepted SessionCreated, and an
+		// unrecognised event are all non-terminal: the caller schedules another
+		// readNextStreamMsg and the stream must stay open.
+		for {
+			if !stream.Receive() {
+				_ = stream.Close()
+				if err := stream.Err(); err != nil {
+					return streamErrorMsg{err: err}
+				}
+				if accepted != nil {
+					return streamSessionCreatedMsg{session: accepted}
+				}
+				return streamErrorMsg{err: fmt.Errorf("stream ended unexpectedly")}
 			}
-			return streamErrorMsg{err: fmt.Errorf("stream ended unexpectedly")}
-		}
-		msg := stream.Msg()
-		switch e := msg.Event.(type) {
-		case *pb.CreateSessionResponse_SetupOutput:
-			return setupScriptLineMsg{text: e.SetupOutput.GetText()}
-		case *pb.CreateSessionResponse_SessionCreated:
-			_ = stream.Close()
-			return streamSessionCreatedMsg{session: e.SessionCreated.GetSession()}
-		default:
-			_ = stream.Close()
-			return streamErrorMsg{err: fmt.Errorf("unexpected stream event")}
+			msg := stream.Msg()
+			switch e := msg.Event.(type) {
+			case *pb.CreateSessionResponse_SetupOutput:
+				return setupScriptLineMsg{text: e.SetupOutput.GetText()}
+			case *pb.CreateSessionResponse_SessionCreated:
+				if accepted == nil {
+					// Closing here would abandon the setup output the user is
+					// watching, and lose the settled session's
+					// agent_session_id.
+					return streamSessionAcceptedMsg{session: e.SessionCreated.GetSession()}
+				}
+				_ = stream.Close()
+				return streamSessionCreatedMsg{session: e.SessionCreated.GetSession()}
+			default:
+				// Skip an unrecognised event rather than failing the stream, so
+				// a newer daemon can add a frame type without breaking this
+				// binary. The old hard error here is exactly what forced
+				// BOS-720 to reuse SessionCreated instead of adding a dedicated
+				// accepted event. Looping rather than recursing keeps a chatty
+				// unknown-event daemon off this goroutine's stack.
+				continue
+			}
 		}
 	}
 }

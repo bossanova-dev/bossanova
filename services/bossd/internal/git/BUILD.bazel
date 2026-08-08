@@ -22,5 +22,6 @@ go_test(
         "worktree_test.go",
     ],
     embed = [":git"],
+    shard_count = 4,  # keep: 209s serial under --config=race; these worktree tests each build a scratch repo and are independent
     deps = ["@com_github_rs_zerolog//:zerolog"],
 )

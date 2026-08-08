@@ -3,6 +3,8 @@ title: Web App
 description: Drive your Bossanova sessions from a browser using the optional Boss Cloud web app.
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Web App
 
 Bossanova ships with an optional web app at
@@ -50,9 +52,9 @@ session or chat and you'll land in the same view, auth permitting.
    with your account (WorkOS-backed SSO).
 2. **Pair your daemon.** On the machine where `bossd` runs:
 
-   ```bash
-   boss login
-   ```
+   <CommandTabs
+   cli="boss login"
+   />
 
    This kicks off a WorkOS device-code flow. Approve in the browser
    and `bossd` registers itself with Boss Cloud under its

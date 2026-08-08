@@ -112,13 +112,16 @@ func TestHarness_CreateSession(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck // test cleanup
 
-	// Read stream messages until we get SessionCreated.
+	// Drain to EOF, last SessionCreated wins. Since BOS-720 the daemon emits
+	// SessionCreated TWICE — accepted (the row exists, the bootstrap is still
+	// running) then settled — so breaking on the first would read a session with
+	// no worktree and no agent_session_id. This is the same drain-to-EOF shape
+	// `boss new` and MCP create_session use.
 	var sess *pb.Session
 	for stream.Receive() {
 		msg := stream.Msg()
 		if sc := msg.GetSessionCreated(); sc != nil {
 			sess = sc.GetSession()
-			break
 		}
 	}
 	if err := stream.Err(); err != nil {

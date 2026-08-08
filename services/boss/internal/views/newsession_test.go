@@ -1271,6 +1271,33 @@ func TestNewSession_StartCreatingIsIdempotentWhileCreating(t *testing.T) {
 	}
 }
 
+// A create that got past its BOS-720 accepted frame and then failed leaves the
+// accepted session behind, and the daemon has deleted that row. startCreating
+// must drop it: readNextStreamMsg treats a clean EOF while holding an accepted
+// session as a successful create, so a stale one would attach the retry to a
+// session that no longer exists.
+func TestStartCreatingClearsTheAcceptedSessionFromThePreviousAttempt(t *testing.T) {
+	sc := &stubClient{
+		repos:   []*pb.Repo{{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main"}},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m.acceptedSess = &pb.Session{Id: "stale-1"}
+	m.setupLines = []string{"cloning..."}
+
+	if cmd := m.startCreating(); cmd != nil {
+		cmd()
+	}
+
+	if m.acceptedSess != nil {
+		t.Fatalf("acceptedSess = %q after a new attempt, want nil", m.acceptedSess.GetId())
+	}
+	if m.setupLines != nil {
+		t.Fatalf("setupLines = %v after a new attempt, want nil", m.setupLines)
+	}
+}
+
 func TestFormatLinearPrompt(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1333,33 +1360,45 @@ func TestFormatLinearPrompt(t *testing.T) {
 
 // TestReadNextStreamMsgClosesOnTerminalPaths verifies that the reader goroutine
 // closes the stream on every terminal branch — receive error, clean EOF, and
-// unknown event type — so that a reader error cannot leak the underlying RPC
-// stream. SetupOutput is non-terminal and must leave the stream open.
+// the settled SessionCreated — so that a reader error cannot leak the
+// underlying RPC stream. SetupOutput is non-terminal and must leave the stream
+// open, and since BOS-720 so are the accepted frame and an unrecognised event
+// (see TestNewSessionStreamSkipsUnknownEvent).
+//
+// accepted is per case: it is what distinguishes "the stream truncated before
+// naming a session" (an error) from "the stream ended having named one" (a
+// completed create).
 func TestReadNextStreamMsgClosesOnTerminalPaths(t *testing.T) {
+	priorAccepted := &pb.Session{Id: "prior-accepted"}
 	cases := []struct {
-		name   string
-		stream *trackingCreateStream
-		want   any
+		name     string
+		stream   *trackingCreateStream
+		accepted *pb.Session
+		want     any
 	}{
 		{
-			name:   "receive error",
-			stream: &trackingCreateStream{receiveErr: fmt.Errorf("boom")},
-			want:   streamErrorMsg{},
+			name:     "receive error",
+			stream:   &trackingCreateStream{receiveErr: fmt.Errorf("boom")},
+			accepted: priorAccepted,
+			want:     streamErrorMsg{},
 		},
 		{
-			name:   "unexpected event",
+			// The unknown frame is skipped, so the stream runs to EOF — and with
+			// no session named yet that EOF is a truncated stream.
+			name:   "unexpected event then EOF with no session named",
 			stream: &trackingCreateStream{unknown: true},
 			want:   streamErrorMsg{},
 		},
 		{
-			name:   "session created",
-			stream: &trackingCreateStream{},
-			want:   streamSessionCreatedMsg{},
+			name:     "settled session created",
+			stream:   &trackingCreateStream{},
+			accepted: priorAccepted,
+			want:     streamSessionCreatedMsg{},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := readNextStreamMsg(tc.stream)
+			cmd := readNextStreamMsg(tc.stream, tc.accepted)
 			msg := cmd()
 			switch tc.want.(type) {
 			case streamErrorMsg:
@@ -1382,7 +1421,7 @@ func TestReadNextStreamMsgClosesOnTerminalPaths(t *testing.T) {
 // SetupOutput messages leave the stream open so the wizard can keep reading.
 func TestReadNextStreamMsgDoesNotCloseOnSetupOutput(t *testing.T) {
 	stream := &setupOutputStream{}
-	cmd := readNextStreamMsg(stream)
+	cmd := readNextStreamMsg(stream, &pb.Session{Id: "prior-accepted"})
 	msg := cmd()
 	if _, ok := msg.(setupScriptLineMsg); !ok {
 		t.Fatalf("got %T, want setupScriptLineMsg", msg)
@@ -2504,6 +2543,49 @@ func TestNewSession_CreatingPhase_BlankLineAfterInitializing(t *testing.T) {
 	}
 }
 
+// TestNewSession_CreatingPhase_BlankLineSurvivesTheAcceptedSession covers the
+// state this feature actually ships in, which the two offset-based gates above
+// never enter: they build the model without acceptedSess, so a BOS-720 id line
+// inserted between "initializing" and the status line would leave both green.
+// The BOS-397 invariant is that the gap immediately precedes the status line —
+// assert that directly, so it holds whatever the accepted frame adds above it.
+func TestNewSession_CreatingPhase_BlankLineSurvivesTheAcceptedSession(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.phase = newSessionPhaseCreating
+	m.acceptedSess = &pb.Session{Id: "sess-accepted"}
+
+	view := stripANSI(m.View().Content)
+	lines := strings.Split(view, "\n")
+
+	initIdx, idIdx, statusIdx := -1, -1, -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "initializing"):
+			initIdx = i
+		case strings.Contains(line, "Session sess-accepted"):
+			idIdx = i
+		case strings.Contains(line, "Creating a new session..."):
+			statusIdx = i
+		}
+	}
+	if initIdx == -1 || idIdx == -1 || statusIdx == -1 {
+		t.Fatalf("creating view missing one of initializing/id/status (%d/%d/%d) in:\n%s", initIdx, idIdx, statusIdx, view)
+	}
+	// The id is grouped with the header, above the gap.
+	if idIdx != initIdx+1 {
+		t.Errorf("accepted session id at line %d, want directly under 'initializing' at %d:\n%s", idIdx, initIdx, view)
+	}
+	// ...and the gap still abuts the status line, which is what BOS-397 pins.
+	if statusIdx != idIdx+2 {
+		t.Errorf("want exactly one blank line between the id (line %d) and the status line (line %d), got a gap of %d:\n%s",
+			idIdx, statusIdx, statusIdx-idIdx, view)
+	}
+	if strings.TrimSpace(lines[statusIdx-1]) != "" {
+		t.Errorf("line before the status line should be blank, got %q in:\n%s", lines[statusIdx-1], view)
+	}
+}
+
 // TestNewSession_CreatingPhase_BlankLineBeforeSetupScript asserts that the same
 // blank line precedes the "Running setup script..." status line when a setup
 // script is running (m.setupLines populated), covering the setupLines>0 render
@@ -2939,4 +3021,168 @@ func TestNewSession_TypeSelectPhase_KeysRouteToKeyTypeSelect(t *testing.T) {
 			t.Errorf("phase = %d, want newSessionPhaseRepoSelect (%d)", m.phase, newSessionPhaseRepoSelect)
 		}
 	})
+}
+
+// scriptedCreateStream replays a fixed sequence of CreateSessionResponse frames
+// and then EOFs, recording how many frames had been delivered when Close was
+// first called. That count is what proves the reader did not hang up early.
+type scriptedCreateStream struct {
+	frames     []*pb.CreateSessionResponse
+	next       int
+	closed     bool
+	closedAfte int // frames delivered at the first Close
+}
+
+func (s *scriptedCreateStream) Receive() bool {
+	if s.next >= len(s.frames) {
+		return false
+	}
+	s.next++
+	return true
+}
+
+func (s *scriptedCreateStream) Msg() *pb.CreateSessionResponse { return s.frames[s.next-1] }
+func (s *scriptedCreateStream) Err() error                     { return nil }
+
+func (s *scriptedCreateStream) Close() error {
+	if !s.closed {
+		s.closed = true
+		s.closedAfte = s.next
+	}
+	return nil
+}
+
+func sessionCreatedFrame(id string) *pb.CreateSessionResponse {
+	return &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{Id: id}},
+		},
+	}
+}
+
+// TestNewSessionStreamAcceptedThenSettled pins the BOS-720 client contract: the
+// daemon emits SessionCreated twice — accepted, then settled — so the reader
+// must treat only the second as terminal. Closing on the first abandons the
+// setup output the user is watching and loses the settled session's
+// agent_session_id.
+func TestNewSessionStreamAcceptedThenSettled(t *testing.T) {
+	stream := &scriptedCreateStream{frames: []*pb.CreateSessionResponse{
+		sessionCreatedFrame("sess-1"),
+		{Event: &pb.CreateSessionResponse_SetupOutput{SetupOutput: &pb.SetupScriptOutput{Text: "installing"}}},
+		sessionCreatedFrame("sess-1"),
+	}}
+
+	accepted, ok := readNextStreamMsg(stream, nil)().(streamSessionAcceptedMsg)
+	if !ok {
+		t.Fatalf("frame 1: got %T, want streamSessionAcceptedMsg", readNextStreamMsg(stream, nil)())
+	}
+	if stream.closed {
+		t.Fatalf("stream closed after the accepted frame (after %d frames); the setup output would be abandoned", stream.closedAfte)
+	}
+
+	if _, ok := readNextStreamMsg(stream, &pb.Session{Id: "prior-accepted"})().(setupScriptLineMsg); !ok {
+		t.Fatal("frame 2: want setupScriptLineMsg")
+	}
+	if stream.closed {
+		t.Fatal("stream closed on setup output")
+	}
+
+	settled, ok := readNextStreamMsg(stream, &pb.Session{Id: "prior-accepted"})().(streamSessionCreatedMsg)
+	if !ok {
+		t.Fatal("frame 3: want streamSessionCreatedMsg")
+	}
+	if !stream.closed {
+		t.Fatal("stream was not closed on the settled frame")
+	}
+	if got, want := settled.session.GetId(), accepted.session.GetId(); got != want {
+		t.Fatalf("settled session id = %q, want the accepted frame's %q", got, want)
+	}
+}
+
+// TestNewSessionStreamSkipsUnknownEvent is the forward-compat fix: a newer
+// daemon may add a frame type this binary does not know, and skipping it must
+// not fail the stream.
+func TestNewSessionStreamSkipsUnknownEvent(t *testing.T) {
+	stream := &scriptedCreateStream{frames: []*pb.CreateSessionResponse{
+		{}, // no Event oneof set — an event this binary does not recognise
+		sessionCreatedFrame("sess-2"),
+	}}
+
+	msg := readNextStreamMsg(stream, &pb.Session{Id: "prior-accepted"})()
+	if _, isErr := msg.(streamErrorMsg); isErr {
+		t.Fatalf("an unrecognised event produced %#v; it must be skipped instead", msg)
+	}
+	created, ok := msg.(streamSessionCreatedMsg)
+	if !ok {
+		t.Fatalf("got %T, want streamSessionCreatedMsg after skipping the unknown frame", msg)
+	}
+	if got := created.session.GetId(); got != "sess-2" {
+		t.Fatalf("session id = %q, want %q", got, "sess-2")
+	}
+}
+
+// TestNewSessionAcceptedFrameRendersTheSessionAndKeepsStreaming pins AC4: the
+// accepted frame makes the session visible immediately, but the wizard stays in
+// its creating phase so setup output keeps rendering. Only the settled frame
+// navigates onward.
+func TestNewSessionAcceptedFrameRendersTheSessionAndKeepsStreaming(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m.phase = newSessionPhaseCreating
+	m.createStream = &scriptedCreateStream{}
+
+	updated, _ := m.Update(streamSessionAcceptedMsg{session: &pb.Session{Id: "sess-accepted"}})
+	rm, ok := updated.(NewSessionModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want NewSessionModel", updated)
+	}
+	if rm.done {
+		t.Fatal("done = true on the accepted frame; only the settled frame is terminal")
+	}
+	if rm.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", rm.phase, newSessionPhaseCreating)
+	}
+	if rm.acceptedSess.GetId() != "sess-accepted" {
+		t.Fatalf("acceptedSess id = %q, want %q", rm.acceptedSess.GetId(), "sess-accepted")
+	}
+
+	view := rm.renderCreating()
+	if !strings.Contains(view, "sess-accepted") {
+		t.Fatalf("creating view does not show the accepted session id:\n%s", view)
+	}
+	if !strings.Contains(view, "initializing") {
+		t.Fatalf("creating view lost its initializing indicator:\n%s", view)
+	}
+}
+
+// TestNewSessionStreamSingleFrameStreamStillCreates covers the two paths the
+// daemon deliberately keeps single-frame: the attach short-circuit and quick
+// chat. Neither runs a bootstrap, so neither emits a settled frame — the one
+// SessionCreated is followed straight by EOF. A reader that insisted on a
+// second frame would turn both into "stream ended unexpectedly".
+func TestNewSessionStreamSingleFrameStreamStillCreates(t *testing.T) {
+	stream := &scriptedCreateStream{frames: []*pb.CreateSessionResponse{
+		sessionCreatedFrame("quick-1"),
+	}}
+
+	accepted, ok := readNextStreamMsg(stream, nil)().(streamSessionAcceptedMsg)
+	if !ok {
+		t.Fatal("frame 1: want streamSessionAcceptedMsg")
+	}
+
+	msg := readNextStreamMsg(stream, accepted.session)()
+	if errMsg, isErr := msg.(streamErrorMsg); isErr {
+		t.Fatalf("a clean EOF after the only frame produced an error: %v", errMsg.err)
+	}
+	created, ok := msg.(streamSessionCreatedMsg)
+	if !ok {
+		t.Fatalf("got %T, want streamSessionCreatedMsg", msg)
+	}
+	if got := created.session.GetId(); got != "quick-1" {
+		t.Fatalf("session id = %q, want %q", got, "quick-1")
+	}
+	if !stream.closed {
+		t.Fatal("stream was not closed on the terminal EOF")
+	}
 }

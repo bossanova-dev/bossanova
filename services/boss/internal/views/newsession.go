@@ -86,6 +86,11 @@ type NewSessionModel struct {
 	// Streaming create session
 	createStream client.CreateSessionStream
 	setupLines   []string
+	// acceptedSess is the session the daemon's accepted SessionCreated frame
+	// carried (BOS-720), or nil before it arrives. Non-nil means the session is
+	// addressable even though its bootstrap is still running, and that the next
+	// SessionCreated is the terminal settled one.
+	acceptedSess *pb.Session
 
 	// Agents (loaded once at wizard startup; drives agent-select phase).
 	agents                 []client.AgentInfo
@@ -222,6 +227,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleCreateStream(msg)
 	case setupScriptLineMsg:
 		return m.handleSetupScriptLine(msg)
+	case streamSessionAcceptedMsg:
+		return m.handleStreamAccepted(msg)
 	case streamSessionCreatedMsg:
 		return m.handleStreamCreated(msg)
 	case streamErrorMsg:

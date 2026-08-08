@@ -4,6 +4,7 @@ description: 'Walk through Bossanova end-to-end: install, open the TUI, add a re
 ---
 
 import AsciinemaDemo from '@site/src/components/AsciinemaDemo';
+import CommandTabs from '@site/src/components/CommandTabs';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
@@ -33,9 +34,12 @@ brew install bossanova-dev/tap/bossanova
 
 Then register the daemon service:
 
-```bash
-boss daemon install
-```
+<CommandTabs
+cli="boss daemon install"
+/>
+
+Registering the service touches this machine's launchd, so there is no MCP tool
+for it — the tabs say so rather than hiding the gap.
 
 </TabItem>
 <TabItem value="linux" label="Linux (x86_64)">
@@ -48,11 +52,13 @@ brew install bossanova-dev/tap/bossanova
 
 Then register the daemon service:
 
-```bash
-boss daemon install
-```
+<CommandTabs
+cli="boss daemon install"
+/>
 
-Linux uses a **systemd user service**, so `systemctl --user` must be available
+Registering the service touches this machine's service manager, so there is no
+MCP tool for it — the tabs say so rather than hiding the gap. On Linux that
+manager is a **systemd user service**, so `systemctl --user` must be available
 (most desktop and server distros; minimal containers and some WSL setups are not
 supported).
 
@@ -75,12 +81,16 @@ instead.
 
 Check that the daemon is running:
 
-```bash
-boss daemon status
-```
+<CommandTabs
+cli="boss daemon status"
+/>
 
-Expected output (the service path is a launchd plist on macOS and a systemd unit on
-Linux; PID and path vary by machine):
+Daemon status inspects this machine's service manager and socket, so it has no
+MCP tool either.
+
+Expected output, abridged — the command also prints the settings, app-data, and
+socket paths, among other daemon details (the service path is a launchd plist on
+macOS and a systemd unit on Linux; PID and paths vary by machine):
 
 ```text
 Daemon is running.
@@ -94,9 +104,17 @@ The daemon owns session state, worktree cleanup, GitHub sync, and browser access
 
 Launch the terminal UI:
 
-```bash
-boss
-```
+<CommandTabs
+cli="boss"
+/>
+
+The TUI is a terminal program on this machine, so there is no chat prompt and no
+MCP tool for launching it — an agent reaches the same session data through read
+tools such as `list_sessions` instead.
+
+The interface tabs above are their own group: picking **Chat**, **CLI**, or
+**MCP** here does not change the macOS/Linux platform choice in step 1, and
+picking a platform does not change the interface.
 
 The home screen is the control center for active coding-agent work. It shows
 sessions across repositories, with branch, pull request, review, and CI state in

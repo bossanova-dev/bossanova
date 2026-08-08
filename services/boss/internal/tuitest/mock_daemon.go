@@ -72,6 +72,12 @@ type MockDaemon struct {
 	// the correct original-index PR).
 	lastCreateSession *pb.CreateSessionRequest
 
+	// createSessionScript, when non-empty, is streamed by CreateSession instead
+	// of the default Unimplemented, with createSessionFrameDelay between
+	// consecutive frames. Installed by SetCreateSessionScript.
+	createSessionScript     []*pb.CreateSessionResponse
+	createSessionFrameDelay time.Duration
+
 	// updateSessionCalls records every UpdateSession request so tests can
 	// assert the TUI sent the expected title / field updates.
 	updateSessionCalls []*pb.UpdateSessionRequest
@@ -1154,13 +1160,51 @@ func (m *MockDaemon) CloneAndRegisterRepo(context.Context, *connect.Request[pb.C
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) CreateSession(_ context.Context, req *connect.Request[pb.CreateSessionRequest], _ *connect.ServerStream[pb.CreateSessionResponse]) error {
+// SetCreateSessionScript makes CreateSession stream the given frames, pausing
+// frameDelay between consecutive ones, instead of returning Unimplemented. It
+// is what lets a proof scenario reach the BOS-720 accepted-then-settled shape
+// deterministically: a script of SessionCreated, SetupOutput, SessionCreated
+// with a delay wide enough to capture the intermediate frame.
+//
+// The session carried by each frame has its title overwritten with the
+// request's, so a scenario can assert on the title it typed.
+func (m *MockDaemon) SetCreateSessionScript(frames []*pb.CreateSessionResponse, frameDelay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createSessionScript = frames
+	m.createSessionFrameDelay = frameDelay
+}
+
+func (m *MockDaemon) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
 	m.mu.Lock()
 	m.lastCreateSession = req.Msg
+	script := m.createSessionScript
+	frameDelay := m.createSessionFrameDelay
 	m.mu.Unlock()
-	// Return Unimplemented so the TUI surfaces an error banner after recording
-	// the request — tests assert on the captured request, not on created sessions.
-	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+
+	if len(script) == 0 {
+		// Return Unimplemented so the TUI surfaces an error banner after recording
+		// the request — tests assert on the captured request, not on created sessions.
+		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+	}
+
+	for i, frame := range script {
+		if i > 0 && frameDelay > 0 {
+			select {
+			case <-time.After(frameDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		resp := cloneMsg(frame)
+		if sc := resp.GetSessionCreated(); sc.GetSession() != nil {
+			sc.Session.Title = req.Msg.GetTitle()
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AttachSession reads events from the per-session channel populated by

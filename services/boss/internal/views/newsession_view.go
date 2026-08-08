@@ -129,9 +129,20 @@ func (m NewSessionModel) renderCreating() string {
 	// Render "initializing" indicator using INFO/blue style with an animated
 	// Dot spinner (same style as the session-list spinner).
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(m.spinner.View() + "initializing")))
-	// Blank line after "initializing" so the creating phase has more breathing
-	// room before the following status line (BOS-397). The gap precedes whichever
-	// message comes next ("Running setup script..." or "Creating a new session...").
+	// Once the daemon has accepted the create (BOS-720) the session row exists
+	// and is addressable even though its bootstrap is still running, so show the
+	// id straight away rather than making the user wait for the settled frame.
+	// It goes ABOVE the BOS-397 gap, grouped with the header: putting it below
+	// would leave the status line with no blank line before it, which is the one
+	// thing that gap exists to guarantee.
+	if id := m.acceptedSess.GetId(); id != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session " + id))
+	}
+	// Blank line so the creating phase has more breathing room before the
+	// following status line (BOS-397). The gap always immediately precedes
+	// whichever message comes next ("Running setup script..." or "Creating a new
+	// session..."), whatever is rendered above it.
 	b.WriteString("\n\n")
 	if len(m.setupLines) > 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))

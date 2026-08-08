@@ -2,14 +2,23 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  DEFAULT_CAP,
+  KEY_DIGEST_LENGTH,
   MARKED_ISSUES_QUERY,
+  MAX_SLUG_SEGMENT,
+  MAX_TITLE_LENGTH,
+  applyVerdicts,
   clusterNotes,
   fetchMarkedLinearIssues,
   mergeClusters,
   parseNote,
+  rankClusters,
   renderClusterMarkers,
+  resolveCap,
+  retiredNoteIds,
   runCli,
   selectClusters,
+  stalenessSignals,
 } from './sweep-notes-gate.mjs'
 
 const note = (id, body) => ({ id, body, created_at: `2026-07-2${id}T00:00:00Z` })
@@ -61,13 +70,13 @@ test('clusterNotes deterministically groups normalized statements and Where targ
     })),
     [
       {
-        key: 'stale-lock-blocks-worktree-creation--cmd-other-go--c3RhbGUgbG9jayBibG9ja3Mgd29ya3RyZWUgY3JlYXRpb24AY21kL290aGVyLmdv',
+        key: 'stale-lock-blocks-worktree-creation--cmd-other-go--f4c764221221258d',
         statement: 'Stale lock blocks worktree creation',
         where: 'cmd/other.go',
         ids: ['2'],
       },
       {
-        key: 'stale-lock-blocks-worktree-creation--cmd-worktree-go--c3RhbGUgbG9jayBibG9ja3Mgd29ya3RyZWUgY3JlYXRpb24AY21kL3dvcmt0cmVlLmdv',
+        key: 'stale-lock-blocks-worktree-creation--cmd-worktree-go--1e66775a53e1ac7c',
         statement: 'stale lock blocks worktree creation',
         where: 'cmd/worktree.go',
         ids: ['1', '3'],
@@ -109,6 +118,34 @@ test('clusterNotes gives colliding slugs distinct stable marker keys', () => {
   )
 })
 
+test('marker keys stay bounded however long the note body is', () => {
+  // parseNote folds every non-field line into `statement`, so a note carrying
+  // recurrence appendices used to produce a multi-kilobyte key: the marker block
+  // became enormous and the pre-create Linear query unusable.
+  const huge = `${'a very long recurrence appendix sentence. '.repeat(300)}\nWhere: ${'services/very/deep/path/'.repeat(40)}file.go`
+  const clusters = clusterNotes([note('1', huge), note('2', 'short problem\nWhere: a.go')])
+
+  assert.equal(clusters.length, 2)
+  for (const cluster of clusters) {
+    assert.ok(
+      cluster.key.length <= 2 * MAX_SLUG_SEGMENT + KEY_DIGEST_LENGTH + 4,
+      `key must stay bounded, got ${cluster.key.length}`,
+    )
+    assert.match(cluster.key, new RegExp(`--[0-9a-f]{${KEY_DIGEST_LENGTH}}$`))
+  }
+
+  // Two notes sharing a truncated slug prefix must still get distinct keys,
+  // because identity lives in the digest rather than in the readable segments.
+  const sharedPrefix = 'x'.repeat(MAX_SLUG_SEGMENT + 40)
+  const twins = clusterNotes([
+    note('1', `${sharedPrefix} alpha\nWhere: a.go`),
+    note('2', `${sharedPrefix} beta\nWhere: a.go`),
+  ])
+  assert.equal(twins.length, 2)
+  assert.notEqual(twins[0].key, twins[1].key)
+  assert.equal(twins[0].key.split('--')[0], twins[1].key.split('--')[0])
+})
+
 test('mergeClusters deterministically applies a complete near-duplicate partition', () => {
   const clusters = clusterNotes([
     note('1', 'Stale lock blocks worktree creation\nWhere: cmd/worktree.go'),
@@ -132,7 +169,80 @@ test('mergeClusters deterministically applies a complete near-duplicate partitio
     () => mergeClusters(clusters, [[related[0]], [unrelated]]),
     /account for every cluster/,
   )
-  assert.throws(() => mergeClusters(clusters, [[...related, unrelated]]), /different Where targets/)
+})
+
+test('mergeClusters merges across different Where targets and records each one', () => {
+  const clusters = clusterNotes([
+    note('1', 'Exit code lies\nWhere: cmd/worktree.go'),
+    note('2', 'Exit status is the wrapper\nWhere: Makefile'),
+    note('3', 'Status is the launcher shell\nWhere: cmd/worktree.go'),
+  ])
+  const merged = mergeClusters(clusters, [
+    { title: 'Commands whose result lies', keys: clusters.map((cluster) => cluster.key) },
+  ])
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].title, 'Commands whose result lies')
+  assert.deepEqual(merged[0].wheres, ['cmd/worktree.go', 'Makefile'])
+  assert.deepEqual(
+    merged[0].notes.map(({ id }) => id),
+    ['1', '2', '3'],
+  )
+  assert.equal(merged[0].sourceKeys.length, 3)
+  assert.ok(merged[0].sourceKeys.includes(merged[0].key))
+})
+
+test('mergeClusters titles are order-independent and validated', () => {
+  const clusters = clusterNotes([
+    note('1', 'First problem\nWhere: a.go'),
+    note('2', 'Second problem\nWhere: b.go'),
+  ])
+  const keys = clusters.map((cluster) => cluster.key)
+  const forward = mergeClusters(clusters, [{ title: 'Shared theme', keys }])
+  const reversed = mergeClusters(clusters.toReversed(), [
+    { title: 'Shared theme', keys: keys.toReversed() },
+  ])
+  assert.deepEqual(forward, reversed)
+
+  // An untitled legacy group still works and falls back to the member statement.
+  const legacy = mergeClusters(clusters, [keys])
+  assert.equal(legacy[0].title, legacy[0].statement)
+
+  const bad = (title) => () => mergeClusters(clusters, [{ title, keys }])
+  assert.throws(bad(''), /title must be non-empty/)
+  assert.throws(bad('   '), /title must be non-empty/)
+  assert.throws(bad(42), /title must be a string/)
+  assert.throws(bad('two\nlines'), /title must be a single line/)
+  assert.throws(bad('x'.repeat(MAX_TITLE_LENGTH + 1)), /exceeds 200 characters/)
+  assert.throws(() => mergeClusters(clusters, ['not-a-group']), /key arrays or \{ title, keys \}/)
+  assert.throws(() => mergeClusters(clusters, [{ title: 'x', keys: [] }]), /must be non-empty/)
+})
+
+test('rankClusters puts corroboration before alphabetical order', () => {
+  const clusters = clusterNotes([
+    note('1', 'Zulu problem\nWhere: z.go'),
+    note('2', 'Zulu problem\nWhere: z.go'),
+    note('3', 'Alpha problem\nWhere: a.go'),
+  ])
+  const merged = mergeClusters(
+    clusters,
+    clusters.map((cluster) => [cluster.key]),
+  )
+  // Key order is alphabetical, so Alpha leads until ranking is applied.
+  assert.match(merged[0].statement, /Alpha/)
+
+  const ranked = rankClusters(merged)
+  assert.match(ranked[0].statement, /Zulu/)
+  assert.equal(ranked[0].notes.length, 2)
+  assert.match(ranked[1].statement, /Alpha/)
+
+  // selectClusters must rank internally rather than trusting its caller.
+  const output = selectClusters(merged, [], { cap: 1 })
+  assert.match(output.selected[0].cluster.statement, /Zulu/)
+  assert.deepEqual(
+    output.deferred.map((entry) => entry.reason),
+    ['over-cap'],
+  )
 })
 
 test('merged issue markers dedupe a later singleton alias recurrence', () => {
@@ -212,17 +322,283 @@ test('selectClusters line-anchors Notes markers and accounts for every input', (
   assert.ok(accounted.every((entry) => typeof entry.reason === 'string' && entry.reason.length > 0))
 })
 
-test('selectClusters defaults to five selections and defers overflow', () => {
+test('selectClusters defaults to the documented cap and defers overflow', () => {
   const clusters = clusterNotes(
-    ['f', 'e', 'd', 'c', 'b', 'a'].map((letter, index) => note(String(index), `${letter} problem`)),
+    Array.from({ length: DEFAULT_CAP + 1 }, (_, index) =>
+      note(String(index), `problem number ${index}`),
+    ),
   )
   const output = selectClusters(clusters, [])
-  assert.equal(output.selected.length, 5)
+  assert.equal(output.selected.length, DEFAULT_CAP)
   assert.deepEqual(
     output.deferred.map((entry) => entry.reason),
     ['over-cap'],
   )
   assert.deepEqual(output.dropped, [])
+})
+
+test('resolveCap prefers an argument, then the environment, then the default', () => {
+  assert.equal(resolveCap('50', {}), 50)
+  assert.equal(resolveCap(undefined, { BS_SWEEP_NOTES_MAX_ISSUES: '50' }), 50)
+  // An explicit argument still wins, so an operator override is never silently lost.
+  assert.equal(resolveCap('7', { BS_SWEEP_NOTES_MAX_ISSUES: '50' }), 7)
+  assert.equal(resolveCap(undefined, {}), DEFAULT_CAP)
+  assert.equal(resolveCap('', { BS_SWEEP_NOTES_MAX_ISSUES: '' }), DEFAULT_CAP)
+  assert.equal(resolveCap('nonsense', {}), DEFAULT_CAP)
+  assert.equal(resolveCap('0', {}), 0)
+  assert.equal(resolveCap('-4', {}), 0)
+  assert.equal(resolveCap('3.9', {}), 3)
+})
+
+test('runCli select honours the environment cap without a shell expansion', () => {
+  const clusters = clusterNotes(
+    Array.from({ length: 4 }, (_, index) => note(String(index), `problem number ${index}`)),
+  )
+  const files = { 'c.json': JSON.stringify(clusters), 'l.json': '[]' }
+  const read = (file) => files[file]
+
+  // This is the case that silently regressed: the cap arrives only in the
+  // environment, exactly as a `BS_SWEEP_NOTES_MAX_ISSUES=2 node …` prefix delivers it.
+  const viaEnv = JSON.parse(
+    runCli(['select', 'c.json', 'l.json'], {
+      readFile: read,
+      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2' },
+    }),
+  )
+  assert.equal(viaEnv.selected.length, 2)
+  assert.equal(viaEnv.deferred.length, 2)
+
+  const viaArg = JSON.parse(
+    runCli(['select', 'c.json', 'l.json', '1'], {
+      readFile: read,
+      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2' },
+    }),
+  )
+  assert.equal(viaArg.selected.length, 1)
+
+  const viaDefault = JSON.parse(
+    runCli(['select', 'c.json', 'l.json'], { readFile: read, env: {} }),
+  )
+  assert.equal(viaDefault.selected.length, 4)
+})
+
+test('stalenessSignals reports missing and post-note-change paths, never a verdict', () => {
+  const clusters = clusterNotes([
+    note('1', 'Glob aborts cleanup\nWhere: skills/boss-plan/SKILL.md Phase 5 and cmd/gone.go'),
+  ])
+  const merged = mergeClusters(clusters, [clusters.map((cluster) => cluster.key)])
+  const signals = stalenessSignals(merged, {
+    pathExists: (path) => path !== 'cmd/gone.go',
+    // Same instant as the note, expressed in a different offset: a naive string
+    // compare would call this "changed since".
+    lastChangeAt: () => '2026-07-21T09:00:00+09:00',
+  })
+
+  assert.equal(signals.length, 1)
+  assert.deepEqual(signals[0].paths, ['cmd/gone.go', 'skills/boss-plan/SKILL.md'])
+  assert.deepEqual(signals[0].missing, ['cmd/gone.go'])
+  assert.deepEqual(signals[0].changedSince, [])
+  assert.equal(signals[0].newestNoteAt, '2026-07-21T00:00:00.000Z')
+
+  const changed = stalenessSignals(merged, {
+    pathExists: () => true,
+    lastChangeAt: () => '2026-08-01T00:00:00Z',
+  })
+  assert.deepEqual(changed[0].changedSince, ['cmd/gone.go', 'skills/boss-plan/SKILL.md'])
+
+  assert.throws(() => stalenessSignals(merged, {}), /requires pathExists and lastChangeAt/)
+})
+
+test('stalenessSignals ignores prose, absolute and home-relative Where tokens', () => {
+  const clusters = clusterNotes([
+    note('1', 'Installed copy drifts\nWhere: ~/.claude/skills/boss-plan/SKILL.md step 2'),
+    note('2', 'Absolute path cited\nWhere: /Users/dave/x/y.go and boss-build Step 11'),
+  ])
+  const merged = mergeClusters(clusters, [clusters.map((cluster) => cluster.key)])
+  const signals = stalenessSignals(merged, {
+    pathExists: () => false,
+    lastChangeAt: () => null,
+  })
+
+  assert.deepEqual(signals[0].paths, [])
+  assert.deepEqual(signals[0].missing, [])
+})
+
+test('applyVerdicts partitions every theme and demands evidence for fixed', () => {
+  const clusters = clusterNotes([
+    note('1', 'Alpha problem\nWhere: a.go'),
+    note('2', 'Beta problem\nWhere: b.go'),
+    note('3', 'Gamma problem\nWhere: c.go'),
+  ])
+  const merged = mergeClusters(
+    clusters,
+    clusters.map((cluster) => [cluster.key]),
+  )
+  const [alpha, beta, gamma] = merged.map((cluster) => cluster.key)
+
+  const buckets = applyVerdicts(merged, [
+    { key: gamma, verdict: 'unverifiable' },
+    { key: beta, verdict: 'fixed', evidence: 'cmd/b.go:12 already guards this' },
+    { key: alpha, verdict: 'live' },
+  ])
+
+  assert.deepEqual(
+    buckets.live.map((entry) => entry.cluster.key),
+    [alpha],
+  )
+  assert.deepEqual(
+    buckets.fixed.map((entry) => [entry.cluster.key, entry.evidence]),
+    [[beta, 'cmd/b.go:12 already guards this']],
+  )
+  assert.deepEqual(
+    buckets.unverifiable.map((entry) => entry.cluster.key),
+    [gamma],
+  )
+  assert.equal(
+    buckets.live.length + buckets.fixed.length + buckets.unverifiable.length,
+    merged.length,
+  )
+
+  assert.throws(
+    () => applyVerdicts(merged, [{ key: alpha, verdict: 'live' }]),
+    /account for every cluster/,
+  )
+  assert.throws(
+    () =>
+      applyVerdicts(merged, [
+        { key: alpha, verdict: 'live' },
+        { key: beta, verdict: 'fixed' },
+        { key: gamma, verdict: 'unverifiable' },
+      ]),
+    /requires evidence for a fixed verdict/,
+  )
+  assert.throws(
+    () =>
+      applyVerdicts(merged, [
+        { key: alpha, verdict: 'resolved' },
+        { key: beta, verdict: 'live' },
+        { key: gamma, verdict: 'live' },
+      ]),
+    /unknown verdict/,
+  )
+  assert.throws(
+    () =>
+      applyVerdicts(merged, [
+        { key: alpha, verdict: 'live' },
+        { key: alpha, verdict: 'live' },
+        { key: gamma, verdict: 'live' },
+      ]),
+    /unknown or duplicate key/,
+  )
+})
+
+test('a live theme can retire individual fixed members', () => {
+  const clusters = clusterNotes([
+    note('1', 'Glob aborts cleanup\nWhere: internal/a.go'),
+    note('2', 'Scratch survives an abort\nWhere: internal/b.go'),
+  ])
+  const theme = mergeClusters(clusters, [
+    { title: 'Cleanup leaves scratch behind', keys: clusters.map((c) => c.key) },
+  ])
+  const ids = theme[0].notes.map((n) => n.id)
+
+  // The whole point: the theme stays live and still gets filed, but the member
+  // whose defect is provably gone is retired anyway.
+  const buckets = applyVerdicts(theme, [
+    { key: theme[0].key, verdict: 'live', evidence: 'internal/a.go:12 now guards it', fixedNotes: [ids[0]] },
+  ])
+  assert.equal(buckets.live.length, 1)
+  assert.deepEqual(buckets.live[0].fixedNoteIds, [ids[0]])
+  assert.deepEqual(retiredNoteIds(buckets), [ids[0]])
+
+  // A wholly fixed theme retires all of its notes without naming them.
+  const whole = applyVerdicts(theme, [
+    { key: theme[0].key, verdict: 'fixed', evidence: 'internal/a.go:12' },
+  ])
+  assert.deepEqual(retiredNoteIds(whole), [...ids].sort((a, b) => a.localeCompare(b)))
+
+  // Nothing is retired by default.
+  const none = applyVerdicts(theme, [{ key: theme[0].key, verdict: 'live' }])
+  assert.deepEqual(retiredNoteIds(none), [])
+  assert.deepEqual(none.live[0].fixedNoteIds, [])
+})
+
+test('fixedNotes cannot reach outside its theme or skip evidence', () => {
+  const clusters = clusterNotes([
+    note('1', 'Alpha problem\nWhere: internal/a.go'),
+    note('2', 'Beta problem\nWhere: internal/b.go'),
+  ])
+  const themes = mergeClusters(
+    clusters,
+    clusters.map((c) => [c.key]),
+  )
+  const [alpha, beta] = themes
+  const foreign = beta.notes[0].id
+  const own = alpha.notes[0].id
+  const verdict = (extra) => [
+    { key: alpha.key, verdict: 'live', ...extra },
+    { key: beta.key, verdict: 'live' },
+  ]
+
+  assert.throws(
+    () => applyVerdicts(themes, verdict({ evidence: 'x', fixedNotes: [foreign] })),
+    /names a note outside/,
+  )
+  assert.throws(
+    () => applyVerdicts(themes, verdict({ fixedNotes: [own] })),
+    /requires evidence to retire notes/,
+  )
+  assert.throws(
+    () => applyVerdicts(themes, verdict({ evidence: 'x', fixedNotes: [own, own] })),
+    /repeats a note id/,
+  )
+  assert.throws(
+    () => applyVerdicts(themes, verdict({ evidence: 'x', fixedNotes: own })),
+    /must be an array/,
+  )
+  assert.throws(
+    () => applyVerdicts(themes, verdict({ evidence: 'x', fixedNotes: [''] })),
+    /must be note ids/,
+  )
+})
+
+test('runCli exposes rank, stale and verdicts through injected probes', () => {
+  // The first two notes share an identity, so clusterNotes already yields two
+  // clusters: a two-note Alpha and a one-note Zulu.
+  const clusters = clusterNotes([
+    note('1', 'Alpha problem\nWhere: internal/a.go'),
+    note('2', 'Alpha problem\nWhere: internal/a.go'),
+    note('3', 'Zulu problem\nWhere: internal/z.go'),
+  ])
+  assert.equal(clusters.length, 2)
+  const merged = mergeClusters(
+    clusters,
+    clusters.map((cluster) => [cluster.key]),
+  )
+  const files = {
+    'merged.json': JSON.stringify(merged),
+    'verdicts.json': JSON.stringify(
+      merged.map((cluster) => ({ key: cluster.key, verdict: 'live' })),
+    ),
+  }
+  const options = {
+    readFile: (file) => files[file],
+    pathExists: () => true,
+    lastChangeAt: () => '2026-08-01T00:00:00Z',
+  }
+
+  const ranked = JSON.parse(runCli(['rank', 'merged.json'], options))
+  assert.equal(ranked[0].notes.length, 2)
+
+  const signals = JSON.parse(runCli(['stale', 'merged.json'], options))
+  assert.deepEqual(signals[0].changedSince, ['internal/a.go'])
+
+  const buckets = JSON.parse(runCli(['verdicts', 'merged.json', 'verdicts.json'], options))
+  assert.equal(buckets.live.length, merged.length)
+  assert.deepEqual(buckets.fixed, [])
+
+  files['buckets.json'] = JSON.stringify(buckets)
+  assert.deepEqual(JSON.parse(runCli(['retired', 'buckets.json'], options)), [])
 })
 
 test('fetchMarkedLinearIssues paginates archived issues and fails closed on truncation', async () => {

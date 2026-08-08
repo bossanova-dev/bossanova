@@ -5525,6 +5525,12 @@ components:
         hasSentryKey:
           type: boolean
           title: has_sentry_key
+        daemonHostname:
+          type: string
+          title: daemon_hostname
+          description: |-
+            Non-secret, user-facing hostname of the serving daemon, for display only.
+             May be empty, in which case callers fall back to daemon_id.
       title: DaemonRepoRef
       additionalProperties: false
       description: |-

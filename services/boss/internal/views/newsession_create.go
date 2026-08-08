@@ -186,6 +186,13 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 	}
 	m.phase = newSessionPhaseCreating
 	m.setupLines = nil // Clear setup output from any previous attempt
+	// ...and the accepted session with it (BOS-720). This is not just a render
+	// value: handleSetupScriptLine threads acceptedSess back into
+	// readNextStreamMsg as the accepted-vs-settled discriminator, and a clean
+	// EOF while holding one is reported as a successful create. A retry after
+	// an attempt that got past its accepted frame would otherwise show — and
+	// could attach to — a session id cleanupFailedCreateSession has deleted.
+	m.acceptedSess = nil
 	repo := m.selectedRepo()
 	if repo == nil {
 		m.err = fmt.Errorf("no repository selected")

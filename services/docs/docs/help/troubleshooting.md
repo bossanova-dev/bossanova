@@ -3,6 +3,8 @@ title: Troubleshooting
 description: 'A runbook for the most common Bossanova failures: auth, setup scripts, the agent plugin, worktrees, auto-merge, and the repair loop.'
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Troubleshooting
 
 This page is organized as a runbook: scan the section that matches what's
@@ -22,9 +24,12 @@ the device-code TTL without success, it fails.
 
 Re-run the command. A fresh code expires further in the future:
 
-```bash
-boss login
-```
+<CommandTabs
+cli="boss login"
+/>
+
+`boss login` drives a browser flow on this machine, so there is no MCP tool for
+it — the tabs record that rather than leaving it ambiguous.
 
 If it still fails, check three things:
 
@@ -72,18 +77,24 @@ When a session's setup script (configured via `boss repo update <repo-id>
 and the agent never starts. The setup script's stdout and stderr are
 captured in the daemon log.
 
-Inspect the daemon log to find the exact failure. The log path is
-`$XDG_STATE_HOME/bossanova/logs/bossd.log` if `XDG_STATE_HOME` is set,
-otherwise `~/.local/state/bossanova/logs/bossd.log` (on both macOS and
-Linux). Use `boss daemon status` to confirm the daemon is up, then
-tail its log:
+Inspect the daemon log to find the exact failure. Use `boss daemon status`
+to confirm the daemon is up, then read its log with `boss tail`, which
+finds the file for you. The failure has already happened, so read a deep
+backlog rather than following:
 
-```bash
-tail -f ~/.local/state/bossanova/logs/bossd.log
-```
+<CommandTabs
+cli="boss tail -n 200"
+/>
+
+The underlying file is `$XDG_STATE_HOME/bossanova/logs/bossd.log` if
+`XDG_STATE_HOME` is set, otherwise `~/.local/state/bossanova/logs/bossd.log`
+(on both macOS and Linux). See the [Logging guide](../guides/logging.md)
+for sources, filters, and JSON output.
 
 The setup script runs from the new worktree's directory, so you can usually
-reproduce it manually:
+reproduce it manually. This is a multi-line shell recipe rather than a single
+command, so it stays a plain block — the `boss show` inside it reads the
+worktree path, and `get_session` is its MCP counterpart:
 
 ```bash
 WT=$(boss show <session-id> | awk '/^  Worktree:/ {print $2}')
@@ -139,12 +150,27 @@ The selected agent plugin owns the agent CLI subprocess; if it crashes,
 the session's chat stops producing output. The plugin's log line will
 record the exit. Check the daemon log for entries tagged with the
 plugin name (`claude` or `codex`), then archive and recreate the
-session:
+session.
 
-```bash
-boss archive <session-id>
-boss new
-```
+Archive the broken session:
+
+<CommandTabs
+chat='"archive session a3f2c19b7d4e0158"'
+cli="boss archive <session-id>"
+mcp="archive_session"
+/>
+
+`archive_session` is destructive, so the MCP call only proceeds with
+`confirm: true`. The CLI archives immediately and asks nothing, so check the
+session id before you run it.
+
+Then create a fresh one:
+
+<CommandTabs
+chat='"start a session on this repo to redo the work I just archived"'
+cli="boss new"
+mcp="create_session"
+/>
 
 There is no in-place "restart this session" command. Sessions are tied
 to a worktree and a chat history, and re-running the agent on the same
@@ -168,12 +194,23 @@ If neither check resolves it, file an issue with the daemon log. Skill install i
 By default, the `claude` plugin runs Claude Code without the
 `--dangerously-skip-permissions` flag, so the agent prompts for any
 filesystem or network operation outside its sandbox. Toggle it from the
-TUI settings view or the CLI:
+TUI settings view, an agent, or the CLI.
 
-```bash
-boss settings --skip-permissions      # turn it on
-boss settings --no-skip-permissions   # turn it off
-```
+Turn it on:
+
+<CommandTabs
+chat='"turn on skip-permissions for the claude plugin"'
+cli="boss settings --skip-permissions"
+mcp="update_settings"
+/>
+
+Turn it off again:
+
+<CommandTabs
+chat='"turn off skip-permissions for the claude plugin"'
+cli="boss settings --no-skip-permissions"
+mcp="update_settings"
+/>
 
 The flag is stored at `plugins[claude].config.dangerously_skip_permissions`
 in `settings.json`. Read [Security and
@@ -190,16 +227,18 @@ stop matching the daemon that now runs.
 
 First, inspect the daemon's diagnostic output:
 
-```bash
-boss daemon doctor
-```
+<CommandTabs
+cli="boss daemon doctor"
+/>
 
 `boss daemon doctor` reports the probe bossd ran at startup, so its verdict is
 as old as the daemon. For a fresh answer, run:
 
-```bash
-boss repair doctor
-```
+<CommandTabs
+chat='"run the repair doctor"'
+cli="boss repair doctor"
+mcp="repair_doctor"
+/>
 
 Its `protected roots readable` check probes on every invocation. Answering a
 pending privacy dialog clears it immediately — no restart, because answering
@@ -218,9 +257,9 @@ Full Disk Access):
 
 Then restart the daemon:
 
-```bash
-boss daemon restart
-```
+<CommandTabs
+cli="boss daemon restart"
+/>
 
 A Full Disk Access grant is not applied to an already-running process, so the
 restart is required for that route.
@@ -254,10 +293,20 @@ shows it.
 There is no `boss session repair` command today. The reliable fix is to
 archive the session and start a new one against the same branch:
 
-```bash
-boss archive <session-id>
-boss new
-```
+<CommandTabs
+chat='"archive session a3f2c19b7d4e0158"'
+cli="boss archive <session-id>"
+mcp="archive_session"
+/>
+
+`archive_session` is destructive: the MCP call only proceeds with
+`confirm: true`.
+
+<CommandTabs
+chat='"start a session on this repo against the same branch"'
+cli="boss new"
+mcp="create_session"
+/>
 
 If you want to recover the worktree manually first, `git worktree add
 <path> <branch>` from the repo root will recreate it; the daemon will
@@ -361,18 +410,42 @@ review on GitHub, then let the daemon re-poll.
 
 The TUI's preflight check shows
 "Cannot connect to the bossd daemon" when the socket isn't reachable.
-Two recovery paths:
+Two recovery paths. Either set up automatic startup (a macOS LaunchAgent, or a
+systemd user service on Linux):
+
+<CommandTabs
+cli="boss daemon install"
+/>
+
+…or run the daemon by hand in another terminal:
 
 ```bash
-boss daemon install   # set up automatic startup (macOS LaunchAgent)
-bossd                 # run it manually in another terminal
+bossd
 ```
 
 `boss daemon status` reports whether the daemon is installed and
-running and prints its PID. For log content, tail the `bossd.log`
-file directly. See
-[Setup script exits non-zero](#setup-script-exits-non-zero) above for
-the path.
+running and prints its PID:
+
+<CommandTabs
+cli="boss daemon status"
+/>
+
+For log content, run `boss tail` — it reads the daemon log without needing a
+path:
+
+<CommandTabs
+cli="boss tail -n 100"
+/>
+
+The daemon lifecycle and log commands all act on this machine's service manager
+and local log file, so none of them has an MCP tool and their tabs carry the
+no-equivalent note. For `boss daemon install` an MCP tool could not have helped
+in any case: every tool is served by the daemon that is not running.
+
+See the [Logging guide](../guides/logging.md) for sources, filters, and
+JSON output, or
+[Setup script exits non-zero](#setup-script-exits-non-zero) above for the
+underlying file path.
 
 ### Plugins missing
 
@@ -444,11 +517,17 @@ A stranded **focus-reporting** mode is the same bug with a quieter tell: a
 stray `I` or `O` appears every time you click away from the window and back
 again (or, in cooked mode, `^[[I` and `^[[O`). The same remedies clear it.
 
-To fix it:
+To fix it, run this on the machine whose terminal is stuck:
+
+<CommandTabs
+cli="boss fix-terminal"
+/>
+
+If boss lives on a remote host, run it from the stuck terminal over SSH so the
+escape sequences land in the local terminal:
 
 ```bash
-boss fix-terminal              # on the machine whose terminal is stuck
-ssh <host> boss fix-terminal   # from the stuck terminal, if boss lives remotely
+ssh <host> boss fix-terminal
 ```
 
 `boss fix-terminal` writes the mouse- and focus-reporting disable sequences and

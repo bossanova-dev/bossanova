@@ -105,6 +105,9 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	for _, j := range w.CronJobs {
 		d.AddCronJob(j)
 	}
+	if len(w.CreateSessionScript) > 0 {
+		d.SetCreateSessionScript(w.CreateSessionScript, w.CreateSessionFrameDelay)
+	}
 	for _, a := range w.Accounts {
 		// Display-safe metadata only; the Account proto has no credential field,
 		// so a nil credential is correct (BOS-265 Settings → Accounts list).

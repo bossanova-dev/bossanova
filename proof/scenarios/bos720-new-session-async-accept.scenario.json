@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "title": "BOS-720 the new-session wizard shows the accepted session while setup output is still streaming, then settles",
+  "fixture": {
+    "preset": "async-create"
+  },
+  "scenes": [
+    {
+      "id": "accepted",
+      "title": "the session is on screen while the bootstrap is still running",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "key": "n",
+          "caption": "Press [n] to start a new session"
+        },
+        {
+          "waitFor": "Select a repository",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 1: the repo picker"
+        },
+        {
+          "key": "enter",
+          "caption": "Select design-system (row 0)"
+        },
+        {
+          "waitFor": "Starting a new session",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 2: the session-type chooser"
+        },
+        {
+          "key": "enter",
+          "caption": "Choose 'Create a new PR' (row 0)"
+        },
+        {
+          "waitFor": "Session name",
+          "timeoutMs": 10000,
+          "caption": "Wizard phase 3: the session-name form"
+        },
+        {
+          "type": "Return an accepted session early",
+          "caption": "Type the session name"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] submits the create"
+        },
+        {
+          "waitFor": "sess-async-720",
+          "timeoutMs": 10000,
+          "caption": "The accepted frame: the daemon has handed back a usable session id before the bootstrap finished"
+        },
+        {
+          "waitFor": "pnpm install",
+          "timeoutMs": 15000,
+          "caption": "Setup output keeps arriving BEHIND the accepted frame — the stream was not closed on it"
+        },
+        {
+          "expect": [
+            {
+              "text": "initializing",
+              "match": "normalized",
+              "label": "the wizard is still in its creating phase, bootstrap in flight"
+            },
+            {
+              "text": "sess-async-720",
+              "match": "normalized",
+              "label": "the accepted session id is already on screen"
+            },
+            {
+              "text": "pnpm install --frozen-lockfile",
+              "match": "normalized",
+              "label": "setup output streaming after the accepted frame"
+            },
+            {
+              "text": "^(?![\\s\\S]*Session created!)[\\s\\S]*initializing",
+              "match": "regex",
+              "label": "NOT finished yet — the accepted frame is not treated as terminal"
+            }
+          ],
+          "caption": "AC1/AC4: the session is addressable and rendered while its bootstrap is still running"
+        }
+      ]
+    },
+    {
+      "id": "settled",
+      "title": "the settled frame completes the wizard",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Launching|Attaching|Session created!",
+            "match": "regex",
+            "label": "the settled frame ends the wizard and hands off to the session"
+          },
+          "timeoutMs": 25000,
+          "caption": "The second SessionCreated frame settles the create and the wizard navigates into the session"
+        },
+        {
+          "expect": [
+            {
+              "text": "Return an accepted session early",
+              "match": "normalized",
+              "label": "the session detail header shows the submitted session title"
+            },
+            {
+              "text": "Launching|Attaching|Session created!",
+              "match": "regex",
+              "label": "the wizard has left its creating phase — only the settled frame is terminal"
+            },
+            {
+              "text": "^(?![\\s\\S]*initializing)[\\s\\S]*",
+              "match": "regex",
+              "label": "the initializing indicator is gone: the bootstrap has settled"
+            }
+          ],
+          "caption": "AC2/AC4: the wizard navigated onward only on the settled frame"
+        }
+      ]
+    }
+  ]
+}

@@ -3,6 +3,8 @@ title: Account Rotation
 description: 'Register multiple provider accounts and let Bossanova rotate them automatically when a usage cap is hit.'
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Account Rotation
 
 Coding-agent subscriptions (Claude and Codex) have usage caps. When a session
@@ -45,13 +47,26 @@ Use `boss account add` with the provider as a positional argument. Both flows
 are interactive and register the credential on your **local** daemon (they
 cannot target a remote daemon):
 
-```bash
-# Claude: runs the setup-token walkthrough
-boss account add claude
+Claude runs the setup-token walkthrough:
 
-# Codex: runs the interactive device flow
-boss account add codex
-```
+<CommandTabs
+chat='"add a new claude account"'
+cli="boss account add claude"
+mcp="add_account"
+/>
+
+Codex runs the interactive device flow:
+
+<CommandTabs
+chat='"add a new codex account"'
+cli="boss account add codex"
+mcp="add_account"
+/>
+
+The MCP `add_account` tool is **not** the interactive walkthrough: it registers
+a credential you have already obtained (a Claude setup-token string, or the
+contents of a Codex `auth.json`) and stores it in the keyring. Run the CLI or
+the TUI to obtain one.
 
 Useful flags (see `boss account add --help`):
 
@@ -63,12 +78,40 @@ Useful flags (see `boss account add --help`):
 
 Manage the registry with the sibling commands:
 
-```bash
-boss account ls                     # list accounts (add --json for scripts)
-boss account test <account-id>      # validate a credential and record the result
-boss account update <account-id>    # change label, priority, status, or allowed models
-boss account remove <account-id>    # remove an account and its stored credential
-```
+List accounts (add `--json` for scripts):
+
+<CommandTabs
+chat='"list my registered accounts"'
+cli="boss account ls"
+mcp="list_accounts"
+/>
+
+Validate a credential and record the result:
+
+<CommandTabs
+chat='"test account <account-id>"'
+cli="boss account test <account-id>"
+mcp="test_account"
+/>
+
+Change label, priority, status, or allowed models:
+
+<CommandTabs
+chat='"update account <account-id>"'
+cli="boss account update <account-id>"
+mcp="update_account"
+/>
+
+Remove an account and its stored credential:
+
+<CommandTabs
+chat='"remove account <account-id>"'
+cli="boss account remove <account-id>"
+mcp="remove_account"
+/>
+
+`remove_account` is classed as a destructive tool, so the MCP call also requires
+`confirm: true` and is rejected without it.
 
 ### Register accounts in the TUI
 
@@ -97,14 +140,20 @@ the command line; there is one registry per local daemon.
 
 You can always move a specific session onto a specific account by hand:
 
-```bash
-boss account switch <session> <account>
-```
+<CommandTabs
+chat='"switch session <session> to account <account>"'
+cli="boss account switch <session> <account>"
+mcp="switch_account"
+/>
 
 Manual switching stops the session's live chat, rebinds it to the chosen
-account, and respawns with resume. Pass `system-default` (or `0`) as the account
-to return a session to account 0. A mid-turn (working) chat is rejected unless
-you add `--force`.
+account, and respawns with resume. To send a session back to the system-default
+account, `boss account switch` accepts `system-default` (along with a few
+equivalent spellings) and resolves it to the empty account id the daemon reads
+as account 0. That resolution is a CLI convenience: the `switch_account` tool
+does no such mapping, so through MCP pass an empty `account_id` instead. A
+mid-turn (working) chat is rejected unless you force it — `--force` on the CLI,
+`force: true` through MCP.
 
 ### Switch from inside a chat
 
@@ -173,13 +222,27 @@ Setting `managed_accounts.enabled=false` is the global kill-switch. It halts
 **all** automatic rotation instantly — the daemon re-reads the flag on every
 rotation decision, so no restart is needed:
 
-```bash
-boss settings --no-managed-accounts   # halt automatic rotation
-boss settings --managed-accounts      # re-enable it
-```
+Halt automatic rotation:
+
+<CommandTabs
+chat='"turn off automatic account rotation"'
+cli="boss settings --no-managed-accounts"
+/>
+
+Re-enable it:
+
+<CommandTabs
+chat='"turn on automatic account rotation"'
+cli="boss settings --managed-accounts"
+/>
 
 (`--no-rotation` / `--rotation` are deprecated hidden aliases for the same
 two flags, kept for back-compat scripts.)
+
+There is no MCP equivalent for the kill-switch. The `update_settings` tool
+covers the worktree base directory, poll interval, default agent, tracing, and
+per-agent config — it carries no managed-accounts field — so the Chat, CLI, and
+TUI paths above are the ways to flip it.
 
 You can also flip the same toggle from the TUI Settings view: it is the
 **"Enable automatic account rotation"** checkbox, toggled with `enter`/`space`.

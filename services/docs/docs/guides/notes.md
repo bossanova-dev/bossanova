@@ -4,6 +4,8 @@ description: Keep durable, repo-scoped free-text for later runs to inspect.
 slug: /guides/notes
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Notes
 
 Notes are durable, repo-scoped free-text records. Use them for information a
@@ -24,14 +26,16 @@ not use notes for credentials or other values that should stay secret.
 Have each skill record a note when it finishes. Keep the note specific enough
 for a later reader to act on it:
 
-```bash
-boss notes add "The integration test failed once; its retry took 94s because the fixture waits for an external worker. Make the worker timeout configurable." \
-  --tag skill \
-  --tag failure \
-  --tag improvement \
-  --tag analytics \
-  --tag timing
-```
+<CommandTabs
+chat='"note that the integration test failed once, its retry took 94s because the fixture waits for an external worker, and that we should make the worker timeout configurable — tag it skill, failure, improvement, analytics, timing"'
+cli={`boss notes add "The integration test failed once; its retry took 94s because the fixture waits for an external worker. Make the worker timeout configurable." \\
+  --tag skill \\
+  --tag failure \\
+  --tag improvement \\
+  --tag analytics \\
+  --tag timing`}
+mcp="create_note"
+/>
 
 This captures what went wrong (the failure), an improvement, analytics (retry
 count), and timing. The repository is inferred when the command runs in a
@@ -39,12 +43,22 @@ registered repository or session worktree, so a skill normally does not need
 to look up IDs first.
 
 Run a weekly agent sweep over the accumulated records instead of relying on the
-memory of the sessions that created them:
+memory of the sessions that created them. Find notes matching a set of tags
+and a search term:
 
-```bash
-boss notes ls --tag improvement --tag timing --search worker
-boss notes show note_01J...
-```
+<CommandTabs
+chat='"find notes tagged improvement or timing that mention worker"'
+cli="boss notes ls --tag improvement --tag timing --search worker"
+mcp="list_notes"
+/>
+
+Then read one in full:
+
+<CommandTabs
+chat='"show me note note_01J..."'
+cli="boss notes show note_01J..."
+mcp="get_note"
+/>
 
 It can group recurring problems, check the supporting notes, then file one
 issue with the proposed change. The notes remain available even if the runs
@@ -62,24 +76,63 @@ The working-directory part of that is local-daemon-only — a CLI connected with
 `BOSS_REPO_ID` or pass `--repo` there. Without one, `add`, `show`, `edit`, and
 `rm` fail, and `ls` lists every repository instead of the current one.
 
-```bash
-# Add a note. Repeat --tag for several tags.
-boss notes add "Review tool skipped generated files." --tag skill --tag review
+Listing notes is one operation you can reach three ways — though only a
+local-daemon CLI defaults to the current repository, for the reason just above.
+`list_notes` with no `repo_id` searches
+every repository the agent can reach, as [MCP reference](#mcp-reference) covers
+below:
 
-# List notes for the current repository.
-boss notes ls
+<CommandTabs
+chat='"list the notes for this repo"'
+cli="boss notes ls"
+mcp="list_notes"
+/>
 
-# List every repository, including from a boss-managed pane.
-boss notes ls --repo ""
+The other operations, and the `ls` filters:
 
-# Filter by the recording session, any given tag, a body substring, or a limit.
-boss notes ls --session session_01J... --tag improvement --tag timing --search retry --limit 20
+Add a note. Repeat `--tag` for several tags.
 
-# Read, edit, and permanently remove one note.
-boss notes show note_01J...
-boss notes edit note_01J... --body "Retry configuration is now covered." --tag resolved
-boss notes rm note_01J...
-```
+<CommandTabs
+chat='"note that the review tool skipped generated files, and tag it skill and review"'
+cli='boss notes add "Review tool skipped generated files." --tag skill --tag review'
+mcp="create_note"
+/>
+
+List every repository, including from a boss-managed pane.
+
+<CommandTabs
+chat='"list notes across every repository"'
+cli='boss notes ls --repo ""'
+mcp="list_notes"
+/>
+
+Filter by the recording session, any given tag, a body substring, or a limit.
+
+<CommandTabs
+chat='"find notes from session session_01J... tagged improvement or timing that mention retry, limited to 20"'
+cli="boss notes ls --session session_01J... --tag improvement --tag timing --search retry --limit 20"
+mcp="list_notes"
+/>
+
+Read, edit, and permanently remove one note.
+
+<CommandTabs
+chat='"pull up note note_01J..."'
+cli="boss notes show note_01J..."
+mcp="get_note"
+/>
+
+<CommandTabs
+chat='"update note note_01J... to say retry configuration is now covered, and tag it resolved"'
+cli='boss notes edit note_01J... --body "Retry configuration is now covered." --tag resolved'
+mcp="update_note"
+/>
+
+<CommandTabs
+chat='"delete note note_01J..."'
+cli="boss notes rm note_01J..."
+mcp="delete_note"
+/>
 
 `ls` defaults to the current repository. `--repo ""` is the explicit
 cross-repository form. Repeating `--tag` on `ls` matches notes with _any_ of

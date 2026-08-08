@@ -100,7 +100,11 @@ func (m *RepoListModel) buildTable() {
 		{col: cursorColumn, priority: 0, minWidth: 1},
 		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep}, priority: 0, minWidth: 1},
 		{col: table.Column{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep}, priority: 2, minWidth: 1},
-		{col: table.Column{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep}, priority: 1, minWidth: 1},
+		// The status column is unlabelled: it only ever holds the transient
+		// "deleting" spinner, so a permanent STATUS heading advertises a column
+		// that is blank in the steady state. Width still sizes against the
+		// header text so the reserved space (and the fit priority) is unchanged.
+		{col: table.Column{Title: "", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep}, priority: 1, minWidth: 1},
 	}
 	fitted := fitColumnsIndexed(cols, fitAvailWidth(m.width, 1))
 	fittedCols := fittedColumns(fitted)

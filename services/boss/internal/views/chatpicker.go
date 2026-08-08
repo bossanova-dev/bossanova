@@ -94,6 +94,19 @@ type ChatPickerModel struct {
 	agentTable   table.Model
 	pickingAgent bool // true while showing the one-shot agent picker
 
+	// preferredAgent is the configured default agent (Settings.DefaultAgent),
+	// seeded by App at construction and re-seeded from each confirmed pick. It
+	// takes precedence over the session's own agent as the picker's default
+	// cursor: sessions.agent_name is written once at create time and never
+	// updated, so seeding from it alone pinned the cursor to whatever runner
+	// the session was created with forever.
+	preferredAgent string
+
+	// onAgentSelected persists confirmed picks so the next [n] — here and in
+	// the new-session wizard, which shares saveDefaultAgent — opens on the
+	// runner last chosen. Nil in tests that don't exercise persistence.
+	onAgentSelected func(string) error
+
 	// Switch-account flow (BOS-171). switchTargetChatID is the agent_session_id
 	// of the chat captured when the operator triggered the switch; the flow reads
 	// its live status back out of m.daemonStatuses to decide whether a mid-turn
@@ -115,6 +128,18 @@ type ChatPickerModel struct {
 // SetTelemetry installs a telemetry client for successful chat-picker actions.
 func (m *ChatPickerModel) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
+}
+
+// SetPreferredAgent sets the default cursor in the [n]ew-chat agent picker.
+// An empty name, or one naming a runner the daemon has not loaded, leaves the
+// picker on its session-agent fallback.
+func (m *ChatPickerModel) SetPreferredAgent(name string) {
+	m.preferredAgent = name
+}
+
+// SetAgentSelectionHandler registers a callback for confirmed picker choices.
+func (m *ChatPickerModel) SetAgentSelectionHandler(fn func(string) error) {
+	m.onAgentSelected = fn
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.

@@ -4,6 +4,8 @@ description: Choose and configure the Claude Code, OpenAI Codex, or OpenCode age
 slug: /guides/agent-runners
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Agent Plugins
 
 Bossanova starts coding-agent sessions through agent plugins. Each plugin owns
@@ -52,9 +54,11 @@ loaded.
 
 Run:
 
-```bash
-boss repair doctor
-```
+<CommandTabs
+chat='"run repair doctor"'
+cli="boss repair doctor"
+mcp="repair_doctor"
+/>
 
 If session start fails with `no AgentRunner plugin loaded`, confirm the plugin
 binary sits next to `bossd` or in the Homebrew plugin directory:

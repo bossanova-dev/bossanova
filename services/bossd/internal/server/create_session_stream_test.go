@@ -110,19 +110,25 @@ func TestCreateSessionStreamsSetupOutputBeforeSessionCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession stream error = %v", err)
 	}
-	if len(events) != 3 {
-		t.Fatalf("events len = %d, want 3", len(events))
+	// Since BOS-720 the stream opens with the accepted SessionCreated frame, so
+	// the setup output sits BETWEEN the accepted and settled frames rather than
+	// before a single one.
+	if len(events) != 4 {
+		t.Fatalf("events len = %d, want 4", len(events))
 	}
-	if got := events[0].GetSetupOutput().Text; got != "first line" {
-		t.Fatalf("event[0] setup output = %q, want %q", got, "first line")
+	if events[0].GetSessionCreated() == nil {
+		t.Fatalf("event[0] = %T, want the accepted SessionCreated", events[0].GetEvent())
 	}
-	if got := events[1].GetSetupOutput().Text; got != "second line" {
-		t.Fatalf("event[1] setup output = %q, want %q", got, "second line")
+	if got := events[1].GetSetupOutput().Text; got != "first line" {
+		t.Fatalf("event[1] setup output = %q, want %q", got, "first line")
 	}
-	if events[2].GetSessionCreated() == nil {
-		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
+	if got := events[2].GetSetupOutput().Text; got != "second line" {
+		t.Fatalf("event[2] setup output = %q, want %q", got, "second line")
 	}
-	if events[2].GetSessionCreated().GetAttachedExisting() {
+	if events[3].GetSessionCreated() == nil {
+		t.Fatalf("event[3] = %T, want SessionCreated", events[3].GetEvent())
+	}
+	if events[3].GetSessionCreated().GetAttachedExisting() {
 		t.Fatal("genuine create AttachedExisting = true, want false")
 	}
 }
@@ -286,53 +292,128 @@ func TestCreateSessionStreamsLongSetupOutputLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession stream error = %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("events len = %d, want 2", len(events))
+	// events[0] is the BOS-720 accepted frame.
+	if len(events) != 3 {
+		t.Fatalf("events len = %d, want 3", len(events))
 	}
-	if got := events[0].GetSetupOutput().Text; got != longLine {
+	if got := events[1].GetSetupOutput().Text; got != longLine {
 		t.Fatalf("long setup output length = %d, want %d", len(got), len(longLine))
 	}
-	if events[1].GetSessionCreated() == nil {
-		t.Fatalf("event[1] = %T, want SessionCreated", events[1].GetEvent())
+	if events[2].GetSessionCreated() == nil {
+		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
 	}
 }
 
-func TestStreamSetupOutputRejectsOversizedLine(t *testing.T) {
+// Inverted for BOS-720. This test previously pinned that an oversized setup
+// line failed the whole stream with ResourceExhausted. Under the new ownership
+// split that is the wrong lever: the bootstrap no longer belongs to this
+// stream, so a rendering problem in ONE client's view must not fail anything.
+// relaySetupOutput truncates and keeps going.
+func TestRelaySetupOutputTruncatesOversizedLine(t *testing.T) {
 	t.Parallel()
 
+	lines := make(chan string, 1)
+	lines <- strings.Repeat("x", maxSetupOutputLineBytes+1)
+	close(lines)
+
 	sender := &setupOutputCaptureSender{}
-	err := streamSetupOutput(strings.NewReader(strings.Repeat("x", maxSetupOutputLineBytes+1)), sender)
-	if err == nil {
-		t.Fatal("streamSetupOutput error = nil, want error")
+	done := make(chan struct{})
+	if err := relaySetupOutput(context.Background(), lines, done, sender); err != nil {
+		t.Fatalf("relaySetupOutput error = %v, want nil", err)
 	}
-	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
-		t.Fatalf("Connect code = %v, want %v; err = %v", got, connect.CodeResourceExhausted, err)
+	if len(sender.events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(sender.events))
 	}
-	if len(sender.events) != 0 {
-		t.Fatalf("events len = %d, want 0", len(sender.events))
+	if got := len(sender.events[0].GetSetupOutput().Text); got != maxSetupOutputLineBytes {
+		t.Fatalf("relayed line length = %d, want %d", got, maxSetupOutputLineBytes)
 	}
 }
 
-func TestCreateSessionCleansUpWhenSetupOutputStreamFailsAfterStartSucceeds(t *testing.T) {
+// A caller that goes away without the transport surfacing a send error — the
+// reverse-stream command context, chiefly — must still release the handler,
+// rather than pin it until the bootstrap's deadline expires.
+func TestRelaySetupOutputReturnsWhenTheCallerContextIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Neither the bus nor the bootstrap ever settles: only ctx can end this.
+	lines := make(chan string)
+	done := make(chan struct{})
+
+	relayed := make(chan error, 1)
+	go func() { relayed <- relaySetupOutput(ctx, lines, done, &setupOutputCaptureSender{}) }()
+	select {
+	case err := <-relayed:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("relaySetupOutput error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("relaySetupOutput ignored the cancelled caller context")
+	}
+}
+
+// relaySetupOutput must drain what the bus buffered before it closed rather
+// than returning the instant done is ready. The runner closes the bus and THEN
+// done, microseconds apart, so both select cases are ready at once and Go picks
+// uniformly at random — a naive `case <-done: return nil` drops the tail of the
+// setup output at random.
+func TestRelaySetupOutputDrainsBufferedLinesWhenDoneIsAlreadyClosed(t *testing.T) {
+	t.Parallel()
+
+	lines := make(chan string, 2)
+	lines <- "first"
+	lines <- "second"
+	close(lines)
+	done := make(chan struct{})
+	close(done)
+
+	sender := &setupOutputCaptureSender{}
+	if err := relaySetupOutput(context.Background(), lines, done, sender); err != nil {
+		t.Fatalf("relaySetupOutput error = %v, want nil", err)
+	}
+	if len(sender.events) != 2 {
+		t.Fatalf("events len = %d, want 2 (the buffered tail must not be dropped)", len(sender.events))
+	}
+	for i, want := range []string{"first", "second"} {
+		if got := sender.events[i].GetSetupOutput().Text; got != want {
+			t.Fatalf("event[%d] = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// Inverted for BOS-720. This test previously pinned that an oversized setup
+// line failed the create and deleted the row. The bootstrap succeeded then and
+// succeeds now — the only thing that had gone wrong was one client's view of
+// its output, which is no longer grounds for reaping anything.
+func TestCreateSessionSurvivesAnOversizedSetupOutputLine(t *testing.T) {
 	t.Parallel()
 
 	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{
 		output: []string{strings.Repeat("x", maxSetupOutputLineBytes+1)},
 	}, &setupStreamAgent{})
 
-	_, err := h.createSession(t, "oversized setup output")
-	if err == nil {
-		t.Fatal("CreateSession stream error = nil, want error")
+	events, err := h.createSession(t, "oversized setup output")
+	if err != nil {
+		t.Fatalf("CreateSession stream error = %v, want nil", err)
 	}
-	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
-		t.Fatalf("Connect code = %v, want %v; err = %v", got, connect.CodeResourceExhausted, err)
+	// events[0] is the BOS-720 accepted frame.
+	if len(events) != 3 {
+		t.Fatalf("events len = %d, want 3", len(events))
+	}
+	if got := len(events[1].GetSetupOutput().Text); got != maxSetupOutputLineBytes {
+		t.Fatalf("setup output length = %d, want it truncated to %d", got, maxSetupOutputLineBytes)
+	}
+	if events[2].GetSessionCreated() == nil {
+		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
 	}
 	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
 	if listErr != nil {
 		t.Fatalf("list sessions: %v", listErr)
 	}
-	if len(sessions) != 0 {
-		t.Fatalf("sessions len = %d, want 0", len(sessions))
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1 (the bootstrap succeeded)", len(sessions))
 	}
 }
 
@@ -353,10 +434,15 @@ func TestCreateSessionStartErrorAfterSetupOutputReturnsConnectError(t *testing.T
 	if strings.Contains(err.Error(), "incomplete envelope") {
 		t.Fatalf("error contains protocol framing failure: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("events len = %d, want 1", len(events))
+	// The accepted frame lands before the bootstrap fails, so the client keeps
+	// the session id even on the error path; the setup line follows it.
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(events))
 	}
-	if got := events[0].GetSetupOutput().Text; got != "setup before failure" {
+	if events[0].GetSessionCreated() == nil {
+		t.Fatalf("event[0] = %T, want the accepted SessionCreated", events[0].GetEvent())
+	}
+	if got := events[1].GetSetupOutput().Text; got != "setup before failure" {
 		t.Fatalf("setup output = %q, want %q", got, "setup before failure")
 	}
 }

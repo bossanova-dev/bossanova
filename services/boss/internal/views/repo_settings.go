@@ -824,12 +824,8 @@ func (m RepoSettingsModel) View() tea.View {
 		row     rowID
 	}
 	renderCheckbox := func(cb checkboxRow) {
-		check := " "
-		if cb.checked {
-			check = "x"
-		}
 		focused := cur == cb.row && m.editingField == repoSettingsRowNone
-		b.WriteString(renderFieldRow(focused, fmt.Sprintf("[%s] %s", check, cb.label)))
+		b.WriteString(renderFieldRow(focused, renderCheckboxLabel(cb.checked, cb.label)))
 		b.WriteString("\n")
 	}
 
@@ -914,16 +910,13 @@ func (m RepoSettingsModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
-// renderIntegrationHeader renders an integration checkbox header row
-// (`[x] Label` / `[ ] Label`) matching the automation checkbox style. The
-// checkbox reflects expansion state, not a persisted enabled flag.
+// renderIntegrationHeader renders an integration checkbox header row through
+// the shared renderCheckboxLabel, so it wears the same checkbox glyph as the
+// automation toggles above it. The checkbox reflects expansion state, not a
+// persisted enabled flag.
 func (m RepoSettingsModel) renderIntegrationHeader(label string, expanded bool, row, cur rowID) string {
-	check := " "
-	if expanded {
-		check = "x"
-	}
 	focused := cur == row && m.editingField == repoSettingsRowNone
-	return renderFieldRow(focused, fmt.Sprintf("[%s] %s", check, label)) + "\n"
+	return renderFieldRow(focused, renderCheckboxLabel(expanded, label)) + "\n"
 }
 
 // repoSettingsChildIndent is how many columns an integration's child field rows

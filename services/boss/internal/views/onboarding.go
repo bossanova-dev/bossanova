@@ -240,15 +240,11 @@ func (m OnboardingModel) View() tea.View {
 	}
 
 	for i, p := range m.providers {
-		check := " "
-		if m.selected[i] {
-			check = "x"
-		}
 		cursor := "  "
 		if i == m.cursor {
 			cursor = cursorChevron + " "
 		}
-		header := fmt.Sprintf("%s[%s] %s", cursor, check, p.Name)
+		header := cursor + renderCheckboxLabel(m.selected[i], p.Name)
 		if i == m.cursor {
 			header = styleSelected.Render(header)
 		}
@@ -278,11 +274,7 @@ func (m OnboardingModel) dangerousModeView() tea.View {
 		"Do you want to skip permissions prompts and use 'dangerous mode' by default?"))
 	b.WriteString("\n\n")
 
-	check := " "
-	if m.dangerousMode {
-		check = "x"
-	}
-	line := fmt.Sprintf("[%s] Use 'dangerous mode' by default", check)
+	line := renderCheckboxLabel(m.dangerousMode, "Use 'dangerous mode' by default")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleSelected.Render(line)))
 	b.WriteString("\n")
 	b.WriteString(actionBarWidth(m.width,

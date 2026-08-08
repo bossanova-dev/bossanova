@@ -3047,7 +3047,22 @@ func run(opts runOpts) error {
 	sessionPortsTracker := sessionports.New(context.Background(), tmuxClient.PanePID, sessionports.WithLogger(log.Logger))
 	defer sessionPortsTracker.Close()
 
+	// The daemon-scoped context. Created here rather than beside the poller
+	// below because server.New now needs it too: BOS-720's bootstrap runner
+	// starts session bootstraps on THIS context, so a client disconnect cannot
+	// abort one and daemon shutdown still can. It is handed to the lifecycle
+	// unchanged further down (lifecycle.SetDaemonCtx), and pollerCancel is
+	// invoked during shutdown, draining all armed polls.
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	defer pollerCancel()
+
+	// bootstrapRunner must be built on pollerCtx, never on a request context and
+	// never on context.Background(): the first would put us back where BOS-720
+	// started, and the second would leave bootstraps running past shutdown.
+	bootstrapRunner := session.NewBootstrapRunner(pollerCtx, lifecycle, log.Logger)
+
 	srv := server.New(server.Config{
+		BootstrapRunner:   bootstrapRunner,
 		AgentLogsDir:      agentLogsDir,
 		Repos:             repos,
 		Sessions:          sessions,
@@ -3184,12 +3199,11 @@ func run(opts runOpts) error {
 	// now. Bound before any stream runs, so no upload can outrun it.
 	chatUploads.setServer(srv)
 
-	// Start poller and dispatcher.
-	pollerCtx, pollerCancel := context.WithCancel(context.Background())
-	defer pollerCancel()
+	// Start poller and dispatcher. pollerCtx is created above, next to the
+	// bootstrap runner that also needs it.
+	//
 	// Hand the daemon-scoped context to the lifecycle so PollArmer.Arm
-	// runs goroutines that outlive any single RPC handler. pollerCancel is
-	// invoked during shutdown, draining all armed polls.
+	// runs goroutines that outlive any single RPC handler.
 	lifecycle.SetDaemonCtx(pollerCtx)
 
 	// BOS-661 stale-upload janitor. Started here rather than beside the

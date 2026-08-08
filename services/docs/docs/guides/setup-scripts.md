@@ -3,6 +3,8 @@ title: Setup Scripts
 description: Configure a per-repo setup script that runs every time Bossanova creates a new worktree.
 ---
 
+import CommandTabs from '@site/src/components/CommandTabs';
+
 # Setup Scripts
 
 Each repository can have an optional setup script that runs
@@ -14,15 +16,19 @@ per-worktree initialization.
 
 Set a setup script when adding a repo, or update it later:
 
-```bash
-boss repo update my-repo --setup-script "npm install"
-```
+<CommandTabs
+chat='"set the setup script for my-repo to npm install"'
+cli='boss repo update my-repo --setup-script "npm install"'
+mcp="update_repo"
+/>
 
 Clear it with an empty string:
 
-```bash
-boss repo update my-repo --setup-script ""
-```
+<CommandTabs
+chat='"clear the setup script for my-repo"'
+cli='boss repo update my-repo --setup-script ""'
+mcp="update_repo"
+/>
 
 ## Environment variables
 
@@ -36,10 +42,12 @@ The following environment variables are available to the setup script:
 These let you reference files in the main repo without hardcoding paths.
 For example, to copy an `.env` file into each new worktree:
 
-```bash
-boss repo update my-repo \
-  --setup-script 'cp "$REPO_DIR/.env" "$WORKTREE_DIR/.env" && npm install'
-```
+<CommandTabs
+chat='"set the setup script for my-repo to copy .env into the worktree and then run npm install"'
+cli={`boss repo update my-repo \\
+  --setup-script 'cp "$REPO_DIR/.env" "$WORKTREE_DIR/.env" && npm install'`}
+mcp="update_repo"
+/>
 
 ## Automatic `.env` loading
 

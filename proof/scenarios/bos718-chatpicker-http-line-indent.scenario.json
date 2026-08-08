@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "title": "BOS-718 chat picker — the HTTP endpoint line's hand-rolled inset lands in the same column as the table caret and the action bar",
+  "fixture": { "preset": "http-endpoints" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the endpoint-bearing session from the home list into its chat picker",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Local dev servers demo",
+            "match": "normalized",
+            "label": "home session list loaded (http-endpoints preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the session exposing machine-local listeners is selected"
+        },
+        { "key": "enter", "caption": "Open the endpoint-bearing session's chat picker" }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the HTTP line sits directly above the chat table at the chrome column",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "HTTP :3000 :5173",
+            "match": "normalized",
+            "label": "the chat picker renders the HTTP endpoint line above the chat table"
+          },
+          "timeoutMs": 10000,
+          "caption": "The chat picker shows the session's machine-local listeners on one HTTP line"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}HTTP {2}:3000 :5173",
+            "match": "regex",
+            "label": "the HTTP line begins after EXACTLY two leading spaces. This is the one prose site that hand-rolls its inset as spaces (lipgloss mangles its OSC 8 hyperlink envelopes), so it is the site most likely to drift out of step"
+          },
+          "caption": "The HTTP line is indented to the chrome column — its hand-rolled inset matches the lipgloss-rendered lines"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}❯",
+            "match": "regex",
+            "label": "the chat table's ❯ caret begins after the same two leading spaces, so the table did NOT move when the prose did"
+          },
+          "caption": "The chat table's selection caret sits in that same column, unchanged"
+        },
+        {
+          "expect": {
+            "text": "\\n {2}\\[enter\\] select",
+            "match": "regex",
+            "label": "the action bar begins after the same two leading spaces"
+          },
+          "caption": "HTTP line, caret and action bar share one left edge"
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "the chat picker action bar is present below the populated chat table"
+          },
+          "caption": "The [esc] back action bar renders in full"
+        }
+      ]
+    }
+  ]
+}

@@ -96,7 +96,7 @@ filegroup(
 
 go_test(
     name = "server_test",
-    size = "large",  # keep: race-instrumented server suite runs ~233s under --config=race, close to the medium (300s) ceiling
+    size = "large",  # keep: race-instrumented server suite is the repo's slowest target under --config=race
     srcs = [
         "account_binding_test.go",
         "account_env_test.go",
@@ -108,6 +108,7 @@ go_test(
         "broadcast_subscription_test.go",
         "check_snapshots_test.go",
         "convert_test.go",
+        "create_session_async_test.go",
         "create_session_bootstrap_deadline_test.go",
         "create_session_capability_profile_test.go",
         "create_session_dedup_test.go",
@@ -176,6 +177,7 @@ go_test(
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":server"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    shard_count = 8,  # keep: 668 independent test funcs; at 605s serial under --config=race this single target WAS the critical path of the whole-graph race pass (13m39s), and no runner size can shorten one target
     deps = [
         "//lib/bossalib/broadcast",
         "//lib/bossalib/chatdelivery",

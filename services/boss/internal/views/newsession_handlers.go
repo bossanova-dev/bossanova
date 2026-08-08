@@ -149,12 +149,21 @@ func (m NewSessionModel) handleCreateStream(msg createSessionStreamMsg) (tea.Mod
 		return m, nil
 	}
 	m.createStream = msg.stream
-	return m, readNextStreamMsg(m.createStream)
+	return m, readNextStreamMsg(m.createStream, nil)
 }
 
 func (m NewSessionModel) handleSetupScriptLine(msg setupScriptLineMsg) (tea.Model, tea.Cmd) {
 	m.setupLines = append(m.setupLines, msg.text)
-	return m, readNextStreamMsg(m.createStream)
+	return m, readNextStreamMsg(m.createStream, m.acceptedSess)
+}
+
+// handleStreamAccepted records the accepted session (BOS-720) and keeps
+// reading. The view stays in its creating phase — showing the "initializing"
+// indicator and the setup output as it arrives — until the settled frame
+// navigates onward.
+func (m NewSessionModel) handleStreamAccepted(msg streamSessionAcceptedMsg) (tea.Model, tea.Cmd) {
+	m.acceptedSess = msg.session
+	return m, readNextStreamMsg(m.createStream, msg.session)
 }
 
 func (m NewSessionModel) handleStreamCreated(msg streamSessionCreatedMsg) (tea.Model, tea.Cmd) {

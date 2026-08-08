@@ -2,6 +2,7 @@ package statusdetect
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -973,6 +974,139 @@ func TestHasQuestionPrompt_ClaudeCodeTips(t *testing.T) {
 				return b.String()
 			}(),
 		},
+		// BOS-719: bossd captures panes with `tmux capture-pane -p -S -1000`
+		// and NO `-J`, so a tip wider than the pane (four live agent panes are
+		// 43 columns) arrives as a start line plus one or more continuation
+		// lines. The trailing "?" lands on the continuation, which the old
+		// single-line tip regex could never reach.
+		{
+			name: "wrapped ⎿ tip, continuation indented 2 spaces",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"✽ Newspapering… (5m 4s · ↓ 19.9k tokens)\n" +
+				"  ⎿  Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n",
+		},
+		{
+			name: "wrapped ⎿ tip, continuation at column 0",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"✽ Newspapering… (5m 4s · ↓ 19.9k tokens)\n" +
+				"  ⎿  Tip: Did you know you can drag and\n" +
+				"drop image files into your terminal?\n",
+		},
+		{
+			name: "wrapped bare tip (no ⎿), continuation indented 2 spaces",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"✽ Newspapering… (5m 4s · ↓ 19.9k tokens)\n" +
+				"  Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n",
+		},
+		{
+			name: "one-line tip introduced by a non-⎿ decoration glyph (※)",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"✽ Newspapering… (5m 4s · ↓ 19.9k tokens)\n" +
+				"  ※ Tip: Did you know you can drag and drop image files into your terminal?\n",
+		},
+		{
+			// Guard: this shape already returned false before BOS-719 (the
+			// 4+-space continuation made toolOutputBlockRe eat the whole
+			// block). It must keep returning false after the tip-block
+			// scanner replaces the single-line regex.
+			name: "wrapped ⎿ tip, continuation indented 5 spaces (already passing guard)",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"✽ Newspapering… (5m 4s · ↓ 19.9k tokens)\n" +
+				"  ⎿  Tip: Did you know you can drag and\n" +
+				"     drop image files into your terminal?\n",
+		},
+		// The remaining allowlisted decorations. ※ is covered above; these pin
+		// the other three so a shrunken tipDecorations map is caught here.
+		{
+			name: "wrapped tip introduced by └",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"  └ Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n",
+		},
+		{
+			name: "wrapped tip introduced by •",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"  • Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n",
+		},
+		{
+			name: "wrapped tip introduced by ·",
+			data: "⏺ Done with the refactor.\n" +
+				"\n" +
+				"  · Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n",
+		},
+		// A ⎿-decorated tip start is ALSO a tool-output block header. The
+		// full-buffer tip pass deletes that header, so stripToolOutput can no
+		// longer anchor on it -- if the tip sweep stopped at the row cap, every
+		// row past it would be orphaned into the tail as ordinary text. These
+		// two pin the shapes that regression produced: a long tool result, and a
+		// pasted question card printed inside one.
+		{
+			name: "⎿ tip heading a tool-output block longer than the sweep cap",
+			data: func() string {
+				var b strings.Builder
+				b.WriteString("⏺ Ran a command.\n")
+				b.WriteString("  ⎿  Tip: Use --force to override\n")
+				for i := range maxTipContinuationLines + 2 {
+					fmt.Fprintf(&b, "     output row %d of the tool result\n", i)
+				}
+				b.WriteString("     did you mean to do that?\n")
+				return b.String()
+			}(),
+		},
+		// A bare "Tip:" row inside a FOREIGN ⎿ block -- one headed by a command,
+		// not by a tip. This pass runs before stripToolOutput, so blanking that
+		// row must keep its indent: a bare blank would truncate
+		// toolOutputBlockRe's 4+-space run at that point and orphan every row
+		// below it into the tail. The second case is the expensive direction --
+		// a question card echoed by a tool reaching the MODAL patterns.
+		{
+			name: "bare Tip: row inside a foreign ⎿ tool block",
+			data: func() string {
+				var b strings.Builder
+				b.WriteString("⏺ Ran a command.\n")
+				b.WriteString("  ⎿  $ grep -rn Tip docs/\n")
+				b.WriteString("     Tip: use the frozen lockfile\n")
+				for i := range maxTipContinuationLines + 2 {
+					fmt.Fprintf(&b, "     tool output row %d\n", i)
+				}
+				b.WriteString("     did you mean to do that?\n")
+				return b.String()
+			}(),
+		},
+		{
+			name: "card echoed inside a foreign ⎿ tool block below a Tip: row",
+			data: "⏺ Here is the card fixture I read.\n" +
+				"  ⎿  $ cat testdata/card.txt\n" +
+				"     Tip: the card renders like this\n" +
+				"     filler row a\n     filler row b\n     filler row c\n" +
+				"      ☐ Which approach?\n" +
+				"     Which approach should I take?\n" +
+				"       1. Rebase\n       2. Merge\n       3. Type something.\n" +
+				"     ────────\n       4. Chat about this\n",
+		},
+		{
+			name: "AskUserQuestion card pasted inside a ⎿ Tip: tool block",
+			data: "⏺ Here is what the card looks like.\n" +
+				"  ⎿  Tip: the card renders like this\n" +
+				"      ☐ Which approach?\n" +
+				"     Which approach should I take?\n" +
+				"       1. Rebase\n" +
+				"       2. Merge\n" +
+				"       3. Type something.\n" +
+				"     ────────\n" +
+				"       4. Chat about this\n",
+		},
 	}
 	for _, tt := range negative {
 		t.Run(tt.name, func(t *testing.T) {
@@ -991,6 +1125,267 @@ func TestHasQuestionPrompt_ClaudeCodeTips(t *testing.T) {
 	positive := "⏺ Tip: consider caching the result. Does that make sense to you?\n"
 	if !HasQuestionPrompt([]byte(positive)) {
 		t.Error("should detect real question even when response contains 'Tip:' mid-sentence")
+	}
+}
+
+// TestStripTipLines_BlockStopConditions pins the tip-block continuation sweep's
+// stop conditions directly. They are the only thing bounding a strictly more
+// aggressive strip than the pre-BOS-719 single-line regex, and over-stripping
+// fails SILENTLY -- a swallowed question never pings a human -- so each stop is
+// asserted on its own rather than only through HasQuestionPrompt.
+//
+// Cases pin the rows that SURVIVE, not the exact output bytes, so the table is
+// not coupled to how a dropped row is represented. The shape-preserving
+// invariant -- every output row is either its input row verbatim or exactly
+// that row's leading whitespace -- is asserted separately, for every case.
+func TestStripTipLines_BlockStopConditions(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		kept []string // the non-blank rows that must survive, in order
+	}{
+		{
+			name: "blank line closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n\nkept?\n",
+			kept: []string{"kept?"},
+		},
+		{
+			name: "optionStopMarker ⏺ closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n⏺ Want me to continue?\n",
+			kept: []string{"⏺ Want me to continue?"},
+		},
+		{
+			name: "optionStopMarker ❯ closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n❯ 1. Yes\n",
+			kept: []string{"❯ 1. Yes"},
+		},
+		{
+			name: "☐ card header closes the block and is kept",
+			in:   "  ⎿  Tip: wrapped tip text\n  continuation row\n ☐ Which approach?\n  1. Rebase\n",
+			kept: []string{" ☐ Which approach?", "  1. Rebase"},
+		},
+		{
+			name: "• bullet closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n  • Should I apply it now?\n",
+			kept: []string{"  • Should I apply it now?"},
+		},
+		{
+			name: "numbered option row closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n  1. Rebase\n  2. Merge\n",
+			kept: []string{"  1. Rebase", "  2. Merge"},
+		},
+		{
+			name: "horizontal rule closes the block and is kept",
+			in:   "  Tip: wrapped tip text\n  continuation row\n────────\n  5. Chat about this\n",
+			kept: []string{"────────", "  5. Chat about this"},
+		},
+		{
+			// The start line plus maxTipContinuationLines (3) rows are swept;
+			// the 4th row below the start line survives even though nothing
+			// about it stops the block.
+			name: "sweep is bounded at maxTipContinuationLines",
+			in: "  Tip: a very long tip that keeps\n" +
+				"  wrapping onto row two\n" +
+				"  and onto row three\n" +
+				"  and onto row four\n" +
+				"and here is real content?\n",
+			kept: []string{"and here is real content?"},
+		},
+		{
+			name: "end of input closes the block",
+			in:   "⏺ Done.\n  Tip: wrapped tip text\n  continuation row\n",
+			kept: []string{"⏺ Done."},
+		},
+		{
+			// A ⎿ tip start is also a tool-output block header, so its 4+-space
+			// rows follow toolOutputBlockRe's rule, NOT the row cap.
+			name: "⎿ tip keeps the tool-block continuation rule past the cap",
+			in: "  ⎿  Tip: heads a tool block\n" +
+				"     row one\n     row two\n     row three\n     row four\n     row five?\n" +
+				"⏺ Next turn.\n",
+			kept: []string{"⏺ Next turn."},
+		},
+		{
+			// The tool-block rule is keyed to ⎿ only: a bare tip's rows stay on
+			// the bounded prose sweep even when indented 4+.
+			name: "bare tip does not get the tool-block rule",
+			in: "  Tip: bare tip\n" +
+				"     row one\n     row two\n     row three\n     row four?\n",
+			kept: []string{"     row four?"},
+		},
+		{
+			// toolOutputBlockRe's continuation run is CONTIGUOUS: the first row
+			// indented under 4 spaces ends the tool block for good. Letting the
+			// tool branch re-engage on a later deep row would skip the stop
+			// runes and the cap and swallow live UI.
+			name: "⎿ tool block ends for good at the first shallow row",
+			in: "  ⎿  Tip: heads a tool block\n     deep row\n" +
+				"  shallow wrap?\n  p2\n  p3\n     deep row again?\n⏺ Next.\n",
+			kept: []string{"     deep row again?", "⏺ Next."},
+		},
+		{
+			name: "a second tip start inside a block re-arms the sweep",
+			in:   "  Tip: first tip\n  continuation\n  ※ Tip: second tip\n  continuation\n\nkept\n",
+			kept: []string{"kept"},
+		},
+		{
+			name: "text with no tip is untouched",
+			in:   "⏺ Done.\n  Not a tip line.\nShould I continue?\n",
+			kept: []string{"⏺ Done.", "  Not a tip line.", "Should I continue?"},
+		},
+	}
+	if maxTipContinuationLines != 3 {
+		t.Fatalf("the bounded-sweep fixture assumes maxTipContinuationLines == 3, got %d", maxTipContinuationLines)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := string(stripTipLines([]byte(tt.in)))
+			inRows := strings.Split(tt.in, "\n")
+			outRows := strings.Split(got, "\n")
+			// Shape-preserving invariant: this pass runs BEFORE stripToolOutput,
+			// so every row must survive either verbatim or as exactly its own
+			// leading whitespace. Losing the row would slide the LastNLines
+			// window; losing the indent would truncate a ⎿ tool block at the
+			// blank and orphan the rest of it into the tail.
+			if len(inRows) != len(outRows) {
+				t.Fatalf("row count changed: in=%d out=%d\n  got: %q", len(inRows), len(outRows), got)
+			}
+			var kept []string
+			for i, in := range inRows {
+				out := outRows[i]
+				switch {
+				case out == in:
+					if strings.TrimSpace(out) != "" {
+						kept = append(kept, out)
+					}
+				case out == in[:len(in)-len(strings.TrimLeft(in, " \t"))]:
+					// Dropped, blanked in place with its indent intact.
+				default:
+					t.Errorf("row %d is neither kept nor indent-blanked\n  in:  %q\n  out: %q", i, in, out)
+				}
+			}
+			if strings.Join(kept, "\x00") != strings.Join(tt.kept, "\x00") {
+				t.Errorf("surviving rows\n  got:  %q\n  want: %q\n  full: %q", kept, tt.kept, got)
+			}
+		})
+	}
+}
+
+// TestHasQuestionPrompt_RealQuestionBelowTip guards the direction the BOS-719
+// tip-block sweep made newly risky: a REAL question sitting directly beneath a
+// tip must survive. HasModalPrompt is asserted alongside HasQuestionPrompt for
+// the card shape because HasModalPrompt gates delivery (BOS-600) -- a false
+// negative there types a message into a pane whose keystrokes are consumed as
+// selections.
+func TestHasQuestionPrompt_RealQuestionBelowTip(t *testing.T) {
+	tests := []struct {
+		name      string
+		data      string
+		wantModal bool
+	}{
+		{
+			name: "AskUserQuestion card directly under a wrapped tip, no blank line",
+			data: "⏺ Working on it.\n" +
+				"  ⎿  Tip: Did you know you can drag and\n" +
+				"  drop image files into your terminal?\n" +
+				" ☐ Which approach should I take?\n" +
+				"\n" +
+				"Which approach should I take?\n" +
+				"\n" +
+				"  1. Rebase\n" +
+				"  2. Merge\n" +
+				"  3. Type something.\n" +
+				"────────\n" +
+				"  4. Chat about this\n",
+			wantModal: true,
+		},
+		{
+			name: "bulleted list whose first item starts with Tip:",
+			data: "⏺ A few notes:\n" +
+				"  • Tip: use the cache for repeat lookups\n" +
+				"  • The migration is reversible\n" +
+				"  • Should I apply it now?\n",
+			wantModal: false,
+		},
+		{
+			// A ⎿ tip heads a tool block, but that block ends for good at the
+			// first row indented under 4 spaces. Everything 4+-indented BELOW
+			// that break is live UI, not tool output, and must survive: if the
+			// tool branch re-engaged it would skip the stop runes and the row
+			// cap and swallow this whole card.
+			name: "card indented 4+ below a shallow row under a ⎿ tip",
+			data: "⏺ Here is the card.\n" +
+				"  ⎿  Tip: wrapped tip text\n" +
+				"  shallow wrap row\n" +
+				"    ☐ Which approach?\n" +
+				"    Which approach should I take?\n" +
+				"    1. Rebase\n" +
+				"    2. Merge\n" +
+				"    3. Type something.\n" +
+				"    ────────\n" +
+				"    4. Chat about this\n",
+			wantModal: true,
+		},
+		{
+			name: "question further below a tip than the sweep bound",
+			data: "⏺ Working.\n" +
+				"  Tip: a very long tip that keeps\n" +
+				"  wrapping onto row two\n" +
+				"  and onto row three\n" +
+				"  and onto row four\n" +
+				"  Should I continue with the deploy?\n",
+			wantModal: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !HasQuestionPrompt([]byte(tt.data)) {
+				t.Errorf("should detect question below a tip\n  stripped: %q",
+					string(stripTipLines(StripANSI([]byte(tt.data)))))
+			}
+			if got := HasModalPrompt([]byte(tt.data)); got != tt.wantModal {
+				t.Errorf("HasModalPrompt = %v, want %v\n  stripped: %q", got, tt.wantModal,
+					string(stripTipLines(StripANSI([]byte(tt.data)))))
+			}
+		})
+	}
+}
+
+// TestHasQuestionPrompt_DecoratedRowUnderSelector pins the exclusion of └ and ※
+// from tipBlockStops. Both open a tip block but must never CLOSE one: they are
+// absent from optionStopMarkers, so a row kept below a stripped tip re-enters
+// countConsecutiveOptionLines -- whose optionRe gate accepts any 2+-space row --
+// counts as a live option under the "❯ " selector, and fires Pattern 1. That
+// flips HasModalPrompt false->TRUE against base, a modal FALSE POSITIVE.
+//
+// This is not one of the two documented accepted-risk shapes; both of those are
+// over-sweeping false negatives. Sweeping the decorated row instead matches the
+// base commit's behaviour for these panes.
+func TestHasQuestionPrompt_DecoratedRowUnderSelector(t *testing.T) {
+	// └ and ※ are the two glyphs excluded from the stop set, plus ⎿ and · as
+	// controls: both are in optionStopMarkers, so they are kept AND break the
+	// option run, and they pass either way.
+	//
+	// • is deliberately absent. It is a stop (tipBlockExtraStops) and so shows
+	// the same flip on this pane, but it cannot simply be swept: the
+	// "bulleted list whose first item starts with Tip:" case in
+	// TestHasQuestionPrompt_RealQuestionBelowTip needs a • row below a • tip to
+	// survive, or a genuine question is swallowed. Resolving that needs • in
+	// optionStopMarkers -- the same pre-existing root cause tracked for └ --
+	// rather than a change to this sweep.
+	for _, decoration := range []string{"└", "※", "⎿", "·"} {
+		t.Run(decoration, func(t *testing.T) {
+			data := "⏺ Let me look for it.\n" +
+				"\n" +
+				"❯ where is the config?\n" +
+				"  · Tip: Press Ctrl-R to expand collapsed tool output\n" +
+				"  " + decoration + "  Did you mean services/boss/config.go?\n"
+			if HasModalPrompt([]byte(data)) {
+				t.Errorf("HasModalPrompt = true, want false -- a %q row under a selector "+
+					"must not count as a live option\n  stripped: %q",
+					decoration, string(stripTipLines(StripANSI([]byte(data)))))
+			}
+		})
 	}
 }
 

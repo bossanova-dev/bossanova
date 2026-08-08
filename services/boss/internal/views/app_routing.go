@@ -129,10 +129,7 @@ func (a *App) enterNewSession() tea.Cmd {
 }
 
 func (a *App) enterChatPicker(msg switchViewMsg) tea.Cmd {
-	a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID, "")
-	a.chatPicker.SetTelemetry(a.telemetry)
-	a.chatPicker.width = a.width
-	a.chatPicker.height = a.height
+	a.chatPicker = a.newChatPickerModel(msg.sessionID, "")
 	// Only seed the picker's key-swallowing archiving flag when the
 	// archive is still actually in flight. After a successful archive the
 	// override lingers on the still-present row for rendering, but no
@@ -197,6 +194,26 @@ func (a App) newSessionModel() NewSessionModel {
 		m.SetAgentSettings(settings)
 	}
 	m.SetAgentSelectionHandler(saveDefaultAgent)
+	return m
+}
+
+// newChatPickerModel builds a chat picker with the App-level wiring every entry
+// point needs: telemetry, terminal size, and the agent-picker default plus the
+// handler that persists a confirmed pick. Centralised because the picker is
+// re-created from four places (enter, and the returns from session settings,
+// trash restore and detach) and a site that forgot the agent wiring would
+// silently reintroduce the stuck-default bug on that one path.
+func (a App) newChatPickerModel(sessionID, highlightAgentSessionID string) ChatPickerModel {
+	m := NewChatPickerModel(a.client, a.ctx, sessionID, highlightAgentSessionID)
+	m.SetTelemetry(a.telemetry)
+	// A settings read that fails leaves preferredAgent empty, which falls back
+	// to the session's own agent — the pre-fix behaviour, not a crash.
+	if settings, err := config.Load(); err == nil {
+		m.SetPreferredAgent(settings.DefaultAgent)
+	}
+	m.SetAgentSelectionHandler(saveDefaultAgent)
+	m.width = a.width
+	m.height = a.height
 	return m
 }
 

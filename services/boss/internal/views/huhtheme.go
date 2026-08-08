@@ -42,6 +42,31 @@ func bossHuhTheme() huh.Theme {
 		t.Focused.SelectSelector = t.Focused.SelectSelector.SetString(cursorChevron + " ").Foreground(colorSelected)
 		t.Focused.NextIndicator = t.Focused.NextIndicator.Foreground(colorSelected)
 		t.Focused.PrevIndicator = t.Focused.PrevIndicator.Foreground(colorSelected)
+		// MultiSelect option prefixes → the shared checkbox glyphs
+		// (formfields.go), so huh's one multi-select in the TUI — the add-repo
+		// Automation field — cannot render a different checkbox from the
+		// hand-rolled settings rows. ThemeBase renders the selected prefix as
+		// "[•] ", which was BOS-726's bug.
+		//
+		// Both focus states are assigned for the same reason Card is above:
+		// ThemeBase does `t.Blurred = t.Focused` at the end of its own
+		// construction, i.e. before this func is handed the value, so setting
+		// only Focused leaves a blurred multi-select still showing "[•]" —
+		// invisible in a focused screenshot. The prefixes stay unstyled because
+		// ThemeBase colours neither and no boss screen colours a checkbox
+		// glyph; SetString on a fresh style rather than on ThemeBase's is the
+		// same restate-don't-inherit rule huhButtonChip follows.
+		//
+		// checkboxPrefix, not checkboxChecked + " ": huh joins this style's
+		// String() straight onto the option label, so the trailing space is
+		// part of the prefix here and part of renderCheckboxLabel there. Taking
+		// both from one function is what makes the two idioms share all four
+		// columns rather than only the three bracket characters.
+		t.Focused.SelectedPrefix = lipgloss.NewStyle().SetString(checkboxPrefix(true))
+		t.Focused.UnselectedPrefix = lipgloss.NewStyle().SetString(checkboxPrefix(false))
+		t.Blurred.SelectedPrefix = t.Focused.SelectedPrefix
+		t.Blurred.UnselectedPrefix = t.Focused.UnselectedPrefix
+
 		// Buttons: colours from the shared buttonStyle (formfields.go), so
 		// huh's Confirm chips and the hand-rolled renderButtonRow rows cannot
 		// drift apart; huh's own chip geometry is restated alongside it.

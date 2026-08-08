@@ -152,6 +152,7 @@ go_test(
         "chatpicker_messages_test.go",
         "chatpicker_switch_test.go",
         "chatpicker_test.go",
+        "checkbox_test.go",
         "cloudpromo_test.go",
         "confirm_test.go",
         "cron_form_test.go",

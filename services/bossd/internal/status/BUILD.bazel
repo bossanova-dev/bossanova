@@ -42,6 +42,7 @@ go_test(
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":status"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
+    shard_count = 4,  # keep: 199s serial under --config=race
     deps = [
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

@@ -279,6 +279,66 @@ func renderIndentedFieldRow(focused bool, indent int, text string) string {
 		Render(fieldGutter(focused).Render(text))
 }
 
+// checkboxChecked and checkboxUnchecked are the TUI's one checkbox glyph pair.
+// They are written here and nowhere else: bossHuhTheme derives huh's
+// MultiSelect prefixes from them and renderCheckboxLabel renders the
+// hand-rolled settings/onboarding rows from them, so the two idioms are
+// mechanically incapable of disagreeing. That is the same reason fieldGutter
+// and buttonStyle exist as single definitions — and the drift BOS-726 fixed was
+// precisely this glyph, where huh's untouched ThemeBase rendered "[•]" while
+// nine hand-rolled rows rendered "[x]".
+//
+// TestCheckboxGlyphRatchet_PackageSourcesAreClean fails the build if a tenth
+// site writes either glyph out again.
+const (
+	checkboxChecked   = "[x]"
+	checkboxUnchecked = "[ ]"
+)
+
+// checkboxGlyph returns the glyph for a checkbox in the given state.
+func checkboxGlyph(checked bool) string {
+	if checked {
+		return checkboxChecked
+	}
+	return checkboxUnchecked
+}
+
+// checkboxPrefix returns the glyph plus the single space that separates it from
+// the label — the whole four columns that precede a checkbox's text.
+//
+// The separator is part of the shared seam rather than each caller's business
+// because it is exactly as capable of drifting as the brackets are: huh renders
+// a MultiSelect option as SelectedPrefix.String() joined to the option label
+// with nothing between, so its prefix has to carry the space, while
+// renderCheckboxLabel joins glyph to label itself. Building " " independently on
+// the two sides would leave the glyph shared and the column count not, shifting
+// every multi-select option label one column against the settings rows.
+//
+// The two form-render tests in checkbox_test.go do catch that today — they
+// assert the contiguous string "[x] Auto-merge Dependabot PRs" against a real
+// rendered form, so the space is inside the literal. What they cannot do is say
+// so: the failure surfaces as a whole missing form row, from a test whose stated
+// subject is the glyph. The seam exists to make the invariant local and the
+// diagnosis direct, not to cover an otherwise unguarded gap. Neither the theme
+// test (which compares huh's two prefixes only to each other) nor the AST
+// ratchet (which matches literals, not widths) sees it at all.
+func checkboxPrefix(checked bool) string {
+	return checkboxGlyph(checked) + " "
+}
+
+// renderCheckboxLabel renders one checkbox and its label — "[x] Label" —
+// and nothing else.
+//
+// The row chrome deliberately stays with the caller: general_settings.go feeds
+// the result through renderFieldRow, repo_settings.go through renderFieldRow
+// with its own focus rule, and onboarding.go prefixes a navigation chevron and
+// wraps the lot in styleSelected. Folding any of that in would restyle a live
+// screen, which is the same boundary buttonStyle draws between colour (shared)
+// and geometry (per call site).
+func renderCheckboxLabel(checked bool, label string) string {
+	return checkboxPrefix(checked) + label
+}
+
 // bossConfirm builds a huh Confirm in the TUI's house style: buttons on the
 // left margin, like every other field's content.
 //

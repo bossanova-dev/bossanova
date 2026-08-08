@@ -94,6 +94,16 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{},
 		},
+		// async-create: the demo world plus a scripted CreateSession stream that
+		// reproduces the BOS-720 daemon contract — SessionCreated (accepted, the
+		// row exists but the bootstrap is still running), setup output, then
+		// SessionCreated again (settled). The 2s spacing is what makes the
+		// intermediate accepted frame capturable rather than a flicker.
+		"async-create": {
+			World:      AsyncCreateWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"busy": {
 			World:      BusyWorld,
 			SeedKind:   SeedAcknowledged,

@@ -1070,3 +1070,30 @@ func TestUpdateCronJobOmitZeroOutputLeavesUnset(t *testing.T) {
 		t.Errorf("omitted zero_output should leave proto field nil, got %v", *captured.IsZeroOutput)
 	}
 }
+
+// TestCreateSessionToolDescriptionSaysACancelledCreateStillCreates pins the
+// BOS-720 contract correction. The tool still waits for the settled session, so
+// "drains setup and returns the final session" stays true — what changed is the
+// implied promise that the DAEMON blocks. It does not, and a caller that
+// cancels mid-call no longer cancels the create.
+func TestCreateSessionToolDescriptionSaysACancelledCreateStillCreates(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "create_session" {
+			desc = tool.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("create_session tool not registered")
+	}
+	const want = "the create continues on the daemon even if this call is cancelled"
+	if !strings.Contains(desc, want) {
+		t.Fatalf("create_session description missing %q: %s", want, desc)
+	}
+}

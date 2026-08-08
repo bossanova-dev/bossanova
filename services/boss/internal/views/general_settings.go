@@ -806,17 +806,9 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 	var line string
 	switch row.Kind { //nolint:exhaustive // header rows take an early return path in View
 	case settingsRowKindBool:
-		check := " "
-		if config.PluginConfigBool(&m.settings, row.Plugin, row.Key) {
-			check = "x"
-		}
-		line = fmt.Sprintf("[%s] %s", check, row.Label)
+		line = renderCheckboxLabel(config.PluginConfigBool(&m.settings, row.Plugin, row.Key), row.Label)
 	case settingsRowKindAgentEnabled:
-		check := " "
-		if pluginEnabled(m.settings, row.Plugin) {
-			check = "x"
-		}
-		line = fmt.Sprintf("[%s] %s", check, row.Label)
+		line = renderCheckboxLabel(pluginEnabled(m.settings, row.Plugin), row.Label)
 	case settingsRowKindString:
 		val := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
 		if val == "" {
@@ -846,29 +838,18 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 		}
 		line = fmt.Sprintf("Poll interval (seconds): %s", intervalStr)
 	case settingsRowKindEventTracing:
-		check := " "
-		if m.settings.EventTracingEnabled {
-			check = "x"
-		}
-		line = fmt.Sprintf("[%s] %s", check, row.Label)
+		line = renderCheckboxLabel(m.settings.EventTracingEnabled, row.Label)
 	case settingsRowKindErrorTracking:
-		val := "OFF"
-		if m.settings.ErrorTrackingEnabled {
-			val = "ON"
-		}
-		line = fmt.Sprintf("%s: %s", row.Label, val)
+		// A checkbox rather than a "Label: ON" value row, because this row and
+		// settingsRowKindEventTracing directly above are indistinguishable
+		// toggles — both declared "toggle" at their enum, both flipping a plain
+		// bool on the same keypress, both labelled "Enable …", and emitted as
+		// adjacent lines. The remaining "%s: %s" arms below carry real values.
+		line = renderCheckboxLabel(m.settings.ErrorTrackingEnabled, row.Label)
 	case settingsRowKindRotation:
-		check := " "
-		if m.settings.ManagedAccounts.ManagedAccountsEnabled() {
-			check = "x"
-		}
-		line = fmt.Sprintf("[%s] %s", check, row.Label)
+		line = renderCheckboxLabel(m.settings.ManagedAccounts.ManagedAccountsEnabled(), row.Label)
 	case settingsRowKindNotifications:
-		check := " "
-		if config.NotificationsEnabled(m.settings) {
-			check = "x"
-		}
-		line = fmt.Sprintf("[%s] %s", check, row.Label)
+		line = renderCheckboxLabel(config.NotificationsEnabled(m.settings), row.Label)
 	case settingsRowKindPostHogToken:
 		val := m.settings.PostHogProjectToken
 		if val == "" {

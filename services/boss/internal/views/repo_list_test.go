@@ -203,13 +203,16 @@ func TestRepoListBuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 		DisplayName: strings.Repeat("n", 30),
 		LocalPath:   "/" + strings.Repeat("p", 59),
 	}}
+	// The status column is deliberately unlabelled (empty title) so it is not
+	// visible in the steady state; it still participates in the responsive fit
+	// at priority 1, so it outlives PATH as the terminal narrows.
 	wantTitles := map[int][]string{
-		0:   {" ", "NAME", "PATH", "STATUS"},
-		60:  {" ", "NAME", "STATUS"},
-		72:  {" ", "NAME", "STATUS"},
-		80:  {" ", "NAME", "STATUS"},
-		100: {" ", "NAME", "STATUS"},
-		140: {" ", "NAME", "PATH", "STATUS"},
+		0:   {" ", "NAME", "PATH", ""},
+		60:  {" ", "NAME", ""},
+		72:  {" ", "NAME", ""},
+		80:  {" ", "NAME", ""},
+		100: {" ", "NAME", ""},
+		140: {" ", "NAME", "PATH", ""},
 	}
 	var unfitted []table.Column
 	for _, width := range []int{0, 60, 72, 80, 100, 140} {

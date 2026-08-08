@@ -73,6 +73,37 @@ func TestAppAttachDetachWiresChatPickerTelemetry(t *testing.T) {
 	if got.chatPicker.telemetry != rec {
 		t.Fatal("chat picker telemetry was not preserved after attach detach")
 	}
+	// The picker is rebuilt from four places; a site that skipped the agent
+	// wiring would reintroduce the stuck default on that path alone.
+	if got.chatPicker.onAgentSelected == nil {
+		t.Fatal("chat picker agent-selection handler was not wired after attach detach")
+	}
+}
+
+// TestAppChatPickerModelWiresAgentDefaults pins that the shared constructor
+// installs both halves of the agent-picker contract: a persistence handler, and
+// a preferred agent read from settings. The configured value is deliberately
+// not "claude", so the assertion cannot pass on the DefaultSettings seed.
+func TestAppChatPickerModelWiresAgentDefaults(t *testing.T) {
+	withTempConfigHome(t)
+	settings := config.DefaultSettings()
+	settings.DefaultAgent = "codex"
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+	a := App{ctx: context.Background(), width: 80, height: 24}
+
+	m := a.newChatPickerModel("session-1", "")
+
+	if m.onAgentSelected == nil {
+		t.Error("onAgentSelected = nil; confirmed picks would not persist")
+	}
+	if m.preferredAgent != "codex" {
+		t.Errorf("preferredAgent = %q, want %q from settings", m.preferredAgent, "codex")
+	}
+	if m.width != 80 || m.height != 24 {
+		t.Errorf("size = %dx%d, want 80x24", m.width, m.height)
+	}
 }
 
 func TestAppSwitchToHomePreservesCloudAccessClient(t *testing.T) {

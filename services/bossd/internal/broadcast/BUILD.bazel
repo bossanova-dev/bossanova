@@ -20,6 +20,7 @@ go_library(
         "//lib/bossalib/sqlutil",
         "//lib/bossalib/telemetry",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/deliverydiag",
         "//services/bossd/internal/telemetry",
         "@com_github_rs_zerolog//:zerolog",
     ],

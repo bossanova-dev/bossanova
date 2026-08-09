@@ -431,8 +431,27 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition dispatched
      ```
    - Add a reply comment on the thread explaining what was fixed:
+     Reply bodies are Markdown and must never be shell-interpolated. `-F` is selected here because
+     the required local stub check proves its `@file` form passes the file's bytes through literally.
+     First run the path-creation block by itself. It prints a concrete temporary path for the
+     file-editing tool. Use the agent's file-editing tool to write the complete reply text to that
+     path. Then put the same printed path in the submission block. Do not use shell input, redirection, `printf`, or a
+     heredoc for the reply text: automatic repair has no interactive stdin, and shell source can
+     reinterpret Markdown. The file must contain only the reply text.
      ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Fixed: [brief explanation of what was changed]"
+     REPLY_BODY="$(mktemp)"
+     printf '%s\n' "$REPLY_BODY"
+     ```
+     Use the agent's file-editing tool to write the exact reply text to the printed path, then:
+     ```bash
+     REPLY_BODY="/the/path/printed/above"
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+       rm -f "$REPLY_BODY"
+     else
+       GH_STATUS=$?
+       rm -f "$REPLY_BODY"
+       exit "$GH_STATUS"
+     fi
      ```
    - Resolve the parent review thread:
      ```bash
@@ -447,8 +466,22 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    **b) Not actionable — decline and resolve:**
    Some review comments are by design, already fixed, stale (reference old code), or low-priority style suggestions. For these:
    - Add a reply comment explaining why it won't be fixed:
+     First create and print a temporary path, then write the reply to that exact printed path with
+     the agent's file-editing tool:
      ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Not fixing: [explanation — e.g. 'This duplication is by design to avoid a dependency from the plugin binary to the host config package' or 'This was already fixed in a subsequent commit']"
+     REPLY_BODY="$(mktemp)"
+     printf '%s\n' "$REPLY_BODY"
+     ```
+     Submit that same path after the file-editing tool has written the reply:
+     ```bash
+     REPLY_BODY="/the/path/printed/above"
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+       rm -f "$REPLY_BODY"
+     else
+       GH_STATUS=$?
+       rm -f "$REPLY_BODY"
+       exit "$GH_STATUS"
+     fi
      ```
    - Then resolve the thread:
      ```bash
@@ -462,8 +495,22 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    **c) Unclear — ask for clarification:**
    - Add a reply comment asking for clarification:
+     First create and print a temporary path, then write the reply to that exact printed path with
+     the agent's file-editing tool:
      ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Could you clarify what you meant by [...]?"
+     REPLY_BODY="$(mktemp)"
+     printf '%s\n' "$REPLY_BODY"
+     ```
+     Submit that same path after the file-editing tool has written the reply:
+     ```bash
+     REPLY_BODY="/the/path/printed/above"
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+       rm -f "$REPLY_BODY"
+     else
+       GH_STATUS=$?
+       rm -f "$REPLY_BODY"
+       exit "$GH_STATUS"
+     fi
      ```
    - Do NOT resolve the thread — leave it open for the reviewer.
    - Mark it `needs-human` after posting the clarification, so later repair rounds park it until the

@@ -644,18 +644,6 @@ message BuildInteractiveCommandRequest {
   // chat, plus the cron autonomy directive for scheduler-spawned runs.
   string append_system_prompt = 7;
   string model = 8;           // opaque agent model id; "" = plugin default.
-  // mcp_config_path, when non-empty, is an absolute path to a JSON file
-  // describing MCP servers to expose to the interactive agent (e.g. Claude
-  // Code's --mcp-config). bossd writes it into the boss app-data dir (NEVER
-  // the worktree) per spawn so the agent can reach the boss MCP server's
-  // mcp__boss__* tools in-session. Empty means no boss MCP wiring.
-  string mcp_config_path = 9;
-  // strict_mcp_config, when true, tells the agent to load ONLY the servers in
-  // mcp_config_path and ignore project .mcp.json / settings MCP servers (Claude
-  // Code's --strict-mcp-config). bossd sets it for cron/fleet spawns so the
-  // curated set (boss + Linear) is the whole surface; absent/false preserves the
-  // pre-existing merge behavior for interactive and any un-updated caller.
-  bool strict_mcp_config = 10;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

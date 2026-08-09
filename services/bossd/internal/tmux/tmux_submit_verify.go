@@ -466,7 +466,7 @@ func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload str
 			// — BOS-597) degrades to plain OutcomeSubmitted, which is still
 			// "delivered, do not resend". Nothing is lost but the label.
 			if paneShowsPayloadQueued(pane, payload) {
-				return OutcomeQueued, fmt.Errorf("%q left the composer on tmux session %q into the agent's queued-message list, so it was accepted behind the running turn: %w", trimmed, sessionName, errSubmissionQueued)
+				return OutcomeQueued, fmt.Errorf("a payload left the composer on tmux session %q into the agent's queued-message list, so it was accepted behind the running turn: %w", sessionName, errSubmissionQueued)
 			}
 			return OutcomeSubmitted, nil
 		}
@@ -512,7 +512,7 @@ func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload str
 			// regex to match — 0 of 50 polls across a full turn saw one. A
 			// delivery-correctness decision must not rest on a signal that is
 			// absent from the very panes it is meant to classify.
-			return OutcomeNotSubmitted, fmt.Errorf("command was not submitted; %q is still present at the tmux prompt: %w", trimmed, errSubmissionPending)
+			return OutcomeNotSubmitted, fmt.Errorf("command was not submitted; a payload is still present at the tmux prompt: %w", errSubmissionPending)
 		case <-ticker.C:
 		}
 	}

@@ -1653,8 +1653,8 @@ func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testi
 	if !strings.Contains(err.Error(), "command was not submitted") {
 		t.Fatalf("expected command submission error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "$boss-repair") {
-		t.Fatalf("expected stuck command in error, got %v", err)
+	if strings.Contains(err.Error(), "$boss-repair") {
+		t.Fatalf("submission error leaked command payload: %v", err)
 	}
 	assertTmuxLiteralEnterOrder(t, calls, "$boss-repair")
 }
@@ -1758,8 +1758,8 @@ func TestSendPlan_ReturnsErrorWhenPayloadRemainsAtPrompt(t *testing.T) {
 	if !strings.Contains(err.Error(), "command was not submitted") {
 		t.Fatalf("expected submission error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "/wc-merge-review headless") {
-		t.Fatalf("expected stuck payload in error, got %v", err)
+	if strings.Contains(err.Error(), "/wc-merge-review headless") {
+		t.Fatalf("submission error leaked payload: %v", err)
 	}
 }
 

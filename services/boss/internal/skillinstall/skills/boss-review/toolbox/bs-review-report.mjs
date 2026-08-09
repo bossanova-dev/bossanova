@@ -71,12 +71,26 @@ function detailsSection(summary, content) {
   return `<details><summary>${summary}</summary>\n\n${content}\n\n</details>`
 }
 
-function renderHeader({ rounds = 1, status = 'clean', mustfix = {} } = {}) {
+function renderHeader({ rounds = 1, status = 'clean', mustfix = {}, invalid = [] } = {}) {
   const r = `${rounds} round(s)`
   if (status === 'capped') {
+    // Two different things cap a run: open must-fix findings, and unrepaired
+    // invalid entries. Naming only the first states the wrong reason whenever
+    // malformed or missing reviewer evidence is the actual blocker -- an
+    // invalid-only cap has `unresolved: 0`, so the header would have read
+    // "0 must-fix findings remain" while the real cause sat in its own section.
     const open = mustfix.unresolved ?? 0
-    const noun = open === 1 ? 'finding' : 'findings'
-    return `bs-review completed after ${r}. ${open} must-fix ${noun} remain (surfaced below); see gates.`
+    const bad = Array.isArray(invalid) ? invalid.length : 0
+    const parts = []
+    if (open) parts.push(`${open} must-fix ${open === 1 ? 'finding' : 'findings'}`)
+    if (bad) parts.push(`${bad} invalid ${bad === 1 ? 'entry' : 'entries'}`)
+    // Neither count is reportable (a cap for some other reason): stay truthful
+    // and generic rather than asserting a count of zero.
+    if (!parts.length) {
+      return `bs-review completed after ${r}. Unresolved review evidence remains (surfaced below); see gates.`
+    }
+    const verb = open + bad === 1 ? 'remains' : 'remain'
+    return `bs-review completed after ${r}. ${parts.join(' and ')} ${verb} (surfaced below); see gates.`
   }
   return `bs-review completed after ${r}. All must-fix findings fixed; required gates green.`
 }
@@ -162,7 +176,32 @@ function renderMustfix(mustfix = {}) {
 
 function renderLeaveAsIs(leaveAsIs = []) {
   if (!leaveAsIs.length) return ''
-  return leaveAsIs.map((l) => `- **${esc(l.title)}**${loc(l)} — ${esc(l.rationale)}`).join('\n')
+  return leaveAsIs
+    .map(
+      (l) =>
+        `- **${esc(l.title)}**${loc(l)} — ${esc(l.rationale)}${
+          l.evidence ? ` — Evidence: ${esc(l.evidence)}` : ''
+        }`,
+    )
+    .join('\n')
+}
+
+function renderInvalid(invalid = []) {
+  if (!Array.isArray(invalid) || !invalid.length) return ''
+  return invalid
+    .map((entry) => {
+      const source = entry?.source
+      const sourceDetails =
+        source && (source.filename || source.reviewer)
+          ? ` — Source: ${esc(source.filename || 'unknown output')} (reviewer: ${esc(source.reviewer || 'unknown')})`
+          : ''
+      const reason = `- ${esc(entry.reason || 'Malformed reviewer finding')}${sourceDetails}`
+      if (!Object.hasOwn(entry, 'item')) return reason
+      const payload = JSON.stringify(entry.item, null, 2) ?? String(entry.item)
+      const fence = codeFence(payload)
+      return `${reason}\n\n${fence}json\n${payload}\n${fence}`
+    })
+    .join('\n\n')
 }
 
 // "Create N follow-up issues": a single copyable, fence-guarded prompt an agent
@@ -230,6 +269,7 @@ export function renderReport(data = {}) {
     evidenceRows = [],
     gates = [],
     mustfix = {},
+    invalid = [],
     leaveAsIs = [],
     suggestions = [],
     prUrl = '',
@@ -264,6 +304,10 @@ export function renderReport(data = {}) {
     blocks.push(detailsSection(`Must-fix detail — ${tally}`, mf))
   }
 
+  blocks.push(
+    detailsSection('Invalid reviewer findings — repair or re-run required', renderInvalid(invalid)),
+  )
+
   blocks.push(detailsSection('Leave as-is', renderLeaveAsIs(leaveAsIs)))
   const n = suggestions.length
   blocks.push(
@@ -282,9 +326,23 @@ import { isMainModule } from './main-module.mjs'
 
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2)
-  const inIdx = argv.indexOf('--in')
-  if (inIdx !== -1 && argv[inIdx + 1]) {
-    process.stdout.write(renderReport(JSON.parse(readFileSync(argv[inIdx + 1], 'utf8'))))
+  const usage =
+    'usage: bs-review-report [--in <path>]\n' +
+    '  Renders report JSON to markdown on stdout.\n' +
+    '  With no arguments, reads the JSON from stdin.\n' +
+    '  --in <path>  read the JSON from a file instead of stdin\n' +
+    '  -h, --help   show this message\n'
+  // Anything other than a bare `--in <path>` pair (or no args at all) is
+  // rejected up front — unconditionally, regardless of process.stdin.isTTY.
+  // This runs BEFORE the isTTY branch below so an unrecognised flag (a typo,
+  // --help, a future caller's flag) can never fall through to the
+  // empty-stdin default-report path and print a fabricated pass.
+  const isValidIn = argv.length === 2 && argv[0] === '--in' && Boolean(argv[1])
+  if (argv.length > 0 && !isValidIn) {
+    process.stderr.write(usage)
+    process.exit(2)
+  } else if (isValidIn) {
+    process.stdout.write(renderReport(JSON.parse(readFileSync(argv[1], 'utf8'))))
   } else if (process.stdin.isTTY) {
     process.stderr.write('bs-review-report: provide JSON via --in <path> or on stdin\n')
     process.exit(2)

@@ -3,10 +3,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -237,13 +234,6 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // landed. Flip the declaration to IN_ARGV in the same change that starts
 // appending the flag, never before.
 //
-// req.McpConfigPath IS consumed, but differently from claude: codex has no
-// --mcp-config flag, so codexMcpOverrideArgs translates the JSON config bossd
-// wrote (in app-data, never the worktree) into repeatable `-c mcp_servers.boss.*`
-// global overrides. This exposes the same mcp__boss__* tools without writing
-// anything into the worktree. It is best-effort — a missing/unparseable config
-// is logged and skipped so the launch never fails.
-//
 // No `tui.notifications` / `tui.notification_method` overrides are appended
 // here, deliberately. BOS-487 proposed launching codex with
 // `-c 'tui.notifications=["approval-requested"]' -c tui.notification_method="osc9"`
@@ -272,13 +262,8 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // (openai/codex#11808, #19921 track the same gap in the external notify hook).
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"codex"}
-	// Codex has no --mcp-config flag (the claude plugin maps the field to that).
-	// It configures MCP servers via repeatable global `-c mcp_servers.<name>.*`
-	// overrides, which keep the wiring on the command line rather than in the
-	// worktree (HARD CONSTRAINT preserved). These are global options, so they go
-	// before the `resume` subcommand. Best-effort: a missing/unparseable config
-	// is logged and skipped, never blocking the launch.
-	args = append(args, s.codexMcpOverrideArgs(req.GetMcpConfigPath())...)
+	// MCP server configuration belongs to the agent user or harness. Boss does
+	// not translate its internal request fields into Codex configuration.
 	if req.Resume {
 		args = append(args, "resume", req.SessionId)
 	}
@@ -328,83 +313,6 @@ func codexInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
 		return "$" + strings.TrimLeft(req.GetInitialCommand(), "/$")
 	}
 	return req.GetInitialPrompt()
-}
-
-// mcpConfigFile is the subset of the JSON config bossd writes (see
-// services/bossd/internal/session/mcp_config.go) that codex needs to rebuild as
-// `-c` overrides. Kept local to the plugin: module boundaries forbid importing
-// the daemon's session package.
-type mcpConfigFile struct {
-	MCPServers map[string]struct {
-		Command string   `json:"command"`
-		Args    []string `json:"args"`
-	} `json:"mcpServers"`
-}
-
-// codexMcpOverrideArgs translates the boss MCP config at path into codex global
-// `-c mcp_servers.boss.*` overrides (codex has no --mcp-config). It returns nil
-// when path is empty or the config cannot be read/parsed/lacks a usable "boss"
-// server — MCP wiring is best-effort and must never block a codex launch. The
-// override values are TOML literals, matching how codex parses `-c key=value`.
-func (s *Server) codexMcpOverrideArgs(path string) []string {
-	if path == "" {
-		return nil
-	}
-	cleaned := filepath.Clean(path)
-	raw, err := os.ReadFile(cleaned)
-	if err != nil {
-		s.logger.Warn().Err(err).Str("mcpConfigPath", path).
-			Msg("read mcp config failed; codex launches without mcp__boss__*")
-		return nil
-	}
-	var doc mcpConfigFile
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		s.logger.Warn().Err(err).Str("mcpConfigPath", path).
-			Msg("parse mcp config failed; codex launches without mcp__boss__*")
-		return nil
-	}
-	boss, ok := doc.MCPServers["boss"]
-	if !ok || boss.Command == "" {
-		s.logger.Warn().Str("mcpConfigPath", path).
-			Msg(`mcp config has no usable "boss" server; codex launches without mcp__boss__*`)
-		return nil
-	}
-	out := []string{"-c", "mcp_servers.boss.command=" + tomlString(boss.Command)}
-	if len(boss.Args) > 0 {
-		quoted := make([]string, len(boss.Args))
-		for i, a := range boss.Args {
-			quoted[i] = tomlString(a)
-		}
-		out = append(out, "-c", "mcp_servers.boss.args=["+strings.Join(quoted, ",")+"]")
-	}
-	return out
-}
-
-// tomlString renders s as a TOML basic string (double-quoted, with backslashes,
-// quotes, and control characters escaped) for use as a `-c key=value` override
-// value. Real binary/socket paths never contain control characters, but
-// escaping them keeps the emitted override valid TOML regardless of input.
-func tomlString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

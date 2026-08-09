@@ -44,11 +44,19 @@ export function collectGoFiles(repoRoot) {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
-  return out
-    .split('\0')
-    .filter(Boolean)
-    .filter((file) => !isGeneratedGoPath(file))
-    .sort()
+  return filterExistingFiles(
+    repoRoot,
+    out
+      .split('\0')
+      .filter(Boolean)
+      .filter((file) => !isGeneratedGoPath(file))
+      .sort(),
+  )
+}
+
+/** Exclude tracked files deleted from the working tree before formatting them. */
+export function filterExistingFiles(repoRoot, files) {
+  return files.filter((file) => fs.existsSync(path.join(repoRoot, file)))
 }
 
 // ── Content-stamp cache (BOS-340 pattern, mirroring lint-affected.mjs +

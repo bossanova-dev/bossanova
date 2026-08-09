@@ -8,6 +8,11 @@ Use this template when dispatching a code reviewer subagent.
 Subagent (general-purpose):
   description: "Review code changes"
   prompt: |
+    HARD TIME BUDGET: [TIME_BUDGET_SECONDS] seconds. Returning late is a failure, not
+    thoroughness: the caller awaits you and cannot preempt you, so every second past the
+    budget is spent straight out of its post-review reserve. When the budget is nearly
+    gone, report the findings you already have — none is a valid result — and return.
+
     You are a Senior Code Reviewer with expertise in software architecture,
     design patterns, and best practices. Your job is to review completed work
     against its plan or requirements and identify issues before they cascade.
@@ -131,6 +136,13 @@ Subagent (general-purpose):
 - `[PLAN_OR_REQUIREMENTS]` — what it should do (plan file path, task text, or requirements)
 - `[BASE_SHA]` — starting commit
 - `[HEAD_SHA]` — ending commit
+- `[TIME_BUDGET_SECONDS]` — the dispatching step's hard return-by, in seconds. Never omit it: the
+  caller awaits this dispatch and cannot preempt it, so a budget the caller keeps to itself bounds
+  nothing. In `boss-build` it is Step 6's `REVIEW_LEG_SECONDS`, the degraded whole-branch
+  reviewer's `DEGRADED_REVIEWER_MINUTES` (10) in seconds as clamped into
+  `DEGRADED_REVIEWER_SECONDS`, the separately priced API
+  classification's `DEGRADED_API_CHECK_MINUTES` (5) in seconds, or Step 6b §3's
+  `RE_REVIEW_SECONDS` share.
 
 **Reviewer returns:** Strengths, Issues (Critical / Important / Minor), Recommendations, Assessment
 

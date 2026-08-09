@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/deliverydiag"
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"github.com/rs/zerolog"
 )
@@ -246,11 +247,11 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCal
 		next = cb.ExpiresAt
 		expiring = true
 	}
-	// last_error is a diagnostic string and must never carry the message body;
-	// cause is the deliverer's transport error, which does not contain it.
+	// last_error is a diagnostic string and must never carry the message body.
+	// Transport errors can echo the rendered prompt, including this body.
 	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
 		NextAttemptAt: next,
-		LastError:     cause.Error(),
+		LastError:     callbackDiagnostic(cause, cb.Message),
 		LastEvent:     string(cb.Trigger),
 	}); err != nil {
 		w.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -268,7 +269,7 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCal
 func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GithubCallback, attempts int, cause error, preserveAttemptCount bool) {
 	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
 		NextAttemptAt:        cb.ExpiresAt,
-		LastError:            fmt.Sprintf("delivery attempt exhaustion after %d attempts: %v", attempts, cause),
+		LastError:            callbackDiagnostic(fmt.Errorf("delivery attempt exhaustion after %d attempts: %v", attempts, cause), cb.Message),
 		LastEvent:            string(cb.Trigger),
 		PreserveAttemptCount: preserveAttemptCount,
 	}); err != nil {
@@ -279,6 +280,16 @@ func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GithubCallback,
 	w.logger.Warn().Str("callback_id", cb.ID).Int("attempt", attempts).
 		Time("expires_at", cb.ExpiresAt).
 		Msg("callback worker: delivery attempts exhausted; callback will expire")
+}
+
+const (
+	callbackRedactedMessageMarker = "[callback message redacted]"
+)
+
+// callbackDiagnostic removes every representation of a registered callback
+// message from a delivery transport error before it is persisted in last_error.
+func callbackDiagnostic(cause error, body string) string {
+	return deliverydiag.Redact(cause, body, callbackRedactedMessageMarker)
 }
 
 // backoffFor returns the retry delay for the given prior attempt count, doubling

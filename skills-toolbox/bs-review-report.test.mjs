@@ -9,10 +9,10 @@ import { renderReport, MARKER, VERDICT_OK } from './bs-review-report.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-report.mjs', import.meta.url))
 
-/** Run the CLI block as a subprocess and return { stdout, status }. */
+/** Run the CLI block as a subprocess and return { stdout, stderr, status }. */
 function runCli(args = [], input = '') {
   const res = spawnSync(process.execPath, [scriptPath, ...args], { input, encoding: 'utf8' })
-  return { stdout: res.stdout, status: res.status }
+  return { stdout: res.stdout, stderr: res.stderr, status: res.status }
 }
 
 /** A complete clean-run report fixture (the #959 self-review, abbreviated). */
@@ -59,6 +59,7 @@ function cleanFixture() {
         file: 'scripts/bs-review-detect.mjs',
         line: 40,
         rationale: 'uncoverable',
+        evidence: 'Read scripts/bs-review-detect.mjs:40; the branch is terminal-only.',
       },
     ],
     suggestions: [
@@ -104,6 +105,36 @@ test('failing verdict values flip the badge to ❌', () => {
   assert.match(md, /❌ \*\*Recommendation:\*\* Fix/)
 })
 
+test('invalid reviewer findings are retained in the rendered report', () => {
+  const md = renderReport({
+    status: 'capped',
+    invalid: [
+      {
+        reason: 'findings-go.json: line must be an integer or null',
+        source: { filename: 'findings-go.json', reviewer: 'golang-pro' },
+        item: {
+          severity: 'Warning',
+          file: 'service.go',
+          line: 'not-an-integer',
+          title: 'Preserve this production finding',
+          detail: 'Use a numeric line before retrying.',
+        },
+      },
+    ],
+  })
+  assert.match(md, /Invalid reviewer findings — repair or re-run required/)
+  assert.match(md, /findings-go\.json: line must be an integer or null/)
+  assert.match(md, /Source: findings-go\.json \(reviewer: golang-pro\)/)
+  assert.match(md, /```json/)
+  assert.match(md, /Preserve this production finding/)
+  assert.match(md, /Use a numeric line before retrying\./)
+})
+
+test('leave-as-is entries retain their verification evidence', () => {
+  const md = renderReport(cleanFixture())
+  assert.match(md, /isTTY guard branch.*Evidence: Read scripts\/bs-review-detect\.mjs:40/)
+})
+
 test('VERDICT_OK classifies the per-field good direction', () => {
   assert.equal(VERDICT_OK.assessment('Sound'), true)
   assert.equal(VERDICT_OK.assessment('Unsound'), false)
@@ -130,6 +161,41 @@ test('capped status changes the header wording and reports open count', () => {
     md,
     /bs-review completed after 3 round\(s\)\. 2 must-fix findings remain \(surfaced below\); see gates\./,
   )
+})
+
+// A run caps on unrepaired `invalid` entries just as it does on open must-fix
+// findings, and an invalid-only cap has `unresolved: 0`. Naming only must-fix
+// made the durable terminal report state the wrong reason for the cap.
+test('an invalid-only cap names invalid evidence, never "0 must-fix findings"', () => {
+  const md = renderReport({
+    status: 'capped',
+    rounds: 2,
+    mustfix: { unresolved: 0 },
+    invalid: [{ reason: 'findings-lens-0-x.json: unexpected end of JSON input' }],
+  })
+  assert.match(
+    md,
+    /bs-review completed after 2 round\(s\)\. 1 invalid entry remains \(surfaced below\); see gates\./,
+  )
+  assert.doesNotMatch(md, /0 must-fix/)
+})
+
+test('a cap with both blockers reports both counts', () => {
+  const md = renderReport({
+    status: 'capped',
+    rounds: 4,
+    mustfix: { unresolved: 2 },
+    invalid: [{ reason: 'a' }, { reason: 'b' }, { reason: 'c' }],
+  })
+  assert.match(md, /2 must-fix findings and 3 invalid entries remain \(surfaced below\)/)
+})
+
+// Neither count is reportable: stay truthful rather than asserting a zero.
+test('a cap with neither count falls back to generic wording, not a zero claim', () => {
+  const md = renderReport({ status: 'capped', rounds: 1, mustfix: { unresolved: 0 }, invalid: [] })
+  assert.match(md, /Unresolved review evidence remains \(surfaced below\); see gates\./)
+  assert.doesNotMatch(md, /0 must-fix/)
+  assert.doesNotMatch(md, /0 invalid/)
 })
 
 test('zero security renders the reassuring line; non-zero renders a loud alert', () => {
@@ -434,4 +500,31 @@ test('CLI on empty stdin renders a minimal (clean) report', () => {
   const { stdout, status } = runCli([], '')
   assert.equal(status, 0)
   assert.match(stdout, /bs-review completed after 1 round\(s\)/)
+})
+
+// Regression coverage for the fail-open bug: with stdin NOT a TTY (a pipe,
+// closed immediately — spawnSync's `input: ''` gives exactly that), an
+// unrecognised argv must be rejected outright rather than falling through to
+// the empty-stdin default-report path. A TTY-only assertion would pass
+// against the buggy code and prove nothing, since the bug only manifests
+// when process.stdin.isTTY is falsy.
+test('CLI --help rejects with usage on stderr, no stdout, exit 2 (stdin closed, not a TTY)', () => {
+  const { stdout, stderr, status } = runCli(['--help'], '')
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.match(stderr, /usage/i)
+})
+
+test('CLI rejects an unknown flag with usage on stderr, no stdout, exit 2 (stdin closed, not a TTY)', () => {
+  const { stdout, stderr, status } = runCli(['--nope'], '')
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.match(stderr, /usage/i)
+})
+
+test('CLI rejects --in with no following value (stdin closed, not a TTY)', () => {
+  const { stdout, stderr, status } = runCli(['--in'], '')
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.match(stderr, /usage/i)
 })

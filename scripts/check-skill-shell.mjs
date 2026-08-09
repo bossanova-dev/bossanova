@@ -93,6 +93,17 @@
 //     The sanctioned fix form uses a single-quoted `-name '<PATTERN>'`; under a quoted-counting
 //     rule that fix would sit one edit away from tripping the gate meant to protect it.
 //
+// (g) GH BODY FIELDS MUST NOT SHELL-INTERPOLATE MARKDOWN. `gh api -f body="...`...`"` and
+//     `body="$(...)"` execute the Markdown's command substitutions before `gh` receives it.
+//     This predicate rejects only `body=` values supplied through `-f`/`--field`/`--raw-field`
+//     when they are unquoted or double-quoted and carry a backtick or `$(`. A single-quoted value
+//     is literal shell text, and `@file` is accepted only with `-F`/`--field`: `-F body=@"$FILE"`
+//     is the safe submission form for arbitrary Markdown, while `-f`/`--raw-field` submit that
+//     value literally. Its producer is checked separately:
+//     heredoc framing can collide with reply text even when quoted, and an unquoted delimiter also
+//     expands the Markdown while writing it. This is deliberately a narrow safety rule, not a ban
+//     on double quotes or an attempt to parse all shell expansions.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -1417,6 +1428,187 @@ function commandWordIndex(segment) {
   return -1
 }
 
+const WRAPPER_OPTIONS_WITH_ARGUMENTS = new Map([
+  ['env', new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string'])],
+  [
+    'sudo',
+    new Set([
+      '-u',
+      '--user',
+      '-g',
+      '--group',
+      '-h',
+      '--host',
+      '-p',
+      '--prompt',
+      '-r',
+      '--role',
+      '-t',
+      '--type',
+      '-C',
+      '--close-from',
+      '-T',
+      '--command-timeout',
+      '-R',
+      '--chroot',
+      '-D',
+      '--chdir',
+    ]),
+  ],
+  ['exec', new Set(['-a'])],
+])
+
+function wrapperOptionConsumesNext(name, option) {
+  const optionsWithArguments = WRAPPER_OPTIONS_WITH_ARGUMENTS.get(name)
+  if (!optionsWithArguments) return false
+  if (optionsWithArguments.has(option)) return true
+  if (!option.startsWith('-') || option.startsWith('--') || option.length < 3) return false
+
+  const shortOptions = option.slice(1)
+  for (let i = 0; i < shortOptions.length; i += 1) {
+    const shortOption = `-${shortOptions[i]}`
+    if (!optionsWithArguments.has(shortOption)) continue
+    // Remaining characters are this option's attached argument; only a trailing option consumes the
+    // next shell word (`sudo -Eu root`, `env -iu NAME`).
+    return i === shortOptions.length - 1
+  }
+  return false
+}
+
+// Resolve the command wrappers actually invoke. Unlike the glob rule's deliberately conservative
+// resolver, this safety rule must step options that consume arguments (`env -u NAME gh …`) because
+// command substitutions in later body fields execute before the wrapper starts.
+function effectiveCommandWordIndex(segment) {
+  let i = 0
+  while (i < segment.length) {
+    const raw = segment[i].raw
+    const word = removeQuotes(raw)
+    const name = word.split('/').pop()
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+      i += 1
+      continue
+    }
+    if (name === 'function') {
+      i += 2
+      continue
+    }
+    if (/^\d*[<>]/.test(raw)) {
+      i += /^\d*[<>]+$/.test(raw) ? 2 : 1
+      continue
+    }
+    if (LEADING_WORDS.has(name) && !WRAPPER_WORDS.has(name) && name !== 'time') {
+      i += 1
+      continue
+    }
+    if (WRAPPER_WORDS.has(name) || name === 'time') {
+      i += 1
+      while (i < segment.length) {
+        const option = removeQuotes(segment[i].raw)
+        if (option === '--') {
+          i += 1
+          break
+        }
+        if (!option.startsWith('-')) break
+        if (name === 'command' && (option === '-v' || option === '-V')) return -1
+        // `env -S` splits its operand into the command and its arguments. A multi-word operand
+        // must be tokenized by ghApiArgumentStart; with a one-word operand, outer tokens still
+        // provide the command's arguments.
+        if (name === 'env' && (option === '-S' || option === '--split-string')) {
+          const splitOperand = segment[i + 1]?.raw || ''
+          return /\s/.test(removeQuotes(splitOperand)) ? i : i + 1
+        }
+        // GNU env also accepts its split string attached to the option. Return the option word so
+        // ghApiArgumentStart can tokenize its value into the effective command and arguments.
+        if (name === 'env' && /^(?:--split-string=|-S.+)/.test(option)) return i
+        i += wrapperOptionConsumesNext(name, option) ? 2 : 1
+      }
+      continue
+    }
+    return i
+  }
+  return -1
+}
+
+const GH_OPTIONS_WITH_ARGUMENTS = new Set(['--hostname', '--repo', '-R'])
+
+// `gh` accepts global options before its subcommand (`gh --hostname github.com api …`). Keep this
+// deliberately small and explicit: these are the global options that consume the next shell word,
+// while other flags can be stepped one word at a time until the `api` subcommand is found.
+function ghApiArgumentStart(segment) {
+  const at = effectiveCommandWordIndex(segment)
+  if (at === -1) return null
+
+  const effectiveWord = removeQuotes(segment[at].raw)
+  let splitString = null
+  if (effectiveWord === '-S' || effectiveWord === '--split-string') {
+    splitString = segment[at + 1]?.raw
+  } else {
+    const attached = /^(?:--split-string=|-S)(.+)$/.exec(segment[at].raw)
+    if (attached) splitString = attached[1]
+  }
+  if (splitString) {
+    const splitTokens = tokenizeShellLine(removeQuotes(splitString), {
+      quote: null,
+      substDepth: 0,
+      substQuote: null,
+      backtick: false,
+      paramDepth: 0,
+    })
+    const splitGhApi = ghApiArgumentStart(splitTokens)
+    if (!splitGhApi) return null
+    return {
+      ...splitGhApi,
+      // Quotes inside the split string are parsed by env, not the outer shell. An inner single
+      // quote therefore cannot suppress a substitution that the outer double-quoted operand has
+      // already evaluated.
+      splitStringInterpolation:
+        splitGhApi.splitStringInterpolation || hasActiveShellInterpolation(splitString),
+    }
+  }
+  if (effectiveWord.split('/').pop() !== 'gh') return null
+
+  for (let i = at + 1; i < segment.length; i += 1) {
+    const option = removeQuotes(segment[i].raw)
+    if (option === 'api') return { segment, argsAt: i + 1 }
+    if (!option.startsWith('-') || option === '--') return null
+    if (GH_OPTIONS_WITH_ARGUMENTS.has(option)) {
+      i += 1
+      continue
+    }
+    if (/^(?:--hostname|--repo)=/.test(option) || /^-R.+/.test(option)) continue
+  }
+  return null
+}
+
+// `gh api` accepts `-i` (include) alongside `-f`/`-F`, including the compact
+// `-ifbody=…` spelling. Keep the accepted prefix intentionally narrow: `i` is
+// the API subcommand's boolean short option, whereas an arbitrary short-option
+// cluster could put an argument-taking flag before `f` and make its suffix an
+// argument rather than a body field.
+function ghClusteredBodyField(option) {
+  return /^-i+([fF])(?:(body=.*))?$/.exec(option)
+}
+
+// `gh api -F body=@- <file` receives its body from the redirected file rather than a heredoc.
+// Return the shell word naming that file so the file-body checker can trace it back to its producer.
+function stdinRedirectionSource(segment) {
+  for (let i = 0; i < segment.length; i += 1) {
+    const raw = segment[i].raw
+    const attached = /^(?:0)?<(?!(?:<|\())(.+)$/.exec(raw)
+    if (attached) return attached[1]
+    if (/^(?:0)?<$/.test(raw)) return segment[i + 1]?.raw ?? null
+  }
+  return null
+}
+
+// A `<<` only supplies stdin to the command in its own command segment, and
+// only when it redirects fd 0 (implicit or explicit). A heredoc on `cat` in
+// `cat <<EOF; gh api … body=@-` — or `3<<EOF` on gh itself — must not make the
+// gh stdin-body form unsafe.
+function segmentHasStdinHeredoc(segment) {
+  return segment.some(({ raw, operator }) => !operator && /^(?:0)?<<-?(?!<)/.test(raw))
+}
+
 /**
  * Report `rm`/`find` invocations carrying more than one UNQUOTED glob. Returns
  * [{ lineOffset, command, globs }] with `lineOffset` the 0-based index of the first physical line
@@ -1483,6 +1675,513 @@ export function findMultiGlobRemovals(body) {
   return findings
 }
 
+// True when a backtick, `$(`, or process substitution remains active after shell quoting.
+// Single/ANSI-C quotes and an escaping backslash make those bytes literal. Double quotes still
+// allow backticks and `$()`, but leave `<()` / `>()` as literal text.
+function hasActiveShellInterpolation(raw) {
+  let quote = null
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i]
+    if (quote === 'single') {
+      if (char === "'") quote = null
+      continue
+    }
+    if (quote === 'ansi') {
+      if (char === '\\') i += 1
+      else if (char === "'") quote = null
+      continue
+    }
+    if (char === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === 'double') {
+      if (char === '"') quote = null
+      else if (char === '`' || (char === '$' && raw[i + 1] === '(')) return true
+      continue
+    }
+    if (char === "'") quote = 'single'
+    else if (char === '$' && raw[i + 1] === "'") {
+      quote = 'ansi'
+      i += 1
+    } else if (char === '"') quote = 'double'
+    else if (
+      char === '`' ||
+      (char === '$' && raw[i + 1] === '(') ||
+      ((char === '<' || char === '>') && raw[i + 1] === '(')
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Report unsafe inline `gh api` body fields as [{ lineOffset, option }]. Markdown containing a
+ * backtick or `$(...)` must reach GitHub through a file (or shell-literal quotes), never expansion.
+ * `-f`/`--raw-field` do not dereference `@file`, so reject that form too.
+ */
+export function findUnsafeGhBody(body) {
+  const findings = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset) => {
+    let segment = []
+    let pipedStdinHeredoc = false
+    const segments = []
+    const addSegment = () => {
+      const stdinHeredoc = pipedStdinHeredoc || segmentHasStdinHeredoc(segment)
+      segments.push({ segment, stdinHeredoc })
+      pipedStdinHeredoc = stdinHeredoc
+    }
+    for (const token of tokens) {
+      if (token.operator) {
+        // `>|` is noclobber redirection, not a pipeline. The tokenizer keeps shell operators
+        // deliberately small and emits its `|` separately, so restore the compound redirection.
+        if (token.raw === '|' && segment.at(-1)?.raw === '>') {
+          segment.at(-1).raw = '>|'
+          continue
+        }
+        addSegment()
+        segment = []
+        if (token.raw !== '|') {
+          pipedStdinHeredoc = false
+        }
+      } else {
+        segment.push(token)
+      }
+    }
+    addSegment()
+
+    for (const { segment, stdinHeredoc } of segments) {
+      const ghApi = ghApiArgumentStart(segment)
+      if (!ghApi) continue
+      for (let i = ghApi.argsAt; i < ghApi.segment.length; i++) {
+        const rawOption = ghApi.segment[i].raw
+        const option = removeQuotes(rawOption)
+        let field = null
+        let normalizedOption = null
+        let combinedField = false
+        let combinedPrefix = null
+        if (
+          option === '-f' ||
+          option === '-F' ||
+          option === '--field' ||
+          option === '--raw-field'
+        ) {
+          field = ghApi.segment[++i]?.raw
+          normalizedOption = option
+        } else {
+          const combined =
+            /^(--field|--raw-field)=(body=.*)$/.exec(option) || /^(-f|-F)=?(body=.*)$/.exec(option)
+          if (combined) {
+            normalizedOption = combined[1]
+            field = rawOption
+            combinedField = true
+            combinedPrefix = /^(?:--field|--raw-field|-[fF])=?/
+          } else {
+            const clustered = ghClusteredBodyField(option)
+            if (!clustered) continue
+            normalizedOption = `-${clustered[1]}`
+            if (clustered[2]) {
+              field = rawOption
+              combinedField = true
+              combinedPrefix = /^-i+[fF]/
+            } else {
+              field = ghApi.segment[++i]?.raw
+            }
+          }
+        }
+        if (!field) continue
+        const normalizedField = removeQuotes(field)
+        const normalizedBodyField = combinedField
+          ? normalizedField.replace(combinedPrefix, '')
+          : normalizedField
+        if (
+          (combinedField || normalizedField.startsWith('body=')) &&
+          (hasActiveShellInterpolation(field) || ghApi.splitStringInterpolation)
+        ) {
+          findings.push({ lineOffset, option: normalizedOption })
+        }
+        if (
+          (normalizedOption === '-f' || normalizedOption === '--raw-field') &&
+          normalizedBodyField.startsWith('body=@')
+        ) {
+          findings.push({ lineOffset, option: normalizedOption, reason: 'raw-file' })
+        }
+        if (
+          (normalizedOption === '-F' || normalizedOption === '--field') &&
+          normalizedBodyField === 'body=@-' &&
+          stdinHeredoc
+        ) {
+          findings.push({ lineOffset, option: normalizedOption })
+        }
+      }
+    }
+
+    // Substitutions are opaque words to the outer command, but their contents are command lists
+    // with their own `gh api` invocations. The outer line offset is the first physical line of the
+    // accumulated command, and the recursive result is relative to the substitution body.
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findUnsafeGhBody(inner)) {
+          findings.push({ ...nested, lineOffset: lineOffset + nested.lineOffset })
+        }
+      }
+    }
+  }
+
+  // Preserve a physical newline inside an open shell word. Tokenizing each line separately would
+  // split a multi-line quoted body into unrelated tokens and hide substitutions after line one.
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(text, state)
+    if (pending) {
+      pending.text += `\n${text}`
+    } else if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) {
+      pending = { text, lineOffset }
+    }
+
+    if (pending) {
+      if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+      const completeState = {
+        quote: null,
+        substDepth: 0,
+        substQuote: null,
+        backtick: false,
+        paramDepth: 0,
+      }
+      analyze(tokenizeShellLine(pending.text, completeState), pending.lineOffset)
+      pending = null
+    } else {
+      analyze(tokens, lineOffset)
+    }
+  }
+  if (pending) {
+    const pendingState = {
+      quote: null,
+      substDepth: 0,
+      substQuote: null,
+      backtick: false,
+      paramDepth: 0,
+    }
+    analyze(tokenizeShellLine(pending.text, pendingState), pending.lineOffset)
+  }
+  return findings
+}
+
+/**
+ * Report heredocs that write a file later supplied as `gh api -F body=@...`.
+ *
+ * `@file` protects GitHub submission, not the command that produced the file: an unquoted
+ * heredoc expands Markdown's backticks and `$(...)`, while any fixed delimiter can collide with
+ * a line in the reply. Restrict this to files actually used as a `gh api` body file so ordinary
+ * shell documentation keeps its existing heredoc affordances.
+ */
+export function findUnsafeGhFileBodyWrites(body) {
+  const bodyFiles = new Map()
+  const addBodyFile = (bodyFile) => {
+    const key = bodyFile.variable ? `variable:${bodyFile.variable}` : `path:${bodyFile.path}`
+    bodyFiles.set(key, bodyFile)
+  }
+  const scan = (source) => {
+    const scanState = {
+      quote: null,
+      substDepth: 0,
+      substQuote: null,
+      backtick: false,
+      paramDepth: 0,
+    }
+
+    for (const { text } of joinContinuations(maskHeredocBodies(source.split('\n')))) {
+      const tokens = tokenizeShellLine(text, scanState)
+      collectBodyFiles(tokens)
+    }
+  }
+
+  const collectBodyFiles = (tokens) => {
+    let segment = []
+    const segments = []
+    for (const token of tokens) {
+      if (token.operator) {
+        segments.push(segment)
+        segment = []
+      } else {
+        segment.push(token)
+      }
+    }
+    segments.push(segment)
+
+    for (const segment of segments) {
+      const ghApi = ghApiArgumentStart(segment)
+      if (!ghApi) continue
+      for (let i = ghApi.argsAt; i < ghApi.segment.length; i++) {
+        const option = removeQuotes(ghApi.segment[i].raw)
+        let field = null
+        let acceptsFile = false
+        if (
+          option === '-f' ||
+          option === '-F' ||
+          option === '--field' ||
+          option === '--raw-field'
+        ) {
+          field = ghApi.segment[++i]?.raw
+          acceptsFile = option === '-F' || option === '--field'
+        } else {
+          const combined =
+            /^(--field|--raw-field)=(body=@.+)$/.exec(option) ||
+            /^(-f|-F)=?(body=@.+)$/.exec(option)
+          if (combined) {
+            acceptsFile = combined[1] === '--field' || combined[1] === '-F'
+            field = combined[2]
+          } else {
+            const clustered = ghClusteredBodyField(option)
+            if (clustered) {
+              acceptsFile = clustered[1] === 'F'
+              field = clustered[2] || ghApi.segment[++i]?.raw
+            }
+          }
+        }
+        if (!acceptsFile || !field) continue
+        const normalizedField = removeQuotes(field).replace(
+          /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+          (_match, variable) => `$${variable}`,
+        )
+        const stdinSource =
+          normalizedField === 'body=@-' ? stdinRedirectionSource(ghApi.segment) : null
+        const bodySource = stdinSource ? `body=@${removeQuotes(stdinSource)}` : normalizedField
+        const match = /^body=@\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(bodySource)
+        if (match) {
+          addBodyFile({ variable: match[1] })
+          continue
+        }
+        // Quotes are removed before comparing a shell word to its destination, so a quoted
+        // pathname may contain spaces or simple variable expansions. Command substitutions stay
+        // excluded because their runtime path cannot be correlated statically.
+        const pathname =
+          /^body=@((?:[^$`]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^$`{}]*)?\})+)$/.exec(
+            bodySource,
+          )
+        if (pathname) addBodyFile({ path: pathname[1] })
+      }
+    }
+
+    // Command substitutions are opaque to their enclosing command, but they can contain an
+    // independent `gh api -F body=@...` invocation. Scan them with their own shell state so a
+    // heredoc producer elsewhere in the fenced block is associated with that body file too.
+    for (const token of tokens) {
+      for (const inner of token.subs || []) scan(inner)
+    }
+  }
+
+  scan(body)
+
+  // A heredoc only produces the output of its own command, or of a command later in the same
+  // pipeline. `cat <<EOF; printf ... >"$REPLY_BODY"` is safe: the later redirection is a separate
+  // command, even though both tokens share a physical line. Conversely, keep `cat <<EOF | tee
+  // "$REPLY_BODY"` unsafe because the pipeline carries the heredoc's output into the body file.
+  const pipelineGroups = (tokens) => {
+    const groups = []
+    let group = []
+    let segment = []
+    for (const token of tokens) {
+      if (!token.operator) {
+        segment.push(token)
+        continue
+      }
+      // See the matching normalization in `findUnsafeGhBody`: `>|` is a redirection, not a pipe.
+      if (token.raw === '|' && segment.at(-1)?.raw === '>') {
+        segment.at(-1).raw = '>|'
+        continue
+      }
+      group.push(segment)
+      segment = []
+      if (token.raw !== '|') {
+        groups.push(group)
+        group = []
+      }
+    }
+    group.push(segment)
+    groups.push(group)
+    return groups
+  }
+
+  const findings = []
+  const teeWritesBodyFile = (segment, bodyFile) => {
+    const commandAt = effectiveCommandWordIndex(segment)
+    if (commandAt === -1 || removeQuotes(segment[commandAt].raw).split('/').pop() !== 'tee') {
+      return false
+    }
+
+    let options = true
+    for (let i = commandAt + 1; i < segment.length; i += 1) {
+      const destination = removeQuotes(segment[i].raw)
+      if (options && destination === '--') {
+        options = false
+        continue
+      }
+      if (options && destination.startsWith('-')) continue
+      if (
+        bodyFile.variable ? destination === `$${bodyFile.variable}` : destination === bodyFile.path
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+  const ddWritesBodyFile = (segment, bodyFile) => {
+    const commandAt = effectiveCommandWordIndex(segment)
+    if (commandAt === -1 || removeQuotes(segment[commandAt].raw).split('/').pop() !== 'dd') {
+      return false
+    }
+
+    for (let i = commandAt + 1; i < segment.length; i += 1) {
+      const match = /^of=(.*)$/.exec(removeQuotes(segment[i].raw))
+      if (!match) continue
+      const destination = match[1]
+      if (
+        bodyFile.variable ? destination === `$${bodyFile.variable}` : destination === bodyFile.path
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+  // Compound-command groups can span logical lines. Keep their state here rather than recreating
+  // it for each line: an unquoted heredoc inside `{ ... }` or `( ... )` still produces the file
+  // when the closing group redirects to it later. Track the heredoc line so a finding points to
+  // the unsafe producer, not its redirection.
+  const collectUnsafeWrites = (source, parentLineOffset = 0) => {
+    const compoundGroups = []
+    const redirectedCompoundGroups = (tokens, lineOffset) => {
+      const redirected = []
+      for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i]
+        const atCommandBoundary =
+          i === 0 || tokens[i - 1].operator || ['then', 'else', 'do'].includes(tokens[i - 1].raw)
+        const groupOpen =
+          (!token.operator && token.raw === '{') ||
+          (token.operator && token.raw === '(') ||
+          (!token.operator && token.raw === 'if' && atCommandBoundary)
+        const groupClose =
+          (!token.operator && token.raw === '}') ||
+          (token.operator && token.raw === ')') ||
+          (!token.operator && token.raw === 'fi' && atCommandBoundary)
+        if (groupOpen) {
+          compoundGroups.push({
+            close: token.raw === '{' ? '}' : token.raw === 'if' ? 'fi' : ')',
+            heredocLineOffset: null,
+          })
+          continue
+        }
+        if (!token.operator && segmentHasStdinHeredoc([token])) {
+          for (const group of compoundGroups) group.heredocLineOffset ??= lineOffset
+          continue
+        }
+        if (groupClose && compoundGroups.length > 0 && compoundGroups.at(-1).close === token.raw) {
+          const group = compoundGroups.pop()
+          if (group.heredocLineOffset === null) continue
+          const downstream = []
+          for (let j = i + 1; j < tokens.length; j += 1) {
+            if (tokens[j].operator && tokens[j].raw !== '|') break
+            downstream.push(tokens[j])
+          }
+          redirected.push({
+            lineOffset: group.heredocLineOffset,
+            downstream,
+          })
+        }
+      }
+      return redirected
+    }
+    const tokenState = {
+      quote: null,
+      substDepth: 0,
+      substQuote: null,
+      backtick: false,
+      paramDepth: 0,
+    }
+    let substitutionStartLineOffset = null
+    for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(source.split('\n')))) {
+      const absoluteLineOffset = parentLineOffset + lineOffset
+      const startsSubstitution = tokenState.substDepth === 0
+      const normalizedText = text.replace(
+        /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+        (_match, variable) => `$${variable}`,
+      )
+      const normalizedTokens = tokenizeShellLine(normalizedText, tokenState)
+      if (startsSubstitution && tokenState.substDepth > 0) {
+        substitutionStartLineOffset = absoluteLineOffset
+      }
+      const redirectedGroups = redirectedCompoundGroups(normalizedTokens, absoluteLineOffset)
+      for (const bodyFile of bodyFiles.values()) {
+        const target = bodyFile.variable
+          ? new RegExp(
+              String.raw`>\|?\s*(?:"\$${bodyFile.variable}"|\$${bodyFile.variable})(?=\s|$)`,
+            )
+          : new RegExp(
+              String.raw`>\|?\s*["']*${bodyFile.path
+                .split('')
+                .map((character) => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .join(String.raw`["']*`)}["']*(?=\s|$)`,
+            )
+        for (const group of pipelineGroups(normalizedTokens)) {
+          // A brace group may carry a heredoc from an earlier logical line. Its closing redirection
+          // has no local heredoc token, but `redirectedGroups` has already tied it to that producer.
+          const heredocAt = group.findIndex(segmentHasStdinHeredoc)
+          if (heredocAt === -1 && redirectedGroups.length === 0) continue
+          // Pipelines only flow left to right. A destination before the heredoc cannot receive its
+          // expansion, while a redirection or `tee` in the heredoc's command or a later one can.
+          const downstream = heredocAt === -1 ? [] : group.slice(heredocAt)
+          const downstreamText = downstream
+            .flat()
+            .map(({ raw }) => raw)
+            .join(' ')
+          const redirectedGroup = redirectedGroups.find((group) => {
+            const downstreamText = group.downstream.map(({ raw }) => raw).join(' ')
+            return (
+              target.test(downstreamText) ||
+              pipelineGroups(group.downstream).some((pipeline) =>
+                pipeline.some(
+                  (segment) =>
+                    segment.length > 0 &&
+                    (teeWritesBodyFile(segment, bodyFile) || ddWritesBodyFile(segment, bodyFile)),
+                ),
+              )
+            )
+          })
+          if (
+            (heredocAt !== -1 &&
+              (target.test(downstreamText) ||
+                downstream.some(
+                  (segment) =>
+                    teeWritesBodyFile(segment, bodyFile) || ddWritesBodyFile(segment, bodyFile),
+                ))) ||
+            redirectedGroup
+          ) {
+            findings.push({
+              lineOffset: redirectedGroup?.lineOffset ?? absoluteLineOffset,
+              ...bodyFile,
+            })
+            break
+          }
+        }
+      }
+
+      // A command substitution has its own command list and can write a body file through an
+      // unquoted heredoc. Analyze it as a producer too, not only as a `gh api` consumer.
+      for (const token of normalizedTokens) {
+        for (const inner of token.subs || []) {
+          collectUnsafeWrites(inner, substitutionStartLineOffset ?? absoluteLineOffset)
+        }
+      }
+      if (tokenState.substDepth === 0) substitutionStartLineOffset = null
+    }
+  }
+  collectUnsafeWrites(body)
+  return findings
+}
+
 /** Every `**\/*.md` under a root. Strictly broader than a SKILL.md/references shape restriction. */
 export function findSkillMarkdownFiles(root, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -1534,7 +2233,8 @@ function makeBashRunner(tmpDir) {
 
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
- * `unterminated` / `syntax` / `multi-glob`, plus `missing-bash` when the gate fails closed.
+ * `unterminated` / `syntax` / `multi-glob` / `gh-body-interpolation` /
+ * `gh-body-file-interpolation`, plus `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -1583,6 +2283,28 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + glob.lineOffset,
             kind: 'multi-glob',
             message: `${glob.command} carries ${glob.globs.length} unquoted globs on one line (${glob.globs.join(' ')}) — an unmatched glob aborts the whole line under zsh/fish, silently skipping the others`,
+          })
+        }
+
+        for (const ghBody of findUnsafeGhBody(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + ghBody.lineOffset,
+            kind: 'gh-body-interpolation',
+            message:
+              ghBody.reason === 'raw-file'
+                ? `gh api ${ghBody.option} does not dereference body=@file; use -F body=@"$REPLY_BODY"`
+                : `gh api ${ghBody.option} body= contains shell-interpolated Markdown; use a delimiter-free literal temp-file write and -F body=@"$REPLY_BODY"`,
+          })
+        }
+
+        for (const fileWrite of findUnsafeGhFileBodyWrites(block.body)) {
+          const fileLabel = fileWrite.variable ? `$${fileWrite.variable}` : fileWrite.path
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + fileWrite.lineOffset,
+            kind: 'gh-body-file-interpolation',
+            message: `body file ${fileLabel} is written with a heredoc; use a delimiter-free literal write before -F body=@"${fileLabel}"`,
           })
         }
 

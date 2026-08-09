@@ -834,3 +834,126 @@ func TestSkillToolExtensionDispatchesDetection(t *testing.T) {
 		})
 	}
 }
+
+// BOS-758: Phase R must dispatch its discovered round descriptors CONCURRENTLY.
+//
+// A round extension is a read-only whole-branch reviewer with its own `outPath`, so N rounds
+// dispatched one at a time cost the SUM of every reviewer instead of the slowest — minutes of
+// serial reviewer time before any fix or gate runs, multiplied by the round cap. Phase 1 already
+// dispatches the same class of read-only reviewer "in parallel (one message, multiple `Task`
+// calls)", which is the precedent this gate holds Phase R to.
+//
+// The gate is scoped to the Phase R Tier-1 passage rather than the whole file because
+// `boss-review` carries a SECOND "Tier 1" heading (the Phase 1 bound-lens site), and a file-wide
+// search for "in parallel" would be satisfied by Phase 1's own sentence while Phase R stayed
+// serial.
+var phaseRTier1Heading = regexp.MustCompile(`(?m)^(#{2,6})\s+Tier 1 — repo-local round extensions\s*$`)
+
+// phaseRRoundDispatchSerial matches wording that makes `(order, name)` a DISPATCH-SEQUENCING
+// instruction, or otherwise says the rounds run one after another. The first alternative is the
+// literal pre-BOS-758 sentence ("dispatch each descriptor in ascending `(order, name)` order")
+// generalised over the noun, so restoring it under a different noun is caught too.
+// The alternation is deliberately wider than the shapes seen so far: a reviewer falsified an
+// earlier cut by rewriting the passage as "work through the descriptors one by one, awaiting each
+// before starting the next", which every then-listed alternative missed while a Phase-1-referencing
+// parenthetical supplied the positive tokens. Serial dispatch has many idiomatic spellings, so
+// prefer over-matching here — a false positive is a wording nudge, a miss ships the bug.
+var phaseRRoundDispatchSerial = regexp.MustCompile(`(?i)dispatch(?:es|ing)?\s+(?:each|every)(?:\s+\S+){0,4}\s+in\s+ascending|\bone at a time\b|\bone-at-a-time\b|\bone by one\b|\bone-by-one\b|\bsequential(?:ly)?\b|\bserial(?:ly)?\b|\bin turn\b|\bsingly\b|\bawait(?:ing)? each\b|\bbefore starting the next\b|\bbefore the next one\b`)
+
+// phaseRRoundDispatchNegated matches the SANCTIONED negated forms — "no longer one at a time",
+// "never sequentially", "rather than serially" — which describe what the passage stopped doing.
+// Over-matching is the right default for the detector above, but not at the cost of forbidding the
+// clearest way to document the change: without this the gate fires on a correct passage and its
+// message ("still instructs serial round dispatch") accuses the author of the opposite of what they
+// wrote. Strip these first, exactly as the sibling .mjs coverage gate drops its sanctioned
+// "rather than appending" before rejecting a bare "append".
+// The negator must sit IMMEDIATELY before the serial term. An earlier cut allowed up to two words
+// between them without checking what was being negated, which stripped "instead of parallel
+// dispatch one at a time" and "rather than parallel run one at a time" — genuinely serial
+// instructions that then passed the detector silently. Exempting a phrase must never be able to
+// exempt the bug it contains.
+var phaseRRoundDispatchNegated = regexp.MustCompile(`(?i)\b(?:never|not|no longer|rather than|instead of)\s+(?:sequential(?:ly)?|serial(?:ly)?|one at a time|one-at-a-time|one by one|one-by-one|singly|in turn)\b`)
+
+// phaseRRoundDispatchGoverns requires the parallel instruction to GOVERN the descriptors rather
+// than merely appear in the passage. Without it the gate is satisfied by any nearby mention of
+// parallelism — including a parenthetical that contrasts Phase 1's parallel lenses while telling
+// the reader to take rounds singly, which is the mutant that defeated the token-only form.
+var phaseRRoundDispatchGoverns = regexp.MustCompile(`(?i)dispatch\s+\*\*every\*\*\s+discovered\s+round\s+descriptor\s+\*\*in\s+parallel\*\*`)
+
+// phaseRTier1Passage returns the Tier-1 round-extension section of a `boss-review` payload, with
+// whitespace collapsed so a prose gate pins words rather than the line breaks prettier chose. The
+// section ends at the next heading of the same or a higher level, so *promoting* Tier 2 cannot
+// escape the window; demoting it below `###` would widen it (past Tier 2 and Tier 3 to the next
+// `##`), which loosens the positive tokens rather than hiding a regression.
+func phaseRTier1Passage(t *testing.T, label, doc string) string {
+	t.Helper()
+
+	loc := phaseRTier1Heading.FindStringSubmatchIndex(doc)
+	if loc == nil {
+		t.Fatalf("%s: no `Tier 1 — repo-local round extensions` heading — the Phase R round-dispatch passage moved or was renamed; re-point this gate rather than deleting it", label)
+	}
+	level := loc[3] - loc[2]
+	section := doc[loc[1]:]
+	sameOrHigher := regexp.MustCompile(fmt.Sprintf(`(?m)^#{1,%d} `, level))
+	if next := sameOrHigher.FindStringIndex(section); next != nil {
+		section = section[:next[0]]
+	}
+	return whitespaceRun.ReplaceAllString(section, " ")
+}
+
+// TestPublishedCoresDispatchRoundExtensionsInParallel pins BOS-758 in both shipped payloads: the
+// Phase R Tier-1 passage must instruct a concurrent dispatch, must say the `(order, name)` sort
+// survives only for post-return ledger/report assembly, and must keep every load-bearing clause
+// that concurrency depends on — per-descriptor `outPath`s (no two rounds share a file), the
+// awaited/never-backgrounded rule (parallel is several awaited calls in one message, NOT
+// backgrounding), and the per-extension timeout that bounds a hung round.
+func TestPublishedCoresDispatchRoundExtensionsInParallel(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		for _, rel := range bodyFilesFor("boss-review") {
+			path := filepath.Join("skills", "boss-review", rel)
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				t.Fatalf("read %s %s: %v", label, path, err)
+			}
+			passage := phaseRTier1Passage(t, fmt.Sprintf("%s %s", label, path), string(data))
+
+			for _, want := range []struct{ token, why string }{
+				{"in parallel", "the rounds must be dispatched concurrently, as Phase 1 already dispatches its lenses"},
+				{"one message, multiple `Task` calls", "parallel must be spelled out as the Phase 1 mechanism, not left to interpretation"},
+				{"after the dispatches return", "the `(order, name)` sort must be scoped to post-return assembly"},
+				{"`(order, name)`", "the deterministic ledger/report ordering must still be named"},
+				// Load-bearing clauses concurrency depends on. Each is counted elsewhere as a
+				// floor, but a rewrite of THIS paragraph is exactly how one gets dropped.
+				{"`skillPath`", "the path-load mechanism must survive the rewrite"},
+				{"resolve from `dir`", "relative extension resources must still resolve from the descriptor directory"},
+				{"`run_in_background`", "parallel dispatch must not be mistaken for backgrounding"},
+				{"BOSS_SKILL_EXTENSION_TIMEOUT_MS", "each concurrent round must stay individually bounded"},
+				{"findings-round-<extension-name>.json", "per-descriptor outPaths are what make concurrent rounds safe"},
+				// The determinism GUARANTEE is the merge/ledger instruction, not the claim in the
+				// dispatch paragraph. Those two live 35 lines apart in the same section, and the
+				// claim's own tokens (`(order, name)`, "after the dispatches return") stay present
+				// when the instruction is reverted to the completion-ordered "record … and
+				// continue" — so pinning the claim alone let the real regression through.
+				{"do not merge or write the ledger as they arrive", "merging as each round returns is completion-ordered, the nondeterminism the claim above rules out"},
+				// No leading "once": this token starts a sentence in the shipped prose, and
+				// strings.Contains is case-sensitive.
+				{"**all** rounds have returned", "the ordered merge/ledger pass is what actually makes the pool and evidence rows byte-stable"},
+			} {
+				if !strings.Contains(passage, want.token) {
+					t.Errorf("%s %s: Phase R Tier 1 must contain %q: %s", label, path, want.token, want.why)
+				}
+			}
+
+			if !phaseRRoundDispatchGoverns.MatchString(passage) {
+				t.Errorf("%s %s: Phase R Tier 1 must instruct dispatching **every** discovered round descriptor **in parallel** — the tokens above can all be supplied by prose that merely mentions parallelism while still dispatching the rounds one by one", label, path)
+			}
+
+			// Drop the sanctioned negated forms before looking for a serial instruction, so
+			// "no longer one at a time" reads as the correction it is rather than the bug.
+			asserted := phaseRRoundDispatchNegated.ReplaceAllString(passage, " ")
+			if hit := phaseRRoundDispatchSerial.FindString(asserted); hit != "" {
+				t.Errorf("%s %s: Phase R Tier 1 still instructs serial round dispatch (%q) — N read-only rounds must cost the slowest, not the sum", label, path, hit)
+			}
+		}
+	}
+}

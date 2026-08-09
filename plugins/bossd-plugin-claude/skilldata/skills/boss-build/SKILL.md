@@ -169,10 +169,15 @@ git branch --show-current
 command -v git; command -v gh; gh auth status
 ```
 
-Arm a wall-clock deadline: record the start time, treat ~3 hours as the cap. If exceeded at any phase
-boundary, stop at the nearest honest terminal state. Capture the baseline and branch facts:
+Arm one wall-clock deadline during Preflight and preserve that absolute value for the whole run. Treat
+~3 hours as the cap. If it is exceeded at any phase boundary, stop at the nearest honest terminal
+state. Capture the baseline and branch facts:
 
 ```bash
+PREFLIGHT_STARTED_AT="$(date +%s)"
+PREFLIGHT_DEADLINE=$(( PREFLIGHT_STARTED_AT + 3 * 60 * 60 ))
+export PREFLIGHT_DEADLINE
+
 START_SHA="$(git rev-parse HEAD)"
 SESSION_BRANCH="$(git branch --show-current)"
 BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
@@ -884,9 +889,44 @@ export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX RUN_SENTINEL RUN_ID RUN_DIR DISPATCH_
 model — review is the canonical judgment step and also fixes must-fix findings). It runs the full
 protocol in **[`references/review-stack.md`](references/review-stack.md)**: the bounded whole-branch
 loop (cap + guard), the Step 6b outside-voice / cross-model Codex pass, and the Step 6c `boss-review`
-pass — fixing must-fix findings and committing tagless. Pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`,
-the plan/acceptance-criteria, (on a resume) the Step 4.5 map, **and `RUN_DIR` / `RUN_ID`**. Its
-contract: as its **last action**, write its terminal sentinel line to the run file —
+pass — fixing must-fix findings and committing tagless. First take a **fresh** whole-minute reading
+from the absolute deadline, then pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`, the
+plan/acceptance-criteria, (on a resume) the Step 4.5 map, `RUN_DIR` / `RUN_ID`, **and
+`REMAINING_MINUTES`**:
+
+```bash
+NOW="$(date +%s)"
+REMAINING_MINUTES=$(( (PREFLIGHT_DEADLINE - NOW) / 60 ))
+export REMAINING_MINUTES
+```
+
+`REMAINING_MINUTES` is whole minutes left against the Preflight deadline, computed by **you** as a
+number, never an instruction to estimate one. The reference picks the review **tier** from it at Step
+6 entry — full, a named degraded tier, or no tier at all — and returns a `## Review coverage` token
+for Step 7. Only
+your context holds that deadline (no env var or file carries it), so omitting it fires the
+reference's absent-input `was not supplied → full tier` fail-safe on **every** dispatched run and the degraded
+tier becomes unreachable.
+
+**Pass the deadline itself too — `PREFLIGHT_DEADLINE`.** `REMAINING_MINUTES` is a snapshot and funds
+one decision, the tier choice. **Every** later gate in the reference — Step 6's per-round leg
+clamps, Step 6b's and Step 6c's — **re-measures** against the Preflight deadline, which a
+subagent cannot do with a deadline it was never handed. So also pass the **absolute** deadline as
+`PREFLIGHT_DEADLINE` — Unix seconds, under **exactly** that name, the one the reference binds; any
+other name leaves those gates reading a name nothing assigned and the cap inert. It is **not**
+`STEP_6C_DEADLINE` (a per-step allowance stamped from it). The reference must use this original
+Preflight value; it must **never** rebuild a deadline from the stale `REMAINING_MINUTES` snapshot,
+which would extend the cap by the time spent before dispatch.
+
+**Apply the tier ladder's budget floor before you dispatch.** Below the degraded tier plus the
+post-review reserve (default **40**; zero/negative included), dispatch **nothing**. Follow
+[`references/review-stack.md`](references/review-stack.md) §BLOCKED-route publication: its
+retry/rebase/rescue procedure must yield `PUSHED=yes` before the generated `capped 1` sentinel;
+`rescue`/`no` report BLOCKED. Publish both tokens, then exit cleanly BLOCKED — never Step 7. Do
+**not** fall through to generic sentinel classification.
+
+**The dispatched stack's contract**: as its **last action**, write its terminal sentinel line to the
+run file —
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
@@ -897,7 +937,8 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
 reached) when it capped with open must-fix.
 
 **What comes back (thin, non-routing).** The subagent RETURNS only the rendered `boss-review` report
-(leading with `<!-- bs-review -->`, for Step 7), the Step 6b `## Cross-model review` outcome token, and
+(leading with `<!-- bs-review -->`, for Step 7), the Step 6b `## Cross-model review` outcome token, the
+`## Review coverage` outcome token, and
 the finding ledger — all **non-routing** (the verdict is read from the run file below). Bulk stays in
 the subagent's context, **NOT pasted back**.
 
@@ -922,9 +963,12 @@ node "$RUN_SENTINEL" cleanup "$RUN_DIR"
 
 - `clean` → proceed to Step 7.
 - `capped` → see the review-stack extension; otherwise record findings and **Stop cleanly** `BLOCKED`.
-- `dispatch-failure` (a **missing/stale** sentinel — the review subagent died or wrote nothing) → the
-  safe non-clean branch: record it in the PR body and go to **Stop cleanly** with `BLOCKED`, **never
-  clean**.
+- `dispatch-failure` (a **missing/stale** sentinel, or one present but unmatchable) → the safe
+  non-clean branch: **Stop cleanly** with `BLOCKED`, **never clean**. The two sub-cases do **not**
+  share a coverage token, and **neither** of them is `none: review stack did not run` — both fire
+  after the stack was entered, so one or more reviewers may already have run — and neither reaches
+  Step 7, the sole place that writes the PR body, so you must publish the tokens yourself. Both are in
+  [`references/review-stack.md`](references/review-stack.md) §BLOCKED-route publication.
 
 Steps 6b and 6c are **non-fatal** — they never flip the terminal state on their own. If the wall-clock
 breaker trips mid-review, flush to `BLOCKED`. If the review-subagent **dispatch itself** fails (a tool
@@ -933,12 +977,24 @@ awaited, non-fatal fallback (it writes the same run-file sentinel).
 
 ## Step 7: PR gate (create/reuse)
 
-After committed work passes review, push the session branch, then **create or reuse** the PR per the
-Step 2.5 mode. Write the body to a temp file **outside** the worktree so it never trips the change
-gate:
+After committed work passes review, first run the **retry/rebase/rescue procedure** in
+[`references/review-stack.md`](references/review-stack.md) §BLOCKED-route publication to persist
+`$SESSION_BRANCH`. It is the required push procedure here too — never replace it with a one-shot
+push. Continue only when it sets `PUSHED=yes`; `PUSHED=rescue` or `PUSHED=no` means the session
+branch cannot safely back a PR, so record the procedure's result and **Stop cleanly** `BLOCKED`.
+
+**`PUSHED=yes` is not proof the reviewed tree is the tree that ships.** That procedure can accept a
+remote tip that merely **contains** `HEAD`, or rebase onto `FETCH_HEAD` — either way the branch
+backing the PR carries commits this run never reviewed, while the body below still reports full
+coverage. Run §Reviewed-tip confirmation in
+[`references/review-stack.md`](references/review-stack.md): capture the reviewed tip before the
+procedure, compare it against the remote tip after, and on any difference either re-run the Step 5
+gates and the Step 6 review against the new tip or **Stop cleanly** `BLOCKED`.
+
+Once `PUSHED=yes` and that comparison matches, **create or reuse** the PR per the Step 2.5 mode.
+Write the body to a temp file **outside** the worktree so it never trips the change gate:
 
 ```bash
-git push -u origin "$SESSION_BRANCH"
 PR_BODY="$(mktemp)"   # populate with the body below; not inside the repo
 ```
 
@@ -964,7 +1020,8 @@ rm -f "$PR_BODY"
 — one per PR: edit the existing marker comment in place on a resume, never stack duplicates. Post the
 Step 6c rendered report when it exists (it carries the marker); when Step 6c was skipped or errored,
 post an honest **fallback note** under the same marker — review ran, why the boss-review pass was
-unavailable, and a pointer to the PR-body `## Cross-model review` section — so every run leaves a
+unavailable, and a pointer to the PR-body `## Review coverage` and `## Cross-model review` sections
+(coverage is the one that explains a reduced or absent pass) — so every run leaves a
 visible review trace. Write the body to a temp file outside the worktree and:
 
 ```bash
@@ -1000,10 +1057,15 @@ Plan: docs/plans/<file>
 
 ## Cross-model review
 <outcome token from Step 6b §4: clean | findings-fixed (per-finding dispositions) | skipped: <reason> | error: <reason>>
+
+## Review coverage
+<review-coverage token: full | full (skipped: <pass list>) | degraded: <reason> (skipped: <pass list>) | none: review stack did not run (<reason>) | none: review verdict unreadable (<reason>) | none: review coverage unknown (<reason>)>
 ```
 
 The `## Cross-model review` section carries the Step 6b §4 outcome token; never omit it (a missing
-section reads as "passed clean" to a reviewer). On a resume, **replace** it rather than appending a
+section reads as "passed clean" to a reviewer). The `## Review coverage` section carries the review
+tier the stack actually ran; never omit it either (a missing section reads as full coverage to a
+reviewer). On a resume, **replace** both rather than appending a
 duplicate. On a resume, regenerate this body from the current done-vs-remaining map (Step 4.5). Do not add
 `please-review` or expose a ready PR before the green/finalize gate.
 

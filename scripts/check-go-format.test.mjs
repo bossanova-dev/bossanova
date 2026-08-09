@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import {
   checkFormat,
   chunk,
+  filterExistingFiles,
   goFormatKey,
   isGeneratedGoPath,
   listUnformatted,
@@ -53,6 +54,19 @@ test('isGeneratedGoPath matches gen/ segments, not gen substrings', () => {
   assert.equal(isGeneratedGoPath('services/bossd/internal/gen/y.go'), true)
   assert.equal(isGeneratedGoPath('services/bossd/generator/z.go'), false)
   assert.equal(isGeneratedGoPath('lib/gendata/w.go'), false)
+})
+
+test('filterExistingFiles excludes tracked files deleted from the worktree', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'go-format-files-'))
+  try {
+    fs.mkdirSync(path.join(dir, 'pkg'))
+    fs.writeFileSync(path.join(dir, 'pkg', 'present.go'), 'package pkg\n')
+    assert.deepEqual(filterExistingFiles(dir, ['pkg/present.go', 'pkg/deleted.go']), [
+      'pkg/present.go',
+    ])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('chunk splits into fixed-size batches', () => {

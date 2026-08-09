@@ -755,6 +755,27 @@ test('resolveTimeoutMs: unset / empty / non-positive / garbage → default 30000
   assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1.5' }), 300000)
 })
 
+test('resolveTimeoutMs: exotic Number() forms the shell gates cannot express → default 300000', () => {
+  // BOS-758 round 3, and the CONTRACT PARITY half of it: claude-review.mjs and codex-review.mjs
+  // document an identical resolveTimeoutMs, so narrowing one without the other is how the two
+  // silently diverge. These forms are all legal Number() input that no POSIX shell glob can match,
+  // and the budget gates that price this timeout are shell — see codex-review-embed.test.mjs.
+  for (const raw of ['1.8e6', '1e3', '0x2710', '0b11', '0o17', '+600000', ' 1800000', '1800000 ']) {
+    assert.equal(
+      resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: raw }),
+      300000,
+      `${JSON.stringify(raw)} is not plain decimal digits and must take the default`,
+    )
+  }
+})
+
+test('resolveTimeoutMs: plain digits stay honored, leading zeros included', () => {
+  // The paired positive, so the gate above cannot be met by a resolver that refuses everything.
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '0600000' }), 600000)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '08' }), 8)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1800000' }), 1800000)
+})
+
 // ---------------------------------------------------------------------------
 // 8. sanitizeOutput — re-exported from the lib (smoke coverage)
 // ---------------------------------------------------------------------------

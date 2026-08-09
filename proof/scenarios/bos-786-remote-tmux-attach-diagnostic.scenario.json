@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "title": "BOS-786 — a failed remote tmux attach prints the fish-safe ssh reproduction command",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_HOST_E2E_ATTACH_DESTINATION": "deploy@build-box.invalid" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "The remote attach error screen carries the same transport wrapper a user can paste to reproduce it",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the seeded remote session board is ready"
+          },
+          "timeoutMs": 15000,
+          "caption": "Boss is in a seeded --host context with a session available to attach."
+        },
+        {
+          "key": "enter",
+          "caption": "Open the remote session's chat picker."
+        },
+        {
+          "waitFor": {
+            "text": "CHAT",
+            "match": "normalized",
+            "label": "the chat picker is rendered before attach"
+          },
+          "timeoutMs": 15000,
+          "caption": "Select the seeded chat to run its remote tmux attach."
+        },
+        {
+          "key": "enter",
+          "caption": "The unreachable fixture host makes the production attach error screen render its reproduction block."
+        },
+        {
+          "waitFor": {
+            "text": "boss attached with:",
+            "match": "normalized",
+            "label": "the attach diagnostic is visible"
+          },
+          "timeoutMs": 15000,
+          "caption": "The error screen exposes the exact remote tmux command instead of a local-only reproduction."
+        },
+        {
+          "expect": [
+            {
+              "text": "ssh -t",
+              "match": "normalized",
+              "label": "the reproduction uses ssh with a tty"
+            },
+            {
+              "text": "sh -c",
+              "match": "normalized",
+              "label": "the login shell hands the tmux payload to sh"
+            },
+            {
+              "text": "tmux -u attach -t",
+              "match": "normalized",
+              "label": "the UTF-8 tmux attach payload is preserved"
+            }
+          ],
+          "caption": "BOS-786: every token needed to reproduce the remote attach is on the error screen."
+        }
+      ]
+    }
+  ]
+}

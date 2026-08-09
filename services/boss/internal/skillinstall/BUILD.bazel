@@ -125,6 +125,7 @@ go_library(
         "skills/boss-plan/toolbox/toolbox-drift.mjs",
         "skills/boss-plan/toolbox/plan-epic-phase25.mjs",
         "skills/boss-build/references/finalize-and-stop.md",
+        "skills/boss-review/toolbox/bs-review-triage.mjs",
     ],
     importpath = "github.com/recurser/boss/internal/skillinstall",
     visibility = ["//services/boss:__subpackages__"],
@@ -133,9 +134,11 @@ go_library(
 go_test(
     name = "skillinstall_test",
     srcs = [
+        "boss_build_skill_test.go",
         "boss_epic_skill_test.go",
         "boss_finalize_skill_test.go",
         "boss_repair_skill_test.go",
+        "boss_review_skill_test.go",
         "boss_skill_test.go",
         "extension_dispatch_test.go",
         "skills_manifest_test.go",

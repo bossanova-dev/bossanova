@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -826,38 +825,21 @@ func TestStartTmuxChat_SeedsFirstChatAgentAccountModel(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChat_PassesMcpConfigPath proves the live spawn wires the
-// per-session boss MCP config: with a trusted `mcp` binary resolvable, the
-// captured request carries an absolute McpConfigPath under the app-data dir
-// (NEVER the worktree), keyed by agent-session id, and the file exists.
-func TestStartTmuxChat_PassesMcpConfigPath(t *testing.T) {
+// TestStartTmuxChat_OmitsAutomaticMcpConfig proves managed chats never inject
+// Boss's MCP configuration. Agents may still use MCP servers their users
+// configure, but bossd must not choose or force an MCP surface for them.
+func TestStartTmuxChat_OmitsAutomaticMcpConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	appData := withTrustedMcpAndAppData(t)
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{})
-	if err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
-	got := h.agentFake.LastBuildInteractiveCommand.GetMcpConfigPath()
-	if got == "" {
-		t.Fatal("BuildInteractiveCommand McpConfigPath is empty; want a generated path")
-	}
-	if !filepath.IsAbs(got) {
-		t.Fatalf("McpConfigPath = %q, want absolute", got)
-	}
-	want := filepath.Join(appData, "mcp-configs", agentSessionID+".json")
-	if got != want {
-		t.Fatalf("McpConfigPath = %q, want %q (under app-data, keyed by id)", got, want)
-	}
-	if strings.Contains(got, h.sessions.sessions["sess-1"].WorktreePath) {
-		t.Fatalf("McpConfigPath must NOT be under the worktree: %q", got)
-	}
-	if _, err := os.Stat(got); err != nil {
-		t.Fatalf("generated mcp config not written: %v", err)
+	if strings.Contains(h.agentFake.LastBuildInteractiveCommand.GetAppendSystemPrompt(), "mcp__boss__") {
+		t.Fatalf("AppendSystemPrompt advertises automatic MCP tools: %q", h.agentFake.LastBuildInteractiveCommand.GetAppendSystemPrompt())
 	}
 }
 
@@ -868,7 +850,6 @@ func TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	withTrustedMcpAndAppData(t)
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "opencode": h.agentFake})
@@ -888,62 +869,9 @@ func TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig(t *testing.T) {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	got := h.agentFake.LastBuildInteractiveCommand
-	if got.GetMcpConfigPath() != "" {
-		t.Fatalf("McpConfigPath = %q, want empty for resumed OpenCode chat", got.GetMcpConfigPath())
-	}
 	if strings.Contains(got.GetAppendSystemPrompt(), "mcp__boss__") {
 		t.Fatalf("AppendSystemPrompt advertises MCP tools for OpenCode: %q", got.GetAppendSystemPrompt())
 	}
-}
-
-// TestStartTmuxChat_NonCronSessionGetsStrictMcpConfig is the Part A behavioural
-// tripwire for BOS-672. Harness sess-1 carries no CronJobID — a non-cron,
-// interactive session — so under the pre-Task-1 code, or under a reintroduced
-// `StrictMcpConfig: isCronSession(sess)` bypass at either of this file's two
-// call sites (StartTmuxChat, sendInputToLiveTmuxChat), the captured request
-// would carry StrictMcpConfig=false here. Task 1 routed StartTmuxChat through
-// StrictMcpConfigForSession, which is now unconditionally true, so a non-cron
-// spawn must get strict mode too. This exercises the real call path for the
-// one site (StartTmuxChat) an existing harness makes cheap to assert against;
-// mcp_config_test.go's source-scanning test covers sendInputToLiveTmuxChat and
-// the internal/server sites this harness cannot reach.
-func TestStartTmuxChat_NonCronSessionGetsStrictMcpConfig(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	if got := h.sessions.sessions["sess-1"].CronJobID; got != nil {
-		t.Fatalf("harness precondition broken: sess-1.CronJobID = %v, want nil (non-cron) for this test to be a genuine tripwire", *got)
-	}
-
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
-		t.Fatalf("StartTmuxChat: %v", err)
-	}
-	if got := h.agentFake.LastBuildInteractiveCommand.GetStrictMcpConfig(); !got {
-		t.Fatalf("BuildInteractiveCommand StrictMcpConfig = %v, want true for a non-cron session (BOS-672: every spawn is strict)", got)
-	}
-}
-
-// withTrustedMcpAndAppData makes ResolveSessionFacts resolve a non-empty McpBin
-// by planting a user-owned (non group/world-writable) `mcp` executable on PATH,
-// and points config at a hermetic temp app-data dir. Returns the app-data dir.
-func withTrustedMcpAndAppData(t *testing.T) string {
-	t.Helper()
-	binDir := t.TempDir()
-	mcpPath := filepath.Join(binDir, "mcp")
-	if err := os.WriteFile(mcpPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake mcp: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	appData := t.TempDir()
-	settings := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(settings, []byte(`{"app_data_dir":`+strconv.Quote(appData)+`}`), 0o600); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
-	t.Setenv("BOSS_SETTINGS_PATH", settings)
-	return appData
 }
 
 func TestStartTmuxChat_HappyPath(t *testing.T) {
@@ -2661,38 +2589,14 @@ func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
 	}
 }
 
-// TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath proves the mention is
-// gated on the config path ACTUALLY written for the spawn, not merely on a
-// resolvable mcp binary: with a trusted mcp binary resolvable (so McpBin != ""),
-// an empty mcpConfigPath (a failed/absent write) must still produce no mention,
-// while a non-empty path produces one. This keeps the prompt from claiming tools
-// claude will not receive (it only gets --mcp-config when the path is non-empty).
-func TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath(t *testing.T) {
-	withTrustedMcpAndAppData(t) // makes ResolveSessionFacts resolve McpBin != ""
+func TestAppendSystemPromptFor_NeverMentionsAutomaticMcp(t *testing.T) {
 	sess := &models.Session{ID: "s1", AgentName: "claude"}
 
-	withPath := AppendSystemPromptFor(sess, "agent-1", "claude", "/data/bossanova/mcp-configs/agent-1.json")
-	if !strings.Contains(withPath, "mcp__boss__") {
-		t.Fatalf("expected mcp__boss__ mention when a config path was written: %q", withPath)
-	}
-	noPath := AppendSystemPromptFor(sess, "agent-1", "claude", "")
-	if strings.Contains(noPath, "mcp__boss__") {
-		t.Fatalf("must NOT mention mcp__boss__ when no config was written, even with McpBin resolvable: %q", noPath)
-	}
-}
-
-// TestBossSessionContext_MentionsMcpWhenAvailable proves the BOS-95 amendment:
-// the injected context advertises mcp__boss__* exactly when a trusted mcp binary
-// is wired (McpBin != ""), and stays silent otherwise so it never claims a
-// capability that is not actually reachable.
-func TestBossSessionContext_MentionsMcpWhenAvailable(t *testing.T) {
-	with := bossSessionContext(SessionFacts{SessionID: "s", McpBin: "/trusted/mcp"})
-	if !strings.Contains(with, "mcp__boss__") {
-		t.Fatalf("expected mcp__boss__ mention when McpBin set: %q", with)
-	}
-	without := bossSessionContext(SessionFacts{SessionID: "s"})
-	if strings.Contains(without, "mcp__boss__") {
-		t.Fatalf("should not mention mcp tools when McpBin empty: %q", without)
+	for _, mcpConfigPath := range []string{"", "/data/bossanova/mcp-configs/agent-1.json"} {
+		prompt := AppendSystemPromptFor(sess, "agent-1", "claude", mcpConfigPath)
+		if strings.Contains(prompt, "mcp__boss__") || strings.Contains(prompt, "BOSS_MCP_BIN") {
+			t.Fatalf("prompt must not mention automatic MCP configuration: %q", prompt)
+		}
 	}
 }
 
@@ -2782,10 +2686,10 @@ func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
 // BossBin present → the identifier list advertises BOSS_BIN and the guidance
 // points at the resolved binary, with no "not available"/`make build` fallback.
 func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
-	got := bossSessionContext(SessionFacts{SessionID: "s", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
+	got := bossSessionContext(SessionFacts{SessionID: "s", BossBin: "/trusted/boss"})
 	// Byte-stable identifier tail from today (regression guard on the resolved case).
-	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an") {
-		t.Fatalf("resolved prompt must advertise BOSS_BIN/BOSS_MCP_BIN in the identifier list: %q", got)
+	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN (context for you, not an") {
+		t.Fatalf("resolved prompt must advertise BOSS_BIN in the identifier list: %q", got)
 	}
 	if !strings.Contains(got, "/trusted/boss env") {
 		t.Fatalf("resolved prompt must point guidance at the resolved binary: %q", got)
@@ -2825,8 +2729,8 @@ func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
 	f := SessionFacts{
 		SessionID: "s", AgentSessionID: "a", RepoID: "r", Agent: "claude",
 		Worktree: "/wt", SettingsPath: "/cfg", Socket: "/sock",
-		BossBin: "/trusted/boss", McpBin: "/trusted/mcp",
-		IsCron: true, IsUnattended: true, CronJobID: "j", CronName: "n",
+		BossBin: "/trusted/boss",
+		IsCron:  true, IsUnattended: true, CronJobID: "j", CronName: "n",
 	}
 	// Behavioral (non-identifier) vars are intentionally never advertised.
 	behavioral := map[string]bool{"BOSS_CRON": true, "BOSS_CRON_JOB_ID": true, "BOSS_CRON_NAME": true}
@@ -2844,13 +2748,12 @@ func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
 	// The two conditional vars must vanish from the prompt when unexported.
 	fNoBins := f
 	fNoBins.BossBin = ""
-	fNoBins.McpBin = ""
 	noBinPrompt := bossSessionContext(fNoBins)
 	if strings.Contains(noBinPrompt, "BOSS_BIN") {
 		t.Errorf("BOSS_BIN advertised when not exported: %q", noBinPrompt)
 	}
-	if strings.Contains(noBinPrompt, "BOSS_MCP_BIN") {
-		t.Errorf("BOSS_MCP_BIN advertised when not exported: %q", noBinPrompt)
+	if strings.Contains(prompt, "BOSS_MCP_BIN") {
+		t.Errorf("BOSS_MCP_BIN advertised despite automatic MCP removal: %q", prompt)
 	}
 }
 

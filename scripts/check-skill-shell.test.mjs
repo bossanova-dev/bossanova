@@ -11,6 +11,8 @@ import {
   SKILL_ROOTS,
   checkSkillShellInRepo,
   extractFencedBlocks,
+  findUnsafeGhFileBodyWrites,
+  findUnsafeGhBody,
   findMultiGlobRemovals,
   findSkillMarkdownFiles,
   findUnterminatedHeredoc,
@@ -31,6 +33,572 @@ function makeRepo(files) {
 }
 
 const claudeSkill = (name) => path.join('.claude', 'skills', name, 'SKILL.md')
+
+test('findUnsafeGhBody rejects interpolated inline gh reply bodies and permits literal or file forms', async () => {
+  assert.equal(
+    findUnsafeGhBody('gh api repos/o/r/pulls/1/comments/2/replies -f body="Fixed: `make test`"')
+      .length,
+    1,
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      String.raw`gh api repos/o/r/pulls/1/comments/2/replies --raw-field body="Fixed: $(make test)"`,
+    ).length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody('echo ok; gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x --field=body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x --raw-field=body=$(make test)`).length, 1)
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=Fixed:<(some-command)').length,
+    1,
+    'input process substitution',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=Fixed:>(some-command)').length,
+    1,
+    'output process substitution',
+  )
+  assert.equal(findUnsafeGhBody('gh api x -f=body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x -fbody="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -Fbody="Fixed: $(make test)"`).length, 1)
+  assert.equal(
+    findUnsafeGhBody('gh api x -ifbody="Fixed: `make test`"').length,
+    1,
+    'clustered -i plus -f',
+  )
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x -iFbody="Fixed: $(make test)"`).length,
+    1,
+    'clustered -i plus -F',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x -if body="Fixed: `make test`"').length,
+    1,
+    'clustered -i plus split -f field',
+  )
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x -iF body="Fixed: $(make test)"`).length,
+    1,
+    'clustered -i plus split -F field',
+  )
+  assert.equal(findUnsafeGhBody('gh api x -f"body=Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x "-fbody=Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -F"body=Fixed: $(make test)"`).length, 1)
+  assert.equal(findUnsafeGhBody('gh api x "--field=body=Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x --raw-field"=body=Fixed: $(make test)"`).length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody(String.raw`gh api x "-f"body=$(make test)`).length, 1)
+  assert.equal(findUnsafeGhBody('/usr/bin/gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody('env -u GH_TOKEN /usr/bin/gh api x -f body="Fixed: `make test`"').length,
+    1,
+  )
+  assert.equal(
+    findUnsafeGhBody('sudo -u root command -p gh api x -f body="Fixed: `make test`"').length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody('sudo -Eu root gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('env -iu GH_TOKEN gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody('env -S gh api x -f body="Fixed: `make test`"').length,
+    1,
+    'env split-string command',
+  )
+  assert.equal(
+    findUnsafeGhBody(`env --split-string="gh api x -f 'body=Fixed: $(date)'"`).length,
+    1,
+    'attached env split-string command',
+  )
+  assert.equal(
+    findUnsafeGhBody(`env -S "gh api x -f 'body=Fixed: $(date)'"`).length,
+    1,
+    'quoted env split-string command',
+  )
+  assert.equal(findUnsafeGhBody(['gh api x -f body="Fixed:', '`make test`"'].join('\n')).length, 1)
+  assert.equal(findUnsafeGhBody('gh api x -F body=@"$REPLY_BODY"`make test`').length, 1)
+  assert.equal(
+    findUnsafeGhBody(['gh api x -F body=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n')).length,
+    1,
+    'stdin body supplied by heredoc',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x -Fbody=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n')).length,
+    1,
+    'combined stdin body option',
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      ['gh --hostname github.com api x -F body=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n'),
+    ).length,
+    1,
+    'inherited gh hostname before stdin body',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh --hostname github.com api x -f body="Fixed: `make test`"').length,
+    1,
+    'inherited gh hostname before inline body',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh -R recurser/bossanova api x -f body="Fixed: `make test`"').length,
+    1,
+    'inherited gh repo before inline body',
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      'gh --repo=recurser/bossanova --hostname github.com api x -f body="Fixed: `make test`"',
+    ).length,
+    1,
+    'multiple inherited gh options before inline body',
+  )
+  assert.deepEqual(
+    findUnsafeGhBody(['cat <<EOF; gh api x -F body=@-', 'literal', 'EOF'].join('\n')),
+    [],
+    'heredoc on another command segment does not supply gh stdin',
+  )
+  assert.equal(
+    findUnsafeGhBody(['cat <<EOF | gh api x -F body=@-', 'Fixed: `make test`', 'EOF'].join('\n'))
+      .length,
+    1,
+    'an upstream pipeline heredoc supplies gh stdin',
+  )
+  assert.deepEqual(
+    findUnsafeGhBody(['gh api x 3<<EOF -F body=@-', 'literal', 'EOF'].join('\n')),
+    [],
+    'non-stdin gh heredoc does not supply @-',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x 0<<EOF -F body=@-', 'literal', 'EOF'].join('\n')).length,
+    1,
+    'explicit stdin gh heredoc remains unsafe',
+  )
+  assert.equal(findUnsafeGhBody('out=$(gh api x -f body="Fixed: `make test`")').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -f body='prefix'$(make test)`).length, 1)
+  assert.equal(findUnsafeGhBody("gh api x -f body='prefix'`make test`").length, 1)
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body='Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f'body=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x '-fbody=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --raw-field'=body=Fixed: $(make test)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x '-f'body='Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -f body="Fixed: \\`make test\\`"'), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --field='body=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body=$'Fixed: `make test` $(date)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --field=$'body=Fixed: `make test` $(date)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body='Fixed: <(some-command)'"), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -f body=Fixed:\\<(some-command)'), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -F body=@"$REPLY_BODY"'), [])
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=@"$REPLY_BODY"').length,
+    1,
+    'raw fields do not dereference @file body values',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x --raw-field body=@/tmp/reply').length,
+    1,
+    'long raw fields do not dereference @file body values',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x -f body=@- <<EOF', 'Fixed: literal', 'EOF'].join('\n')).length,
+    1,
+    'raw stdin-looking values report only as raw fields',
+  )
+  assert.deepEqual(findUnsafeGhBody('gh api x --field body="Fixed: documented behavior"'), [])
+  assert.deepEqual(findUnsafeGhBody('echo gh api x -f body="Fixed: `make test`"'), [])
+
+  const repoRoot = makeRepo({
+    [claudeSkill('unsafe-gh-body')]: md('```bash', 'gh api x -f body="Fixed: `make test`"', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('unsafe-gh-body'), line: 2, kind: 'gh-body-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+
+  const nestedRepoRoot = makeRepo({
+    [claudeSkill('nested-unsafe-gh-body')]: md(
+      '```bash',
+      'out=$(',
+      'gh api x -f body="Fixed: `make test`"',
+      ')',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(nestedRepoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('nested-unsafe-gh-body'), line: 3, kind: 'gh-body-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(nestedRepoRoot, { recursive: true, force: true })
+  }
+})
+
+test('findUnsafeGhFileBodyWrites rejects heredocs for gh @file reply bodies', async () => {
+  const unsafe = [
+    'REPLY_BODY="$(mktemp)"',
+    'cat >"$REPLY_BODY" <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    'gh api x -F body=@"$REPLY_BODY"',
+  ].join('\n')
+  assert.deepEqual(findUnsafeGhFileBodyWrites(unsafe), [{ lineOffset: 1, variable: 'REPLY_BODY' }])
+
+  const quoted = unsafe.replace('<<EOF', "<<'EOF'")
+  assert.deepEqual(findUnsafeGhFileBodyWrites(quoted), [{ lineOffset: 1, variable: 'REPLY_BODY' }])
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('body=@"$REPLY_BODY"', 'body=@"${REPLY_BODY}"')),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'braced body-file variable',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('>"$REPLY_BODY"', '>"${REPLY_BODY}"')),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'braced body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee -a "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee with options remains a body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee /tmp/copy "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee checks every body-file destination',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'cat >|"$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'noclobber output redirection remains a body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'cat <<EOF | tee "$REPLY_BODY"'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'piped tee body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'dd of="$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'dd body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        "cat <<EOF; printf '%s\\n' 'Fixed: literal' >\"$REPLY_BODY\"",
+        'unrelated heredoc payload',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a heredoc does not taint a later command segment output redirection',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace(
+        'gh api x -F body=@"$REPLY_BODY"',
+        'gh --hostname github.com api x -F body=@"$REPLY_BODY"',
+      ),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'inherited gh hostname before body-file use',
+  )
+  for (const bodyFile of ['"$REPLY_BODY"', '"${REPLY_BODY}"']) {
+    for (const field of [
+      `-Fbody=@${bodyFile}`,
+      `-F=body=@${bodyFile}`,
+      `--field=body=@${bodyFile}`,
+      `-iFbody=@${bodyFile}`,
+      `-iF body=@${bodyFile}`,
+    ]) {
+      assert.deepEqual(
+        findUnsafeGhFileBodyWrites(unsafe.replace('-F body=@"$REPLY_BODY"', field)),
+        [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+        field,
+      )
+    }
+  }
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        "printf '%s\\n' 'Fixed: `make test`' >\"$REPLY_BODY\"",
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+  )
+  for (const safeProducer of [
+    'cat <<<\'Fixed: literal\' >"$REPLY_BODY"',
+    "printf '%s\\n' '<<EOF' >\"$REPLY_BODY\"",
+  ]) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(
+        ['REPLY_BODY="$(mktemp)"', safeProducer, 'gh api x -F body=@"$REPLY_BODY"'].join('\n'),
+      ),
+      [],
+      safeProducer,
+    )
+  }
+  const substituted = unsafe.replace(
+    'gh api x -F body=@"$REPLY_BODY"',
+    'result=$(gh api x -F body=@"$REPLY_BODY")',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(substituted),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'gh body file inside command substitution',
+  )
+  const substitutedProducer = [
+    'REPLY_BODY="$(mktemp)"',
+    'ignored=$(cat >"$REPLY_BODY" <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    ')',
+    'gh api x -F body=@"$REPLY_BODY"',
+  ].join('\n')
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(substitutedProducer),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'body-file producer inside command substitution',
+  )
+  const literalPath = [
+    'cat >/tmp/reply <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    'gh api x -F body=@/tmp/reply',
+  ].join('\n')
+  assert.deepEqual(findUnsafeGhFileBodyWrites(literalPath), [{ lineOffset: 0, path: '/tmp/reply' }])
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', '>"/tmp/reply"')
+        .replace('body=@/tmp/reply', 'body=@"/tmp/reply"'),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply' }],
+    'quoted literal body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', ">'/tmp/reply'")
+        .replace('body=@/tmp/reply', "body=@'/tmp/reply'"),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply' }],
+    'single-quoted literal body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', '>"/tmp/reply file"')
+        .replace('body=@/tmp/reply', 'body=@"/tmp/reply file"'),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply file' }],
+    'quoted literal body-file path containing spaces',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"$TMPDIR/reply" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"${TMPDIR}/reply"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '$TMPDIR/reply' }],
+    'equivalent variable-plus-suffix body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"$TMPDIR"/reply <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$TMPDIR"/reply',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '$TMPDIR/reply' }],
+    'partially quoted variable-plus-suffix body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"${TMPDIR:-/tmp}/reply" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"${TMPDIR:-/tmp}/reply"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '${TMPDIR:-/tmp}/reply' }],
+    'parameter-default body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'printf %s safe >"$REPLY_BODY" | cat <<EOF',
+        'unrelated heredoc payload',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a body-file redirection before a pipeline heredoc is not tainted',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'cat >"$REPLY_BODY" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@- <"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'stdin body redirects are traced to their file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '{ cat <<EOF; printf "%s\\n" done; } >"$REPLY_BODY"',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'group redirection carries heredoc output into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '{',
+        'cat <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        '} >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 2, variable: 'REPLY_BODY' }],
+    'group redirection carries a multiline heredoc into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '( cat <<EOF; printf "%s\\n" done; ) >"$REPLY_BODY"',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'subshell group redirection carries heredoc output into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'if cat <<EOF; then',
+        'Fixed: `make test`',
+        'EOF',
+        '  printf ok',
+        'fi >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'conditional group redirection carries heredoc output into the body file',
+  )
+  for (const [open, close] of [
+    ['{', '}'],
+    ['(', ')'],
+  ]) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(
+        [
+          'REPLY_BODY="$(mktemp)"',
+          `${open} cat <<EOF`,
+          'Fixed: `make test`',
+          'EOF',
+          `${close} | tee "$REPLY_BODY"`,
+          'gh api x -F body=@"$REPLY_BODY"',
+        ].join('\n'),
+      ),
+      [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+      `${open} ... ${close} pipeline carries heredoc output into the body file`,
+    )
+  }
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'GROUP_OUTPUT="$(mktemp)"',
+        'REPLY_BODY="$(mktemp)"',
+        '{',
+        'cat <<EOF',
+        'unrelated heredoc payload',
+        'EOF',
+        '} >"$GROUP_OUTPUT"; printf %s safe >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a later non-heredoc redirection is not tainted by an earlier brace group',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('-F body=@"$REPLY_BODY"', '-f body=@"$REPLY_BODY"')),
+    [],
+    'raw fields do not consume body files',
+  )
+  for (const incomplete of ['gh api x -F', 'gh api x --field', 'gh api x -iF']) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(incomplete),
+      [],
+      `${incomplete} without a field operand is ignored`,
+    )
+  }
+
+  const repoRoot = makeRepo({
+    [claudeSkill('unsafe-gh-file-body')]: md('```bash', ...unsafe.split('\n'), '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('unsafe-gh-file-body'), line: 3, kind: 'gh-body-file-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
 
 // 1. Opening line number.
 test('extractFencedBlocks reports the 1-based line of the OPENING fence', () => {

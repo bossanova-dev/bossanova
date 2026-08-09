@@ -181,6 +181,82 @@ export function gcStamps(stampDir) {
   }
 }
 
+// The literal golangci-lint prints on stderr when a concurrent invocation (e.g.
+// a sibling worktree's cron run) holds its lock file. This is NOT a lint
+// finding — it means golangci-lint never actually analyzed the module.
+const LOCK_CONTENTION_SIGNATURE = 'parallel golangci-lint is running'
+
+// Distinct, greppable message emitted after retries are exhausted and the
+// module still can't get the lock. Deliberately does not share any prefix
+// with a real golangci-lint finding line, so an agent (or a human) reading
+// the log can tell the two apart even in this exhausted case. Derived from the
+// actual attempt count rather than hard-coded, so the message can never claim
+// a number of attempts that were not made — the exported constant below pins
+// the default-3 rendering that CLAUDE.md documents as a grep token.
+export function lockContentionExhaustedMessage(attempts) {
+  return `golangci-lint: lock contention exhausted after ${attempts} attempts (not a lint finding)`
+}
+
+// The exact literal CLAUDE.md tells agents to grep for. If the default attempt
+// count below ever changes, change CLAUDE.md in the same commit.
+export const LOCK_CONTENTION_EXHAUSTED_MESSAGE = lockContentionExhaustedMessage(3)
+
+// golangci-lint output is captured rather than inherited (see runGolangci), which
+// subjects it to spawnSync's 1 MiB default maxBuffer. Exceeding that SIGTERMs the
+// child, truncates its output, and surfaces an ENOBUFS error instead of the lint
+// findings — a gate reporting something other than what happened, which is the
+// exact class this module was hardened against. A large module's findings can
+// plausibly exceed 1 MiB, so raise the ceiling well above any realistic run.
+const GOLANGCI_MAX_BUFFER = 64 * 1024 * 1024
+
+// Synchronous sleep (main() is not async, and neither is this exported seam —
+// the caller drives a plain per-module loop). Atomics.wait blocks the current
+// thread without a busy-loop.
+function sleepSync(ms) {
+  if (!ms || ms <= 0) return
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// Runs `golangci-lint run ./...` in cwd, retrying up to `attempts` times but
+// ONLY when the failure is lock contention from a concurrent golangci-lint
+// (e.g. a sibling worktree's cron run) — never a real lint finding. The
+// child's stdout/stderr are captured (not inherited) so the contention
+// signature is inspectable, then re-emitted verbatim so output never vanishes
+// from the terminal.
+export function runGolangci({ cwd, attempts = 3, backoffMs = 500 }) {
+  // Guard the loop invariant: with attempts < 1 the loop body never runs, and
+  // the exhausted path below would report contention that was never observed
+  // and then dereference an undefined result.
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError(`runGolangci: attempts must be a positive integer, got ${attempts}`)
+  }
+  let result
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    result = spawnSync('golangci-lint', ['run', './...'], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: GOLANGCI_MAX_BUFFER,
+    })
+    // Echo before the throw: on a spawn error that still produced output (an
+    // ENOBUFS overflow truncates rather than discards), the partial findings
+    // are more useful to the reader than the bare error.
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
+    if (result.error) throw result.error
+
+    if (result.status === 0) return { status: 0, attempts: attempt }
+
+    const isContention = `${result.stdout ?? ''}${result.stderr ?? ''}`.includes(
+      LOCK_CONTENTION_SIGNATURE,
+    )
+    if (!isContention) return { status: result.status ?? 1, attempts: attempt }
+
+    if (attempt < attempts) sleepSync(backoffMs)
+  }
+  process.stderr.write(`${lockContentionExhaustedMessage(attempts)}\n`)
+  return { status: result.status ?? 1, attempts, contentionExhausted: true }
+}
+
 function parseArgs(argv) {
   let moduleFilter = null
   let force = process.env.LINT_FORCE === '1'
@@ -234,12 +310,20 @@ function main() {
     }
 
     console.log(`==> Linting ${mod}`)
-    const result = spawnSync('golangci-lint', ['run', './...'], {
-      cwd: path.join(repoRoot, mod),
-      stdio: 'inherit',
-    })
-    if (result.error) throw result.error
-    if (result.status !== 0) process.exit(result.status ?? 1)
+    const { status } = runGolangci({ cwd: path.join(repoRoot, mod) })
+    // Set exitCode and RETURN rather than process.exit(): on POSIX, Node's
+    // stdout/stderr are asynchronous when they are pipes, and process.exit()
+    // does not flush pending writes. Since runGolangci captures golangci's
+    // output and re-emits it (rather than inheriting the fd), exiting here
+    // truncates anything past the ~64 KiB pipe buffer — dropping both a large
+    // run's findings and the LOCK_CONTENTION_EXHAUSTED_MESSAGE token CLAUDE.md
+    // tells agents to grep for. Under CI, `| tee`, or any agent harness stdout
+    // IS a pipe; on a TTY it is synchronous, so the loss is invisible by eye.
+    // Returning lets the process end naturally, which flushes both streams.
+    if (status !== 0) {
+      process.exitCode = status
+      return
+    }
 
     if (stampsEnabled) {
       try {

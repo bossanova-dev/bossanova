@@ -101,8 +101,14 @@ test('cleanSentinel is byte-identical', () => {
 })
 
 test('cappedSentinel keeps a fixed prefix with only the round-count tail dynamic', () => {
-  assert.equal(cappedSentinel(3), 'bs-review capped: open must-fix findings remain after 3 rounds.')
-  assert.equal(cappedSentinel(2), 'bs-review capped: open must-fix findings remain after 2 rounds.')
+  assert.equal(
+    cappedSentinel(3),
+    'bs-review capped: unresolved must-fix findings or invalid evidence remain after 3 rounds.',
+  )
+  assert.equal(
+    cappedSentinel(2),
+    'bs-review capped: unresolved must-fix findings or invalid evidence remain after 2 rounds.',
+  )
   assert.ok(cappedSentinel(2).startsWith(CAPPED_PREFIX))
   // Two capped sentinels differ ONLY in the round-count tail.
   assert.equal(
@@ -127,7 +133,9 @@ test('matchSentinel recognizes the empty-diff clean variant', () => {
 
 test('matchSentinel recognizes the capped sentinel and extracts the round count', () => {
   assert.deepEqual(
-    matchSentinel('bs-review capped: open must-fix findings remain after 3 rounds.'),
+    matchSentinel(
+      'bs-review capped: unresolved must-fix findings or invalid evidence remain after 3 rounds.',
+    ),
     {
       status: 'capped',
       rounds: 3,
@@ -137,11 +145,15 @@ test('matchSentinel recognizes the capped sentinel and extracts the round count'
 
 test('matchSentinel rejects malformed capped sentinels', () => {
   assert.equal(
-    matchSentinel('bs-review capped: open must-fix findings remain after 0 rounds.'),
+    matchSentinel(
+      'bs-review capped: unresolved must-fix findings or invalid evidence remain after 0 rounds.',
+    ),
     null,
   )
   assert.equal(
-    matchSentinel('bs-review capped: open must-fix findings remain after abc rounds.'),
+    matchSentinel(
+      'bs-review capped: unresolved must-fix findings or invalid evidence remain after abc rounds.',
+    ),
     null,
   )
   assert.equal(matchSentinel('bs-review capped: open must-fix findings remain.'), null)
@@ -178,7 +190,7 @@ test('CLI `sentinel clean|capped` prints byte-identical lines', () => {
   assert.equal(runCli(['sentinel', 'clean']).stdout, 'bs-review clean: no open must-fix findings.')
   assert.equal(
     runCli(['sentinel', 'capped', '3']).stdout,
-    'bs-review capped: open must-fix findings remain after 3 rounds.',
+    'bs-review capped: unresolved must-fix findings or invalid evidence remain after 3 rounds.',
   )
 })
 
@@ -197,7 +209,10 @@ test('CLI `sentinel capped` rejects missing / 0 / non-integer counts', () => {
 })
 
 test('CLI `match` classifies a sentinel line as JSON', () => {
-  const r = runCli(['match', 'bs-review capped: open must-fix findings remain after 2 rounds.'])
+  const r = runCli([
+    'match',
+    'bs-review capped: unresolved must-fix findings or invalid evidence remain after 2 rounds.',
+  ])
   assert.deepEqual(JSON.parse(r.stdout), { status: 'capped', rounds: 2 })
 })
 
@@ -226,7 +241,9 @@ test(
     const skill = readFileSync(bsReviewSkillPath, 'utf8')
     assert.ok(skill.includes(cleanSentinel()), 'clean sentinel present in boss-review SKILL.md')
     assert.ok(
-      skill.includes('bs-review capped: open must-fix findings remain after'),
+      skill.includes(
+        'bs-review capped: unresolved must-fix findings or invalid evidence remain after',
+      ),
       'capped sentinel prefix present in boss-review SKILL.md',
     )
     assert.ok(

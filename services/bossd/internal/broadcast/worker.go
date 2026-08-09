@@ -4,9 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -15,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/deliverydiag"
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
@@ -425,7 +423,7 @@ const (
 )
 
 // maxDiagnosticLen bounds what a single failure may write into last_error.
-const maxDiagnosticLen = 512
+const maxDiagnosticLen = deliverydiag.MaxLength
 
 // deliveryDiagnostic renders a failed attempt's transport error into the
 // body-free, length-bounded string stored in broadcast_deliveries.last_error.
@@ -446,60 +444,7 @@ const maxDiagnosticLen = 512
 // verb produces (where a multi-line body's newlines arrive as literal \n
 // escapes, which a raw-substring replace alone would miss).
 func deliveryDiagnostic(cause error, body string) string {
-	text := ""
-	if cause != nil {
-		text = cause.Error()
-	}
-
-	// Longest needle first, so a shorter overlapping form cannot leave a
-	// fragment of a longer one behind. Each match is replaced with a sentinel
-	// rather than the marker itself, and the marker substituted once at the end:
-	// replacing straight into human-readable text lets a later, shorter needle
-	// match INSIDE the marker an earlier one inserted (a body of "message" would
-	// rewrite the marker's own wording), garbling the diagnostic.
-	needles := bodyRedactionNeedles(body)
-	sort.Slice(needles, func(i, j int) bool { return len(needles[i]) > len(needles[j]) })
-	for _, needle := range needles {
-		text = strings.ReplaceAll(text, needle, redactionSentinel)
-	}
-	text = strings.ReplaceAll(text, redactionSentinel, redactedBodyMarker)
-
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return "delivery failed"
-	}
-	if len(text) > maxDiagnosticLen {
-		// Cut on a rune boundary; the marker survives because redaction ran first.
-		text = strings.ToValidUTF8(text[:maxDiagnosticLen], "") + "…"
-	}
-	return text
-}
-
-// bodyRedactionNeedles returns every rendering of the broadcast body a transport
-// error might echo. Very short bodies are still redacted: a false positive
-// mangles a diagnostic, while a miss leaks the secret.
-func bodyRedactionNeedles(body string) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(s string) {
-		if s == "" {
-			return
-		}
-		if _, dup := seen[s]; dup {
-			return
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	for _, form := range []string{body, strings.TrimSpace(body)} {
-		add(form)
-		// strconv.Quote wraps in quotes and escapes the interior; the interior is
-		// what appears inside a larger %q-formatted string.
-		if quoted := strconv.Quote(form); len(quoted) >= 2 {
-			add(quoted[1 : len(quoted)-1])
-		}
-	}
-	return out
+	return deliverydiag.Redact(cause, body, redactedBodyMarker)
 }
 
 // completeIfSettled asks the store to complete the parent broadcast once none of

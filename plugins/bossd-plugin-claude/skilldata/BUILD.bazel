@@ -116,6 +116,7 @@ go_library(
         "skills/boss-plan/toolbox/toolbox-drift.mjs",
         "skills/boss-plan/toolbox/plan-epic-phase25.mjs",
         "skills/boss-build/references/finalize-and-stop.md",
+        "skills/boss-review/toolbox/bs-review-triage.mjs",
     ],
     importpath = "github.com/recurser/bossd-plugin-claude/skilldata",
     visibility = ["//visibility:public"],

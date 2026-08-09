@@ -58,11 +58,18 @@ export function cleanSentinel() {
 
 /**
  * The capped sentinel — a fixed prefix with only the round-count tail dynamic.
+ *
+ * The wording names BOTH things that cap a run. A run can cap with zero open
+ * must-fix findings when unrepaired `invalid` entries are the only blocker, and
+ * the old "open must-fix findings remain" text asserted the wrong reason there.
+ * Routing is unaffected: callers match on `CAPPED_PREFIX` and `matchSentinel`
+ * parses only the `after N rounds.` tail.
+ *
  * @param {number} rounds
  * @returns {string}
  */
 export function cappedSentinel(rounds) {
-  return `${CAPPED_PREFIX} open must-fix findings remain after ${rounds} rounds.`
+  return `${CAPPED_PREFIX} unresolved must-fix findings or invalid evidence remain after ${rounds} rounds.`
 }
 
 /**

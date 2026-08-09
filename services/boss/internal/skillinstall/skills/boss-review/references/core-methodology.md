@@ -55,6 +55,12 @@ Severity drives the loop; it is not a matter of per-subagent judgment at fix tim
   explicitly left as-is); never fixed by default.
 - **Coverage override.** A `Suggestion` that is a **test-coverage gap for new or changed
   logic** is promoted to must-fix. Untested new behavior is not an optional nicety.
+- **Convergence promotion.** A `Suggestion` reported independently by **two or more distinct
+  reviewers** at the same `file:line` and title is promoted to must-fix. Agreement between reviewers
+  that never saw each other's output is stronger evidence than any one reviewer's own severity
+  label. Count **distinct reviewers**, never occurrences: one reviewer repeating itself — twice in a
+  pass, or across rounds — is one reviewer and must never promote. Findings at one `file:line` under
+  different titles do not group mechanically; judge whether they describe the same defect first.
 
 ## Always-on rounds vs. additive lenses
 
@@ -108,16 +114,23 @@ produce the first-pass findings, to catch what a single model's blind spots miss
 Once must-fix findings exist, iterate:
 
 1. **Fix.** Dispatch a fix step given **only** the must-fix items (each as `file:line` plus
-   the requested change). Follow receiving-code-review discipline: verify each finding
-   against the code before implementing, one item at a time, no unrelated refactors, and
-   write behavior-focused tests for coverage gaps. Each item ends in exactly one
-   disposition — **fixed** (code changed) or **verified** (the finding was wrong for this
-   codebase, with a recorded rationale). Run the affected tests/lint and commit.
-2. **Re-review only the newly-changed files.** Re-run the always-on rounds over the new
-   commit(s), writing into round-namespaced findings so a re-run never clobbers prior
-   evidence. Re-dispatch a specialist lens only if the new files match it; when none match,
-   the confirming round is exactly the always-on rounds over the new commits — never skip
-   the round entirely. The cross-agent voice is optional on confirming rounds.
+   the requested change). Follow receiving-code-review discipline: **adjudicate before you fix** —
+   an item may not be fixed until its premise has been confirmed or falsified against the code it
+   cites — then one item at a time, no unrelated refactors, and write behavior-focused tests for
+   coverage gaps. Each item ends in exactly one disposition — **fixed** (code changed) or
+   **verified** (the finding was wrong for this codebase, with a recorded rationale **and the
+   evidence that settled it**). Run the affected tests/lint and commit.
+2. **Re-review the confirming surface.** That surface is the union of the newly-changed files
+   and the cited files of every verified finding. Verified items make no code change, so their
+   rationale and evidence still need independent confirmation; if every item was verified and no
+   code changed, their cited files are the confirming surface and the round still runs. Re-run the
+   always-on rounds over that surface, writing into round-namespaced findings so a re-run never
+   clobbers prior evidence. Re-dispatch a specialist lens only if a confirming-surface file
+   matches it; when none match, the confirming round is exactly the always-on rounds over that
+   surface — never skip the round entirely. The cross-agent voice is optional on confirming
+   rounds.
+   Carry every declined finding's rationale and evidence into the confirming round: the rationale is
+   itself reviewable, and a factually false one re-opens the finding.
 3. **Repeat** until a round yields zero must-fix.
 
 ### Oscillation guard

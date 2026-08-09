@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	bosspty "github.com/recurser/boss/internal/pty"
@@ -17,6 +18,33 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/termnorm"
 )
+
+func mustBuildAttachCommand(t *testing.T, destination, tmuxName, worktreePath string) attachCommand {
+	t.Helper()
+	command, err := buildAttachCommand(destination, tmuxName, worktreePath)
+	if err != nil {
+		t.Fatalf("buildAttachCommand(%q, %q): %v", destination, tmuxName, err)
+	}
+	return command
+}
+
+func mustBuildAttachReproArgv(t *testing.T, destination, tmuxName string) []string {
+	t.Helper()
+	argv, err := buildAttachReproArgv(destination, tmuxName)
+	if err != nil {
+		t.Fatalf("buildAttachReproArgv(%q, %q): %v", destination, tmuxName, err)
+	}
+	return argv
+}
+
+func mustTmuxProbeCommandLine(t *testing.T, destination string) ([]string, time.Duration) {
+	t.Helper()
+	argv, timeout, err := tmuxProbeCommandLine(destination, "boss-chat-abc")
+	if err != nil {
+		t.Fatalf("tmuxProbeCommandLine(%q): %v", destination, err)
+	}
+	return argv, timeout
+}
 
 // TestBuildAttachCommand_RemoteRunsTmuxOverSSHWithNoLocalDir is the regression
 // guard for the two bugs a naive --host attach has: it shells out to the local
@@ -26,7 +54,7 @@ import (
 // command, because the live pane cannot be captured once tea.Exec takes the
 // terminal.
 func TestBuildAttachCommand_RemoteRunsTmuxOverSSHWithNoLocalDir(t *testing.T) {
-	got := buildAttachCommand("deploy@bastion.example.com", "boss-chat-abc", "/home/deploy/worktrees/feature")
+	got := mustBuildAttachCommand(t, "deploy@bastion.example.com", "boss-chat-abc", "/home/deploy/worktrees/feature")
 
 	want := []string{
 		"ssh", "-t",
@@ -42,7 +70,7 @@ func TestBuildAttachCommand_RemoteRunsTmuxOverSSHWithNoLocalDir(t *testing.T) {
 		// non-login shell, and a tmux off that reduced PATH (Homebrew's
 		// /opt/homebrew/bin, exported from a ~/.zprofile zsh does not read
 		// non-interactively) fails every attach with "command not found".
-		"deploy@bastion.example.com", `exec "$SHELL" -lc 'tmux -u attach -t boss-chat-abc'`,
+		"deploy@bastion.example.com", `exec "$SHELL" -lc 'sh -c "tmux -u attach -t boss-chat-abc"'`,
 	}
 	if !reflect.DeepEqual(got.argv, want) {
 		t.Fatalf("remote attach argv = %q, want %q", got.argv, want)
@@ -71,7 +99,7 @@ func TestAttach_ModelExecsTheCommandItBuilt(t *testing.T) {
 	// Read back off the *exec.Cmd itself, never off a copy of the builder's
 	// output: a copy would agree with itself while the exec quietly disagreed
 	// with both, which is exactly the revert this test exists to catch.
-	want := buildAttachCommand("deploy@bastion.example.com", "boss-test-chat", "/home/deploy/worktrees/feature")
+	want := mustBuildAttachCommand(t, "deploy@bastion.example.com", "boss-test-chat", "/home/deploy/worktrees/feature")
 	if !reflect.DeepEqual(got.pendingExec.cmd.Args, want.argv) {
 		t.Fatalf("exec'd argv = %q, want the remote form %q", got.pendingExec.cmd.Args, want.argv)
 	}
@@ -215,7 +243,7 @@ func TestDetachedAfterExec_ClassifiesAllFourArms(t *testing.T) {
 // including the worktree cwd. --host support branches the attach path; it must
 // not refactor it.
 func TestBuildAttachCommand_LocalIsUnchanged(t *testing.T) {
-	got := buildAttachCommand("", "boss-chat-abc", "/Users/dev/worktrees/feature")
+	got := mustBuildAttachCommand(t, "", "boss-chat-abc", "/Users/dev/worktrees/feature")
 
 	want := []string{"tmux", "attach", "-t", "boss-chat-abc"}
 	if !reflect.DeepEqual(got.argv, want) {
@@ -226,77 +254,66 @@ func TestBuildAttachCommand_LocalIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestRemoteArgvQuotesTheSessionNameForTheRemoteShell covers the one thing an
-// argv element does NOT buy you over ssh: ssh concatenates its trailing
-// arguments and the remote user's shell re-parses the result, so a session name
-// carrying shell syntax would stop being data on the far side. Latent today —
-// the daemon mints `boss-<8>-<8>` — but this is the seam, and the name crosses
-// the wire from another machine.
-func TestRemoteArgvQuotesTheSessionNameForTheRemoteShell(t *testing.T) {
-	hostile := "boss-chat; touch /tmp/pwned"
-
-	argvs := map[string][]string{
-		"attach":       buildAttachCommand("deploy@bastion", hostile, "").argv,
-		"local attach": buildAttachCommand("", hostile, "").argv,
-	}
-	argvs["probe"], _ = tmuxProbeCommandLine("deploy@bastion", hostile)
-	argvs["local probe"], _ = tmuxProbeCommandLine("", hostile)
-
-	// The two argvs that are actually executed against a remote shell. The name
-	// now crosses TWO parses — the remote login shell reads the whole command,
-	// then remoteTmuxCommand's `$SHELL -lc` reads the inner one — so asserting
-	// the quoted spelling would only restate how the string was built. Run it
-	// through two real shells instead and check what tmux was handed: if either
-	// layer of quoting is wrong the name splits into several arguments (or runs
-	// as a command), and this fails.
-	for _, name := range []string{"attach", "probe"} {
-		argv := argvs[name]
-		want := map[string][]string{
-			"attach": {"-u", "attach", "-t", hostile},
-			"probe":  {"has-session", "-t", hostile},
-		}[name]
-		if got := remoteTmuxArgv(t, argv[len(argv)-1]); !reflect.DeepEqual(got, want) {
-			t.Errorf("remote %s handed tmux %q, want %q: the session name must survive both shell parses as ONE argument",
-				name, got, want)
-		}
-	}
-	// The local forms hand argv straight to exec with no shell in between, so
-	// quoting there would corrupt the name rather than protect it.
-	for _, name := range []string{"local attach", "local probe"} {
-		argv := argvs[name]
-		if got := argv[len(argv)-1]; got != hostile {
-			t.Errorf("%s session name = %q, want it verbatim", name, got)
-		}
+// TestRemoteCommandBuildersRejectInvalidTmuxSessionNames closes the command
+// execution seam before a remote-sourced name can reach either shell parser.
+func TestRemoteCommandBuildersRejectInvalidTmuxSessionNames(t *testing.T) {
+	for _, name := range []string{
+		"boss-chat'quote", "boss-chat\\backslash", "boss-chat;semicolon",
+		"boss-chat$dollar", "boss chat",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := buildAttachCommand("deploy@bastion", name, ""); err == nil || !strings.Contains(err.Error(), "invalid tmux session name") {
+				t.Fatalf("buildAttachCommand(%q) error = %v, want clear rejection", name, err)
+			}
+			if _, err := buildAttachReproArgv("deploy@bastion", name); err == nil || !strings.Contains(err.Error(), "invalid tmux session name") {
+				t.Fatalf("buildAttachReproArgv(%q) error = %v, want clear rejection", name, err)
+			}
+			if _, _, err := tmuxProbeCommandLine("deploy@bastion", name); err == nil || !strings.Contains(err.Error(), "invalid tmux session name") {
+				t.Fatalf("tmuxProbeCommandLine(%q) error = %v, want clear rejection", name, err)
+			}
+		})
 	}
 
-	// The remote repro carries the wrapper verbatim, so it is a shell string
-	// like the attach and its name is quoted the same way — a raw name here
-	// would print a command that word-splits when pasted. The LOCAL repro is
-	// still handed to shellJoin raw, which quotes it once for display.
-	if got := buildAttachReproArgv("", hostile); got[len(got)-1] != hostile {
-		t.Errorf("local repro session name = %q, want it raw: shellJoin does the quoting", got[len(got)-1])
+	const valid = "boss-AbC12345-XyZ_6789"
+	attach, err := buildAttachCommand("deploy@bastion", valid, "")
+	if err != nil || !strings.Contains(attach.argv[len(attach.argv)-1], valid) {
+		t.Fatalf("buildAttachCommand(%q) = (%q, %v), want unchanged valid name", valid, attach.argv, err)
 	}
-	remoteRepro := buildAttachReproArgv("deploy@bastion", hostile)
-	if got := remoteTmuxArgv(t, remoteRepro[len(remoteRepro)-1]); !reflect.DeepEqual(got, []string{"-u", "attach", "-t", hostile}) {
-		t.Errorf("remote repro handed tmux %q, want the name as one argument", got)
+	repro, err := buildAttachReproArgv("deploy@bastion", valid)
+	if err != nil || !strings.Contains(repro[len(repro)-1], valid) {
+		t.Fatalf("buildAttachReproArgv(%q) = (%q, %v), want unchanged valid name", valid, repro, err)
 	}
-	// And the rendered line has to survive being PASTED, which adds shellJoin's
-	// layer on top of the two above. Run the whole line the way the two
-	// machines would and check what tmux ends up with.
-	rendered := renderTmuxAttachDiagnostic("deploy@bastion", hostile, "", "")
-	if got := pastedReproArgv(t, firstCodeLine(rendered)); !reflect.DeepEqual(got, []string{"-u", "attach", "-t", hostile}) {
-		t.Errorf("pasting the rendered repro hands tmux %q, want the name as one argument; got:\n%s", got, rendered)
+	probe, _, err := tmuxProbeCommandLine("deploy@bastion", valid)
+	if err != nil || !strings.Contains(probe[len(probe)-1], valid) {
+		t.Fatalf("tmuxProbeCommandLine(%q) = (%q, %v), want unchanged valid name", valid, probe, err)
 	}
 }
 
-// remoteTmuxArgv runs a remote command string the way ssh's far side does — the
-// remote login shell parses the whole string, then remoteTmuxCommand's
-// `$SHELL -lc` parses the inner command — and returns the arguments the tmux at
-// the end was actually handed. A stub tmux on PATH reports them, so this needs
-// no tmux server and asserts the one property the quoting exists for.
-func remoteTmuxArgv(t *testing.T, remoteCommand string) []string {
-	t.Helper()
-	return runAgainstRemoteStubs(t, remoteCommand)
+func TestRemoteTmuxCommand_RoundTripsThroughFishWithoutTouchingCanary(t *testing.T) {
+	fish, err := exec.LookPath("fish")
+	if err != nil {
+		t.Skip("fish not installed: wrapper shape is covered by golden argv tests")
+	}
+
+	dir := remoteStubDir(t)
+	canary := filepath.Join(t.TempDir(), "must-survive")
+	if err := os.WriteFile(canary, []byte("present"), 0o600); err != nil {
+		t.Fatalf("write canary: %v", err)
+	}
+	name := "boss-chat-A1_b2"
+	inner := "tmux -u attach -t " + name
+	cmd := exec.Command(fish, "--no-config", "-c", remoteTmuxCommand(inner))
+	cmd.Env = []string{"PATH=" + dir + ":/bin:/usr/bin", "SHELL=" + filepath.Join(dir, "loginshell")}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("fish parsed remote command %q: %v (stderr: %s)", remoteTmuxCommand(inner), err, exitStderr(err))
+	}
+	if got := strings.Split(strings.TrimRight(string(out), "\n"), "\n"); !reflect.DeepEqual(got, []string{"-u", "attach", "-t", name}) {
+		t.Fatalf("fish delivered tmux argv %q, want one payload word", got)
+	}
+	if _, err := os.Stat(canary); err != nil {
+		t.Fatalf("fish parse touched canary %q: %v", canary, err)
+	}
 }
 
 // remoteStubDir builds stand-ins for the far side of a --host attach: the remote
@@ -330,23 +347,6 @@ func remoteStubDir(t *testing.T) string {
 	return dir
 }
 
-// runAgainstRemoteStubs parses command with a real shell against those stubs and
-// returns the arguments tmux was handed. /bin/sh is named absolutely because
-// PATH is deliberately narrowed to the stub directory.
-func runAgainstRemoteStubs(t *testing.T, command string) []string {
-	t.Helper()
-	dir := remoteStubDir(t)
-	// #nosec G204 -- test-only; command is this package's own builder output
-	// owner=@recurser review-by=2027-02-07 issue=BOS-714
-	cmd := exec.Command("/bin/sh", "-c", command)
-	cmd.Env = []string{"PATH=" + dir, "SHELL=" + filepath.Join(dir, "loginshell")}
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("remote command %q failed: %v (stderr: %s)", command, err, exitStderr(err))
-	}
-	return strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-}
-
 // exitStderr surfaces a failed stub run's stderr, which carries the login
 // shell's own complaint when production stops passing -lc.
 func exitStderr(err error) string {
@@ -355,34 +355,6 @@ func exitStderr(err error) string {
 		return strings.TrimSpace(string(exitErr.Stderr))
 	}
 	return ""
-}
-
-// firstCodeLine returns the single indented command line out of a rendered
-// diagnostic, with its padding removed.
-func firstCodeLine(rendered string) string {
-	for _, line := range strings.Split(rendered, "\n") {
-		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "ssh ") {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-// pastedReproArgv executes a rendered `ssh …` diagnostic line the way pasting it
-// really behaves, and returns the arguments tmux was handed at the far end.
-//
-// A stub ssh stands in for the transport: real ssh concatenates its trailing
-// arguments and hands the result to the remote login shell, which is the step
-// that decides whether the session name is data or syntax, so the stub does the
-// same. A stub tmux reports what survived. Together with the shell that parses
-// the pasted line itself, this exercises all three layers of quoting the
-// diagnostic depends on.
-func pastedReproArgv(t *testing.T, renderedLine string) []string {
-	t.Helper()
-	if renderedLine == "" {
-		t.Fatal("no ssh command line found in the rendered diagnostic")
-	}
-	return runAgainstRemoteStubs(t, renderedLine)
 }
 
 // TestRemoteCommandsRunThroughTheLoginShell guards the fix itself. `ssh host
@@ -395,11 +367,11 @@ func pastedReproArgv(t *testing.T, renderedLine string) []string {
 // because the two looked in different places, and a repro without the wrapper
 // prints a command that fails on exactly the misconfigured host reading it.
 func TestRemoteCommandsRunThroughTheLoginShell(t *testing.T) {
-	remoteProbe, _ := tmuxProbeCommandLine("deploy@bastion", "boss-chat-abc")
+	remoteProbe, _ := mustTmuxProbeCommandLine(t, "deploy@bastion")
 	for name, argv := range map[string][]string{
-		"attach": buildAttachCommand("deploy@bastion", "boss-chat-abc", "").argv,
+		"attach": mustBuildAttachCommand(t, "deploy@bastion", "boss-chat-abc", "").argv,
 		"probe":  remoteProbe,
-		"repro":  buildAttachReproArgv("deploy@bastion", "boss-chat-abc"),
+		"repro":  mustBuildAttachReproArgv(t, "deploy@bastion", "boss-chat-abc"),
 	} {
 		last := argv[len(argv)-1]
 		if !strings.HasPrefix(last, `exec "$SHELL" -lc `) {
@@ -417,11 +389,11 @@ func TestRemoteCommandsRunThroughTheLoginShell(t *testing.T) {
 
 	// The local forms stay untouched: a local tmux resolves on the user's own
 	// PATH, and wrapping it would interpose a shell where exec needs none.
-	localProbe, _ := tmuxProbeCommandLine("", "boss-chat-abc")
+	localProbe, _ := mustTmuxProbeCommandLine(t, "")
 	for name, argv := range map[string][]string{
-		"attach": buildAttachCommand("", "boss-chat-abc", "").argv,
+		"attach": mustBuildAttachCommand(t, "", "boss-chat-abc", "").argv,
 		"probe":  localProbe,
-		"repro":  buildAttachReproArgv("", "boss-chat-abc"),
+		"repro":  mustBuildAttachReproArgv(t, "", "boss-chat-abc"),
 	} {
 		if got := argv[0]; got != "tmux" {
 			t.Errorf("local %s runs %q, want tmux directly", name, got)
@@ -453,8 +425,8 @@ var attachTuningArgs = map[string]bool{
 // anything else, so a new option is red until someone decides which kind it is.
 func TestAttachReproIsASubsequenceOfTheRealAttach(t *testing.T) {
 	for _, destination := range []string{"", "deploy@bastion"} {
-		full := buildAttachCommand(destination, "boss-chat-abc", "").argv
-		repro := buildAttachReproArgv(destination, "boss-chat-abc")
+		full := mustBuildAttachCommand(t, destination, "boss-chat-abc", "").argv
+		repro := mustBuildAttachReproArgv(t, destination, "boss-chat-abc")
 
 		i := 0
 		var dropped []string
@@ -646,7 +618,7 @@ func TestTmuxSessionAlive_RemoteProbeCrossesTheConnection(t *testing.T) {
 	}
 	want := []string{
 		"-o", "BatchMode=yes",
-		"deploy@bastion.example.com", `exec "$SHELL" -lc 'tmux has-session -t boss-chat-abc'`,
+		"deploy@bastion.example.com", `exec "$SHELL" -lc 'sh -c "tmux has-session -t boss-chat-abc"'`,
 	}
 	if !reflect.DeepEqual(rec.args, want) {
 		t.Fatalf("remote probe args = %q, want %q", rec.args, want)
@@ -677,10 +649,10 @@ func TestTmuxSessionAlive_LocalProbeIsUnchanged(t *testing.T) {
 // while the remote one crosses a network behind a live TUI and must not be able
 // to hang the interface.
 func TestTmuxProbeCommandLine_OnlyTheRemoteFormIsBounded(t *testing.T) {
-	if _, timeout := tmuxProbeCommandLine("", "boss-chat-abc"); timeout != 0 {
+	if _, timeout := mustTmuxProbeCommandLine(t, ""); timeout != 0 {
 		t.Fatalf("local probe timeout = %v, want 0 (unchanged local behaviour)", timeout)
 	}
-	if _, timeout := tmuxProbeCommandLine("host", "boss-chat-abc"); timeout <= 0 {
+	if _, timeout := mustTmuxProbeCommandLine(t, "host"); timeout <= 0 {
 		t.Fatalf("remote probe timeout = %v, want a bound so a hung ssh cannot freeze the TUI", timeout)
 	}
 }

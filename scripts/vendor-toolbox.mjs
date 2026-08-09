@@ -13,6 +13,7 @@ export const VENDOR_MAP = {
   'boss-review': [
     'main-module.mjs',
     'bs-review-caps.mjs',
+    'bs-review-triage.mjs',
     'bs-review-report.mjs',
     'bs-review-detect.mjs',
     'cross-review-lib.mjs',

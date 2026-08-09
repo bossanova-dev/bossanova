@@ -39,15 +39,15 @@ type attachCommand struct {
 //   - the remote tmux runs through the remote LOGIN shell, via
 //     remoteTmuxCommand. Without that, an attach to a host whose tmux is not on
 //     sshd's reduced PATH fails with `tmux: command not found`.
-//   - the session name is shell-quoted for the remote form only, and quoted
-//     twice over because remoteTmuxCommand introduces a second shell parse —
-//     see its doc. Unlike a local exec, ssh concatenates its trailing arguments
-//     and hands the result to the remote user's shell, so a separate local argv
-//     element is not a separate remote word. Today's names are `boss-<8>-<8>`
-//     from the daemon's ChatSessionName and quote to themselves, but the value
-//     arrives over the wire from another machine and this is the seam where it
-//     would stop being data. The local form is left unquoted: exec.Command
-//     passes argv straight through with no shell to defend against.
+//   - the session name is allowlist-checked before it reaches any command
+//     string, then shell-quoted for the one `sh -c` parse — see
+//     remoteTmuxCommand. Unlike a local exec, ssh concatenates its trailing
+//     arguments and hands the result to the remote user's shell, so a separate
+//     local argv element is not a separate remote word. ChatSessionName formats
+//     `boss-<8>-<8>` but only truncates its input segments, so the remote value
+//     is still checked here at the command boundary. The local form is left
+//     unquoted: exec.Command passes argv straight through with no shell to
+//     defend against.
 //   - dir stays EMPTY for the remote case. The worktree path came from the
 //     remote daemon and names a directory on that machine; using it as a local
 //     exec.Cmd.Dir makes the process fail to start with a confusing chdir
@@ -57,9 +57,12 @@ type attachCommand struct {
 //
 // No BatchMode here, unlike the liveness probe: this command owns the terminal,
 // so an ssh key passphrase prompt is something the user can actually answer.
-func buildAttachCommand(destination, tmuxName, worktreePath string) attachCommand {
+func buildAttachCommand(destination, tmuxName, worktreePath string) (attachCommand, error) {
+	if err := validateTmuxSessionName(tmuxName); err != nil {
+		return attachCommand{}, err
+	}
 	if destination == "" {
-		return attachCommand{argv: []string{"tmux", "attach", "-t", tmuxName}, dir: worktreePath}
+		return attachCommand{argv: []string{"tmux", "attach", "-t", tmuxName}, dir: worktreePath}, nil
 	}
 	return attachCommand{argv: []string{
 		"ssh", "-t",
@@ -83,7 +86,24 @@ func buildAttachCommand(destination, tmuxName, worktreePath string) attachComman
 		"-o", fmt.Sprintf("ServerAliveInterval=%d", attachServerAliveInterval),
 		"-o", fmt.Sprintf("ServerAliveCountMax=%d", attachServerAliveCountMax),
 		destination, remoteTmuxCommand("tmux -u attach -t " + shellQuote(tmuxName)),
-	}}
+	}}, nil
+}
+
+// validateTmuxSessionName closes the command-string boundary around the
+// remote-provided tmux name. ChatSessionName formats boss-<id>-<id> but does
+// not validate the ID segments, so this is the boundary that establishes the
+// subset. Anything else is malformed or hostile input, not a name to quote or
+// rewrite into a different session.
+func validateTmuxSessionName(name string) error {
+	if name == "" {
+		return errors.New("invalid tmux session name: empty")
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return fmt.Errorf("invalid tmux session name %q: only [A-Za-z0-9_-] is allowed", name)
+		}
+	}
+	return nil
 }
 
 // remoteTmuxCommand renders a tmux invocation as the single remote command
@@ -105,12 +125,13 @@ func buildAttachCommand(destination, tmuxName, worktreePath string) attachComman
 //
 // The result is deliberately ONE argv element. ssh concatenates its trailing
 // arguments and hands the string to the remote shell, so `-lc`'s operand has to
-// survive as a single word — which is also what keeps a session name carrying
-// shell syntax as data across BOTH parses: the outer shell unwraps this
-// quoting, and the inner `$SHELL -lc` unwraps the layer buildAttachCommand and
-// tmuxProbeCommandLine already applied to the name.
+// survive as a single word. The login shell unwraps that one word, then `sh
+// -c` is the only shell that parses the tmux snippet. The wrapper contains no
+// POSIX quote-escape idiom because every datum in inner was allowlist-checked;
+// shellQuote models sh's rules, not every possible login shell's rules, and
+// fish does not interpret that idiom the same way.
 func remoteTmuxCommand(inner string) string {
-	return `exec "$SHELL" -lc ` + shellQuote(inner)
+	return `exec "$SHELL" -lc ` + shellQuote(`sh -c "`+inner+`"`)
 }
 
 // attachServerAliveInterval/attachServerAliveCountMax mirror the values
@@ -147,14 +168,17 @@ const (
 // The result must stay a subsequence of buildAttachCommand's argv — that is what
 // makes it a reproduction rather than a second, drifting spelling of the attach
 // — and a test asserts it.
-func buildAttachReproArgv(destination, tmuxName string) []string {
+func buildAttachReproArgv(destination, tmuxName string) ([]string, error) {
+	if err := validateTmuxSessionName(tmuxName); err != nil {
+		return nil, err
+	}
 	if destination == "" {
-		return []string{"tmux", "attach", "-t", tmuxName}
+		return []string{"tmux", "attach", "-t", tmuxName}, nil
 	}
 	return []string{
 		"ssh", "-t",
 		destination, remoteTmuxCommand("tmux -u attach -t " + shellQuote(tmuxName)),
-	}
+	}, nil
 }
 
 // tmuxProbeTimeout bounds the remote liveness probe. The probe runs on the
@@ -225,7 +249,13 @@ func probeTmuxSession(name string) tmuxProbeResult {
 		return tmuxProbeGone
 	}
 	destination := remoteHostDestination()
-	argv, timeout := tmuxProbeCommandLine(destination, name)
+	argv, timeout, err := tmuxProbeCommandLine(destination, name)
+	if err != nil {
+		if destination == "" {
+			return tmuxProbeGone
+		}
+		return tmuxProbeUnreachable
+	}
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -383,9 +413,12 @@ func detachedAfterExec(intercepted bool, exitErr error, tmuxName string) bool {
 // crosses a network, so it is both bounded and run with BatchMode=yes: a
 // credential prompt behind a live TUI has no visible terminal to prompt on, so
 // failing fast is the only honest outcome.
-func tmuxProbeCommandLine(destination, name string) (argv []string, timeout time.Duration) {
+func tmuxProbeCommandLine(destination, name string) (argv []string, timeout time.Duration, err error) {
+	if err := validateTmuxSessionName(name); err != nil {
+		return nil, 0, err
+	}
 	if destination == "" {
-		return []string{"tmux", "has-session", "-t", name}, 0
+		return []string{"tmux", "has-session", "-t", name}, 0, nil
 	}
 	// Routed through the login shell exactly like the attach: if the two
 	// disagreed about how tmux resolves, the probe would report a live session
@@ -393,5 +426,5 @@ func tmuxProbeCommandLine(destination, name string) (argv []string, timeout time
 	return []string{
 		"ssh", "-o", "BatchMode=yes",
 		destination, remoteTmuxCommand("tmux has-session -t " + shellQuote(name)),
-	}, tmuxProbeTimeout
+	}, tmuxProbeTimeout, nil
 }

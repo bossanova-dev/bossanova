@@ -26,6 +26,12 @@
 # `#nosec`; exits 0 when all suppressions carry a reason.
 set -euo pipefail
 
+# Name the gate when a producer failure aborts the script, so a CI log does not
+# show only git's own `fatal: …` under a bare non-zero status. Mirrors the trap
+# in scripts/check-mirror-leaks.sh. Not reached by the deliberate `exit 1`
+# violations path, nor by any `if`/`||` condition (bash suppresses ERR there).
+trap 'echo "::error::nosec-metadata-check aborted: a producer command failed; refusing to certify this tree." >&2' ERR
+
 # Path segments excluded from the gosec scan (see security.yml -exclude-dir).
 # Matched against any full path SEGMENT so nested packages are covered too.
 is_excluded() {
@@ -62,8 +68,30 @@ report() {
   violations=$((violations + 1))
 }
 
+# Assignment on its OWN line so a failing `git ls-files` aborts the script: under
+# `set -e` a failing command substitution in a simple assignment DOES abort, while
+# the `done < <(git ls-files …)` process substitution it replaces discarded the
+# status entirely — a broken index scanned zero files and printed the pass line.
+#
+# core.quotePath=false for the same reason as scripts/check-mirror-leaks.sh: git
+# C-quotes non-ASCII paths by default, and a quoted name cannot be opened by the
+# `grep -Eq … "$file"` below, whose `2>/dev/null || continue` would then skip the
+# file silently — a suppression in it would never be audited.
+go_files="$(git -c core.quotePath=false ls-files '*.go')"
 while IFS= read -r file; do
+  [ -n "$file" ] || continue
   is_excluded "$file" && continue
+  # A file we cannot open is a file we cannot audit. Without this the `grep …
+  # 2>/dev/null || continue` below swallows the open failure and skips it
+  # silently, so a suppression inside it is certified as auditable — the same
+  # fail-open the ls-files hoist closes, one level down. It also catches the
+  # remainder core.quotePath cannot fix: git still C-quotes `"`, `\` and
+  # control bytes, and such a name is not openable under its quoted form.
+  if [ ! -r "$file" ]; then
+    report "unreadable Go file(s): the gate cannot audit a file it cannot open (SECURITY.md § Suppressions)." \
+      "${file}: not readable"
+    continue
+  fi
   # Only inspect files that actually contain a suppression directive.
   grep -Eq '#nosec|gosec:disable' "$file" 2>/dev/null || continue
 
@@ -102,7 +130,7 @@ while IFS= read -r file; do
     report "disallowed gosec:disable suppression(s): use an auditable '// #nosec <rule> -- <reason>' instead (SECURITY.md § Suppressions)." \
       "${file}:${lineno}: ${trimmed}"
   done < <(grep -nE "$disable_re" "$file")
-done < <(git ls-files '*.go')
+done <<<"$go_files"
 
 if [ "$violations" -gt 0 ]; then
   echo "::error::${violations} disallowed/non-compliant suppression(s); use '// #nosec <rule> -- <reason>; owner=@handle review-by=YYYY-MM-DD issue=BOS-NN' (SECURITY.md § Suppressions)."

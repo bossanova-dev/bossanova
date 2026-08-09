@@ -3609,7 +3609,6 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 				Msg("legacy provider session id discovery ambiguous before attach")
 		}
 	}
-	mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 	defaultAccountID := ""
 	sessionEnvFunc := func() map[string]string {
 		defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
@@ -3628,7 +3627,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
 		)
 	}
-	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath)
+	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, "")
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:                      chat,
 		WorktreePath:              sess.WorktreePath,
@@ -3646,9 +3645,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
-		Model:           chat.Model,
-		McpConfigPath:   mcpConfigPath,
-		StrictMcpConfig: session.StrictMcpConfigForSession(sess),
+		Model: chat.Model,
 	})
 	if err != nil {
 		return err

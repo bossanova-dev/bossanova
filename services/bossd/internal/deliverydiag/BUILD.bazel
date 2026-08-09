@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "deliverydiag",
+    srcs = ["redact.go"],
+    importpath = "github.com/recurser/bossd/internal/deliverydiag",
+    visibility = ["//services/bossd:__subpackages__"],
+)

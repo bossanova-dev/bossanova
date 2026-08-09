@@ -229,14 +229,12 @@ type argvCall struct {
 	logPath            string
 	appendSystemPrompt string
 	model              string
-	mcpConfigPath      string
-	strictMcpConfig    bool
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, mcpConfigPath: mcpConfigPath, strictMcpConfig: strictMcpConfig})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -306,64 +304,6 @@ func TestSpawnChatTmux_ThreadsModel(t *testing.T) {
 	}
 	if got := builder.calls[0].model; got != "sonnet" {
 		t.Fatalf("BuildInteractive model = %q, want sonnet", got)
-	}
-}
-
-// TestSpawnChatTmux_ThreadsMcpConfigPath mirrors the model threading: the
-// per-spawn boss MCP config path must reach BuildInteractive so a woken or
-// re-ensured pane exposes the same mcp__boss__* tools as the initial spawn.
-func TestSpawnChatTmux_ThreadsMcpConfigPath(t *testing.T) {
-	wd := t.TempDir()
-	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
-	builder := claudeArgvBuilder()
-	const mcpPath = "/data/bossanova/mcp-configs/aaa.json"
-	_, err := spawnChatTmux(context.Background(), spawnDeps{
-		Tmux:        tmuxer,
-		Transcripts: &fakeTranscriptOracle{exists: false},
-		Argv:        builder,
-	}, spawnInput{
-		Chat:          newTestChat(t),
-		WorktreePath:  wd,
-		TmuxName:      "boss-aaa-bbb",
-		McpConfigPath: mcpPath,
-	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(builder.calls) != 1 {
-		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
-	}
-	if got := builder.calls[0].mcpConfigPath; got != mcpPath {
-		t.Fatalf("BuildInteractive mcpConfigPath = %q, want %q", got, mcpPath)
-	}
-}
-
-// TestSpawnChatTmux_ThreadsStrictMcpConfig mirrors the mcp-config threading: the
-// strict flag (cron-derived) must reach BuildInteractive so a woken or
-// re-ensured cron pane strictly loads the curated set (boss + Linear) just like
-// the initial cron spawn.
-func TestSpawnChatTmux_ThreadsStrictMcpConfig(t *testing.T) {
-	wd := t.TempDir()
-	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
-	builder := claudeArgvBuilder()
-	_, err := spawnChatTmux(context.Background(), spawnDeps{
-		Tmux:        tmuxer,
-		Transcripts: &fakeTranscriptOracle{exists: false},
-		Argv:        builder,
-	}, spawnInput{
-		Chat:            newTestChat(t),
-		WorktreePath:    wd,
-		TmuxName:        "boss-aaa-bbb",
-		StrictMcpConfig: true,
-	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(builder.calls) != 1 {
-		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
-	}
-	if !builder.calls[0].strictMcpConfig {
-		t.Fatalf("BuildInteractive strictMcpConfig = false, want true")
 	}
 }
 

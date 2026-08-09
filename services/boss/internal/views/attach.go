@@ -385,6 +385,11 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
 			return m, nil
 		}
+		if err := validateTmuxSessionName(tmuxName); err != nil {
+			m.err = err
+			m.launching = false
+			return m, nil
+		}
 		// Stash on the model (not just pendingExec) so it survives to the
 		// agentFinishedMsg handler, which fires after pendingExec has already
 		// been cleared.
@@ -426,7 +431,12 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// delay elapses, the manager already knows about the session and
 		// the user's Ctrl+X intercept has somewhere to land.
 		m.attachDestination = remoteHostDestination()
-		attach := buildAttachCommand(m.attachDestination, tmuxName, msg.session.GetWorktreePath())
+		attach, err := buildAttachCommand(m.attachDestination, tmuxName, msg.session.GetWorktreePath())
+		if err != nil {
+			m.err = err
+			m.launching = false
+			return m, nil
+		}
 		// #nosec G204 -- tmux attach -t <name>, or the same under ssh; const argv
 		// plus an app-generated session id and the user's own --host destination. owner=@recurser review-by=2027-02-07 issue=BOS-714
 		// No local shell either way; the remote leg's shell gets the session name
@@ -840,7 +850,11 @@ func renderTmuxAttachDiagnostic(destination, tmuxName, effectiveTERM, capturedTa
 	prose := lipgloss.NewStyle().Padding(0, 2)
 	code := lipgloss.NewStyle().Padding(0, 4)
 
-	repro := shellJoin(buildAttachReproArgv(destination, tmuxName))
+	argv, err := buildAttachReproArgv(destination, tmuxName)
+	if err != nil {
+		return prose.Render(err.Error())
+	}
+	repro := shellJoin(argv)
 	if effectiveTERM != "" {
 		// ssh hands the local TERM to the remote pty, so prefixing the whole
 		// invocation sets the value the remote tmux client will see too.

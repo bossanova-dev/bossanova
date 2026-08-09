@@ -124,6 +124,49 @@ func TestRealQueuedPaneIsDeliveredAsQueued(t *testing.T) {
 	}
 }
 
+// TestSubmitVerifierErrorsDoNotEchoPayload ensures verifier diagnostics remain
+// safe to persist as transport errors while preserving their outcome classes.
+func TestSubmitVerifierErrorsDoNotEchoPayload(t *testing.T) {
+	cases := []struct {
+		name        string
+		payload     string
+		pane        string
+		wantOutcome SubmitOutcome
+		wantCause   error
+	}{
+		{
+			name:        "still pending",
+			payload:     "TMUX-SECRET-PAYLOAD",
+			pane:        "› TMUX-SECRET-PAYLOAD\n",
+			wantOutcome: OutcomeNotSubmitted,
+			wantCause:   errSubmissionPending,
+		},
+		{
+			name:        "queued",
+			payload:     queuedFixturePayload,
+			pane:        readPaneFixture(t, realQueuedPane),
+			wantOutcome: OutcomeQueued,
+			wantCause:   errSubmissionQueued,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &sendPlanRecordingFactory{capturePaneOutputs: []string{tc.pane}}
+			c := NewClient(WithCommandFactory(f.factory))
+			outcome, err := c.waitForSubmission(context.Background(), "boss-test-redaction", tc.payload, 15*time.Millisecond, time.Millisecond)
+			if outcome != tc.wantOutcome {
+				t.Fatalf("outcome = %v, want %v", outcome, tc.wantOutcome)
+			}
+			if !errors.Is(err, tc.wantCause) {
+				t.Fatalf("error = %v, want cause %v", err, tc.wantCause)
+			}
+			if strings.Contains(err.Error(), tc.payload) {
+				t.Fatalf("submit-verifier error leaked payload: %q", err)
+			}
+		})
+	}
+}
+
 // TestRealSwallowedEnterPaneIsNotSubmitted is the other half, and together with
 // the test above it is the whole finding: the two panes were captured from the
 // same agent, seconds apart, and they do NOT render alike. The swallowed-Enter

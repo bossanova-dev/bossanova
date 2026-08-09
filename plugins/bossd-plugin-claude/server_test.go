@@ -138,76 +138,18 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveCommand_AppendsMcpConfig(t *testing.T) {
+func TestBuildInteractiveCommand_IgnoresAutomaticMcpConfig(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:     "sid",
-		LogPath:       filepath.Join(t.TempDir(), "claude.log"),
-		McpConfigPath: "/data/bossanova/mcp-configs/sid.json",
+		SessionId: "sid",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(resp.GetArgv(), "\x00")
-	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
-		t.Fatalf("argv %v missing --mcp-config <path>", resp.GetArgv())
-	}
-}
-
-// argvHas reports whether argv contains an exact token.
-func argvHas(argv []string, want string) bool {
-	for _, a := range argv {
-		if a == want {
-			return true
-		}
-	}
-	return false
-}
-
-func TestBuildInteractiveCommand_AppendsStrictMcpConfig(t *testing.T) {
-	srv := &Server{}
-	// StrictMcpConfig true with a non-empty config path → --strict-mcp-config is
-	// appended so the curated config is the whole MCP surface.
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:       "sid",
-		LogPath:         filepath.Join(t.TempDir(), "claude.log"),
-		McpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
-		StrictMcpConfig: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !argvHas(resp.GetArgv(), "--strict-mcp-config") {
-		t.Fatalf("argv %v missing --strict-mcp-config when strict + config set", resp.GetArgv())
-	}
-
-	// StrictMcpConfig false → never append --strict-mcp-config (interactive path).
-	respOff, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:       "sid",
-		LogPath:         filepath.Join(t.TempDir(), "claude.log"),
-		McpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
-		StrictMcpConfig: false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if argvHas(respOff.GetArgv(), "--strict-mcp-config") {
-		t.Fatalf("argv %v must not contain --strict-mcp-config when strict false", respOff.GetArgv())
-	}
-
-	// StrictMcpConfig true but empty config path → neither flag, so strict mode
-	// can never strip the boss server by pointing at nothing.
-	respNoCfg, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:       "sid",
-		LogPath:         filepath.Join(t.TempDir(), "claude.log"),
-		StrictMcpConfig: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range respNoCfg.GetArgv() {
-		if a == "--strict-mcp-config" || a == "--mcp-config" {
-			t.Fatalf("argv %v must contain neither --mcp-config nor --strict-mcp-config when path empty", respNoCfg.GetArgv())
+	for _, arg := range resp.GetArgv() {
+		if arg == "--mcp-config" || arg == "/data/bossanova/mcp-configs/sid.json" || arg == "--strict-mcp-config" {
+			t.Fatalf("argv must ignore automatic MCP configuration: %v", resp.GetArgv())
 		}
 	}
 }

@@ -180,3 +180,30 @@ test('resolveTimeoutMs: unset / empty / non-positive / garbage → default 30000
   assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '100abc' }), 300000)
   assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1.5' }), 300000)
 })
+
+test('resolveTimeoutMs: exotic Number() forms the shell gates cannot express → default 300000', () => {
+  // BOS-758 round 3. These are all LEGAL Number() input and a bare `Number()` honoured every one of
+  // them, but the budget gates that price this timeout are POSIX shell and their normalization is a
+  // digits-only `case` glob plus `$(( 10# ))` — no glob can match an exponent, a sign, a hex prefix,
+  // or leading whitespace. Each accepted-here/rejected-there form is a leg the gate reserves the
+  // 300000 ms default for while the helper grants the override: `1.8e6` reserves five minutes for a
+  // thirty-minute Codex leg and the overrun lands in the post-review reserve. Rejecting them here is
+  // what makes "plain positive decimal digits" the one contract BOTH readers implement.
+  for (const raw of ['1.8e6', '1e3', '0x2710', '0b11', '0o17', '+600000', ' 1800000', '1800000 ']) {
+    assert.equal(
+      resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: raw }),
+      300000,
+      `${JSON.stringify(raw)} is not plain decimal digits and must take the default`,
+    )
+  }
+})
+
+test('resolveTimeoutMs: plain digits stay honored, leading zeros included', () => {
+  // The paired positive: the gate above must not be satisfiable by a resolver that simply refuses
+  // everything. A zero-padded POSITIVE is plain digits, so it is a real override — and it is the one
+  // both readers agree on, because the shell side converts through an explicit base-10 radix rather
+  // than letting `$(( ))` read the leading zero as octal.
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '0600000' }), 600000)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '08' }), 8)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1800000' }), 1800000)
+})

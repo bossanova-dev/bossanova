@@ -3764,20 +3764,8 @@ type BuildInteractiveCommandRequest struct {
 	// chat, plus the cron autonomy directive for scheduler-spawned runs.
 	AppendSystemPrompt string `protobuf:"bytes,7,opt,name=append_system_prompt,json=appendSystemPrompt,proto3" json:"append_system_prompt,omitempty"`
 	Model              string `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"` // opaque agent model id; "" = plugin default.
-	// mcp_config_path, when non-empty, is an absolute path to a JSON file
-	// describing MCP servers to expose to the interactive agent (e.g. Claude
-	// Code's --mcp-config). bossd writes it into the boss app-data dir (NEVER
-	// the worktree) per spawn so the agent can reach the boss MCP server's
-	// mcp__boss__* tools in-session. Empty means no boss MCP wiring.
-	McpConfigPath string `protobuf:"bytes,9,opt,name=mcp_config_path,json=mcpConfigPath,proto3" json:"mcp_config_path,omitempty"`
-	// strict_mcp_config, when true, tells the agent to load ONLY the servers in
-	// mcp_config_path and ignore project .mcp.json / settings MCP servers (Claude
-	// Code's --strict-mcp-config). bossd sets it for cron/fleet spawns so the
-	// curated set (boss + Linear) is the whole surface; absent/false preserves the
-	// pre-existing merge behavior for interactive and any un-updated caller.
-	StrictMcpConfig bool `protobuf:"varint,10,opt,name=strict_mcp_config,json=strictMcpConfig,proto3" json:"strict_mcp_config,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandRequest) Reset() {
@@ -3864,20 +3852,6 @@ func (x *BuildInteractiveCommandRequest) GetModel() string {
 		return x.Model
 	}
 	return ""
-}
-
-func (x *BuildInteractiveCommandRequest) GetMcpConfigPath() string {
-	if x != nil {
-		return x.McpConfigPath
-	}
-	return ""
-}
-
-func (x *BuildInteractiveCommandRequest) GetStrictMcpConfig() bool {
-	if x != nil {
-		return x.StrictMcpConfig
-	}
-	return false
 }
 
 type BuildInteractiveCommandResponse struct {
@@ -5962,7 +5936,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\x83\x03\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xaf\x02\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -5972,10 +5946,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\x12#\n" +
 	"\rworktree_path\x18\x06 \x01(\tR\fworktreePath\x120\n" +
 	"\x14append_system_prompt\x18\a \x01(\tR\x12appendSystemPrompt\x12\x14\n" +
-	"\x05model\x18\b \x01(\tR\x05model\x12&\n" +
-	"\x0fmcp_config_path\x18\t \x01(\tR\rmcpConfigPath\x12*\n" +
-	"\x11strict_mcp_config\x18\n" +
-	" \x01(\bR\x0fstrictMcpConfig\"\x9f\x02\n" +
+	"\x05model\x18\b \x01(\tR\x05model\"\x9f\x02\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +

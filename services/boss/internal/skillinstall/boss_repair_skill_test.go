@@ -33,9 +33,29 @@ func TestBossRepairSkillReviewRepliesUseGitHubReplyEndpoint(t *testing.T) {
 	skill := readEmbeddedBossRepairSkill(t)
 
 	assertNotContains(t, skill, "in_reply_to_id")
-	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body=\"Fixed:")
-	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body=\"Not fixing:")
-	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body=\"Could you clarify")
+	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\"")
+	assertContains(t, skill, "Reply bodies are Markdown and must never be shell-interpolated.")
+	assertContains(t, skill, "Use the agent's file-editing tool to write the complete reply text")
+	assertContains(t, skill, "First run the path-creation block by itself")
+	assertContains(t, skill, "printf '%s\\n' \"$REPLY_BODY\"")
+	assertContains(t, skill, "REPLY_BODY=\"/the/path/printed/above\"")
+	assertNotContains(t, skill, "cat >\"$REPLY_BODY\"")
+}
+
+func TestBossRepairSkillReviewRepliesPreserveAPIFailureStatus(t *testing.T) {
+	skill := readEmbeddedBossRepairSkill(t)
+	strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+	const replyCommand = "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\""
+	if got := strings.Count(strategyC, replyCommand); got != 3 {
+		t.Fatalf("reply command count = %d, want 3", got)
+	}
+	if got := strings.Count(strategyC, "GH_STATUS=$?"); got != 3 {
+		t.Fatalf("saved GitHub failure status count = %d, want 3", got)
+	}
+	if got := strings.Count(strategyC, "exit \"$GH_STATUS\""); got != 3 {
+		t.Fatalf("preserved GitHub failure exit count = %d, want 3", got)
+	}
 }
 
 // TestBossRepairSkillPinsLinearHistoryInvariant pins the linear-history contract: a repair

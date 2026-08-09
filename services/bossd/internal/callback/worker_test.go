@@ -3,7 +3,9 @@ package callback
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -246,6 +248,34 @@ func TestWorker_RetryOnDeliveryFailure(t *testing.T) {
 	}
 }
 
+// TestWorker_RetryDiagnosticDoesNotPersistEchoedCallbackBody guards last_error,
+// which is returned by durable callback reads. tmux used to echo its complete
+// prompt into a failed submit-verifier error, including this registered body.
+func TestWorker_RetryDiagnosticDoesNotPersistEchoedCallbackBody(t *testing.T) {
+	const secret = "CALLBACK-SECRET-RETRY\nSECOND-LINE"
+	store := newStore(t)
+	clk := newClock(time.Now())
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: secret,
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	w := newWorker(store, DelivererFunc(func(_ context.Context, _ string, prompt string) error {
+		return fmt.Errorf("command was not submitted; %q is still present at the tmux prompt", prompt)
+	}), clk.now, "worker-1")
+	w.scan(context.Background())
+
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.LastError == nil {
+		t.Fatal("last_error not recorded")
+	}
+	assertCallbackDiagnosticRedacted(t, *got.LastError, secret)
+}
+
 func TestWorker_RetryDeliveryUsesRepeatPrompt(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()
@@ -312,7 +342,7 @@ func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
 	if got.NextAttemptAt == nil || got.NextAttemptAt.Sub(expires).Abs() > time.Second {
 		t.Errorf("next_attempt_at = %v, want pinned to expiry %v", got.NextAttemptAt, expires)
 	}
-	if got.LastError == nil || !strings.Contains(*got.LastError, "attempt exhaustion") {
+	if got.LastError == nil || !strings.Contains(*got.LastError, "exhaustion") {
 		t.Errorf("last_error = %v, want attempt exhaustion diagnostic", got.LastError)
 	}
 
@@ -329,6 +359,57 @@ func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
 	}
 	if attempts != maxDeliveryAttempts {
 		t.Errorf("delivery attempts after expiry = %d, want %d", attempts, maxDeliveryAttempts)
+	}
+}
+
+// TestWorker_ExhaustionDiagnosticDoesNotPersistEchoedCallbackBody verifies the
+// terminal retry path applies the same last_error redaction as ordinary retries.
+func TestWorker_ExhaustionDiagnosticDoesNotPersistEchoedCallbackBody(t *testing.T) {
+	const secret = "CALLBACK-SECRET-EXHAUSTION\nSECOND-LINE"
+	store := newStore(t)
+	base := time.Now().UTC()
+	clk := newClock(base)
+	expires := base.Add(24 * time.Hour)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: secret, ExpiresAt: &expires,
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	w := newWorker(store, DelivererFunc(func(_ context.Context, _ string, prompt string) error {
+		return fmt.Errorf("command was not submitted; %q is still present at the tmux prompt", prompt)
+	}), clk.now, "worker-1")
+	for range maxDeliveryAttempts {
+		w.scan(context.Background())
+		got, err := store.Get(context.Background(), cb.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.NextAttemptAt == nil {
+			t.Fatal("next_attempt_at not set")
+		}
+		clk.advance(got.NextAttemptAt.Sub(clk.now()))
+	}
+
+	got, err := store.Get(context.Background(), cb.ID)
+	if err != nil {
+		t.Fatalf("get exhausted callback: %v", err)
+	}
+	if got.LastError == nil {
+		t.Fatal("last_error not recorded")
+	}
+	assertCallbackDiagnosticRedacted(t, *got.LastError, secret)
+}
+
+func assertCallbackDiagnosticRedacted(t *testing.T, diagnostic, body string) {
+	t.Helper()
+	quotedBody := strconv.Quote(body)
+	quotedBody = quotedBody[1 : len(quotedBody)-1]
+	if strings.Contains(diagnostic, body) || strings.Contains(diagnostic, quotedBody) {
+		t.Fatalf("last_error leaked callback body: %q", diagnostic)
+	}
+	if !strings.Contains(diagnostic, callbackRedactedMessageMarker) {
+		t.Fatalf("last_error did not mark the callback redaction: %q", diagnostic)
 	}
 }
 
@@ -374,7 +455,7 @@ func TestWorker_PreviouslyExhaustedCallbackIsNotDeliveredAgain(t *testing.T) {
 	if got.NextAttemptAt == nil || got.NextAttemptAt.Sub(expires).Abs() > time.Second {
 		t.Errorf("next_attempt_at = %v, want expiry %v", got.NextAttemptAt, expires)
 	}
-	if got.LastError == nil || !strings.Contains(*got.LastError, "attempt exhaustion after 5 attempts") {
+	if got.LastError == nil || !strings.Contains(*got.LastError, "exhaustion after 5") {
 		t.Errorf("last_error = %v, want five-attempt exhaustion diagnostic", got.LastError)
 	}
 }

@@ -61,12 +61,27 @@ const EMBED_DIFF_LIMIT_BYTES = 200 * 1024
 const DIFF_COLLECTION_BUDGET_MS = 30_000
 
 // resolveTimeoutMs(env) → positive integer ms.
-// Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default when unset or
-// not a positive integer. Uses strict Number() parsing (not the lenient
-// parseInt) so trailing garbage like "100abc" is rejected to the default
-// rather than silently truncated to 100.
+// Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default unless the
+// value is a run of PLAIN DECIMAL DIGITS denoting a positive number. Trailing
+// garbage like "100abc" and fractional "1.5" are rejected to the default rather
+// than silently truncated to 100 / 1, as they always were.
+//
+// The digits-only shape gate is load bearing, not belt-and-braces on top of
+// Number(). Number() alone also accepts `1.8e6`, `0x2710`, `+600000` and
+// whitespace-padded ` 1800000` — forms no POSIX shell glob can express, and the
+// budget gates that PRICE this timeout are shell. boss-build's Step 6b gate
+// (its review-stack reference) normalizes with a digits-only `case` glob plus an
+// explicit base-10 `$(( 10# ))` radix, so every form Number() accepted but the
+// glob cannot is one where the gate reserves a different number of minutes than
+// the helper then spends: `1.8e6` reserves 5 minutes for a leg granted 30, and
+// the run eats its own post-review reserve. Narrowing the accepted set to what
+// BOTH readers parse identically closes that divergence at the source, instead
+// of teaching the shell one more literal form per round. `0600000` stays valid
+// (600000 ms): it is plain digits, and the gate's `10#` radix reads it the same.
 export function resolveTimeoutMs(env = process.env) {
-  const n = Number(env?.BOSS_CROSS_REVIEW_TIMEOUT_MS)
+  const raw = env?.BOSS_CROSS_REVIEW_TIMEOUT_MS
+  if (raw == null || !/^[0-9]+$/.test(String(raw))) return DEFAULT_TIMEOUT_MS
+  const n = Number(raw)
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS
 }
 

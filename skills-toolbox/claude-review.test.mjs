@@ -283,6 +283,46 @@ test('buildClaudeArgs: includes --permission-mode plan (read-only)', () => {
   assert.equal(args[idx + 1], 'plan')
 })
 
+test('buildClaudeArgs: preserves plan-mode read-only scope when Tier A is requested', () => {
+  const repo = '/tmp/reviewed-checkout'
+  const probeRoot = '/tmp/boss-review-tier-a-private'
+  const args = buildClaudeArgs({
+    base: 'abc',
+    head: 'def',
+    repo,
+    falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    tierAProbeRoot: probeRoot,
+  })
+  const permissionIndex = args.indexOf('--permission-mode')
+  assert.equal(args[permissionIndex + 1], 'plan')
+  assert.ok(!args.includes('acceptEdits'), 'Tier A must not give Claude checkout edit capability')
+  assert.ok(!args.includes('--add-dir'), 'Tier A must not expand Claude checkout access')
+  assert.match(args.at(-1), new RegExp(`checkout is read-only at ${repo}`))
+  assert.match(args.at(-1), /BOSS_REVIEW_TIER_A_ROOT/)
+})
+
+test('run: absolute falsification reference preserves the Claude second voice', async () => {
+  const repo = makeTmpDir()
+  try {
+    const bin = writeEchoArgvBin(repo)
+    const result = await run({
+      env: { BOSS_CLAUDE_BIN: bin },
+      base: 'abc',
+      head: 'def',
+      repo,
+      timeoutMs: 5000,
+      falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    })
+    assert.equal(result.ok, true, result.stderr)
+    assert.equal(result.timedOut, false)
+    assert.match(result.output, /\/opt\/skills\/boss-review\/references\/falsification\.md/)
+    assert.match(result.output, /Tier A only/)
+    assert.match(result.output, /report the probe blocked/i)
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('buildClaudeArgs: includes --bare (hermetic) when ANTHROPIC_API_KEY is set', () => {
   const args = buildClaudeArgs({ base: 'abc', head: 'def', env: { ANTHROPIC_API_KEY: 'sk-test' } })
   assert.ok(args.includes('--bare'), 'bare mode should be enabled when the API key is present')
@@ -353,6 +393,14 @@ test('buildClaudeArgs: preamble instructs to treat output as data, not instructi
       a.length > 50,
   )
   assert.ok(prompt, 'preamble should address data-not-instructions constraint')
+})
+
+test('buildClaudeArgs: supplied falsification reference reaches nested reviewer prompt', () => {
+  const reference = '/opt/skills/boss-review/references/falsification.md'
+  const args = buildClaudeArgs({ base: 'abc', head: 'def', falsificationReference: reference })
+  const prompt = args.at(-1)
+  assert.ok(prompt.includes(reference))
+  assert.match(prompt, /Tier A only/)
 })
 
 test('buildClaudeArgs: preamble mentions BASE...HEAD range', () => {

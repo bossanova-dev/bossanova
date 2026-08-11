@@ -134,11 +134,7 @@ test('mirror gate is documented for any edit to this skill', () => {
 // NO_CHANGE porcelain gate and Phase 4 `git add -A` would — so both must exclude
 // them, or a managed lock alone opens a lock-only PR / gets committed.
 test('NO_CHANGE gate and staging exclude bossd-managed dirty files', () => {
-  for (const p of [
-    '.claude/settings.local.json',
-    '.claude/scheduled_tasks.lock',
-    '.superpowers/',
-  ]) {
+  for (const p of ['.claude/settings.local.json', '.claude/scheduled_tasks.lock']) {
     assert.ok(SKILL.includes(p), `SKILL must account for managed path ${p}`)
   }
   assert.match(SKILL, /grep -Ev/, 'NO_CHANGE gate must filter managed paths from porcelain')

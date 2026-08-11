@@ -40,6 +40,11 @@ var _ bossanovav1connect.DaemonServiceClient = (*fakeDaemonRPC)(nil)
 
 const fakeSessionID = "sess-1"
 
+// fakeMergeDetail is the MergeSessionResponse.detail the fake daemon echoes, so
+// TestLocalClientMergeSessionReturnsDetail can pin that BOS-816 second return
+// actually comes off the wire rather than being synthesized client-side.
+const fakeMergeDetail = "merge strategy squash substituted for rebase"
+
 func sessionResp[T any](f *fakeDaemonRPC, build func() *T) (*connect.Response[T], error) {
 	if f.err != nil {
 		return nil, f.err
@@ -93,7 +98,7 @@ func (f *fakeDaemonRPC) CloseSession(_ context.Context, _ *connect.Request[pb.Cl
 
 func (f *fakeDaemonRPC) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
 	return sessionResp(f, func() *pb.MergeSessionResponse {
-		return &pb.MergeSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+		return &pb.MergeSessionResponse{Session: &pb.Session{Id: fakeSessionID}, Detail: fakeMergeDetail}
 	})
 }
 
@@ -161,7 +166,10 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 		{"ResumeSession", func(c *LocalClient) (*pb.Session, error) { return c.ResumeSession(ctx, "id") }},
 		{"RetrySession", func(c *LocalClient) (*pb.Session, error) { return c.RetrySession(ctx, "id") }},
 		{"CloseSession", func(c *LocalClient) (*pb.Session, error) { return c.CloseSession(ctx, "id") }},
-		{"MergeSession", func(c *LocalClient) (*pb.Session, error) { return c.MergeSession(ctx, "id") }},
+		{"MergeSession", func(c *LocalClient) (*pb.Session, error) {
+			sess, _, err := c.MergeSession(ctx, "id")
+			return sess, err
+		}},
 		{"UpdateSession", func(c *LocalClient) (*pb.Session, error) {
 			return c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: "id"})
 		}},
@@ -449,4 +457,22 @@ func TestLocalClientRecordChat(t *testing.T) {
 			t.Fatalf("got %v, want nil chat", got)
 		}
 	})
+}
+
+// TestLocalClientMergeSessionReturnsDetail pins BOS-816: the widened
+// MergeSession returns MergeSessionResponse.detail alongside the session, so the
+// CLI can print a merge-strategy substitution note. The wrapper table above only
+// covers the session return.
+func TestLocalClientMergeSessionReturnsDetail(t *testing.T) {
+	c := &LocalClient{rpc: &fakeDaemonRPC{}}
+	sess, detail, err := c.MergeSession(context.Background(), "id")
+	if err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if sess == nil || sess.GetId() != fakeSessionID {
+		t.Fatalf("session = %v, want %q", sess, fakeSessionID)
+	}
+	if detail != fakeMergeDetail {
+		t.Fatalf("detail = %q, want %q", detail, fakeMergeDetail)
+	}
 }

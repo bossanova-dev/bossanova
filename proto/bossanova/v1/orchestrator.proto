@@ -106,6 +106,11 @@ service OrchestratorService {
   // caller's Ready daemons via the shared resolver.
   // ProxyListChats reads a session's chats (routes by session_id).
   rpc ProxyListChats(ProxyListChatsRequest) returns (ProxyListChatsResponse);
+  // ProxyGetChatStatuses reads one session's per-chat statuses (routes by
+  // session_id, exactly as ProxyListChats does). Not interchangeable with
+  // ProxyGetSessionStatuses: that aggregates across a session's chats, so it
+  // cannot say whether one specific chat has settled.
+  rpc ProxyGetChatStatuses(ProxyGetChatStatusesRequest) returns (ProxyGetChatStatusesResponse);
   // ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
   // unknown ids, and unions the returned SessionStatusEntry values.
   rpc ProxyGetSessionStatuses(ProxyGetSessionStatusesRequest) returns (ProxyGetSessionStatusesResponse);
@@ -1150,6 +1155,12 @@ message ReportContext {
 // daemon (FindSessionDaemon) and scopes authz.
 message ProxyListChatsRequest { string session_id = 1; }
 message ProxyListChatsResponse { repeated ClaudeChat chats = 1; }
+
+// ProxyGetChatStatusesRequest reads a session's per-chat statuses. session_id
+// routes to the owning daemon (FindSessionDaemon) and scopes authz, matching
+// ProxyListChatsRequest.
+message ProxyGetChatStatusesRequest { string session_id = 1; }
+message ProxyGetChatStatusesResponse { repeated ChatStatusEntry statuses = 1; }
 
 // ProxyGetSessionStatusesRequest resolves each session's owning daemon and
 // unions the returned statuses; unknown ids are skipped, not errored.

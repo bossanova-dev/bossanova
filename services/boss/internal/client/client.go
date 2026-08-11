@@ -63,7 +63,13 @@ type BossClient interface {
 	ResumeSession(ctx context.Context, id string) (*pb.Session, error)
 	RetrySession(ctx context.Context, id string) (*pb.Session, error)
 	CloseSession(ctx context.Context, id string) (*pb.Session, error)
-	MergeSession(ctx context.Context, id string) (*pb.Session, error)
+	// MergeSession merges the session's PR (or its local-only branch) through
+	// the daemon, which owns the merge gate and the per-repo serialization. The
+	// second return is the response's human-readable detail — e.g. a merge
+	// strategy substitution — and is empty when the merge ran exactly as
+	// configured. RemoteClient always returns "": ProxyMergeSessionResponse
+	// carries no detail field, and adding one would be an observable API change.
+	MergeSession(ctx context.Context, id string) (*pb.Session, string, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)

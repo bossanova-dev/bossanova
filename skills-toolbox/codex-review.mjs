@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -10,7 +12,8 @@ import {
   buildExecArgv,
   classifyProbe,
   interpretResult,
-  REVIEW_PREAMBLE,
+  removeTierAProbeRoot,
+  reviewPreamble,
   resolveAgentBin,
   sanitizeOutput,
 } from './cross-review-lib.mjs'
@@ -42,6 +45,131 @@ export { classifyProbe, sanitizeOutput }
 const CODEX_ADAPTER = {
   subcommand: 'exec',
   flags: ['-s', 'read-only', '-c', 'model_reasoning_effort="high"'],
+}
+
+function isDescendant(pathname, ancestor) {
+  return (
+    pathname === ancestor ||
+    ancestor === path.parse(ancestor).root ||
+    pathname.startsWith(`${ancestor}${path.sep}`)
+  )
+}
+
+// Codex's workspace-write configuration can confine writes, but its supported
+// settings do not provide a readable-path allowlist. Tier A executes copied,
+// untrusted code, so write-only confinement is insufficient: it could read
+// host credentials and return them in the review output. Keep Tier A disabled
+// until Codex exposes read confinement alongside writable_roots.
+function canConfineCodexTierAReads() {
+  return false
+}
+
+// Resolve the checkout once before Tier A passes it to prompts or environment.
+// A relative --repo would otherwise be interpreted from Tier A's scratch cwd.
+export function canonicalizeCheckoutRoot(repo) {
+  if (typeof repo !== 'string' || repo === '') return ''
+  try {
+    return fs.realpathSync(repo)
+  } catch {
+    return ''
+  }
+}
+
+// createCodexTierAProbeRoot(repo) → string
+//
+// Codex's workspace-write sandbox normally allows the system temporary roots
+// in addition to its working directory. A workspace below /tmp would therefore
+// make a /tmp checkout writable too. Keep the per-run workspace in a canonical
+// user-cache directory instead, and reject it if the host topology cannot prove
+// that it is outside both the checkout and the system temporary root.
+export function createCodexTierAProbeRoot(
+  repo,
+  { homeDir = os.homedir(), tmpDir = os.tmpdir() } = {},
+) {
+  let checkoutRoot
+  let homeRoot
+  let tmpRoot
+  let cacheRoot
+  try {
+    checkoutRoot = fs.realpathSync(repo)
+    homeRoot = fs.realpathSync(homeDir)
+    tmpRoot = fs.realpathSync(tmpDir)
+    // Start from the canonical, already-existing home root. A fresh account
+    // need not have ~/.cache yet, so resolving that missing child before mkdir
+    // would incorrectly disable Tier A. Validate the ancestor first: only then
+    // may we create ~/.cache, and the post-create canonicalization catches a
+    // pre-existing symlink or other unexpected topology.
+    if (isDescendant(homeRoot, tmpRoot) || isDescendant(homeRoot, checkoutRoot)) {
+      return ''
+    }
+    const cacheParentPath = path.join(homeRoot, '.cache')
+    fs.mkdirSync(cacheParentPath, { recursive: true, mode: 0o700 })
+    const cacheParent = fs.realpathSync(cacheParentPath)
+    if (
+      !isDescendant(cacheParent, homeRoot) ||
+      isDescendant(cacheParent, tmpRoot) ||
+      isDescendant(cacheParent, checkoutRoot)
+    ) {
+      return ''
+    }
+    cacheRoot = path.join(cacheParent, 'boss-review')
+    fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 })
+    cacheRoot = fs.realpathSync(cacheRoot)
+  } catch {
+    return ''
+  }
+
+  if (
+    !isDescendant(cacheRoot, homeRoot) ||
+    isDescendant(cacheRoot, tmpRoot) ||
+    isDescendant(cacheRoot, checkoutRoot)
+  ) {
+    return ''
+  }
+
+  let probeRoot = ''
+  try {
+    probeRoot = fs.realpathSync(fs.mkdtempSync(path.join(cacheRoot, 'tier-a-')))
+    if (
+      !isDescendant(probeRoot, cacheRoot) ||
+      isDescendant(probeRoot, tmpRoot) ||
+      isDescendant(probeRoot, checkoutRoot)
+    ) {
+      removeTierAProbeRoot(probeRoot)
+      return ''
+    }
+    return probeRoot
+  } catch {
+    removeTierAProbeRoot(probeRoot)
+    return ''
+  }
+}
+
+function codexAdapter(tierAProbeRoot) {
+  if (typeof tierAProbeRoot !== 'string' || !path.isAbsolute(tierAProbeRoot)) {
+    return CODEX_ADAPTER
+  }
+  // The scratch root, not the reviewed checkout, is Codex's workspace. This
+  // grants Tier A exactly one writable tree while the checkout remains
+  // readable for inspecting the real gate and production feed. Codex otherwise
+  // includes $TMPDIR and /tmp in workspace-write by default, so explicitly
+  // exclude both and allow only this per-run root.
+  return {
+    subcommand: 'exec',
+    flags: [
+      '--skip-git-repo-check',
+      '-s',
+      'workspace-write',
+      '-c',
+      'model_reasoning_effort="high"',
+      '-c',
+      `sandbox_workspace_write.writable_roots=${JSON.stringify([tierAProbeRoot])}`,
+      '-c',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      '-c',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+    ],
+  }
 }
 
 // Default review timeout, env-overridable via BOSS_CROSS_REVIEW_TIMEOUT_MS.
@@ -166,25 +294,55 @@ export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
 // `run()` builds an embed-mode variant when it can fetch the diff; this pure
 // helper keeps the structural test-surface stable.
 // ---------------------------------------------------------------------------
-export function buildCodexArgs({ base, head, repo }) {
-  const prompt = assemblePrompt({ preamble: REVIEW_PREAMBLE, range: `${base}...${head}` })
-  return buildExecArgv(CODEX_ADAPTER, { base, head, repo, prompt })
+export function buildCodexArgs({ base, head, repo, falsificationReference, tierAProbeRoot = '' }) {
+  const tierA =
+    canConfineCodexTierAReads() &&
+    typeof tierAProbeRoot === 'string' &&
+    path.isAbsolute(tierAProbeRoot)
+  const prompt = assemblePrompt({
+    preamble: reviewPreamble(falsificationReference, { checkoutRoot: repo, tierAProbeRoot }),
+    range: `${base}...${head}`,
+    tierA,
+  })
+  return buildExecArgv(codexAdapter(tierA ? tierAProbeRoot : ''), {
+    base,
+    head,
+    repo: tierA ? tierAProbeRoot : repo,
+    prompt,
+  })
 }
 
 // buildCodexArgsWithDiff — adaptive argv builder used by run().
 // When a diff is available and under the embed cap, embed it directly into the
 // prompt (so the reviewer never has to explore the tree); otherwise fall back
 // to the pure instruct-mode argv.
-function buildCodexArgsWithDiff({ base, head, repo, diffText }) {
+function buildCodexArgsWithDiff({
+  base,
+  head,
+  repo,
+  diffText,
+  falsificationReference,
+  tierAProbeRoot = '',
+}) {
+  const tierA =
+    canConfineCodexTierAReads() &&
+    typeof tierAProbeRoot === 'string' &&
+    path.isAbsolute(tierAProbeRoot)
   if (typeof diffText === 'string' && diffText !== '') {
     const prompt = assemblePrompt({
-      preamble: REVIEW_PREAMBLE,
+      preamble: reviewPreamble(falsificationReference, { checkoutRoot: repo, tierAProbeRoot }),
       range: `${base}...${head}`,
       diffText,
+      tierA,
     })
-    return buildExecArgv(CODEX_ADAPTER, { base, head, repo, prompt })
+    return buildExecArgv(codexAdapter(tierA ? tierAProbeRoot : ''), {
+      base,
+      head,
+      repo: tierA ? tierAProbeRoot : repo,
+      prompt,
+    })
   }
-  return buildCodexArgs({ base, head, repo })
+  return buildCodexArgs({ base, head, repo, falsificationReference, tierAProbeRoot })
 }
 
 // bestEffortDiff(repo, base, head, timeoutMs) → string
@@ -245,6 +403,7 @@ export async function run({
   timeoutMs,
   maxBytes = 65536,
   maxStderrBytes = 4096,
+  falsificationReference = env.BOSS_REVIEW_FALSIFICATION_REFERENCE,
 } = {}) {
   const bin = resolveCodexBin(env)
   if (bin === null) {
@@ -252,6 +411,17 @@ export async function run({
   }
 
   const effectiveTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : resolveTimeoutMs(env)
+  const tierARequested =
+    typeof falsificationReference === 'string' && path.isAbsolute(falsificationReference)
+  const tierAEnabled = tierARequested && canConfineCodexTierAReads()
+  const checkoutRoot = tierAEnabled ? canonicalizeCheckoutRoot(repo) : repo
+
+  // Keep the read-only outside voice available when Tier A cannot be confined.
+  // The prompt requires it to report the blocked probe rather than attempting
+  // an unsafe fallback. Only an enabled Tier A needs a canonical checkout.
+  if (tierAEnabled && checkoutRoot === '') {
+    return { ok: false, output: '', stderr: '', timedOut: false }
+  }
 
   // Feed the diff, don't make the agent fetch it. Best-effort and failure-safe:
   // a non-git `repo` (as in the unit tests) just yields '' → instruct-mode.
@@ -260,9 +430,20 @@ export async function run({
   // run()'s total wall time under effectiveTimeoutMs rather than diff-time + it.
   const diffBudgetMs = Math.min(effectiveTimeoutMs, DIFF_COLLECTION_BUDGET_MS)
   const diffStart = Date.now()
-  const diffText = bestEffortDiff(repo, base, head, diffBudgetMs)
+  const diffText = bestEffortDiff(checkoutRoot, base, head, diffBudgetMs)
   const agentTimeoutMs = Math.max(0, effectiveTimeoutMs - (Date.now() - diffStart))
-  const args = buildCodexArgsWithDiff({ base, head, repo, diffText })
+  const tierAProbeRoot = tierAEnabled ? createCodexTierAProbeRoot(checkoutRoot) : ''
+  if (tierAEnabled && !tierAProbeRoot) {
+    return { ok: false, output: '', stderr: '', timedOut: false }
+  }
+  const args = buildCodexArgsWithDiff({
+    base,
+    head,
+    repo: checkoutRoot,
+    diffText,
+    falsificationReference,
+    tierAProbeRoot,
+  })
 
   return new Promise((resolve) => {
     let settled = false
@@ -290,6 +471,7 @@ export async function run({
         clearTimeout(timer)
         timer = null
       }
+      removeTierAProbeRoot(tierAProbeRoot)
       // NOTE: we deliberately do NOT cancel the pending SIGKILL escalation here.
       // It is only ever armed after a timeout SIGTERM, and the group LEADER
       // exiting first (its `close` resolves run()) does not mean the rest of the
@@ -306,6 +488,14 @@ export async function run({
       // can't deadlock past the ~64KB buffer; the rolling compaction keeps the
       // retained bytes bounded.
       child = spawn(bin, args, {
+        env:
+          tierAProbeRoot === ''
+            ? env
+            : {
+                ...env,
+                BOSS_REVIEW_CHECKOUT_ROOT: repo,
+                BOSS_REVIEW_TIER_A_ROOT: tierAProbeRoot,
+              },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       })
@@ -409,6 +599,7 @@ async function main(argv) {
       base: flags.base,
       head: flags.head,
       repo: flags.repo ?? process.cwd(),
+      falsificationReference: flags['falsification-reference'],
     })
     if (result.output) process.stdout.write(`${result.output}\n`)
     if (!result.ok) {

@@ -43,6 +43,28 @@ test('resolveSessionRunnerAdapter throws on an unregistered runner', () => {
   )
 })
 
+test('an explicitly EMPTY SESSION_RUNNER fails fast instead of coercing to the default', () => {
+  // `||` would silently treat SESSION_RUNNER='' as "boss", hiding a misconfigured
+  // host — an unset-vs-blank env var is exactly what a deploy script gets wrong.
+  assert.throws(
+    () => resolveSessionRunnerAdapter({ SESSION_RUNNER: '' }),
+    /unknown session runner: $/,
+  )
+})
+
+test('an inherited Object.prototype member is NOT a session runner', () => {
+  // REGISTRY is a plain object literal: a truthiness check on REGISTRY[name] would
+  // resolve `constructor` to `Object` and return `Object()`, a plain object that
+  // impersonates an adapter until the first capability call.
+  for (const inherited of ['constructor', 'toString', 'valueOf']) {
+    assert.throws(
+      () => resolveSessionRunnerAdapter({ SESSION_RUNNER: inherited }),
+      new RegExp(`unknown session runner: ${inherited}`),
+      `expected a throw for SESSION_RUNNER=${inherited}`,
+    )
+  }
+})
+
 test('assertConforms passes for the boss reference adapter', () => {
   assert.doesNotThrow(() => assertConforms(resolveSessionRunnerAdapter({})))
 })

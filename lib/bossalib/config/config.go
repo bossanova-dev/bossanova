@@ -809,6 +809,53 @@ type Settings struct {
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
+	// ManagedMcpTools narrows the boss MCP server's advertised tool surface for
+	// every agent spawn to the named tools (MCP tool names, e.g. "get_session").
+	// Empty or absent — the default — advertises all 55, which is what every
+	// install did before this key existed.
+	//
+	// It exists because those tool schemas are re-sent on every turn and a run
+	// uses a fraction of them, so the unused ones are a standing context cost.
+	// It applies ONLY to the boss server: the managed config's other two entries
+	// are third-party HTTP servers whose tool lists bossd does not control.
+	//
+	// Naming a tool that does not exist is silently ignored, and an agent cannot
+	// call a tool left out here — so a too-narrow list makes capability vanish
+	// rather than fail loudly. Widen it if a run reports a missing mcp__boss__*
+	// tool.
+	ManagedMcpTools []string `json:"managed_mcp_tools,omitempty"`
+	// DisabledManagedMcpServers names managed MCP servers to omit from every
+	// agent spawn — "boss", "bossanova-linear", "bossanova-sentry". Disabling
+	// all three writes no config at all, so the spawn omits --mcp-config
+	// entirely.
+	//
+	// It is the coarse counterpart to ManagedMcpTools: the boss server's tool
+	// list can be narrowed because bossd owns that server, but the other two are
+	// third-party HTTP servers whose tool lists bossd does not control, so the
+	// only lever for those is omitting the server.
+	//
+	// It is a POINTER because absent and explicitly-empty must mean different
+	// things (BOS-827), and only a pointer survives the Load -> mutate -> Save
+	// round trip UpdateSettings performs:
+	//
+	//   - nil (key absent) — apply bossd's default, which omits "boss". The
+	//     boss skills prefer the boss CLI for the same operations (BOS-825), so
+	//     the ~20k tokens of mcp__boss__* schemas re-sent on every turn are not
+	//     worth their cost by default.
+	//   - non-nil and empty ([]) — the operator's explicit rollback: wire every
+	//     managed server, including "boss". This is a settings change only, no
+	//     rebuild. On a plain []string this override could not be expressed:
+	//     omitempty drops an empty slice whether or not it is nil, so Save
+	//     would rewrite the file without the key and the next spawn would
+	//     silently re-apply the default.
+	//   - populated — omit exactly the named servers, verbatim; the default
+	//     does not merge into an operator-supplied list.
+	//
+	// Whoever reads this must go through the effective-disabled-set resolver in
+	// services/bossd/internal/session/mcp_config.go, not the raw field: the
+	// config writer and the system-prompt builder have to agree about which
+	// servers a spawn actually receives.
+	DisabledManagedMcpServers *[]string `json:"disabled_managed_mcp_servers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this
 	// daemon. It is PRESENTATION METADATA ONLY: it feeds the self-reported
 	// hostname bossd advertises to the orchestrator, and never the daemon's

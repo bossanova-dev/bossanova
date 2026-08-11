@@ -76,27 +76,35 @@ plan (…)` link a previously-planned ticket carried, so the epic parent isn't `
    boss-plan sweep will keep re-selecting the already-created epic container. Re-running on a
    partially-built parent **adopts** existing children rather than duplicating them.
 
-## Phase 3 — Seed a design doc (auto-skip office-hours; interactive only)
+## Phase 3 — Seed a design doc in this run's private scratch (interactive only)
 
-`plan-eng-review` offers to run `office-hours` only when it finds **no** design doc. Seed one so
-that offer never fires (headless never invokes `plan-eng-review`, so this whole phase is
-interactive-only):
+A drafting layer that finds no design doc typically opens its own discovery interview from scratch.
+Seed one so the Phase 4 draft extension starts from the ticket's own starting material instead
+(headless never reads it — the drafting brief carries the ticket itself — so this whole phase is
+interactive-only).
 
-1. Compute the slug + branch exactly the way `plan-eng-review` does:
+The seed lives in **this run's own private scratch**, never in a third-party tool's directory and
+never at a user-global or otherwise shared path: a published core runs in arbitrary projects on
+arbitrary machines, so it may only write where it owns the ground.
+
+1. Create the run scratch and compute the design-doc path inside it:
    ```bash
-   SLUG=$(~/.claude/skills/gstack/browse/bin/remote-slug 2>/dev/null || basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
-   BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo 'no-branch')
-   USER=$(whoami)
-   DATETIME=$(date +%Y%m%d-%H%M%S)
-   DESIGN_DIR="$HOME/.gstack/projects/$SLUG"
+   ISSUE_ID="${ISSUE_ID:?set to the id of the ticket you are planning}"
+   RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-run.XXXXXX")
+   DESIGN_DIR="$RUN_TMP/design"
    mkdir -p "$DESIGN_DIR"
-   echo "$DESIGN_DIR/$USER-$BRANCH-design-$DATETIME.md"
+   echo "$RUN_TMP"
+   echo "$DESIGN_DIR/$ISSUE_ID-design.md"
    ```
-   **Record the exact path this prints** — call it the design-doc path. Cleanup (below) removes that
-   literal path. Do **not** reconstruct it later (the `$DATETIME` stamp is non-deterministic, so a
-   fresh shell would compute a different name) and do **not** stash it in a shared file (a fixed
+   Substitute the ticket's own id for `${ISSUE_ID:?…}` (or export `ISSUE_ID` first) — a fresh Bash
+   shell carries no value for it, so a verbatim copy aborts on that guard rather than seeding.
+   `RUN_TMP` is the `runTmp` you pass to every Phase 4 dispatch; `mktemp -d` makes it unique per run,
+   so two concurrent runs in the same worktree never collide. **Record the exact paths this prints**
+   — call them the run scratch and the design-doc path. Cleanup (below) removes that literal scratch
+   directory. Do **not** reconstruct either path later (the `mktemp` suffix is non-deterministic, so
+   a fresh shell would compute a different name) and do **not** stash it in a shared file (a fixed
    pointer path collides between two runs in the same worktree). Your own context carries it across
-   the fresh Bash shells; only the shell is fresh, not your memory of this path.
+   the fresh Bash shells; only the shell is fresh, not your memory of these paths.
 2. Write a design doc to that path using the Write tool. Body:
 
    ```markdown
@@ -200,14 +208,19 @@ body, but the URLs must stay intact in `## Original notes`. The orchestrator's m
 
 ## Interactive cleanup
 
-In addition to the plan file, remove the design doc you seeded in Phase 3 (headless has no design
-doc to remove):
+In addition to the plan file, remove the run scratch you created in Phase 3 — it holds the seeded
+design doc and every per-dispatch draft target (headless has no design doc to remove):
 
 ```bash
-rm -f "<the exact design-doc path you recorded in Phase 3>"
+rm -rf "<the exact run-scratch path you recorded in Phase 3>"
 ```
 
-Substitute the **literal** design-doc path you recorded in Phase 3 — do not recompute it (the
-non-deterministic `$DATETIME` stamp would yield a different filename and leave the doc behind) and
-do not glob the timestamp (that would over-delete a concurrent same-user/branch run's doc). Removal
-is best-effort: a missing file is fine.
+Substitute the **literal** run-scratch path you recorded in Phase 3 — do not recompute it (the
+non-deterministic `mktemp` suffix would yield a different directory and leave the seed behind) and
+do not glob the suffix (that would over-delete a concurrent run's scratch). Removal is best-effort:
+a missing directory is fine.
+
+A dispatched draft extension may also produce artifacts of its own **outside** the scratch you
+handed it. That is the extension's own cleanup obligation, stated in the extension contract; the
+core neither guesses at those paths nor leaves them standing — if such an artifact survives a
+dispatch you can see, record it in the autonomous decisions.

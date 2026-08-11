@@ -20,17 +20,17 @@ preserve the per-task commits. The PR was created in Step 7; this does **not** r
 ```bash
 # PR_NUMBER was captured in Step 7; re-derive if unset (resume / fresh shell).
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
-test -n "$PR_NUMBER"
+test -n "$PR_NUMBER" || exit 1
 BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
+if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
-test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
+test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
 git fetch origin "$BASE_BRANCH"
 # Rebase all commits since the PR base and inject [#PR_NUMBER] into any missing it.
 BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
 git push --force-with-lease origin "$SESSION_BRANCH"
-test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"   # HEAD == upstream
+test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream
 ```
 
 > inject-PR-tag rewrites history (rebase). A daemon `pull --rebase` could race the force-push;
@@ -65,23 +65,23 @@ wait** — `gh pr ready` triggers no gating `test-*.yml` workflow (they fire `on
 
 ```bash
 PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
-test -n "$PR_NUMBER"
+test -n "$PR_NUMBER" || exit 1
 BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-[ -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
+if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
-test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs"
+test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
 git fetch origin "$BASE_BRANCH"
 # Re-inject only if boss-repair added tagless commits; else no rewrite, no push, no second CI wait.
 if git log "origin/$BASE_BRANCH"..HEAD --oneline | grep -qv "\[#$PR_NUMBER\]"; then
   BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
   git push --force-with-lease origin "$SESSION_BRANCH"
-  test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})"   # HEAD == upstream (lease rejected → re-fetch, re-run)
+test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream (lease rejected → re-fetch, re-run)
   gh pr checks "$PR_NUMBER" --watch --fail-fast            # red → route back to Step 8 (boss-repair)
 fi
 # Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
-[ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ] && gh pr ready "$PR_NUMBER"
-test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false"
+if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
+test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
 ```
 
 > If the re-inject branch's `gh pr checks --watch --fail-fast` goes red, route back to **Step 8

@@ -127,6 +127,7 @@ function initRepo() {
   git('init', '-q')
   git('config', 'user.email', 'test@example.com')
   git('config', 'user.name', 'Test')
+  git('config', 'commit.gpgsign', 'false')
   fs.mkdirSync(path.join(root, 'mod'))
   fs.writeFileSync(path.join(root, 'mod', 'a.go'), 'package mod\n')
   git('add', '-A')

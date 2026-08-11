@@ -2109,7 +2109,8 @@ func run(opts runOpts) error {
 		},
 		// Proactive pre-cap sweep seams (BOS-318). LiveChatStatuses surfaces the
 		// non-stale live panes; ProactiveCandidate probes candidate utilization and
-		// picks the idlest eligible account WITHOUT cooling the bound account.
+		// picks the banded consume-first candidate — soonest in-band weekly reset,
+		// else the idlest (BOS-830) — WITHOUT cooling the bound account.
 		LiveChatStatuses: func() map[string]bossanovav1.ChatStatus {
 			snap := chatStatusTracker.Snapshot()
 			out := make(map[string]bossanovav1.ChatStatus, len(snap))

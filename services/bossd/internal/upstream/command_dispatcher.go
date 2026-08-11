@@ -140,6 +140,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchTestAccount(ctx, cmdID, cmd.GetTestAccount(), outbound)
 	case *pb.OrchestratorCommand_ListChats:
 		return c.dispatchListChats(ctx, cmdID, cmd.GetListChats(), outbound)
+	case *pb.OrchestratorCommand_GetChatStatuses:
+		return c.dispatchGetChatStatuses(ctx, cmdID, cmd.GetGetChatStatuses(), outbound)
 	case *pb.OrchestratorCommand_GetSessionStatuses:
 		return c.dispatchGetSessionStatuses(ctx, cmdID, cmd.GetGetSessionStatuses(), outbound)
 	case *pb.OrchestratorCommand_ListCheckSnapshots:
@@ -892,6 +894,26 @@ func (c *StreamClient) dispatchListChats(ctx context.Context, cmdID string, req 
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_ListChats{ListChats: out},
+		}}}
+	})
+}
+
+// dispatchGetChatStatuses routes a GetChatStatusesCommand to the handler and
+// wraps the session's per-chat statuses in a CommandResult{get_chat_statuses}.
+// session_id scopes the read for authz. Dispatched asynchronously (mirrors
+// dispatchListChats, which is keyed on the same single session_id).
+func (c *StreamClient) dispatchGetChatStatuses(ctx context.Context, cmdID string, req *pb.GetChatStatusesCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetChatStatuses(ctx, req.GetSessionId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetChatStatuses{GetChatStatuses: out},
 		}}}
 	})
 }

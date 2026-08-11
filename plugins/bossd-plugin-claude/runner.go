@@ -2,6 +2,8 @@
 package main
 
 import (
+	"context"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -19,7 +21,18 @@ type Runner struct {
 	*agentruntime.Runner
 	dangerouslySkipPermissions bool
 	loginShell                 string
+	model                      string
 	cmdFactory                 agentruntime.CommandFactory
+}
+
+// StartWithManagedMcpConfig starts a headless Claude run with the daemon's
+// managed MCP surface represented as CLI arguments rather than worktree state.
+func (r *Runner) StartWithManagedMcpConfig(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string, managedMcpConfigPath string, isStrictManagedMcpConfig bool) (string, error) {
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
+		"model":                        model,
+		"managed_mcp_config_path":      managedMcpConfigPath,
+		"is_strict_managed_mcp_config": strconv.FormatBool(isStrictManagedMcpConfig),
+	})
 }
 
 // RunnerOption configures a Runner. Kept as RunnerOption (rather than the
@@ -30,9 +43,11 @@ type RunnerOption func(*Runner)
 // WithDangerouslySkipPermissions toggles passing --dangerously-skip-permissions
 // to the Claude CLI. Wired in production from the BOSS_PLUGIN_dangerously_skip_permissions
 // env var (set by bossd's plugin host from Settings.Plugins[claude].Config) —
-// see runnerOptsFromEnv in main.go. The daemon-side tmux paths
-// (server.EnsureChat, session.startCronTmuxChat) build the claude argv
-// directly, so they read the config entry there.
+// see runnerOptsFromEnv in main.go. Every daemon spawn path reaches argv
+// through this plugin: headless via buildArgv, and the tmux/interactive paths
+// via BuildInteractiveCommand (services/bossd/internal/session/tmux_chat.go and
+// server/spawn_chat_tmux.go call it rather than assembling claude argv
+// themselves), so a toggle set here applies to all of them.
 func WithDangerouslySkipPermissions(v bool) RunnerOption {
 	return func(r *Runner) { r.dangerouslySkipPermissions = v }
 }
@@ -40,6 +55,32 @@ func WithDangerouslySkipPermissions(v bool) RunnerOption {
 // WithLoginShell wraps claude argv through the configured login shell.
 func WithLoginShell(shell string) RunnerOption {
 	return func(r *Runner) { r.loginShell = shell }
+}
+
+// WithModel pins the fallback claude --model selection for runs that do not
+// carry their own. Empty means "pass no --model", which lets the claude CLI
+// resolve the model from its own settings.
+func WithModel(model string) RunnerOption {
+	return func(r *Runner) { r.model = model }
+}
+
+// resolveClaudeModel applies per-request-wins/plugin-default-fallback. A run
+// that carries an explicit model (session.model / agent_chats.model, set via
+// `boss new --model`, a cron job's model, or MCP create_session) always wins;
+// otherwise the plugin-level default from BOSS_PLUGIN_model applies. Both empty
+// means no --model on argv and the claude CLI picks.
+//
+// The fallback exists because "no --model" is not deterministic in practice:
+// two chats spawned minutes apart in the same worktree were observed resolving
+// to different context windows, so a run's usable context depended on state
+// outside boss. Pinning the model here makes every boss-spawned claude run
+// resolve identically without the daemon having to thread a default through
+// each of its spawn sites.
+func resolveClaudeModel(reqModel, pluginModel string) string {
+	if reqModel != "" {
+		return reqModel
+	}
+	return pluginModel
 }
 
 // WithCommandFactory overrides the agent command factory (for testing).
@@ -94,8 +135,14 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if r.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	if model := in.Options["model"]; model != "" {
+	if model := resolveClaudeModel(in.Options["model"], r.model); model != "" {
 		args = append(args, "--model", model)
+	}
+	if mcpConfigPath := in.Options["managed_mcp_config_path"]; mcpConfigPath != "" {
+		args = append(args, "--mcp-config", mcpConfigPath)
+		if in.Options["is_strict_managed_mcp_config"] == "true" {
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

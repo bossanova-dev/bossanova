@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	creackpty "github.com/creack/pty/v2"
 	"golang.org/x/term"
@@ -129,6 +130,18 @@ func (c *PTYCommand) Run() error {
 	defer func() {
 		if c.stdout != nil {
 			writeTerminalModeReset(c.stdout)
+			// Record that we just turned mouse reporting off on this terminal
+			// while the child kept running, so the next attach knows to undo it.
+			// The child is REUSED, not respawned, so it will not re-send the
+			// enable itself — see Process.MarkModesClobbered and termreset's
+			// MouseEnable. Manager.Get reports false for a child that has already
+			// exited, which is exactly the liveness guard this needs: such a child
+			// is replaced by a fresh one that runs its own terminal init, and
+			// marking it would make the next attach write modes over a child that
+			// never asked for them.
+			if p, alive := c.manager.Get(c.agentSessionID); alive {
+				p.MarkModesClobbered()
+			}
 		}
 	}()
 
@@ -164,6 +177,20 @@ func (c *PTYCommand) Run() error {
 
 	// Replay any buffered output from a previous attach.
 	proc.ReplayBuffer(c.stdout)
+
+	// Undo a previous teardown's mouse-mode reset, AFTER the replay so it is the
+	// last word on the terminal's mode: the replayed buffer is raw historical
+	// output and may itself contain a stale DECRST, which would otherwise land
+	// on top of the enable and re-break scrolling.
+	//
+	// Only for a child we are reusing. That is also why this cannot be left to
+	// the ring buffer to fix by accident: the replay does re-send tmux's original
+	// DECSET while it is still inside the 512KB window, which is precisely why
+	// the bug is intermittent rather than constant — on a busy pane the enable is
+	// evicted and scrolling dies until the client is respawned.
+	if proc.TakeModesClobbered() {
+		termreset.WriteMouseEnable(c.stdout)
+	}
 
 	// Create a cancel pipe for interrupting the stdin read goroutine.
 	cancelR, cancelW, err := os.Pipe()
@@ -292,6 +319,19 @@ func (c *PTYCommand) Run() error {
 						data = c.enterHold.filter(data)
 					}
 
+					// Expand scroll chords LAST, immediately before the write.
+					// Everything above — the detach scan, the paste scanner, the
+					// Enter hold — still sees exactly the bytes the user typed, so
+					// none of their invariants or latencies are affected; the only
+					// difference is what reaches the agent. A chord is not a detach
+					// key and carries no Enter, so no earlier stage has an opinion
+					// about it. See scrollkeys.go for why a keyboard path is needed
+					// when the pane already forwards the mouse.
+					if len(data) > 0 {
+						cx, cy := c.scrollReportPoint()
+						data = expandScrollChords(data, cx, cy)
+					}
+
 					if len(data) > 0 {
 						_ = proc.WriteInput(data)
 					}
@@ -358,20 +398,46 @@ func containsDetachSequence(data []byte) bool {
 	return false
 }
 
-// fdSet sets a file descriptor in a syscall.FdSet.
+// fdSetWordBits is the width, in bits, of one syscall.FdSet.Bits element.
+//
+// It is PLATFORM-DEPENDENT — int64 on Linux, int32 on Darwin — and both helpers
+// below previously hardcoded 64. On Darwin that made every descriptor from 32
+// upwards unaddressable: `Bits[fd/64]` collapsed to word 0 and `1 << (fd%64)`
+// shifted an int32 by 32 or more, which Go defines as zero. fdSet became a
+// silent no-op and fdIsSet always answered false, so the descriptor was simply
+// never watched — no error, no panic, just a select that ignored it.
+//
+// That is not a corner case here. A live boss TUI holds around thirty
+// descriptors above 32 (a pty master per backgrounded attach, plus sockets and
+// pipes), so the cancel pipe of a new attach routinely lands in the dead range,
+// and the cancellation signal could never wake select. Teardown then blocks
+// forever in wg.Wait(), leaving Run() stuck in its first deferred call with the
+// later defers — proc.Detach and signal.Stop among them — never reached.
+//
+// Derived from the type with unsafe.Sizeof, which is a compile-time constant and
+// involves no pointer arithmetic, so it cannot drift from whatever the platform
+// actually declares.
+const (
+	fdSetWordBits = 8 * int(unsafe.Sizeof(syscall.FdSet{}.Bits[0]))
+	fdSetCapacity = len(syscall.FdSet{}.Bits) * fdSetWordBits
+)
+
+// fdSet sets a file descriptor in a syscall.FdSet. Descriptors outside the set's
+// capacity are declined rather than written: fd_set cannot represent them, and
+// indexing past the end would corrupt whatever follows.
 func fdSet(set *syscall.FdSet, fd int) {
-	if fd < 0 {
+	if fd < 0 || fd >= fdSetCapacity {
 		return
 	}
-	set.Bits[fd/64] |= 1 << (uint(fd) % 64)
+	set.Bits[fd/fdSetWordBits] |= 1 << (uint(fd) % uint(fdSetWordBits))
 }
 
 // fdIsSet checks if a file descriptor is set in a syscall.FdSet.
 func fdIsSet(set *syscall.FdSet, fd int) bool {
-	if fd < 0 {
+	if fd < 0 || fd >= fdSetCapacity {
 		return false
 	}
-	return set.Bits[fd/64]&(1<<(uint(fd)%64)) != 0
+	return set.Bits[fd/fdSetWordBits]&(1<<(uint(fd)%uint(fdSetWordBits))) != 0
 }
 
 // clampUint16 narrows a terminal dimension (rows/cols — always small and

@@ -209,6 +209,8 @@ message OrchestratorCommand {
     // handler NEVER publishes a BroadcastEgress in response — see
     // BroadcastCommand.
     BroadcastCommand broadcast = 60;
+    // bosso → daemon: per-chat status for one session. Replies CommandResult{get_chat_statuses}.
+    GetChatStatusesCommand get_chat_statuses = 61;
   }
 }
 
@@ -440,6 +442,8 @@ message CommandResult {
     // UpdateNote returns the updated note (reuses daemon.proto type).
     // DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
     UpdateNoteResponse update_note = 39;
+    // GetChatStatuses returns the session's per-chat statuses (reuses daemon.proto type).
+    GetChatStatusesResponse get_chat_statuses = 40;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -821,6 +825,13 @@ message GetChatTranscriptCommand {
 // CommandResult carrying a ListChatsResponse (list_chats = 27). session_id
 // scopes the read for authz, mirroring GetChatTranscriptCommand.
 message ListChatsCommand { string session_id = 1; }
+
+// GetChatStatusesCommand asks the daemon for the per-chat status of one
+// session. Replies with CommandResult carrying a GetChatStatusesResponse
+// (get_chat_statuses = 40). session_id scopes the read for authz, mirroring
+// ListChatsCommand. Distinct from GetSessionStatusesCommand, which aggregates
+// across a session's chats and so cannot answer whether one chat has settled.
+message GetChatStatusesCommand { string session_id = 1; }
 
 // GetSessionStatusesCommand asks the daemon for the aggregate status of the
 // given sessions. Replies with CommandResult carrying a

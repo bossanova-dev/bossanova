@@ -130,6 +130,8 @@ type fakeCommandHandler struct {
 	// Read-tier parity knobs (BOS-401).
 	listChatsResult          *pb.ListChatsResponse
 	listChatsSession         string // last sessionID passed to ListChats
+	chatStatusesResult       *pb.GetChatStatusesResponse
+	chatStatusesSession      string // last sessionID passed to GetChatStatuses
 	sessionStatusesResult    *pb.GetSessionStatusesResponse
 	sessionStatusesIDs       []string // last sessionIDs passed to GetSessionStatuses
 	listCheckSnapshotsResult *pb.ListCheckSnapshotsResponse
@@ -353,6 +355,10 @@ func (f *fakeCommandHandler) TestAccount(_ context.Context, cmd *pb.TestAccountC
 func (f *fakeCommandHandler) ListChats(_ context.Context, sessionID string) (*pb.ListChatsResponse, error) {
 	f.listChatsSession = sessionID
 	return f.listChatsResult, f.returnErr
+}
+func (f *fakeCommandHandler) GetChatStatuses(_ context.Context, sessionID string) (*pb.GetChatStatusesResponse, error) {
+	f.chatStatusesSession = sessionID
+	return f.chatStatusesResult, f.returnErr
 }
 func (f *fakeCommandHandler) GetSessionStatuses(_ context.Context, sessionIDs []string) (*pb.GetSessionStatusesResponse, error) {
 	f.sessionStatusesIDs = sessionIDs
@@ -1894,6 +1900,75 @@ func TestDispatchCommand_DeleteChat_CallsHandler(t *testing.T) {
 	}
 	if r.GetRecordChat() != nil {
 		t.Fatalf("expected no record_chat payload for delete_chat, got %+v", r.GetRecordChat())
+	}
+}
+
+func TestDispatchCommand_GetChatStatuses_CallsHandler(t *testing.T) {
+	statuses := &pb.GetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{
+		{AgentSessionId: "chat-1", Status: pb.ChatStatus_CHAT_STATUS_IDLE},
+		{AgentSessionId: "chat-2", Status: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}}
+	handler := &fakeCommandHandler{chatStatusesResult: statuses}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-gcs1",
+			Cmd: &pb.OrchestratorCommand_GetChatStatuses{
+				GetChatStatuses: &pb.GetChatStatusesCommand{SessionId: "sess-1"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async get_chat_statuses, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	// session_id must reach the handler unchanged: it is what scopes the read for authz.
+	if handler.chatStatusesSession != "sess-1" {
+		t.Fatalf("handler session_id = %q, want %q", handler.chatStatusesSession, "sess-1")
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-gcs1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	// The reply must land in the new get_chat_statuses arm, not the aggregate
+	// get_session_statuses one — they are not interchangeable.
+	if r.GetGetSessionStatuses() != nil {
+		t.Fatalf("expected no get_session_statuses payload, got %+v", r.GetGetSessionStatuses())
+	}
+	got := r.GetGetChatStatuses().GetStatuses()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 chat statuses, got %+v", got)
+	}
+	if got[0].GetAgentSessionId() != "chat-1" || got[0].GetStatus() != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("unexpected first chat status: %+v", got[0])
+	}
+	if got[1].GetAgentSessionId() != "chat-2" || got[1].GetStatus() != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Fatalf("unexpected second chat status: %+v", got[1])
+	}
+}
+
+func TestDispatchCommand_GetChatStatuses_HandlerError_ReturnsCommandErr(t *testing.T) {
+	handler := &fakeCommandHandler{
+		returnErr: connect.NewError(connect.CodeNotFound, errors.New("session not found")),
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-gcs-err",
+			Cmd: &pb.OrchestratorCommand_GetChatStatuses{
+				GetChatStatuses: &pb.GetChatStatusesCommand{SessionId: "sess-missing"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async get_chat_statuses, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	// The daemon-side code must survive so --remote can map it like a local call.
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("error_code = %v, want NOT_FOUND", r.GetErrorCode())
 	}
 }
 

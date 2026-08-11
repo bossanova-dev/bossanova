@@ -123,9 +123,9 @@ func TestAttach_LocalModelStillExecsInTheWorktree(t *testing.T) {
 	if got.pendingExec == nil || got.pendingExec.cmd == nil {
 		t.Fatal("pendingExec.cmd = nil, want the staged process")
 	}
-	want := []string{"tmux", "attach", "-t", "boss-test-chat"}
+	want := []string{"tmux", "-u", "attach", "-t", "boss-test-chat"}
 	if !reflect.DeepEqual(got.pendingExec.cmd.Args, want) {
-		t.Fatalf("exec'd argv = %q, want the unchanged local form %q", got.pendingExec.cmd.Args, want)
+		t.Fatalf("exec'd argv = %q, want the local form %q", got.pendingExec.cmd.Args, want)
 	}
 	if got.pendingExec.cmd.Dir != "/Users/dev/worktrees/feature" {
 		t.Fatalf("exec'd dir = %q, want the session worktree", got.pendingExec.cmd.Dir)
@@ -245,7 +245,10 @@ func TestDetachedAfterExec_ClassifiesAllFourArms(t *testing.T) {
 func TestBuildAttachCommand_LocalIsUnchanged(t *testing.T) {
 	got := mustBuildAttachCommand(t, "", "boss-chat-abc", "/Users/dev/worktrees/feature")
 
-	want := []string{"tmux", "attach", "-t", "boss-chat-abc"}
+	// -u is required, not incidental: the remote arm and bossd's own attach both
+	// pass it, and omitting it here is what made the local attach the only path
+	// that lost UTF-8 line-drawing under a bare locale.
+	want := []string{"tmux", "-u", "attach", "-t", "boss-chat-abc"}
 	if !reflect.DeepEqual(got.argv, want) {
 		t.Fatalf("local attach argv = %q, want %q", got.argv, want)
 	}

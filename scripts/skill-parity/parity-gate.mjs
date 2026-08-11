@@ -57,7 +57,7 @@ const EXPECTED_EXTENSIONS = [
     core: 'boss-review',
     role: 'round',
     skill: 'boss-review',
-    names: ['boss-review-crossmodel', 'boss-review-requesting', 'boss-review-thermonuclear'],
+    names: ['boss-review-ce', 'boss-review-crossmodel', 'boss-review-thermonuclear'],
   },
   {
     core: 'boss-proof',
@@ -75,7 +75,7 @@ const EXPECTED_EXTENSIONS = [
     core: 'boss-plan',
     role: 'draft',
     skill: 'boss-plan',
-    names: ['boss-plan-draft'],
+    names: ['boss-plan-compound-engineering'],
   },
   {
     core: 'boss-build',

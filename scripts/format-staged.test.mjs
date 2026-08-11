@@ -330,3 +330,22 @@ test('format-staged: staged symlink is skipped; its target is not modified', () 
     'symlink target must not be modified',
   )
 })
+
+test('format-staged: locks canonical skill payload writes', () => {
+  const repo = initRepo()
+  const prettier = path.join(repo, 'node_modules', '.bin', 'prettier')
+  fs.mkdirSync(path.dirname(prettier), { recursive: true })
+  fs.writeFileSync(
+    prettier,
+    `#!/bin/sh\ntest -f "$PWD/.git/boss-skill-snapshot.lock" || exit 1\nprintf '\\n# locked\\n' >> "$2"\n`,
+  )
+  fs.chmodSync(prettier, 0o755)
+  const skill = 'services/boss/internal/skillinstall/skills/boss/SKILL.md'
+  fs.mkdirSync(path.join(repo, path.dirname(skill)), { recursive: true })
+  fs.writeFileSync(path.join(repo, skill), '# skill\n')
+  execFileSync('git', ['-C', repo, 'add', skill])
+
+  const result = runScript(repo, `${path.dirname(process.execPath)}:${MINIMAL_PATH}`)
+  assert.equal(result.code, 0, `must exit 0; stderr: ${result.stderr}`)
+  assert.match(stagedContent(repo, skill), /# locked/)
+})

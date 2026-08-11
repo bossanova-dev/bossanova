@@ -85,6 +85,15 @@ go_library(
 # (mcp_config_test.go) can statically scan them for the
 # McpConfigPath/StrictMcpConfig BOS-672 pairing invariant via runtime.Caller +
 # go/ast, since Bazel only stages declared data.
+filegroup(
+    name = "go_sources",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
 go_test(
     name = "server_test",
     size = "large",  # keep: race-instrumented server suite is the repo's slowest target under --config=race

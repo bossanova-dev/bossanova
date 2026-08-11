@@ -65,7 +65,10 @@ func TestDestructiveToolsAllGated(t *testing.T) {
 			tool: "merge_session",
 			args: map[string]any{"id": "s1"},
 			backend: func(c *bool) *fakeBackend {
-				return &fakeBackend{mergeSession: func(_ context.Context, _ string) (*pb.Session, error) { *c = true; return &pb.Session{Id: "x"}, nil }}
+				return &fakeBackend{mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+					*c = true
+					return &pb.Session{Id: "x"}, "", nil
+				}}
 			},
 		},
 		{

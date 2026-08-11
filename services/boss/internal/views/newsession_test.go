@@ -172,8 +172,10 @@ func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error) 
 func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *stubClient) MergeSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *stubClient) RemoveSession(context.Context, string) error                { panic("unused") }
+func (s *stubClient) MergeSession(context.Context, string) (*pb.Session, string, error) {
+	panic("unused")
+}
+func (s *stubClient) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
 }

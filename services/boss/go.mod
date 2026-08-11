@@ -56,7 +56,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/posthog/posthog-go v1.22.0 // indirect
+	github.com/posthog/posthog-go v1.23.0 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect

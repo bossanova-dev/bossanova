@@ -208,16 +208,16 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
-# Warn (never abort) when these installed helpers have drifted from the repo's helper source:
-# the install is a copy, so a repo that moved on leaves a stale copy here silently. One probe,
+# Warn (never abort) if installed helpers drift from the repo helper source:
+# the install is a copy, so a moved repo leaves a stale copy. Probe once,
 # here at startup only — it never re-checks mid-run. The -f guard keeps an install predating
 # the helper silent instead of failing on a missing module. Clear a `boss-toolbox-drift:` line
 # by re-vendoring and reinstalling the skills; the run continues either way.
-[ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ] && node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true
+if [ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ]; then node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true; fi
 # BOSSD_MANAGED=1 iff a bossd daemon provisioned this worktree (references/standalone-mode.md):
 if node "$BOSS_BUILD_TOOLBOX/bossd-present.mjs"; then BOSSD_MANAGED=1; else BOSSD_MANAGED=0; fi
 if [ "$BOSSD_MANAGED" = "1" ]; then
-  test -n "$SESSION_BRANCH"
+  test -n "$SESSION_BRANCH" || exit 1
 fi
 ```
 
@@ -239,6 +239,39 @@ state and only then discovers it cannot finish:
 
 If either is absent, the repo has not finished configuring boss-build — stop with `NO_CHANGE` naming
 what is missing and make no tracker write.
+
+**Validate a boss transport, not specifically MCP.** This run's boss session operations (its own
+session, its check snapshots, its chats) have two carriers: the boss MCP tools and the `boss` CLI.
+Validate whichever this runtime has, and BLOCK only when **neither** is complete — no MCP server but
+a working `boss` binary is a degraded run, not a stopped one. Enumerate the available boss MCP tool
+names and `boss` subcommands, then diff both at once:
+
+```bash
+node --input-type=module -e '
+  const m = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/session/boss.mjs`)
+  process.stdout.write("tools:\n" + m.requiredBossToolsForEpic().join("\n") + "\n")
+  process.stdout.write("cli:\n" + m.requiredBossCliCommandsForEpic().join("\n") + "\n")
+'
+```
+
+`bossEpicTransportPreflight({availableTools, availableCliCommands})` → `{ ok, transport, missing,
+degraded, partial }` decides it, and the CLI is **preferred, not a fallback**: `transport: 'cli'`
+whenever every `cli`-mapped capability is reachable, including when the MCP set is also complete —
+that preference is what made it safe to stop wiring the boss MCP server by default, so on a managed
+spawn expect `cli`. `transport: 'mcp'` only when the CLI set is incomplete and the tool set is
+complete; `ok: false` only when neither is. On `ok: false` stop `BLOCKED: no complete boss
+transport: <comma-separated
+missing>`. Otherwise **report it in this run's opening line** — `transport: <mcp|cli>`, plus
+`degraded: <capabilities>` and `partial: <capability>(<missing fields>)` when each is non-empty — so
+the handoff says which capabilities the run never consulted, and which it read **half-blind**.
+
+`degraded` = no CLI equivalent: `resolveContext`, `getSessionStatuses`, `createPlanningChat` (three,
+not two — `boss new` has no `--quick-chat`). `partial` = works but blind to fields: today
+`getSession`, whose `boss show --json` lacks `last_agent_activity_at`, `repair_active`,
+`attention_status.reason`, `pr_mergeable` and `merge_block`. Treat an unreadable signal there as
+"not settled", never as a green. Under
+`BOSSD_MANAGED=0` there may be no boss transport at all; that is
+[`references/standalone-mode.md`](references/standalone-mode.md), not a BLOCK.
 
 ## Step 1: Acquire the worktree lock (simplified)
 
@@ -950,7 +983,7 @@ READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" review)"
 if [ "$(printf '%s' "$READ" | jq -r '.status')" = "ok" ]; then
   # matchSentinel classifies the byte-stable `bs-review clean:` / `bs-review capped:` prefixes.
   VERDICT="$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" match "$(printf '%s' "$READ" | jq -r '.kind')" | jq -r '.status // empty')"
-  [ -n "$VERDICT" ] || VERDICT="$DISPATCH_FAILURE"
+  if [ -z "$VERDICT" ]; then VERDICT="$DISPATCH_FAILURE"; fi
 else
   # status == missing (dead/watchdog-killed subagent) OR stale (foreign leftover): a distinct
   # dispatch-failure that routes to the SAFE non-clean branch and is NEVER treated as clean.

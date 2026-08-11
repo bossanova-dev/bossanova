@@ -73,7 +73,7 @@ import {
   OPTIONAL_TRACKER_OPERATIONS,
   REQUIRED_TRACKER_OPERATIONS,
   TRACKER_CAPABILITIES,
-} from '../skills-toolbox/tracker/adapter.mjs'
+} from '../skills-toolbox/tracker/adapter-core.mjs'
 
 // The two roots this repo owns. The generated mirrors are excluded by omission AND
 // by EXCLUDED_PATH_SEGMENTS below, so a future root addition cannot re-admit them.

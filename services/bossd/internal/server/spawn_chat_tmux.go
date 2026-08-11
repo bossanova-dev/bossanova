@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -148,7 +149,7 @@ func chatCommandPrefix(agentName string) string {
 // instructions that never reached the command line. Callers still spawn from
 // GetArgv() alone — the declaration is reported, never enforced.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -195,6 +196,17 @@ type spawnInput struct {
 	// launches on the same model as the initial StartTmuxChat rather than
 	// silently reverting to the plugin default.
 	Model string
+	// ManagedMcpConfigPath is the absolute path to the per-spawn boss MCP config in the
+	// app-data dir (never the worktree), or "" when no trusted mcp binary
+	// resolved. Threading it through means re-ensured (RecordChat) and woken
+	// (WakeChat) panes expose the same mcp__boss__* tools as the initial spawn.
+	ManagedMcpConfigPath string
+	// StrictManagedMcpConfig, when true, makes the curated ManagedMcpConfigPath the whole MCP
+	// surface (Claude Code's --strict-mcp-config): the agent ignores project
+	// .mcp.json / settings servers. Derived from the session's cron-ness so
+	// re-ensured (RecordChat) and woken (WakeChat) panes strictly load the same
+	// curated set (boss + Linear) as the initial cron spawn; false for interactive.
+	StrictManagedMcpConfig bool
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
 	// SessionEnvFunc lazily builds SessionEnv after liveness checks pass. It lets
@@ -276,7 +288,14 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	// at all — pane capture is wired post-NewSession via tmux pipe-pane
 	// by StartTmuxChat, and the WakeChat path here just doesn't need
 	// any. Keeping the empty argument makes the contract explicit.
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model)
+	// Resolve the spawn environment before building argv: Codex uses CODEX_HOME
+	// or HOME to choose the account home that strict MCP setup must mirror.
+	// Liveness was checked above, so this remains lazy for already-live panes.
+	sessionEnv := in.SessionEnv
+	if in.SessionEnvFunc != nil {
+		sessionEnv = in.SessionEnvFunc()
+	}
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, in.ManagedMcpConfigPath, in.StrictManagedMcpConfig, configHomeEnv(sessionEnv, in.WorktreePath))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -290,10 +309,6 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 		in.Chat.AgentName, in.AppendSystemPromptClasses, cmdResp.GetAppendSystemPromptSupport())
 
 	launchedAt := time.Now().UTC()
-	sessionEnv := in.SessionEnv
-	if in.SessionEnvFunc != nil {
-		sessionEnv = in.SessionEnvFunc()
-	}
 	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, sessionEnv); err != nil {
 		return spawnResult{}, fmt.Errorf("new tmux session: %w", err)
 	}
@@ -472,7 +487,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -485,12 +500,15 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, agent.AgentRunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:          agentSessionID,
-		Resume:             resume,
-		WorktreePath:       worktreePath,
-		LogPath:            logPath,
-		AppendSystemPrompt: appendSystemPrompt,
-		Model:              model,
+		SessionId:              agentSessionID,
+		Resume:                 resume,
+		WorktreePath:           worktreePath,
+		LogPath:                logPath,
+		AppendSystemPrompt:     appendSystemPrompt,
+		Model:                  model,
+		ManagedMcpConfigPath:   mcpConfigPath,
+		StrictManagedMcpConfig: strictMcpConfig,
+		ConfigHomeEnv:          configHomeEnv,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)
@@ -499,4 +517,25 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, fmt.Errorf("agent %q returned empty argv", name)
 	}
 	return resp, nil
+}
+
+// configHomeEnv forwards only the home selectors needed while argv is built;
+// account credentials remain confined to the tmux session environment.
+func configHomeEnv(env map[string]string, worktreePath string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make(map[string]string, 2)
+	for _, key := range []string{"CODEX_HOME", "HOME"} {
+		if value, ok := env[key]; ok {
+			if value != "" && !filepath.IsAbs(value) {
+				value = filepath.Join(worktreePath, value)
+			}
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -267,6 +267,10 @@ func (f *fakeSessionCommandServer) ListChats(_ context.Context, _ *connect.Reque
 	return connect.NewResponse(&pb.ListChatsResponse{}), nil
 }
 
+func (f *fakeSessionCommandServer) GetChatStatuses(_ context.Context, _ *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
+	return connect.NewResponse(&pb.GetChatStatusesResponse{}), nil
+}
+
 func (f *fakeSessionCommandServer) GetSessionStatuses(_ context.Context, _ *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
 	return connect.NewResponse(&pb.GetSessionStatusesResponse{}), nil
 }
@@ -483,6 +487,10 @@ func (e *errCommandServer) TestAccount(context.Context, *connect.Request[pb.Test
 }
 
 func (e *errCommandServer) ListChats(context.Context, *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetChatStatuses(context.Context, *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
 	return nil, e.err
 }
 

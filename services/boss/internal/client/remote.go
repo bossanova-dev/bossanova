@@ -352,8 +352,17 @@ func (c *RemoteClient) CloseSession(ctx context.Context, id string) (*pb.Session
 	return resp.Msg.Session, nil
 }
 
-func (c *RemoteClient) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
-	return nil, errLocalOnly("MergeSession")
+// MergeSession proxies the merge through the orchestrator, which routes it to
+// the owning daemon. The detail return is always "": ProxyMergeSessionResponse
+// carries only the session, so a merge-strategy substitution note cannot cross
+// the remote boundary. Adding the field would be an observable API change
+// requiring a date-based apiversion bump plus a down-convert transform.
+func (c *RemoteClient) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
+	resp, err := c.rpc.ProxyMergeSession(ctx, connect.NewRequest(&pb.ProxyMergeSessionRequest{Id: id}))
+	if err != nil {
+		return nil, "", err
+	}
+	return resp.Msg.GetSession(), "", nil
 }
 
 func (c *RemoteClient) RemoveSession(ctx context.Context, id string) error {
@@ -549,8 +558,16 @@ func (c *RemoteClient) ReportChatStatus(ctx context.Context, reports []*pb.ChatS
 	return err
 }
 
-func (c *RemoteClient) GetChatStatuses(_ context.Context, _ string) ([]*pb.ChatStatusEntry, error) {
-	return nil, errLocalOnly("GetChatStatuses")
+// GetChatStatuses proxies a single session's per-chat status read through the
+// orchestrator, which routes it to that session's owning daemon by session_id.
+// Deliberately not served by GetSessionStatuses: that aggregates a session's
+// chats into one entry, so it cannot say whether one specific chat has settled.
+func (c *RemoteClient) GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error) {
+	resp, err := c.rpc.ProxyGetChatStatuses(ctx, connect.NewRequest(&pb.ProxyGetChatStatusesRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetStatuses(), nil
 }
 
 // GetSessionStatuses proxies a multi-session status read through the orchestrator,

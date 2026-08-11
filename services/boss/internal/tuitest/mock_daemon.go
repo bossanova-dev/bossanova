@@ -67,6 +67,12 @@ type MockDaemon struct {
 	// not a secret, it is the record, so every read surface returns it.
 	notes map[string]*pb.Note
 
+	// checkSnapshots is the per-session CI check snapshot store, keyed by
+	// session id and held newest-first — the order the real daemon's
+	// RecentBySession query returns and the order `boss session checks`
+	// renders.
+	checkSnapshots map[string][]*pb.CheckSnapshot
+
 	// lastCreateSession records the most recent CreateSession request so tests
 	// can assert on what the TUI sent (e.g. that filter-narrowed selection uses
 	// the correct original-index PR).
@@ -232,6 +238,53 @@ type MockDaemon struct {
 	chatListDelay time.Duration
 	chatListError string
 
+	// chatStatusesErrorCode/chatStatusesErrorMsg, when the message is non-empty,
+	// make GetChatStatuses fail with that connect error instead of answering.
+	// A status read that cannot be served is the case `boss chats` has to
+	// degrade correctly — loudly under --json, visibly under the table — and
+	// only an injected failure can produce it here.
+	chatStatusesErrorCode connect.Code
+	chatStatusesErrorMsg  string
+
+	// mergeSessionCalls records the id of every MergeSession request. This is
+	// what lets a test prove a declined confirmation issued NO merge RPC —
+	// asserting only on stdout would pass even if the merge had gone through.
+	mergeSessionCalls []string
+	// mergeDetail is echoed as MergeSessionResponse.detail. Empty by default so
+	// the no-detail output path is the default shape.
+	mergeDetail string
+	// mergeErrorCode/mergeErrorMsg, when mergeErrorMsg is non-empty, make
+	// MergeSession fail with that connect error instead of merging — used to
+	// drive the daemon's `merge blocked: gate=<slug>; ...` refusal through the
+	// CLI without reimplementing the gate here.
+	mergeErrorCode connect.Code
+	mergeErrorMsg  string
+	// mergeResponseState, when non-zero, is the state MergeSession reports in
+	// its response instead of MERGED. The real daemon can genuinely answer a
+	// successful merge with a pre-merge state — its handler reads the session
+	// before its own deferred display refresh lands the Merged transition — and
+	// the mock's eager transition below cannot express that, so a test asserting
+	// the CLI passes state through verbatim would only ever be agreeing with the
+	// mock. Setting this drives the lagging shape.
+	mergeResponseState pb.SessionState
+
+	// recordChatCalls records every RecordChat request. `boss chat new` mints the
+	// agent_session_id itself, so the request is the only place a test can see
+	// what id, title, agent and resume flag actually reached the daemon —
+	// stdout shows what the CLI chose to print, which is a different question.
+	recordChatCalls []*pb.RecordChatRequest
+	// recordChatResponse, when non-nil, is returned verbatim by RecordChat
+	// instead of the minted row. The variant that matters is one whose
+	// tmux_session_name is empty: the real daemon genuinely persists a chat row
+	// with no live agent behind it on a host without tmux, and the mock's
+	// unconditional backfill below cannot express that, so a test asserting the
+	// CLI rejects it would only be agreeing with the mock.
+	recordChatResponse *pb.ClaudeChat
+	// sendChatMessageCalls records every SendChatMessage request, which is the
+	// only place the wake/submit flags are observable — the response says
+	// nothing about them.
+	sendChatMessageCalls []*pb.SendChatMessageRequest
+
 	// rpcStall is the current wedge window applied to unary handlers by
 	// rpcStallInterceptor. See SetRPCStall / SetRPCStallFor in harness.go.
 	rpcStall rpcStall
@@ -355,6 +408,7 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		broadcastDeliveries:    make(map[string][]*pb.BroadcastDelivery),
 		broadcastSubscriptions: make(map[string]*pb.BroadcastSubscription),
 		notes:                  make(map[string]*pb.Note),
+		checkSnapshots:         make(map[string][]*pb.CheckSnapshot),
 		accounts:               make(map[string]*pb.Account),
 		accountCredentials:     make(map[string][]byte),
 		prs:                    make(map[string][]*pb.PRSummary),
@@ -391,12 +445,28 @@ func NewMockDaemon(t *testing.T) *MockDaemon {
 	// `go test ./...`) don't collide on `/tmp/boss-tuitest-1.sock`: each package gets
 	// its own counter starting at 1, so without the PID qualifier the second binary
 	// would remove and rebind the first binary's still-active socket.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("boss-tuitest-%d-%d.sock", os.Getpid(), socketCounter.Add(1)))
+	//
+	// Each daemon gets its own *directory*, not just its own socket filename.
+	// socketauth.TokenPath derives the token file from filepath.Dir(socketPath),
+	// so daemons sharing a directory share one token file — and every stop()
+	// removes it, pulling the token out from under peers that are still serving.
+	// That surfaced as unrelated tests failing with "socket auth token missing or
+	// stale" whenever runs overlapped. A per-daemon directory keeps the token
+	// private, so cleanup can only ever affect its own daemon. The name stays
+	// short to stay clear of the socket-length limit.
+	dir := filepath.Join("/tmp", fmt.Sprintf("boss-tuitest-%d-%d", os.Getpid(), socketCounter.Add(1)))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create mock daemon dir: %v", err)
+	}
+	socketPath := filepath.Join(dir, "d.sock")
 	m, stop, err := StartMockDaemon(socketPath)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	t.Cleanup(func() { _ = stop() })
+	t.Cleanup(func() {
+		_ = stop()
+		_ = os.RemoveAll(dir)
+	})
 	return m
 }
 
@@ -524,6 +594,18 @@ func (m *MockDaemon) AddNote(n *pb.Note) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.notes[n.GetId()] = cloneMsg(n)
+}
+
+// AddCheckSnapshots seeds a session's CI check snapshots. Pass them in the
+// order the real daemon returns them — newest first — because
+// ListCheckSnapshots truncates from the front to honour `limit`, exactly as the
+// daemon's RecentBySession query does.
+func (m *MockDaemon) AddCheckSnapshots(sessionID string, snaps ...*pb.CheckSnapshot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range snaps {
+		m.checkSnapshots[sessionID] = append(m.checkSnapshots[sessionID], cloneMsg(s))
+	}
 }
 
 // SetResolvedContext seeds what ResolveContext reports for any working
@@ -921,9 +1003,24 @@ func (m *MockDaemon) ReportChatStatus(_ context.Context, _ *connect.Request[pb.R
 	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 }
 
+// SetChatStatusesError makes GetChatStatuses fail with the given connect code
+// and message instead of answering. Pass an empty message to clear it. Use this
+// to drive the status-unavailable path a caller meets in the field — the
+// daemon answering CodeUnimplemented, or RemoteClient.GetChatStatuses refusing
+// under --remote (errLocalOnly, also Unimplemented) — through the real CLI
+// without standing up a remote transport.
+func (m *MockDaemon) SetChatStatusesError(code connect.Code, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chatStatusesErrorCode, m.chatStatusesErrorMsg = code, msg
+}
+
 func (m *MockDaemon) GetChatStatuses(_ context.Context, req *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.chatStatusesErrorMsg != "" {
+		return nil, connect.NewError(m.chatStatusesErrorCode, fmt.Errorf("%s", m.chatStatusesErrorMsg))
+	}
 	var out []*pb.ChatStatusEntry
 	// Serve statuses for chats in the requested session, mirroring ListChats'
 	// session filter so the picker only sees its own chats' heartbeats.
@@ -1453,8 +1550,103 @@ func (m *MockDaemon) CloseSession(context.Context, *connect.Request[pb.CloseSess
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+// SetMergeDetail sets the human-readable note echoed as
+// MergeSessionResponse.detail (e.g. a merge-strategy substitution). Empty — the
+// default — means the merge ran exactly as configured and no note is returned.
+func (m *MockDaemon) SetMergeDetail(detail string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mergeDetail = detail
+}
+
+// SetMergeError makes MergeSession fail with the given connect code and message
+// instead of merging. Pass an empty message to clear it. Use this to drive the
+// real daemon's merge-gate refusal shape (CodeFailedPrecondition with
+// "merge blocked: gate=<slug>; <detail>") through a client.
+func (m *MockDaemon) SetMergeError(code connect.Code, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mergeErrorCode, m.mergeErrorMsg = code, msg
+}
+
+// MergeSessionCalls returns the session ids MergeSession was called with, in
+// order. A test asserting a merge did NOT happen must check this rather than
+// stdout — stdout alone cannot distinguish "not merged" from "merged silently".
+func (m *MockDaemon) MergeSessionCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]string(nil), m.mergeSessionCalls...)
+}
+
+// SetMergeResponseState makes a successful MergeSession answer with state
+// instead of MERGED, reproducing the real daemon's read-before-refresh lag (see
+// mergeResponseState). Pass SESSION_STATE_UNSPECIFIED to restore the default.
+func (m *MockDaemon) SetMergeResponseState(state pb.SessionState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mergeResponseState = state
+}
+
+// MergeSession marks the stored session merged and echoes the configured
+// detail. The real daemon's merge gate, per-repo serialization, and provider
+// merge have no analogue here — SetMergeError injects the refusal instead, and
+// SetMergeResponseState overrides the state it reports.
+func (m *MockDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mergeSessionCalls = append(m.mergeSessionCalls, req.Msg.GetId())
+	if m.mergeErrorMsg != "" {
+		return nil, connect.NewError(m.mergeErrorCode, fmt.Errorf("%s", m.mergeErrorMsg))
+	}
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.GetId() {
+			s.State = pb.SessionState_SESSION_STATE_MERGED
+			if m.mergeResponseState != pb.SessionState_SESSION_STATE_UNSPECIFIED {
+				// Answer with the lagging state without disturbing the stored
+				// session, so a later list/get still sees the merge.
+				lagging := cloneMsg(s)
+				lagging.State = m.mergeResponseState
+				return connect.NewResponse(&pb.MergeSessionResponse{Session: lagging, Detail: m.mergeDetail}), nil
+			}
+			return connect.NewResponse(&pb.MergeSessionResponse{Session: s, Detail: m.mergeDetail}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetId()))
+}
+
+// SetRecordChatResponse makes RecordChat answer with chat verbatim instead of
+// minting a row. Pass a chat whose TmuxSessionName is empty to reproduce the
+// real daemon's "row persisted, no live agent" outcome; pass nil to restore the
+// default minting behaviour.
+func (m *MockDaemon) SetRecordChatResponse(chat *pb.ClaudeChat) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordChatResponse = chat
+}
+
+// RecordChatCalls returns every RecordChat request in order. A test asserting a
+// command issued NO RecordChat must check this rather than stdout, which cannot
+// distinguish "no chat created" from "created and not printed".
+func (m *MockDaemon) RecordChatCalls() []*pb.RecordChatRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.RecordChatRequest, 0, len(m.recordChatCalls))
+	for _, c := range m.recordChatCalls {
+		out = append(out, cloneMsg(c))
+	}
+	return out
+}
+
+// SendChatMessageCalls returns every SendChatMessage request in order. The
+// wake/submit flags are observable nowhere else.
+func (m *MockDaemon) SendChatMessageCalls() []*pb.SendChatMessageRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.SendChatMessageRequest, 0, len(m.sendChatMessageCalls))
+	for _, c := range m.sendChatMessageCalls {
+		out = append(out, cloneMsg(c))
+	}
+	return out
 }
 
 // RecordChat mints (or returns) the chat row the attach flow needs, including a
@@ -1465,6 +1657,10 @@ func (m *MockDaemon) MergeSession(context.Context, *connect.Request[pb.MergeSess
 func (m *MockDaemon) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.recordChatCalls = append(m.recordChatCalls, cloneMsg(req.Msg))
+	if m.recordChatResponse != nil {
+		return connect.NewResponse(&pb.RecordChatResponse{Chat: cloneMsg(m.recordChatResponse)}), nil
+	}
 	for _, c := range m.chats {
 		if c.AgentSessionId == req.Msg.AgentSessionId {
 			if c.TmuxSessionName == "" {
@@ -1506,8 +1702,22 @@ func (m *MockDaemon) DescribeChatLaunch(context.Context, *connect.Request[pb.Des
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+// SendChatMessage records the request and reports delivery. The real daemon
+// pastes into a tmux pane; the mock has none, so the interesting part here is
+// the request itself — SendChatMessageCalls is what a test reads back.
+func (m *MockDaemon) SendChatMessage(_ context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendChatMessageCalls = append(m.sendChatMessageCalls, cloneMsg(req.Msg))
+	for _, c := range m.chats {
+		if c.AgentSessionId == req.Msg.GetAgentSessionId() {
+			return connect.NewResponse(&pb.SendChatMessageResponse{
+				Delivered:       true,
+				TmuxSessionName: mockTmuxSessionName(c.AgentSessionId),
+			}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %q not found", req.Msg.GetAgentSessionId()))
 }
 
 func (m *MockDaemon) DeliverVCSEvent(context.Context, *connect.Request[pb.DeliverVCSEventRequest]) (*connect.Response[pb.DeliverVCSEventResponse], error) {
@@ -2056,8 +2266,30 @@ func (m *MockDaemon) StartRepairWorkflow(_ context.Context, _ *connect.Request[p
 	return connect.NewResponse(&pb.StartRepairWorkflowResponse{}), nil
 }
 
-func (m *MockDaemon) ListCheckSnapshots(_ context.Context, _ *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
-	return connect.NewResponse(&pb.ListCheckSnapshotsResponse{}), nil
+// ListCheckSnapshots mirrors the real daemon's semantics
+// (services/bossd/internal/server/check_snapshots.go): session_id is required,
+// a non-positive limit means 10, and the newest snapshots are returned first.
+func (m *MockDaemon) ListCheckSnapshots(_ context.Context, req *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
+	sessionID := req.Msg.GetSessionId()
+	if sessionID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	limit := int(req.Msg.GetLimit())
+	if limit <= 0 {
+		limit = 10
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snaps := m.checkSnapshots[sessionID]
+	if len(snaps) > limit {
+		snaps = snaps[:limit]
+	}
+	resp := &pb.ListCheckSnapshotsResponse{}
+	for _, s := range snaps {
+		resp.Snapshots = append(resp.Snapshots, cloneMsg(s))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {

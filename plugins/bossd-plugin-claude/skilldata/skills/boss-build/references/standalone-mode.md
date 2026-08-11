@@ -30,7 +30,7 @@ if [ "$BOSSD_MANAGED" = "0" ] && { [ -z "$SESSION_BRANCH" ] || [ "$SESSION_BRANC
   SESSION_BRANCH="boss-build/$(echo "<TICKET-ID>" | tr 'A-Z' 'a-z')"
   git switch -c "$SESSION_BRANCH" "$BASE_REF"
 fi
-test -n "$SESSION_BRANCH"
+test -n "$SESSION_BRANCH" || exit 1
 ```
 
 The branch is named `boss-build/<ticket-id>` (lower-cased). Provisioning an _isolated checkout_

@@ -20,7 +20,10 @@ import {
   topoOrderChildren,
   epicChildMarker,
 } from './plan-epic-lib.mjs'
-import { REQUIRED_TRACKER_OPERATIONS, OPTIONAL_TRACKER_OPERATIONS } from './tracker/adapter.mjs'
+import {
+  REQUIRED_TRACKER_OPERATIONS,
+  OPTIONAL_TRACKER_OPERATIONS,
+} from './tracker/adapter-core.mjs'
 import { buildLinearOperationMap } from './tracker/linear.mjs'
 
 const PARENT_ID = 'BOS-999'

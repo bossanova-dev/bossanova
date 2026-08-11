@@ -90,7 +90,7 @@ func (s *stubSessionSettingsClient) RetrySession(context.Context, string) (*pb.S
 func (s *stubSessionSettingsClient) CloseSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) MergeSession(context.Context, string) (*pb.Session, error) {
+func (s *stubSessionSettingsClient) MergeSession(context.Context, string) (*pb.Session, string, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RemoveSession(context.Context, string) error { panic("unused") }

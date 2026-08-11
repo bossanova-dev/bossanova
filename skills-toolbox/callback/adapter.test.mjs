@@ -57,6 +57,26 @@ test('resolveCallbackAdapter throws on an unregistered notifier', () => {
   )
 })
 
+test('an explicitly EMPTY CALLBACK fails fast instead of coercing to the default', () => {
+  // `||` would silently treat CALLBACK='' as "boss", hiding a misconfigured host —
+  // an unset-vs-blank env var is exactly what a deploy script gets wrong. Here the
+  // stakes are callbacks silently going to the wrong notifier rather than failing.
+  assert.throws(() => resolveCallbackAdapter({ CALLBACK: '' }), /unknown callback notifier: /)
+})
+
+test('an inherited Object.prototype member is NOT a callback notifier', () => {
+  // REGISTRY is a plain object literal: a truthiness check on REGISTRY[name] would
+  // resolve `constructor` to `Object` and return `Object()`, a plain object that
+  // would only fail later, deep inside assertConforms.
+  for (const inherited of ['constructor', 'toString', 'valueOf']) {
+    assert.throws(
+      () => resolveCallbackAdapter({ CALLBACK: inherited }),
+      new RegExp(`unknown callback notifier: ${inherited}`),
+      `expected a throw for CALLBACK=${inherited}`,
+    )
+  }
+})
+
 test('the boss adapter maps every capability to a `boss callback` sub-command', () => {
   const { operationMap } = resolveCallbackAdapter({})
   assert.equal(operationMap.registerWatch.command, 'boss callback add')

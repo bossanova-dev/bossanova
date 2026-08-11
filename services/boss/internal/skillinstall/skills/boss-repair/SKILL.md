@@ -84,6 +84,52 @@ explain what its amendment guard protects.
 
 ---
 
+## Boss transport preflight
+
+Before Phase 1, decide **which carrier** this run will use for boss session operations — reading the
+session's state, its check snapshots, its chats. There are two: the boss MCP tools, and the `boss`
+CLI. Validate whichever the runtime actually exposes and BLOCK only when **neither** is complete; a
+runtime with no MCP server but a working `boss` binary repairs perfectly well, and stopping it would
+be a self-inflicted outage.
+
+Enumerate the available boss MCP tool names and `boss` subcommands, then diff both at once with
+`bossEpicTransportPreflight({availableTools, availableCliCommands})` from
+`$BOSS_REPAIR_TOOLBOX/session/boss.mjs`, which returns `{ ok, transport, missing, degraded,
+partial }`:
+
+The CLI is **preferred, not a fallback** — a complete CLI set wins even when the MCP set is also
+complete. That preference is what made it safe to stop wiring the boss MCP server by default, so on
+a managed spawn expect `cli`.
+
+- `transport: 'cli'` — every `cli`-mapped capability is reachable, whether or not MCP is also
+  complete. Proceed; substitute each capability's `cli` invocation for its MCP spelling.
+- `transport: 'mcp'` — the CLI set is incomplete and the tool set is complete. Proceed on the
+  richer carrier.
+- `ok: false` — neither is complete. Stop `BLOCKED: no complete boss transport: <comma-separated
+missing>`, naming everything absent from both carriers in one line.
+
+**Report the chosen transport in the repair run's opening line** — `transport: <mcp|cli>`, plus
+`degraded: <comma-separated capabilities>` when `degraded` is non-empty, plus
+`partial: <capability>(<missing fields>)` for each entry in `partial`. The degraded names are
+capabilities with no CLI equivalent at all — `resolveContext`, `getSessionStatuses` and
+`createPlanningChat` (three, not two: `boss new` has no `--quick-chat` flag) — so a CLI-mode run
+must use their documented fallbacks rather than guessing; saying so out loud is what stops a later
+reader believing the run consulted them.
+
+A capability the CLI covers only _partially_ still has a transport and is **not** degraded, which is
+why `partial` is a separate list rather than an extension of that one. Today it holds `getSession`:
+`boss show --json` carries the lifecycle state but none of `last_agent_activity_at`,
+`repair_active`, `attention_status.reason`, `pr_mergeable` or `merge_block`. Where a `partial` entry
+names a routing signal the CLI cannot supply, treat that signal as **not settled**, never as a pass
+— `pr_mergeable` and `merge_block` in particular are how a repair run would otherwise mistake a
+conflicting PR for a mergeable one.
+
+Repair reaches for boss session state rarely — `gh` carries most of this workflow — so an incomplete
+boss transport is usually a nuisance rather than a stop. Run the preflight anyway: discovering the
+gap at the moment you need the value is how a repair run stalls with the PR half-fixed.
+
+---
+
 ## Repair Workflow
 
 ### Phase 1: Assess Current State
@@ -224,7 +270,7 @@ push this round did not make. They are not interchangeable.
          sort -nr |
          awk 'NR == 1 {print $2}'
      )
-     [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
+     if [ -n "$BASE_BRANCH" ]; then echo "Using inferred git base branch: $BASE_BRANCH"; fi
    fi
    test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
    git fetch origin "$BASE_BRANCH"
@@ -524,6 +570,28 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification. Fixed or declined threads must be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
 
 3. After implementing changes:
+   - Because this checklist runs before commit, use only a zero-write scratch copy. Do not mutate the
+     checkout. An in-place probe belongs after a commit, with its commit-first backup and exact-restore
+     safeguards.
+   - Materialize every scratch fixture through a read-only, `noatime` view of the checkout source. A
+     plain host read, copy, or directory traversal can update checkout access metadata before the
+     sandboxed command begins. If that atime-safe source view is unavailable, reject the probe.
+   - A shell, interpreted-source, or test-gate invocation is zero-write only inside a filesystem sandbox
+     whose only writable path is `"$PROBE_DIR"`, with an explicit read-only allowlist for the scratch
+     fixture, required tool binaries and libraries, and any dependency cache. Start with a cleared
+     environment (put `HOME`, `TMPDIR`, `PWD`, and XDG paths under `"$PROBE_DIR"`), do not expose host
+     credentials or home paths, and deny writes outside the sandbox root. Network access is disabled,
+     including loopback, link-local, and metadata endpoints. If filesystem or network confinement is
+     unavailable, reject the probe; never execute the copied command on the host.
+   - If a fix adds or changes a guard, gate, or assertion, prove it non-vacuous with this ordered
+     checklist before committing the review-feedback result:
+     1. **Name the property** the gate claims to forbid, including the unbounded direction for a
+        one-sided bound.
+     2. **Mutate the production feed, never the assertion**, using the zero-write scratch copy.
+     3. **Prove the mutation landed** before reading the result; a no-op mutation proves nothing.
+     4. **Require red for the right reason** and require the failure to name the property. A compile
+        or harness error is not evidence that the gate detected the mutation.
+     5. **Restore exactly, then prove the restore** and re-run the gate green.
    - Run the repo's formatting and test gates:
      ```bash
      # Examples only; use the commands discovered for this repo

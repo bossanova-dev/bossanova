@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
@@ -34,6 +35,24 @@ func chatCmd() *cobra.Command {
 	// expecting the agent to act on it, so a single-line message is submitted
 	// (Enter + verified). --submit=false prefills the composer without submitting.
 	send.Flags().Bool("submit", true, "Submit the message (press Enter and verify); false prefills the composer without submitting")
+	// Default true: this is what `boss chat send` has always done, and it matches
+	// the MCP send_chat_message default. The flag exists so a caller can opt OUT
+	// (--wake-if-asleep=false) — e.g. to leave a deliberately stopped chat
+	// stopped — not to change the default for everyone else.
+	send.Flags().Bool("wake-if-asleep", true, "Wake a sleeping chat before delivering; false leaves a stopped chat stopped")
+
+	// new subcommand
+	newChat := &cobra.Command{
+		Use:   "new <session-id>",
+		Short: "Start a new live chat inside an existing session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runChatNew(cmd, args[0])
+		},
+	}
+	newChat.Flags().String("title", "", "Title for the new chat")
+	newChat.Flags().String("agent", "", "Agent plugin to run (empty inherits the session's agent)")
+	newChat.Flags().Bool(jsonFlagName, false, "Emit the new chat as a machine-readable JSON envelope")
 
 	// show subcommand
 	show := &cobra.Command{
@@ -58,7 +77,7 @@ func chatCmd() *cobra.Command {
 	}
 	wait.Flags().Duration("timeout", 30*time.Minute, "Maximum time to wait (e.g. 5m, 1h)")
 
-	cmd.AddCommand(send, show, wait)
+	cmd.AddCommand(newChat, send, show, wait)
 	return cmd
 }
 
@@ -67,18 +86,33 @@ func runChatSend(cmd *cobra.Command, chatID, message string) error {
 	if err != nil {
 		return err
 	}
+	return chatSend(context.Background(), c, cmd, chatID, message)
+}
 
-	ctx := context.Background()
+// chatSendClient is the client surface `boss chat send` needs. Narrowing it here
+// (rather than taking client.BossClient) is what lets a test drive the real send
+// path — flag parsing included — and read back the request that reached the
+// daemon, which is the only place the wake/submit flags are observable.
+type chatSendClient interface {
+	GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error)
+	SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
+}
+
+func chatSend(ctx context.Context, c chatSendClient, cmd *cobra.Command, chatID, message string) error {
 	target, err := resolveChatTarget(ctx, c, chatID)
 	if err != nil {
 		return err
 	}
 
 	submit, _ := cmd.Flags().GetBool("submit")
+	// GetBool returns the registered default (true) when the flag is absent, so
+	// an existing caller that never passes it keeps today's wake-then-deliver
+	// behaviour.
+	wake, _ := cmd.Flags().GetBool("wake-if-asleep")
 	resp, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{
 		AgentSessionId: target.AgentSessionID,
 		Message:        message,
-		WakeIfAsleep:   true,
+		WakeIfAsleep:   wake,
 		Submit:         submit,
 	})
 	if err != nil {
@@ -87,6 +121,81 @@ func runChatSend(cmd *cobra.Command, chatID, message string) error {
 
 	reportChatSendOutcome(cmd.OutOrStdout(), resp)
 	return nil
+}
+
+// runChatNew starts a brand-new live chat inside an existing session. It is the
+// CLI counterpart of the MCP `start_chat` tool and composes over the same
+// RecordChat(resume=false) primitive: mint the agent_session_id here (matching
+// the daemon, web and MCP), then let the daemon spawn a live agent in the
+// session's existing worktree and branch.
+func runChatNew(cmd *cobra.Command, sessionID string) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
+	c, err := newClient(cmd)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+
+	title, _ := cmd.Flags().GetString("title")
+	// An empty --agent is forwarded as an empty string on purpose: the daemon
+	// then inherits the session's own agent. Defaulting it CLI-side would pin a
+	// chat to whatever the CLI guessed rather than what the session runs.
+	agentName, _ := cmd.Flags().GetString("agent")
+
+	// The caller does not get to supply the id — registering a pre-existing
+	// agent_session_id is `record_chat`'s job, not this command's.
+	id := uuid.NewString()
+	chat, err := c.RecordChat(ctx, sessionID, id, title, agentName, false)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("start chat: %w", err))
+	}
+
+	// RecordChat succeeds even when no tmux session was created — the row is
+	// persisted with nothing listening behind it. Reporting success here would
+	// hand back an agent_session_id a `chat send` can never reach, so refuse it
+	// the same way MCP's start_chat does.
+	if chat.GetTmuxSessionName() == "" {
+		return emitJSONFailure(cmd, asJSON, codedError(codeAgentNotSpawned,
+			fmt.Errorf("could not spawn a live agent: no tmux session was created for chat %s (is tmux available on the daemon host?)", id)))
+	}
+
+	if asJSON {
+		return emitJSON(cmd, newChatJSON(chat))
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\nchat-id:    %s\n",
+		chat.GetSessionId(), chat.GetAgentSessionId())
+	return nil
+}
+
+// chatNewJSON is the `boss chat new --json` success envelope. It is nested under
+// a `chat` key so the envelope can gain siblings later without a caller having
+// to re-root its parsing.
+type chatNewJSON struct {
+	Chat chatNewChatJSON `json:"chat"`
+}
+
+type chatNewChatJSON struct {
+	AgentSessionID string `json:"agent_session_id"`
+	SessionID      string `json:"session_id"`
+	Title          string `json:"title"`
+	// TmuxSessionName is the live pane behind the chat. It is always non-empty
+	// on a success envelope — an empty one is rejected as AGENT_NOT_SPAWNED
+	// before we get here — but it is emitted so a driver can name the pane.
+	TmuxSessionName string `json:"tmux_session_name"`
+}
+
+func newChatJSON(chat *pb.ClaudeChat) chatNewJSON {
+	return chatNewJSON{Chat: chatNewChatJSON{
+		AgentSessionID:  chat.GetAgentSessionId(),
+		SessionID:       chat.GetSessionId(),
+		Title:           chat.GetTitle(),
+		TmuxSessionName: chat.GetTmuxSessionName(),
+	}}
 }
 
 // reportChatSendOutcome renders a SendChatMessageResponse for a human. It is

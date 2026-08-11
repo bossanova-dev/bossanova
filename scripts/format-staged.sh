@@ -42,6 +42,31 @@ if [ -z "$STAGED" ]; then
   exit 0
 fi
 
+# Formatting the canonical embedded payload writes one file at a time. Re-enter
+# under the shared rewrite lock so startup snapshots never accept that interim
+# state. The Node wrapper keeps the lock descriptor alive across this shell.
+if [ -z "${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then
+  NEEDS_SKILL_SOURCE_LOCK=""
+  IFS='
+'
+  for f in $STAGED; do
+    case "$f" in
+      services/boss/internal/skillinstall/skills/*)
+        NEEDS_SKILL_SOURCE_LOCK=1
+        break
+        ;;
+    esac
+  done
+  unset IFS
+  if [ -n "$NEEDS_SKILL_SOURCE_LOCK" ]; then
+    command -v node >/dev/null 2>&1 || exit 0
+    REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+    SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 0
+    node "$SCRIPT_DIR/skill-source-rewrite-lock.mjs" --repo-root "$REPO_ROOT" -- sh "$SCRIPT_DIR/format-staged.sh" || true
+    exit 0
+  fi
+fi
+
 # Files that have working-tree modifications on top of what is staged.
 UNSTAGED=$(git -c core.quotePath=false diff --name-only 2>/dev/null) || UNSTAGED=""
 

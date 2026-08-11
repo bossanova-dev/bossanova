@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -341,16 +340,6 @@ func triggerLabel(trigger string) string {
 		return label
 	}
 	return trigger
-}
-
-// emitJSON marshals v as indented JSON to the command's stdout.
-func emitJSON(cmd *cobra.Command, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal JSON output: %w", err)
-	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
-	return nil
 }
 
 func callbackCmd() *cobra.Command {

@@ -581,27 +581,110 @@ func TestSetAttachOptions_Error(t *testing.T) {
 	}
 }
 
-// TestRefreshClient verifies the wrapper issues `tmux refresh-client -t <name>`
-// with the configured session name. Used by the web-tmux-attach client after
-// a ring-buffer overflow to force tmux to repaint all attached viewers.
+// clientListFactory is a CommandFactory that answers `tmux list-clients` with
+// the given client names on stdout and succeeds at everything else, recording
+// every argv. failRefreshFor names clients whose refresh-client must fail, so a
+// test can prove one dead client does not skip the clients behind it.
+type clientListFactory struct {
+	clients        []string
+	failRefreshFor map[string]bool
+	calls          [][]string
+}
+
+func (f *clientListFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
+	f.calls = append(f.calls, append([]string{name}, args...))
+	if len(args) > 0 && args[0] == "list-clients" {
+		return exec.CommandContext(ctx, "printf", "%s", strings.Join(f.clients, "\n"))
+	}
+	if len(args) > 2 && args[0] == "refresh-client" && f.failRefreshFor[args[2]] {
+		return exec.CommandContext(ctx, "false")
+	}
+	return exec.CommandContext(ctx, "true")
+}
+
+// refreshTargets returns the -t argument of every refresh-client call recorded.
+func (f *clientListFactory) refreshTargets() []string {
+	var got []string
+	for _, call := range f.calls {
+		if len(call) > 3 && call[1] == "refresh-client" {
+			got = append(got, call[3])
+		}
+	}
+	return got
+}
+
+// TestRefreshClient verifies the wrapper resolves the session's CLIENTS and
+// refreshes each one by client name. `refresh-client -t` takes a client, not a
+// session: the previous implementation passed the session name straight to it,
+// which always failed with "can't find client", so the web-tmux-attach RESYNC
+// repaint never actually fired. This test is the regression gate for that — it
+// fails if the target reverts to the session name.
 func TestRefreshClient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	mock := &mockCommandFactory{}
+	mock := &clientListFactory{clients: []string{"/dev/ttys008", "/dev/ttys011"}}
 	c := NewClient(WithCommandFactory(mock.factory))
-	ctx := context.Background()
 
-	if err := c.RefreshClient(ctx, "boss-test-sess"); err != nil {
+	if err := c.RefreshClient(context.Background(), "boss-test-sess"); err != nil {
 		t.Fatalf("RefreshClient failed: %v", err)
 	}
 
-	want := []string{"tmux", "refresh-client", "-t", "boss-test-sess"}
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 tmux call, got %d: %v", len(mock.calls), mock.calls)
+	wantList := []string{"tmux", "list-clients", "-t", "boss-test-sess", "-F", "#{client_name}"}
+	if len(mock.calls) == 0 || !equalSlices(mock.calls[0], wantList) {
+		t.Fatalf("expected first call %v, got %v", wantList, mock.calls)
 	}
-	if !equalSlices(mock.calls[0], want) {
-		t.Errorf("RefreshClient args: expected %v, got %v", want, mock.calls[0])
+	got := mock.refreshTargets()
+	want := []string{"/dev/ttys008", "/dev/ttys011"}
+	if !equalSlices(got, want) {
+		t.Errorf("refresh-client targets: expected %v, got %v", want, got)
+	}
+	if slices.Contains(got, "boss-test-sess") {
+		t.Error("refresh-client was targeted at the SESSION name; it takes a client name")
+	}
+}
+
+// TestRefreshClient_NoClientsIsNoOp verifies a session with nothing attached
+// refreshes nothing and reports success. That is the normal state of a headless
+// or cron session — there is no viewer to repaint — so it must not surface as a
+// failure on a fire-and-forget call.
+func TestRefreshClient_NoClientsIsNoOp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	mock := &clientListFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	if err := c.RefreshClient(context.Background(), "boss-test-sess"); err != nil {
+		t.Fatalf("expected nil error for a session with no clients, got %v", err)
+	}
+	if targets := mock.refreshTargets(); len(targets) != 0 {
+		t.Errorf("expected no refresh-client calls, got %v", targets)
+	}
+}
+
+// TestRefreshClient_RefreshesEveryClientDespiteFailure verifies a client that
+// fails to refresh — the benign race where it detached between the list and the
+// refresh — does not skip the clients behind it, and that the failure is still
+// reported rather than swallowed.
+func TestRefreshClient_RefreshesEveryClientDespiteFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	mock := &clientListFactory{
+		clients:        []string{"/dev/ttys008", "/dev/ttys011", "/dev/ttys013"},
+		failRefreshFor: map[string]bool{"/dev/ttys011": true},
+	}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	err := c.RefreshClient(context.Background(), "boss-test-sess")
+	if err == nil {
+		t.Fatal("expected the failing client to surface as an error, got nil")
+	}
+	got := mock.refreshTargets()
+	want := []string{"/dev/ttys008", "/dev/ttys011", "/dev/ttys013"}
+	if !equalSlices(got, want) {
+		t.Errorf("every client must still be refreshed: expected %v, got %v", want, got)
 	}
 }
 
@@ -623,9 +706,12 @@ func TestRefreshClient_EmptySessionName(t *testing.T) {
 	}
 }
 
-// TestRefreshClient_Error verifies a tmux invocation failure surfaces as an
-// error rather than being swallowed. Catches mutations like err != nil →
-// err == nil that would silently break the resync repaint flow.
+// TestRefreshClient_Error verifies a failure of the client LOOKUP surfaces as
+// an error rather than being swallowed — the `false` factory here fails the
+// list-clients call, before any refresh is attempted. Catches mutations like
+// err != nil → err == nil that would silently break the resync repaint flow.
+// The refresh half of that contract is covered by
+// TestRefreshClient_RefreshesEveryClientDespiteFailure.
 func TestRefreshClient_Error(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")

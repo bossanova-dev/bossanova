@@ -126,8 +126,10 @@ func (s *chatPickerStub) PauseSession(context.Context, string) (*pb.Session, err
 func (s *chatPickerStub) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *chatPickerStub) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *chatPickerStub) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *chatPickerStub) MergeSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *chatPickerStub) RemoveSession(context.Context, string) error                { panic("unused") }
+func (s *chatPickerStub) MergeSession(context.Context, string) (*pb.Session, string, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *chatPickerStub) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
 }

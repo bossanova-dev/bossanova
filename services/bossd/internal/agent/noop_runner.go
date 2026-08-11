@@ -6,8 +6,9 @@ import (
 )
 
 var (
-	_ AgentRunner     = NoopRunner{}
-	_ AgentDispatcher = NoopRunner{}
+	_ AgentRunner                     = NoopRunner{}
+	_ AgentDispatcher                 = NoopRunner{}
+	_ HeadlessLaunchOptionsDispatcher = NoopRunner{}
 )
 
 // errNoAgentPlugin is returned when bossd was started without an
@@ -34,6 +35,10 @@ func (NoopRunner) Subscribe(_ context.Context, _ string) (<-chan OutputLine, err
 }
 
 func (NoopRunner) StartByAgent(_ context.Context, _, _, _ string, _ *string, _, _ string, _ map[string]string) (string, error) {
+	return "", errNoAgentPlugin
+}
+
+func (NoopRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _, _, _ string, _ *string, _, _ string, _ map[string]string, _ HeadlessLaunchOptions) (string, error) {
 	return "", errNoAgentPlugin
 }
 

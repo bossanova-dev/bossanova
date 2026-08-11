@@ -11,8 +11,11 @@ import {
   boundedStderrTail,
   buildExecArgv,
   classifyProbe,
+  createTierAProbeRoot,
   interpretResult,
+  removeTierAProbeRoot,
   REVIEW_PREAMBLE,
+  reviewPreamble,
   resolveAgentBin,
   sanitizeOutput,
   sliceLenUtf8Safe,
@@ -204,6 +207,52 @@ test('assemblePrompt: preamble keeps data / AGENTS.md / CLAUDE.md / skill-dirs c
     assert.ok(prompt.includes('.claude/'), 'preamble keeps skill/agent dirs')
     assert.ok(/DATA/.test(prompt), 'preamble keeps data-not-instructions constraint')
   }
+})
+
+test('reviewPreamble: absolute falsification reference requires Tier A', () => {
+  const prompt = reviewPreamble('/opt/skills/boss-review/references/falsification.md')
+  assert.match(prompt, /\/opt\/skills\/boss-review\/references\/falsification\.md/)
+  assert.match(prompt, /Tier A only/)
+  assert.match(prompt, /sole exception.*falsification-recipe path/i)
+  assert.match(prompt, /read-only access to the checkout/i)
+  assert.match(prompt, /write only beneath.*private PROBE_DIR/i)
+  assert.match(prompt, /filesystem confinement/i)
+  assert.match(prompt, /report the probe blocked/i)
+})
+
+test('reviewPreamble: relative falsification reference is ignored', () => {
+  assert.equal(reviewPreamble('references/falsification.md'), REVIEW_PREAMBLE)
+})
+
+test('Tier A scratch root is fresh, outside the checkout, and removable', () => {
+  const checkout = makeTmpDir()
+  let probeRoot = ''
+  try {
+    probeRoot = createTierAProbeRoot(checkout)
+    assert.ok(path.isAbsolute(probeRoot), 'Tier A must get an absolute scratch root')
+    assert.notEqual(probeRoot, checkout)
+    assert.ok(!probeRoot.startsWith(`${checkout}${path.sep}`), 'scratch must not be in checkout')
+    assert.ok(fs.statSync(probeRoot).isDirectory(), 'scratch root must be created before launch')
+    removeTierAProbeRoot(probeRoot)
+    assert.ok(!fs.existsSync(probeRoot), 'scratch root must be removed after the launch')
+    probeRoot = ''
+  } finally {
+    removeTierAProbeRoot(probeRoot)
+    fs.rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('assemblePrompt: Tier A permits scoped gate inspection without broad tree exploration', () => {
+  const prompt = assemblePrompt({
+    preamble: REVIEW_PREAMBLE,
+    range: 'abc...def',
+    diffText: 'diff --git a/x b/x',
+    tierA: true,
+  })
+  assert.match(prompt, /inspect the named checkout and execute the relevant gate/i)
+  assert.match(prompt, /do not explore unrelated paths/i)
+  assert.match(prompt, /private probe root/i)
+  assert.doesNotMatch(prompt, /Everything you need is in the embedded diff/i)
 })
 
 // ---------------------------------------------------------------------------

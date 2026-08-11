@@ -256,6 +256,13 @@ func fallbackAgentInfos() []client.AgentInfo {
 					Type:         client.SettingTypeBool,
 					DefaultValue: "false",
 				},
+				{
+					Key:          "model",
+					Label:        "Model",
+					Description:  "Fallback claude --model for runs without their own. Empty uses the claude CLI default.",
+					Type:         client.SettingTypeString,
+					DefaultValue: "",
+				},
 			},
 		},
 		{

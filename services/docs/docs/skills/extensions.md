@@ -25,7 +25,7 @@ installed globally; the extensions live in the repository.
 An extension of a core skill named `<core>` is a skill directory named
 `<core>-<suffix>` under `.claude/skills/`. For example, an extra review lens for
 `boss-review` is a directory such as `.claude/skills/boss-review-golang/`, and an
-implementation methodology for `boss-build` is `.claude/skills/boss-build-superpowers/`.
+implementation methodology for `boss-build` is `.claude/skills/boss-build-ce/`.
 
 ## The `x-boss-extension` discovery marker
 
@@ -70,15 +70,15 @@ wrong `role`, unreadable frontmatter). With nothing installed it prints
 There are seven roles. Each attaches to a specific core skill and plugs into a
 specific step of that core's pipeline.
 
-| Role            | Extends       | What it adds                                                                           | Example extension           |
-| --------------- | ------------- | -------------------------------------------------------------------------------------- | --------------------------- |
-| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files. | `boss-review-golang`        |
-| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                  | `boss-review-thermonuclear` |
-| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                   | `boss-proof-docs`           |
-| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                    | `boss-plan-<reviewer>`      |
-| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                 | `boss-proof-tui`            |
-| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                      | `boss-plan-draft`           |
-| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs (e.g. TDD/SDD).                  | `boss-build-superpowers`    |
+| Role            | Extends       | What it adds                                                                           | Example extension                |
+| --------------- | ------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
+| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files. | `boss-review-golang`             |
+| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                  | `boss-review-thermonuclear`      |
+| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                   | `boss-proof-docs`                |
+| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                    | `boss-plan-<reviewer>`           |
+| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                 | `boss-proof-tui`                 |
+| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                      | `boss-plan-compound-engineering` |
+| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs.                                 | `boss-build-ce`                  |
 
 The `plan-reviewer` role has no default Bossanova extension shipped; the example name
 above is illustrative of the `<core>-<suffix>` convention. Every other role has a

@@ -19,19 +19,28 @@ import (
 // the operator having to re-run gh by hand. Limit defaults to 5; older
 // snapshots remain in SQLite if a wider sweep is needed.
 func runSessionChecks(cmd *cobra.Command, sessionID string, limit int32) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 	defer cancel()
 	resolved, err := resolveSessionID(c, ctx, sessionID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 	resp, err := c.ListCheckSnapshots(ctx, resolved, limit)
 	if err != nil {
-		return fmt.Errorf("ListCheckSnapshots: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("ListCheckSnapshots: %w", err))
+	}
+	if asJSON {
+		rows := make([]checkSnapshotJSON, 0, len(resp.GetSnapshots()))
+		for _, snap := range resp.GetSnapshots() {
+			rows = append(rows, newCheckSnapshotJSON(snap))
+		}
+		return emitJSON(cmd, checkSnapshotListJSON{Snapshots: rows})
 	}
 	out := cmd.OutOrStdout()
 	if len(resp.GetSnapshots()) == 0 {
@@ -49,6 +58,53 @@ func runSessionChecks(cmd *cobra.Command, sessionID string, limit int32) error {
 		_, _ = fmt.Fprintln(out)
 	}
 	return nil
+}
+
+// checkSnapshotListJSON is the `boss session checks --json` envelope.
+// Snapshots is always a non-nil slice so "none recorded yet" marshals as
+// `[]` rather than `null`.
+type checkSnapshotListJSON struct {
+	Snapshots []checkSnapshotJSON `json:"snapshots"`
+}
+
+// checkSnapshotJSON is one persisted poll of a PR's checks.
+type checkSnapshotJSON struct {
+	PolledAt string `json:"polled_at"`
+	// HeadSHA is the full SHA — the human rendering abbreviates for width,
+	// a caller wants the value it can compare against git.
+	HeadSHA string `json:"head_sha"`
+	// ComputedStatus reuses displayStatusName so JSON and text agree.
+	ComputedStatus string `json:"computed_status"`
+	// Raw is the daemon's stored payload spliced in as a nested JSON value,
+	// not an escaped string — a caller reads snapshots[].raw.state directly
+	// instead of decoding twice. json.RawMessage is what makes that splice
+	// possible; assigning raw_json to a string field double-encodes it.
+	Raw json.RawMessage `json:"raw"`
+	// RawInvalid carries the payload verbatim when it does not parse, so a
+	// malformed row degrades to a readable string instead of either being
+	// dropped or corrupting the whole envelope.
+	RawInvalid string `json:"raw_invalid,omitempty"`
+}
+
+func newCheckSnapshotJSON(snap *pb.CheckSnapshot) checkSnapshotJSON {
+	row := checkSnapshotJSON{
+		PolledAt:       rfc3339OrEmpty(snap.GetPolledAt()),
+		HeadSHA:        snap.GetHeadSha(),
+		ComputedStatus: displayStatusName(snap.GetComputedStatus()),
+		// Raw is never left nil: a nil json.RawMessage marshals as the
+		// invalid token `` (empty), which would break the envelope.
+		Raw: json.RawMessage("null"),
+	}
+	raw := snap.GetRawJson()
+	if raw == "" {
+		return row
+	}
+	if !json.Valid([]byte(raw)) {
+		row.RawInvalid = raw
+		return row
+	}
+	row.Raw = json.RawMessage(raw)
+	return row
 }
 
 // indentJSON pretty-prints raw_json with two-space indentation; falls

@@ -88,6 +88,21 @@ type HeadlessCapabilityProfileRunner interface {
 	StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
 }
 
+// HeadlessLaunchOptions carries daemon-owned policy that every panel-less
+// launch must forward to its plugin as one atomic request.
+type HeadlessLaunchOptions struct {
+	ManagedMcpConfigPath      string
+	StrictManagedMcpConfig    bool
+	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
+}
+
+// HeadlessLaunchOptionsRunner is implemented by runners that preserve the
+// complete panel-less launch contract instead of silently dropping strict MCP
+// isolation or a capability profile.
+type HeadlessLaunchOptionsRunner interface {
+	StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
+}
+
 // HeadlessCapabilityProfilePreflightRunner is implemented only by runners
 // that can validate a required headless operation surface without starting a
 // run or depending on a worktree.
@@ -101,6 +116,13 @@ type HeadlessCapabilityProfilePreflightRunner interface {
 type HeadlessCapabilityProfileDispatcher interface {
 	AgentDispatcher
 	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
+}
+
+// HeadlessLaunchOptionsDispatcher is the explicit-by-agent form used by the
+// lifecycle for panel-less launches.
+type HeadlessLaunchOptionsDispatcher interface {
+	AgentDispatcher
+	StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
 }
 
 // AgentNameResolver is implemented by dispatchers that can report which

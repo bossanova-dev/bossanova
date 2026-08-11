@@ -60,13 +60,18 @@ Show what bossd's display poller saw for this session's CI checks
 
 Shows bossd's persisted view of a session's CI check snapshots, alongside the `DisplayStatus` the daemon computed for each one. Useful when reconciling "why did the TUI think this PR was passing when GitHub says failing?".
 
+`--json` emits `{"snapshots": [...]}` (`[]`, never `null`, when none are recorded yet), newest first and truncated by `--limit` exactly as the text rendering is. Each entry carries `polled_at` (RFC3339 UTC), `head_sha` (the FULL sha — the text rendering abbreviates for width), `computed_status` (the same `DisplayStatus` vocabulary the text rendering prints) and `raw`. `raw` is the daemon's stored payload spliced in as a NESTED JSON value, not an escaped string, so `.snapshots[0].raw.state` reads directly without decoding twice. A payload that does not parse is preserved verbatim under `raw_invalid` (with `raw` null) rather than being dropped or corrupting the envelope.
+
 **Flags:**
 
+- `--json` — Emit a stable JSON schema instead of text
 - `--limit` — Number of snapshots to show (newest first) (default: 5)
 
 ```bash
 boss session checks abc123
 boss session checks abc123 --limit 10
+# raw is nested JSON, so it is queryable without a second decode
+boss session checks abc123 --json | jq '.snapshots[0].raw.check_runs'
 ```
 
 ### `boss session link-pr <session-id> <pr-number-or-url>`

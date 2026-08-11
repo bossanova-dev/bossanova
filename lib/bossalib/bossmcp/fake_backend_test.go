@@ -31,7 +31,7 @@ type fakeBackend struct {
 	resumeSession        func(ctx context.Context, id string) (*pb.Session, error)
 	retrySession         func(ctx context.Context, id string) (*pb.Session, error)
 	closeSession         func(ctx context.Context, id string) (*pb.Session, error)
-	mergeSession         func(ctx context.Context, id string) (*pb.Session, error)
+	mergeSession         func(ctx context.Context, id string) (*pb.Session, string, error)
 	removeSession        func(ctx context.Context, id string) error
 	updateSession        func(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	linkSessionPR        func(ctx context.Context, id, pr string) (*pb.Session, error)
@@ -215,11 +215,11 @@ func (f *fakeBackend) CloseSession(ctx context.Context, id string) (*pb.Session,
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) MergeSession(ctx context.Context, id string) (*pb.Session, error) {
+func (f *fakeBackend) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
 	if f.mergeSession != nil {
 		return f.mergeSession(ctx, id)
 	}
-	return nil, errNotImpl
+	return nil, "", errNotImpl
 }
 
 func (f *fakeBackend) RemoveSession(ctx context.Context, id string) error {

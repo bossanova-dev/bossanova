@@ -25,7 +25,7 @@ Install or refresh boss skills (fresh-installs missing trees); --force reinstall
 
 ### `boss skills sync [flags]`
 
-Refresh installed boss skills to match this binary (update-only, no prompt)
+Refresh installed boss skills from the selected checkout or embedded payload (update-only, no prompt)
 
 **Flags:**
 

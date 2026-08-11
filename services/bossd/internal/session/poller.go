@@ -39,6 +39,7 @@ type Poller struct {
 	sessionTimeout time.Duration
 	logger         zerolog.Logger
 	done           chan struct{}
+	firstPoll      chan struct{}
 }
 
 // NewPoller creates a new check poller. A zero sessionTimeout selects
@@ -62,6 +63,7 @@ func NewPoller(
 		sessionTimeout: sessionTimeout,
 		logger:         logger,
 		done:           make(chan struct{}),
+		firstPoll:      make(chan struct{}),
 	}
 }
 
@@ -79,6 +81,7 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 
 		// Poll immediately on start, then on each tick.
 		p.poll(ctx, ch)
+		close(p.firstPoll)
 
 		for {
 			select {
@@ -95,6 +98,12 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 // Done returns a channel that is closed when the Run goroutine exits.
 // Useful for coordinating shutdown.
 func (p *Poller) Done() <-chan struct{} { return p.done }
+
+// FirstPollDone returns a channel that is closed once Run's immediate
+// start-up poll has finished. Callers that seed sessions after starting the
+// poller can wait on it so that start-up poll is guaranteed to observe the
+// pre-seed world rather than racing the seed.
+func (p *Poller) FirstPollDone() <-chan struct{} { return p.firstPoll }
 
 // poll checks all sessions in pollable states and emits events.
 //

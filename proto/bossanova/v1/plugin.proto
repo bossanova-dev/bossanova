@@ -574,6 +574,12 @@ message StartAgentRunRequest {
   // Explicit required runtime operation surface for a headless launch. The
   // zero/default profile is legacy-compatible and performs no preflight.
   HeadlessCapabilityProfile headless_capability_profile = 8;
+  // daemon-owned MCP config for a panel-less run. Empty preserves the legacy
+  // launch behavior for agents that cannot consume a managed MCP surface.
+  string managed_mcp_config_path = 9;
+  // When true, the plugin must use only managed_mcp_config_path and must not
+  // fall back to user or project MCP configuration.
+  bool is_strict_managed_mcp_config = 10;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -644,6 +650,20 @@ message BuildInteractiveCommandRequest {
   // chat, plus the cron autonomy directive for scheduler-spawned runs.
   string append_system_prompt = 7;
   string model = 8;           // opaque agent model id; "" = plugin default.
+  // Never reuse the original automatic-MCP field numbers or names: older
+  // bossd binaries can still serialize them to a newer plugin.
+  reserved 9, 10;
+  reserved "mcp_config_path", "strict_mcp_config";
+  // managed_mcp_config_path, when non-empty, is an absolute path to a JSON
+  // config written in bossd app data for this launch's managed MCP servers.
+  string managed_mcp_config_path = 11;
+  // strict_managed_mcp_config makes that managed config the entire MCP surface.
+  bool strict_managed_mcp_config = 12;
+  // config_home_env contains only the home-selection variables (CODEX_HOME and
+  // HOME) from the environment that will launch the interactive agent. Plugins
+  // use it when they must prepare configuration before the child process starts;
+  // it intentionally does not carry the session's secret-bearing environment.
+  map<string, string> config_home_env = 13;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

@@ -597,11 +597,6 @@ func sanitizeDirName(name string) string {
 // adds the wiring. The in-process filter in finalize.go (which does call
 // ListIgnoredDirtyFiles) is the primary fix; this exclude entry is
 // belt-and-suspenders.
-// .superpowers/ is the superpowers-framework scratch directory. Skills create
-// it while they run — including during the finalize/stop skills themselves — so
-// the agent cannot reliably clean it before bossd finalizes. Left untracked it
-// trips the same pr_failed → Blocked misclassification as the Stop-hook config,
-// so it is excluded here for every managed repo.
 //
 // .opencode/plugins/bossd-question.js is the opencode question-signal event
 // hook (BOS-486). bossd-plugin-opencode drops it into the worktree just before
@@ -623,17 +618,90 @@ func sanitizeDirName(name string) string {
 var bossdManagedExcludePatterns = []string{
 	".boss/",
 	".claude/settings.local.json",
-	".superpowers/",
 	".opencode/plugins/bossd-question.js",
+}
+
+// retiredGitInfoExcludePatterns are patterns bossd used to manage and no longer
+// does. ensureGitInfoExclude deletes them, because info/exclude lives in
+// $GIT_COMMON_DIR and is never rewritten from scratch: dropping a pattern from
+// bossdManagedExcludePatterns only stops NEW repos from getting it, while every
+// repo bossd has already touched keeps hiding the path from `git status` — and
+// from commits — forever.
+//
+// The single entry below is the scratch directory of the legacy plugin BOS-815
+// removed; it is deliberately the only place in this package that still spells
+// the retired name, so scripts/legacy-support-refs.test.mjs can pin it.
+//
+// Removal is by exact whole-line match against a line bossd itself would have
+// written — the pattern alone, no leading or trailing whitespace, no comment —
+// and only inside a bossd-managed block (see bossdManagedExcludeBlock), so a
+// user-authored line is left untouched whether it merely embeds the same word (a
+// differently-named sibling directory, or a commented-out copy) or spells the
+// pattern byte-for-byte somewhere the user put it.
+var retiredGitInfoExcludePatterns = []string{
+	".superpowers/",
 }
 
 // bossdExcludeMarker identifies the block of patterns bossd has added
 // to info/exclude, so the additions are easy to spot and remove by hand.
 const bossdExcludeMarker = "# bossd-managed: ignore worktree-local artifacts"
 
+// bossdManagedExcludeBlock reports the half-open line range [start, end) that
+// ensureGitInfoExclude treats as bossd-owned, given that lines[start] is the
+// marker. Only lines inside such a range may be purged.
+//
+// Extent rule: a block is the marker plus the maximal run of immediately
+// following lines that are each EXACTLY a pattern bossd writes (the caller's
+// patterns) or used to write (retiredGitInfoExcludePatterns). Anything else —
+// a blank line, a comment, a second marker, a user pattern, EOF — ends it.
+//
+// The looser candidates were rejected because each can swallow user lines:
+// "until the next marker" and "until EOF" both absorb everything a user appended
+// after bossd's last write (bossd only ever appends, so that is the normal place
+// for a user to add their own patterns), and "until a blank line" absorbs them
+// whenever the user did not leave one. This rule is the only one that cannot
+// consume a line bossd could not itself have written.
+//
+// Failure mode, in both directions:
+//
+//	False negative (safe): a retired line separated from its marker by a line
+//	bossd no longer writes stays put. It keeps hiding a path, which is the status
+//	quo, and a later hand-edit fixes it. Today this is unreachable: the sole entry
+//	of retiredGitInfoExcludePatterns is the only pattern ever dropped from
+//	bossdManagedExcludePatterns, so the two sets below cover every line bossd has
+//	ever written to this file.
+//
+//	False positive (unavoidable): a user who hand-typed the retired pattern on a
+//	line directly adjacent to bossd's own entries under the marker loses it. Nothing
+//	in the file records provenance, so that line is byte-identical to bossd's and no
+//	rule can tell them apart; the marker is the strongest signal available.
+//
+// The caller must have established that lines[start] == bossdExcludeMarker.
+func bossdManagedExcludeBlock(lines []string, start int, patterns []string) int {
+	written := make(map[string]bool, len(patterns)+len(retiredGitInfoExcludePatterns))
+	for _, p := range patterns {
+		written[p] = true
+	}
+	for _, p := range bossdManagedExcludePatterns {
+		written[p] = true
+	}
+	for _, p := range retiredGitInfoExcludePatterns {
+		written[p] = true
+	}
+	end := start + 1
+	for end < len(lines) && written[lines[end]] {
+		end++
+	}
+	return end
+}
+
 // ensureGitInfoExclude appends the given patterns to the worktree's
-// $GIT_COMMON_DIR/info/exclude, idempotently. Patterns already present
-// (anywhere in the file) are skipped. Pre-existing content is preserved.
+// $GIT_COMMON_DIR/info/exclude, idempotently, and removes any
+// retiredGitInfoExcludePatterns a previous bossd version wrote there — only from
+// inside a bossd-managed block, so an identical line the user wrote themselves
+// keeps hiding what they meant it to hide. Patterns already present (anywhere in
+// the file) are skipped. Pre-existing content is otherwise preserved, in its
+// original order.
 //
 // info/exclude lives in $GIT_COMMON_DIR, which for linked worktrees is
 // the main repo's .git directory — so applying this once for any
@@ -656,9 +724,52 @@ func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []s
 		return fmt.Errorf("read exclude: %w", err)
 	}
 
-	have := make(map[string]bool)
-	for line := range strings.SplitSeq(string(existing), "\n") {
-		have[strings.TrimSpace(line)] = true
+	retired := make(map[string]bool, len(retiredGitInfoExcludePatterns))
+	for _, p := range retiredGitInfoExcludePatterns {
+		retired[p] = true
+	}
+
+	// Split/join on "\n" is exactly invertible, so dropping retired entries this
+	// way preserves both the order of every surviving line and whether the file
+	// ended with a newline.
+	lines := strings.Split(string(existing), "\n")
+	kept := make([]string, 0, len(lines))
+	have := make(map[string]bool, len(lines))
+	var purged bool
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if line != bossdExcludeMarker {
+			// Outside every managed block, so bossd cannot claim to have written
+			// it — a byte-identical retired pattern here is the user's own, and
+			// deleting it would un-hide a path they chose to ignore and let it
+			// into a later commit.
+			have[strings.TrimSpace(line)] = true
+			kept = append(kept, line)
+			continue
+		}
+		end := bossdManagedExcludeBlock(lines, i, patterns)
+		block := make([]string, 0, end-i-1)
+		var blockPurged bool
+		for _, p := range lines[i+1 : end] {
+			if retired[p] {
+				blockPurged = true
+				continue
+			}
+			block = append(block, p)
+		}
+		purged = purged || blockPurged
+		// Drop a marker whose entire body we just purged, rather than leaving a
+		// dangling header over nothing. A marker that was already empty before
+		// this pass is left alone: we did not create it, so we do not tidy it.
+		if !blockPurged || len(block) > 0 {
+			have[strings.TrimSpace(line)] = true
+			kept = append(kept, line)
+		}
+		for _, p := range block {
+			have[strings.TrimSpace(p)] = true
+			kept = append(kept, p)
+		}
+		i = end - 1
 	}
 	var missing []string
 	for _, p := range patterns {
@@ -666,20 +777,22 @@ func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []s
 			missing = append(missing, p)
 		}
 	}
-	if len(missing) == 0 {
+	if len(missing) == 0 && !purged {
 		return nil
 	}
 
 	var buf bytes.Buffer
-	buf.Write(existing)
-	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
+	buf.WriteString(strings.Join(kept, "\n"))
+	if len(missing) > 0 {
+		if buf.Len() > 0 && !bytes.HasSuffix(buf.Bytes(), []byte("\n")) {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(bossdExcludeMarker)
 		buf.WriteByte('\n')
-	}
-	buf.WriteString(bossdExcludeMarker)
-	buf.WriteByte('\n')
-	for _, p := range missing {
-		buf.WriteString(p)
-		buf.WriteByte('\n')
+		for _, p := range missing {
+			buf.WriteString(p)
+			buf.WriteByte('\n')
+		}
 	}
 
 	if err := os.WriteFile(excludePath, buf.Bytes(), 0o600); err != nil {

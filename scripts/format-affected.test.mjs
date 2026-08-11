@@ -495,3 +495,20 @@ test('format-affected: empty changed set prints "nothing to format" and exits 0'
   assert.equal(result.code, 0, `exit 0; stderr: ${result.stderr}`)
   assert.match(result.stdout, /nothing to format/)
 })
+
+test('format-affected: locks canonical skill payload writes', () => {
+  const repo = initRepo()
+  const binDir = mkTemp('fmtaffected-bin-')
+  const skill = 'services/boss/internal/skillinstall/skills/boss/SKILL.md'
+  fs.mkdirSync(path.join(repo, path.dirname(skill)), { recursive: true })
+  fs.writeFileSync(path.join(repo, skill), '# skill\n')
+  fs.writeFileSync(
+    path.join(binDir, 'prettier'),
+    `#!/bin/sh\ntest -f "$PWD/.git/boss-skill-snapshot.lock" || exit 1\nprintf '\\n# locked\\n' >> "$2"\n`,
+  )
+  fs.chmodSync(path.join(binDir, 'prettier'), 0o755)
+
+  const result = runScript(repo, [skill], `${binDir}:${MINIMAL_PATH}`)
+  assert.equal(result.code, 0, `exit 0; stderr: ${result.stderr}`)
+  assert.match(fs.readFileSync(path.join(repo, skill), 'utf8'), /# locked/)
+})

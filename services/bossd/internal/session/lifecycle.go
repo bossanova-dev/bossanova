@@ -491,6 +491,23 @@ func mergeSessionEnv(managed, account, proof map[string]string) map[string]strin
 	return mergeEnv(managed, mergeEnv(account, proof))
 }
 
+// configHomeEnv selects the only environment values an interactive runner may
+// need before the tmux child starts: CODEX_HOME takes precedence, and HOME is
+// the fallback Codex uses when CODEX_HOME is absent. Keep session credentials
+// out of the runner request; tmux still receives the complete environment.
+func configHomeEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	selected := make(map[string]string, 2)
+	for _, name := range []string{"CODEX_HOME", "HOME"} {
+		if value, ok := env[name]; ok {
+			selected[name] = value
+		}
+	}
+	return selected
+}
+
 // SetHookPort records the hook server's bound loopback port so
 // StartSession can stamp it into a worktree's settings.local.json when
 // installing the Stop-hook config. Called from the daemon entrypoint
@@ -1906,15 +1923,16 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// (claude, codex) are skipped entirely, so their env is byte-identical
 		// to what it was before BOS-486.
 		headlessEnv = l.withQuestionHookEnv(session.AgentName, headlessEnv)
-		if opts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
-			claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv)
-		} else {
-			profiledRunner, ok := l.agentRunner.(agent.HeadlessCapabilityProfileDispatcher)
-			if !ok {
-				return fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName)
-			}
-			claudeSessionID, err = profiledRunner.StartByAgentWithHeadlessCapabilityProfile(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, opts.HeadlessCapabilityProfile)
+		headlessMcpConfigPath := l.writeSessionMcpConfig(session, sessionID, sessionID, resolvedAgentName)
+		launchRunner, ok := l.agentRunner.(agent.HeadlessLaunchOptionsDispatcher)
+		if !ok {
+			return fmt.Errorf("headless launch for agent %q requires managed-MCP-aware agent dispatcher", resolvedAgentName)
 		}
+		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, agent.HeadlessLaunchOptions{
+			ManagedMcpConfigPath:      headlessMcpConfigPath,
+			StrictManagedMcpConfig:    StrictManagedMcpConfigForSession(session),
+			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
+		})
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}

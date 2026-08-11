@@ -195,6 +195,7 @@ type SessionCommandServer interface {
 	RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error)
 	TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error)
 	ListChats(context.Context, *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error)
+	GetChatStatuses(context.Context, *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error)
 	GetSessionStatuses(context.Context, *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error)
 	ListCheckSnapshots(context.Context, *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error)
 	ListPlugins(context.Context, *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error)
@@ -1143,6 +1144,20 @@ func (a *CommandHandlerAdapter) ListChats(ctx context.Context, sessionID string)
 	resp, err := a.Commands.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{SessionId: sessionID}))
 	if err != nil {
 		return nil, fmt.Errorf("list chats: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// GetChatStatuses implements SessionCommandHandler.GetChatStatuses by
+// delegating to the daemon's GetChatStatuses connect handler and unwrapping the
+// response message.
+func (a *CommandHandlerAdapter) GetChatStatuses(ctx context.Context, sessionID string) (*pb.GetChatStatusesResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_chat_statuses: command server not wired")
+	}
+	resp, err := a.Commands.GetChatStatuses(ctx, connect.NewRequest(&pb.GetChatStatusesRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("get chat statuses: %w", err)
 	}
 	return resp.Msg, nil
 }

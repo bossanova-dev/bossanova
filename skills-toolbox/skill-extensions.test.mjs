@@ -385,8 +385,11 @@ const repoRoot = path.resolve(import.meta.dirname, '..')
 
 test('discoverExtensions finds the committed boss-plan draft extension repo-local', () => {
   const { extensions } = discoverExtensions({ core: 'boss-plan', root: repoRoot, role: 'draft' })
-  const found = extensions.find((e) => e.name === 'boss-plan-draft')
-  assert.ok(found, `expected boss-plan-draft in ${JSON.stringify(extensions.map((e) => e.name))}`)
+  const found = extensions.find((e) => e.name === 'boss-plan-compound-engineering')
+  assert.ok(
+    found,
+    `expected boss-plan-compound-engineering in ${JSON.stringify(extensions.map((e) => e.name))}`,
+  )
   assert.equal(found.role, 'draft')
 })
 
@@ -394,7 +397,7 @@ test('discoverExtensions finds the committed boss-review round extensions repo-l
   const { extensions } = discoverExtensions({ core: 'boss-review', root: repoRoot, role: 'round' })
   const names = extensions.map((e) => e.name)
   for (const expected of [
-    'boss-review-requesting',
+    'boss-review-ce',
     'boss-review-crossmodel',
     'boss-review-thermonuclear',
   ]) {
@@ -436,11 +439,8 @@ test('discoverExtensions finds the committed boss-build methodology extension re
     { encoding: 'utf8', cwd: process.cwd() },
   )
   const { extensions } = JSON.parse(out)
-  const found = extensions.find((e) => e.name === 'boss-build-superpowers')
-  assert.ok(
-    found,
-    `expected boss-build-superpowers in ${JSON.stringify(extensions.map((e) => e.name))}`,
-  )
+  const found = extensions.find((e) => e.name === 'boss-build-ce')
+  assert.ok(found, `expected boss-build-ce in ${JSON.stringify(extensions.map((e) => e.name))}`)
   assert.equal(found.role, 'methodology')
 })
 
@@ -547,7 +547,7 @@ test('validateResult accepts a well-formed lens envelope', () => {
 test('validateResult accepts a well-formed round envelope', () => {
   const envelope = {
     ok: true,
-    extension: 'boss-review-requesting',
+    extension: 'boss-review-ce',
     role: 'round',
     items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't', detail: 'd' }],
   }
@@ -557,7 +557,7 @@ test('validateResult accepts a well-formed round envelope', () => {
 test('validateResult rejects a round envelope missing a findings key', () => {
   const envelope = {
     ok: true,
-    extension: 'boss-review-requesting',
+    extension: 'boss-review-ce',
     role: 'round',
     items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't' }],
   }

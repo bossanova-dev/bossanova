@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1159,9 +1160,11 @@ func installedPluginName(name string) bool {
 }
 
 func runLS(cmd *cobra.Command) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	repoID, _ := cmd.Flags().GetString("repo")
@@ -1175,7 +1178,7 @@ func runLS(cmd *cobra.Command) error {
 		if val, ok := pb.SessionState_value[key]; ok {
 			states = append(states, pb.SessionState(val))
 		} else {
-			return fmt.Errorf("unknown state: %s", s)
+			return emitJSONFailure(cmd, asJSON, fmt.Errorf("unknown state: %s", s))
 		}
 	}
 
@@ -1190,7 +1193,17 @@ func runLS(cmd *cobra.Command) error {
 	ctx := context.Background()
 	sessions, err := c.ListSessions(ctx, req, client.SessionReadOptions{})
 	if err != nil {
-		return fmt.Errorf("list sessions: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("list sessions: %w", err))
+	}
+
+	if asJSON {
+		// The empty case emits `{"sessions": []}`, not the human "no sessions"
+		// line and not `null` — a driver decodes one shape either way.
+		rows := make([]sessionJSON, 0, len(sessions))
+		for _, sess := range sessions {
+			rows = append(rows, newSessionRowJSON(sess))
+		}
+		return emitJSON(cmd, sessionListJSON{Sessions: rows})
 	}
 
 	if len(sessions) == 0 {
@@ -1262,13 +1275,43 @@ func runNew(cmd *cobra.Command) error {
 		a := account
 		accountArg = &a
 	}
-	detach, _ := cmd.Flags().GetBool("detach")
-	noAttach, _ := cmd.Flags().GetBool("no-attach")
-	detach = detach || noAttach
+	// --detach / --no-attach are deliberately NOT read. The scripting path below
+	// always detaches — runNewDetach's predecessor already took the value as `_`
+	// — and the interactive path launches the TUI regardless, so the flags are
+	// inert on both. They stay registered because they are a documented surface
+	// callers already pass; `--detach`'s help text is what says it is a no-op
+	// here and points at --tmux-unattended for the durable-pane behaviour.
+	tmuxUnattended, _ := cmd.Flags().GetBool("tmux-unattended")
+	trackerID, _ := cmd.Flags().GetString("tracker-id")
+	trackerSource, _ := cmd.Flags().GetString("tracker-source")
+	trackerURL, _ := cmd.Flags().GetString("tracker-url")
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
+	// Reject an unknown --tracker-source before any RPC is issued, on BOTH the
+	// interactive and the scripting path. The daemon neither validates nor
+	// stores the field — there is no tracker_source column, and server.go reads
+	// it exactly once, to label a plan derived from a tracker_issue — so an
+	// unrecognised value is silently ignored rather than refused. Failing here
+	// turns a typo into an error the caller can see, instead of a tracker
+	// binding that quietly never happens.
+	if err := validateTrackerSource(trackerSource); err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
 
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
-		return runNewDetach(cmd, repo, prompt, title, agentName, model, accountArg, detach)
+		return runNewDetach(cmd, newSessionOpts{
+			RepoID:         repo,
+			Prompt:         prompt,
+			Title:          title,
+			AgentName:      agentName,
+			Model:          model,
+			Account:        accountArg,
+			TmuxUnattended: tmuxUnattended,
+			TrackerID:      trackerID,
+			TrackerSource:  trackerSource,
+			TrackerURL:     trackerURL,
+		}, asJSON)
 	}
 
 	return launchTUI(cmd, func(app *views.App) {
@@ -1296,23 +1339,92 @@ func runNew(cmd *cobra.Command) error {
 // account is optional and carries flag PRESENCE: nil omits account_id (the
 // daemon applies its default-account policy), a non-nil pointer (even to "")
 // binds explicitly — "" is the account-0 opt-out that skips the policy.
-func newDetachRequest(repoID, prompt, title, agentName, model string, account *string) *pb.CreateSessionRequest {
+//
+// It takes a named options struct rather than a positional parameter list:
+// the list was already at six arguments and the tracker/tmux flags would have
+// taken it to ten same-typed strings and bools, where a transposed pair is
+// invisible at the call site and silently sends the URL as the id.
+func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 	req := &pb.CreateSessionRequest{
-		RepoId: repoID,
-		Plan:   prompt,
-		Title:  title,
-		Detach: true,
+		RepoId: opts.RepoID,
+		// Verbatim. The daemon only auto-submits an unattended prompt when it is
+		// one trimmed line starting with `/` or `$`, so the CLI must not wrap,
+		// prefix, trim or reflow it on the way in.
+		Plan:  opts.Prompt,
+		Title: opts.Title,
+		// Detach and IsTmuxUnattended are orthogonal, not alternatives: the
+		// daemon carries both on StartSessionOpts and mints a finalize hook
+		// token when EITHER is set. Detach means "run the initial agent pass
+		// headlessly"; is_tmux_unattended means "host it in a durable tmux pane
+		// that survives a daemon restart". --tmux-unattended therefore adds to
+		// this scripting path's always-true Detach rather than replacing it.
+		Detach:           true,
+		IsTmuxUnattended: opts.TmuxUnattended,
 	}
-	if agentName != "" {
-		req.AgentName = &agentName
+	if opts.AgentName != "" {
+		req.AgentName = &opts.AgentName
 	}
-	if model != "" {
-		req.Model = &model
+	if opts.Model != "" {
+		req.Model = &opts.Model
 	}
-	if account != nil {
-		req.AccountId = account
+	if opts.Account != nil {
+		req.AccountId = opts.Account
+	}
+	// The tracker fields are `optional` in the proto, so an omitted flag must
+	// leave the field nil: a present-but-empty pointer is a different wire
+	// signal, and the daemon's tracker-id dedup keys on presence.
+	if opts.TrackerID != "" {
+		req.TrackerId = &opts.TrackerID
+	}
+	if opts.TrackerSource != "" {
+		req.TrackerSource = &opts.TrackerSource
+	}
+	if opts.TrackerURL != "" {
+		req.TrackerUrl = &opts.TrackerURL
 	}
 	return req
+}
+
+// newSessionOpts carries the `boss new` non-interactive flag set through to the
+// CreateSessionRequest builder. Named fields, not positional arguments — see
+// newDetachRequest.
+type newSessionOpts struct {
+	RepoID    string
+	Prompt    string
+	Title     string
+	AgentName string
+	Model     string
+	// Account carries flag PRESENCE: nil = absent, non-nil (even "") = explicit.
+	Account *string
+	// TmuxUnattended requests a durable tmux-hosted pane that survives a daemon
+	// restart. Independent of Detach — see newDetachRequest.
+	TmuxUnattended bool
+	// Tracker* bind the session to an external issue. Empty = flag absent, which
+	// leaves the corresponding optional proto field unset.
+	TrackerID     string
+	TrackerSource string
+	TrackerURL    string
+}
+
+// trackerSources is the tracker_source vocabulary the proto documents
+// (proto/bossanova/v1/daemon.proto: `optional string tracker_source = 13; //
+// "linear" | "sentry"`).
+var trackerSources = []string{"linear", "sentry"}
+
+// validateTrackerSource rejects an unknown --tracker-source. The daemon does
+// not validate this field — it stores it and uses it only to format a plan from
+// a tracker issue — so an unrecognised value is persisted verbatim and the
+// binding it was meant to establish silently does not happen. Catching it here
+// keeps the failure at the call the caller can still fix.
+//
+// An empty value is valid: it means the flag was omitted.
+func validateTrackerSource(source string) error {
+	if source == "" || slices.Contains(trackerSources, source) {
+		return nil
+	}
+	return codedError(codeInvalidArgument, fmt.Errorf(
+		"invalid --tracker-source %q: want one of %s",
+		source, strings.Join(trackerSources, ", ")))
 }
 
 // deriveSessionTitle builds a session title from the prompt for the
@@ -1342,10 +1454,10 @@ func deriveSessionTitle(prompt string) string {
 	return line
 }
 
-func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model string, account *string, _ bool) error {
+func runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON bool) error {
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	ctx := context.Background()
@@ -1353,28 +1465,33 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model s
 	// Resolve --repo to a repo_id.
 	repos, err := c.ListRepos(ctx)
 	if err != nil {
-		return fmt.Errorf("list repos: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("list repos: %w", err))
 	}
-	repoID, err := resolveRepoArg(repoArg, repos)
+	repoID, err := resolveRepoArg(opts.RepoID, repos)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
+	opts.RepoID = repoID
 
 	// The server requires a non-empty title. Mirror the interactive TUI and
-	// derive one client-side from the prompt when --title is absent.
-	if strings.TrimSpace(title) == "" {
-		title = deriveSessionTitle(prompt)
+	// derive one client-side from the prompt when --title is absent. Only the
+	// TITLE is derived — opts.Prompt itself is never rewritten, so Plan reaches
+	// the daemon byte-identical.
+	if strings.TrimSpace(opts.Title) == "" {
+		opts.Title = deriveSessionTitle(opts.Prompt)
 	}
 
-	req := newDetachRequest(repoID, prompt, title, agentName, model, account)
+	req := newDetachRequest(opts)
 
 	stream, err := c.CreateSession(ctx, req)
 	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("create session: %w", err))
 	}
 	defer func() { _ = stream.Close() }()
 
 	// Drain the stream; print setup output inline and capture the final session.
+	// Setup output goes to stderr on both paths, so stdout under --json carries
+	// exactly one JSON object.
 	var session *pb.Session
 	for stream.Receive() {
 		msg := stream.Msg()
@@ -1386,15 +1503,42 @@ func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName, model s
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return fmt.Errorf("create session: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("create session: %w", err))
 	}
 	if session == nil {
-		return fmt.Errorf("daemon did not return a session")
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon did not return a session"))
 	}
 
+	if asJSON {
+		return emitJSON(cmd, newSessionJSON(session))
+	}
+	// Byte-identical to what this path printed before --json existed: it is a
+	// documented scripting surface and existing callers parse it positionally.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\nchat-id:    %s\n",
 		session.GetId(), session.GetAgentSessionId())
 	return nil
+}
+
+// newSessionEnvelope is the `boss new --json` success envelope. It nests under
+// "session" like `boss merge --json` so a driver reads one shape across the
+// CLI, and it names the chat id `chat_id` — the same field the human two-line
+// output labels `chat-id` — rather than leaking the proto's agent_session_id.
+type newSessionEnvelope struct {
+	Session newSessionBody `json:"session"`
+}
+
+type newSessionBody struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	ChatID string `json:"chat_id"`
+}
+
+func newSessionJSON(session *pb.Session) newSessionEnvelope {
+	return newSessionEnvelope{Session: newSessionBody{
+		ID:     session.GetId(),
+		Title:  session.GetTitle(),
+		ChatID: session.GetAgentSessionId(),
+	}}
 }
 
 // resolveRepoArg resolves a --repo argument (id, unique id prefix, display
@@ -1636,6 +1780,150 @@ func boolLabel(b bool) string {
 	return "no"
 }
 
+// agentLister is the narrow client seam `boss agents` needs. Naming it here —
+// rather than taking the whole client.BossClient — is what lets the command be
+// tested against a stub without standing up a daemon.
+type agentLister interface {
+	ListAgents(ctx context.Context) ([]client.AgentInfo, error)
+}
+
+// agentsJSON is the `boss agents --json` success envelope. The object wrapper
+// (rather than a bare array) leaves room for future top-level fields without
+// breaking a driver that already parses it.
+type agentsJSON struct {
+	Agents []agentJSON `json:"agents"`
+}
+
+type agentJSON struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// Always an array, never null: a driver iterating an agent's settings
+	// should not have to null-check a fleet member that exposes none.
+	UserSettings []userSettingJSON `json:"user_settings"`
+}
+
+type userSettingJSON struct {
+	Key          string `json:"key"`
+	Label        string `json:"label"`
+	Description  string `json:"description"`
+	DefaultValue string `json:"default_value"`
+	// Type is the enum NAME, not client.SettingType's integer. The int's
+	// ordering is an implementation detail of this package; emitting it would
+	// couple every caller to it.
+	Type string `json:"type"`
+	// Always an array, never null, for the same reason as UserSettings.
+	AllowedValues []string `json:"allowed_values"`
+}
+
+// settingTypeName maps the package-local SettingType to its stable wire
+// spelling. Anything unrecognised reads as UNSPECIFIED rather than a number, so
+// a new enum member added upstream degrades to "opaque/text" instead of leaking
+// an integer into the contract.
+func settingTypeName(t client.SettingType) string {
+	switch t {
+	case client.SettingTypeBool:
+		return "BOOL"
+	case client.SettingTypeString:
+		return "STRING"
+	case client.SettingTypeEnum:
+		return "ENUM"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+// runAgents lists the agent runners the daemon actually loaded — the plugins
+// satisfying AgentRunnerService, which is a strictly narrower set than
+// `boss plugin list` reports. A preflight asking "can I request this agent?"
+// wants this list, not the plugin inventory.
+func runAgents(cmd *cobra.Command) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+	c, err := newClient(cmd)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+	return renderAgents(cmd, c, asJSON)
+}
+
+// renderAgents is runAgents with the transport hoisted out, so the rendering
+// contract can be exercised against a stub client.
+func renderAgents(cmd *cobra.Command, c agentLister, asJSON bool) error {
+	agents, err := c.ListAgents(context.Background())
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("list agents: %w", err))
+	}
+
+	if asJSON {
+		return emitJSON(cmd, newAgentsJSON(agents))
+	}
+
+	if len(agents) == 0 {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No agent runners loaded.")
+		return nil
+	}
+
+	names := make([]string, len(agents))
+	versions := make([]string, len(agents))
+	settings := make([]string, len(agents))
+	for i, a := range agents {
+		names[i] = orDash(a.Name)
+		versions[i] = orDash(a.Version)
+		settings[i] = strconv.Itoa(len(a.UserSettings))
+	}
+
+	cols := []table.Column{
+		{Title: "NAME", Width: views.MaxColWidth("NAME", names, 24)},
+		{Title: "VERSION", Width: views.MaxColWidth("VERSION", versions, 20)},
+		{Title: "SETTINGS", Width: views.MaxColWidth("SETTINGS", settings, 8)},
+	}
+	rows := make([]table.Row, len(agents))
+	for i := range agents {
+		rows[i] = table.Row{names[i], versions[i], settings[i]}
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	return nil
+}
+
+// newAgentsJSON converts the client types into the wire envelope.
+//
+// Every slice here is allocated with make rather than grown from nil: a nil
+// slice marshals as `null`, and each of these three lists is something a driver
+// iterates. `[]` is the honest empty answer — "this agent has no settings", not
+// "the settings are unknown".
+func newAgentsJSON(agents []client.AgentInfo) agentsJSON {
+	out := make([]agentJSON, 0, len(agents))
+	for _, a := range agents {
+		settings := make([]userSettingJSON, 0, len(a.UserSettings))
+		for _, s := range a.UserSettings {
+			allowed := make([]string, 0, len(s.AllowedValues))
+			allowed = append(allowed, s.AllowedValues...)
+			settings = append(settings, userSettingJSON{
+				Key:           s.Key,
+				Label:         s.Label,
+				Description:   s.Description,
+				DefaultValue:  s.DefaultValue,
+				Type:          settingTypeName(s.Type),
+				AllowedValues: allowed,
+			})
+		}
+		out = append(out, agentJSON{
+			Name:         a.Name,
+			Version:      a.Version,
+			UserSettings: settings,
+		})
+	}
+	return agentsJSON{Agents: out}
+}
+
 func runRepoRemove(cmd *cobra.Command, id string) error {
 	c, err := newClient(cmd)
 	if err != nil {
@@ -1647,6 +1935,141 @@ func runRepoRemove(cmd *cobra.Command, id string) error {
 	}
 	fmt.Printf("Repository %s removed.\n", id)
 	return nil
+}
+
+// mergeTargetDescription names what a merge is about to act on, so the
+// confirmation prompt catches a mistyped prefix that resolved to a real (and
+// possibly archived) session. A session with a linked PR merges that PR; one
+// without takes the daemon's local-only-branch merge path.
+func mergeTargetDescription(sess *pb.Session) string {
+	if sess.PrNumber != nil {
+		return fmt.Sprintf("PR #%d %q", sess.GetPrNumber(), sess.GetTitle())
+	}
+	base := sess.GetBaseBranch()
+	if base == "" {
+		base = "its base branch"
+	}
+	return fmt.Sprintf("local branch %s into %s", sess.GetBranchName(), base)
+}
+
+// runMerge is a thin transport over the daemon's MergeSession RPC. The daemon
+// owns the merge gate, the per-repo merge serialization, the already-merged
+// short-circuit, and the merge-strategy resolution — none of that is mirrored
+// here. In particular there is deliberately no client-side gate: the daemon's
+// own `merge blocked: gate=<slug>; <detail>` message names the actual gate and
+// is a better outcome than a CLI guess. Merges wait on the repo merge lock and
+// the provider, so the context is unbounded like runArchive's (the procedure is
+// already in the client's no-short-deadline set).
+func runMerge(cmd *cobra.Command, sessionID string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+
+	c, err := newClient(cmd)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+
+	yes, _ := cmd.Flags().GetBool("yes")
+	switch {
+	case asJSON && !yes:
+		// --json is a machine contract, and the confirmation prompt is not part
+		// of it. Prompting here would either block on a stdin nobody attached,
+		// or read EOF and print "Cancelled." with exit 0 — a merge that reads
+		// as declined though it was never offered. Refusing loudly is the safe
+		// direction, and it travels as an envelope like every other failure.
+		return emitJSONFailure(cmd, asJSON, codedError(codeConfirmationRequired,
+			errors.New("merge: --json requires --yes (refusing to prompt for confirmation on a machine-readable invocation)")))
+	case !yes:
+		sess, err := c.GetSession(ctx, sessionID, client.SessionReadOptions{})
+		if err != nil {
+			return fmt.Errorf("get session: %w", err)
+		}
+		fmt.Printf("Merge session %s — %s? [y/N] ", sessionID, mergeTargetDescription(sess))
+		var answer string
+		if _, err := fmt.Scanln(&answer); err != nil || (answer != "y" && answer != "Y") {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+	}
+
+	sess, detail, err := c.MergeSession(ctx, sessionID)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("merge session: %w", err))
+	}
+	if asJSON {
+		return emitJSON(cmd, newMergeJSON(sess, detail))
+	}
+	fmt.Printf("Session %s merged (%s).\n", sess.GetId(), sess.GetTitle())
+	if detail != "" {
+		fmt.Printf("Note: %s\n", detail)
+	}
+	return nil
+}
+
+// mergeJSON is the `boss merge --json` success envelope.
+type mergeJSON struct {
+	Session mergeSessionJSON `json:"session"`
+	PR      *mergePRJSON     `json:"pr,omitempty"`
+	// Detail is the daemon's note about how the merge was performed (e.g. a
+	// merge-strategy substitution), empty when it ran exactly as configured.
+	// Always emitted, never omitted: over --remote it is always "" because
+	// ProxyMergeSessionResponse carries no detail field, so a caller has to be
+	// able to tell "the daemon said nothing" from "this transport cannot say".
+	// (--host is not affected: it tunnels to a real local client and carries the
+	// daemon's detail through unchanged.)
+	Detail string `json:"detail"`
+}
+
+type mergeSessionJSON struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// State is the protobuf enum name (e.g. SESSION_STATE_MERGED) — the same
+	// vocabulary the wire uses, so it needs no client-side mapping table and
+	// does not drift when a display label changes.
+	//
+	// It is the daemon's value verbatim, which on a successful merge can still
+	// be the PRE-merge state: the daemon's handler reads the session before its
+	// own deferred display refresh applies the Merged transition (see
+	// services/bossd/internal/server/server.go, MergeSession). Treat this as
+	// "the state as of the merge call", not as the merge's outcome — the
+	// outcome is the envelope itself.
+	State string `json:"state"`
+}
+
+type mergePRJSON struct {
+	Number int32  `json:"number"`
+	URL    string `json:"url"`
+}
+
+// newMergeJSON builds the success envelope. The pr object is omitted entirely
+// unless the session carries a number or a URL: emitting it full of zero values
+// would make a local-only-branch merge look like it merged PR #0.
+//
+// There is deliberately no already_merged field. The daemon's short-circuit
+// returns an ordinary success plus a detail string, and MergeSessionResponse
+// carries nothing else a client could key on — deriving the flag from detail
+// text would reintroduce exactly the message matching this envelope removes.
+// session.state is not a substitute: it can still read pre-merge on a genuine
+// merge (see mergeSessionJSON.State), so a caller that branches on it would
+// mistake a successful merge for a failed one. A caller that needs the settled
+// state must re-read the session.
+func newMergeJSON(sess *pb.Session, detail string) mergeJSON {
+	env := mergeJSON{
+		Session: mergeSessionJSON{
+			ID:    sess.GetId(),
+			Title: sess.GetTitle(),
+			State: sess.GetState().String(),
+		},
+		Detail: detail,
+	}
+	if sess.PrNumber != nil || sess.PrUrl != nil {
+		env.PR = &mergePRJSON{Number: sess.GetPrNumber(), URL: sess.GetPrUrl()}
+	}
+	return env
 }
 
 func runArchive(cmd *cobra.Command, sessionID string) error {
@@ -2419,11 +2842,15 @@ func resolveSessionID(c client.BossClient, ctx context.Context, prefix string) (
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no session found matching prefix %q", prefix)
+		// Tagged, not wrapped: codedError leaves the message byte-identical,
+		// so the human output is unchanged while --json can still classify
+		// this as NOT_FOUND. Resolution happens entirely client-side, so
+		// there is no connect code to derive one from.
+		return "", codedError(codeNotFound, fmt.Errorf("no session found matching prefix %q", prefix))
 	case 1:
 		return matches[0], nil
 	default:
-		return "", fmt.Errorf("ambiguous prefix %q matches %d sessions", prefix, len(matches))
+		return "", codedError(codeAmbiguousPrefix, fmt.Errorf("ambiguous prefix %q matches %d sessions", prefix, len(matches)))
 	}
 }
 
@@ -2489,20 +2916,29 @@ func printSessionShowHeader(sess *pb.Session) {
 }
 
 func runShow(cmd *cobra.Command, sessionID string) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	ctx := context.Background()
 	sessionID, err = resolveSessionID(c, ctx, sessionID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	sess, err := c.GetSession(ctx, sessionID, client.SessionReadOptions{})
 	if err != nil {
-		return fmt.Errorf("get session: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("get session: %w", err))
+	}
+
+	if asJSON {
+		// Session detail only — the chats table below is `boss chats`' shape,
+		// which has to join in per-chat status, so it stays out of this
+		// envelope rather than shipping a half-populated version of it.
+		return emitJSON(cmd, sessionShowJSON{Session: newSessionDetailJSON(sess)})
 	}
 
 	// Print key-value header.
@@ -2543,40 +2979,187 @@ func runShow(cmd *cobra.Command, sessionID string) error {
 		return nil
 	}
 
+	statuses, statusErr := fetchChatStatuses(ctx, c, sessionID)
+	if statusErr != nil {
+		warnChatStatusUnavailable(cmd, statusErr)
+	}
+
 	fmt.Println()
-	printChatsTable(cmd, chats)
+	printChatsTable(cmd, chats, statuses, statusErr == nil)
 	return nil
 }
 
 func runChats(cmd *cobra.Command, sessionID string) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	ctx := context.Background()
 	sessionID, err = resolveSessionID(c, ctx, sessionID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	chats, err := c.ListChats(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("list chats: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("list chats: %w", err))
 	}
+
+	// The status read is what makes this command answerable at all: a chat row
+	// without a status says nothing about whether the chat has settled. It is
+	// fetched before the empty-list shortcut so the two output modes agree on
+	// when status is unavailable regardless of how many chats came back.
+	statuses, statusErr := fetchChatStatuses(ctx, c, sessionID)
+	if statusErr != nil {
+		if asJSON {
+			// Fail loudly rather than emit rows with an absent status. Degrading
+			// here produces rows that read `"status": "UNSPECIFIED"` — byte
+			// identical to chats that genuinely have no cached status — so a
+			// driver cannot tell "the read failed" from "this chat has not
+			// reported yet", and one forgotten null check merges on a WORKING
+			// chat. Refusing to answer is what makes "a missing status degrades
+			// to a stall" true rather than aspirational.
+			return emitJSONFailure(cmd, asJSON, codedError(codeChatStatusUnavailable,
+				fmt.Errorf("get chat statuses: %w", statusErr)))
+		}
+		warnChatStatusUnavailable(cmd, statusErr)
+	}
+
+	if asJSON {
+		return emitJSON(cmd, newChatsJSON(chats, statuses))
+	}
+
 	if len(chats) == 0 {
 		fmt.Println("No chats found.")
 		return nil
 	}
 
-	printChatsTable(cmd, chats)
+	printChatsTable(cmd, chats, statuses, statusErr == nil)
 	return nil
 }
 
-func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
+// chatStatusReader is the one client method the chat-status join needs. Naming
+// it keeps fetchChatStatuses testable with a stub without dragging in the whole
+// client surface.
+type chatStatusReader interface {
+	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
+}
+
+// fetchChatStatuses reads the session's per-chat statuses and keys them by
+// agent_session_id for the left join onto ListChats.
+//
+// Every error is reported to the caller, including connect.CodeUnimplemented.
+// chatWaitTick (chat.go) tolerates Unimplemented because it has a transcript
+// read to fall back on; this command has none. --remote is no longer a source of
+// Unimplemented here (RemoteClient.GetChatStatuses proxies the read through
+// ProxyGetChatStatuses since BOS-824), but a daemon older than that RPC still
+// answers Unimplemented, and swallowing it would turn "this transport cannot
+// tell you" into a silent "nothing is working".
+//
+// get_session_statuses is deliberately NOT a fallback here: it answers a
+// different question (session aggregate vs the tracked chat), and a
+// plausible-looking wrong answer on this path causes a wrong merge.
+func fetchChatStatuses(ctx context.Context, c chatStatusReader, sessionID string) (map[string]*pb.ChatStatusEntry, error) {
+	entries, err := c.GetChatStatuses(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	byChat := make(map[string]*pb.ChatStatusEntry, len(entries))
+	for _, e := range entries {
+		byChat[e.GetAgentSessionId()] = e
+	}
+	return byChat, nil
+}
+
+// warnChatStatusUnavailable prints the single stderr line the human table mode
+// owes a reader whose STATUS cells all read "?".
+func warnChatStatusUnavailable(cmd *cobra.Command, err error) {
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"boss: chat status unavailable (%v); STATUS and LAST OUTPUT show ? — no chat below can be read as settled\n", err)
+}
+
+// chatStatusName renders the enum as its bare suffix (IDLE, WORKING, WAITING,
+// …), mirroring displayStatusName's treatment of DisplayStatus. A chat the
+// daemon holds no cached status for stays UNSPECIFIED rather than being mapped
+// to anything friendlier: only the caller can decide, and every safe caller
+// treats UNSPECIFIED as not-settled.
+//
+// A value this build's enum does not know — a newer daemon reporting a status
+// added after this binary was compiled — also renders UNSPECIFIED. The guard is
+// load-bearing: protobuf-go's generated String() falls back to the *decimal
+// number* for any value missing from ChatStatus_name, so TrimPrefix alone would
+// leave a bare integer in the STATUS column and in the JSON `status` field.
+// UNSPECIFIED is the only honest rendering, because it is the one value already
+// documented as "not settled, do not merge on it".
+func chatStatusName(s pb.ChatStatus) string {
+	if _, known := pb.ChatStatus_name[int32(s)]; !known {
+		return "UNSPECIFIED"
+	}
+	return strings.TrimPrefix(s.String(), "CHAT_STATUS_")
+}
+
+// chatsJSON is the `boss chats --json` success envelope.
+type chatsJSON struct {
+	Chats []chatJSON `json:"chats"`
+}
+
+// chatJSON is one chat row. Every field is always emitted — never omitempty:
+// an absent field is precisely what a settled-green driver must not have to
+// guess about.
+type chatJSON struct {
+	AgentSessionID string `json:"agent_session_id"`
+	Title          string `json:"title"`
+	CreatedAt      string `json:"created_at"`
+	// Status is the trimmed enum string ("IDLE"), not the numeric value: a
+	// driver comparing against "IDLE" is the intended use, and a number would
+	// invite off-by-one coupling to the enum.
+	Status string `json:"status"`
+	// LastOutputAt is the proto's last_output_at verbatim, and is named after
+	// it. For a WORKING chat it is effectively fetch-time — every WORKING chat
+	// in one fetch shares it to the nanosecond — so it says nothing about
+	// staleness until the chat is IDLE. "IDLE and stale" is a sound settled
+	// gate; "stale" alone is not.
+	LastOutputAt string `json:"last_output_at"`
+	// WaitingReason explains a WAITING chat's block; empty for every other
+	// status.
+	WaitingReason string `json:"waiting_reason"`
+}
+
+// newChatsJSON left-joins the statuses onto the chats by agent_session_id.
+func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntry) chatsJSON {
+	out := chatsJSON{Chats: make([]chatJSON, 0, len(chats))}
+	for _, chat := range chats {
+		st := statuses[chat.GetAgentSessionId()]
+		out.Chats = append(out.Chats, chatJSON{
+			AgentSessionID: chat.GetAgentSessionId(),
+			Title:          chat.GetTitle(),
+			CreatedAt:      rfc3339OrEmpty(chat.GetCreatedAt()),
+			Status:         chatStatusName(st.GetStatus()),
+			LastOutputAt:   rfc3339OrEmpty(st.GetLastOutputAt()),
+			WaitingReason:  st.GetWaitingReason(),
+		})
+	}
+	return out
+}
+
+// chatStatusCellMax bounds the STATUS cell. A WAITING chat appends its
+// waiting_reason inline, and reasons are free text from the daemon, so the same
+// bound is applied to the cell text and to the column width — otherwise one long
+// reason widens the table past a terminal for every other row.
+const chatStatusCellMax = 44
+
+// printChatsTable renders the human table. statusAvailable false means the
+// status read failed: STATUS and LAST OUTPUT render "?" so no cell can be
+// mistaken for a settled chat.
+func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntry, statusAvailable bool) {
 	ids := make([]string, len(chats))
 	titles := make([]string, len(chats))
 	createds := make([]string, len(chats))
+	statusCells := make([]string, len(chats))
+	lastOutputs := make([]string, len(chats))
 	for i, chat := range chats {
 		ids[i] = chat.AgentSessionId
 		t := chat.Title
@@ -2590,17 +3173,42 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
 		} else {
 			createds[i] = "-"
 		}
+
+		if !statusAvailable {
+			statusCells[i], lastOutputs[i] = "?", "?"
+			continue
+		}
+		st := statuses[chat.GetAgentSessionId()]
+		cell := chatStatusName(st.GetStatus())
+		if reason := st.GetWaitingReason(); reason != "" {
+			// waiting_reason exists precisely to explain the wait, so the human
+			// table shows it inline rather than making a reader run a second
+			// command to find out what the chat is blocked on.
+			cell = truncateString(cell+" ("+reason+")", chatStatusCellMax)
+		}
+		statusCells[i] = cell
+		if lo := st.GetLastOutputAt(); lo != nil {
+			lastOutputs[i] = views.RelativeTime(lo.AsTime())
+		} else {
+			lastOutputs[i] = "-"
+		}
 	}
 
+	// The new columns are appended rather than inserted: ID / TITLE / CREATED
+	// keep the positions they have always had, so a reader (or a script) that
+	// already slices this table by field index is widened, not silently shifted
+	// onto a different column.
 	cols := []table.Column{
 		{Title: "ID", Width: views.MaxColWidth("ID", ids, 0)},
 		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 50)},
 		{Title: "CREATED", Width: views.MaxColWidth("CREATED", createds, 12)},
+		{Title: "STATUS", Width: views.MaxColWidth("STATUS", statusCells, chatStatusCellMax)},
+		{Title: "LAST OUTPUT", Width: views.MaxColWidth("LAST OUTPUT", lastOutputs, 12)},
 	}
 
 	rows := make([]table.Row, len(chats))
 	for i := range chats {
-		rows[i] = table.Row{ids[i], titles[i], createds[i]}
+		rows[i] = table.Row{ids[i], titles[i], createds[i], statusCells[i], lastOutputs[i]}
 	}
 
 	t := table.New(

@@ -66,8 +66,13 @@ const BUILDERS = {
  * @returns {FinalizeAdapter}
  */
 export function resolveFinalizeAdapter(env = process.env, { runImpl } = {}) {
-  const name = env.FINALIZE || 'boss-finalize'
-  const build = BUILDERS[name]
-  if (!build) throw new Error(`unknown finalize: ${name}`)
-  return assertConforms(build({ runImpl }))
+  // `??` not `||`, and Object.hasOwn not a truthiness check: an explicitly-empty
+  // FINALIZE='' must fail on the unknown-finalize path rather than silently taking
+  // the default, and `FINALIZE=constructor` must not resolve to the inherited
+  // `Object` — truthy — and hand back `Object({runImpl})`, a plain object that
+  // would then only fail deep inside assertConforms. Same rule in the tracker,
+  // session and callback resolvers.
+  const name = env.FINALIZE ?? 'boss-finalize'
+  if (!Object.hasOwn(BUILDERS, name)) throw new Error(`unknown finalize: ${name}`)
+  return assertConforms(BUILDERS[name]({ runImpl }))
 }

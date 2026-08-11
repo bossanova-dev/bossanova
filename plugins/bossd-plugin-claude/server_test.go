@@ -138,19 +138,75 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveCommand_IgnoresAutomaticMcpConfig(t *testing.T) {
+func TestBuildInteractiveCommand_AppendsMcpConfig(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: "sid",
-		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+		SessionId:            "sid",
+		LogPath:              filepath.Join(t.TempDir(), "claude.log"),
+		ManagedMcpConfigPath: "/data/bossanova/mcp-configs/sid.json",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, arg := range resp.GetArgv() {
-		if arg == "--mcp-config" || arg == "/data/bossanova/mcp-configs/sid.json" || arg == "--strict-mcp-config" {
-			t.Fatalf("argv must ignore automatic MCP configuration: %v", resp.GetArgv())
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
+		t.Fatalf("argv %v missing --mcp-config <path>", resp.GetArgv())
+	}
+}
+
+// argvHas reports whether argv contains an exact token.
+func argvHas(argv []string, want string) bool {
+	for _, a := range argv {
+		if a == want {
+			return true
 		}
+	}
+	return false
+}
+
+func TestBuildInteractiveCommand_AppendsStrictManagedMcpConfig(t *testing.T) {
+	srv := &Server{}
+	// StrictManagedMcpConfig true with a non-empty config path → --strict-mcp-config is
+	// appended so the curated config is the whole MCP surface.
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "sid",
+		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
+		ManagedMcpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
+		StrictManagedMcpConfig: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHas(resp.GetArgv(), "--strict-mcp-config") {
+		t.Fatalf("argv %v missing --strict-mcp-config when strict + config set", resp.GetArgv())
+	}
+
+	// StrictManagedMcpConfig false → never append --strict-mcp-config (interactive path).
+	respOff, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "sid",
+		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
+		ManagedMcpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
+		StrictManagedMcpConfig: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argvHas(respOff.GetArgv(), "--strict-mcp-config") {
+		t.Fatalf("argv %v must not contain --strict-mcp-config when strict false", respOff.GetArgv())
+	}
+
+	// StrictManagedMcpConfig true but empty config path must abort the launch. Omitting
+	// both flags would fall back to user/project MCP servers and violate strict isolation.
+	_, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "sid",
+		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
+		StrictManagedMcpConfig: true,
+	})
+	if err == nil {
+		t.Fatal("BuildInteractiveCommand strict mode without config path returned nil error")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("BuildInteractiveCommand strict mode without config path code = %v, want %v", got, codes.FailedPrecondition)
 	}
 }
 
@@ -922,4 +978,57 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 	if exit.ExitError == "" {
 		t.Error("ExitStatus.ExitError empty for `exit 7` — natural-exit error path may have regressed")
 	}
+}
+
+func TestBuildInteractiveCommand_FallsBackToPluginModel(t *testing.T) {
+	srv := &Server{runner: NewRunner(zerolog.Nop(), WithModel("opus[1m]"))}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--model\x00opus[1m]") {
+		t.Fatalf("argv %v missing plugin default --model opus[1m]", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_RequestModelBeatsPluginModel(t *testing.T) {
+	srv := &Server{runner: NewRunner(zerolog.Nop(), WithModel("opus[1m]"))}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		Model:     "sonnet",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--model\x00sonnet") {
+		t.Fatalf("argv %v want per-request --model sonnet to win", resp.GetArgv())
+	}
+	if strings.Contains(joined, "opus[1m]") {
+		t.Fatalf("argv %v plugin default must not also appear", resp.GetArgv())
+	}
+}
+
+// GetInfo must declare the model setting, otherwise the daemon never renders a
+// field for it and BOSS_PLUGIN_model is unreachable from settings.
+func TestGetInfoDeclaresModelSetting(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.GetInfo(context.Background(), &bossanovav1.AgentRunnerServiceGetInfoRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range resp.GetInfo().GetUserSettings() {
+		if s.GetKey() == "model" {
+			if s.GetType() != bossanovav1.UserSettingType_USER_SETTING_TYPE_STRING {
+				t.Fatalf("model setting type = %v, want STRING", s.GetType())
+			}
+			return
+		}
+	}
+	t.Fatalf("GetInfo user settings %v missing a 'model' key", resp.GetInfo().GetUserSettings())
 }

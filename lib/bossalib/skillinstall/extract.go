@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/gofrs/flock"
 )
 
 // isBossSkill returns true for skill directory names that belong to boss
@@ -21,8 +23,11 @@ func isBossSkill(name string) bool {
 
 // Namespace is the subdirectory under ~/.claude/skills/ where boss skill
 // files are stored. Symlinks are created from the parent directory into
-// this namespace, mirroring how gstack organises its skills.
+// this namespace, so the payload stays in one owned subtree while each
+// skill still resolves by its bare name at the top level.
 const Namespace = "bossanova"
+
+const updateLockFile = ".bossanova-skills.lock"
 
 // SourceRelPath is the repository-relative directory containing the canonical
 // skill payload. It mirrors Makefile's SKILLS_SRC_DIR and must move with it.
@@ -123,12 +128,71 @@ func SourceManifest(srcRoot string) (string, error) {
 	return Manifest(os.DirFS(srcRoot))
 }
 
+// EnsureUpdatedFromSource refreshes an installed skill tree from a checkout's
+// canonical skill sources rather than from an embedded payload. It is the write
+// counterpart of SourceDrift: a process running inside a checkout treats that
+// checkout as authoritative, so a binary whose embed has fallen behind repairs
+// the install instead of re-staling it.
+func EnsureUpdatedFromSource(dir, srcRoot string) (bool, error) {
+	return EnsureUpdated(dir, os.DirFS(srcRoot))
+}
+
+// ExtractFromSource is Extract against a checkout's skill sources.
+func ExtractFromSource(dir, srcRoot string) error { return Extract(dir, os.DirFS(srcRoot)) }
+
+// InstalledNeedsUpdate reports whether a boss skill tree is installed and, if
+// it is, whether it differs from fsys. When a writer has already created its
+// per-agent update lock, it holds a shared lock across both observations so a
+// concurrent Extract cannot be mistaken for a current tree while its namespace
+// is temporarily absent. A legacy install without a lock is checked
+// optimistically and retried if a writer creates one during the check.
+func InstalledNeedsUpdate(dir string, fsys fs.FS) (installed, needsUpdate bool, err error) {
+	if _, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, false, nil
+		}
+		return false, false, statErr
+	}
+	for {
+		lock, locked, lockErr := acquireExistingUpdateLock(dir)
+		if lockErr != nil {
+			return false, false, lockErr
+		}
+		if locked {
+			installed = IsInstalled(dir)
+			if installed {
+				needsUpdate, err = needsUpdateLocked(dir, fsys)
+			}
+			if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
+				return false, false, fmt.Errorf("release skill update lock: %w", unlockErr)
+			}
+			return installed, needsUpdate, err
+		}
+
+		installed = IsInstalled(dir)
+		if installed {
+			needsUpdate, err = needsUpdateLocked(dir, fsys)
+			if err != nil {
+				return false, false, err
+			}
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, updateLockFile)); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return false, false, fmt.Errorf("stat skill update lock: %w", statErr)
+		}
+		return installed, needsUpdate, nil
+	}
+}
+
 // NeedsUpdate reports whether an already-installed boss skill tree differs
 // from the embedded payload or has a broken top-level symlink layout.
 func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
-	if !IsInstalled(dir) {
-		return false, nil
-	}
+	_, needsUpdate, err := InstalledNeedsUpdate(dir, fsys)
+	return needsUpdate, err
+}
+
+func needsUpdateLocked(dir string, fsys fs.FS) (bool, error) {
 	files, err := embeddedFiles(fsys)
 	if err != nil {
 		return false, err
@@ -217,12 +281,45 @@ func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
 
 // EnsureUpdated refreshes installed boss skills only when the installed tree
 // differs from the embedded payload. It does not install into an empty target.
-func EnsureUpdated(dir string, fsys fs.FS) (bool, error) {
-	needs, err := NeedsUpdate(dir, fsys)
+func EnsureUpdated(dir string, fsys fs.FS) (updated bool, err error) {
+	// Check only that the target directory exists before acquiring the lock:
+	// acquireUpdateLock creates it, while a concurrent Extract can temporarily
+	// remove Namespace. Recheck installation after the lock serializes that gap.
+	if _, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, statErr
+	}
+
+	if !IsInstalled(dir) {
+		if _, lockErr := os.Stat(filepath.Join(dir, updateLockFile)); lockErr != nil {
+			if os.IsNotExist(lockErr) {
+				return false, nil
+			}
+			return false, lockErr
+		}
+	}
+
+	lock, err := acquireUpdateLock(dir)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
+			updated = false
+			err = fmt.Errorf("release skill update lock: %w", unlockErr)
+		}
+	}()
+	if !IsInstalled(dir) {
+		return false, nil
+	}
+
+	needs, err := needsUpdateLocked(dir, fsys)
 	if err != nil || !needs {
 		return false, err
 	}
-	if err := Extract(dir, fsys); err != nil {
+	if err := extract(dir, fsys); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -289,7 +386,56 @@ func executableSkillFile(path string) bool {
 //
 // It removes stale boss-* symlinks and the bossanova/ directory first so
 // that renamed or deleted skills don't persist across upgrades.
-func Extract(dir string, fsys fs.FS) error {
+func Extract(dir string, fsys fs.FS) (err error) {
+	lock, err := acquireUpdateLock(dir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
+			err = fmt.Errorf("release skill update lock: %w", unlockErr)
+		}
+	}()
+
+	return extract(dir, fsys)
+}
+
+// acquireUpdateLock serializes all destructive skill-tree rewrites for one
+// agent directory. The lock lives alongside the namespace so Extract's cleanup
+// cannot remove it while another process is waiting.
+func acquireUpdateLock(dir string) (*flock.Flock, error) {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("create skill directory for update lock: %w", err)
+	}
+	lock := flock.New(filepath.Join(dir, updateLockFile))
+	if err := lock.Lock(); err != nil {
+		return nil, fmt.Errorf("acquire skill update lock: %w", err)
+	}
+	return lock, nil
+}
+
+// acquireExistingUpdateLock takes a shared lock only when a writer has already
+// created the durable lock file. Read-only checks must not leave a new lock
+// artifact in legacy installed skill directories.
+func acquireExistingUpdateLock(dir string) (*flock.Flock, bool, error) {
+	path := filepath.Join(dir, updateLockFile)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("stat skill update lock: %w", err)
+	}
+	lock := flock.New(path, flock.SetFlag(os.O_RDONLY))
+	if err := lock.RLock(); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("acquire existing skill update lock: %w", err)
+	}
+	return lock, true, nil
+}
+
+func extract(dir string, fsys fs.FS) error {
 	nsDir := filepath.Join(dir, Namespace)
 
 	// Remove stale boss-* entries (symlinks or real directories) in the parent directory.

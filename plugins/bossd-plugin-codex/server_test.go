@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,49 +92,368 @@ func TestBuildInteractiveCommandIgnoresAppendSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveCommand_IgnoresAutomaticMcpConfig(t *testing.T) {
+func TestBuildInteractiveCommand_WiresMcpViaConfigOverride(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
 
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:    "s1",
-		WorktreePath: worktree,
+		SessionId:            "s1",
+		ManagedMcpConfigPath: cfgPath,
+		WorktreePath:         worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	// Codex has no --mcp-config; the plugin translates the config file into
+	// repeatable `-c mcp_servers.boss.*` overrides (keeps wiring out of the
+	// worktree). Assert both command and args overrides are present.
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.command=\"/trusted/mcp\"") {
+		t.Fatalf("argv missing codex mcp command override: %v", resp.GetArgv())
+	}
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.args=[\"--socket\",\"/run/bossd.sock\"]") {
+		t.Fatalf("argv missing codex mcp args override: %v", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_StrictManagedMcpConfigResetsInheritedServers(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("[mcp_servers.unmanaged]\\ncommand = \"/untrusted/mcp\"\\n"), 0o600); err != nil {
+		t.Fatalf("write inherited config: %v", err)
+	}
+	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]},"bossanova-linear":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"Authorization":"Bearer ${LINEAR_API_KEY}"}},"bossanova-sentry":{"type":"http","url":"https://mcp.sentry.dev/mcp"}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "s1",
+		ManagedMcpConfigPath:   cfgPath,
+		StrictManagedMcpConfig: true,
+		WorktreePath:           worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	strictHome := cfgPath + ".codex-home"
+	if !strings.Contains(joined, "env\x00CODEX_HOME="+strictHome+"\x00codex") {
+		t.Fatalf("strict argv must launch codex with isolated CODEX_HOME: %v", resp.GetArgv())
+	}
+	isolatedConfig, err := os.ReadFile(filepath.Join(strictHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read isolated config: %v", err)
+	}
+	config := string(isolatedConfig)
+	for _, want := range []string{
+		"[mcp_servers.boss]",
+		"[mcp_servers.bossanova-linear]",
+		`url = "https://mcp.linear.app/mcp"`,
+		`bearer_token_env_var = "LINEAR_API_KEY"`,
+		"[mcp_servers.bossanova-sentry]",
+		`url = "https://mcp.sentry.dev/mcp"`,
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("isolated config missing %q:\n%s", want, config)
+		}
+	}
+	if strings.Contains(config, "unmanaged") {
+		t.Fatalf("isolated config must exclude inherited MCP servers:\n%s", isolatedConfig)
+	}
+}
+
+func TestBuildInteractiveCommand_StrictManagedMcpConfigUsesRequestCodexHome(t *testing.T) {
+	ambientHome := t.TempDir()
+	t.Setenv("CODEX_HOME", ambientHome)
+	if err := os.WriteFile(filepath.Join(ambientHome, "auth.json"), []byte("ambient"), 0o600); err != nil {
+		t.Fatalf("write ambient auth: %v", err)
+	}
+	selectedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(selectedHome, "auth.json"), []byte("selected"), 0o600); err != nil {
+		t.Fatalf("write selected auth: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(selectedHome, "skills"), 0o700); err != nil {
+		t.Fatalf("create selected skills: %v", err)
+	}
+	for _, name := range []string{"state_5.sqlite", "memories_1.sqlite", "goals_1.sqlite"} {
+		if err := os.WriteFile(filepath.Join(selectedHome, name), []byte(name), 0o600); err != nil {
+			t.Fatalf("write selected %s: %v", name, err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(selectedHome, "rules"), 0o700); err != nil {
+		t.Fatalf("create selected rules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(selectedHome, "rules", "default.rules"), []byte("allow"), 0o600); err != nil {
+		t.Fatalf("write selected command policy: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(selectedHome, "plugins"), 0o700); err != nil {
+		t.Fatalf("create selected plugins: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(selectedHome, "plugins", "extension.toml"), []byte("enabled = true"), 0o600); err != nil {
+		t.Fatalf("write selected plugin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(selectedHome, "hooks.json"), []byte(`{"hooks":[]}`), 0o600); err != nil {
+		t.Fatalf("write selected hooks: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "s1",
+		ManagedMcpConfigPath:   cfgPath,
+		StrictManagedMcpConfig: true,
+		ConfigHomeEnv:          map[string]string{"CODEX_HOME": selectedHome},
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	strictHome := cfgPath + ".codex-home"
+	if !strings.Contains(strings.Join(resp.GetArgv(), "\x00"), "CODEX_HOME="+strictHome) {
+		t.Fatalf("strict argv must set isolated CODEX_HOME: %v", resp.GetArgv())
+	}
+	linkedAuth, err := os.Readlink(filepath.Join(strictHome, "auth.json"))
+	if err != nil {
+		t.Fatalf("read selected auth link: %v", err)
+	}
+	if linkedAuth != filepath.Join(selectedHome, "auth.json") {
+		t.Fatalf("strict auth source = %q, want selected CODEX_HOME %q", linkedAuth, filepath.Join(selectedHome, "auth.json"))
+	}
+	linkedSkills, err := os.Readlink(filepath.Join(strictHome, "skills"))
+	if err != nil {
+		t.Fatalf("read selected skills link: %v", err)
+	}
+	if linkedSkills != filepath.Join(selectedHome, "skills") {
+		t.Fatalf("strict skills source = %q, want %q", linkedSkills, filepath.Join(selectedHome, "skills"))
+	}
+	for _, name := range []string{"state_5.sqlite", "memories_1.sqlite", "goals_1.sqlite", "rules", "plugins", "hooks.json"} {
+		linked, err := os.Readlink(filepath.Join(strictHome, name))
+		if err != nil {
+			t.Fatalf("read selected %s link: %v", name, err)
+		}
+		if linked != filepath.Join(selectedHome, name) {
+			t.Fatalf("strict %s source = %q, want %q", name, linked, filepath.Join(selectedHome, name))
+		}
+	}
+
+	rotatedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rotatedHome, "auth.json"), []byte("rotated"), 0o600); err != nil {
+		t.Fatalf("write rotated auth: %v", err)
+	}
+	if _, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:              "s1",
+		ManagedMcpConfigPath:   cfgPath,
+		StrictManagedMcpConfig: true,
+		ConfigHomeEnv:          map[string]string{"CODEX_HOME": rotatedHome},
+	}); err != nil {
+		t.Fatalf("BuildInteractiveCommand after rotation: %v", err)
+	}
+	linkedAuth, err = os.Readlink(filepath.Join(strictHome, "auth.json"))
+	if err != nil {
+		t.Fatalf("read rotated auth link: %v", err)
+	}
+	if linkedAuth != filepath.Join(rotatedHome, "auth.json") {
+		t.Fatalf("rotated strict auth source = %q, want %q", linkedAuth, filepath.Join(rotatedHome, "auth.json"))
+	}
+}
+
+// TestStartRun_StrictPreflightProfilesTheIsolatedHome pins that the authoritative
+// preflight inspects the runtime that actually starts. The profile certifies a
+// runtime by the operations its CODEX_HOME exposes, so profiling the selected home
+// and then switching CODEX_HOME to the strict one underneath would certify a
+// different runtime: the selected account can hold an authenticated connector the
+// daemon-managed one lacks, and the required-operation check would pass for
+// capabilities the launched agent does not have.
+func TestStartRun_StrictPreflightProfilesTheIsolatedHome(t *testing.T) {
+	selectedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(selectedHome, "auth.json"), []byte("selected"), 0o600); err != nil {
+		t.Fatalf("write selected auth: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "managed-mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
+		t.Fatalf("write managed config: %v", err)
+	}
+	strictHome := cfgPath + ".codex-home"
+
+	var profiledHome string
+	var actualRunnerStarted atomic.Bool
+	srv := newServer(nil, zerolog.Nop(), WithCommandFactory(func(context.Context, string, ...string) *exec.Cmd {
+		actualRunnerStarted.Store(true)
+		return nil
+	}))
+	// Fail the profile so the run stops before launching anything; the assertion is
+	// which home the registry was asked about.
+	srv.operationRegistry = runtimeOperationRegistryFunc(func(_ context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
+		profiledHome = target.ExtraEnv["CODEX_HOME"]
+		return runtimeOperationSurface{}, errors.New("stop before launch")
+	})
+
+	_, _ = srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+		SessionId:                 "s1",
+		WorkDir:                   t.TempDir(),
+		ManagedMcpConfigPath:      cfgPath,
+		IsStrictManagedMcpConfig:  true,
+		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		ExtraEnv:                  map[string]string{"CODEX_HOME": selectedHome},
+	})
+
+	if profiledHome != strictHome {
+		t.Fatalf("preflight profiled CODEX_HOME = %q, want the isolated home %q", profiledHome, strictHome)
+	}
+	if actualRunnerStarted.Load() {
+		t.Fatal("runner started despite a failing preflight")
+	}
+}
+
+// TestStrictCodexMcpHome_RotationDropsEntryAbsentFromNewAccount pins the
+// account-isolation property the strict home exists for: after rotating to a
+// CODEX_HOME that LACKS an entry the previous account had, the stale symlink
+// must be gone. The projection loop visits only names the new source still has,
+// so linkCodexHomeEntry's missing-source cleanup never fires for an omitted
+// entry — without the destination reconcile, `auth.json` from the previous
+// account survives and the strict home keeps authenticating as that account.
+func TestStrictCodexMcpHome_RotationDropsEntryAbsentFromNewAccount(t *testing.T) {
+	srv := &Server{logger: zerolog.Nop()}
+	cfgPath := filepath.Join(t.TempDir(), "managed-mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mcpServers":{}}`), 0o600); err != nil {
+		t.Fatalf("write managed config: %v", err)
+	}
+
+	firstHome := t.TempDir()
+	for _, name := range []string{"auth.json", "skills"} {
+		if err := os.WriteFile(filepath.Join(firstHome, name), []byte("first"), 0o600); err != nil {
+			t.Fatalf("write first %s: %v", name, err)
+		}
+	}
+	strictHome, err := srv.strictCodexMcpHome(cfgPath, "", map[string]string{"CODEX_HOME": firstHome})
+	if err != nil {
+		t.Fatalf("project first home: %v", err)
+	}
+	if _, err := os.Readlink(filepath.Join(strictHome, "auth.json")); err != nil {
+		t.Fatalf("first auth link missing: %v", err)
+	}
+
+	// The rotated account has `skills` but NO `auth.json`.
+	secondHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secondHome, "skills"), []byte("second"), 0o600); err != nil {
+		t.Fatalf("write second skills: %v", err)
+	}
+	if _, err := srv.strictCodexMcpHome(cfgPath, "", map[string]string{"CODEX_HOME": secondHome}); err != nil {
+		t.Fatalf("project rotated home: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(strictHome, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale auth.json from the previous account survived rotation: %v", err)
+	}
+	linkedSkills, err := os.Readlink(filepath.Join(strictHome, "skills"))
+	if err != nil {
+		t.Fatalf("read rotated skills link: %v", err)
+	}
+	if linkedSkills != filepath.Join(secondHome, "skills") {
+		t.Fatalf("rotated skills source = %q, want %q", linkedSkills, filepath.Join(secondHome, "skills"))
+	}
+}
+
+func TestLinkCodexHomeEntryRemovesStaleDestinationWhenSourceIsMissing(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "skills")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "skills"), destination); err != nil {
+		t.Fatalf("create stale entry: %v", err)
+	}
+
+	if err := linkCodexHomeEntry(filepath.Join(t.TempDir(), "skills"), destination); err != nil {
+		t.Fatalf("link missing source entry: %v", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("stale destination remains: %v", err)
+	}
+}
+
+// TestBuildInteractiveCommand_CuratedLinearIgnored pins that the curated cron
+// config's HTTP "bossanova-linear" server never becomes a codex `-c
+// mcp_servers.*` override: codex has no --strict-mcp-config, codexMcpOverrideArgs
+// reads ONLY the stdio "boss" server, and a command-less HTTP entry is inert.
+// Codex behavior is therefore byte-identical whether or not Linear is present.
+func TestBuildInteractiveCommand_CuratedLinearIgnored(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	// The curated (cron) config shape: boss stdio + bossanova-linear HTTP.
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]},"bossanova-linear":{"type":"http","url":"https://mcp.linear.app/mcp","headers":{"Authorization":"Bearer ${LINEAR_API_KEY}"}}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:            "s1",
+		ManagedMcpConfigPath: cfgPath,
+		WorktreePath:         worktree,
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
 	joined := strings.Join(resp.GetArgv(), "\x00")
-	if strings.Contains(joined, "mcp_servers.") || strings.Contains(joined, "/trusted/mcp") {
-		t.Fatalf("argv must ignore automatic MCP configuration: %v", resp.GetArgv())
+	// boss override still present (unchanged).
+	if !strings.Contains(joined, "-c\x00mcp_servers.boss.command=\"/trusted/mcp\"") {
+		t.Fatalf("argv missing codex mcp boss override: %v", resp.GetArgv())
+	}
+	// Linear HTTP entry must NEVER surface as an override or leak the key, and
+	// codex must never emit --strict-mcp-config (it has no such flag).
+	if strings.Contains(joined, "bossanova-linear") || strings.Contains(joined, "mcp.linear.app") ||
+		strings.Contains(joined, "LINEAR_API_KEY") || strings.Contains(joined, "--strict-mcp-config") {
+		t.Fatalf("codex argv must not reference the Linear HTTP server or strict flag: %v", resp.GetArgv())
 	}
 }
 
-func TestBuildInteractiveCommand_ResumesWithoutMcpOverride(t *testing.T) {
+func TestBuildInteractiveCommand_McpOverridePrecedesResumeSubcommand(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	worktree := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "s1.json")
+	cfg := `{"mcpServers":{"boss":{"command":"/trusted/mcp","args":["--socket","/run/bossd.sock"]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
 
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:    "agent-1",
-		Resume:       true,
-		WorktreePath: worktree,
+		SessionId:            "agent-1",
+		Resume:               true,
+		ManagedMcpConfigPath: cfgPath,
+		WorktreePath:         worktree,
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
+	// `-c` is a codex global option and MUST precede the `resume` subcommand;
+	// pin the ordering so a future reorder cannot silently push it after resume.
 	argv := resp.GetArgv()
-	resumeIdx := -1
+	cIdx, resumeIdx := -1, -1
 	for i, a := range argv {
+		if a == "-c" && cIdx == -1 {
+			cIdx = i
+		}
 		if a == "resume" {
 			resumeIdx = i
 		}
 	}
-	if resumeIdx == -1 {
-		t.Fatalf("expected resume subcommand: %v", argv)
+	if cIdx == -1 || resumeIdx == -1 {
+		t.Fatalf("expected both a -c override and a resume subcommand: %v", argv)
 	}
-	if strings.Contains(strings.Join(argv, "\x00"), "mcp_servers.") {
-		t.Fatalf("resume argv must not carry automatic MCP overrides: %v", argv)
+	if cIdx > resumeIdx {
+		t.Fatalf("-c override (idx %d) must precede resume subcommand (idx %d): %v", cIdx, resumeIdx, argv)
 	}
 }
 
@@ -147,6 +469,22 @@ func TestBuildInteractiveCommand_NoMcpOverrideWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(resp.GetArgv(), " "), "mcp_servers.boss") {
 		t.Fatalf("codex argv must not carry mcp override when path empty: %v", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_NoMcpOverrideWhenConfigUnreadable(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:            "s1",
+		ManagedMcpConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
+		WorktreePath:         t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand must not fail on unreadable mcp config: %v", err)
+	}
+	if strings.Contains(strings.Join(resp.GetArgv(), " "), "mcp_servers.boss") {
+		t.Fatalf("codex argv must not carry mcp override when config unreadable: %v", resp.GetArgv())
 	}
 }
 

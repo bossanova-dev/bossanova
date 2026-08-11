@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/clidoc"
 	"github.com/recurser/bossalib/config"
@@ -77,7 +76,13 @@ func run() error {
 
 	err := root.Execute()
 	captureCommand(ctx, telemetryClient, executedCommand(ctx), err)
-	return err
+	// Backstop for a `--json` run that failed before its RunE was reached — a
+	// rejected flag, an Args refusal, a PersistentPreRunE error. Those return
+	// straight out of Execute, so without this the machine channel would be
+	// empty and the caller would be back to parsing stderr. No-op when the
+	// command already emitted its envelope. Telemetry is captured above, on the
+	// error cobra actually produced.
+	return emitRootJSONFailure(root, os.Args[1:], err)
 }
 
 func rootCmd() *cobra.Command {
@@ -149,7 +154,7 @@ func rootCmd() *cobra.Command {
 		}
 	}
 
-	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), archiveCmd(), renameCmd())
+	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), archiveCmd(), renameCmd())
 	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd())
 	addGrouped("cron", cronCmd())
@@ -163,7 +168,10 @@ func rootCmd() *cobra.Command {
 	addGrouped("skills", skillsCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
 	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd(), tailCmd())
-	addGrouped("plugins", pluginCmd())
+	// `boss agents` sits in the plugins group rather than getting one of its
+	// own: agent runners ARE loaded plugins, and the command a reader reaches
+	// for next to it is `boss plugin list`.
+	addGrouped("plugins", pluginCmd(), agentsCmd())
 	addGrouped("other", versionCmd(), upgradeCmd())
 
 	// Deprecated (resurrect) and hidden (gen-skill) commands carry no group —
@@ -227,6 +235,23 @@ func pluginCmd() *cobra.Command {
 	return cmd
 }
 
+// agentsCmd lists the agent runners the daemon loaded. It is deliberately not a
+// filtered `plugin list`: the question it answers — "is this agent runner
+// available to request?" — is narrower, and it carries each runner's
+// user_settings, which the plugin inventory does not.
+func agentsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "agents",
+		Short: "List the agent runners the daemon loaded",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAgents(cmd)
+		},
+	}
+	cmd.Flags().Bool(jsonFlagName, false, "Emit machine-readable JSON, including each agent's user settings")
+	return cmd
+}
+
 func sessionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
@@ -242,6 +267,7 @@ func sessionCmd() *cobra.Command {
 		},
 	}
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
+	checks.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "link-pr <session-id> <pr-number-or-url>",
@@ -299,11 +325,12 @@ func lsCmd() *cobra.Command {
 	cmd.Flags().String("repo", "", "Filter by repo ID")
 	cmd.Flags().Bool("archived", false, "Include archived sessions")
 	cmd.Flags().StringSlice("state", nil, "Filter by state(s)")
+	cmd.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of a table")
 	return cmd
 }
 
 func showCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "show <session-id>",
 		Short: "Show session details",
 		Args:  cobra.ExactArgs(1),
@@ -311,17 +338,21 @@ func showCmd() *cobra.Command {
 			return runShow(cmd, args[0])
 		},
 	}
+	cmd.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
+	return cmd
 }
 
 func chatsCmd() *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "chats <session-id>",
-		Short: "List chats in a session",
+		Short: "List chats in a session with their status and last output time",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runChats(cmd, args[0])
 		},
 	}
+	c.Flags().Bool("json", false, "Emit a stable JSON envelope instead of human-readable text")
+	return c
 }
 
 func newCmd() *cobra.Command {
@@ -338,8 +369,24 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
 	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
 	cmd.Flags().String("account", "", "Account id or label to run this session under (empty = system default)")
-	cmd.Flags().Bool("detach", false, "Exit immediately after creating the session; print session-id and chat-id")
+	cmd.Flags().Bool("detach", false,
+		"Exit immediately after creating the session; print session-id and chat-id. "+
+			"The non-interactive --repo + --prompt path always detaches, so the flag is a "+
+			"no-op there; --tmux-unattended is the distinct durable-pane option")
 	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
+	cmd.Flags().Bool("tmux-unattended", false,
+		"Host the session in a durable tmux pane that survives a daemon restart and is "+
+			"attach-safe (independent of --detach, which only governs whether this command "+
+			"attaches a chat pane before it exits)")
+	// The example is a generic placeholder on purpose: this usage string is
+	// harvested into the globally-installed `boss` skill core, which
+	// TestPublishedCoresAreProjectAgnostic forbids from carrying a real
+	// Bossanova backlog id.
+	cmd.Flags().String("tracker-id", "", "External issue id to bind this session to (e.g. PROJ-42)")
+	cmd.Flags().String("tracker-source", "", "External issue tracker: linear or sentry")
+	cmd.Flags().String("tracker-url", "", "URL of the external issue this session is bound to")
+	cmd.Flags().Bool(jsonFlagName, false,
+		"Emit the created session as a stable JSON schema instead of the two-line output")
 	return cmd
 }
 
@@ -639,6 +686,20 @@ func archiveCmd() *cobra.Command {
 	}
 }
 
+func mergeCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "merge <session-id>",
+		Short: "Merge a session's pull request (or its local-only branch)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMerge(cmd, args[0])
+		},
+	}
+	c.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
+	c.Flags().Bool("json", false, "Emit a stable JSON envelope instead of human-readable text (requires --yes)")
+	return c
+}
+
 func renameCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "rename <session-id> <new-title...>",
@@ -811,10 +872,16 @@ func maybeInstallSkills() error {
 		// so a merged skill edit never reached live sessions. Instead of
 		// prompting, silently self-heal a stale-but-installed tree (update-only,
 		// never a fresh install into an empty dir) so the on-disk global skills
-		// track this binary's embedded payload.
+		// track the checkout payload when available, otherwise this binary's
+		// embed.
 		return selfHealSkills()
 	}
-	manifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
+	payload, err := startupSkillPayload()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipping checkout skill refresh: %v\n", err)
+		return nil // non-fatal
+	}
+	manifest, err := libskillinstall.Manifest(payload.fsys)
 	if err != nil {
 		return nil // non-fatal
 	}
@@ -832,7 +899,7 @@ func maybeInstallSkills() error {
 		installed := libskillinstall.IsInstalled(dir)
 		needsUpdate := false
 		if installed {
-			needsUpdate, err = libskillinstall.NeedsUpdate(dir, skillinstall.SkillsFS)
+			needsUpdate, err = libskillinstall.NeedsUpdate(dir, payload.fsys)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to check %s skills: %v\n", target.name, err)
 				continue
@@ -871,7 +938,7 @@ func maybeInstallSkills() error {
 			}
 			continue
 		}
-		if err := libskillinstall.Extract(dir, skillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(dir, payload.fsys); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to install %s skills: %v\n", target.name, err)
 			continue
 		}
@@ -887,6 +954,7 @@ func maybeInstallSkills() error {
 	if settingsChanged {
 		_ = config.Save(settings)
 	}
+	warnBinarySkillsDrift(payload, false, manifest)
 	return nil
 }
 
@@ -965,7 +1033,12 @@ func recordSkillInstall(settings *config.Settings, agent libskillinstall.Agent, 
 // skills current instead of bailing. The caller has already honored
 // BOSS_SKIP_SKILLS and the non-TTY check.
 func selfHealSkills() error {
-	manifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
+	payload, err := startupSkillPayload()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: skipping checkout skill refresh: %v\n", err)
+		return nil // non-fatal
+	}
+	manifest, err := libskillinstall.Manifest(payload.fsys)
 	if err != nil {
 		return nil // non-fatal
 	}
@@ -978,12 +1051,18 @@ func selfHealSkills() error {
 		fmt.Fprintf(os.Stderr, "Warning: skipping skill-manifest bookkeeping; failed to load settings: %v\n", loadErr)
 	}
 	settingsChanged := false
+	refreshed := false
+	installedTargetsCurrent := true
 	for _, target := range skillInstallAgents {
-		if _, err := skillInstallLookPath(target.command); err != nil {
-			continue
-		}
 		dir, err := libskillinstall.DirForAgent(target.agent)
 		if err != nil {
+			installedTargetsCurrent = false
+			continue
+		}
+		if _, err := skillInstallLookPath(target.command); err != nil {
+			if libskillinstall.IsInstalled(dir) {
+				installedTargetsCurrent = false
+			}
 			continue
 		}
 		// Honor a previously declined update for this exact manifest. An
@@ -996,16 +1075,19 @@ func selfHealSkills() error {
 		// decline state, so we fall through and refresh (matching the
 		// bookkeeping skip above); default settings carry no declines anyway.
 		if loadErr == nil && skillPromptDeclined(settings, target.agent, true, manifest) {
+			installedTargetsCurrent = false
 			continue
 		}
-		updated, err := libskillinstall.EnsureUpdated(dir, skillinstall.SkillsFS)
+		updated, err := libskillinstall.EnsureUpdated(dir, payload.fsys)
 		if err != nil {
+			installedTargetsCurrent = false
 			fmt.Fprintf(os.Stderr, "Warning: failed to refresh %s skills: %v\n", target.name, err)
 			continue
 		}
 		if !updated {
 			continue
 		}
+		refreshed = true
 		if loadErr == nil && recordSkillInstall(&settings, target.agent, manifest) {
 			settingsChanged = true
 		}
@@ -1013,7 +1095,7 @@ func selfHealSkills() error {
 	if settingsChanged {
 		_ = config.Save(settings)
 	}
-	warnBinarySkillsDrift()
+	warnBinarySkillsDrift(payload, refreshed && installedTargetsCurrent, manifest)
 	return nil
 }
 

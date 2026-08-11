@@ -71,6 +71,79 @@ func TestResolveChatTarget(t *testing.T) {
 	})
 }
 
+// chatSendRecorder answers resolveChatTarget's GetSession with NotFound (so the
+// argument is treated as a chat id) and captures the SendChatMessage request.
+// The request is the only place the wake/submit flags are observable — the
+// response says nothing about them, and neither does stdout.
+type chatSendRecorder struct {
+	req *pb.SendChatMessageRequest
+}
+
+func (c *chatSendRecorder) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("session not found"))
+}
+
+func (c *chatSendRecorder) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	c.req = req
+	return &pb.SendChatMessageResponse{Delivered: true, TmuxSessionName: "boss-chat-agent-123"}, nil
+}
+
+// runChatSendArgs drives the real `chat send` subcommand's flag parsing — not a
+// hand-built flag set — so the registered default is what the assertion sees.
+func runChatSendArgs(t *testing.T, c *chatSendRecorder, args ...string) {
+	t.Helper()
+	root := chatCmd()
+	var send *cobra.Command
+	for _, sub := range root.Commands() {
+		if sub.Name() == "send" {
+			send = sub
+			break
+		}
+	}
+	if send == nil {
+		t.Fatal("chat send subcommand not registered")
+	}
+	send.SetOut(&bytes.Buffer{})
+	if err := send.Flags().Parse(args); err != nil {
+		t.Fatalf("parse flags %v: %v", args, err)
+	}
+	if err := chatSend(context.Background(), c, send, "agent-123", "hello"); err != nil {
+		t.Fatalf("chatSend: %v", err)
+	}
+	if c.req == nil {
+		t.Fatal("no SendChatMessage request reached the daemon")
+	}
+}
+
+func TestChatSendWakeIfAsleepFlag(t *testing.T) {
+	t.Run("omitted flag still wakes a sleeping chat", func(t *testing.T) {
+		c := &chatSendRecorder{}
+		runChatSendArgs(t, c)
+		if !c.req.GetWakeIfAsleep() {
+			t.Fatal("wake_if_asleep = false with the flag omitted; existing callers rely on the wake")
+		}
+	})
+
+	t.Run("explicit false leaves a stopped chat stopped", func(t *testing.T) {
+		c := &chatSendRecorder{}
+		runChatSendArgs(t, c, "--wake-if-asleep=false")
+		if c.req.GetWakeIfAsleep() {
+			t.Fatal("wake_if_asleep = true, want false: --wake-if-asleep=false was ignored")
+		}
+	})
+
+	t.Run("explicit true is passed through", func(t *testing.T) {
+		c := &chatSendRecorder{}
+		runChatSendArgs(t, c, "--wake-if-asleep=true", "--submit")
+		if !c.req.GetWakeIfAsleep() {
+			t.Fatal("wake_if_asleep = false, want true")
+		}
+		if !c.req.GetSubmit() {
+			t.Fatal("submit = false, want true: --submit regressed alongside the new flag")
+		}
+	})
+}
+
 type chatWaitClient struct {
 	statusSessionID string
 	statuses        []*pb.ChatStatusEntry

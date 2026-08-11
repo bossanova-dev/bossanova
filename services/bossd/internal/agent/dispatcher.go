@@ -14,6 +14,7 @@ var (
 	_ AgentRunner                                  = (*Dispatcher)(nil)
 	_ AgentDispatcher                              = (*Dispatcher)(nil)
 	_ HeadlessCapabilityProfilePreflightDispatcher = (*Dispatcher)(nil)
+	_ HeadlessLaunchOptionsDispatcher              = (*Dispatcher)(nil)
 	_ AgentNameResolver                            = (*Dispatcher)(nil)
 )
 
@@ -213,6 +214,20 @@ func (d *Dispatcher) StartByAgentWithHeadlessCapabilityProfile(ctx context.Conte
 		return "", fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
 	}
 	return profiled.StartWithHeadlessCapabilityProfile(ctx, workDir, plan, resume, agentSessionID, model, extraEnv, profile)
+}
+
+// StartByAgentWithHeadlessLaunchOptions forwards the complete panel-less
+// launch contract to a runner that supports it.
+func (d *Dispatcher) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	launchRunner, ok := runner.(HeadlessLaunchOptionsRunner)
+	if !ok {
+		return "", fmt.Errorf("agent %q: headless launch options unsupported", name)
+	}
+	return launchRunner.StartWithHeadlessLaunchOptions(ctx, workDir, plan, resume, agentSessionID, model, extraEnv, options)
 }
 
 // PreflightByAgentWithHeadlessCapabilityProfile routes a required capability

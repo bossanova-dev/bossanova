@@ -41,6 +41,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 
 const PRETTIER_EXTENSIONS = new Set([
   '.ts',
@@ -58,6 +59,7 @@ const PRETTIER_EXTENSIONS = new Set([
 // Biome-owned package roots (see .prettierignore). Files under these route to
 // per-package `biome check --write`, never root prettier.
 const BIOME_ROOTS = ['services/web/', 'services/marketing/']
+const CANONICAL_SKILL_PAYLOAD_ROOT = 'services/boss/internal/skillinstall/skills/'
 
 // A workspace dependency update can change a Biome formatter's output without
 // changing a source file. In that case format the whole owning package: routing
@@ -402,7 +404,15 @@ export function run(argv = process.argv.slice(2), opts = {}) {
     return 0
   }
 
-  return formatFiles(plan, { ...opts, log })
+  const format = () => formatFiles(plan, { ...opts, log })
+  const rewritesCanonicalSkillPayload = plan.prettier.some((file) =>
+    normalizePath(path.relative(process.cwd(), path.resolve(file))).startsWith(
+      CANONICAL_SKILL_PAYLOAD_ROOT,
+    ),
+  )
+  return rewritesCanonicalSkillPayload
+    ? withSkillSourceRewriteLock(process.cwd(), format)
+    : format()
 }
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'

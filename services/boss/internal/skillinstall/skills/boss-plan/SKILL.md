@@ -204,17 +204,18 @@ for the Phase 4 secret gate.
      echo "$DISPATCH_FAILURE: drafting subagent left no valid sentinel (status=$RC_STATUS) — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
      # A headless EPIC subagent can write child plans (.linear-plans/<ISSUE-ID>-child-*.md, which
-     # carry `## Original notes`) + image-guard, attachment-header and epic-spec-body scratch, then
-     # die WITHOUT an ok sentinel. This abort skips Phase 5, so remove the same four patterns here —
+    # carry `## Original notes`) + image-guard, attachment-guard, attachment-header and epic-spec-body scratch, then
+    # die WITHOUT an ok sentinel. This abort skips Phase 5, so remove the same five patterns here —
      # never leave that scratch in the cron worktree. ONE PATTERN PER LINE + CLEANUP_RC, for the
      # reasons Phase 5 records; this path already exits 1, so a failure is warned about, not re-signalled.
      CLEANUP_RC=0
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+     if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-     if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-     [ "$CLEANUP_RC" = 0 ] || echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2
+     if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2; fi
      exit 1
    fi
    EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
@@ -247,15 +248,16 @@ for the Phase 4 secret gate.
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
        # Reverify-fail also skips Phase 5, and a partial epic definitely wrote child scratch (plans
        # carry `## Original notes`, header files carry signed request data, the epic-spec body carries
-       # the whole decomposition) — same four patterns, same CLEANUP_RC accumulation; this path already
+       # the whole decomposition) — same five patterns, same CLEANUP_RC accumulation; this path already
        # exits 1, so a failure is warned about.
        CLEANUP_RC=0
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-       [ "$CLEANUP_RC" = 0 ] || echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2
+       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2; fi
        exit 1
      fi
      # reverify PASSED: there is NO single-ticket plan file, and the single-ticket
@@ -520,7 +522,11 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
 6. **Commit the parent overview, THEN link external conflicts + expose the children (deferred exposure
    — makes an agent-friendly child `boss-build`-eligible).** Only now, after the intra-epic DAG wiring
    (step 5; the external links are deferred to here), **commit the parent overview before any external
-   edge is written or any child is exposed:** compose the parent overview, run step 7's
+   edge is written or any child is exposed:** after the children are created and moved to planned,
+   re-assert the parent's configured unplanned state before composing the parent overview.
+   Linear's sub-issue rollup can advance the parent on its own; without this re-assertion,
+   parent-repurpose-last crash recovery silently stops working because the unplanned sweep can no
+   longer find a partial epic. Then compose the parent overview, run step 7's
    two gates (secret + image-parity), then attach it natively and save it onto the still-unplanned
    parent** (description-only; an **attachment-sourced** spec lives outside the description, so this
    description-replacing save cannot lose it — the old re-append-the-marker requirement is obsolete
@@ -575,7 +581,10 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    **Parent estimate, priority, and label:** resolve `EPIC_LABEL` through
    `labelName(config, 'epic')`, then union that result into the parent labels. The final flip writes
    `estimate = epicParentEstimate(spec)` and `priority = parent.priority`. The sum can be non-Fibonacci:
-   if `estimate` is rejected, retry without `estimate` and warn, matching Phase 4.
+   if `estimate` is genuinely rejected, retry without `estimate` and warn, matching Phase 4. Do not
+   rely on rejection alone: Linear was observed accepting a non-Fibonacci `15`, silently clamping it
+   to `8`, and returning success. After the final flip, re-read the parent and compare its stored
+   estimate with `epicParentEstimate(spec)`; warn on any difference.
    **Parent-label exception:** the parent carries
    **neither** `agent-friendly` **nor** `needs-human` (it is a `boss-epic` container, not a
    `boss-build` target); each **child** carries exactly one of `agent-friendly`/`needs-human`
@@ -692,12 +701,17 @@ subagent → validate its envelope → fold or skip), against
 > attachment. Read the entire plan file (with special attention to the `## Original notes` verbatim
 > block and anything pasted from the ticket or interview) and confirm it contains **zero** of: API
 > keys, tokens, passwords, connection strings, private keys, session cookies, internal
-> hostnames/IPs, or customer PII. If you find anything credential- or PII-shaped, **redact it in the
-> plan file and replace it with a reference to where the value lives** (e.g. "the deployment token
-> in repo-root `.env`") before attaching it. If you are unsure whether something is sensitive,
-> treat it as sensitive and redact it. Do not finalize the attachment until this check passes.
-> (This is the one place the headless orchestrator reads the plan **file** — the subagent already
-> kept its body out of the orchestrator's context; the gate reads it once, deliberately, for safety.)
+> hostnames/IPs, or customer PII. If you find anything credential- or PII-shaped, **redact it in
+> every persisted artifact with `[REDACTED]` or `[REDACTED: reference]`** (e.g. `[REDACTED: repo-root
+.env]`) before attaching it. If you are unsure whether something
+> is sensitive, treat it as sensitive and redact it. Do not finalize the attachment until this
+> check passes. For credential-valued external-image query parameters, use `token=REDACTED`,
+> `token=[REDACTED]`, or `token=[REDACTED:%20vault]`; these preserve the image
+> reference without persisting its credential. The redacted source is the safe form used by the verbatim attachment checks below;
+> the raw Phase 1 source is retained only in the ephemeral image-parity scratch file.
+> A signed `uploads.linear.app` URL is an explicit carve-out: do **not** redact the reference away.
+> Strip its signature query string and preserve the unsigned asset path instead, so the image-parity
+> gate can retain the asset identity without carrying a credential-like signature.
 
 > **STOP — image-parity gate (mandatory, mechanical, do not skip).** A rewritten description that
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
@@ -705,20 +719,57 @@ subagent → validate its envelope → fold or skip), against
 > Linear write. Use your **Write tool** to materialize two scratch files under gitignored
 > `.linear-plans/` — they do not exist until you write them. An **empty** or whitespace-only
 > original is refused (exit 1); pass `--allow-empty-original` only if it truly is empty. Write the
-> **raw** Phase 1 `get_issue` description (never a
+> **byte copy** of the Phase 1 `get_issue` description (never retyped prose or a
 > summary/paraphrase) to `.linear-plans/<ISSUE-ID>.image-guard-orig.md` and the returned
 > `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md` (per-issue paths avoid
-> clobbering). Then run the guard:
+> clobbering). Also write `.linear-plans/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
+> source with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
+> do not derive it from either generated artifact. Both the returned `descriptionSummary` and the
+> final attachment must preserve this safe source under `## Original notes`. Set `EXPECTED_IMAGES`
+> to the number of distinct canonical upload identities observed in the Phase 1 description — the
+> `uploads.linear.app` origin plus pathname, ignoring query strings — then run the guard:
 >
 > ```bash
 > BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
 > if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
-> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
-> node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW"
-> GATE=$?
-> rm -f "$ORIG" "$NEW"
-> [ "$GATE" -eq 0 ] || { echo "image-parity gate failed (guard message above) — no Linear write, aborting" >&2; exit 1; }
+> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
+> PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
+> EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
+> cleanup_guard_scratch() {
+>   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" "$PLAN_FILE" || echo "warning: guard scratch cleanup failed" >&2
+> }
+> # Keep scratch until all gates pass; every failing gate calls this helper before exiting.
+> if ! node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW" \
+>   --expect-images "$EXPECTED_IMAGES" --require-unsigned-uploads; then
+>   echo "image-parity gate failed (guard message above) — no Linear write, aborting" >&2
+>   cleanup_guard_scratch
+>   exit 1
+> fi
+> if ! node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$ORIG" --rewritten "$SAFE_ORIG" \
+>   --require-safe-source; then
+>   echo "safe-source gate failed (guard message above) — no Linear write, aborting" >&2
+>   cleanup_guard_scratch
+>   exit 1
+> fi
+> if ! node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
+>   --require-verbatim --require-unsigned-uploads; then
+>   echo "description safety gate failed (guard message above) — no Linear write, aborting" >&2
+>   cleanup_guard_scratch
+>   exit 1
+> fi
+> if ! node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$PLAN_FILE" \
+>   --require-verbatim --require-unsigned-uploads; then
+>   echo "plan-attachment safety gate failed (guard message above) — no attachment finalize, aborting" >&2
+>   cleanup_guard_scratch
+>   exit 1
+> fi
 > ```
+>
+> Phase 5 removes these files after success. A failed gate instead calls `cleanup_guard_scratch`
+> before its non-zero exit, including the raw Phase 1 source which may contain sensitive content.
+> `--require-verbatim` makes the tracker write reject rewritten Markdown in `## Original notes`, and
+> `--require-safe-source` permits only image normalization and explicit redaction markers, never dropped prose.
+> `--require-unsigned-uploads` rejects any query-bearing upload URL before it can persist a signature.
 >
 > On non-zero exit take the **SAFE branch** — identical to the dispatch-failure branch: **no Linear
 > write**, a one-line stderr reason carrying the guard's own message (it prints each), discard the
@@ -832,7 +883,7 @@ rm -f ".linear-plans/<ISSUE-ID>-<slug>.md"
 # prepare/PUT/finalize abort cannot strand signed-upload request headers.
 rm -f "${ATTACHMENT_HEADERS_FILE:-}"
 # EPIC runs also wrote one full plan per child (.linear-plans/<ISSUE-ID>-child-*.md — the planned
-# ticket is the parent) plus per-issue image-guard, attachment-header and epic-spec-body scratch
+# ticket is the parent) plus per-issue image-guard, attachment-guard, attachment-header and epic-spec-body scratch
 # (step 4 stage 2's `.linear-plans/<ISSUE-ID>.epic-spec.json`), which can carry `## Original notes`,
 # signed request data and the whole decomposition. ONE PATTERN PER LINE: under zsh and fish an unmatched
 # glob aborts the WHOLE command line, so a single-ticket run — which writes no child plans — would
@@ -850,9 +901,10 @@ rm -f "${ATTACHMENT_HEADERS_FILE:-}"
 CLEANUP_RC=0
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
-if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
 [ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans may still hold plan text, signed upload headers or the epic spec" >&2; exit 1; }
 ```
 

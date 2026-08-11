@@ -35,6 +35,34 @@ func UtilizationCapped(util float64) bool { return util >= UtilizationCapThresho
 // engine.selectCandidate and the binding-time resolver.
 func LowerUtilization(a, b float64) bool { return a < b }
 
+// MinRotationHeadroom is the least remaining-quota fraction (1 - utilization) a
+// candidate must still have before rotation will prefer it for its perishable
+// weekly quota rather than for being idle (BOS-830). It bounds consume-first:
+// a soon-resetting account is only worth switching onto while it has room to do
+// real work, so rotation never lands on an account at 95% that re-caps within
+// minutes and burns another attempt from the per-run rotation budget.
+//
+// Note the deliberate window asymmetry: the band is measured against the
+// WORST-case window (the utilization map carries UsageUtil, i.e.
+// MaxUtilization(5h, 7d)) while the urgency it gates is the 7d reset. So an
+// account whose weekly quota is perishable but whose 5h window is nearly spent
+// stays out of the band. That is the conservative pairing and the intended one —
+// it is exactly the "re-caps within minutes" case this floor exists to exclude.
+//
+// A package constant, deliberately not a config key: 0.25 is a starting point
+// with no field evidence behind it, and it lives in exactly one place so it can
+// be tuned — or promoted to ManagedAccountsConfig — additively once there is.
+// Because the floor is compared with >=, the "exactly at the floor is in band"
+// guarantee is exact only while the value is binary-representable (0.25 is;
+// 0.3 would not be) — worth re-checking the boundary test when tuning it.
+const MinRotationHeadroom = 0.25
+
+// HasRotationHeadroom reports whether util leaves at least MinRotationHeadroom
+// of the window unspent, i.e. whether the account is inside the consume-first
+// band. The comparison is >=, so headroom exactly at the floor is INSIDE the
+// band. It is the single source of that predicate for engine.selectCandidate.
+func HasRotationHeadroom(util float64) bool { return 1-util >= MinRotationHeadroom }
+
 // MaxUtilization reduces a 5h/7d utilization pair to the single worst-case
 // fraction. It carries no rate-limit semantics; callers that need the
 // rate-limited→1 bump layer it on top (see UsageUtil).

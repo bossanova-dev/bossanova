@@ -270,24 +270,40 @@ func (f *fakeAttachFactory) configCount() int {
 
 // makeTmuxClient builds a tmux.Client that records calls but does nothing.
 // Lets tests verify RefreshClient is fired without spawning a real tmux.
+//
+// list-clients is answered with real output rather than a bare success, because
+// `refresh-client -t` takes a CLIENT and RefreshClient therefore resolves the
+// session's clients first. A fake that succeeded at everything but printed
+// nothing would report zero clients, so nothing would be refreshed — and it
+// would equally have let the old session-targeting implementation look correct
+// here while always failing against real tmux. Modelling tmux's actual contract
+// is what makes this an end-to-end check rather than a restatement of the code.
 type recordingCmdFactory struct {
-	mu    sync.Mutex
-	calls [][]string
+	mu      sync.Mutex
+	calls   [][]string
+	clients []string
 }
 
 func (r *recordingCmdFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string{name}, args...))
+	clients := r.clients
 	r.mu.Unlock()
+	if len(args) > 0 && args[0] == "list-clients" {
+		return exec.CommandContext(ctx, "printf", "%s", strings.Join(clients, "\n"))
+	}
 	return exec.CommandContext(ctx, "true")
 }
 
-func (r *recordingCmdFactory) refreshCalls(sessionName string) int {
+// refreshCalls counts `tmux refresh-client -t <clientName>` invocations. The
+// target is a CLIENT name, not the session name — that distinction is the whole
+// point of the wrapper's client lookup.
+func (r *recordingCmdFactory) refreshCalls(clientName string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n := 0
 	for _, call := range r.calls {
-		if len(call) >= 4 && call[0] == "tmux" && call[1] == "refresh-client" && call[3] == sessionName {
+		if len(call) >= 4 && call[0] == "tmux" && call[1] == "refresh-client" && call[3] == clientName {
 			n++
 		}
 	}
@@ -305,6 +321,11 @@ type testHarness struct {
 	client  *TerminalStreamClient
 }
 
+// testTmuxClientName is the client the harness's fake tmux reports as attached
+// to the session, and therefore the target every refresh-client is expected to
+// carry.
+const testTmuxClientName = "/dev/ttys100"
+
 func newTestHarness(t *testing.T) *testHarness {
 	t.Helper()
 	opener := &fakeTerminalOpener{}
@@ -315,7 +336,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		},
 	}
 	factory := newFakeAttachFactory()
-	cmdRec := &recordingCmdFactory{}
+	cmdRec := &recordingCmdFactory{clients: []string{testTmuxClientName}}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(cmdRec.factory))
 	client := NewTerminalStreamClient(TerminalStreamClientConfig{
 		Opener:        opener,
@@ -547,10 +568,16 @@ func TestTerminalStreamClient_RefreshClientOnLost(t *testing.T) {
 	// Drain the data frame on the wire.
 	_ = waitForServerMessage(t, stream)
 
-	// Wait for refresh-client to fire on the recording cmd factory.
+	// Wait for refresh-client to fire on the recording cmd factory. The expected
+	// target is the CLIENT the session's list-clients reported, not the session
+	// name: `refresh-client -t` takes a client, and targeting the session is the
+	// bug this assertion now pins against.
 	waitFor(t, "refresh-client fired", func() bool {
-		return h.tmuxCmd.refreshCalls("boss-rep-chat-1") >= 1
+		return h.tmuxCmd.refreshCalls(testTmuxClientName) >= 1
 	})
+	if n := h.tmuxCmd.refreshCalls("boss-rep-chat-1"); n != 0 {
+		t.Errorf("refresh-client was targeted at the session name %d time(s); it takes a client name", n)
+	}
 }
 
 // TestTerminalStreamClient_StreamDropClosesAttaches verifies that when

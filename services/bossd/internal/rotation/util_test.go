@@ -69,6 +69,31 @@ func TestLowerUtilization(t *testing.T) {
 	}
 }
 
+func TestHasRotationHeadroom(t *testing.T) {
+	cases := []struct {
+		name string
+		util float64
+		want bool
+	}{
+		{name: "fresh account is comfortably in band", util: 0, want: true},
+		{name: "moderately used is in band", util: 0.35, want: true},
+		{name: "exactly at the floor is IN band (>=, not >)", util: 0.75, want: true},
+		{name: "a hair past the floor is out of band", util: 0.76, want: false},
+		{name: "near-exhausted is out of band", util: 0.90, want: false},
+		{name: "capped is out of band", util: 1.0, want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := HasRotationHeadroom(c.util); got != c.want {
+				t.Errorf("HasRotationHeadroom(%v) = %v, want %v", c.util, got, c.want)
+			}
+		})
+	}
+	if MinRotationHeadroom != 0.25 {
+		t.Errorf("MinRotationHeadroom = %v, want 0.25", MinRotationHeadroom)
+	}
+}
+
 func TestMaxUtilization(t *testing.T) {
 	cases := []struct {
 		u5h, u7d, want float64

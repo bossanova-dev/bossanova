@@ -46,7 +46,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 	})
 
 	registerDestructiveSessionTool(server, opts, "close_session", "Close a session (abandons its work). Destructive — requires confirm:true.", backend.CloseSession)
-	registerDestructiveSessionTool(server, opts, "merge_session", "Merge a session's pull request. Destructive — requires confirm:true.", backend.MergeSession)
+	registerMergeSessionTool(server, backend, opts)
 	registerDestructiveSessionTool(server, opts, "archive_session", "Archive a session into the trash. Destructive — requires confirm:true.", backend.ArchiveSession)
 	registerDestructiveSessionTool(server, opts, "resurrect_session", "Resurrect an archived session from the trash. Destructive — requires confirm:true.", backend.ResurrectSession)
 
@@ -219,6 +219,64 @@ func registerDestructiveSessionTool(server *mcp.Server, opts Options, name, desc
 			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(out)
+		return r, nil, err
+	})
+}
+
+// mergeSessionResult is the merge_session success payload: the session exactly
+// as every other session tool returns it, plus an optional detail sibling.
+//
+// The session is embedded, not nested under a "session" key, so encoding/json
+// promotes its fields to the top level and the payload keeps the same shape as
+// close_session, archive_session and resurrect_session — a caller reading
+// .id or .pr_number off a merge_session result still reads it off the top
+// level. With an empty detail the payload is byte-identical to close_session's
+// for the same session, which is what TestMergeSessionSessionShapeUnchanged
+// pins by comparing the two tools' real output over the same transport.
+//
+// Embedding is only safe because *pb.Session does not implement json.Marshaler
+// (protoc-gen-go generates no MarshalJSON); if it ever did, that method would be
+// promoted here and would silently drop Detail. Session also has no top-level
+// "detail" field of its own, so the sibling key cannot collide.
+//
+// detail is omitted when empty so its presence is meaningful, rather than a
+// field every caller has to test against "".
+type mergeSessionResult struct {
+	*pb.Session
+	Detail string `json:"detail,omitempty"`
+}
+
+// registerMergeSessionTool installs merge_session. It does not go through
+// registerDestructiveSessionTool because merge is the one session op with a
+// detail to carry — the daemon's note about what it actually did, most
+// importantly a merge-strategy substitution (a rebase that was refused and
+// squashed instead). Widening the shared helper for this one caller would force
+// three unrelated tools to thread an always-empty string, so the confirm gate,
+// argument struct, annotations and error path are mirrored here instead. A merge
+// *refusal* stays an error, not a detail: errorResult passes err.Error()
+// verbatim, so a gate refusal and the MERGE_STRATEGY_INCOMPATIBLE token still
+// reach the caller intact.
+func registerMergeSessionTool(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
+		Name: "merge_session",
+		// The optional `detail` key is deliberately NOT described here. The tool
+		// surface is pinned byte-for-byte by TestToolSurfaceSizeRatchet, which sits
+		// at zero headroom and refuses growth in either direction — every byte of
+		// every description is resident in the cached prompt prefix and re-paid on
+		// each turn of each session. Its remedy names this case exactly: move
+		// situational detail out of the description. So `detail` is documented in
+		// docs/mcp.md and services/docs/docs/guides/mcp.md instead.
+		Description: "Merge a session's pull request. Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ConfirmIDArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "merge_session"); r != nil {
+			return r, nil, nil
+		}
+		session, detail, err := backend.MergeSession(ctx, args.ID)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(mergeSessionResult{Session: session, Detail: detail})
 		return r, nil, err
 	})
 }

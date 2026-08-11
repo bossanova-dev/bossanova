@@ -35,8 +35,6 @@
 .boss/**
 .worktrees
 .worktrees/**
-.gstack
-.gstack/**
 node_modules
 node_modules/**
 bin

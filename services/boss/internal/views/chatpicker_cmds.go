@@ -153,7 +153,7 @@ func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	ctx := m.ctx
 	id := m.sessionID
 	return func() tea.Msg {
-		_, err := client.MergeSession(ctx, id)
+		_, _, err := client.MergeSession(ctx, id)
 		return mergeResultMsg{sessionID: id, err: err}
 	}
 }

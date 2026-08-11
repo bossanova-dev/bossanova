@@ -436,6 +436,21 @@ First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-p
 that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
 
+**Seed the run scratch before you dispatch anything.** Tier 1 hands each extension a `runTmp` and
+anchors the per-dispatch plan target to it, and an extension may anchor its own staging and cleanup
+there too — so `runTmp` is not a value the orchestrator supplies, it is one you create here. Left
+undefined it degrades to an empty string, which collapses every per-dispatch target onto one shared
+root-relative path and defeats the attribution the success predicate below is built on:
+
+```bash
+RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-run.XXXXXX")
+echo "$RUN_TMP"
+```
+
+Record the printed path; it is the literal `runTmp` you pass in every dispatch below. Remove it with
+`rm -rf` once you have promoted the winning plan to `PLAN_PATH` — on the failure paths too, so a
+dispatch that returned nothing usable still leaves no scratch behind.
+
 - **Tier 1:** if a draft extension exists, dispatch each discovered extension with
   `{ role: "draft", core: "boss-plan", context: { mode: "headless", planPath: PLAN_PATH, ticket },
 runTmp, outPath }`. Load the extension by **reading the descriptor's `skillPath` from disk**
@@ -630,9 +645,11 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
-**Preserve every image reference VERBATIM.** When composing `## Original notes`, copy every image
-reference the ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
-`uploads.linear.app`/attachment URLs — **byte-for-byte**, URLs intact. **Never** replace an image
+**Preserve every image reference.** When composing `## Original notes`, copy every image reference
+the ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
+`uploads.linear.app`/attachment URLs — byte-for-byte except that an upload URL may, and a signed
+upload URL **must**, be written in its query-stripped unsigned form. The parity guard compares upload
+asset identity, so this preserves the asset while avoiding a credential-like signature. **Never** replace an image
 with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose description
 history to agents, so the rewritten description is the only surviving copy of those URLs, and a
 paraphrase destroys them permanently (this is the exact screenshot-dropping data-loss failure). You MAY _additionally_
@@ -640,6 +657,10 @@ list the images under a `## Screenshots` bullet list in the plan body for the im
 convenience, but the original URLs must stay intact inside `## Original notes`. A mechanical
 orchestrator-side guard (`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`) aborts the Linear write if any source image
 is missing from your `descriptionSummary`, so a dropped image fails the whole run — do not let it.
+For any literal whose leading or trailing whitespace is semantically significant, use a fenced code
+block rather than an inline code span: the tracker's Markdown normalizer can move leading whitespace
+outside inline spans on save. The plan attachment is authoritative wherever the stored description
+and attachment differ, because the attachment is uploaded as raw bytes.
 
 ## Step 8 — Write the terminal sentinel
 
@@ -673,17 +694,25 @@ id and fails/cleans up as a failed run even though the parent was already repurp
 after the epic is fully created + wired and the parent repurposed. If the epic guards
 failed and you fell back to a single-ticket plan, write the single-ticket sentinel above instead.
 
-Before writing the sentinel, **self-verify image parity**: confirm every image URL in the ticket's
-original description (inline `![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives
-verbatim in your `descriptionSummary`'s `## Original notes`. Run the guard — re-deriving the toolbox
-dir in the same block, because this Bash call inherits nothing:
+Before writing the sentinel, **self-verify image parity**: first make a safe copy of the ticket's
+original description with the same mandatory secret/PII redactions and upload-signature stripping
+required for `descriptionSummary`, then confirm every image URL in that safe source (inline
+`![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives verbatim in
+`descriptionSummary`'s `## Original notes`. Run the guard against that safe source — re-deriving the
+toolbox dir in the same block, because this Bash call inherits nothing:
 
 ```bash
 BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
 if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
-node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <orig.md> --rewritten <new.md>
+node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <safe-orig.md> --rewritten <new.md> \
+  --require-verbatim --require-unsigned-uploads
 ```
+
+The orchestrator additionally passes `--expect-images` from its Phase 1 observation. The verbatim
+check catches a drafting model that rewrites ordinary Markdown links inside `## Original notes`; the
+unsigned-upload check rejects a signature query before the tracker write. Never compare redacted
+`descriptionSummary` against the raw source: required redaction is not a parity failure.
 
 The guard **refuses** an empty or whitespace-only original (exit 1, `cannot verify image parity`)
 rather than certify a comparison it cannot make. Your `description` input may legitimately be empty

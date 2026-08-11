@@ -216,11 +216,22 @@ func TestServeWaitTimeout(t *testing.T) {
 
 // TestSettleReturnsStableScreen asserts settle returns only after Screen()
 // stops changing.
+//
+// One "loading" screen, for the same reason as
+// TestSettleWaitsOnRealContentChange below — two identical reads let a single
+// slow poll satisfy settle's window before "ready" is ever read. Here the two
+// screens were byte-identical rather than merely normalizing equal, so this
+// test carried the same latent flake without a spinner glyph in sight.
 func TestSettleReturnsStableScreen(t *testing.T) {
-	f := &fakeTUI{screens: []string{"loading", "loading", "ready"}}
-	got := settle(f, fastSettle())
+	f := &fakeTUI{screens: []string{"loading", "ready"}}
+	st := fastSettle()
+	start := time.Now()
+	got := settle(f, st)
 	if got != "ready" {
 		t.Fatalf("settle = %q, want ready", got)
+	}
+	if elapsed := time.Since(start); elapsed < st.stableFor {
+		t.Fatalf("settle returned after %v, want at least stableFor (%v)", elapsed, st.stableFor)
 	}
 }
 
@@ -253,16 +264,37 @@ func TestSettleFastOnSpinnerOnlyDiff(t *testing.T) {
 
 // TestSettleWaitsOnRealContentChange: genuine content changes still reset the
 // stability window, so settle returns only the final settled content.
+//
+// The fixture holds exactly ONE "loading" screen on purpose — do not add more.
+// fakeTUI advances one screen per Screen() call, but settle's window is
+// wall-clock: it returns as soon as two consecutive reads normalize equal AND
+// stableFor has elapsed since the last change. With two "loading" screens (both
+// normalizing to the same text once the spinner glyph is stripped) a single
+// overshooting sleep under CI load satisfies both conditions before "ready" is
+// ever read, and settle returns the raw second frame — "⣽ loading". That is a
+// load-dependent failure, not a bug in settle, and it is what this test did
+// before: it failed in CI while passing locally.
+//
+// With one "loading" screen the outcome cannot depend on timing, because settle
+// never sees two consecutive "loading" reads and so can never settle on it. The
+// elapsed assertion is what keeps the reset semantics under test: settle must
+// still wait a full stability window after the change rather than returning the
+// moment it first sees "ready". That bound is load-safe — load only pushes
+// elapsed up.
 func TestSettleWaitsOnRealContentChange(t *testing.T) {
 	frames := spinner.Dot.Frames
 	f := &fakeTUI{screens: []string{
 		frames[0] + "loading",
-		frames[1] + "loading",
-		frames[2] + "ready", // real content change
+		frames[1] + "ready", // real content change, on the very next read
 	}}
-	got := settle(f, fastSettle())
+	st := fastSettle()
+	start := time.Now()
+	got := settle(f, st)
 	if !strings.Contains(got, "ready") {
 		t.Fatalf("settle = %q, want settled content 'ready'", got)
+	}
+	if elapsed := time.Since(start); elapsed < st.stableFor {
+		t.Fatalf("settle returned after %v, want at least stableFor (%v) — the content change must reset the window", elapsed, st.stableFor)
 	}
 }
 

@@ -33,6 +33,7 @@ go_test(
         "tools_broadcast_test.go",
         "tools_destructive_test.go",
         "tools_githubcallback_test.go",
+        "tools_merge_session_test.go",
         "tools_mutating_test.go",
         "tools_notes_test.go",
         "tools_only_test.go",

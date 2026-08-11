@@ -1333,7 +1333,6 @@ func TestCreate_IgnoresBossdManagedPatterns(t *testing.T) {
 	want := []string{
 		".boss/",
 		".claude/settings.local.json",
-		".superpowers/",
 		// BOS-486: the opencode question-signal hook the plugin injects at
 		// StartRun and removes at run end. A crashed run can leave it behind.
 		".opencode/plugins/bossd-question.js",
@@ -1382,6 +1381,158 @@ func TestCreate_IgnorePreservesExistingExcludes(t *testing.T) {
 	}
 	if !strings.Contains(string(body), ".boss/") {
 		t.Errorf(".boss/ pattern not added. Body:\n%s", body)
+	}
+}
+
+// TestEnsureGitInfoExclude_PurgesRetiredPatterns covers the upgrade path BOS-815
+// opens: info/exclude lives in $GIT_COMMON_DIR and is only ever appended to, so
+// dropping the retired pattern from bossdManagedExcludePatterns would leave it
+// in place in every repo bossd had already created a worktree for — still hiding
+// that directory from `git status` and from commits, forever.
+//
+// The retired pattern is spelled out here rather than read from
+// retiredGitInfoExcludePatterns: a test that loops over the slice under test
+// agrees with itself no matter what the slice says. These three lines are the
+// only ones in this file that name it, and scripts/legacy-support-refs.test.mjs
+// pins them exactly.
+func TestEnsureGitInfoExclude_PurgesRetiredPatterns(t *testing.T) {
+	const retired = ".superpowers/"
+	const lookAlike = "my-superpowers-notes/"
+	const comment = "# .superpowers/ is a user note, not a bossd-written pattern"
+
+	// Everything an older bossd or a user could have left in the file. The
+	// look-alike and the comment are user-authored and must survive: the purge
+	// matches a whole line, not a substring — and only inside a managed block, so
+	// a byte-exact copy the user typed outside one survives too.
+	seed := func(t *testing.T, lines []string) (string, string) {
+		t.Helper()
+		repoDir := initTestRepo(t)
+		excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+		body := strings.Join(append(append([]string{}, lines...), ""), "\n")
+		if err := os.WriteFile(excludePath, []byte(body), 0o600); err != nil {
+			t.Fatalf("seed exclude: %v", err)
+		}
+		return repoDir, excludePath
+	}
+	read := func(t *testing.T, path string) string {
+		t.Helper()
+		body, err := os.ReadFile(path) // #nosec G304 -- test-owned temp path
+		if err != nil {
+			t.Fatalf("read exclude: %v", err)
+		}
+		return string(body)
+	}
+	countLines := func(body, want string) int {
+		n := 0
+		for _, line := range strings.Split(body, "\n") {
+			if line == want {
+				n++
+			}
+		}
+		return n
+	}
+
+	// User-authored preamble, present in every case.
+	user := []string{"user-private.txt", lookAlike, comment}
+	// A bossd-written block: the marker plus what an older bossd put under it.
+	block := func(managed ...string) []string {
+		return append([]string{bossdExcludeMarker}, managed...)
+	}
+	current := []string{".boss/", ".claude/settings.local.json", ".opencode/plugins/bossd-question.js"}
+
+	cases := []struct {
+		name  string
+		lines []string
+		// how many whole lines equal to the retired pattern must remain
+		wantRetired int
+		// how many marker lines must remain — an orphaned header is a defect
+		wantMarkers int
+		// the call must not touch the file at all
+		wantUnchanged bool
+	}{
+		// The load-bearing case: nothing is missing, so the pre-BOS-815
+		// implementation returned early and never rewrote the file at all.
+		{
+			name:        "PurgeOnly",
+			lines:       append(append([]string{}, user...), block(".boss/", retired, ".claude/settings.local.json", ".opencode/plugins/bossd-question.js")...),
+			wantMarkers: 1,
+		},
+		// A repo old enough to also be missing a current pattern: purge and
+		// append have to happen in the same pass. The append writes its own
+		// marker, as it always has.
+		{
+			name:        "PurgeAndAppend",
+			lines:       append(append([]string{}, user...), block(".boss/", retired)...),
+			wantMarkers: 2,
+		},
+		// The regression this scoping exists for. The user independently ignored
+		// the same directory, on their own line, outside any bossd block. bossd
+		// never wrote that line, so deleting it would un-hide a path the user
+		// deliberately ignored and let it into a later commit.
+		{
+			name:          "UserAuthoredCopyOutsideBlockSurvives",
+			lines:         append([]string{"user-private.txt", retired, lookAlike, comment}, block(current...)...),
+			wantRetired:   1,
+			wantMarkers:   1,
+			wantUnchanged: true,
+		},
+		// Block extent: the run under a marker stops at the first line bossd
+		// would not itself have written, so anything past that hand-added note is
+		// the user's. Leaving the pattern in place is the safe direction.
+		{
+			name:          "BlockEndsAtForeignLine",
+			lines:         append(append([]string{}, user...), block(append(append([]string{}, current...), "# hand-added note", retired)...)...),
+			wantRetired:   1,
+			wantMarkers:   1,
+			wantUnchanged: true,
+		},
+		// The whole body of the block was the retired pattern, so purging it
+		// empties the block: the header must go too rather than dangle over
+		// nothing (and must not be duplicated by the append that follows).
+		{
+			name:        "OrphanedMarkerDropped",
+			lines:       append(append([]string{}, user...), block(retired)...),
+			wantMarkers: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir, excludePath := seed(t, tc.lines)
+			ctx := context.Background()
+			before := read(t, excludePath)
+
+			if err := ensureGitInfoExclude(ctx, repoDir, bossdManagedExcludePatterns); err != nil {
+				t.Fatalf("ensureGitInfoExclude: %v", err)
+			}
+			body := read(t, excludePath)
+
+			if got := countLines(body, retired); got != tc.wantRetired {
+				t.Errorf("%q appears as a whole line %d times, want %d. Body:\n%s", retired, got, tc.wantRetired, body)
+			}
+			if got := countLines(body, bossdExcludeMarker); got != tc.wantMarkers {
+				t.Errorf("marker appears %d times, want %d. Body:\n%s", got, tc.wantMarkers, body)
+			}
+			if tc.wantUnchanged && body != before {
+				t.Errorf("file was rewritten but nothing was owed.\nbefore:\n%s\nafter:\n%s", before, body)
+			}
+			for _, want := range []string{"user-private.txt", lookAlike, comment} {
+				if !strings.Contains(body, want) {
+					t.Errorf("user-authored %q was lost. Body:\n%s", want, body)
+				}
+			}
+			for _, want := range current {
+				if countLines(body, want) != 1 {
+					t.Errorf("info/exclude does not carry %q exactly once. Body:\n%s", want, body)
+				}
+			}
+
+			if err := ensureGitInfoExclude(ctx, repoDir, bossdManagedExcludePatterns); err != nil {
+				t.Fatalf("ensureGitInfoExclude (second call): %v", err)
+			}
+			if again := read(t, excludePath); again != body {
+				t.Errorf("second call rewrote the file.\nfirst:\n%s\nsecond:\n%s", body, again)
+			}
+		})
 	}
 }
 

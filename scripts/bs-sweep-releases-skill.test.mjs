@@ -121,7 +121,7 @@ test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal 
   assert.match(body, /owner/)
   assert.match(body, /STALE_DIR/)
   assert.match(body, /STALE_TARGET="\$HEARTBEAT"/)
-  assert.match(body, /test -f "\$STALE_TARGET" \|\| STALE_TARGET="\$LOCK_DIR"/)
+  assert.match(body, /if ! test -f "\$STALE_TARGET"; then STALE_TARGET="\$LOCK_DIR"; fi/)
   assert.match(body, /mv "\$LOCK_DIR" "\$STALE_DIR"/)
   assert.match(body, /lease lost/)
   assert.match(body, /utimesSync/)

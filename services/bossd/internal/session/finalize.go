@@ -495,7 +495,6 @@ func (l *Lifecycle) assertPRHasDiffBeforeMarkReady(ctx context.Context, cur *mod
 var bossdManagedWorktreeFiles = []string{
 	".claude/settings.local.json",
 	".claude/scheduled_tasks.lock",
-	".superpowers/",
 }
 
 func (l *Lifecycle) managedDirtyPaths(ctx context.Context, session *models.Session, warnMsg string) []string {

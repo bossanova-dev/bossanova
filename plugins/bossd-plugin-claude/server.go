@@ -84,6 +84,13 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 					Type:         bossanovav1.UserSettingType_USER_SETTING_TYPE_BOOL,
 					DefaultValue: "false",
 				},
+				{
+					Key:          "model",
+					Label:        "Model",
+					Description:  "Fallback claude --model for runs without their own. Empty uses the claude CLI default.",
+					Type:         bossanovav1.UserSettingType_USER_SETTING_TYPE_STRING,
+					DefaultValue: "",
+				},
 			},
 		},
 	}, nil
@@ -99,7 +106,10 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
+	if req.GetIsStrictManagedMcpConfig() && req.GetManagedMcpConfigPath() == "" {
+		return nil, status.Error(codes.FailedPrecondition, "strict MCP config requires a managed config path")
+	}
+	sid, err := s.runner.StartWithManagedMcpConfig(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv(), req.GetManagedMcpConfigPath(), req.GetIsStrictManagedMcpConfig())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -179,7 +189,7 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 //
 // req.LogPath is accepted for API compatibility but intentionally
 // unused — bossd reads it from its own state, not from this response.
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"claude"}
 	if req.Resume {
 		args = append(args, "--resume", req.SessionId)
@@ -196,8 +206,29 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		args = append(args, "--append-system-prompt", sp)
 		appendSystemPromptSupport = bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
 	}
-	if model := req.GetModel(); model != "" {
+	pluginModel := ""
+	if s.runner != nil {
+		pluginModel = s.runner.model
+	}
+	if model := resolveClaudeModel(req.GetModel(), pluginModel); model != "" {
 		args = append(args, "--model", model)
+	}
+	// --mcp-config wires the boss MCP server into this session so mcp__boss__*
+	// tools are reachable. bossd writes the config to its app-data dir (never the
+	// worktree) and passes the absolute path. Strict mode must never continue
+	// without it: omitting both flags would re-enable user/project MCP servers.
+	mcpCfg := req.GetManagedMcpConfigPath()
+	if req.GetStrictManagedMcpConfig() && mcpCfg == "" {
+		return nil, status.Error(codes.FailedPrecondition, "strict MCP config requires a managed config path")
+	}
+	if mcpCfg != "" {
+		args = append(args, "--mcp-config", mcpCfg)
+		// --strict-mcp-config makes the curated --mcp-config the WHOLE surface:
+		// the agent ignores project .mcp.json / settings MCP servers. bossd sets
+		// StrictManagedMcpConfig for every spawn, whose config includes boss and Linear.
+		if req.GetStrictManagedMcpConfig() {
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	loginShell := ""
 	if s.runner != nil {

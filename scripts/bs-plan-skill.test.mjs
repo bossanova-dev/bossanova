@@ -18,14 +18,15 @@
 // topology: the canonical committed home is the embedded skillinstall payload
 // (services/boss/internal/skillinstall/skills/boss-plan/), with no .claude/.codex
 // committed copy — so this test reads the skillinstall home and no longer asserts
-// codex-mirror parity for the core. The repo-local boss-plan-draft extension stays
-// under .claude/skills.
+// codex-mirror parity for the core. The repo-local draft extension
+// (boss-plan-compound-engineering) stays under .claude/skills.
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
@@ -40,7 +41,8 @@ const CORE = '../services/boss/internal/skillinstall/skills/boss-plan'
 const SKILL = read(`${CORE}/SKILL.md`)
 const INTERACTIVE = read(`${CORE}/references/interactive-mode.md`)
 const BRIEF = read(`${CORE}/references/headless-drafting-brief.md`)
-const DRAFT = readIfExists('../.claude/skills/boss-plan-draft/SKILL.md')
+const DRAFT_NAME = 'boss-plan-compound-engineering'
+const DRAFT = readIfExists(`../.claude/skills/${DRAFT_NAME}/SKILL.md`)
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const count = (body, needle) => body.split(needle).length - 1
@@ -228,6 +230,66 @@ test('Phase 4 step 5 warns when an auto-linked blocker is itself transitively bl
   )
 })
 
+test('Phase 4 permits required secret redaction without weakening attachment parity (BOS-702)', () => {
+  assert.match(
+    PHASE_4_SECTION,
+    /redact it in[\s\S]{0,20}every persisted artifact/i,
+    'the secret gate must cover both persisted artifacts, not only the attachment',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /attachment-guard-orig\.md[\s\S]{0,280}only.*mandatory secret\/PII redactions/i,
+    'the safe source must be derived from Phase 1 notes, not a generated artifact',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /--original "\$ORIG" --rewritten "\$NEW"[\s\S]{0,180}--expect-images "\$EXPECTED_IMAGES" --require-unsigned-uploads/,
+    'the raw source must retain image parity checks without demanding unredacted verbatim notes',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /--original "\$ORIG" --rewritten "\$SAFE_ORIG"[\s\S]{0,120}--require-safe-source/,
+    'the safe source must be mechanically checked against the raw Phase 1 notes',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /--original "\$SAFE_ORIG" --rewritten "\$NEW"[\s\S]{0,120}--require-verbatim --require-unsigned-uploads/,
+    'the tracker description must preserve the independently prepared safe source',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /--original "\$SAFE_ORIG" --rewritten "\$PLAN_FILE"[\s\S]{0,120}--require-verbatim --require-unsigned-uploads/,
+    'the attachment must preserve the same safe source',
+  )
+})
+
+test('Phase 4 counts canonical upload identities for the image guard (BOS-702)', () => {
+  assert.match(
+    PHASE_4_SECTION,
+    /distinct canonical upload identities[\s\S]{0,140}origin plus pathname, ignoring query strings/i,
+    'EXPECTED_IMAGES must use the same signed-URL-normalizing identity as the guard',
+  )
+  assert.ok(
+    PHASE_4_SECTION.includes(
+      'EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"',
+    ),
+    'the command placeholder must not ask callers to count raw upload URLs',
+  )
+})
+
+test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', () => {
+  assert.match(
+    PHASE_4_SECTION,
+    /cleanup_guard_scratch\(\)[\s\S]{0,240}rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW" "\$PLAN_FILE"/,
+    'the failed-gate cleanup must remove raw, safe, rewritten, and plan scratch files',
+  )
+  assert.equal(
+    (PHASE_4_SECTION.match(/cleanup_guard_scratch\n>   exit 1/g) ?? []).length,
+    4,
+    'each of the four guard failures must clean scratch before exiting',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Bulk-output discipline — no raw bulk in the orchestrator.
 // ---------------------------------------------------------------------------
@@ -313,11 +375,103 @@ test('the interactive draft step resolves through discovery and the Fallback con
   for (const marker of ['Tier 1', 'Tier 2', 'Tier 3']) {
     assert.ok(INTERACTIVE.includes(marker), `interactive-mode.md must document ${marker}`)
   }
-  assert.doesNotMatch(
-    `${SKILL}\n${INTERACTIVE}\n${BRIEF}`,
-    /Invoke `(?:plan-eng-review|superpowers:writing-plans)`/g,
-    'boss-plan core and references must not directly invoke plan-eng-review or superpowers:writing-plans',
+  // The legacy-dependency gate itself lives in its own test below (BOS-813) — it covers the whole
+  // core reference set plus the active repo-local planning skills, not just these three bodies.
+})
+
+// ---------------------------------------------------------------------------
+// BOS-813 — no ACTIVE planning surface may name a legacy planning dependency.
+// ---------------------------------------------------------------------------
+//
+// The pre-813 gate was name-exact AND verb-exact (it required the word "Invoke" before the skill
+// name) and therefore vacuous: it passed green the whole time references/interactive-mode.md said
+// "Compute the slug + branch exactly the way `plan-eng-review` does" and shelled out to a retired
+// third-party helper binary — a hard requirement the assertion could not see, because the sentence
+// did not begin with "Invoke".
+//
+// The replacement matches ANY mention of a legacy planning skill anywhere in an active planning
+// surface. Historical records (docs/plans/**, TODOS.md) are deliberately NOT surfaces: the ticket
+// orders them preserved verbatim.
+//
+// `writing-plans` is matched bare rather than plugin-qualified: the skill is reachable under its
+// bare name too, so a surface naming it that way would slip a `<plugin>:`-anchored pattern while
+// carrying exactly the dependency BOS-813 removed. Matching bare also covers every qualified form,
+// since the qualified name contains the bare one as a substring.
+//
+// BOS-815: the retired tooling's own names are no longer listed here. They are gated repo-wide —
+// not merely across planning surfaces — by scripts/legacy-support-refs.test.mjs, which scans every
+// tracked file. Naming them in a second place would reintroduce the very strings this ticket
+// removed, and would be strictly weaker than the tree-wide scan that now subsumes it.
+const LEGACY_PLANNING_DEP = /plan-eng-review|writing-plans/i
+
+/** Every active planning surface, as `[label, body]`.
+ *
+ *  Both halves are enumerated from disk rather than listed literally. The core's references come
+ *  from `readdirSync`; the repo-local half comes from `discoverExtensions` over every role plus the
+ *  planning sweep entry point, which is not an extension of the core but drives the same flow. A
+ *  hand-maintained path list is the part of a ratchet that rots: the literal list this replaced
+ *  named two files and so never scanned `.claude/skills/boss-plan-notes/`, an active planning
+ *  surface that was on disk the whole time.
+ */
+function activePlanningSurfaces() {
+  const surfaces = [[`${CORE}/SKILL.md`, SKILL]]
+  const refDir = new URL(`${CORE}/references/`, import.meta.url)
+  for (const entry of readdirSync(refDir).sort()) {
+    if (!entry.endsWith('.md')) continue
+    surfaces.push([`${CORE}/references/${entry}`, readFileSync(new URL(entry, refDir), 'utf8')])
+  }
+  const { extensions } = discoverExtensions({ core: 'boss-plan', root: REPO_ROOT })
+  const localDirs = extensions.map((ext) => [ext.name, ext.dir])
+  localDirs.push(['bs-sweep-plan', join(REPO_ROOT, '.claude', 'skills', 'bs-sweep-plan')])
+  for (const [name, dir] of localDirs) {
+    for (const [rel, body] of markdownUnder(dir)) {
+      surfaces.push([`.claude/skills/${name}/${rel}`, body])
+    }
+  }
+  return surfaces
+}
+
+/** Every prose-or-script file under `dir`, recursively, as `[pathRelativeToDir, body]`, sorted for
+ *  determinism. Executable planning surfaces count: `.claude/skills/bs-sweep-plan/gate/gate.mjs`
+ *  drives the sweep and could name a legacy dependency just as a SKILL.md could. */
+function markdownUnder(dir, prefix = '') {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) out.push(...markdownUnder(join(dir, entry.name), rel))
+    else if (/\.(md|mjs|js|sh)$/.test(entry.name))
+      out.push([rel, readFileSync(join(dir, entry.name), 'utf8')])
+  }
+  return out
+}
+
+test('BOS-813: no active planning surface mentions a legacy planning dependency', () => {
+  const surfaces = activePlanningSurfaces()
+  // Guard the guard: an empty or truncated surface list would make every assertion below vacuous.
+  assert.ok(
+    surfaces.length >= 5,
+    `expected the core + its references + the repo-local planning skills, got ${surfaces.length}`,
   )
+  // Name the two extensions the enumeration must reach: the CE draft extension this ticket added,
+  // and the notes extension the superseded literal list silently omitted.
+  for (const name of ['boss-plan-compound-engineering', 'boss-plan-notes']) {
+    assert.ok(
+      surfaces.some(([label]) => label.startsWith(`.claude/skills/${name}/`)),
+      `${name} must be among the scanned surfaces — disk enumeration, not a hand-kept list`,
+    )
+  }
+  for (const [label, body] of surfaces) {
+    const hit = body.match(LEGACY_PLANNING_DEP)
+    assert.equal(
+      hit,
+      null,
+      `${label} must not name a legacy planning dependency (found ${JSON.stringify(hit?.[0])}); ` +
+        'planning drafting goes through the discovered role:draft extension, and the published ' +
+        'core stays project-agnostic',
+    )
+  }
 })
 
 test('BOS-693: one draft-success predicate governs skip recording and tier fall-through', () => {
@@ -360,9 +514,12 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
     count(INTERACTIVE, 'succeeded under the draft success predicate') >= 3,
     'the Tier-1 suppression gate and both Tier-2/Tier-3 entry gates must cite the same draft success predicate',
   )
+  // Match on the collapsed body: prettier rewraps this reference at 100 columns, so the line break
+  // between "Tier 2, then" and "Tier 3" moves whenever a word ahead of it changes. A regex pinned
+  // to today's break reds on a reflow that changed no meaning.
   assert.match(
-    INTERACTIVE,
-    /fall through to Tier 2, then\s+Tier 3/,
+    INTERACTIVE.replace(/\s+/g, ' '),
+    /fall through to Tier 2, then Tier 3/,
     'interactive-mode.md must keep the Tier-2/Tier-3 fall-through',
   )
   assert.doesNotMatch(
@@ -375,6 +532,38 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
     /if no extension ran successfully/i,
     'the Tier-2/Tier-3 entry gates must not use the undefined "ran successfully" criterion',
   )
+
+  // BOS-813: the headless brief hands every Tier-1 dispatch a `runTmp` and anchors the per-dispatch
+  // plan target to it, but nothing on that path ever created one — `RUN_TMP` appeared in the brief
+  // only as a value being passed. Undefined it expands to empty, which collapses every sibling's
+  // target onto one shared path and hollows out the attribution the success predicate below is
+  // built on; a draft extension anchoring its staging there inherits the same emptiness. Anchored
+  // to the seed block itself so an `RUN_TMP` mention anywhere else in the brief cannot satisfy it.
+  {
+    // Indent-aware, like the interactive seed gate below: a fence nested in a list item is
+    // indented, and a column-0 anchor would pass vacuously on an empty candidate set.
+    const seedBlocks = [...BRIEF.matchAll(/^([ \t]*)```bash\n([\s\S]*?)^\1```/gm)]
+      .map(([, indent, block]) =>
+        indent ? block.replace(new RegExp('^' + indent, 'gm'), '') : block,
+      )
+      .filter((block) => /mktemp\s+-d/.test(block))
+    assert.equal(seedBlocks.length, 1, 'the headless brief must seed exactly one run scratch')
+    assert.match(
+      seedBlocks[0],
+      /^RUN_TMP=\$\(mktemp -d/m,
+      'the headless brief must create the runTmp it passes to every Tier-1 dispatch',
+    )
+    assert.match(
+      seedBlocks[0],
+      /^echo "\$RUN_TMP"$/m,
+      'the seed block must print the scratch the brief tells the drafter to record',
+    )
+    assert.match(
+      BRIEF.replace(/\s+/g, ' '),
+      /Remove it with `rm -rf`[^.]*promoted the winning plan[^.]*failure paths too/i,
+      'the headless brief must remove the run scratch it created, on the failure paths too',
+    )
+  }
 
   // The headless brief's Step 5 is the *shared* drafting spec that interactive-mode.md points at
   // for Tier 3, and it is the whole draft resolution on the headless path. It carried both defects
@@ -520,34 +709,236 @@ test('the resident body states the draft Fallback contract', () => {
   )
 })
 
-test('the boss-plan-draft extension is authored and discoverable', () => {
+test('BOS-813: the CE draft extension is authored and discoverable', () => {
   assert.match(
     DRAFT,
     /x-boss-extension:\s*\n\s+extends: boss-plan\s*\n\s+role: draft\s*\n\s+order: 40/,
-    'boss-plan-draft must declare the draft extension marker',
+    `${DRAFT_NAME} must declare the draft extension marker`,
   )
   const { extensions, skipped } = discoverExtensions({
     core: 'boss-plan',
     role: 'draft',
     root: REPO_ROOT,
   })
+  // Discovery is by `role`, not by name — but the rename must still leave exactly one draft
+  // extension standing, so a stale `boss-plan-draft` directory left behind by an incomplete
+  // rename fails here rather than silently double-dispatching the draft step.
   assert.deepEqual(
     extensions.map((e) => e.name),
-    ['boss-plan-draft'],
-    'boss-plan draft discovery must return exactly boss-plan-draft',
+    [DRAFT_NAME],
+    `boss-plan draft discovery must return exactly ${DRAFT_NAME}`,
   )
   assert.deepEqual(skipped, [], 'boss-plan draft discovery must have zero skips')
 })
 
-test('the boss-plan-draft extension points at the core drafting brief', () => {
-  assert.match(
+test('BOS-813: the CE draft extension points at the core drafting brief', () => {
+  // Point at the canonical core source, not at `plugins/bossd-plugin-claude/skilldata/`. That tree
+  // is a generated mirror `make copy-skills` overwrites, so a reader sent there reads a copy that
+  // can lag the source it was copied from — and an editor sent there edits a file the next
+  // regeneration discards.
+  const rel = '../../../services/boss/internal/skillinstall/skills/boss-plan/references'
+  assert.ok(
+    DRAFT.includes(`${rel}/headless-drafting-brief.md`),
+    `${DRAFT_NAME} must reference the canonical core drafting brief`,
+  )
+  assert.doesNotMatch(
     DRAFT,
-    /\.\.\/\.\.\/\.\.\/plugins\/bossd-plugin-claude\/skilldata\/skills\/boss-plan\/references\/headless-drafting-brief\.md` Step 5/,
-    'boss-plan-draft must reference the canonical core drafting brief',
+    /plugins\/bossd-plugin-claude\/skilldata\/skills\/boss-plan\/references\/headless-drafting-brief\.md`? Step/,
+    `${DRAFT_NAME} must not send readers to the generated skilldata mirror of the brief`,
+  )
+  // The pointer is a relative path from the extension's own directory: resolve it rather than
+  // trusting the string, so a moved or renamed brief reds here instead of rotting silently.
+  const draftDir = join(REPO_ROOT, '.claude', 'skills', DRAFT_NAME)
+  assert.ok(
+    existsSync(join(draftDir, rel, 'headless-drafting-brief.md')),
+    'the drafting-brief pointer must resolve to a file that exists',
   )
 })
 
-test('plan-reviewer discovery ignores the boss-plan-draft sibling', () => {
+test('BOS-813: the CE draft extension drives CE natively in both modes', () => {
+  // AC#2: interactive planning uses CE's own interview/review; cron planning stays
+  // non-interactive. Pin the CE skill names this repo verified as installed, and pin that the
+  // headless path names CE's non-interactive entry rather than re-using the interactive one.
+  for (const skill of ['ce-plan', 'ce-doc-review']) {
+    assert.ok(DRAFT.includes(`\`${skill}\``), `${DRAFT_NAME} must drive CE through \`${skill}\``)
+  }
+  const interactive = sectionBetween(DRAFT, '### Interactive', '### Headless')
+  const headless = sectionBetween(DRAFT, '### Headless', '## Normalize and promote')
+  assert.match(
+    interactive,
+    /AskUserQuestion/,
+    'the interactive path must keep the blocking question tool available for CE’s interview',
+  )
+  assert.match(
+    headless,
+    /Never\s+call\s+`AskUserQuestion`/i,
+    'the headless path must forbid the blocking question tool',
+  )
+  // CE's pipeline-mode exception already runs `ce-doc-review` in headless mode before returning
+  // control, so the headless path must NOT invoke it a second time — a second dispatch re-runs the
+  // whole persona fan-out and applies its `safe_auto` mutations to the plan twice.
+  assert.match(
+    headless,
+    /Do \*\*not\*\* invoke `ce-doc-review` yourself/i,
+    'the headless path must not re-invoke CE document review on top of CE’s own headless pass',
+  )
+  assert.match(
+    headless,
+    /runs `ce-doc-review` in headless mode itself/i,
+    'the headless path must say why it does not re-invoke: CE runs the review pass itself',
+  )
+  assert.match(
+    headless,
+    /\*\*pipeline\*\*\s+\(non-interactive\)/i,
+    'the headless path must invoke the CE planner on its non-interactive pipeline path',
+  )
+
+  // CE ends a markdown run with a post-generation menu whose branches create a tracker issue from
+  // the plan and start implementing it — and CE fires the routed action itself rather than just
+  // rendering the menu. Deferring to that menu would mint a second, unmanaged copy of the ticket
+  // outside the core's attachment-before-writeback and image-parity contracts, or begin
+  // implementing mid-plan. The interactive path must stop at CE's plan file instead.
+  assert.doesNotMatch(
+    interactive,
+    /do not shortcut its menus/i,
+    'the interactive path must not hand CE’s post-generation menu blanket authority',
+  )
+  assert.match(
+    interactive,
+    /never a CE menu action/i,
+    'the interactive path must name CE’s plan file — not a menu action — as the deliverable',
+  )
+  assert.match(
+    interactive.replace(/\s+/g, ' '),
+    /decline every menu branch that leaves the plan file/i,
+    'the interactive path must decline the menu branches that leave the plan file',
+  )
+  assert.match(
+    interactive.replace(/\s+/g, ' '),
+    /the core owns the tracker write/i,
+    'the interactive path must say why: the core, not CE, owns the tracker write',
+  )
+  assert.match(
+    interactive.replace(/\s+/g, ' '),
+    /already been created[\s\S]{0,60}before you could decline[\s\S]{0,400}failure envelope/i,
+    'an already-fired tracker-issue branch must route to the failure envelope, not be papered over',
+  )
+})
+
+test('BOS-813: the CE draft extension fails its envelope when CE cannot load', () => {
+  // AC#3: a missing CE must skip the extension and let the portable core fallback run. The core's
+  // draft-success predicate needs BOTH a valid envelope AND a plan at the passed planPath, so an
+  // `ok: false` envelope with no plan is what routes the run to Tier 2 / Tier 3.
+  assert.match(
+    DRAFT,
+    /"ok":\s*false/,
+    `${DRAFT_NAME} must document an ok:false envelope for the unavailable-CE path`,
+  )
+  assert.match(
+    DRAFT,
+    /Tier\s+2[\s\S]{0,80}Tier\s+3/,
+    `${DRAFT_NAME} must say the failure envelope routes the core to its own fallback tiers`,
+  )
+  assert.match(
+    DRAFT,
+    // `\*{0,2}` tolerates the bold emphasis the prose carries ("do **not** draft"); `\s+` between
+    // words tolerates prettier's 100-col wrapping.
+    /do\s+\*{0,2}not\*{0,2}\s+draft\s+the\s+plan\s+inline/i,
+    `${DRAFT_NAME} must not degrade to drafting the plan itself when CE is missing`,
+  )
+})
+
+test('BOS-813: the CE draft extension stages CE output and cleans it up', () => {
+  // AC#4 + constraint D: CE writes its plan to a repo path of its own choosing, so the extension
+  // must promote to `context.planPath`, normalize to the plan contract, and leave nothing behind.
+  assert.match(
+    DRAFT,
+    /docs\/plans\/YYYY-MM-DD/,
+    `${DRAFT_NAME} must name the CE staging path it is responsible for removing`,
+  )
+  assert.match(
+    DRAFT,
+    /Nothing\s+CE\s+wrote\s+\*\*outside\*\*\s+`runTmp`\s+may\s+survive/i,
+    `${DRAFT_NAME} must forbid CE artifacts surviving outside the core-supplied scratch`,
+  )
+  assert.match(
+    DRAFT,
+    /Cleanup\s+is\s+unconditional/i,
+    `${DRAFT_NAME} must run staging cleanup on the failure paths too`,
+  )
+  assert.match(
+    DRAFT,
+    /planContract\.version:\s*1/,
+    `${DRAFT_NAME} must normalize the CE plan to the versioned plan contract`,
+  )
+  assert.match(
+    DRAFT,
+    /`-\s+Contract:\s+v<N>`/,
+    `${DRAFT_NAME} must stamp the in-band contract version under \`## Planning\``,
+  )
+  // AC#4 is "every CONFIGURED plan-contract section", so the list is read from the config rather
+  // than snapshotted here: a hardcoded copy stays green when someone renames or adds a section in
+  // .boss-skills.json, which is exactly the drift this gate exists to catch.
+  const sections = JSON.parse(readFileSync(join(REPO_ROOT, '.boss-skills.json'), 'utf8'))
+    .planContract.sections
+  assert.ok(sections.length >= 9, 'the plan contract must still declare its sections')
+  for (const { heading } of sections) {
+    assert.ok(
+      DRAFT.includes(`\`${heading}\``),
+      `${DRAFT_NAME} must name the configured plan-contract section ${heading}`,
+    )
+  }
+  assert.match(
+    DRAFT,
+    /verbatim/i,
+    `${DRAFT_NAME} must preserve the ticket's original notes verbatim`,
+  )
+})
+
+test('BOS-813: the published core seeds its design doc in its own private scratch', () => {
+  // Constraint A: boss-plan is published into every user's global skill dir, so the design-doc
+  // seed may not reach into a third-party tool's directory or any user-global path. `mktemp -d`
+  // under the core's own scratch is the portable replacement.
+  assert.match(
+    INTERACTIVE,
+    /mktemp\s+-d\s+"\$\{TMPDIR:-\/tmp\}\/boss-plan-run/,
+    'the design-doc seed must live under a run-private mktemp scratch',
+  )
+  assert.doesNotMatch(
+    INTERACTIVE,
+    /\$HOME\/\.[a-z]/,
+    'the published core must not seed a design doc under a user-global dotdir',
+  )
+  // The optional envelope field survives the rewrite so existing extensions keep working.
+  assert.match(INTERACTIVE, /designDoc/, 'the draft envelope must still carry context.designDoc')
+  // Cleanup forbids reconstructing the scratch path (the mktemp suffix is non-deterministic), so
+  // the seed block has to PRINT it. A block that prints only the design-doc path leaves the agent
+  // with nothing to `rm -rf`, and nothing to hand Phase 4 as `runTmp`.
+  //
+  // Anchored to the seed block itself, not to the document: an `echo "$RUN_TMP"` in some unrelated
+  // fence elsewhere in the reference would satisfy a whole-file match while the block the agent
+  // actually copies still printed nothing.
+  // Indent-aware: the seed fence is nested inside a numbered list item, so a column-0 anchor
+  // matches nothing and the gate below would pass vacuously on an empty candidate set.
+  const seedBlocks = [...INTERACTIVE.matchAll(/^([ \t]*)```bash\n([\s\S]*?)^\1```/gm)]
+    .map(([, indent, block]) =>
+      indent ? block.replace(new RegExp('^' + indent, 'gm'), '') : block,
+    )
+    .filter((block) => /mktemp\s+-d/.test(block))
+  assert.equal(seedBlocks.length, 1, 'exactly one bash block may seed the run scratch')
+  assert.match(
+    seedBlocks[0],
+    /^echo "\$RUN_TMP"$/m,
+    'the seed block must print the run scratch it tells you to record',
+  )
+  assert.match(
+    seedBlocks[0],
+    /^ISSUE_ID="\$\{ISSUE_ID:\?/m,
+    'the seed block must guard the id it interpolates rather than expanding it to empty',
+  )
+})
+
+test('plan-reviewer discovery ignores the draft sibling', () => {
   const { extensions, skipped } = discoverExtensions({
     core: 'boss-plan',
     role: 'plan-reviewer',
@@ -1087,6 +1478,17 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
     globCleanupLines.length >= 9,
     `expected at least 9 glob cleanup lines (3 sites x child-plan/image-guard/attachment-headers), got ${globCleanupLines.length}`,
   )
+  const SAFE_SOURCE = '<ISSUE-ID>*.attachment-guard-orig.md'
+  assert.equal(
+    lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}' -delete`)).length,
+    3,
+    'every cleanup path must delete the redacted safe-source scratch file',
+  )
+  assert.equal(
+    lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}'`) && l.includes('-print)')).length,
+    3,
+    'every residual sweep must detect a surviving redacted safe-source scratch file',
+  )
   for (const line of globCleanupLines) {
     assert.match(
       line.trim(),
@@ -1121,7 +1523,7 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
     'each cleanup site must re-scan for surviving scratch — BSD find exits 0 on a failed -delete',
   )
   assert.equal(
-    lines.filter((l) => l.includes('[ "$CLEANUP_RC" = 0 ]')).length,
+    lines.filter((l) => /\[\s+"\$CLEANUP_RC"\s+(?:=|!=)\s+0\s+\]/.test(l)).length,
     SITES,
     'each cleanup site must act on the accumulated status',
   )
@@ -1143,8 +1545,8 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 78691
-  const RATCHET = 78675 // pinned exact byte ceiling: re-baselined +495 for BOS-663's Tier-1 path-load clause and success-gated suppression: `boss-plan/SKILL.md`'s Fallback-contract line said "tiers 2/3 suppressed when an extension exists", and the Step-8 notes dispatch said to load each extension by its descriptor `name`. Every extension now declares `disable-model-invocation: true` (the flag stops it consuming model-listing budget for a skill only ever dispatched explicitly), and the Skill tool REFUSES such a skill — so the pre-663 wording made every dispatch fail while presence-gating suppressed tiers 2 and 3, silently dropping the whole drafting layer. Both sites now name the descriptor's `skillPath` read and the skipped-then-fall-through path; was 78180. Re-baselined +1041 for the FINAL #1761 commit (4c98f0597, "fail scratch cleanup on any deletion error, not just the last"), which grew the body past the ceiling its own earlier round had just set. The `scripts` job is path-filtered, so it did not run on that merge to main and the overshoot stayed latent until a PR touching skill payloads triggered it; was 62730. Re-baselined +771 for the Phase 2.5 reconcileEpicChildren idempotent-resume mandate (the reconcile-join call, its epicChildMarker(key) marker citation, and the three-outcome aligned/unambiguous-rename/ambiguous-drift wording); was 63771. Re-baselined +52 for BOS-649's doc-drift fix: SKILL.md's child-creation step now cites `epicChildMarker(key)` as the resume marker's canonical emitter (never a hand-written literal comment), matching the headless-drafting-brief's wording; was 64542. Re-baselined +219 for BOS-649's review fix: the unambiguous-rename repair now rewrites the CHILD's own `epicChildMarker(specKey)` marker instead of re-pointing the spec key at `liveKey` — the spec key is the namespace `adopted`, the siblings' `blockedByKeys` and `epicWiringPlan` all resolve through, so the old wording would have stranded those refs and thrown mid-wire after children already existed; was 64594. Re-baselined +196 for BOS-649's round-2 review fix: moving the repair target from the parent spec to the child dropped the "the save replaces the description" constraint this phase already carries at its other two marker-write points, so a literal marker-only save_issue would have wiped the child's gated plan body while it still read as adopted; was 64813. Re-baselined +3659 for BOS-651's move of the epic decomposition spec out of the base64 description marker and into a plain-JSON `epic-spec.json` attachment: Phase 2.5 gained the spec-attachment contract table (filename/MIME/title/body/read/duplicate-policy/identity plus the reuse-plan-storage-steps-1-4 mechanism and the two "why" clauses), the three-stage label-strip → spec-upload → deferred-destructive-strip write ordering, dual-store epic-parent detection with its presence-decides rule and present-but-unreadable recovery gate, and the `Implementation plan`-scoped stale-attachment sweep predicate — net of deleting the now-false marker append/re-append prose, the bounded-marker `planMarkdown` clauses and the base64 rationale; was 65009. Re-baselined +1123 for BOS-651's task-2 review fixes: step 4 stage 2 now names the `.linear-plans/<ISSUE-ID>.epic-spec.json` scratch file the file-taking PUT needs, and all three Phase 5 cleanup sites (terminal, dispatch-failure abort, epic reverify-fail abort) gained the matching `find … -delete` line plus its residual `-print` term, so the new artifact cannot violate the leave-no-local-artifacts invariant; stage 3 gained the explicit `deletePlanAttachment` / starts-with-`Implementation plan` predicate; the `deletePlanAttachment` precondition moved from "the first epic write" to stage 3; and the unreadable-spec recovery gate now admits the per-child attachment read it may need — net of replacing step 7's restatement of the stage-1 selectability argument with a back-reference; was 68668. Re-baselined +1266 for BOS-651's whole-branch review fixes: the epic-parent detection block now scopes `validateSpecIdentity` to an ATTACHMENT-sourced spec and states that a legacy inline spec — which predates `schemaVersion`/`parentId` and would therefore fail that check unconditionally — is bound by provenance and recovered as-is, resolving a contradiction that had routed 100% of legacy parents into the abort-or-no-op gate while the resume section claimed they were still recovered; and step 4 stage 2 gained the upload-exactly-once precondition (read `attachments[]` first; one existing `Epic spec (…)` ⇒ skip the upload and resume, two or more ⇒ abort), because a finalize mints a new attachment row every call where the description marker it replaces was overwritten in place, so a crash after stage 2 would otherwise accumulate duplicates into the permanently-aborting state the contract's duplicate policy defines — that policy also gained its manual remediation and the contract's read row now names `readPlanAttachment`; was 69791. Re-baselined +787 for BOS-651's round-2 review fixes, which made the identity mechanism actually functional: `serializeEpicSpec` reads `spec.parentId` and omits an absent id rather than inventing one, but the drafted-spec shape cited here (and in the headless brief) listed only `parent`/`children`, so every attachment this skill writes would have shipped without a `parentId` and failed `validateSpecIdentity` unconditionally — the shape now carries `parentId` and step 4 stage 2 sets it before serializing; and the MAINLINE idempotent-resume guard, which the unplanned sweep actually takes, recovered the spec by attachment TITLE and never validated identity at all, so it now runs `validateSpecIdentity` too and routes a failure to the unreadable-spec recovery gate. The stage-2 skip also states that stage 3 is skipped with it (the step-7 flip re-runs that strip), which was a dead end for a headless reader; was 71057. Re-baselined +638 for BOS-651's round-3 review fix: round 2 made `parentId` load-bearing but left it enforced by prose alone — `serializeEpicSpec` drops an unset id silently and `validateDecomposition` never inspects it, so an unbound spec uploaded clean and only turned fatal on a later resume, which is the silent-at-write/fatal-later shape the plan's failure-mode table reserves for a guard. Stage 2 now verifies its own bytes before the PUT with `validateSpecIdentity(parseEpicSpec(<file>), <ISSUE-ID>)` and aborts while zero children exist. `validateDecomposition` was deliberately NOT given the check: it validates the decomposition (children, DAG, estimates), not the attachment binding, and 30+ inline fixtures pass specs that legitimately carry no `parentId`. Also: the mainline resume guard now restates that identity is attachment-sourced-only, so the legacy sentence that follows it cannot be misread, and the Phase 2.5 toolbox roll-call names the three new exports plus `SPEC_ATTACHMENT_MIME`; was 71844. Re-baselined +1404 for the BOS-651 outside-voice (cross-model) review, which found the branch's legacy-support claim hollow in the two places that decide it. Step 6's parent-overview save is description-only and this branch had replaced the old re-append-the-marker mandate with an UNCONDITIONAL "this save cannot lose the spec" — true for an attachment-sourced spec, false for a legacy parent whose spec IS the description marker, so a legacy resume's own overview save destroyed the only store and left the parent with NEITHER, which the next sweep re-decomposes into duplicate children; that claim is now scoped, with the legacy arm required to carry the marker substring verbatim. And step 4 stage 2's re-pick check counted `Epic spec (…)` ATTACHMENTS only while the dual-store rule lived solely in the precondition paragraph scoped to a non-unplanned named source, so the unplanned sweep — the primary resume route — never saw a legacy parent and re-decomposed it into keys that no live child's marker matches, bricking `reconcileEpicChildren` on every later run; stage 2 now reads both stores. Also: the duplicate-attachment abort is restated at the two sites that actually perform detection (it had lived only in the contract table and stage 2), and the child copy-back now names `openQuestions` alongside `agentFriendly` — SKILL.md's "copy only the `agentFriendly` verdict" contradicted the brief and silently dropped every child's `agent-question` signal on resume; was 72482. Re-baselined +222 for the prose hygiene the bounded re-review flagged after four rounds of edits landed on the same paragraphs: stage 2's duplicate-attachment abort now precedes the either-store-present skip (the pre-fix predicate said "exactly one", which excluded duplicates by construction, so widening it to "either" had quietly made the skip match a two-attachment parent before the abort sentence was reached); the step-6 legacy carry no longer cites "Decision 3" of an unshipped repo-internal plan doc, which a globally-installed skill cannot resolve, and states the reason inline instead; and the stage-2 crash-safety rationale is scoped, since it asserted the parent holds a spec attachment which is false on the skip path; was 73886. Re-baselined +1958 for the boss-review multi-lens pass. Its cross-model round found that widening the re-pick check to the description store had made a bare QUOTED `<!-- boss-plan-epic-spec:` substring count as presence, so a brand-new ticket whose reporter notes merely mention the marker (this repo's own plan docs do) would be classified an unreadable epic parent and abort loudly on every sweep, permanently unplannable; presence is now store-specific — an attachment counts when present, a description only when `parseEpicSpec` actually returns a spec. Its requesting round found the `deletePlanAttachment` capability requirement had been moved to stage 3, which is skipped on every resume, deferring the check to step 7 — past child creation and `agent-friendly` exposure — so on an adapter lacking that optional op the run stranded buildable children under an unplanned parent; it is required before the first epic write again. Codex also refuted the "which no copy can forge" rationale for waiving identity on a legacy spec (duplicating an issue copies its description), so the waiver now rests on the legacy store being read-only, frozen and slated for removal rather than on a false forgery claim. Plus: the brief's stage-2 crash-safety sentence got the scoping SKILL.md received in the prior round, and the unreadable-spec gate documents its operator remediation, since an unplanned parent fails its first conjunct by definition; was 74108. Re-baselined +531 for BOS-652's four inline-code CALL citations to Phase 2.5's own deterministic core, `skills-toolbox/plan-epic-phase25.mjs`: `detectEpicParent(issue)` in the epic-parent precondition, `epicSpecRecoveryGate(...)` at the unreadable-spec gate, `epicPhase25WritePlan(...)` as step 4's ordered write-sequence emitter, and `stalePlanAttachmentSweep(...)` at step 7's stale sweep, plus the module's toolbox-path roll-call entry. The call form is what the bytes bought: `check-skill-symbols.mjs` only extracts a span that starts with a camelCase identifier followed by `(`, so a bare backticked name would leave the new core ungated. Each citation REPLACED the prose it now owns (the store-specific presence rule and duplicate ordering, the ALL-of conjunct enumeration, the three-stage ordering mechanics and stage-1/3 op restatements, the starts-with-`Implementation plan` predicate) rather than sitting beside it, so the net growth is the citations plus the kept rationale, not a second copy of the rules; was 76066. Re-baselined +780 for BOS-652's whole-branch review fixes, which retracted a claim this branch had just added: step 4 said the emitter owns "the per-child label subtraction", but `serializeEpicSpec` persists no `labels` array, so the subtraction ran against a field round-tripped spec data never carries — a no-op dressed as a rule, and a headless reader obeying "never re-derive either inline" would have created every child with an EMPTY label set, dropping the content labels and the `agent-question` signal step 4 mandates at creation (the same signal BOS-651's cross-model round already restored once). `labelsToStrip` is now stated PARENT-scoped (stage 1's `removeLabels` and nothing else) and the emitter is stated to emit no child `labels` field at all, with the reason inline so the boundary cannot be re-crossed. Also: "execute its ops in emitted order" gained "minus any stage the preconditions below skip", because the emitter emits the three spec-upload ops unconditionally while stage 2 skips them (and stage 3 with them) whenever either store already holds a spec — and a finalize mints a NEW attachment row every call, so a reader taking the emitted plan as complete would upload a second `Epic spec (…)` on the unplanned sweep, the primary resume route, landing the parent in the permanently-aborting duplicate state. Round 2 then applied the SAME reasoning to stage 4, which the round-1 clause had not covered: the emitter emits one `createChild` per SPEC child, never per MISSING child, while the resume path is required to "create only the spec keys `missing` names" — so a reader executing the emitted create-children ops unfiltered after a stage-2 skip duplicates every child that already exists, the one failure this phase's other guards are most obsessed with; the citation now also reads "minus every child `reconcileEpicChildren` does NOT report `missing`". Plus stage 3 now names the ONE-ARG sweep form (no parent-overview attachment exists yet, so there is nothing to keep), where copying step 7's two-arg call was benign but under-specified; Re-baselined a further +344 for the cross-model (Codex) round, which found the emitted `args` could not execute the ops they named: all three spec-upload entries carried one identical `{issueId, filename, mimeType, title}` blob and the delete was keyed `{issueId, attachmentId}`, while the adapter declares `{issue, filename, contentType, size}`, `{issue, assetUrl, title}` and `{id}` — and nothing caught it, because the fake tracker reads two arg fields, so a plan of plausible-looking WRONG keys replayed perfectly green. Entries are now `{stage, op, args, runtimeArgs}`: `args` is the statically-known subset under the adapter's own key names, and `runtimeArgs` names per op what only the executor can supply because it does not exist until the previous op ran (the prepare's `size`, the PUT's `file`/`uploadURL`/`headers`, the finalize's `assetUrl`), with a test cross-checking BOTH halves against the adapter's own operation summaries rather than a restated literal; was 77377. Re-baselined a further +459 for the bounded outside-voice re-review, which found that fix's ONE pinned exception was exactly the size of a real bug: `BEYOND_SUMMARY` waved through stage 1's `removeLabels`, and `save_issue` has no such argument — its `labels` REPLACES the set, which is why this same SKILL.md already tells the executor to read `readLabels` and merge. `removeLabels` occurred nowhere but this branch's own new code. So the one emitted key that was not a real argument was exempted from the one check that would have caught it, and an executor obeying the new "spread `args` into the call" contract would have errored or, on a tracker that drops unknown keys, silently sent `{id}` alone — the strip no-ops and the parent keeps `agent-friendly` plus its plan artifact through the whole create→wire→expose window, the exact exposure stage 1 exists to close, and this branch had already deleted the sentence that explained the mechanism. The labels to strip now ride OUTSIDE `args` as `stripLabels` (an instruction, not a call argument), both files restate the read-merge-replace mechanism, and `BEYOND_SUMMARY` is now EMPTY — so the arg cross-check has full teeth and re-adding the key turns the suite red; was 77721.
+  const PRE_SPLIT_BASELINE = 83145
+  const RATCHET = 83129 // Re-baselined +222 for the BOS-702 safety gates; preserve the 16-byte guard margin.
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

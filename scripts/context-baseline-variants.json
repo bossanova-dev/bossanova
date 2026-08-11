@@ -24,6 +24,19 @@
       }
     },
     {
+      "name": "boss-omitted-remotes-wired",
+      "description": "What a spawn pays AFTER the boss MCP server stopped being wired by default: the two third-party HTTP remotes under strict mode, with no boss stdio server and so no mcp__boss__* tool schemas. Take the delta against status-quo-minus-dup, NOT status-quo — minus-dup is the same three servers under strict mode, which is what a spawn actually pays today now that strictness is unconditional, so the pair isolates exactly one boss MCP copy with the remotes held constant. Expect roughly 20k, not the whole fixed prefix: the 2026-08-03 baseline measured one boss copy at 20,369-20,507 tokens (curated-boss-only 89,335 vs no-mcp 68,966). Run the two in ISOLATION — Claude's ephemeral prompt cache lives ~5 minutes, so back-to-back variants land inside each other's window and a byte-identical prefix can report cache_creation_input_tokens: 0, which once scored as a nonsense 110k saving.",
+      "strictMcpConfig": true,
+      "mcpServers": {
+        "bossanova-linear": {
+          "type": "http",
+          "url": "https://mcp.linear.app/mcp",
+          "headers": { "Authorization": "Bearer ${LINEAR_API_KEY}" }
+        },
+        "bossanova-sentry": { "type": "http", "url": "https://mcp.sentry.dev/mcp" }
+      }
+    },
+    {
       "name": "curated-boss-only",
       "description": "The boss daemon MCP alone, strictly curated: no Linear, no Sentry, no repo .mcp.json merge.",
       "strictMcpConfig": true,

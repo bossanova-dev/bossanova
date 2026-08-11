@@ -1,11 +1,13 @@
 package skillinstall
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func testFS() fstest.MapFS {
@@ -121,6 +123,22 @@ func TestSourceDrift(t *testing.T) {
 	}
 }
 
+func TestExtractFromSourceWritesCanonicalSourceBytes(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), changedFS())
+	dest := t.TempDir()
+
+	if err := ExtractFromSource(dest, srcRoot); err != nil {
+		t.Fatalf("ExtractFromSource: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, Namespace, "boss-test", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "# Test Skill\nDo the changed thing."; got != want {
+		t.Fatalf("installed source bytes = %q, want %q", got, want)
+	}
+}
+
 func TestExtract(t *testing.T) {
 	dest := t.TempDir()
 	if err := Extract(dest, testFS()); err != nil {
@@ -233,6 +251,51 @@ func TestExtractIdempotent(t *testing.T) {
 	}
 }
 
+func TestAcquireUpdateLockSerializesSkillWriters(t *testing.T) {
+	dir := t.TempDir()
+	first, err := acquireUpdateLock(dir)
+	if err != nil {
+		t.Fatalf("acquire first update lock: %v", err)
+	}
+
+	acquired := make(chan struct{})
+	release := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		second, err := acquireUpdateLock(dir)
+		if err != nil {
+			errs <- err
+			return
+		}
+		close(acquired)
+		<-release
+		errs <- second.Unlock()
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second writer acquired the skill update lock while first writer held it")
+	case err := <-errs:
+		t.Fatalf("acquire second update lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := first.Unlock(); err != nil {
+		t.Fatalf("release first update lock: %v", err)
+	}
+	select {
+	case <-acquired:
+	case err := <-errs:
+		t.Fatalf("acquire second update lock after release: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second writer did not acquire the skill update lock after release")
+	}
+	close(release)
+	if err := <-errs; err != nil {
+		t.Fatalf("release second update lock: %v", err)
+	}
+}
+
 func TestExtractCreatesDirectories(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "deep", "nested", "path")
 	if err := Extract(dest, testFS()); err != nil {
@@ -323,16 +386,16 @@ func TestExtractScriptPermissions(t *testing.T) {
 }
 
 func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
-	// Extensionless helper scripts (e.g. support/.../scripts/review-package) are
+	// Extensionless helper scripts (e.g. toolbox/.../scripts/review-package) are
 	// invoked directly by skill prose. go:embed drops their on-disk 100755 mode
 	// and executableSkillFile's filename heuristic misses them, so extraction
 	// must fall back to a shebang probe or public installs hit "permission denied".
 	fsys := fstest.MapFS{
 		"skills/boss-build/SKILL.md": {Data: []byte("# Implement\nRun it.")},
-		"skills/boss-build/support/superpowers/sdd/scripts/review-package": {
+		"skills/boss-build/toolbox/review/scripts/review-package": {
 			Data: []byte("#!/usr/bin/env bash\necho ok"),
 		},
-		"skills/boss-build/support/superpowers/sdd/README": {
+		"skills/boss-build/toolbox/review/README": {
 			Data: []byte("plain text, no shebang, must stay 0644"),
 		},
 	}
@@ -341,7 +404,7 @@ func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	scriptPath := filepath.Join(dest, "bossanova", "boss-build", "support", "superpowers", "sdd", "scripts", "review-package")
+	scriptPath := filepath.Join(dest, "bossanova", "boss-build", "toolbox", "review", "scripts", "review-package")
 	info, err := os.Stat(scriptPath)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", scriptPath, err)
@@ -350,7 +413,7 @@ func TestExtractPreservesExtensionlessShebangScripts(t *testing.T) {
 		t.Errorf("expected extensionless shebang script to be executable, got mode %o", info.Mode().Perm())
 	}
 
-	plainPath := filepath.Join(dest, "bossanova", "boss-build", "support", "superpowers", "sdd", "README")
+	plainPath := filepath.Join(dest, "bossanova", "boss-build", "toolbox", "review", "README")
 	info, err = os.Stat(plainPath)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", plainPath, err)
@@ -461,6 +524,63 @@ func TestNeedsUpdateFalseAfterExtract(t *testing.T) {
 	}
 	if needs {
 		t.Fatal("NeedsUpdate = true, want false after fresh extract")
+	}
+}
+
+func TestInstalledNeedsUpdateDoesNotCreateLockForLegacyInstall(t *testing.T) {
+	dest := t.TempDir()
+	if err := extract(dest, testFS()); err != nil {
+		t.Fatalf("extract legacy install: %v", err)
+	}
+	lockPath := filepath.Join(dest, updateLockFile)
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy install lock before check = %v, want absent", err)
+	}
+
+	installed, needsUpdate, err := InstalledNeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("InstalledNeedsUpdate: %v", err)
+	}
+	if !installed || needsUpdate {
+		t.Fatalf("InstalledNeedsUpdate = (%t, %t), want (true, false)", installed, needsUpdate)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("InstalledNeedsUpdate created lock %q: %v", lockPath, err)
+	}
+}
+
+func TestInstalledNeedsUpdateWaitsForSkillUpdateLock(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	lock, err := acquireUpdateLock(dest)
+	if err != nil {
+		t.Fatalf("acquire skill update lock: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		installed, needsUpdate, err := InstalledNeedsUpdate(dest, testFS())
+		if err == nil && (!installed || needsUpdate) {
+			err = fmt.Errorf("InstalledNeedsUpdate = (%t, %t), want (true, false)", installed, needsUpdate)
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("InstalledNeedsUpdate returned while Extract lock held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := lock.Unlock(); err != nil {
+		t.Fatalf("release skill update lock: %v", err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("InstalledNeedsUpdate did not finish after Extract lock released")
 	}
 }
 
@@ -740,6 +860,9 @@ func TestEnsureUpdatedDoesNotInstallIntoEmptyDirectory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, Namespace)); !os.IsNotExist(err) {
 		t.Fatalf("namespace exists after no-op, err=%v", err)
 	}
+	if _, err := os.Stat(filepath.Join(dest, updateLockFile)); !os.IsNotExist(err) {
+		t.Fatalf("update lock exists after no-op, err=%v", err)
+	}
 }
 
 func TestEnsureUpdatedNoOpOnCurrentInstall(t *testing.T) {
@@ -792,5 +915,87 @@ func TestEnsureUpdatedRefreshesStaleInstall(t *testing.T) {
 	}
 	if string(data) != "# Test Skill\nDo the thing." {
 		t.Fatalf("stale content not refreshed: %q", string(data))
+	}
+}
+
+func TestEnsureUpdatedDoesNotCreateMissingDirectory(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "missing", "skills")
+
+	updated, err := EnsureUpdated(dest, testFS())
+	if err != nil {
+		t.Fatalf("EnsureUpdated: %v", err)
+	}
+	if updated {
+		t.Fatal("EnsureUpdated updated a missing directory, want no-op")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("missing skill directory exists after no-op, err=%v", err)
+	}
+}
+
+func TestEnsureUpdatedFromSourceNoOpOnCurrentInstall(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	dest := t.TempDir()
+	if err := ExtractFromSource(dest, srcRoot); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dest, Namespace, "boss-test", "SKILL.md")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := EnsureUpdatedFromSource(dest, srcRoot)
+	if err != nil {
+		t.Fatalf("EnsureUpdatedFromSource: %v", err)
+	}
+	if updated {
+		t.Fatal("EnsureUpdatedFromSource = true on a current source tree, want no-op")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("current source tree was rewritten: mtime %v -> %v", before.ModTime(), after.ModTime())
+	}
+}
+
+func TestEnsureUpdatedFromSourceRefreshesDifferentPayload(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), changedFS())
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := EnsureUpdatedFromSource(dest, srcRoot)
+	if err != nil {
+		t.Fatalf("EnsureUpdatedFromSource: %v", err)
+	}
+	if !updated {
+		t.Fatal("EnsureUpdatedFromSource = false for a different installed payload, want true")
+	}
+	data, err := os.ReadFile(filepath.Join(dest, Namespace, "boss-test", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "# Test Skill\nDo the changed thing."; got != want {
+		t.Fatalf("installed bytes = %q, want source bytes %q", got, want)
+	}
+}
+
+func TestEnsureUpdatedFromSourceDoesNotInstallIntoEmptyDirectory(t *testing.T) {
+	srcRoot := writeSourceTree(t, t.TempDir(), testFS())
+	dest := t.TempDir()
+
+	updated, err := EnsureUpdatedFromSource(dest, srcRoot)
+	if err != nil {
+		t.Fatalf("EnsureUpdatedFromSource: %v", err)
+	}
+	if updated {
+		t.Fatal("EnsureUpdatedFromSource updated empty dir, want no-op")
+	}
+	if _, err := os.Stat(filepath.Join(dest, Namespace)); !os.IsNotExist(err) {
+		t.Fatalf("namespace exists after no-op, err=%v", err)
 	}
 }

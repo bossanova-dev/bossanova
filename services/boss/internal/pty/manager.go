@@ -260,6 +260,35 @@ type Process struct {
 	done      chan struct{}
 	exitErr   error
 	lastWrite time.Time
+
+	// modesClobbered records that an attach's teardown wrote the mouse-mode
+	// DECRST to the real terminal while THIS child stayed alive. The next attach
+	// must undo it: the child is reused rather than respawned, so it never
+	// re-runs its terminal init and never re-sends the DECSET itself. See
+	// MarkModesClobbered.
+	modesClobbered bool
+}
+
+// MarkModesClobbered records that this process outlived an attach whose teardown
+// disabled mouse reporting on the real terminal. Called from the teardown, read
+// once by the next attach via TakeModesClobbered.
+func (p *Process) MarkModesClobbered() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.modesClobbered = true
+}
+
+// TakeModesClobbered reports whether a previous attach's teardown disabled the
+// terminal's mouse modes for this still-live child, clearing the flag so the
+// re-assert happens once per clobber rather than on every attach. A freshly
+// spawned process returns false: it runs its own terminal init, and writing over
+// that would be guessing at modes the child may not want.
+func (p *Process) TakeModesClobbered() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	was := p.modesClobbered
+	p.modesClobbered = false
+	return was
 }
 
 // readLoop continuously reads from the PTY and forwards output.

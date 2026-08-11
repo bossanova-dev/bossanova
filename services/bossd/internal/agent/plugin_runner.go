@@ -73,6 +73,12 @@ func (r *PluginRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, w
 	return r.start(ctx, workDir, plan, resume, sessionID, model, extraEnv, profile)
 }
 
+// StartWithHeadlessLaunchOptions forwards every panel-less launch control to
+// the plugin in one request so strict managed MCP policy cannot be dropped.
+func (r *PluginRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
+	return r.startWithMcpConfig(ctx, workDir, plan, resume, sessionID, model, extraEnv, options.HeadlessCapabilityProfile, options.ManagedMcpConfigPath, options.StrictManagedMcpConfig)
+}
+
 // PreflightHeadlessCapabilityProfile asks the plugin to validate a required
 // operation surface using only the managed account/model inputs available
 // before worktree creation. It performs no run or tailer side effects.
@@ -93,6 +99,10 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, m
 }
 
 func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	return r.startWithMcpConfig(ctx, workDir, plan, resume, sessionID, model, extraEnv, profile, "", false)
+}
+
+func (r *PluginRunner) startWithMcpConfig(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, managedMcpConfigPath string, isStrictManagedMcpConfig bool) (string, error) {
 	req := &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   workDir,
 		Plan:                      plan,
@@ -102,6 +112,8 @@ func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *
 		Model:                     model,
 		ExtraEnv:                  extraEnv,
 		HeadlessCapabilityProfile: profile,
+		ManagedMcpConfigPath:      managedMcpConfigPath,
+		IsStrictManagedMcpConfig:  isStrictManagedMcpConfig,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

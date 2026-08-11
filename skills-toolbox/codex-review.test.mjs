@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildCodexArgs,
+  canonicalizeCheckoutRoot,
   classifyProbe,
+  createCodexTierAProbeRoot,
   probe,
   resolveCodexBin,
   run,
@@ -393,6 +395,29 @@ test('run: fake codex that exits 0 with output → ok=true, sanitized output ret
   }
 })
 
+test('run: absolute falsification reference preserves the read-only Codex second voice', async () => {
+  const repo = makeTmpDir()
+  try {
+    const bin = writeEchoArgvBin(repo)
+    const result = await run({
+      env: { BOSS_CODEX_BIN: bin },
+      base: 'abc',
+      head: 'def',
+      repo,
+      timeoutMs: 5000,
+      falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    })
+    assert.equal(result.ok, true, result.stderr)
+    assert.equal(result.timedOut, false)
+    assert.match(result.output, /-s\nread-only/)
+    assert.match(result.output, /\/opt\/skills\/boss-review\/references\/falsification\.md/)
+    assert.match(result.output, /Tier A only/)
+    assert.match(result.output, /report the probe blocked/i)
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('run: fake codex that exits non-zero → ok=false, no throw', async () => {
   const dir = makeTmpDir()
   try {
@@ -682,6 +707,157 @@ test('buildCodexArgs: includes -s read-only', () => {
   assert.equal(args[idx + 1], 'read-only')
 })
 
+test('buildCodexArgs: Tier A is unavailable without readable-path confinement', () => {
+  const repo = '/tmp/reviewed-checkout'
+  const probeRoot = '/Users/tester/.cache/boss-review/tier-a-private'
+  const args = buildCodexArgs({
+    base: 'abc',
+    head: 'def',
+    repo,
+    falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    tierAProbeRoot: probeRoot,
+  })
+  const sandboxIndex = args.indexOf('-s')
+  const workspaceIndex = args.indexOf('-C')
+  assert.equal(args[sandboxIndex + 1], 'read-only')
+  assert.equal(args[workspaceIndex + 1], repo)
+  assert.ok(!args.includes('--skip-git-repo-check'))
+  assert.ok(!args.some((arg) => arg.startsWith('sandbox_workspace_write.')))
+})
+
+test('canonicalizeCheckoutRoot: resolves a relative checkout before Tier A uses it', () => {
+  const repo = makeTmpDir()
+  try {
+    const relativeRepo = path.relative(process.cwd(), repo)
+    assert.equal(canonicalizeCheckoutRoot(relativeRepo), fs.realpathSync(repo))
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('createCodexTierAProbeRoot: rejects a cache location inside the checkout before mkdir', () => {
+  const home = makeTmpDir()
+  const cacheRoot = path.join(home, '.cache', 'boss-review')
+  try {
+    fs.mkdirSync(path.dirname(cacheRoot), { recursive: true })
+    const probeRoot = createCodexTierAProbeRoot(home, { homeDir: home, tmpDir: os.tmpdir() })
+    assert.equal(probeRoot, '')
+    assert.ok(!fs.existsSync(cacheRoot), 'rejected cache root must not be created in the checkout')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('createCodexTierAProbeRoot: rejects the filesystem-root checkout before mkdir', () => {
+  const home = makeTmpDir()
+  const isolatedTmp = makeTmpDir()
+  const cacheRoot = path.join(home, '.cache', 'boss-review')
+  try {
+    const probeRoot = createCodexTierAProbeRoot(path.parse(process.cwd()).root, {
+      homeDir: home,
+      tmpDir: isolatedTmp,
+    })
+    assert.equal(probeRoot, '')
+    assert.ok(!fs.existsSync(cacheRoot), 'rejected cache root must not be created in the checkout')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(isolatedTmp, { recursive: true, force: true })
+  }
+})
+
+test('createCodexTierAProbeRoot: creates a missing cache directory from a safe home ancestor', () => {
+  const home = makeTmpDir()
+  const repo = makeTmpDir()
+  const isolatedTmp = makeTmpDir()
+  const cacheParent = path.join(home, '.cache')
+  let probeRoot = ''
+  try {
+    assert.ok(!fs.existsSync(cacheParent), 'fixture starts without ~/.cache')
+    probeRoot = createCodexTierAProbeRoot(repo, { homeDir: home, tmpDir: isolatedTmp })
+    assert.ok(path.isAbsolute(probeRoot), 'safe fresh homes must receive a Tier A probe root')
+    assert.ok(
+      fs.existsSync(cacheParent),
+      'helper creates the missing cache parent after validation',
+    )
+    const homeRoot = fs.realpathSync(home)
+    assert.ok(
+      probeRoot.startsWith(`${homeRoot}${path.sep}`),
+      'probe root remains below the safe home',
+    )
+    assert.ok(
+      !probeRoot.startsWith(`${repo}${path.sep}`),
+      'probe root is never created below checkout',
+    )
+  } finally {
+    if (probeRoot) fs.rmSync(probeRoot, { recursive: true, force: true })
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(repo, { recursive: true, force: true })
+    fs.rmSync(isolatedTmp, { recursive: true, force: true })
+  }
+})
+
+test('run: preserves the read-only review when Tier A cannot allocate an external workspace', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'codex', "printf 'review result\\n'\nexit 0")
+    const result = await run({
+      env: { BOSS_CODEX_BIN: bin },
+      base: 'abc',
+      head: 'def',
+      repo: os.homedir(),
+      timeoutMs: 5000,
+      falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    })
+    assert.equal(result.ok, true, result.stderr)
+    assert.equal(result.output, 'review result\n')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('run: preserves the read-only review when Codex cannot confine Tier A reads', async () => {
+  const repo = makeTmpDir()
+  try {
+    const bin = writeFakeBin(repo, 'codex', "printf 'review result\\n'\nexit 0")
+    const result = await run({
+      env: { BOSS_CODEX_BIN: bin },
+      base: 'abc',
+      head: 'def',
+      repo,
+      timeoutMs: 5000,
+      falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    })
+    assert.equal(result.ok, true, result.stderr)
+    assert.equal(result.output, 'review result\n')
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('run: a /tmp checkout remains read-only when Tier A reads are not confined', async () => {
+  const repo = makeTmpDir()
+  try {
+    const bin = writeFakeBin(
+      repo,
+      'codex',
+      'printf "checkout=%s\\n" "$BOSS_REVIEW_CHECKOUT_ROOT"\nfor a in "$@"; do printf "%s\\n" "$a"; done\nexit 0',
+    )
+    const result = await run({
+      env: { BOSS_CODEX_BIN: bin },
+      base: 'abc',
+      head: 'def',
+      repo,
+      timeoutMs: 5000,
+      falsificationReference: '/opt/skills/boss-review/references/falsification.md',
+    })
+    assert.equal(result.ok, true, result.stderr)
+    assert.match(result.output, /-s\nread-only/)
+    assert.ok(!result.output.includes('workspace-write'))
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('buildCodexArgs: does NOT include -a (codex exec has no approval flag)', () => {
   // Regression guard: `codex exec` (codex-cli 0.142.0) has no -a/--ask-for-approval
   // flag — passing it makes codex exit with "unexpected argument '-a' found" and
@@ -750,6 +926,19 @@ test('buildCodexArgs: preamble mentions BASE...HEAD range', () => {
   const args = buildCodexArgs({ base: 'abc123', head: 'def456', repo: '/tmp/repo' })
   const prompt = args.find((a) => a.includes('abc123') && a.includes('def456'))
   assert.ok(prompt, 'preamble should mention the base...head range')
+})
+
+test('buildCodexArgs: supplied falsification reference reaches nested reviewer prompt', () => {
+  const reference = '/opt/skills/boss-review/references/falsification.md'
+  const args = buildCodexArgs({
+    base: 'abc',
+    head: 'def',
+    repo: '/tmp/repo',
+    falsificationReference: reference,
+  })
+  const prompt = args.at(-1)
+  assert.ok(prompt.includes(reference))
+  assert.match(prompt, /Tier A only/)
 })
 
 // ---------------------------------------------------------------------------

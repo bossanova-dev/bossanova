@@ -2348,3 +2348,152 @@ func TestSettings_StallDetectionRoundTrip(t *testing.T) {
 		t.Errorf("legacy ExecutingToolThreshold() = %v, want 45m", got)
 	}
 }
+
+// writeSettingsFile writes body to a hermetic settings.json and returns its
+// path. It does NOT set BOSS_SETTINGS_PATH: these tests drive LoadFrom/SaveTo
+// by path so they never touch the operator's real settings file.
+func writeSettingsFile(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	return p
+}
+
+// BOS-827: disabled_managed_mcp_servers must distinguish "absent" (apply the
+// bossd default, which omits the boss server) from "explicitly empty" (the
+// operator's rollback: wire every managed server). Load has always drawn that
+// line — json.Unmarshal yields nil for an absent key and a non-nil empty slice
+// for []. This pins it.
+func TestDisabledManagedMcpServersLoadDistinguishesAbsentFromEmpty(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantNil  bool
+		wantList []string
+	}{
+		{name: "absent key is nil", body: `{}`, wantNil: true},
+		{name: "explicit empty is non-nil empty", body: `{"disabled_managed_mcp_servers":[]}`, wantList: []string{}},
+		{name: "populated list survives verbatim", body: `{"disabled_managed_mcp_servers":["boss"]}`, wantList: []string{"boss"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := LoadFrom(writeSettingsFile(t, tt.body))
+			if err != nil {
+				t.Fatalf("LoadFrom: %v", err)
+			}
+			got := s.DisabledManagedMcpServers
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("DisabledManagedMcpServers = %v, want nil (absent)", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("DisabledManagedMcpServers = nil, want a non-nil value")
+			}
+			if !slices.Equal(*got, tt.wantList) {
+				t.Fatalf("DisabledManagedMcpServers = %v, want %v", *got, tt.wantList)
+			}
+		})
+	}
+}
+
+// The load-bearing test for BOS-827's rollback guarantee: an operator who sets
+// disabled_managed_mcp_servers to [] must still have it set after the next
+// UpdateSettings write, which is a Load -> mutate -> Save round trip. On a plain
+// []string field this FAILS: `omitempty` drops an empty slice whether or not it
+// is nil, so Save rewrites the file without the key and the next Load re-applies
+// the default. The rollback would appear to work and then silently revert.
+func TestDisabledManagedMcpServersExplicitEmptySurvivesSaveRoundTrip(t *testing.T) {
+	p := writeSettingsFile(t, `{"disabled_managed_mcp_servers":[]}`)
+
+	loaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if err := SaveTo(p, loaded); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(string(raw), `"disabled_managed_mcp_servers": []`) {
+		t.Fatalf("Save dropped the explicit empty override; file is:\n%s", raw)
+	}
+
+	reloaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.DisabledManagedMcpServers == nil {
+		t.Fatal("explicit [] round-tripped back to nil: the operator's rollback silently reverted")
+	}
+	if len(*reloaded.DisabledManagedMcpServers) != 0 {
+		t.Fatalf("want an empty override, got %v", *reloaded.DisabledManagedMcpServers)
+	}
+}
+
+// The mirror of the round trip above: Save must NOT materialise the key for a
+// settings file that never set it, or every install would be pinned to whatever
+// the default happened to be on the day it was written.
+func TestDisabledManagedMcpServersAbsentStaysAbsentAcrossSave(t *testing.T) {
+	p := writeSettingsFile(t, `{}`)
+
+	loaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if err := SaveTo(p, loaded); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Contains(string(raw), "disabled_managed_mcp_servers") {
+		t.Fatalf("Save materialised the key for an install that never set it:\n%s", raw)
+	}
+	reloaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.DisabledManagedMcpServers != nil {
+		t.Fatalf("want absent (nil), got %v", *reloaded.DisabledManagedMcpServers)
+	}
+}
+
+// A malformed value must surface as a load error rather than decoding to nil,
+// which would read as "absent" and silently apply the default.
+func TestDisabledManagedMcpServersMalformedValueIsALoadError(t *testing.T) {
+	_, err := LoadFrom(writeSettingsFile(t, `{"disabled_managed_mcp_servers":"boss"}`))
+	if err == nil {
+		t.Fatal("want a load error for a string value, got nil")
+	}
+}
+
+// A populated list survives Save unchanged.
+func TestDisabledManagedMcpServersPopulatedListRoundTrips(t *testing.T) {
+	p := writeSettingsFile(t, `{"disabled_managed_mcp_servers":["boss","bossanova-sentry"]}`)
+	loaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if err := SaveTo(p, loaded); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	reloaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.DisabledManagedMcpServers == nil {
+		t.Fatal("populated list round-tripped to nil")
+	}
+	if want := []string{"boss", "bossanova-sentry"}; !slices.Equal(*reloaded.DisabledManagedMcpServers, want) {
+		t.Fatalf("got %v, want %v", *reloaded.DisabledManagedMcpServers, want)
+	}
+}

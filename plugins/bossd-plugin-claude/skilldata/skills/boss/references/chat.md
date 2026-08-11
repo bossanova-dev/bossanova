@@ -6,18 +6,39 @@
 
 Interact with session chats headlessly
 
+### `boss chat new <session-id> [flags]`
+
+Start a new live chat inside an existing session
+
+Starts a brand-new live chat inside an existing session, reusing that session's worktree, branch and PR with a clean context. This is the CLI counterpart of the MCP start_chat tool. `boss new` is not a substitute: on a session that is already live the daemon attaches to it instead, and the supplied prompt is never run. The agent_session_id is minted for you; the command fails rather than reporting success if the daemon could not spawn a live agent behind the chat. An omitted --agent inherits the session's own agent; --title names the chat. Print the id with --json and feed it straight to `boss chat send`.
+
+**Flags:**
+
+- `--agent` — Agent plugin to run (empty inherits the session's agent)
+- `--json` — Emit the new chat as a machine-readable JSON envelope
+- `--title` — Title for the new chat
+
+```bash
+boss chat new <session-id>
+# Capture chat.agent_session_id, then `boss chat send <chat-id> ... --submit`
+boss chat new <session-id> --title "repair round" --json
+```
+
 ### `boss chat send <session-id|chat-id> <message> [flags]`
 
 Send a message to a chat
 
-Delivers a follow-up message to a running chat identified by a session id or agent_session_id (the chat-id printed by `boss new --detach`). When given a session id, boss targets that session's primary chat. The daemon wakes a sleeping chat before pasting the message.
+Delivers a follow-up message to a running chat identified by a session id or agent_session_id (the chat-id printed by `boss new --detach` or `boss chat new --json`). When given a session id, boss targets that session's primary chat. The daemon wakes a sleeping chat before pasting the message; --wake-if-asleep defaults to true and exists so a caller can pass --wake-if-asleep=false to leave a deliberately stopped chat stopped.
 
 **Flags:**
 
 - `--submit` — Submit the message (press Enter and verify); false prefills the composer without submitting (default: true)
+- `--wake-if-asleep` — Wake a sleeping chat before delivering; false leaves a stopped chat stopped (default: true)
 
 ```bash
 boss chat send <session-id|chat-id> "please also add tests"
+# Do not wake a stopped chat just to deliver this message
+boss chat send <chat-id> "status?" --wake-if-asleep=false
 ```
 
 ### `boss chat show <session-id|chat-id> [flags]`

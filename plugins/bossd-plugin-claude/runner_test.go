@@ -47,6 +47,21 @@ func TestBuildArgvNoModelWhenEmptyOption(t *testing.T) {
 	}
 }
 
+func TestBuildArgvIncludesStrictManagedMcpConfig(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{
+		"managed_mcp_config_path":      "/data/bossanova/mcp-configs/sid.json",
+		"is_strict_managed_mcp_config": "true",
+	}})
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
+		t.Fatalf("buildArgv = %v, want --mcp-config path", got)
+	}
+	if !strings.Contains(joined, "--strict-mcp-config") {
+		t.Fatalf("buildArgv = %v, want --strict-mcp-config", got)
+	}
+}
+
 func TestBuildArgvIncludesResume(t *testing.T) {
 	r := NewRunner(zerolog.Nop())
 	resume := "abc"
@@ -104,5 +119,46 @@ func TestBuildArgvOmitsSessionIDWhenNotProvided(t *testing.T) {
 		if a == "--session-id" {
 			t.Errorf("--session-id should not appear when ProvidedSessionID is false: %v", got)
 		}
+	}
+}
+
+func TestBuildArgvFallsBackToPluginModel(t *testing.T) {
+	r := NewRunner(zerolog.Nop(), WithModel("opus[1m]"))
+	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"model": ""}})
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "--model\x00opus[1m]") {
+		t.Fatalf("buildArgv = %v, want plugin default --model opus[1m]", got)
+	}
+}
+
+func TestBuildArgvRequestModelBeatsPluginModel(t *testing.T) {
+	r := NewRunner(zerolog.Nop(), WithModel("opus[1m]"))
+	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"model": "sonnet"}})
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "--model\x00sonnet") {
+		t.Fatalf("buildArgv = %v, want per-request --model sonnet to win", got)
+	}
+	if strings.Contains(joined, "opus[1m]") {
+		t.Fatalf("buildArgv = %v, plugin default must not also appear", got)
+	}
+}
+
+// A bracketed context-window variant must reach argv byte-for-byte. It is passed
+// through loginshell.Wrap as a positional arg, so no shell ever globs it; this
+// pins that and guards against a future sanitiser stripping the suffix.
+func TestBuildArgvPreservesBracketedModelVariant(t *testing.T) {
+	r := NewRunner(zerolog.Nop(), WithLoginShell("/opt/homebrew/bin/fish"), WithModel("opus[1m]"))
+	got := r.buildArgv(agentruntime.BuildArgvInput{})
+	var found bool
+	for i, a := range got {
+		if a == "--model" {
+			if i+1 >= len(got) || got[i+1] != "opus[1m]" {
+				t.Fatalf("buildArgv = %v, want the model arg to be exactly opus[1m]", got)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("buildArgv = %v, want --model present", got)
 	}
 }

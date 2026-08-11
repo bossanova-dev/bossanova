@@ -9,7 +9,8 @@ import {
   boundedStderrTail,
   classifyProbe,
   interpretResult,
-  REVIEW_PREAMBLE,
+  removeTierAProbeRoot,
+  reviewPreamble,
   resolveAgentBin,
   sanitizeOutput,
 } from './cross-review-lib.mjs'
@@ -31,7 +32,10 @@ import {
 // directly. `--permission-mode plan` keeps the reviewer read-only (it cannot
 // create/edit/delete files), the analog of codex's `-s read-only` sandbox; and
 // because the diff is EMBEDDED in the prompt the reviewer needs no file-system
-// tools at all (no recursion into bs-review, no tree exploration).
+// tools at all (no recursion into bs-review, no tree exploration). It also
+// cannot perform Tier A, because Tier A requires writes to a private scratch
+// workspace. It still provides an independent diff review; the prompt requires
+// it to report a load-bearing probe blocked rather than claiming that result.
 
 // Re-export the pure primitives the test-suite (and downstream callers) consume
 // from this module's public surface.
@@ -139,8 +143,20 @@ function claudeArgv(prompt, env = process.env) {
 // embed-mode variant when it can fetch the diff; this pure helper keeps the
 // structural test-surface stable.
 // ---------------------------------------------------------------------------
-export function buildClaudeArgs({ base, head, env = process.env }) {
-  const prompt = assemblePrompt({ preamble: REVIEW_PREAMBLE, range: `${base}...${head}` })
+export function buildClaudeArgs({
+  base,
+  head,
+  env = process.env,
+  repo = '',
+  falsificationReference,
+  tierAProbeRoot = '',
+}) {
+  const tierA = typeof tierAProbeRoot === 'string' && path.isAbsolute(tierAProbeRoot)
+  const prompt = assemblePrompt({
+    preamble: reviewPreamble(falsificationReference, { checkoutRoot: repo, tierAProbeRoot }),
+    range: `${base}...${head}`,
+    tierA,
+  })
   return claudeArgv(prompt, env)
 }
 
@@ -148,16 +164,26 @@ export function buildClaudeArgs({ base, head, env = process.env }) {
 // When a diff is available and under the embed cap, embed it directly into the
 // prompt (so the reviewer never has to explore the tree); otherwise fall back
 // to the pure instruct-mode argv. `env` gates bare mode (see bareModeArgs).
-function buildClaudeArgsWithDiff({ base, head, diffText, env = process.env }) {
+function buildClaudeArgsWithDiff({
+  base,
+  head,
+  diffText,
+  env = process.env,
+  repo = '',
+  falsificationReference,
+  tierAProbeRoot = '',
+}) {
+  const tierA = typeof tierAProbeRoot === 'string' && path.isAbsolute(tierAProbeRoot)
   if (typeof diffText === 'string' && diffText !== '') {
     const prompt = assemblePrompt({
-      preamble: REVIEW_PREAMBLE,
+      preamble: reviewPreamble(falsificationReference, { checkoutRoot: repo, tierAProbeRoot }),
       range: `${base}...${head}`,
       diffText,
+      tierA,
     })
-    return claudeArgv(prompt, env)
+    return claudeArgv(prompt, env, { checkoutRoot: repo, tierAProbeRoot })
   }
-  return buildClaudeArgs({ base, head, env })
+  return buildClaudeArgs({ base, head, env, repo, falsificationReference, tierAProbeRoot })
 }
 
 // bestEffortDiff(repo, base, head, timeoutMs) → string
@@ -283,6 +309,7 @@ export async function run({
   timeoutMs,
   maxBytes = 65536,
   maxStderrBytes = 4096,
+  falsificationReference = env.BOSS_REVIEW_FALSIFICATION_REFERENCE,
 } = {}) {
   const bin = resolveClaudeBin(env)
   if (bin === null) {
@@ -300,7 +327,14 @@ export async function run({
   const diffStart = Date.now()
   const diffText = bestEffortDiff(repo, base, head, diffBudgetMs)
   const agentTimeoutMs = Math.max(0, effectiveTimeoutMs - (Date.now() - diffStart))
-  const args = buildClaudeArgsWithDiff({ base, head, diffText, env })
+  const args = buildClaudeArgsWithDiff({
+    base,
+    head,
+    repo,
+    diffText,
+    env,
+    falsificationReference,
+  })
 
   return new Promise((resolve) => {
     let settled = false
@@ -345,6 +379,7 @@ export async function run({
       // retained bytes bounded. cwd=repo replaces codex's `-C <repo>` arg.
       child = spawn(bin, args, {
         cwd: repo,
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       })
@@ -448,6 +483,7 @@ async function main(argv) {
       base: flags.base,
       head: flags.head,
       repo: flags.repo ?? process.cwd(),
+      falsificationReference: flags['falsification-reference'],
     })
     if (result.output) process.stdout.write(`${result.output}\n`)
     if (!result.ok) {

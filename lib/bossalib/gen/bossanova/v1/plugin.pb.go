@@ -3109,8 +3109,14 @@ type StartAgentRunRequest struct {
 	// Explicit required runtime operation surface for a headless launch. The
 	// zero/default profile is legacy-compatible and performs no preflight.
 	HeadlessCapabilityProfile HeadlessCapabilityProfile `protobuf:"varint,8,opt,name=headless_capability_profile,json=headlessCapabilityProfile,proto3,enum=bossanova.v1.HeadlessCapabilityProfile" json:"headless_capability_profile,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// daemon-owned MCP config for a panel-less run. Empty preserves the legacy
+	// launch behavior for agents that cannot consume a managed MCP surface.
+	ManagedMcpConfigPath string `protobuf:"bytes,9,opt,name=managed_mcp_config_path,json=managedMcpConfigPath,proto3" json:"managed_mcp_config_path,omitempty"`
+	// When true, the plugin must use only managed_mcp_config_path and must not
+	// fall back to user or project MCP configuration.
+	IsStrictManagedMcpConfig bool `protobuf:"varint,10,opt,name=is_strict_managed_mcp_config,json=isStrictManagedMcpConfig,proto3" json:"is_strict_managed_mcp_config,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *StartAgentRunRequest) Reset() {
@@ -3197,6 +3203,20 @@ func (x *StartAgentRunRequest) GetHeadlessCapabilityProfile() HeadlessCapability
 		return x.HeadlessCapabilityProfile
 	}
 	return HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
+}
+
+func (x *StartAgentRunRequest) GetManagedMcpConfigPath() string {
+	if x != nil {
+		return x.ManagedMcpConfigPath
+	}
+	return ""
+}
+
+func (x *StartAgentRunRequest) GetIsStrictManagedMcpConfig() bool {
+	if x != nil {
+		return x.IsStrictManagedMcpConfig
+	}
+	return false
 }
 
 type StartAgentRunResponse struct {
@@ -3764,8 +3784,18 @@ type BuildInteractiveCommandRequest struct {
 	// chat, plus the cron autonomy directive for scheduler-spawned runs.
 	AppendSystemPrompt string `protobuf:"bytes,7,opt,name=append_system_prompt,json=appendSystemPrompt,proto3" json:"append_system_prompt,omitempty"`
 	Model              string `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"` // opaque agent model id; "" = plugin default.
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// managed_mcp_config_path, when non-empty, is an absolute path to a JSON
+	// config written in bossd app data for this launch's managed MCP servers.
+	ManagedMcpConfigPath string `protobuf:"bytes,11,opt,name=managed_mcp_config_path,json=managedMcpConfigPath,proto3" json:"managed_mcp_config_path,omitempty"`
+	// strict_managed_mcp_config makes that managed config the entire MCP surface.
+	StrictManagedMcpConfig bool `protobuf:"varint,12,opt,name=strict_managed_mcp_config,json=strictManagedMcpConfig,proto3" json:"strict_managed_mcp_config,omitempty"`
+	// config_home_env contains only the home-selection variables (CODEX_HOME and
+	// HOME) from the environment that will launch the interactive agent. Plugins
+	// use it when they must prepare configuration before the child process starts;
+	// it intentionally does not carry the session's secret-bearing environment.
+	ConfigHomeEnv map[string]string `protobuf:"bytes,13,rep,name=config_home_env,json=configHomeEnv,proto3" json:"config_home_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandRequest) Reset() {
@@ -3852,6 +3882,27 @@ func (x *BuildInteractiveCommandRequest) GetModel() string {
 		return x.Model
 	}
 	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetManagedMcpConfigPath() string {
+	if x != nil {
+		return x.ManagedMcpConfigPath
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetStrictManagedMcpConfig() bool {
+	if x != nil {
+		return x.StrictManagedMcpConfig
+	}
+	return false
+}
+
+func (x *BuildInteractiveCommandRequest) GetConfigHomeEnv() map[string]string {
+	if x != nil {
+		return x.ConfigHomeEnv
+	}
+	return nil
 }
 
 type BuildInteractiveCommandResponse struct {
@@ -5882,7 +5933,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
 	"\x1cPreflightHeadlessRunResponse\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
-	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xba\x03\n" +
+	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xb1\x04\n" +
 	"\x14StartAgentRunRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x12\n" +
 	"\x04plan\x18\x02 \x01(\tR\x04plan\x12 \n" +
@@ -5892,7 +5943,10 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\blog_path\x18\x05 \x01(\tR\alogPath\x12\x14\n" +
 	"\x05model\x18\x06 \x01(\tR\x05model\x12M\n" +
 	"\textra_env\x18\a \x03(\v20.bossanova.v1.StartAgentRunRequest.ExtraEnvEntryR\bextraEnv\x12g\n" +
-	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x1a;\n" +
+	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x125\n" +
+	"\x17managed_mcp_config_path\x18\t \x01(\tR\x14managedMcpConfigPath\x12>\n" +
+	"\x1cis_strict_managed_mcp_config\x18\n" +
+	" \x01(\bR\x18isStrictManagedMcpConfig\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n" +
@@ -5936,7 +5990,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xaf\x02\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xfc\x04\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -5946,7 +6000,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\x12#\n" +
 	"\rworktree_path\x18\x06 \x01(\tR\fworktreePath\x120\n" +
 	"\x14append_system_prompt\x18\a \x01(\tR\x12appendSystemPrompt\x12\x14\n" +
-	"\x05model\x18\b \x01(\tR\x05model\"\x9f\x02\n" +
+	"\x05model\x18\b \x01(\tR\x05model\x125\n" +
+	"\x17managed_mcp_config_path\x18\v \x01(\tR\x14managedMcpConfigPath\x129\n" +
+	"\x19strict_managed_mcp_config\x18\f \x01(\bR\x16strictManagedMcpConfig\x12g\n" +
+	"\x0fconfig_home_env\x18\r \x03(\v2?.bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntryR\rconfigHomeEnv\x1a@\n" +
+	"\x12ConfigHomeEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\x0fmcp_config_pathR\x11strict_mcp_config\"\x9f\x02\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +
@@ -6172,7 +6234,7 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 98)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 99)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                             // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                         // 1: bossanova.v1.TaskItemStatus
@@ -6278,14 +6340,15 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	nil,                                         // 101: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
 	nil,                                         // 102: bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry
 	nil,                                         // 103: bossanova.v1.StartAgentRunRequest.ExtraEnvEntry
-	nil,                                         // 104: bossanova.v1.ProbeRateLimitRequest.CredentialEnvEntry
-	nil,                                         // 105: bossanova.v1.MaterializeAccountResponse.EnvEntry
-	(*TrackerIssue)(nil),                        // 106: bossanova.v1.TrackerIssue
-	(*timestamppb.Timestamp)(nil),               // 107: google.protobuf.Timestamp
-	(WorkflowStatus)(0),                         // 108: bossanova.v1.WorkflowStatus
-	(WorkflowStep)(0),                           // 109: bossanova.v1.WorkflowStep
-	(DisplayStatus)(0),                          // 110: bossanova.v1.DisplayStatus
-	(*ChatMessage)(nil),                         // 111: bossanova.v1.ChatMessage
+	nil,                                         // 104: bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry
+	nil,                                         // 105: bossanova.v1.ProbeRateLimitRequest.CredentialEnvEntry
+	nil,                                         // 106: bossanova.v1.MaterializeAccountResponse.EnvEntry
+	(*TrackerIssue)(nil),                        // 107: bossanova.v1.TrackerIssue
+	(*timestamppb.Timestamp)(nil),               // 108: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                         // 109: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                           // 110: bossanova.v1.WorkflowStep
+	(DisplayStatus)(0),                          // 111: bossanova.v1.DisplayStatus
+	(*ChatMessage)(nil),                         // 112: bossanova.v1.ChatMessage
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	100, // 0: bossanova.v1.PluginInfo.user_settings:type_name -> bossanova.v1.UserSetting
@@ -6296,17 +6359,17 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	0,   // 5: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
 	1,   // 6: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
 	101, // 7: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
-	106, // 8: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	107, // 8: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
 	24,  // 9: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	107, // 10: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	108, // 10: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
 	25,  // 11: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
 	26,  // 12: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
 	27,  // 13: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
 	28,  // 14: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
 	17,  // 15: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
 	31,  // 16: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	107, // 17: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	107, // 18: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	108, // 17: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	108, // 18: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
 	34,  // 19: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
 	35,  // 20: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
 	36,  // 21: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
@@ -6316,115 +6379,116 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	49,  // 25: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	49,  // 26: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	49,  // 27: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	108, // 28: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
-	109, // 29: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
-	107, // 30: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	110, // 31: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	109, // 28: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	110, // 29: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	108, // 30: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	111, // 31: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
 	8,   // 32: bossanova.v1.AgentRunnerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
 	102, // 33: bossanova.v1.PreflightHeadlessRunRequest.extra_env:type_name -> bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry
 	2,   // 34: bossanova.v1.PreflightHeadlessRunRequest.headless_capability_profile:type_name -> bossanova.v1.HeadlessCapabilityProfile
 	103, // 35: bossanova.v1.StartAgentRunRequest.extra_env:type_name -> bossanova.v1.StartAgentRunRequest.ExtraEnvEntry
 	2,   // 36: bossanova.v1.StartAgentRunRequest.headless_capability_profile:type_name -> bossanova.v1.HeadlessCapabilityProfile
-	107, // 37: bossanova.v1.AgentExitStatusResponse.reset_at:type_name -> google.protobuf.Timestamp
-	3,   // 38: bossanova.v1.BuildInteractiveCommandResponse.append_system_prompt_support:type_name -> bossanova.v1.AppendSystemPromptSupport
-	107, // 39: bossanova.v1.ResolveInteractiveSessionIDRequest.launched_after:type_name -> google.protobuf.Timestamp
-	107, // 40: bossanova.v1.ResolveInteractiveSessionIDRequest.chat_created_at:type_name -> google.protobuf.Timestamp
-	107, // 41: bossanova.v1.DetectUsageLimitResponse.reset_at:type_name -> google.protobuf.Timestamp
-	104, // 42: bossanova.v1.ProbeRateLimitRequest.credential_env:type_name -> bossanova.v1.ProbeRateLimitRequest.CredentialEnvEntry
-	4,   // 43: bossanova.v1.RateLimitStatus.status:type_name -> bossanova.v1.RateLimitPlanStatus
-	107, // 44: bossanova.v1.RateLimitStatus.reset_5h:type_name -> google.protobuf.Timestamp
-	107, // 45: bossanova.v1.RateLimitStatus.reset_7d:type_name -> google.protobuf.Timestamp
-	83,  // 46: bossanova.v1.ProbeRateLimitResponse.status:type_name -> bossanova.v1.RateLimitStatus
-	111, // 47: bossanova.v1.ReadTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
-	107, // 48: bossanova.v1.ProbeProgressLivenessResponse.last_progress_at:type_name -> google.protobuf.Timestamp
-	5,   // 49: bossanova.v1.ProbeProgressLivenessResponse.phase:type_name -> bossanova.v1.AgentProgressPhase
-	6,   // 50: bossanova.v1.RotationCapabilityResponse.auth_kind:type_name -> bossanova.v1.AuthKind
-	105, // 51: bossanova.v1.MaterializeAccountResponse.env:type_name -> bossanova.v1.MaterializeAccountResponse.EnvEntry
-	97,  // 52: bossanova.v1.MaterializeAccountResponse.files:type_name -> bossanova.v1.MaterializedFile
-	7,   // 53: bossanova.v1.UserSetting.type:type_name -> bossanova.v1.UserSettingType
-	9,   // 54: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	15,  // 55: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	18,  // 56: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	20,  // 57: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
-	11,  // 58: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	22,  // 59: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	13,  // 60: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	29,  // 61: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	32,  // 62: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	37,  // 63: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
-	39,  // 64: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
-	41,  // 65: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
-	43,  // 66: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
-	45,  // 67: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
-	47,  // 68: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
-	50,  // 69: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
-	52,  // 70: bossanova.v1.AgentRunnerService.GetInfo:input_type -> bossanova.v1.AgentRunnerServiceGetInfoRequest
-	54,  // 71: bossanova.v1.AgentRunnerService.PreflightHeadlessRun:input_type -> bossanova.v1.PreflightHeadlessRunRequest
-	56,  // 72: bossanova.v1.AgentRunnerService.StartRun:input_type -> bossanova.v1.StartAgentRunRequest
-	58,  // 73: bossanova.v1.AgentRunnerService.StopRun:input_type -> bossanova.v1.StopAgentRunRequest
-	60,  // 74: bossanova.v1.AgentRunnerService.IsRunning:input_type -> bossanova.v1.IsAgentRunningRequest
-	62,  // 75: bossanova.v1.AgentRunnerService.ExitStatus:input_type -> bossanova.v1.AgentExitStatusRequest
-	64,  // 76: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:input_type -> bossanova.v1.ConfigureFinalizeHookRequest
-	66,  // 77: bossanova.v1.AgentRunnerService.RemoveAgentRunHook:input_type -> bossanova.v1.RemoveAgentRunHookRequest
-	68,  // 78: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:input_type -> bossanova.v1.BuildInteractiveCommandRequest
-	70,  // 79: bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID:input_type -> bossanova.v1.ResolveInteractiveSessionIDRequest
-	72,  // 80: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:input_type -> bossanova.v1.ListIgnoredDirtyFilesRequest
-	74,  // 81: bossanova.v1.AgentRunnerService.GetChatTitle:input_type -> bossanova.v1.GetChatTitleRequest
-	76,  // 82: bossanova.v1.AgentRunnerService.SuggestPRTitle:input_type -> bossanova.v1.SuggestPRTitleRequest
-	78,  // 83: bossanova.v1.AgentRunnerService.HasQuestionPrompt:input_type -> bossanova.v1.HasQuestionPromptRequest
-	85,  // 84: bossanova.v1.AgentRunnerService.HasWorkingIndicator:input_type -> bossanova.v1.HasWorkingIndicatorRequest
-	87,  // 85: bossanova.v1.AgentRunnerService.LastTurnIsUser:input_type -> bossanova.v1.LastTurnIsUserRequest
-	80,  // 86: bossanova.v1.AgentRunnerService.DetectUsageLimit:input_type -> bossanova.v1.DetectUsageLimitRequest
-	82,  // 87: bossanova.v1.AgentRunnerService.ProbeRateLimit:input_type -> bossanova.v1.ProbeRateLimitRequest
-	89,  // 88: bossanova.v1.AgentRunnerService.TranscriptExists:input_type -> bossanova.v1.TranscriptExistsRequest
-	91,  // 89: bossanova.v1.AgentRunnerService.ReadTranscript:input_type -> bossanova.v1.ReadTranscriptRequest
-	93,  // 90: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:input_type -> bossanova.v1.ProbeProgressLivenessRequest
-	95,  // 91: bossanova.v1.AgentRunnerService.RotationCapability:input_type -> bossanova.v1.RotationCapabilityRequest
-	98,  // 92: bossanova.v1.AgentRunnerService.MaterializeAccount:input_type -> bossanova.v1.MaterializeAccountRequest
-	10,  // 93: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	16,  // 94: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	19,  // 95: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	21,  // 96: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
-	12,  // 97: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	23,  // 98: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	14,  // 99: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	30,  // 100: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	33,  // 101: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	38,  // 102: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
-	40,  // 103: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
-	42,  // 104: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
-	44,  // 105: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
-	46,  // 106: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
-	48,  // 107: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
-	51,  // 108: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
-	53,  // 109: bossanova.v1.AgentRunnerService.GetInfo:output_type -> bossanova.v1.AgentRunnerServiceGetInfoResponse
-	55,  // 110: bossanova.v1.AgentRunnerService.PreflightHeadlessRun:output_type -> bossanova.v1.PreflightHeadlessRunResponse
-	57,  // 111: bossanova.v1.AgentRunnerService.StartRun:output_type -> bossanova.v1.StartAgentRunResponse
-	59,  // 112: bossanova.v1.AgentRunnerService.StopRun:output_type -> bossanova.v1.StopAgentRunResponse
-	61,  // 113: bossanova.v1.AgentRunnerService.IsRunning:output_type -> bossanova.v1.IsAgentRunningResponse
-	63,  // 114: bossanova.v1.AgentRunnerService.ExitStatus:output_type -> bossanova.v1.AgentExitStatusResponse
-	65,  // 115: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:output_type -> bossanova.v1.ConfigureFinalizeHookResponse
-	67,  // 116: bossanova.v1.AgentRunnerService.RemoveAgentRunHook:output_type -> bossanova.v1.RemoveAgentRunHookResponse
-	69,  // 117: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:output_type -> bossanova.v1.BuildInteractiveCommandResponse
-	71,  // 118: bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID:output_type -> bossanova.v1.ResolveInteractiveSessionIDResponse
-	73,  // 119: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:output_type -> bossanova.v1.ListIgnoredDirtyFilesResponse
-	75,  // 120: bossanova.v1.AgentRunnerService.GetChatTitle:output_type -> bossanova.v1.GetChatTitleResponse
-	77,  // 121: bossanova.v1.AgentRunnerService.SuggestPRTitle:output_type -> bossanova.v1.SuggestPRTitleResponse
-	79,  // 122: bossanova.v1.AgentRunnerService.HasQuestionPrompt:output_type -> bossanova.v1.HasQuestionPromptResponse
-	86,  // 123: bossanova.v1.AgentRunnerService.HasWorkingIndicator:output_type -> bossanova.v1.HasWorkingIndicatorResponse
-	88,  // 124: bossanova.v1.AgentRunnerService.LastTurnIsUser:output_type -> bossanova.v1.LastTurnIsUserResponse
-	81,  // 125: bossanova.v1.AgentRunnerService.DetectUsageLimit:output_type -> bossanova.v1.DetectUsageLimitResponse
-	84,  // 126: bossanova.v1.AgentRunnerService.ProbeRateLimit:output_type -> bossanova.v1.ProbeRateLimitResponse
-	90,  // 127: bossanova.v1.AgentRunnerService.TranscriptExists:output_type -> bossanova.v1.TranscriptExistsResponse
-	92,  // 128: bossanova.v1.AgentRunnerService.ReadTranscript:output_type -> bossanova.v1.ReadTranscriptResponse
-	94,  // 129: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:output_type -> bossanova.v1.ProbeProgressLivenessResponse
-	96,  // 130: bossanova.v1.AgentRunnerService.RotationCapability:output_type -> bossanova.v1.RotationCapabilityResponse
-	99,  // 131: bossanova.v1.AgentRunnerService.MaterializeAccount:output_type -> bossanova.v1.MaterializeAccountResponse
-	93,  // [93:132] is the sub-list for method output_type
-	54,  // [54:93] is the sub-list for method input_type
-	54,  // [54:54] is the sub-list for extension type_name
-	54,  // [54:54] is the sub-list for extension extendee
-	0,   // [0:54] is the sub-list for field type_name
+	108, // 37: bossanova.v1.AgentExitStatusResponse.reset_at:type_name -> google.protobuf.Timestamp
+	104, // 38: bossanova.v1.BuildInteractiveCommandRequest.config_home_env:type_name -> bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry
+	3,   // 39: bossanova.v1.BuildInteractiveCommandResponse.append_system_prompt_support:type_name -> bossanova.v1.AppendSystemPromptSupport
+	108, // 40: bossanova.v1.ResolveInteractiveSessionIDRequest.launched_after:type_name -> google.protobuf.Timestamp
+	108, // 41: bossanova.v1.ResolveInteractiveSessionIDRequest.chat_created_at:type_name -> google.protobuf.Timestamp
+	108, // 42: bossanova.v1.DetectUsageLimitResponse.reset_at:type_name -> google.protobuf.Timestamp
+	105, // 43: bossanova.v1.ProbeRateLimitRequest.credential_env:type_name -> bossanova.v1.ProbeRateLimitRequest.CredentialEnvEntry
+	4,   // 44: bossanova.v1.RateLimitStatus.status:type_name -> bossanova.v1.RateLimitPlanStatus
+	108, // 45: bossanova.v1.RateLimitStatus.reset_5h:type_name -> google.protobuf.Timestamp
+	108, // 46: bossanova.v1.RateLimitStatus.reset_7d:type_name -> google.protobuf.Timestamp
+	83,  // 47: bossanova.v1.ProbeRateLimitResponse.status:type_name -> bossanova.v1.RateLimitStatus
+	112, // 48: bossanova.v1.ReadTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
+	108, // 49: bossanova.v1.ProbeProgressLivenessResponse.last_progress_at:type_name -> google.protobuf.Timestamp
+	5,   // 50: bossanova.v1.ProbeProgressLivenessResponse.phase:type_name -> bossanova.v1.AgentProgressPhase
+	6,   // 51: bossanova.v1.RotationCapabilityResponse.auth_kind:type_name -> bossanova.v1.AuthKind
+	106, // 52: bossanova.v1.MaterializeAccountResponse.env:type_name -> bossanova.v1.MaterializeAccountResponse.EnvEntry
+	97,  // 53: bossanova.v1.MaterializeAccountResponse.files:type_name -> bossanova.v1.MaterializedFile
+	7,   // 54: bossanova.v1.UserSetting.type:type_name -> bossanova.v1.UserSettingType
+	9,   // 55: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	15,  // 56: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	18,  // 57: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	20,  // 58: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
+	11,  // 59: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	22,  // 60: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	13,  // 61: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	29,  // 62: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	32,  // 63: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	37,  // 64: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	39,  // 65: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	41,  // 66: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	43,  // 67: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	45,  // 68: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	47,  // 69: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	50,  // 70: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
+	52,  // 71: bossanova.v1.AgentRunnerService.GetInfo:input_type -> bossanova.v1.AgentRunnerServiceGetInfoRequest
+	54,  // 72: bossanova.v1.AgentRunnerService.PreflightHeadlessRun:input_type -> bossanova.v1.PreflightHeadlessRunRequest
+	56,  // 73: bossanova.v1.AgentRunnerService.StartRun:input_type -> bossanova.v1.StartAgentRunRequest
+	58,  // 74: bossanova.v1.AgentRunnerService.StopRun:input_type -> bossanova.v1.StopAgentRunRequest
+	60,  // 75: bossanova.v1.AgentRunnerService.IsRunning:input_type -> bossanova.v1.IsAgentRunningRequest
+	62,  // 76: bossanova.v1.AgentRunnerService.ExitStatus:input_type -> bossanova.v1.AgentExitStatusRequest
+	64,  // 77: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:input_type -> bossanova.v1.ConfigureFinalizeHookRequest
+	66,  // 78: bossanova.v1.AgentRunnerService.RemoveAgentRunHook:input_type -> bossanova.v1.RemoveAgentRunHookRequest
+	68,  // 79: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:input_type -> bossanova.v1.BuildInteractiveCommandRequest
+	70,  // 80: bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID:input_type -> bossanova.v1.ResolveInteractiveSessionIDRequest
+	72,  // 81: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:input_type -> bossanova.v1.ListIgnoredDirtyFilesRequest
+	74,  // 82: bossanova.v1.AgentRunnerService.GetChatTitle:input_type -> bossanova.v1.GetChatTitleRequest
+	76,  // 83: bossanova.v1.AgentRunnerService.SuggestPRTitle:input_type -> bossanova.v1.SuggestPRTitleRequest
+	78,  // 84: bossanova.v1.AgentRunnerService.HasQuestionPrompt:input_type -> bossanova.v1.HasQuestionPromptRequest
+	85,  // 85: bossanova.v1.AgentRunnerService.HasWorkingIndicator:input_type -> bossanova.v1.HasWorkingIndicatorRequest
+	87,  // 86: bossanova.v1.AgentRunnerService.LastTurnIsUser:input_type -> bossanova.v1.LastTurnIsUserRequest
+	80,  // 87: bossanova.v1.AgentRunnerService.DetectUsageLimit:input_type -> bossanova.v1.DetectUsageLimitRequest
+	82,  // 88: bossanova.v1.AgentRunnerService.ProbeRateLimit:input_type -> bossanova.v1.ProbeRateLimitRequest
+	89,  // 89: bossanova.v1.AgentRunnerService.TranscriptExists:input_type -> bossanova.v1.TranscriptExistsRequest
+	91,  // 90: bossanova.v1.AgentRunnerService.ReadTranscript:input_type -> bossanova.v1.ReadTranscriptRequest
+	93,  // 91: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:input_type -> bossanova.v1.ProbeProgressLivenessRequest
+	95,  // 92: bossanova.v1.AgentRunnerService.RotationCapability:input_type -> bossanova.v1.RotationCapabilityRequest
+	98,  // 93: bossanova.v1.AgentRunnerService.MaterializeAccount:input_type -> bossanova.v1.MaterializeAccountRequest
+	10,  // 94: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	16,  // 95: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	19,  // 96: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	21,  // 97: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
+	12,  // 98: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	23,  // 99: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	14,  // 100: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	30,  // 101: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	33,  // 102: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	38,  // 103: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	40,  // 104: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	42,  // 105: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	44,  // 106: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	46,  // 107: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	48,  // 108: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	51,  // 109: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
+	53,  // 110: bossanova.v1.AgentRunnerService.GetInfo:output_type -> bossanova.v1.AgentRunnerServiceGetInfoResponse
+	55,  // 111: bossanova.v1.AgentRunnerService.PreflightHeadlessRun:output_type -> bossanova.v1.PreflightHeadlessRunResponse
+	57,  // 112: bossanova.v1.AgentRunnerService.StartRun:output_type -> bossanova.v1.StartAgentRunResponse
+	59,  // 113: bossanova.v1.AgentRunnerService.StopRun:output_type -> bossanova.v1.StopAgentRunResponse
+	61,  // 114: bossanova.v1.AgentRunnerService.IsRunning:output_type -> bossanova.v1.IsAgentRunningResponse
+	63,  // 115: bossanova.v1.AgentRunnerService.ExitStatus:output_type -> bossanova.v1.AgentExitStatusResponse
+	65,  // 116: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:output_type -> bossanova.v1.ConfigureFinalizeHookResponse
+	67,  // 117: bossanova.v1.AgentRunnerService.RemoveAgentRunHook:output_type -> bossanova.v1.RemoveAgentRunHookResponse
+	69,  // 118: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:output_type -> bossanova.v1.BuildInteractiveCommandResponse
+	71,  // 119: bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID:output_type -> bossanova.v1.ResolveInteractiveSessionIDResponse
+	73,  // 120: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:output_type -> bossanova.v1.ListIgnoredDirtyFilesResponse
+	75,  // 121: bossanova.v1.AgentRunnerService.GetChatTitle:output_type -> bossanova.v1.GetChatTitleResponse
+	77,  // 122: bossanova.v1.AgentRunnerService.SuggestPRTitle:output_type -> bossanova.v1.SuggestPRTitleResponse
+	79,  // 123: bossanova.v1.AgentRunnerService.HasQuestionPrompt:output_type -> bossanova.v1.HasQuestionPromptResponse
+	86,  // 124: bossanova.v1.AgentRunnerService.HasWorkingIndicator:output_type -> bossanova.v1.HasWorkingIndicatorResponse
+	88,  // 125: bossanova.v1.AgentRunnerService.LastTurnIsUser:output_type -> bossanova.v1.LastTurnIsUserResponse
+	81,  // 126: bossanova.v1.AgentRunnerService.DetectUsageLimit:output_type -> bossanova.v1.DetectUsageLimitResponse
+	84,  // 127: bossanova.v1.AgentRunnerService.ProbeRateLimit:output_type -> bossanova.v1.ProbeRateLimitResponse
+	90,  // 128: bossanova.v1.AgentRunnerService.TranscriptExists:output_type -> bossanova.v1.TranscriptExistsResponse
+	92,  // 129: bossanova.v1.AgentRunnerService.ReadTranscript:output_type -> bossanova.v1.ReadTranscriptResponse
+	94,  // 130: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:output_type -> bossanova.v1.ProbeProgressLivenessResponse
+	96,  // 131: bossanova.v1.AgentRunnerService.RotationCapability:output_type -> bossanova.v1.RotationCapabilityResponse
+	99,  // 132: bossanova.v1.AgentRunnerService.MaterializeAccount:output_type -> bossanova.v1.MaterializeAccountResponse
+	94,  // [94:133] is the sub-list for method output_type
+	55,  // [55:94] is the sub-list for method input_type
+	55,  // [55:55] is the sub-list for extension type_name
+	55,  // [55:55] is the sub-list for extension extendee
+	0,   // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -6456,7 +6520,7 @@ func file_bossanova_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
 			NumEnums:      8,
-			NumMessages:   98,
+			NumMessages:   99,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

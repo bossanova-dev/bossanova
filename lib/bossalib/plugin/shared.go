@@ -20,7 +20,16 @@ import (
 // handshake's primary defense is still that the subprocess's gRPC address
 // is only sent to the parent over the inherited stdout pipe).
 const (
-	ProtocolVersion = 1
+	// ProtocolVersionV1 is the protocol used before managed MCP fields moved
+	// from protobuf tags 9/10. Keep it named so compatibility decisions are
+	// explicit; new binaries must not negotiate it because v1 silently drops
+	// the managed MCP configuration with an old counterpart.
+	ProtocolVersionV1 = 1
+
+	// ProtocolVersion is bumped whenever host/plugin wire semantics change in a
+	// way an older binary cannot safely ignore. Version 2 protects the managed
+	// MCP fields whose original protobuf tags remain permanently reserved.
+	ProtocolVersion = 2
 	MagicCookieKey  = "BOSSANOVA_PLUGIN"
 )
 

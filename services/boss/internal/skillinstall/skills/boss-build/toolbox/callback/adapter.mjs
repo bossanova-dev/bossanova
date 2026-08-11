@@ -44,14 +44,19 @@ const REGISTRY = {
  * @param {Record<string,string|undefined>} [env]
  */
 export function resolveCallbackAdapter(env = process.env) {
-  const name = env.CALLBACK || 'boss'
-  const factory = REGISTRY[name]
-  if (!factory) {
+  // `??` not `||`, and Object.hasOwn not a truthiness check: an explicitly-empty
+  // CALLBACK='' must fail on the unknown-notifier path rather than silently taking
+  // the default, and `CALLBACK=constructor` must not resolve to the inherited
+  // `Object` — truthy — and hand back `Object()`, a plain object that would then
+  // only fail deep inside assertConforms. Same rule in the tracker, session and
+  // finalize resolvers.
+  const name = env.CALLBACK ?? 'boss'
+  if (!Object.hasOwn(REGISTRY, name)) {
     throw new Error(
       `unknown callback notifier: ${name} (known: ${Object.keys(REGISTRY).join(', ')})`,
     )
   }
-  return assertConforms(factory())
+  return assertConforms(REGISTRY[name]())
 }
 
 /**

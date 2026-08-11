@@ -301,12 +301,15 @@ func (b *Backend) CloseSession(ctx context.Context, id string) (*pb.Session, err
 	return resp.Msg.GetSession(), nil
 }
 
-func (b *Backend) MergeSession(ctx context.Context, id string) (*pb.Session, error) {
+// MergeSession returns the daemon's detail note alongside the merged session.
+// MergeSessionResponse already carries it, so the local socket path can report a
+// merge-strategy substitution to an MCP caller verbatim.
+func (b *Backend) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
 	resp, err := b.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return resp.Msg.GetSession(), nil
+	return resp.Msg.GetSession(), resp.Msg.GetDetail(), nil
 }
 
 func (b *Backend) RemoveSession(ctx context.Context, id string) error {

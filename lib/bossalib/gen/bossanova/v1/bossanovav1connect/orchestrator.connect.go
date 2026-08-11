@@ -154,6 +154,9 @@ const (
 	// OrchestratorServiceProxyListChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListChats RPC.
 	OrchestratorServiceProxyListChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyListChats"
+	// OrchestratorServiceProxyGetChatStatusesProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetChatStatuses RPC.
+	OrchestratorServiceProxyGetChatStatusesProcedure = "/bossanova.v1.OrchestratorService/ProxyGetChatStatuses"
 	// OrchestratorServiceProxyGetSessionStatusesProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyGetSessionStatuses RPC.
 	OrchestratorServiceProxyGetSessionStatusesProcedure = "/bossanova.v1.OrchestratorService/ProxyGetSessionStatuses"
@@ -364,6 +367,11 @@ type OrchestratorServiceClient interface {
 	// caller's Ready daemons via the shared resolver.
 	// ProxyListChats reads a session's chats (routes by session_id).
 	ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error)
+	// ProxyGetChatStatuses reads one session's per-chat statuses (routes by
+	// session_id, exactly as ProxyListChats does). Not interchangeable with
+	// ProxyGetSessionStatuses: that aggregates across a session's chats, so it
+	// cannot say whether one specific chat has settled.
+	ProxyGetChatStatuses(context.Context, *connect.Request[v1.ProxyGetChatStatusesRequest]) (*connect.Response[v1.ProxyGetChatStatusesResponse], error)
 	// ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
 	// unknown ids, and unions the returned SessionStatusEntry values.
 	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
@@ -718,6 +726,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListChats")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyGetChatStatuses: connect.NewClient[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetChatStatusesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetChatStatuses")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyGetSessionStatuses: connect.NewClient[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyGetSessionStatusesProcedure,
@@ -991,6 +1005,7 @@ type orchestratorServiceClient struct {
 	proxyRemoveAccount         *connect.Client[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse]
 	proxyTestAccount           *connect.Client[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse]
 	proxyListChats             *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
+	proxyGetChatStatuses       *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
 	proxyGetSessionStatuses    *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
 	proxyListCheckSnapshots    *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
 	proxyListAgentsAggregated  *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
@@ -1229,6 +1244,11 @@ func (c *orchestratorServiceClient) ProxyTestAccount(ctx context.Context, req *c
 // ProxyListChats calls bossanova.v1.OrchestratorService.ProxyListChats.
 func (c *orchestratorServiceClient) ProxyListChats(ctx context.Context, req *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {
 	return c.proxyListChats.CallUnary(ctx, req)
+}
+
+// ProxyGetChatStatuses calls bossanova.v1.OrchestratorService.ProxyGetChatStatuses.
+func (c *orchestratorServiceClient) ProxyGetChatStatuses(ctx context.Context, req *connect.Request[v1.ProxyGetChatStatusesRequest]) (*connect.Response[v1.ProxyGetChatStatusesResponse], error) {
+	return c.proxyGetChatStatuses.CallUnary(ctx, req)
 }
 
 // ProxyGetSessionStatuses calls bossanova.v1.OrchestratorService.ProxyGetSessionStatuses.
@@ -1515,6 +1535,11 @@ type OrchestratorServiceHandler interface {
 	// caller's Ready daemons via the shared resolver.
 	// ProxyListChats reads a session's chats (routes by session_id).
 	ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error)
+	// ProxyGetChatStatuses reads one session's per-chat statuses (routes by
+	// session_id, exactly as ProxyListChats does). Not interchangeable with
+	// ProxyGetSessionStatuses: that aggregates across a session's chats, so it
+	// cannot say whether one specific chat has settled.
+	ProxyGetChatStatuses(context.Context, *connect.Request[v1.ProxyGetChatStatusesRequest]) (*connect.Response[v1.ProxyGetChatStatusesResponse], error)
 	// ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
 	// unknown ids, and unions the returned SessionStatusEntry values.
 	ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error)
@@ -1865,6 +1890,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListChats")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyGetChatStatusesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetChatStatusesProcedure,
+		svc.ProxyGetChatStatuses,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetChatStatuses")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyGetSessionStatusesHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyGetSessionStatusesProcedure,
 		svc.ProxyGetSessionStatuses,
@@ -2175,6 +2206,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyTestAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListChatsProcedure:
 			orchestratorServiceProxyListChatsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetChatStatusesProcedure:
+			orchestratorServiceProxyGetChatStatusesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetSessionStatusesProcedure:
 			orchestratorServiceProxyGetSessionStatusesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListCheckSnapshotsProcedure:
@@ -2418,6 +2451,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyTestAccount(context.Context,
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListChats is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetChatStatuses(context.Context, *connect.Request[v1.ProxyGetChatStatusesRequest]) (*connect.Response[v1.ProxyGetChatStatusesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetChatStatuses is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyGetSessionStatuses(context.Context, *connect.Request[v1.ProxyGetSessionStatusesRequest]) (*connect.Response[v1.ProxyGetSessionStatusesResponse], error) {

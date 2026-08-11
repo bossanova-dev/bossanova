@@ -371,13 +371,13 @@ description: example description
 ---
 
 Run \`/boss-plan\` then **/boss-finalize**.
-Also run /boss-proof now and use /superpowers:writing-plans for plans.
+Also run /boss-proof now and use /compound-engineering:ce-plan for plans.
 `)
 
     assert.match(rewritten, /`\$boss-plan`/)
     assert.match(rewritten, /\*\*\$boss-finalize\*\*/)
     assert.match(rewritten, /run \$boss-proof now/)
-    assert.match(rewritten, /use \$superpowers:writing-plans for plans/)
+    assert.match(rewritten, /use \$compound-engineering:ce-plan for plans/)
     assert.doesNotMatch(rewritten, /\/boss-plan/)
     assert.doesNotMatch(rewritten, /\/boss-finalize/)
   })

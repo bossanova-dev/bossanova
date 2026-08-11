@@ -1315,6 +1315,9 @@ func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, 
 	}
 	return "agent-session", a.startErr
 }
+func (a *setupStreamAgent) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
+	return a.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+}
 func (a *setupStreamAgent) StopByAgent(context.Context, string, string) error { return nil }
 func (a *setupStreamAgent) IsRunningByAgent(string, string) bool              { return false }
 

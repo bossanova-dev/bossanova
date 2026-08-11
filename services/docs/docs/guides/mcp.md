@@ -208,6 +208,30 @@ The callback, broadcast, and note tool families each have their own guide:
 
 `remove_repo`, `remove_session`, `close_session`, `merge_session`, `archive_session`, `resurrect_session`, `delete_chat`, `empty_trash`, `delete_cron_job`, `remove_account`, `delete_github_callback`, `delete_broadcast`, `delete_broadcast_subscription`, `delete_note`
 
+### `merge_session` results carry a `detail` note
+
+On success `merge_session` returns the session object exactly as `close_session`,
+`archive_session` and `resurrect_session` do — the session's own fields stay at the
+top level — plus one optional sibling key, `detail`. The payload shape is otherwise
+unchanged, so if you read `id` or `pr_number` off a merge result you are unaffected.
+
+The `detail` string is the daemon's note about what it actually did, most
+importantly a **merge-strategy substitution**: a rebase the repository's configured
+strategy asked for, which GitHub refused, so the daemon squashed instead. Without it
+you cannot tell a plain merge from a substituted one.
+
+The key is **omitted entirely when the note is empty**, so its presence is
+meaningful — do not expect a `detail` field on every successful merge, and do not
+read its absence as an error.
+
+A merge _refusal_ is not a `detail`. It comes back as an error result whose text
+reaches you verbatim, including the `MERGE_STRATEGY_INCOMPATIBLE` token you can
+branch on.
+
+`detail` is **always empty on the hosted gateway path**. The orchestrator response
+behind the hosted endpoint carries only the session, so the note cannot cross the
+remote boundary — only the local `bin/mcp` server reports it.
+
 ## Hosted MCP
 
 A hosted endpoint at `mcp.bossanova.dev` — WorkOS-authenticated and routed to your

@@ -1140,7 +1140,7 @@ func TestListRenderersEmitFullIDs(t *testing.T) {
 		cmd := &cobra.Command{}
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
-		printChatsTable(cmd, []*pb.ClaudeChat{{AgentSessionId: fullAgentID}})
+		printChatsTable(cmd, []*pb.ClaudeChat{{AgentSessionId: fullAgentID}}, nil, true)
 		if !strings.Contains(buf.String(), fullAgentID) {
 			t.Fatalf("chats table truncated the id; got:\n%s", buf.String())
 		}

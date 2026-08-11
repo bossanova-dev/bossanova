@@ -31,6 +31,16 @@ type fakeDaemon struct {
 	// backend adapter can be exercised for both the genuine-create and
 	// attach-to-existing paths.
 	attachExisting bool
+	// mergeDetail is echoed on MergeSessionResponse.detail — the daemon's note
+	// about a merge-strategy substitution.
+	mergeDetail string
+}
+
+func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	return connect.NewResponse(&pb.MergeSessionResponse{
+		Session: &pb.Session{Id: req.Msg.GetId()},
+		Detail:  f.mergeDetail,
+	}), nil
 }
 
 func (f *fakeDaemon) ListSessions(_ context.Context, _ *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
@@ -193,6 +203,33 @@ func TestListSessionsRoundTrips(t *testing.T) {
 	}
 	if got[0].GetId() != "sess-1" || got[1].GetId() != "sess-2" {
 		t.Fatalf("unexpected sessions: %+v", got)
+	}
+}
+
+// TestMergeSessionDetail proves the local socket path carries the
+// daemon's merge-strategy note through to the MCP layer instead of discarding
+// it, which is what this backend used to do.
+func TestMergeSessionDetail(t *testing.T) {
+	t.Parallel()
+
+	const detail = "requested rebase was refused; merged with squash instead"
+	fake := &fakeDaemon{mergeDetail: detail}
+	socketPath := serveFakeDaemon(t, fake)
+
+	backend, err := New(socketPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	session, got, err := backend.MergeSession(context.Background(), "sess-7")
+	if err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if session.GetId() != "sess-7" {
+		t.Fatalf("got session %q, want sess-7", session.GetId())
+	}
+	if got != detail {
+		t.Fatalf("detail = %q, want %q (the daemon's note must not be dropped)", got, detail)
 	}
 }
 

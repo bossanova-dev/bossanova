@@ -48,7 +48,11 @@ type Backend interface {
 	ResumeSession(ctx context.Context, id string) (*pb.Session, error)
 	RetrySession(ctx context.Context, id string) (*pb.Session, error)
 	CloseSession(ctx context.Context, id string) (*pb.Session, error)
-	MergeSession(ctx context.Context, id string) (*pb.Session, error)
+	// MergeSession returns the merged session plus the daemon's detail note —
+	// most importantly a merge-strategy substitution (a rebase that was refused
+	// and squashed instead). The shape mirrors client.BossClient.MergeSession
+	// deliberately: neither surface should silently narrow the other.
+	MergeSession(ctx context.Context, id string) (*pb.Session, string, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)

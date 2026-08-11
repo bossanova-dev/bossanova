@@ -20,6 +20,7 @@ type fakeChatOrchestrator struct {
 	sendReq       *pb.ProxySendChatMessageRequest
 	getSessReq    *pb.ProxyGetSessionRequest
 	listSessReq   *pb.ProxyListSessionsRequest
+	mergeSessReq  *pb.ProxyMergeSessionRequest
 	createCronReq *pb.ProxyCreateCronJobRequest
 	updateCronReq *pb.ProxyUpdateCronJobRequest
 	// sendResp, when set, is returned by ProxySendChatMessage instead of the
@@ -28,6 +29,9 @@ type fakeChatOrchestrator struct {
 
 	// Notes (BOS-553): captured so tests can assert repo_id is set on the wire
 	// for every proxy call.
+	// BOS-824: captured so the test can assert session_id reaches the wire.
+	chatStatusesReq *pb.ProxyGetChatStatusesRequest
+
 	createNoteReq *pb.ProxyCreateNoteRequest
 	getNoteReq    *pb.ProxyGetNoteRequest
 	listNoteReq   *pb.ProxyListNotesRequest
@@ -61,6 +65,19 @@ func (f *fakeChatOrchestrator) ProxyGetSession(_ context.Context, req *connect.R
 func (f *fakeChatOrchestrator) ProxyListSessions(_ context.Context, req *connect.Request[pb.ProxyListSessionsRequest]) (*connect.Response[pb.ProxyListSessionsResponse], error) {
 	f.listSessReq = req.Msg
 	return connect.NewResponse(&pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{Id: "sess-1"}}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyMergeSession(_ context.Context, req *connect.Request[pb.ProxyMergeSessionRequest]) (*connect.Response[pb.ProxyMergeSessionResponse], error) {
+	f.mergeSessReq = req.Msg
+	return connect.NewResponse(&pb.ProxyMergeSessionResponse{Session: &pb.Session{Id: "sess-1"}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyGetChatStatuses(_ context.Context, req *connect.Request[pb.ProxyGetChatStatusesRequest]) (*connect.Response[pb.ProxyGetChatStatusesResponse], error) {
+	f.chatStatusesReq = req.Msg
+	return connect.NewResponse(&pb.ProxyGetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{
+		{AgentSessionId: "agent-1", Status: pb.ChatStatus_CHAT_STATUS_IDLE},
+		{AgentSessionId: "agent-2", Status: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}}), nil
 }
 
 func newTestRemote(t *testing.T) (*RemoteClient, *fakeChatOrchestrator) {
@@ -118,6 +135,33 @@ func TestRemoteClient_SendChatMessage(t *testing.T) {
 	got := fake.sendReq
 	if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() {
 		t.Fatalf("fields not forwarded: %+v", got)
+	}
+}
+
+// TestRemoteClient_GetChatStatuses is the BOS-824 pin: under --remote the call
+// must reach the orchestrator's ProxyGetChatStatuses and return real per-chat
+// statuses, not the errLocalOnly stub it used to be. Distinct statuses for two
+// chats are asserted because collapsing them (as GetSessionStatuses does) is the
+// exact failure this RPC exists to avoid.
+func TestRemoteClient_GetChatStatuses(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	statuses, err := c.GetChatStatuses(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetChatStatuses: %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("unexpected statuses: %+v", statuses)
+	}
+	if statuses[0].GetAgentSessionId() != "agent-1" || statuses[0].GetStatus() != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("unexpected first status: %+v", statuses[0])
+	}
+	if statuses[1].GetAgentSessionId() != "agent-2" || statuses[1].GetStatus() != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Fatalf("unexpected second status: %+v", statuses[1])
+	}
+	if fake.chatStatusesReq.GetSessionId() != "sess-1" {
+		t.Fatalf("session_id not forwarded: %+v", fake.chatStatusesReq)
 	}
 }
 
@@ -280,5 +324,31 @@ func assertZeroOutputPointer(t *testing.T, want, got *bool) {
 		t.Fatalf("is_zero_output = nil, want &%v", *want)
 	case want != nil && *got != *want:
 		t.Fatalf("is_zero_output = %v, want %v", *got, *want)
+	}
+}
+
+// TestRemoteClient_MergeSession_ProxiesToOrchestrator pins BOS-816: MergeSession
+// used to be the one stubbed method in the session-mutator block, returning
+// errLocalOnly while bosso already implemented ProxyMergeSession. This asserts
+// the RPC actually reaches the orchestrator with the session id.
+func TestRemoteClient_MergeSession_ProxiesToOrchestrator(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	sess, detail, err := c.MergeSession(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if sess.GetId() != "sess-1" {
+		t.Fatalf("session = %+v, want id sess-1", sess)
+	}
+	if detail != "" {
+		t.Fatalf("detail = %q, want \"\" — ProxyMergeSessionResponse carries no detail field", detail)
+	}
+	if fake.mergeSessReq == nil {
+		t.Fatal("ProxyMergeSession was never called")
+	}
+	if got := fake.mergeSessReq.GetId(); got != "sess-1" {
+		t.Fatalf("ProxyMergeSession id = %q, want sess-1", got)
 	}
 }

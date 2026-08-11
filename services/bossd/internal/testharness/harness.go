@@ -255,6 +255,17 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	webhookDispatcher := upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, realtimeProvider, logger)
 	_ = safego.Go(logger, func() { realtimeDispatcher.Run(realtimeCtx, merged) })
 
+	// Run's immediate start-up poll must observe the empty pre-seed world,
+	// otherwise it races tests that seed a pollable session right after New
+	// and adds a spurious provider call to their counts. Wait it out here so
+	// every test starts from a settled poller instead of guessing with a
+	// sleep.
+	select {
+	case <-poller.FirstPollDone():
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the realtime poller's initial poll")
+	}
+
 	// Server.
 	h := &Harness{}
 	mockAgentClient := &MockAgentClient{Name: "claude"}

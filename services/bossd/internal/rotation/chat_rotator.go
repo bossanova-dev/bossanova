@@ -159,8 +159,9 @@ type Decision struct {
 	ResumeAt  time.Time // set for DecisionAllExhausted (min future cooldown)
 }
 
-// ProactiveDecideRequest asks the engine adapter for the idlest eligible switch
-// target for a bound account that is nearing (not at) its cap. (BOS-318)
+// ProactiveDecideRequest asks the engine adapter for the banded consume-first
+// switch target — soonest in-band weekly reset, else the idlest (BOS-830) — for
+// a bound account that is nearing (not at) its cap. (BOS-318)
 type ProactiveDecideRequest struct {
 	Provider       string
 	SessionID      string
@@ -194,6 +195,19 @@ const proactiveUtilTrigger = 0.8
 // proactiveHysteresis is the minimum utilization gap (bound − candidate) that
 // makes a candidate "materially idler" and worth a proactive switch. It damps
 // churn between similarly-loaded accounts.
+//
+// It can now suppress a rotation the pre-BOS-830 rule would have made, and that
+// is deliberate. The gate was written when Engine.SelectProactiveCandidate
+// returned the LOWEST-utilization candidate — the one most likely to clear it.
+// A banded consume-first winner is instead bounded only by
+// rotation.MinRotationHeadroom, so a bound account just over
+// proactiveUtilTrigger paired with an in-band winner just inside the band can
+// fail this gate and the sweep skips, where the old rule would have picked an
+// idler account and switched. Exempting in-band picks from the gate is a
+// proactive-rotation policy change beyond BOS-830's acceptance criteria, so it
+// is left to a follow-up. The exposure is small: proactive rotation is off
+// unless ProactiveRotationEnabled, and it cannot thrash, because a switch
+// requires the new bound account to sit below proactiveUtilTrigger.
 const proactiveHysteresis = 0.25
 
 // UsageUtil reduces a usage snapshot to the single worst-case utilization
@@ -270,8 +284,12 @@ type ChatRotatorDeps struct {
 	// agentSessionID → status (backed by status.Tracker.Snapshot()). nil ⇒ no
 	// chats; the proactive sweep is a no-op without this seam. (BOS-318)
 	LiveChatStatuses func() map[string]bossanovav1.ChatStatus
-	// ProactiveCandidate selects the idlest eligible account to pre-cap-rotate
-	// onto, with its probed utilization, WITHOUT cooling the bound account. Kind ==
+	// ProactiveCandidate selects the banded consume-first account to pre-cap-rotate
+	// onto — soonest in-band weekly reset, else the idlest; see
+	// Engine.SelectProactiveCandidate (BOS-830) — with its probed utilization,
+	// WITHOUT cooling the bound account. Note SweepProactive still applies its own
+	// proactiveHysteresis gate on top, so what it switches to is always materially
+	// idler than the bound account even though what this returns may not be. Kind ==
 	// ProactiveNone when no candidate qualifies. (BOS-318)
 	ProactiveCandidate func(ctx context.Context, req ProactiveDecideRequest) (ProactiveDecision, error)
 	// CaptureProactiveRotation records a successful pre-cap account switch. It

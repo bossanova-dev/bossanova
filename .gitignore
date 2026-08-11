@@ -59,13 +59,9 @@ docs/handoffs/
 # Linear plan scratch dir (boss-plan uploads plans as native tracker attachments, never commits them)
 .linear-plans/
 
-# Superpowers-framework scratch dir (created while skills run; never committed)
-.superpowers/
-
 # Beads
 .beads/interactions.jsonl
 .beads/issues.jsonl
-.gstack/
 
 # Compound Engineering machine-local config
 .compound-engineering/*.local.yaml

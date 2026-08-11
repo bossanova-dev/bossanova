@@ -4,6 +4,7 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -393,26 +394,79 @@ func (c *Client) SetAttachOptions(ctx context.Context, sessionName string) error
 	return nil
 }
 
-// RefreshClient runs `tmux refresh-client -t <session>` to force tmux to
-// redraw all currently-attached clients. The web-tmux-attach feature calls
-// this after a per-attach ring buffer overflow forces a RESYNC: dropping
-// oldest bytes leaves later viewers with a corrupt frame, but a tmux-driven
-// repaint resolves it without needing each attach to negotiate its own
-// resync. Idempotent and cheap — safe to fire-and-forget on every overflow.
+// RefreshClient forces tmux to redraw every client currently attached to
+// sessionName. The web-tmux-attach feature calls this after a per-attach ring
+// buffer overflow forces a RESYNC: dropping oldest bytes leaves later viewers
+// with a corrupt frame, but a tmux-driven repaint resolves it without needing
+// each attach to negotiate its own resync. Idempotent and cheap — safe to
+// fire-and-forget on every overflow.
+//
+// This resolves the session's clients first and refreshes each by name, because
+// `refresh-client -t` takes a CLIENT, not a session. Passing a session name to
+// it — as this wrapper used to — always fails with "can't find client", so the
+// RESYNC repaint never actually happened. There is no session-targeting spelling
+// of refresh-client to fall back on; the client lookup is the whole fix.
+//
+// A session with no attached clients is a no-op success: there is nothing to
+// repaint, which is the normal state for a headless/cron session and must not be
+// reported as a failure. Every resolved client is refreshed even if an earlier
+// one fails, so a client that detached between the list and the refresh (a
+// benign race) cannot skip the clients behind it; the failures are joined into
+// the returned error.
 func (c *Client) RefreshClient(ctx context.Context, sessionName string) error {
 	if sessionName == "" {
 		return fmt.Errorf("session name is required")
 	}
-	cmd := c.cmdFunc(ctx, "tmux", "refresh-client", "-t", sessionName)
-	out, err := cmd.CombinedOutput()
+	clients, err := c.listClientNames(ctx, sessionName)
 	if err != nil {
-		trimmed := strings.TrimSpace(string(out))
-		if trimmed != "" {
-			return fmt.Errorf("tmux refresh-client -t %q: %s: %w", sessionName, trimmed, err)
-		}
-		return fmt.Errorf("tmux refresh-client -t %q: %w", sessionName, err)
+		return err
 	}
-	return nil
+	var errs []error
+	for _, client := range clients {
+		cmd := c.cmdFunc(ctx, "tmux", "refresh-client", "-t", client)
+		out, runErr := cmd.CombinedOutput()
+		if runErr == nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			errs = append(errs, fmt.Errorf("tmux refresh-client -t %q: %s: %w", client, trimmed, runErr))
+			continue
+		}
+		errs = append(errs, fmt.Errorf("tmux refresh-client -t %q: %w", client, runErr))
+	}
+	return errors.Join(errs...)
+}
+
+// listClientNames returns the tmux client names attached to sessionName, via
+// `tmux list-clients -t <session> -F '#{client_name}'`. Unlike refresh-client,
+// list-clients DOES accept a session as its target.
+//
+// A session tmux cannot find yields no clients and no error: the session dying
+// between a caller's decision to repaint and this lookup is a race the repaint
+// path must absorb, not an error to propagate up a fire-and-forget call. Any
+// other tmux failure is surfaced.
+func (c *Client) listClientNames(ctx context.Context, sessionName string) ([]string, error) {
+	cmd := c.cmdFunc(ctx, "tmux", "list-clients", "-t", sessionName, "-F", "#{client_name}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") {
+			return nil, nil
+		}
+		if msg == "" {
+			return nil, fmt.Errorf("tmux list-clients -t %q: %w", sessionName, err)
+		}
+		return nil, fmt.Errorf("tmux list-clients -t %q: %w (stderr: %s)", sessionName, err, msg)
+	}
+	var names []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }
 
 // PipePane arms `tmux pipe-pane` on the session's primary pane so that

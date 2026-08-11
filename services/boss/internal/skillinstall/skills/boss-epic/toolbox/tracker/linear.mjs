@@ -16,7 +16,9 @@ import { runUnblockedGate, extractBlockers, isUnblocked } from '../linear-deps-l
 import { formatClaimComment, isClaimWon, parseClaimComments } from '../linear-claim.mjs'
 import { normalizeTicket } from '../bs-epic-lib.mjs'
 import { loadSkillConfig, trackerConfigFor } from '../skill-config.mjs'
-import { TRACKER_STATE_ROLES } from './adapter.mjs'
+// From adapter-core.mjs, not adapter.mjs: adapter.mjs imports THIS module to build
+// its registry, so reading the roles from there would make the pair circular.
+import { TRACKER_STATE_ROLES } from './adapter-core.mjs'
 
 // Declarative map of each agent-driven capability to the Linear MCP tool the
 // skills invoke today, with the argument/response shape they rely on. This is

@@ -1167,6 +1167,8 @@ type mockStartCall struct {
 	model   string
 	env     map[string]string
 	profile pb.HeadlessCapabilityProfile
+	mcpPath string
+	strict  bool
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1225,6 +1227,18 @@ func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan str
 
 func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
 	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: extraEnv, profile: profile})
+	if m.startErr != nil {
+		return "", m.startErr
+	}
+	id := m.nextID
+	m.mu.Lock()
+	m.running[id] = true
+	m.mu.Unlock()
+	return id, nil
+}
+
+func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env, profile: options.HeadlessCapabilityProfile, mcpPath: options.ManagedMcpConfigPath, strict: options.StrictManagedMcpConfig})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -7404,6 +7418,9 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	if agentSessionID == nil || armer.armedID != *agentSessionID {
 		t.Errorf("armed agent session id = %q, want %v", armer.armedID, agentSessionID)
 	}
+	if len(cr.started) != 1 || !cr.started[0].strict {
+		t.Fatalf("headless start must carry strict managed MCP policy: %+v", cr.started)
+	}
 }
 
 // TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken pins
@@ -8322,6 +8339,11 @@ func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSe
 		return r.name + "-generated-id", nil
 	}
 	return agentSessionID, nil
+}
+
+func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
+	r.profileSeen.Store(int32(options.HeadlessCapabilityProfile))
+	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
 }
 
 // PreflightHeadlessCapabilityProfile / StartWithHeadlessCapabilityProfile make

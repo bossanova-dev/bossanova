@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -192,6 +193,34 @@ func TestMaybeInstallSkillsPromptsForStaleInstalledSkills(t *testing.T) {
 	}
 }
 
+func TestMaybeInstallSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	root := t.TempDir()
+	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := filepath.Join(home, ".claude", "skills")
+	if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+		t.Fatalf("Extract source payload: %v", err)
+	}
+	t.Chdir(root)
+	setAvailableSkillAgents(map[string]bool{"claude": true})
+	calls := setSkillPromptAnswers(t)
+
+	got := captureStderr(t, func() {
+		if err := maybeInstallSkills(); err != nil {
+			t.Fatalf("maybeInstallSkills: %v", err)
+		}
+	})
+	if *calls != 0 {
+		t.Fatalf("prompts = %d, want 0", *calls)
+	}
+	if !strings.Contains(got, binarySkillsDriftCheckWarning(srcRoot)) {
+		t.Fatalf("warning = %q, want stale-binary warning %q", got, binarySkillsDriftCheckWarning(srcRoot))
+	}
+}
+
 func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	codexDir := filepath.Join(home, ".codex", "skills")
@@ -219,6 +248,125 @@ func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
 	}
 	if string(data) == "stale" {
 		t.Fatal("stale skill was not self-healed on the non-TTY path")
+	}
+}
+
+func TestSelfHealSkillsSkipsCheckoutRefreshWhenGitAuthenticationFails(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setupCheckoutSkillSource(t)
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallIsTerminal = func() bool { return false }
+	// The checkout is canonical, but a restricted startup PATH cannot authenticate
+	// it. Falling back to the embed here would overwrite the stale tree.
+	t.Setenv("PATH", t.TempDir())
+
+	got := captureStderr(t, func() {
+		if err := selfHealSkills(); err != nil {
+			t.Fatalf("selfHealSkills: %v", err)
+		}
+	})
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "stale" {
+		t.Fatalf("installed skill = %q, want unchanged stale payload", data)
+	}
+	if !strings.Contains(got, "skipping checkout skill refresh") || !strings.Contains(got, "authenticate checkout skill source") {
+		t.Fatalf("warning = %q, want checkout authentication failure", got)
+	}
+}
+
+func TestSelfHealSkillsNonInteractiveUsesExplicitlyTrustedCheckoutSkillPayload(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	setupCheckoutSkillSource(t)
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract embedded payload: %v", err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	got, err := os.ReadFile(installedBossSkillPath(codexDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != checkoutSkillFixture {
+		embed, readErr := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+		if readErr != nil {
+			t.Fatalf("read embedded skill: %v", readErr)
+		}
+		if bytes.Equal(got, embed) {
+			t.Fatal("self-heal installed the embedded payload, want checkout source")
+		}
+		t.Fatal("self-heal did not install checkout source")
+	}
+}
+
+func TestSelfHealSkillsNonInteractiveRequiresExplicitCheckoutTrust(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	setupCheckoutSkillSource(t)
+	t.Setenv(trustCheckoutSkillSourcesEnv, "")
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+		t.Fatalf("Extract embedded payload: %v", err)
+	}
+	stalePath := installedBossSkillPath(codexDir)
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("self-heal must not prompt")
+		return ""
+	}
+	skillInstallIsTerminal = func() bool { return false }
+
+	if err := maybeInstallSkills(); err != nil {
+		t.Fatalf("maybeInstallSkills: %v", err)
+	}
+	got, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded skill: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("self-heal installed %q, want embedded payload %q without explicit checkout trust", got, want)
+	}
+}
+
+func TestSelfHealSkillsWarnsWhenCheckoutSnapshotFails(t *testing.T) {
+	setupSkillStartupTest(t)
+	srcRoot := setupCheckoutSkillSource(t)
+	if err := os.Symlink("missing", filepath.Join(srcRoot, "skills", "bad-link")); err != nil {
+		t.Fatalf("create malformed checkout skill entry: %v", err)
+	}
+
+	got := captureStderr(t, func() {
+		if err := selfHealSkills(); err != nil {
+			t.Fatalf("selfHealSkills: %v", err)
+		}
+	})
+	if !strings.Contains(got, "Warning: skipping checkout skill refresh:") {
+		t.Fatalf("selfHealSkills stderr = %q, want checkout snapshot warning", got)
 	}
 }
 
@@ -464,24 +612,72 @@ func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	}
 	t.Chdir(root)
 
-	read, write, err := os.Pipe()
-	if err != nil {
+	got := captureStderr(t, func() {
+		if err := selfHealSkills(); err != nil {
+			t.Fatalf("selfHealSkills: %v", err)
+		}
+	})
+	assertNamesFullSkillRebuildRemedy(t, got, root)
+	if !strings.Contains(got, binarySkillsDriftWarning(srcRoot)) {
+		t.Fatalf("warning = %q, want exact post-refresh wording %q", got, binarySkillsDriftWarning(srcRoot))
+	}
+}
+
+func TestSelfHealSkillsStaleBinaryWarningDoesNotClaimDeclinedSkillsCurrent(t *testing.T) {
+	home := setupSkillStartupTest(t)
+	root := t.TempDir()
+	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	oldStderr := os.Stderr
-	os.Stderr = write
-	t.Cleanup(func() { os.Stderr = oldStderr })
-	if err := selfHealSkills(); err != nil {
-		t.Fatalf("selfHealSkills: %v", err)
+	t.Chdir(root)
+	manifest := currentTestSkillManifest(t)
+	if err := config.Save(config.Settings{
+		SkillsDeclinedByAgent:         map[string]bool{"codex": true},
+		SkillsDeclinedManifestByAgent: map[string]string{"codex": manifest},
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
 	}
-	if err := write.Close(); err != nil {
+	codexDir := filepath.Join(home, ".codex", "skills")
+	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
 		t.Fatal(err)
 	}
-	got, err := io.ReadAll(read)
-	if err != nil {
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+
+	got := captureStderr(t, func() {
+		if err := selfHealSkills(); err != nil {
+			t.Fatalf("selfHealSkills: %v", err)
+		}
+	})
+	if strings.Contains(got, "installed skills were refreshed from source and are current") {
+		t.Fatalf("warning = %q, must not claim a declined stale tree was refreshed", got)
+	}
+	if !strings.Contains(got, binarySkillsDriftCheckWarning(srcRoot)) {
+		t.Fatalf("warning = %q, want claim-free warning %q", got, binarySkillsDriftCheckWarning(srcRoot))
+	}
+}
+
+func TestSelfHealSkillsStaleBinaryWarningDoesNotClaimAbsentAgentsCurrent(t *testing.T) {
+	setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{})
+	root := t.TempDir()
+	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assertNamesFullSkillRebuildRemedy(t, string(got), root)
+	t.Chdir(root)
+
+	got := captureStderr(t, func() {
+		if err := selfHealSkills(); err != nil {
+			t.Fatalf("selfHealSkills: %v", err)
+		}
+	})
+	if strings.Contains(got, "installed skills were refreshed from source and are current") {
+		t.Fatalf("warning = %q, must not claim absent agents were refreshed", got)
+	}
+	if !strings.Contains(got, binarySkillsDriftCheckWarning(srcRoot)) {
+		t.Fatalf("warning = %q, want claim-free warning %q", got, binarySkillsDriftCheckWarning(srcRoot))
+	}
 }
 
 func assertAgentSkillsInstalled(t *testing.T, dir string) {
@@ -496,7 +692,11 @@ func assertAgentSkillsInstalled(t *testing.T, dir string) {
 
 func currentTestSkillManifest(t *testing.T) string {
 	t.Helper()
-	manifest, err := libskillinstall.Manifest(bossskillinstall.SkillsFS)
+	payload, err := skillPayload()
+	if err != nil {
+		t.Fatalf("skillPayload: %v", err)
+	}
+	manifest, err := libskillinstall.Manifest(payload.fsys)
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}

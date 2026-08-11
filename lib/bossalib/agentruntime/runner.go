@@ -214,6 +214,13 @@ func defaultBinName(s string) string {
 // CODEX_HOME). Its VALUES are never logged — the spawn preamble records
 // argv/cwd/PATH only.
 func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{"model": model})
+}
+
+// StartWithOptions starts an agent with caller-defined non-secret argv-builder
+// options. extraEnv remains the only process-environment overlay and is kept
+// separate so option values cannot accidentally be inherited by the child.
+func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath string, extraEnv, options map[string]string) (string, error) {
 	// Determine whether the caller provided a session ID.
 	providedSessionID := sessionID != ""
 
@@ -285,7 +292,7 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		SessionID:         sessionID,
 		ProvidedSessionID: providedSessionID,
 		LogPath:           logPath,
-		Options:           map[string]string{"model": model},
+		Options:           options,
 	})
 	if len(argv) == 0 {
 		cancel()

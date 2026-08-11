@@ -106,7 +106,7 @@ if [ -z "$BASE_BRANCH" ]; then
   CURRENT_BRANCH=$(git branch --show-current)
   UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's#^origin/##' || true)
   BASE_BRANCH=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -Fvx HEAD | grep -Fvx "$CURRENT_BRANCH" | { if [ -n "$UPSTREAM_BRANCH" ]; then grep -Fvx "$UPSTREAM_BRANCH"; else cat; fi; } | while read -r branch; do base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue; git merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null && continue; printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"; done | sort -nr | awk 'NR == 1 {print $2}')
-  [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
+  if [ -n "$BASE_BRANCH" ]; then echo "Using inferred git base branch: $BASE_BRANCH"; fi
 fi
 test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
 git fetch origin "$BASE_BRANCH"
@@ -273,7 +273,7 @@ git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"
 ```bash
 git log origin/$BASE_BRANCH..HEAD --oneline
 MERGE_BASE=$(git merge-base HEAD "origin/$BASE_BRANCH")
-test -n "${BRANCH_OWNED_FILES:-}" || BRANCH_OWNED_FILES=$(mktemp)
+if [ -z "${BRANCH_OWNED_FILES:-}" ]; then BRANCH_OWNED_FILES=$(mktemp); fi
 git diff --name-only "$MERGE_BASE"..HEAD > "$BRANCH_OWNED_FILES"
 ```
 
@@ -383,7 +383,7 @@ gh pr ready "$PR_URL"
 IS_DRAFT=""
 for attempt in 1 2 3 4 5 6; do
   IS_DRAFT=$(gh pr view "$PR_URL" --json isDraft -q .isDraft)
-  [ "$IS_DRAFT" = "false" ] && break
+  if [ "$IS_DRAFT" = "false" ]; then break; fi
   sleep 5
 done
 

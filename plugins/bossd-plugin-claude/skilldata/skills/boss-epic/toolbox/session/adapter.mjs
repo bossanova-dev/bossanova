@@ -56,14 +56,20 @@ const REGISTRY = {
  * Resolve the configured session-runner adapter. `env.SESSION_RUNNER` selects
  * the adapter (default "boss"); unknown values throw. This is the single
  * pluggable choke point — new runners register a factory here.
+ *
+ * `??` not `||`: an explicitly-empty SESSION_RUNNER='' is a misconfiguration, and
+ * coercing it to the default hides that instead of failing on the unknown-runner
+ * path. `Object.hasOwn` not a truthiness check on `REGISTRY[name]`: the registry is a
+ * plain object literal, so `SESSION_RUNNER=constructor` would otherwise resolve to
+ * `Object` — truthy — and `Object()` would return a plain object that silently
+ * impersonates an adapter. Same rule in the tracker, finalize and callback resolvers.
  * @param {object} [env] Environment map (defaults to process.env).
  * @returns {SessionRunnerAdapter}
  */
 export function resolveSessionRunnerAdapter(env = process.env) {
-  const name = env.SESSION_RUNNER || 'boss'
-  const factory = REGISTRY[name]
-  if (!factory) throw new Error(`unknown session runner: ${name}`)
-  return factory()
+  const name = env.SESSION_RUNNER ?? 'boss'
+  if (!Object.hasOwn(REGISTRY, name)) throw new Error(`unknown session runner: ${name}`)
+  return REGISTRY[name]()
 }
 
 /**

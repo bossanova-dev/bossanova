@@ -43,6 +43,7 @@ type harnessConfig struct {
 	githubCallbacks []*pb.GithubCallback
 	accounts        []*pb.Account
 	notes           []*pb.Note
+	checkSnapshots  map[string][]*pb.CheckSnapshot
 	resolvedRepo    *pb.Repo
 	resolvedSession *pb.Session
 	extraEnv        []string
@@ -81,6 +82,18 @@ func WithAccounts(accounts ...*pb.Account) Option {
 // WithNotes seeds the mock daemon with notes.
 func WithNotes(notes ...*pb.Note) Option {
 	return func(c *harnessConfig) { c.notes = append(c.notes, notes...) }
+}
+
+// WithCheckSnapshots seeds a session's CI check snapshots. Pass them newest
+// first — the order the daemon returns them and the order `--limit`
+// truncates from.
+func WithCheckSnapshots(sessionID string, snaps ...*pb.CheckSnapshot) Option {
+	return func(c *harnessConfig) {
+		if c.checkSnapshots == nil {
+			c.checkSnapshots = make(map[string][]*pb.CheckSnapshot)
+		}
+		c.checkSnapshots[sessionID] = append(c.checkSnapshots[sessionID], snaps...)
+	}
 }
 
 // WithResolvedContext makes the mock daemon report the given repo and session
@@ -137,6 +150,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, n := range cfg.notes {
 		daemon.AddNote(n)
+	}
+	for sessionID, snaps := range cfg.checkSnapshots {
+		daemon.AddCheckSnapshots(sessionID, snaps...)
 	}
 	if cfg.resolvedRepo != nil || cfg.resolvedSession != nil {
 		daemon.SetResolvedContext(cfg.resolvedRepo, cfg.resolvedSession)

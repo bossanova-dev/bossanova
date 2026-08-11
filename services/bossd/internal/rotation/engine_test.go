@@ -384,6 +384,267 @@ func TestDecideUtilizationAwareSelection(t *testing.T) {
 	}
 }
 
+// TestDecideBandedConsumeFirstPrefersImminentReset is the BOS-830 falsification
+// case, and it is the whole ticket in one scenario: weekly quota is perishable,
+// so between two candidates that both have room to do real work the one whose
+// window is about to roll over must be consumed first. A sits at util 0.10 with
+// six days left on its week; B sits at util 0.35 with four hours. The old
+// lowest-utilization rule picks A and lets ~65% of B's week expire unspent; the
+// banded consume-first rule must pick B. A is also FIRST in list order (lower
+// Priority), so nothing but the reset ordering can produce B here.
+func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
+	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
+	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
+	eng := newEngineForTest(newFakeStore(capped, a, b))
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider:        claude,
+		CappedAccountID: "capped",
+		Kind:            UsageLimited,
+		RotationCapable: true,
+		Utilization:     map[string]float64{"A": 0.10, "B": 0.35},
+	})
+	if err != nil {
+		t.Fatalf("Decide error: %v", err)
+	}
+	if out.Kind != OutcomeRotate {
+		t.Fatalf("Kind = %v, want OutcomeRotate", out.Kind)
+	}
+	got := "<nil>"
+	if out.NextAccount != nil {
+		got = out.NextAccount.ID
+	}
+	if got != "B" {
+		t.Fatalf("NextAccount = %s, want B (util 0.35 resetting in 4h must beat util 0.10 resetting in 6d — "+
+			"both are in the headroom band, and B's quota is the perishable one)", got)
+	}
+}
+
+// TestDecideBandedConsumeFirstSelection pins the rest of the BOS-830 rule around
+// the falsification case above: where the band starts and stops, what happens
+// when it is empty, and that neither an unknown reset nor the cap exclusion can
+// be talked into a selection by reset urgency. Every case gives the account that
+// must LOSE the lower Priority, so it is first in ListByProvider order and no
+// result here can be produced by list order alone.
+func TestDecideBandedConsumeFirstSelection(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+
+	tests := []struct {
+		name        string
+		accts       []*models.Account
+		utilization map[string]float64
+		wantNext    string
+	}{
+		{
+			// The band's lower edge: B resets in an hour but has only 0.10 headroom,
+			// so it is out of the band and never preferred — switching onto it would
+			// re-cap within minutes and burn another rotation from MaxRotations.
+			name: "below the headroom floor is not preferred on urgency",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.10, "B": 0.90},
+			wantNext:    "A",
+		},
+		{
+			// Headroom EXACTLY at MinRotationHeadroom is inside the band (>=, not >),
+			// so A's imminent reset still wins over B's distant one.
+			name: "headroom exactly at the floor is inside the band",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.75, "B": 0.10},
+			wantNext:    "A",
+		},
+		{
+			// Nobody is in the band, so the fallback is today's rule exactly: lowest
+			// utilization, NOT the soonest reset (A resets first and still loses).
+			name: "empty band falls back to lowest utilization",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-3*time.Hour)), tp(time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
+				withReset7d(mkAcct("C", 3, ok, active, nil, tp(-1*time.Hour)), tp(2*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.85, "B": 0.80, "C": 0.95},
+			wantNext:    "B",
+		},
+		{
+			// NO candidate carries a reset, so there is no perishable-quota signal to
+			// act on at all and the band cannot rank itself. Selection must then fall
+			// back to today's lowest-utilization rule rather than to bare list order:
+			// preferring the 0.70 account over the 0.02 one buys nothing and re-caps
+			// sooner. Reachable in production — a probe can report a nil reset_7d, and
+			// a failed usage write leaves a stale snapshot against fresh utilization.
+			name: "band with no known reset falls back to lowest utilization",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
+				mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.70, "B": 0.02},
+			wantNext:    "B",
+		},
+		{
+			// A was never probed at all (nil Usage): unknown is not urgent, so the
+			// known-future B wins despite being more utilized and later in the list.
+			name: "nil usage snapshot never beats a known future reset",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.10, "B": 0.20},
+			wantNext:    "B",
+		},
+		{
+			name: "nil reset never beats a known future reset",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), nil),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.10, "B": 0.20},
+			wantNext:    "B",
+		},
+		{
+			// A past reset means A's week ALREADY rolled — a fresh full window, the
+			// opposite of urgent — so B's real future reset wins.
+			name: "past reset never beats a known future reset",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(-time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.10, "B": 0.20},
+			wantNext:    "B",
+		},
+		{
+			// Identical future resets are not a strict improvement over one another,
+			// so the earlier ListByProvider row wins and selection is reproducible
+			// across restarts — even though B is the less utilized of the two.
+			name: "identical future resets keep list order",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(3*time.Hour)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(3*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 0.30, "B": 0.10},
+			wantNext:    "A",
+		},
+		{
+			// A fully exhausted account does not win on urgency, however imminent its
+			// reset. Note what this case does and does not prove: util 1.0 also fails
+			// HasRotationHeadroom, so A is kept out of the band by the headroom filter
+			// even if UtilizationCapped were removed, and B wins either way. The test
+			// that makes the cap check itself load-bearing is
+			// TestDecideUtilizationSkipsUnprobedCandidates, where a capped account is
+			// the only probed candidate and the expected result is no rotation at all.
+			name: "capped account excluded despite an imminent reset",
+			accts: []*models.Account{
+				mkAcct("capped", 0, ok, active, nil, tp(0)),
+				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(10*time.Minute)),
+				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
+			},
+			utilization: map[string]float64{"A": 1.0, "B": 0.30},
+			wantNext:    "B",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eng := newEngineForTest(newFakeStore(tt.accts...))
+			out, err := eng.Decide(context.Background(), Signal{
+				Provider:        claude,
+				CappedAccountID: "capped",
+				Kind:            UsageLimited,
+				RotationCapable: true,
+				Utilization:     tt.utilization,
+			})
+			if err != nil {
+				t.Fatalf("Decide error: %v", err)
+			}
+			if out.Kind != OutcomeRotate {
+				t.Fatalf("Kind = %v, want OutcomeRotate", out.Kind)
+			}
+			got := "<nil>"
+			if out.NextAccount != nil {
+				got = out.NextAccount.ID
+			}
+			if got != tt.wantNext {
+				t.Fatalf("NextAccount = %s, want %s", got, tt.wantNext)
+			}
+		})
+	}
+}
+
+// TestSelectProactiveCandidateBandedConsumeFirst asserts the banded rule through
+// the OTHER call site. Decide and SelectProactiveCandidate share selectCandidate
+// today, but that sharing is an implementation detail: pinning the proactive path
+// separately means a future refactor that stops sharing cannot silently drop
+// consume-first from the pre-cap sweep — which is exactly where moving onto
+// perishable quota pays off most (BOS-830).
+func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	bound := mkAcct("bound", 0, ok, active, nil, tp(0))
+	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
+	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
+	store := newFakeStore(bound, a, b)
+	eng := newEngineForTest(store)
+
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "bound",
+		map[string]float64{"bound": 0.85, "A": 0.10, "B": 0.35})
+	if err != nil {
+		t.Fatalf("SelectProactiveCandidate error: %v", err)
+	}
+	got := "<nil>"
+	if chosen != nil {
+		got = chosen.ID
+	}
+	if got != "B" {
+		t.Fatalf("chosen = %s, want B (in-band, soonest future reset)", got)
+	}
+	if store.writes != 0 {
+		t.Errorf("store.writes = %d, want 0 (proactive selection stays read-only)", store.writes)
+	}
+}
+
+// TestDecideEmptyUtilizationBranchUntouchedByBandedRule pins that the banded rule
+// lives ONLY in the util-aware branch. With no utilization data there is no
+// headroom to band on, so the legacy branch must still hand back the first
+// list-order candidate — B's imminent reset must not promote it past A.
+func TestDecideEmptyUtilizationBranchUntouchedByBandedRule(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
+	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
+	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
+	eng := newEngineForTest(newFakeStore(capped, a, b))
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider:        claude,
+		CappedAccountID: "capped",
+		Kind:            UsageLimited,
+		RotationCapable: true,
+		Utilization:     map[string]float64{},
+	})
+	if err != nil {
+		t.Fatalf("Decide error: %v", err)
+	}
+	if out.NextAccount == nil || out.NextAccount.ID != "A" {
+		t.Fatalf("NextAccount = %v, want A (first list-order candidate; the banded rule must not reach this branch)", out.NextAccount)
+	}
+}
+
 func TestDecideUtilizationSkipsUnprobedCandidates(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

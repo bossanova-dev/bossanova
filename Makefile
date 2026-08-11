@@ -1,4 +1,4 @@
-.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt vendor-toolbox vendor-toolbox-check build-drift-check \
+.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt skills-check vendor-toolbox vendor-toolbox-check build-drift-check \
 	buf-check-version deps-golangci lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -6,7 +6,7 @@
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
 	test-native-ledger test-native-ledger-affected test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
-	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
+	test-legacy-refs test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
@@ -445,7 +445,7 @@ copy-skills:
 ## The reference region of services/boss/internal/skillinstall/skills/boss/SKILL.md is
 ## generated from the cobra command tree; TestSkillMatchesGenerated fails if it drifts.
 gen-skill:
-	cd services/boss && go run ./cmd gen-skill
+	node scripts/skill-source-rewrite-lock.mjs --repo-root "$(CURDIR)" -- sh -c 'cd services/boss && go run ./cmd gen-skill'
 	$(MAKE) copy-skills
 
 ## generate: Run buf generate to produce Go code from proto definitions
@@ -916,6 +916,22 @@ test-public-mirror:
 test-no-inline-stop-hooks:
 	node scripts/check-no-inline-stop-hooks.mjs
 
+## test-legacy-refs: BOS-815 tree-wide retirement scan — fail if any ACTIVE file
+## reintroduces a reference to either retired system (the scan names them; this
+## comment deliberately does not, because the scan reads this file too). Its input is
+## the WHOLE `git ls-files` tree, so no path rule can predict which change reintroduces
+## one: an ordinary Go production file is as capable of it as a scripts/** file.
+## `make test-scripts` (and so `make test-all`) already runs this as one of the
+## scripts/*.test.mjs files, but that target is reached only behind the
+## test-scripts.yml path filter, which omits ordinary production paths. This
+## standalone, dependency-free (~0.5s, node built-ins only) target exists so an
+## UNCONDITIONALLY triggered CI job — bazel.yml `go-lint`, which carries no path
+## filter and no event `if:` — can run the scan on every push regardless of what
+## changed. Do not give this target prerequisites; cheapness is what makes the
+## unconditional wiring affordable.
+test-legacy-refs:
+	node --test scripts/legacy-support-refs.test.mjs
+
 ## test-manifest-update: Regenerate the checked-in test command manifest.
 test-manifest-update:
 	mkdir -p docs/testing
@@ -1023,6 +1039,11 @@ debt-knip:
 build-boss:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
+
+## skills-check: Build boss and fail if installed skill trees, binary embed, or checkout
+## sources disagree. Fail-closed per-machine/local/handoff gate; cannot run in CI.
+skills-check: build-boss
+	BOSS_TRUST_CHECKOUT_SKILLS=1 ./bin/boss skills check
 
 build-bossd:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd

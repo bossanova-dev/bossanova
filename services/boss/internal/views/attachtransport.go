@@ -62,7 +62,13 @@ func buildAttachCommand(destination, tmuxName, worktreePath string) (attachComma
 		return attachCommand{}, err
 	}
 	if destination == "" {
-		return attachCommand{argv: []string{"tmux", "attach", "-t", tmuxName}, dir: worktreePath}, nil
+		// -u forces UTF-8 regardless of what the locale env vars say. The remote
+		// arm below and bossd's own attach (services/bossd/internal/tmux/attach.go)
+		// both pass it; omitting it only here made the local attach the one path
+		// that renders tmux's line-drawing characters as ASCII fallbacks (`_`,
+		// `q`, `x`) when boss is launched from an environment with no usable
+		// LANG/LC_ALL — a launchd- or GUI-spawned terminal, most often.
+		return attachCommand{argv: []string{"tmux", "-u", "attach", "-t", tmuxName}, dir: worktreePath}, nil
 	}
 	return attachCommand{argv: []string{
 		"ssh", "-t",
@@ -173,7 +179,7 @@ func buildAttachReproArgv(destination, tmuxName string) ([]string, error) {
 		return nil, err
 	}
 	if destination == "" {
-		return []string{"tmux", "attach", "-t", tmuxName}, nil
+		return []string{"tmux", "-u", "attach", "-t", tmuxName}, nil
 	}
 	return []string{
 		"ssh", "-t",

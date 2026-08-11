@@ -1,9 +1,12 @@
 // scripts/vendor-toolbox.mjs — copy the canonical skills-toolbox/ helpers into
 // each consuming skill's toolbox/ subdir, or verify no drift (--check).
 // Mirrors the sync-codex-skills drift-gate idiom. Node builtins only.
-import { mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
+
+export { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 
 export const VENDOR_MAP = {
   // boss-review is the only skill that runs the review-specific helpers (its detect,
@@ -37,6 +40,9 @@ export const VENDOR_MAP = {
     // Tracker operations are part of boss-build's installed runtime. Keep the
     // seam and its pure Linear helpers co-located with the skill, including the
     // bs-epic scheduler transitively imported by tracker/linear.mjs.
+    // adapter-core.mjs is the tracker-agnostic contract adapter.mjs and linear.mjs
+    // both import; without it neither resolves in an installed toolbox.
+    'tracker/adapter-core.mjs',
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
@@ -60,6 +66,12 @@ export const VENDOR_MAP = {
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
+    // Preflight names bossEpicTransportPreflight to choose the MCP or CLI carrier, so the
+    // module must ship in boss-build's own toolbox — an installed core cannot reach into
+    // boss-epic's copy, which may not be installed at all. It imports the session seam's
+    // adapter, so both files ship or neither resolves.
+    'session/adapter.mjs',
+    'session/boss.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
@@ -78,6 +90,9 @@ export const VENDOR_MAP = {
     'progress-comment.mjs',
     // The tracker seam is executable in a consuming repo, so ship its
     // descriptor, helpers, and config dependency beside the epic driver.
+    // adapter-core.mjs is the tracker-agnostic contract adapter.mjs and linear.mjs
+    // both import; without it neither resolves in an installed toolbox.
+    'tracker/adapter-core.mjs',
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
@@ -122,7 +137,15 @@ export const VENDOR_MAP = {
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
   ],
-  'boss-repair': ['main-module.mjs', 'skill-extensions.mjs'],
+  // session/boss.mjs backs the transport preflight boss-repair runs before Phase 1; like
+  // boss-build's copy it ships here because a published core must resolve its own helpers,
+  // and it brings session/adapter.mjs with it — the import it cannot resolve without.
+  'boss-repair': [
+    'main-module.mjs',
+    'skill-extensions.mjs',
+    'session/adapter.mjs',
+    'session/boss.mjs',
+  ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-security': ['main-module.mjs', 'bs-run-sentinel.mjs'],
@@ -217,12 +240,14 @@ if (isMainModule(import.meta.url)) {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const skillsRoot = join(repoRoot, '.claude', 'skills')
   const publishedRoot = join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills')
-  const res = vendorToolbox({
-    sourceRoot: join(repoRoot, 'skills-toolbox'),
-    skillsRoot,
-    publishedRoot,
-    check,
-  })
+  const vendor = () =>
+    vendorToolbox({
+      sourceRoot: join(repoRoot, 'skills-toolbox'),
+      skillsRoot,
+      publishedRoot,
+      check,
+    })
+  const res = check ? vendor() : withSkillSourceRewriteLock(repoRoot, vendor)
   if (res.skipped) {
     process.stdout.write(
       `Skipped vendored toolbox check: ${skillsRoot} and ${publishedRoot} are absent (skills stripped)\n`,

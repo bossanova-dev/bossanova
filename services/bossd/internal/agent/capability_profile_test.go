@@ -19,3 +19,22 @@ func TestStartAgentRunRequestExposesVersionedHeadlessCapabilityProfile(t *testin
 		t.Fatalf("tracker-plan-attachment profile number = %d, want 1", got)
 	}
 }
+
+func TestStartAgentRunRequestExposesManagedMcpConfig(t *testing.T) {
+	fields := (&bossanovav1.StartAgentRunRequest{}).ProtoReflect().Descriptor().Fields()
+	for _, want := range []struct {
+		name string
+		kind protoreflect.Kind
+	}{
+		{name: "managed_mcp_config_path", kind: protoreflect.StringKind},
+		{name: "is_strict_managed_mcp_config", kind: protoreflect.BoolKind},
+	} {
+		field := fields.ByName(protoreflect.Name(want.name))
+		if field == nil {
+			t.Fatalf("StartAgentRunRequest must expose %s", want.name)
+		}
+		if field.Kind() != want.kind {
+			t.Fatalf("%s kind = %s, want %s", want.name, field.Kind(), want.kind)
+		}
+	}
+}

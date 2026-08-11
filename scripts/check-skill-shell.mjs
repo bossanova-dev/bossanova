@@ -104,6 +104,17 @@
 //     expands the Markdown while writing it. This is deliberately a narrow safety rule, not a ban
 //     on double quotes or an attempt to parse all shell expansions.
 //
+// (g) INERT GUARDS ARE REJECTED. `test -f tool || echo missing` looks defensive but falls through
+//     and lets the rest of the block run. The rule only recognises `test`/`[` guards, a braced
+//     fallback, `|| exit`/`|| return`, and bare `command -v … ||`; it deliberately does not infer
+//     arbitrary shell control flow. A block whose first non-comment command is `set -e` (including
+//     `set -euo pipefail`) is accepted; otherwise every recognised failure branch must reach
+//     `exit` or `return`. Accepted false negatives: aliases, functions, conditionals, pipelines,
+//     and shell expansion are outside this small lexical rule. A final bare `test`/`[` is also
+//     accepted: with no later command/list for it to accidentally permit, it cannot fall through.
+//     Heredoc payloads are masked, while command substitutions are re-entered because they execute
+//     shell commands.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -996,6 +1007,1870 @@ function joinContinuations(lines) {
   return joined
 }
 
+// Track options in command-list order. A later `set +e` or `shopt -u` must take effect before
+// the next command; scanning the whole source for an enable would apply both options backwards.
+function shellOptionStateAfter(body, initial) {
+  const result = { ...initial }
+  const tokenState = {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  }
+  let subshellDepth = initial.subshellDepth ?? 0
+  // An AND/OR operator at the end of a physical line still controls the next
+  // line's command. Keep the predecessor's known status until that RHS has
+  // been considered, or a skipped `set -e` can incorrectly leak into later
+  // commands.
+  let pendingSeparator = null
+  let priorStatus = null
+  for (const line of body.split('\n')) {
+    const tokens = tokenizeShellLine(line, tokenState)
+    let segment = []
+    let priorSeparator = pendingSeparator
+    const segments = []
+    const commandListOperators = new Set([';', '&&', '||', '&'])
+    for (const token of tokens) {
+      if (token.operator && commandListOperators.has(token.raw)) {
+        segments.push({ tokens: segment, separator: token, priorSeparator })
+        segment = []
+        priorSeparator = token
+        continue
+      }
+      segment.push(token)
+    }
+    segments.push({ tokens: segment, separator: null, priorSeparator })
+    for (const { tokens: segmentTokens, separator, priorSeparator } of segments) {
+      const words = segmentTokens.filter((token) => !token.operator)
+      const args = words.map((token) => removeQuotes(token.raw))
+      const commandIndex = commandWordIndex(words)
+      const command = args[commandIndex]
+      const parenDelta = segmentTokens.reduce((delta, token) => {
+        if (token.raw === '(') return delta + 1
+        if (token.raw === ')') return delta - 1
+        return delta
+      }, 0)
+      const commandToken = words[commandIndex]
+      const commandTokenIndex = commandToken ? segmentTokens.indexOf(commandToken) : -1
+      const opensSubshellBeforeCommand =
+        commandTokenIndex !== -1 &&
+        segmentTokens.slice(0, commandTokenIndex).some((token) => token.raw === '(')
+      const inSubshell = subshellDepth > 0 || opensSubshellBeforeCommand
+      const pipelines = segmentTokens.filter((token) => token.raw === '|')
+      const inAsyncList = priorSeparator?.raw === '&' || separator?.raw === '&'
+      // Commands on an AND/OR RHS normally are not guaranteed to execute, so their option changes
+      // cannot establish state for a later command. Literal true/false predecessors are the
+      // exception: their RHS is known to execute. Braced groups execute in this shell, but
+      // parenthesized groups do not, including when their opening and closing parens span physical
+      // lines.
+      const executesUnconditionally =
+        !inAsyncList &&
+        (priorSeparator?.raw !== '&&' || priorStatus === true) &&
+        (priorSeparator?.raw !== '||' || priorStatus === false)
+      if (executesUnconditionally && !inSubshell && pipelines.length === 0 && command === 'set') {
+        for (let i = commandIndex + 1; i < args.length; i++) {
+          if (args[i] === '--') break
+          if (/^-[A-Za-z]*e[A-Za-z]*$/.test(args[i])) result.errexit = true
+          else if (/^\+[A-Za-z]*e[A-Za-z]*$/.test(args[i])) result.errexit = false
+          else if (args[i] === '-o' && args[i + 1] === 'errexit') result.errexit = true
+          else if (args[i] === '+o' && args[i + 1] === 'errexit') result.errexit = false
+          else if (args[i] === '-o' && args[i + 1] === 'pipefail') result.pipefail = true
+          else if (args[i] === '+o' && args[i + 1] === 'pipefail') result.pipefail = false
+          else if (args[i] === '-o' && args[i + 1] === 'posix') result.inheritErrexit = true
+          if (/^-[A-Za-z]*o[A-Za-z]*$/.test(args[i]) && args[i + 1] === 'pipefail')
+            result.pipefail = true
+          else if (/^\+[A-Za-z]*o[A-Za-z]*$/.test(args[i]) && args[i + 1] === 'pipefail')
+            result.pipefail = false
+          else if (/^-[A-Za-z]*o[A-Za-z]*$/.test(args[i]) && args[i + 1] === 'posix')
+            result.inheritErrexit = true
+        }
+      } else if (
+        executesUnconditionally &&
+        !inSubshell &&
+        pipelines.length === 0 &&
+        command === 'shopt'
+      ) {
+        let shoptMode = null
+        let shoptSetOptionMode = false
+        let shoptOptionStart = commandIndex + 1
+        for (; shoptOptionStart < args.length; shoptOptionStart++) {
+          const arg = args[shoptOptionStart]
+          if (arg === '--') {
+            shoptOptionStart += 1
+            break
+          }
+          if (!/^-[opqsu]+$/.test(arg)) break
+          for (const flag of arg.slice(1)) {
+            if (flag === 's') shoptMode = true
+            if (flag === 'u') shoptMode = false
+            if (flag === 'o') shoptSetOptionMode = true
+          }
+        }
+        if (shoptMode !== null) {
+          const shoptOptions = args.slice(shoptOptionStart)
+          if (shoptOptions.includes('inherit_errexit')) result.inheritErrexit = shoptMode
+          if (shoptSetOptionMode && shoptOptions.includes('errexit')) result.errexit = shoptMode
+          if (shoptSetOptionMode && shoptOptions.includes('pipefail')) result.pipefail = shoptMode
+        }
+      }
+      if (executesUnconditionally) {
+        priorStatus =
+          command === 'true' || command === ':' ? true : command === 'false' ? false : null
+      }
+      subshellDepth = Math.max(0, subshellDepth + parenDelta)
+    }
+    pendingSeparator =
+      tokens.at(-1)?.operator && ['&&', '||'].includes(tokens.at(-1).raw) ? tokens.at(-1) : null
+    if (!pendingSeparator) priorStatus = null
+  }
+  result.subshellDepth = subshellDepth
+  return result
+}
+
+function branchReachesExit(branch) {
+  let trimmed = branch.trimStart()
+  while (trimmed.startsWith('#')) {
+    const newline = trimmed.indexOf('\n')
+    if (newline === -1) return false
+    trimmed = trimmed.slice(newline + 1).trimStart()
+  }
+  // A direct `exit` still needs the operator check below: `exit 1 | cat` and
+  // `exit 1 & wait` terminate only a pipeline/background child, not this shell.
+  if (/^(?:exit|return)\b/.test(trimmed)) return branchContainsTerminator(trimmed)
+  if (!trimmed.startsWith('{')) return false
+  const end = matchingBrace(trimmed, 0)
+  if (end === -1) return false
+  // A braced group on the left of a pipeline or in the background runs in a child shell, so its
+  // `exit`/`return` cannot stop the guarded block. Skip redirections while finding the first real
+  // operator: `} 2>&1 | cat` is just as inert as `} | cat`.
+  const suffix = tokenizeShellLine(trimmed.slice(end + 1))
+  const firstOperator = suffix.find((token) => token.operator)
+  if (firstOperator?.raw === '|' || firstOperator?.raw === '&') return false
+  return branchContainsTerminator(trimmed.slice(1, end))
+}
+
+// The final command in the RHS of an OR list is subject to `errexit`. Keep this deliberately
+// narrow: only a literal `false` command, or a group whose own final command has that shape, can
+// prove that the fallback terminates without an explicit exit or return. Bash ignores `errexit`
+// for commands whose status is inverted with `!`, so a broader known-failure predicate is unsafe.
+function branchFailsUnderErrexit(branch) {
+  const trimmed = branch.trim()
+  if (trimmed.startsWith('{')) {
+    const end = matchingBrace(trimmed, 0)
+    if (end === -1 || trimmed.slice(end + 1).trim()) return false
+    return branchFailsUnderErrexit(trimmed.slice(1, end))
+  }
+  if (trimmed.startsWith('(')) {
+    const end = matchingParen(trimmed, 0)
+    if (end === -1 || trimmed.slice(end + 1).trim()) return false
+    return branchFailsUnderErrexit(trimmed.slice(1, end))
+  }
+  const command = trimmed.replace(/;\s*(?:#.*)?$/s, '').trim()
+  const { separators, pipelines } = scanGuardOperators(command)
+  return separators.length === 0 && pipelines.length === 0 && commandWord(command) === 'false'
+}
+
+// Tokenize each physical line instead of scanning raw text: a diagnostic may legitimately quote a
+// line beginning with `exit`, but that is data for the fallback rather than a terminating command.
+function branchContainsTerminator(body) {
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+  let parenDepth = 0
+  let previousOperator = null
+  // An exit nested in a compound command is conditional (or, for a function declaration, not run at
+  // all). It cannot prove that every path through this fallback terminates. This deliberately stays
+  // conservative: only an exit in the branch's own command list is accepted as a terminator.
+  const compoundClosers = []
+  const braceGroups = []
+  let pendingBraceExit = false
+  let functionName = false
+  let functionBody = false
+  for (const line of body.split('\n')) {
+    const tokens = tokenizeShellLine(line, state)
+    let commandTokens = []
+    const reachesExit = (followingOperator = null) => {
+      const command = commandWordIndex(commandTokens)
+      const directExit =
+        command !== -1 &&
+        /^(?:exit|return)$/.test(removeQuotes(commandTokens[command].raw)) &&
+        compoundClosers.length === 0 &&
+        !['&&', '||', '|', '&'].includes(previousOperator) &&
+        !['|', '&'].includes(followingOperator)
+      commandTokens = []
+      if (directExit && braceGroups.length > 0) {
+        braceGroups.at(-1).hasExit = true
+        return false
+      }
+      // A direct exit before later commands still terminates this branch. Only an exit reached
+      // through `&&` / `||`, or one piped/backgrounded itself, is non-terminating.
+      return directExit
+    }
+    for (const token of tokens) {
+      if (token.raw === '(') {
+        const command = commandWordIndex(commandTokens)
+        functionName =
+          command !== -1 &&
+          /^[A-Za-z_][A-Za-z0-9_]*$/.test(removeQuotes(commandTokens[command].raw))
+        parenDepth += 1
+        commandTokens = []
+        continue
+      }
+      if (token.raw === ')') {
+        parenDepth = Math.max(0, parenDepth - 1)
+        if (parenDepth === 0 && functionName) functionBody = true
+        functionName = false
+        commandTokens = []
+        continue
+      }
+      if (parenDepth > 0) continue
+      if (token.operator) {
+        if (pendingBraceExit) {
+          pendingBraceExit = false
+          if (!['|', '&'].includes(token.raw)) return true
+        }
+        if (reachesExit(token.raw)) return true
+        previousOperator = token.raw
+        continue
+      }
+      const raw = removeQuotes(token.raw)
+      if (functionBody && raw === '{') {
+        compoundClosers.push('}')
+        functionBody = false
+      } else if (raw === '{') {
+        braceGroups.push({ hasExit: false })
+      } else if (raw === '}' && compoundClosers.at(-1) === '}') {
+        compoundClosers.pop()
+      } else if (raw === '}') {
+        const group = braceGroups.pop()
+        if (group?.hasExit) {
+          if (braceGroups.length > 0) braceGroups.at(-1).hasExit = true
+          pendingBraceExit = true
+        }
+      }
+      // Braces only delimit compound groups; they are not command words. Leaving them in the
+      // pending command made a following `if` look like an argument to `{`, so an exit in that
+      // conditional was incorrectly promoted to the enclosing fallback group.
+      if (raw === '{' || raw === '}') {
+        commandTokens = []
+        continue
+      }
+      if (commandTokens.length === 0) {
+        if (raw === 'if') compoundClosers.push('fi')
+        else if (['while', 'until', 'for', 'select'].includes(raw)) compoundClosers.push('done')
+        else if (raw === 'case') compoundClosers.push('esac')
+        // `function name { ... }` declares a body; its braces are not an executable group.
+        // Defer recording the closer until the opening brace so the function body is never
+        // mistaken for the fallback group that contains it.
+        else if (raw === 'function') functionBody = true
+        else if (raw === compoundClosers.at(-1)) compoundClosers.pop()
+      }
+      commandTokens.push(token)
+    }
+    if (pendingBraceExit) return true
+    if (parenDepth === 0 && reachesExit()) return true
+    // `&&`, `||`, and `|` continue a command list across an unescaped physical newline. Keep
+    // them so a following `exit` is not accepted as an unconditional terminator. Other operators
+    // end the list at the newline.
+    if (!(tokens.at(-1)?.operator && ['&&', '||', '|'].includes(tokens.at(-1).raw)))
+      previousOperator = null
+  }
+  return false
+}
+
+function conditionalHasTerminator(candidate, terminator) {
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+  for (const line of candidate.split('\n')) {
+    const tokens = tokenizeShellLine(line, state)
+    let followsSeparator = true
+    for (const token of tokens) {
+      if (token.operator) {
+        followsSeparator = token.raw === ';'
+        continue
+      }
+      if (followsSeparator && removeQuotes(token.raw) === terminator) return true
+      followsSeparator = false
+    }
+  }
+  return false
+}
+
+function matchingBrace(source, open) {
+  let depth = 0
+  let quote = null
+  for (let i = open; i < source.length; i++) {
+    const ch = source[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(source[i - 1]))) {
+      const end = source.indexOf('\n', i + 1)
+      if (end === -1) return -1
+      i = end
+      continue
+    }
+    if (ch === '{') depth += 1
+    else if (ch === '}' && --depth === 0) return i
+  }
+  return -1
+}
+
+function guardCommand(left) {
+  const command = left.trim().replace(/^(?:!|time)\s+/, '')
+  if (command.startsWith('{')) return false
+  if (isGuardCommand(command)) return true
+  const words = tokenizeShellLine(command, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  }).filter((token) => !token.operator)
+  let index = 0
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index]?.raw)) index += 1
+  return (
+    removeQuotes(words[index]?.raw ?? '') === 'command' &&
+    removeQuotes(words[index + 1]?.raw ?? '') === '-v'
+  )
+}
+
+function commandWord(command) {
+  const tokens = tokenizeShellLine(command, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  })
+  const index = commandWordIndex(tokens)
+  return index === -1 ? '' : removeQuotes(tokens[index].raw)
+}
+
+function functionCalls(text, definitions) {
+  if (isFunctionDeclaration(text)) return []
+  const { pipelines } = scanGuardOperators(text)
+  const boundaries = [-1, ...pipelines.map(({ at }) => at), text.length]
+  return boundaries.slice(0, -1).flatMap((start, index) => {
+    const name = functionCallCommandWord(text.slice(start + 1, boundaries[index + 1]))
+    if (!definitions.has(name)) return []
+    return [
+      { name, pipeline: pipelines.length > 0, finalPipelineSegment: index === pipelines.length },
+    ]
+  })
+}
+
+function functionCallCommandWord(text) {
+  const casePrefix = /^\s*case\b[\s\S]*?\bin\b\s*/.exec(text)
+  const command = casePrefix ? stripLeadingCaseArmPattern(text.slice(casePrefix[0].length)) : text
+  const tokens = tokenizeShellLine(command, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  })
+  const index = commandWordIndex(tokens)
+  if (index === -1) return ''
+  // Command wrappers execute an external command rather than doing ordinary shell-function
+  // lookup. `command disable`, for example, must not be resolved to a local `disable()` body.
+  if (
+    tokens
+      .slice(0, index)
+      .filter((token) => !token.operator)
+      .some((token) => WRAPPER_WORDS.has(removeQuotes(token.raw)))
+  )
+    return ''
+  return removeQuotes(tokens[index].raw)
+}
+
+function knownCommandStatus(text) {
+  const tokens = tokenizeShellLine(text, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  })
+  const index = commandWordIndex(tokens)
+  if (index === -1) return null
+  const command = removeQuotes(tokens[index].raw)
+  const status = command === 'true' || command === ':' ? true : command === 'false' ? false : null
+  if (status === null) return null
+  const negated =
+    tokens.slice(0, index).filter((token) => !token.operator && removeQuotes(token.raw) === '!')
+      .length %
+      2 ===
+    1
+  return negated ? !status : status
+}
+
+// A conditional predicate is a command list, not one command. Keep its segments in source order so
+// calls and option builtins can update the caller state in the same order Bash evaluates them.
+// A RHS after an unknown command is reachable, but not definitely executed; inspect it for guards
+// without allowing its option changes to alter the caller's certain state.
+function commandListSegments(text) {
+  const { separators } = scanGuardOperators(text)
+  const segments = []
+  let start = 0
+  let previousSeparator = null
+  let previousStatus = null
+  for (const separator of [...separators, { at: text.length }]) {
+    const segment = text.slice(start, separator.at)
+    // An unknown predecessor may succeed, so its RHS is reachable. A literal false/true is the
+    // only static proof that the following AND/OR segment cannot run.
+    const executes =
+      previousSeparator === null ||
+      (previousSeparator === '&&' && previousStatus !== false) ||
+      (previousSeparator === '||' && previousStatus !== true)
+    const guaranteed =
+      previousSeparator === null ||
+      (previousSeparator === '&&' && previousStatus === true) ||
+      (previousSeparator === '||' && previousStatus === false)
+    segments.push({ text: segment, executes, guaranteed })
+    if (executes) previousStatus = knownCommandStatus(segment)
+    start = separator.operator ? separator.at + separator.operator.length : text.length
+    previousSeparator = separator.operator ?? null
+  }
+  return segments
+}
+
+function isGuardCommand(command) {
+  const word = commandWord(command)
+  return word === 'test' || word === '['
+}
+
+function fallbackAssignsValue(branch) {
+  const { separators } = scanGuardOperators(branch)
+  const assignment = branch.slice(0, separators[0]?.at).trim()
+  const tokens = tokenizeShellLine(assignment, {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+  })
+  return (
+    tokens.some((token) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.raw)) &&
+    commandWordIndex(tokens) === -1
+  )
+}
+
+function isDocumentationPlaceholderFallback(branch) {
+  return normalizePlaceholders(branch).trim() === 'PLACEHOLDER'
+}
+
+// Return top-level `||` operators along with nested command substitutions. This intentionally
+// stays lexical: the gate only promises the narrow forms documented in (g), not a shell parser.
+function scanGuardOperators(line) {
+  const operators = []
+  const separators = []
+  const pipelines = []
+  const substitutions = []
+  let quote = null
+  let parens = 0
+  let parenDelta = 0
+  let braces = 0
+  let braceDelta = 0
+  let start = 0
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null
+      else if (ch === '$' && line[i + 1] === '(') {
+        const end = matchingParen(line, i + 1)
+        if (end !== -1) {
+          substitutions.push({
+            body: line.slice(i + 2, end),
+            prefix: line.slice(0, i),
+            suffix: line.slice(end + 1),
+          })
+          i = end
+        }
+      } else if (ch === '`') {
+        const end = matchingBacktick(line, i)
+        if (end !== -1) {
+          substitutions.push({
+            body: line.slice(i + 1, end),
+            prefix: line.slice(0, i),
+            suffix: line.slice(end + 1),
+          })
+          i = end
+        }
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '$' && line[i + 1] === '(') {
+      const end = matchingParen(line, i + 1)
+      if (end !== -1) {
+        substitutions.push({
+          body: line.slice(i + 2, end),
+          prefix: line.slice(0, i),
+          suffix: line.slice(end + 1),
+        })
+        i = end
+      }
+      continue
+    }
+    if (ch === '`') {
+      const end = matchingBacktick(line, i)
+      if (end !== -1) {
+        substitutions.push({
+          body: line.slice(i + 1, end),
+          prefix: line.slice(0, i),
+          suffix: line.slice(end + 1),
+        })
+        i = end
+      }
+      continue
+    }
+    if (ch === '#') {
+      if (i === 0 || /[\s;|&(){}]/.test(line[i - 1])) break
+    }
+    if (ch === '(') {
+      parens += 1
+      parenDelta += 1
+    } else if (ch === ')') {
+      parenDelta -= 1
+      if (parens > 0) parens -= 1
+    } else if (ch === '{') {
+      braces += 1
+      braceDelta += 1
+    } else if (ch === '}') {
+      if (braces > 0) braces -= 1
+      braceDelta -= 1
+    }
+    if (parens === 0 && braces === 0 && ch === '|' && line[i + 1] !== '|' && line[i - 1] !== '>') {
+      pipelines.push({ at: i })
+    } else if (parens === 0 && braces === 0 && ch === '|' && line[i + 1] === '|') {
+      operators.push({ at: i, start })
+      separators.push({ at: i, operator: '||' })
+      i += 1
+      start = i + 1
+    } else if (parens === 0 && braces === 0 && ch === ';') {
+      const operator = line.startsWith(';;&', i)
+        ? ';;&'
+        : line.startsWith(';;', i)
+          ? ';;'
+          : line.startsWith(';&', i)
+            ? ';&'
+            : ';'
+      separators.push({ at: i, operator })
+      i += operator.length - 1
+      start = i + 1
+    } else if (
+      parens === 0 &&
+      braces === 0 &&
+      ch === '&' &&
+      line[i - 1] !== '>' &&
+      line[i - 1] !== '<' &&
+      line[i + 1] !== '>'
+    ) {
+      const operator = line[i + 1] === '&' ? '&&' : '&'
+      separators.push({ at: i, operator })
+      if (operator === '&&') i += 1
+      start = i + 1
+    }
+  }
+  return { operators, separators, pipelines, substitutions, braceDelta, parenDelta }
+}
+
+function guardLogicalLines(source) {
+  const physical = joinContinuations(source.split('\n'))
+  const lines = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+  let pending = null
+  let pendingAndOr = false
+  for (const line of physical) {
+    if (pending) pending.text += `\n${line.text}`
+    else pending = { ...line }
+    tokenizeShellLine(line.text, state)
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    // A physical newline after && or || remains in the same command list. Keep comments with the
+    // pending list too: Bash discards them before reading the RHS on the next physical line.
+    const endsAndOr = /(?:&&|\|\|)\s*(?:#.*)?$/.test(line.text)
+    const commentOrBlank = /^\s*(?:#.*)?$/.test(line.text)
+    if (endsAndOr || (pendingAndOr && commentOrBlank)) {
+      pendingAndOr = true
+      continue
+    }
+    lines.push(pending)
+    pending = null
+    pendingAndOr = false
+  }
+  if (pending) lines.push(pending)
+  const logical = []
+  const pushLogicalLine = (entry) => {
+    const { separators } = scanGuardOperators(entry.text)
+    const segments = []
+    let start = 0
+    for (const separator of separators) {
+      segments.push({
+        text: entry.text.slice(start, separator.at),
+        nextSeparator: separator.operator,
+      })
+      start = separator.at + separator.operator.length
+    }
+    segments.push({ text: entry.text.slice(start), nextSeparator: null })
+    // A function declaration and a later invocation can share one physical line. Split only
+    // those top-level command lists so scope analysis sees the declaration and the invocation.
+    const texts = segments.some(({ text }) => isFunctionDeclaration(text))
+      ? segments
+      : [{ text: entry.text }]
+    for (const [segmentIndex, segment] of texts.entries()) {
+      let { text } = segment
+      for (;;) {
+        const trailing = leadingCompoundCloserTrailing(text)
+        if (!trailing) {
+          if (text.trim()) {
+            const logicalLine = { text, lineOffset: entry.lineOffset }
+            if (segment.nextSeparator !== undefined)
+              logicalLine.nextSeparator = segment.nextSeparator
+            if (texts === segments && segmentIndex > 0) {
+              logicalLine.previousSeparator = segments[segmentIndex - 1].nextSeparator
+              logicalLine.previousText = segments[segmentIndex - 1].text
+            }
+            logical.push(logicalLine)
+          }
+          break
+        }
+        logical.push({ text: trailing.closer, lineOffset: entry.lineOffset })
+        text = trailing.suffix
+        if (!text.trim()) break
+      }
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    let { text } = lines[i]
+    const lineOffset = lines[i].lineOffset
+    // A braced fallback often puts its `{` on the next physical line. It is one guard command;
+    // joining only this shape prevents the following `exit` from being mistaken for unrelated flow.
+    const opening = scanGuardOperators(text)
+    const continuedFallback = /\|\|\s*(?:#.*)?$/.test(text)
+    if (continuedFallback || (/\|\|\s*\{/.test(text) && opening.braceDelta > 0)) {
+      let depth = opening.braceDelta
+      let opened = depth > 0
+      for (; i + 1 < lines.length;) {
+        const next = lines[++i].text
+        text += `\n${next}`
+        depth += scanGuardOperators(next).braceDelta
+        if (depth > 0) opened = true
+        if (opened && depth === 0) break
+        if (!opened && (!next.trim() || next.trimStart().startsWith('#'))) continue
+        if (!opened) break
+      }
+    }
+    // A conditional keyword may stand alone while its predicate occupies following logical lines.
+    // Keep that predicate with the conditional so its guards are not mistaken for top-level commands.
+    const conditional = conditionalOpener(text)
+    if (conditional) {
+      const terminator = ['if', 'elif'].includes(conditional[1]) ? 'then' : 'do'
+      const hasTerminator = (candidate) => conditionalHasTerminator(candidate, terminator)
+      while (!hasTerminator(text) && i + 1 < lines.length) text += `\n${lines[++i].text}`
+    }
+    pushLogicalLine({ text, lineOffset })
+    // An inline compound closer can be followed by another top-level command on the same logical
+    // line. Keep the compound command opaque, but analyze that trailing command separately.
+    if (conditional) {
+      let trailing = inlineCompoundParts(text).trailing
+      while (trailing) {
+        pushLogicalLine({ text: trailing, lineOffset })
+        trailing = inlineCompoundParts(trailing).trailing
+      }
+    }
+  }
+  return logical
+}
+
+function substitutionFallsThrough(suffix) {
+  const trimmed = suffix.trimStart()
+  if (!trimmed) return false
+  const { separators } = scanGuardOperators(trimmed)
+  const semicolon = separators.find(({ operator }) => operator === ';')
+  const fallback = separators.find(({ operator }) => operator === '||')
+  if (semicolon && (!fallback || semicolon.at < fallback.at)) return true
+  if (!fallback) return false
+  const next = separators.find(({ at }) => at > fallback.at)
+  const branch = trimmed.slice(fallback.at + 2, next?.at)
+  return !branchReachesExit(branch)
+}
+
+function substitutionAssignmentTerminates(prefix, suffix) {
+  return (
+    !commandMasksSubstitution(prefix) &&
+    assignmentRedirectionsBeforeGuard(suffix) &&
+    !substitutionFallsThrough(suffix)
+  )
+}
+
+// Redirections are part of an assignment command, not a command that can mask its status. Keep
+// this deliberately narrow: consume only leading redirections before the `||` guard, leaving any
+// command or list operator between the assignment and the guard as a fallthrough.
+function assignmentRedirectionsBeforeGuard(suffix) {
+  const redirection =
+    /^(?:\d+)?(?:&>>|&>|>>|<<|<>|>&|<&|>|<)(?:\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s;|&()])+)?\s*/
+  let remainder = suffix.trimStart()
+  while (true) {
+    if (/^\|\|/.test(remainder)) return true
+    const match = remainder.match(redirection)
+    if (!match) return false
+    remainder = remainder.slice(match[0].length).trimStart()
+  }
+}
+
+function substitutionIsFollowedInSameCommand(suffix) {
+  const { substitutions, separators } = scanGuardOperators(suffix)
+  const firstSeparator = separators[0]?.at ?? Infinity
+  return (
+    commandMasksSubstitution(suffix.slice(0, firstSeparator)) ||
+    substitutions.some(({ prefix }) => prefix.length < firstSeparator)
+  )
+}
+
+function isStructuralCloser(text) {
+  return /^(?:;;|;&|;;&|fi|done|esac|else|elif|\}|\))(?:[;\s]|$)/.test(text)
+}
+
+function isImplicitStatusTerminator(text) {
+  return /^(?:return|exit)(?:\s*(?:;|#.*)?$)/.test(text)
+}
+
+// A direct return/exit makes the remainder of its function command list unreachable. Keep this
+// deliberately narrow: a terminator in a conditional, an AND/OR list, a pipeline, or a background
+// command does not prove that later option updates cannot run.
+function unconditionalTerminator(text) {
+  if (
+    /(?:^|[;\s])(?:if|then|else|elif|while|until|for|select|case|do|done|fi|esac)(?:[;\s]|$)/.test(
+      text,
+    )
+  )
+    return null
+  const { separators, pipelines } = scanGuardOperators(text)
+  let start = 0
+  for (let index = 0; index <= separators.length; index += 1) {
+    const separator = separators[index]
+    const end = separator?.at ?? text.length
+    const previous = separators[index - 1]?.operator
+    const hasPipeline = pipelines.some(({ at }) => at >= start && at < end)
+    if (
+      /^(?:return|exit)\b/.test(commandWord(text.slice(start, end))) &&
+      !hasPipeline &&
+      !['&&', '||', '&'].includes(previous) &&
+      (!separator || separator.operator === ';')
+    )
+      return { end }
+    if (!separator) break
+    start = separator.at + separator.operator.length
+  }
+  return null
+}
+
+function commandMasksSubstitution(prefix) {
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+  return commandWordIndex(tokenizeShellLine(prefix, state)) !== -1
+}
+
+function stripLeadingCaseArmPattern(text) {
+  let quote = null
+  let parenDepth = 0
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote) {
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '(') {
+      parenDepth += 1
+      continue
+    }
+    if (ch === ')' && parenDepth === 0) return text.slice(i + 1).trimStart()
+    if (ch === ')') parenDepth -= 1
+  }
+  return text
+}
+
+function bareGuardFallsThrough(
+  text,
+  options,
+  hasLaterCommand,
+  enclosingContinues,
+  inCaseArm = false,
+  errexitIgnored = false,
+) {
+  const source = text.trimStart().replace(/^\{\s*/, '')
+  const { separators } = scanGuardOperators(source)
+  let segmentOptions = { ...options }
+  let start = 0
+  const andFailureReachesTerminator = (from) => {
+    for (let index = from + 1; index < separators.length; index += 1) {
+      const separator = separators[index]
+      if (separator.operator === '&&') continue
+      if (separator.operator === '||')
+        return branchReachesExit(source.slice(separator.at + separator.operator.length))
+      return false
+    }
+    return false
+  }
+  for (let i = 0; i <= separators.length; i++) {
+    const separator = separators[i]
+    const segment = source.slice(start, separator?.at)
+    const rawCommand = segment.trim()
+    const commandSource = inCaseArm ? stripLeadingCaseArmPattern(rawCommand) : rawCommand
+    const command = commandSource
+      .trim()
+      .replace(/^(?:\{\s*)+/, '')
+      .replace(/^(?:!|time)\s+/, '')
+    const isGuard = isGuardCommand(command)
+    const errexitExempt =
+      (separator?.operator === '&&' && isGuard) ||
+      (separator?.operator === '&' && isGuard) ||
+      (/^!\s+/.test(commandSource) && isGuardCommand(commandSource.replace(/^!\s+/, ''))) ||
+      (scanGuardOperators(rawCommand).pipelines.length > 0 && !segmentOptions.pipefail)
+    const fallsThrough =
+      (!separator && (hasLaterCommand || enclosingContinues)) ||
+      ((separator?.operator === ';' || separator?.operator === '&') &&
+        (() => {
+          const remainder = source.slice(separator.at + 1).trim()
+          return (
+            (separator.operator === '&' && (hasLaterCommand || enclosingContinues)) ||
+            (remainder && !remainder.startsWith('#') && !isStructuralCloser(remainder)) ||
+            (separator.operator === ';' && !remainder && enclosingContinues)
+          )
+        })()) ||
+      (separator?.operator === '&&' &&
+        (hasLaterCommand ||
+          enclosingContinues ||
+          separators.slice(i + 1).some(({ operator }) => operator === ';')) &&
+        !andFailureReachesTerminator(i))
+    if (
+      isGuard &&
+      (!segmentOptions.errexit || errexitExempt || compoundErrexitExempt(text)) &&
+      fallsThrough
+    )
+      return true
+    if (!separator) break
+    segmentOptions = shellOptionStateAfter(segment, segmentOptions)
+    if (errexitIgnored) segmentOptions.errexit = false
+    start = separator.at + separator.operator.length
+  }
+  return false
+}
+
+// `errexit` does not apply to a command on the non-final side of an AND list.
+// Keep checking that narrow case even when the enclosing block starts with `set -e`.
+function isFunctionDeclaration(text) {
+  return /^\s*(?:function\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\(\s*\))?|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*(?:\{|\(|$)/.test(
+    text,
+  )
+}
+
+function conditionalOpener(text) {
+  return text.match(
+    /^\s*(?:(?:(?:function\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*)?\{\s*)?(if|elif|while|until|for|select)\b/,
+  )
+}
+
+function embeddedConditionalStart(text) {
+  const match = /(?:^|;)\s*(if|while|until|for|select)\b/.exec(text)
+  if (!match) return -1
+  return match.index + match[0].lastIndexOf(match[1])
+}
+
+function caseOpener(text) {
+  return /^\s*(?:(?:(?:function\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*)?\{\s*)?case\b/.test(
+    text,
+  )
+}
+
+function staticCaseWord(text) {
+  const word = text.trim()
+  if (/^[A-Za-z0-9_./:-]+$/.test(word)) return word
+  if (/^'[^']*'$/.test(word)) return word.slice(1, -1)
+  return null
+}
+
+function staticCaseSelector(text) {
+  const match = /\bcase\s+([^\s]+)\s+in\b/.exec(text)
+  return match ? staticCaseWord(match[1]) : null
+}
+
+function staticCaseArmMatches(text, selector) {
+  if (selector === null) return null
+  const header = /\bcase\s+[^\s]+\s+in\b([\s\S]*)/.exec(text)
+  const arm = /^\s*([^()]*)\)/.exec(header ? header[1] : text)
+  if (!arm) return null
+  const patterns = arm[1].split('|').map((pattern) => pattern.trim())
+  if (patterns.includes('*')) return true
+  const literals = patterns.map(staticCaseWord)
+  return literals.every((pattern) => pattern !== null) ? literals.includes(selector) : null
+}
+
+// A conditional's predicate always runs, while its body may not. Keep option tracking on the
+// former only: applying `set` or `shopt` from an unselected branch leaks state into the command
+// list after the conditional, but ignoring the predicate loses an effect Bash definitely applies.
+function conditionalPredicate(text, conditional) {
+  const keyword = conditional[1]
+  const terminator = keyword === 'if' || keyword === 'elif' ? 'then' : 'do'
+  const keywordAt = conditional.index + conditional[0].lastIndexOf(keyword)
+  const predicateAt = keywordAt + keyword.length
+  // Shell grammar places `then`/`do` after a command separator. This narrow lexical split matches
+  // the conditional opener recognized above without treating a similarly named command argument as
+  // a terminator.
+  const close = new RegExp(`(?:^|[;\\n])\\s*${terminator}\\b`).exec(text.slice(predicateAt))
+  return text.slice(predicateAt, predicateAt + (close?.index ?? text.length))
+}
+
+function staticallySelectedConditionalBody(text, conditional, bodies) {
+  if (conditional[1] !== 'if' || bodies.length === 0) return null
+  const status = knownCommandStatus(conditionalPredicate(text, conditional))
+  if (status === true) return bodies.findIndex(({ branch }) => branch === 'then')
+  if (status === false) return bodies.findIndex(({ branch }) => branch === 'else')
+  return null
+}
+
+function compoundErrexitExempt(text) {
+  const trimmed = text.trimStart()
+  const close =
+    trimmed[0] === '{'
+      ? matchingBrace(trimmed, 0)
+      : trimmed[0] === '('
+        ? matchingParen(trimmed, 0)
+        : -1
+  return close !== -1 && compoundListOperatorAfterRedirections(trimmed.slice(close + 1))
+}
+
+function compoundListOperatorAfterRedirections(text) {
+  const redirection =
+    /^(?:\d+)?(?:&>>|&>|>>|<<|<>|>&|<&|>|<)(?:\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s;|&()])+)?\s*/
+  let remainder = text.trimStart()
+  while (true) {
+    if (/^(?:&&|\|\||\|)/.test(remainder)) return true
+    const match = remainder.match(redirection)
+    if (!match) return false
+    remainder = remainder.slice(match[0].length).trimStart()
+  }
+}
+
+function testedCompoundCloser(text) {
+  const match = text.match(/^\s*(?:fi|done|esac)\b|^\s*[})]/)
+  return match !== null && compoundListOperatorAfterRedirections(text.slice(match[0].length))
+}
+
+function inlineSubshellBody(text) {
+  const trimmed = text.trimStart()
+  if (!trimmed.startsWith('(')) return null
+  const close = matchingParen(trimmed, 0)
+  if (close === -1 || trimmed.slice(close + 1).trim()) return null
+  return trimmed.slice(1, close)
+}
+
+function caseArmTerminator(text) {
+  // `;&` and `;;&` deliberately continue into the next case arm. Only `;;` ends the selected
+  // arm's flow and therefore gives subsequent arms an independent scope.
+  return scanGuardOperators(text).separators.some(({ operator }) => operator === ';;')
+}
+
+function conditionalBranchDelimiter(text) {
+  const { separators } = scanGuardOperators(text)
+  let start = 0
+  for (const separator of separators) {
+    start = separator.at + separator.operator.length
+    if (/^\s*(?:else|elif)\b/.test(text.slice(start))) return start
+  }
+  return -1
+}
+
+function incrementScopedBranch(scope) {
+  const match = /^(.*\.)(\d+)$/.exec(scope)
+  return match ? `${match[1]}${Number(match[2]) + 1}` : scope
+}
+
+function conditionalBranchSuffix(text) {
+  const delimiter = conditionalBranchDelimiter(text)
+  if (delimiter === -1) return null
+  const match = /^\s*(?:else|elif)\b([\s\S]*)$/.exec(text.slice(delimiter))
+  if (!match) return null
+  return { prefix: text.slice(0, delimiter), suffix: match[1] }
+}
+
+function caseArmSuffix(text) {
+  const terminator = [...scanGuardOperators(text).separators]
+    .reverse()
+    .find(({ operator }) => operator === ';;')
+  if (!terminator) return null
+  const suffix = text.slice(terminator.at + terminator.operator.length)
+  const pattern = /^\s*(?:[^()\\]|\\.)*\)\s*([\s\S]*)$/.exec(suffix)
+  if (!pattern) return null
+  return { prefix: text.slice(0, terminator.at + terminator.operator.length), suffix: pattern[1] }
+}
+
+function functionDefinitions(logical) {
+  const scopes = new Map()
+  for (const line of logical) {
+    if (line.functionScope === null) continue
+    const lines = scopes.get(line.functionScope) ?? []
+    lines.push(line)
+    scopes.set(line.functionScope, lines)
+  }
+  const definitions = new Map()
+  for (const lines of scopes.values()) {
+    if (lines.some((line) => line.inSubshell)) continue
+    if (lines.some((line) => isFunctionDeclaration(line.text) && !line.definitionReachable))
+      continue
+    const source = lines.map(({ text }) => text).join('\n')
+    const declaration = source.match(
+      /^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*([({])/,
+    )
+    if (!declaration) continue
+    const name = declaration[1] ?? declaration[2]
+    const opener = declaration.index + declaration[0].lastIndexOf(declaration[3])
+    const closer =
+      declaration[3] === '{' ? matchingBrace(source, opener) : matchingParen(source, opener)
+    if (closer === -1) continue
+    definitions.set(name, {
+      body: source.slice(opener + 1, closer),
+      lineOffset: lines[0].lineOffset + source.slice(0, opener + 1).split('\n').length - 1,
+    })
+  }
+  return definitions
+}
+
+function functionDeclarationName(text) {
+  const declaration = text.match(
+    /^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?|([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\))\s*[({]/,
+  )
+  return declaration?.[1] ?? declaration?.[2] ?? null
+}
+
+// Split a command list only when it invokes a known function. The general guard analysis needs
+// the whole list (for example, to see `test -f x || exit 1`), while function calls need their
+// exact AND/OR position: only a non-final list member suppresses errexit in Bash.
+function splitInvokedFunctionLines(logical, definitions) {
+  return logical.flatMap((line) => {
+    if (line.invokedFunctionLineSplit || conditionalOpener(line.text)) return [line]
+    if (isFunctionDeclaration(line.text)) {
+      const open = line.text.indexOf('{')
+      const close = open === -1 ? -1 : matchingBrace(line.text, open)
+      const suffix = close === -1 ? '' : line.text.slice(close + 1)
+      if (!suffix.trim()) return [line]
+      return [
+        { ...line, text: line.text.slice(0, close + 1) },
+        ...splitInvokedFunctionLines([{ ...line, text: suffix }], definitions),
+      ]
+    }
+    const { separators } = scanGuardOperators(line.text)
+    if (separators.length === 0) return [line]
+    const segments = []
+    let start = 0
+    for (const separator of separators) {
+      segments.push({
+        text: line.text.slice(start, separator.at),
+        nextSeparator: separator.operator,
+      })
+      start = separator.at + separator.operator.length
+    }
+    segments.push({ text: line.text.slice(start), nextSeparator: null })
+    if (!segments.some(({ text }) => definitions.has(functionCallCommandWord(text)))) return [line]
+    return segments
+      .filter(({ text }) => text.trim())
+      .map(({ text, nextSeparator }, index, invokedSegments) => ({
+        ...line,
+        text,
+        nextSeparator,
+        previousSeparator: index === 0 ? null : invokedSegments[index - 1].nextSeparator,
+        previousText: index === 0 ? null : invokedSegments[index - 1].text,
+        invokedFunctionLineSplit: true,
+      }))
+  })
+}
+
+function annotateFunctionScopes(logical) {
+  let braceDepth = 0
+  let parenDepth = 0
+  let pendingFunction = false
+  let nextScope = 0
+  const functions = []
+  const groups = []
+  const conditionals = []
+  const cases = []
+
+  for (const line of logical) {
+    const trimmed = line.text.trim()
+    if (caseOpener(trimmed))
+      cases.push({
+        id: ++nextScope,
+        arm: 0,
+        selector: staticCaseSelector(trimmed),
+        armMatches: null,
+      })
+    const caseArmMatches = staticCaseArmMatches(trimmed, cases.at(-1)?.selector ?? null)
+    if (caseArmMatches !== null) cases.at(-1).armMatches = caseArmMatches
+    line.functionScope = functions.at(-1)?.id ?? null
+    line.groupScope = groups.map(({ id }) => id).join('/')
+    line.inSubshell = groups.some(({ kind }) => kind === 'paren')
+    line.definitionReachable =
+      conditionals.every(
+        ({ predicateStatus, branch }) => predicateStatus !== false || branch > 0,
+      ) && cases.every(({ armMatches }) => armMatches !== false)
+    const closesConditional = /^fi(?:[;\s]|$)/.test(trimmed)
+    const closesLoop = /^done(?:[;\s]|$)/.test(trimmed)
+    const closesCase = /^esac(?:[;\s]|$)/.test(trimmed)
+    if (/^(?:else|elif)\b/.test(trimmed) && conditionals.at(-1)?.closer === 'fi') {
+      const current = conditionals.at(-1)
+      current.branch += 1
+      if (/^elif\b/.test(trimmed)) current.sawElif = true
+      if (/^else\b/.test(trimmed) && current.predicateStatus === false && !current.sawElif)
+        current.selectedBranch = current.branch
+    }
+    line.conditionalScope = conditionals.map(({ id, branch }) => `${id}.${branch}`).join('/')
+    line.caseScope = cases.map(({ id, arm }) => `${id}.${arm}`).join('/')
+    const { braceDelta, parenDelta } = scanGuardOperators(line.text)
+    const declaration = isFunctionDeclaration(line.text)
+    const opensFunction = declaration || (pendingFunction && (braceDelta > 0 || parenDelta > 0))
+    // An entire brace-bodied declaration can sit on one logical line. It never executes while
+    // declared, but its body still needs a temporary function scope so `set` cannot leak outward.
+    const inlineFunction = declaration && braceDelta === 0 && /\{/.test(line.text)
+    pendingFunction = declaration && braceDelta === 0 && parenDelta === 0 && !inlineFunction
+    const priorBraceDepth = braceDepth
+    const priorParenDepth = parenDepth
+    braceDepth += braceDelta
+    parenDepth += parenDelta
+    for (let depth = priorBraceDepth + 1; depth <= braceDepth; depth++)
+      groups.push({ id: ++nextScope, kind: 'brace', depth })
+    for (let depth = priorParenDepth + 1; depth <= parenDepth; depth++)
+      groups.push({ id: ++nextScope, kind: 'paren', depth })
+    if (opensFunction && braceDelta > 0) {
+      const id = ++nextScope
+      functions.push({ id, bodyKind: 'brace', bodyDepth: braceDepth })
+      line.functionScope = id
+    } else if (opensFunction && parenDelta > 0) {
+      const id = ++nextScope
+      functions.push({ id, bodyKind: 'paren', bodyDepth: parenDepth })
+      line.functionScope = id
+    } else if (inlineFunction) {
+      line.functionScope = ++nextScope
+    }
+    while (
+      functions.length > 0 &&
+      ((functions.at(-1).bodyKind === 'brace' && braceDepth < functions.at(-1).bodyDepth) ||
+        (functions.at(-1).bodyKind === 'paren' && parenDepth < functions.at(-1).bodyDepth))
+    )
+      functions.pop()
+    while (groups.at(-1)?.kind === 'brace' && groups.at(-1).depth > braceDepth) groups.pop()
+    while (groups.at(-1)?.kind === 'paren' && groups.at(-1).depth > parenDepth) groups.pop()
+    const conditional = conditionalOpener(trimmed)
+    const closer = conditional?.[1] === 'if' || conditional?.[1] === 'elif' ? 'fi' : 'done'
+    const closesInlineConditional =
+      closer && new RegExp(`(?:^|[;\\n])\\s*${closer}(?:[;\\s]|$)`).test(trimmed)
+    if (conditional && conditional[1] !== 'elif' && !closesInlineConditional)
+      conditionals.push({
+        id: ++nextScope,
+        branch: 0,
+        closer,
+        predicateStatus: knownCommandStatus(conditionalPredicate(line.text, conditional)),
+        selectedBranch:
+          knownCommandStatus(conditionalPredicate(line.text, conditional)) === true ? 0 : null,
+        sawElif: false,
+      })
+    if (closesConditional) line.closedConditional = conditionals.pop()
+    if (closesLoop) line.closedConditional = conditionals.pop()
+    if (caseArmTerminator(trimmed) && cases.length > 0) {
+      cases.at(-1).arm += 1
+      cases.at(-1).armMatches = null
+    }
+    if (closesCase) cases.pop()
+    if (conditionalBranchDelimiter(trimmed) !== -1 && conditionals.at(-1)?.closer === 'fi') {
+      const current = conditionals.at(-1)
+      current.branch += 1
+      if (/^\s*elif\b/.test(trimmed)) current.sawElif = true
+      if (/^\s*else\b/.test(trimmed) && current.predicateStatus === false && !current.sawElif)
+        current.selectedBranch = current.branch
+    }
+    // A command after a compound closer belongs to the surrounding command list, not the branch
+    // that just ended. Its option changes must therefore update the outer shell state.
+    if (closesConditional || closesLoop || closesCase) {
+      line.conditionalScope = conditionals.map(({ id, branch }) => `${id}.${branch}`).join('/')
+      line.caseScope = cases.map(({ id, arm }) => `${id}.${arm}`).join('/')
+    }
+  }
+  return logical
+}
+
+function matchingParen(line, open) {
+  let depth = 0
+  let quote = null
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(line[i - 1]))) {
+      const end = line.indexOf('\n', i + 1)
+      if (end === -1) return -1
+      i = end
+      continue
+    }
+    if (ch === '(') depth += 1
+    else if (ch === ')' && --depth === 0) return i
+  }
+  return -1
+}
+
+// Find branch bodies and a trailing top-level command after an inline conditional or loop. The
+// raw-regexp version treated a matching word in quoted output or a comment as a closer; this small
+// lexer follows the shell's quote/comment boundaries and tracks nested compound commands before
+// accepting the closer.
+function inlineCompoundParts(text) {
+  const closers = []
+  const bodies = []
+  let bodyStart = null
+  let bodyBranch = null
+  const addBody = (end) => {
+    if (bodyStart === null) return
+    const source = text
+      .slice(bodyStart, end)
+      .replace(/^\s*;\s*/, '')
+      .replace(/\s*;\s*$/, '')
+    if (source)
+      bodies.push({
+        text: source,
+        lineOffset: text.slice(0, bodyStart).split('\n').length - 1,
+        branch: bodyBranch,
+      })
+    bodyStart = null
+    bodyBranch = null
+  }
+  let commandStart = true
+  for (let i = 0; i < text.length;) {
+    const ch = text[i]
+    if (ch === '\\') {
+      i += 2
+      commandStart = false
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      const quote = ch
+      i += 1
+      while (i < text.length) {
+        if (text[i] === '\\' && quote === '"') i += 2
+        else if (text[i++] === quote) break
+      }
+      commandStart = false
+      continue
+    }
+    if (ch === '$' && text[i + 1] === '(') {
+      const end = matchingParen(text, i + 1)
+      if (end === -1) return { bodies, trailing: null }
+      i = end + 1
+      commandStart = false
+      continue
+    }
+    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(text[i - 1]))) {
+      const end = text.indexOf('\n', i + 1)
+      if (end === -1) return { bodies, trailing: null }
+      i = end + 1
+      commandStart = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      commandStart ||= ch === '\n'
+      i += 1
+      continue
+    }
+    if (ch === ';' || ch === '|' || ch === '&') {
+      commandStart = true
+      i += 1
+      continue
+    }
+    if (ch === '(' || ch === ')' || ch === '{' || ch === '}') {
+      commandStart = ch === '{'
+      i += 1
+      continue
+    }
+    const start = i
+    while (i < text.length && !/[\s;|&(){}'"\\]/.test(text[i])) i += 1
+    const word = text.slice(start, i)
+    if (commandStart) {
+      if (word === 'if') closers.push('fi')
+      else if (['while', 'until', 'for', 'select'].includes(word)) closers.push('done')
+      else if (word === 'case') closers.push('esac')
+      else if ((word === 'then' || word === 'do') && closers.length === 1) {
+        bodyStart = i
+        bodyBranch = word === 'then' ? 'then' : null
+      } else if ((word === 'else' || word === 'elif') && closers.length === 1) {
+        addBody(start)
+        if (word === 'else') {
+          bodyStart = i
+          bodyBranch = 'else'
+        }
+      } else if (word === closers.at(-1)) {
+        closers.pop()
+        let after = i
+        while (/[ \t]/.test(text[after])) after += 1
+        if (closers.length === 0) {
+          addBody(start)
+          const suffix = text.slice(after).trimStart()
+          return {
+            bodies,
+            trailing:
+              text[after] === ';'
+                ? text.slice(after + 1).trimStart()
+                : /^(?:&&|\|\|)/.test(suffix)
+                  ? suffix
+                  : null,
+          }
+        }
+      }
+    }
+    commandStart = false
+  }
+  return { bodies, trailing: null }
+}
+
+function leadingCompoundCloserTrailing(text) {
+  const match = text.match(/^(\s*(?:fi|done|esac)\b|\s*\})([ \t]*;)([\s\S]*)$/)
+  if (!match) return null
+  return { closer: match[1], suffix: match[3].trimStart() }
+}
+
+function sameOrOuterScope(scope, laterScope) {
+  return (
+    scope === laterScope || (scope && (laterScope === '' || scope.startsWith(`${laterScope}/`)))
+  )
+}
+
+function matchingBacktick(line, open) {
+  for (let i = open + 1; i < line.length; i++) {
+    if (line[i] === '\\') {
+      i += 1
+      continue
+    }
+    if (line[i] === '`') return i
+  }
+  return -1
+}
+
+/**
+ * Report recognised shell guards whose failure branch falls through. Returns
+ * [{ lineOffset, guard }] with line offsets relative to `body`.
+ */
+export function findInertGuards(body) {
+  const masked = maskHeredocBodies(body.split('\n')).join('\n')
+  const findings = []
+  const inspect = (
+    source,
+    lineOffset,
+    inheritedErrexit = false,
+    enclosingContinues = false,
+    inheritedErrexitEnabled = false,
+    inheritedPipefail = false,
+    inheritedErrexitIgnored = false,
+    inheritedDefinitions = new Map(),
+    activeDefinitions = new Set(),
+  ) => {
+    let options = {
+      errexit: inheritedErrexit,
+      inheritErrexit: inheritedErrexitEnabled,
+      pipefail: inheritedPipefail,
+    }
+    let logical = annotateFunctionScopes(guardLogicalLines(source))
+    let localDefinitions = functionDefinitions(logical)
+    let allDefinitions = new Map([...inheritedDefinitions, ...localDefinitions])
+    logical = annotateFunctionScopes(splitInvokedFunctionLines(logical, allDefinitions))
+    localDefinitions = functionDefinitions(logical)
+    allDefinitions = new Map([...inheritedDefinitions, ...localDefinitions])
+    // Function declarations only take effect once execution reaches them. Keep the complete map
+    // for structural splitting, but resolve calls with this sequential environment.
+    const definitions = new Map(inheritedDefinitions)
+    // A multiline compound's closer carries the AND/OR-list status-test exemption for its whole
+    // body. The closer itself still has the just-closing scope, so retain that scope and apply it
+    // to every nested line while the compound is inspected.
+    const testedCompoundScopes = logical
+      .filter(({ text }) => testedCompoundCloser(text))
+      .map(({ conditionalScope, caseScope, groupScope }) => ({
+        conditionalScope,
+        caseScope,
+        groupScope,
+      }))
+    const isInTestedCompoundScope = (conditionalScope, caseScope, groupScope) =>
+      testedCompoundScopes.some(
+        (tested) =>
+          scopeIsOuter(tested.conditionalScope, conditionalScope) &&
+          scopeIsOuter(tested.caseScope, caseScope) &&
+          scopeIsOuter(tested.groupScope, groupScope),
+      )
+    const invokedFunctions = new Set()
+    const definitionsInOrder = new Map(inheritedDefinitions)
+    for (const { text, functionScope } of logical) {
+      if (functionScope === null)
+        for (const { name } of functionCalls(text, definitionsInOrder)) invokedFunctions.add(name)
+      if (!isFunctionDeclaration(text)) continue
+      const name = functionDeclarationName(text)
+      if (name && localDefinitions.has(name))
+        definitionsInOrder.set(name, localDefinitions.get(name))
+    }
+    for (const definition of localDefinitions.values()) {
+      for (const { text } of guardLogicalLines(definition.body)) {
+        for (const { name } of functionCalls(text, allDefinitions)) invokedFunctions.add(name)
+      }
+    }
+    // An uninvoked function is still checked for a bare guard that it itself makes ineffective
+    // (for example, one followed by `return 0`), but it has no caller-provided shell options yet.
+    // Functions that are invoked below are checked there instead, with their call-site state.
+    for (const [name, definition] of localDefinitions) {
+      if (invokedFunctions.has(name)) continue
+      inspect(
+        definition.body,
+        lineOffset + definition.lineOffset,
+        false,
+        false,
+        false,
+        false,
+        false,
+        definitions,
+      )
+    }
+    const scopedOptions = new Map()
+    const scopeIsOuter = (outer, inner) =>
+      outer === '' || outer === inner || inner.startsWith(`${outer}/`)
+    const optionsForScope = (functionScope, conditionalScope, caseScope, fallback) => {
+      let closest = fallback
+      let closestDepth = -1
+      for (const scoped of scopedOptions.values()) {
+        if (
+          scoped.functionScope !== functionScope ||
+          !scopeIsOuter(scoped.conditionalScope, conditionalScope) ||
+          !scopeIsOuter(scoped.caseScope, caseScope)
+        )
+          continue
+        const depth = scoped.conditionalScope.length + scoped.caseScope.length
+        if (depth > closestDepth) {
+          closest = scoped.options
+          closestDepth = depth
+        }
+      }
+      return closest
+    }
+    const updateOptions = (functionScope, conditionalScope, caseScope, next) => {
+      if (!conditionalScope && !caseScope) {
+        if (functionScope === null) options = next
+        return
+      }
+      scopedOptions.set(`${functionScope}|${conditionalScope}|${caseScope}`, {
+        functionScope,
+        conditionalScope,
+        caseScope,
+        options: next,
+      })
+    }
+    const reportInertPredicateGuard = (predicate, predicateOptions, localOffset) => {
+      // An explicit `||` fallback is conditional syntax, not a falling-through guard.
+      if (
+        bareGuardFallsThrough(
+          predicate,
+          { ...predicateOptions, errexit: false },
+          false,
+          false,
+          false,
+          true,
+        )
+      )
+        findings.push({ lineOffset: lineOffset + localOffset, guard: predicate.trim() })
+    }
+    for (let index = 0; index < logical.length; index++) {
+      const {
+        text,
+        lineOffset: localOffset,
+        functionScope,
+        conditionalScope,
+        caseScope,
+        groupScope,
+        nextSeparator,
+        previousSeparator,
+        previousText,
+        closedConditional,
+      } = logical[index]
+      if (isFunctionDeclaration(text)) {
+        const name = functionDeclarationName(text)
+        if (name && localDefinitions.has(name)) definitions.set(name, localDefinitions.get(name))
+      }
+      // A declaration does not execute its body. Analyze that body only where the function is
+      // invoked, because Bash supplies the caller's option state at that point rather than the
+      // state that happened to be active while defining it.
+      if (functionScope !== null) continue
+      let lineOptions = optionsForScope(functionScope, conditionalScope, caseScope, options)
+      const lineErrexitIgnored =
+        inheritedErrexitIgnored || isInTestedCompoundScope(conditionalScope, caseScope, groupScope)
+      const conditional = conditionalOpener(text)
+      const { operators, substitutions } = scanGuardOperators(text)
+      const hasLaterCommand = logical
+        .slice(index + 1)
+        .some(
+          ({
+            text: later,
+            functionScope: laterScope,
+            conditionalScope: laterConditionalScope,
+            caseScope: laterCaseScope,
+          }) => {
+            const trimmed = later.trim()
+            return (
+              functionScope === laterScope &&
+              sameOrOuterScope(conditionalScope, laterConditionalScope) &&
+              sameOrOuterScope(caseScope, laterCaseScope) &&
+              trimmed !== '' &&
+              !trimmed.startsWith('#') &&
+              !isImplicitStatusTerminator(trimmed) &&
+              !isStructuralCloser(trimmed)
+            )
+          },
+        )
+      const subshell = inlineSubshellBody(text)
+      if (subshell !== null) {
+        inspect(
+          subshell,
+          lineOffset + localOffset,
+          lineOptions.errexit,
+          enclosingContinues || hasLaterCommand,
+          lineOptions.inheritErrexit,
+          lineOptions.pipefail,
+          lineErrexitIgnored,
+          definitions,
+          activeDefinitions,
+        )
+        continue
+      }
+      const embeddedConditional = embeddedConditionalStart(text)
+      if (embeddedConditional > 0) {
+        const compound = inlineCompoundParts(text.slice(embeddedConditional))
+        if (compound.bodies.length > 0) {
+          const prefixOptions = shellOptionStateAfter(
+            text.slice(0, embeddedConditional),
+            lineOptions,
+          )
+          const embeddedOpener = conditionalOpener(text.slice(embeddedConditional))
+          const predicate = conditionalPredicate(text.slice(embeddedConditional), embeddedOpener)
+          for (const inner of scanGuardOperators(predicate).substitutions) {
+            const innerOptions = shellOptionStateAfter(inner.prefix, prefixOptions)
+            // A predicate tests the assignment's status, so Bash ignores errexit in its command
+            // substitutions even when inherit_errexit is enabled.
+            inspect(
+              inner.body,
+              lineOffset + localOffset,
+              innerOptions.errexit && innerOptions.inheritErrexit,
+              false,
+              innerOptions.inheritErrexit,
+              innerOptions.pipefail,
+              true,
+              definitions,
+              activeDefinitions,
+            )
+          }
+          reportInertPredicateGuard(predicate, prefixOptions, localOffset)
+          let outerOptions = prefixOptions
+          const testedCompound = /^\s*(?:&&|\|\|)/.test(compound.trailing ?? '')
+          const selectedBody = staticallySelectedConditionalBody(
+            text.slice(embeddedConditional),
+            embeddedOpener,
+            compound.bodies,
+          )
+          for (const [bodyIndex, body] of compound.bodies.entries()) {
+            const bodyOptions = inspect(
+              body.text,
+              lineOffset + localOffset + body.lineOffset,
+              prefixOptions.errexit,
+              enclosingContinues || hasLaterCommand,
+              prefixOptions.inheritErrexit,
+              prefixOptions.pipefail,
+              inheritedErrexitIgnored || testedCompound,
+              definitions,
+              activeDefinitions,
+            )
+            if (bodyIndex === selectedBody) outerOptions = bodyOptions
+          }
+          updateOptions(functionScope, conditionalScope, caseScope, outerOptions)
+          if (compound.trailing && !/^\s*(?:&&|\|\|)/.test(compound.trailing)) {
+            const trailingOptions = inspect(
+              compound.trailing,
+              lineOffset + localOffset,
+              outerOptions.errexit,
+              enclosingContinues,
+              outerOptions.inheritErrexit,
+              outerOptions.pipefail,
+              inheritedErrexitIgnored,
+              definitions,
+              activeDefinitions,
+            )
+            updateOptions(functionScope, conditionalScope, caseScope, trailingOptions)
+          }
+          continue
+        }
+      }
+      if (conditional) {
+        // A predicate executes before its selected body. Retain its option changes in that branch,
+        // but never promote branch-local state to the enclosing command list.
+        const predicate = conditionalPredicate(text, conditional)
+        let predicateOptions = lineOptions
+        for (const { text: predicateSegment, executes, guaranteed } of commandListSegments(
+          predicate,
+        )) {
+          if (!executes) continue
+          for (const { name } of functionCalls(predicateSegment, definitions)) {
+            if (activeDefinitions.has(name)) continue
+            const predicateDefinition = definitions.get(name)
+            // Bash ignores errexit throughout a function whose status is tested by a conditional,
+            // but does not disable the option. The function still runs in the caller's shell and
+            // can change its options when its predicate-list segment definitely executes.
+            const functionOptions = inspect(
+              predicateDefinition.body,
+              lineOffset + predicateDefinition.lineOffset,
+              predicateOptions.errexit,
+              enclosingContinues,
+              predicateOptions.inheritErrexit,
+              predicateOptions.pipefail,
+              true,
+              definitions,
+              new Set([...activeDefinitions, name]),
+            )
+            if (guaranteed) predicateOptions = functionOptions
+          }
+          if (guaranteed)
+            predicateOptions = shellOptionStateAfter(predicateSegment, predicateOptions)
+        }
+        for (const inner of scanGuardOperators(predicate).substitutions) {
+          const innerOptions = shellOptionStateAfter(inner.prefix, predicateOptions)
+          // A predicate tests the assignment's status, so Bash ignores errexit in its command
+          // substitutions even when inherit_errexit is enabled.
+          inspect(
+            inner.body,
+            lineOffset + localOffset,
+            innerOptions.errexit && innerOptions.inheritErrexit,
+            false,
+            innerOptions.inheritErrexit,
+            innerOptions.pipefail,
+            true,
+            definitions,
+            activeDefinitions,
+          )
+        }
+        reportInertPredicateGuard(predicate, predicateOptions, localOffset)
+        let outerOptions = predicateOptions
+        const conditionalInvocation =
+          nextSeparator === '&&' ||
+          nextSeparator === '||' ||
+          scanGuardOperators(text).separators.some(
+            ({ operator }) => operator === '&&' || operator === '||',
+          )
+        const compoundBodies = inlineCompoundParts(text).bodies
+        const selectedBody = staticallySelectedConditionalBody(text, conditional, compoundBodies)
+        for (const [bodyIndex, body] of compoundBodies.entries()) {
+          const bodyOptions = inspect(
+            body.text,
+            lineOffset + localOffset + body.lineOffset,
+            predicateOptions.errexit,
+            enclosingContinues || hasLaterCommand,
+            predicateOptions.inheritErrexit,
+            predicateOptions.pipefail,
+            lineErrexitIgnored || conditionalInvocation,
+            definitions,
+            activeDefinitions,
+          )
+          if (bodyIndex === selectedBody) outerOptions = bodyOptions
+        }
+        updateOptions(functionScope, conditionalScope, caseScope, outerOptions)
+        continue
+      }
+      for (const { name, pipeline, finalPipelineSegment } of functionCalls(text, definitions)) {
+        const definition = definitions.get(name)
+        const skippedFunctionInvocation =
+          (previousSeparator === '&&' && /^\s*false\s*$/.test(previousText ?? '')) ||
+          (previousSeparator === '||' && /^\s*(?:true|:)\s*$/.test(previousText ?? ''))
+        if (skippedFunctionInvocation || activeDefinitions.has(name)) continue
+        // Bash ignores errexit throughout a function invoked from an AND/OR list or a non-final
+        // pipeline segment. A direct call, however, runs in the current shell, so option changes
+        // made by its body carry forward.
+        // `guardLogicalLines` splits a predicate list at `&&`/`||` when a preceding function
+        // declaration shares its line. Retain the conditional context for the later segment.
+        const predicateListInvocation =
+          previousSeparator === '&&' && Boolean(conditionalOpener(previousText ?? ''))
+        const conditionalInvocation =
+          (pipeline && !finalPipelineSegment) ||
+          nextSeparator === '&&' ||
+          nextSeparator === '||' ||
+          predicateListInvocation ||
+          /^\s*!\s+/.test(text) ||
+          scanGuardOperators(text).separators.some(
+            ({ operator }) => operator === '&&' || operator === '||',
+          )
+        const functionOptions = inspect(
+          definition.body,
+          lineOffset + definition.lineOffset,
+          lineOptions.errexit && !conditionalInvocation,
+          enclosingContinues || hasLaterCommand,
+          lineOptions.inheritErrexit,
+          lineOptions.pipefail,
+          lineErrexitIgnored || conditionalInvocation,
+          definitions,
+          new Set([...activeDefinitions, name]),
+        )
+        // A function on an AND/OR RHS may never run, and a pipeline or backgrounded command runs
+        // in a child shell.
+        // Literal predecessors are the exception: `true && fn` and `false || fn` definitely invoke
+        // the function in this shell, so its option changes persist for later commands.
+        const guaranteedInvocation =
+          !previousSeparator ||
+          previousSeparator === ';' ||
+          (previousSeparator === '&&' && /^\s*(?:true|:)\s*$/.test(previousText ?? '')) ||
+          (previousSeparator === '||' && /^\s*false\s*$/.test(previousText ?? ''))
+        if (guaranteedInvocation && !pipeline && nextSeparator !== '&') {
+          lineOptions = functionOptions
+          updateOptions(functionScope, conditionalScope, caseScope, functionOptions)
+        }
+      }
+      for (const inner of substitutions) {
+        const innerOptions = shellOptionStateAfter(inner.prefix, lineOptions)
+        const outerAssignmentTerminates = substitutionAssignmentTerminates(
+          inner.prefix,
+          inner.suffix,
+        )
+        const outerAssignmentIsStatusTested = scanGuardOperators(inner.suffix).separators.some(
+          ({ operator }) => operator === '&&' || operator === '||',
+        )
+        inspect(
+          inner.body,
+          lineOffset + localOffset,
+          // Bash clears `-e` on entry to a command substitution unless inherit_errexit is enabled.
+          // A `set -e` in the substitution itself is tracked while inspecting that substitution.
+          innerOptions.errexit && innerOptions.inheritErrexit,
+          enclosingContinues ||
+            (!outerAssignmentTerminates && hasLaterCommand) ||
+            commandMasksSubstitution(inner.prefix) ||
+            substitutionIsFollowedInSameCommand(inner.suffix) ||
+            substitutionFallsThrough(inner.suffix),
+          innerOptions.inheritErrexit,
+          innerOptions.pipefail,
+          lineErrexitIgnored || outerAssignmentIsStatusTested,
+          definitions,
+          activeDefinitions,
+        )
+      }
+      if (
+        bareGuardFallsThrough(
+          text,
+          lineErrexitIgnored ? { ...lineOptions, errexit: false } : lineOptions,
+          hasLaterCommand,
+          enclosingContinues,
+          Boolean(caseScope),
+          lineErrexitIgnored,
+        )
+      ) {
+        findings.push({ lineOffset: lineOffset + localOffset, guard: text.trim() })
+      }
+      for (const { at, start } of operators) {
+        const left = text.slice(start, at)
+        const right = text.slice(at + 2)
+        if (!guardCommand(left) && !/^\s*(?:\{|exit\b|return\b)/.test(right)) continue
+        if (isDocumentationPlaceholderFallback(right)) continue
+        if (fallbackAssignsValue(right)) continue
+        const guardOptions = shellOptionStateAfter(text.slice(0, start), lineOptions)
+        const fallbackTerminates =
+          branchReachesExit(right) ||
+          (guardOptions.errexit && !lineErrexitIgnored && branchFailsUnderErrexit(right))
+        if (!fallbackTerminates || enclosingContinues)
+          findings.push({ lineOffset: lineOffset + localOffset, guard: text.trim() })
+      }
+      if (closedConditional?.closer === 'fi' && closedConditional.selectedBranch !== null) {
+        const selectedScope = [
+          ...(conditionalScope ? conditionalScope.split('/') : []),
+          `${closedConditional.id}.${closedConditional.selectedBranch}`,
+        ].join('/')
+        const selected = scopedOptions.get(`${functionScope}|${selectedScope}|${caseScope}`)
+        if (selected) lineOptions = selected.options
+      }
+      // A function declaration does not execute its body. Its `set`/`shopt` calls are scoped to
+      // that function during analysis and cannot alter state for later top-level commands.
+      // Conditional and case option changes stay scoped to their selected branch. They can affect
+      // later commands in that branch, but must not leak after the compound command closes.
+      const terminator = unconditionalTerminator(text)
+      updateOptions(
+        functionScope,
+        conditionalScope,
+        caseScope,
+        shellOptionStateAfter(terminator ? text.slice(0, terminator.end) : text, lineOptions),
+      )
+      if (terminator) break
+      // The lexical scope attached to a logical line is its scope at the line's start. When an
+      // `else` or `;; next-pattern)` appears mid-line, option changes in its suffix belong to the
+      // next branch/arm rather than that starting scope.
+      const branchSuffix = conditionalBranchSuffix(text)
+      if (branchSuffix && conditionalScope) {
+        updateOptions(
+          functionScope,
+          incrementScopedBranch(conditionalScope),
+          caseScope,
+          shellOptionStateAfter(branchSuffix.suffix, lineOptions),
+        )
+      }
+      const armSuffix = caseArmSuffix(text)
+      if (armSuffix && caseScope) {
+        const armOptions = shellOptionStateAfter(armSuffix.prefix, lineOptions)
+        updateOptions(
+          functionScope,
+          conditionalScope,
+          incrementScopedBranch(caseScope),
+          shellOptionStateAfter(armSuffix.suffix, armOptions),
+        )
+      }
+    }
+    return options
+  }
+  inspect(masked, 0)
+  return findings
+}
+
 // Quote- and escape-aware word splitter. Records, per word, whether it carries a glob character
 // that the SHELL would expand — i.e. one that is neither quoted nor backslash-escaped. See (f).
 //
@@ -1207,8 +3082,11 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
     // Same containment as whitespace: these are ordinary characters inside an expansion, where
     // `${x:-a;b}`, `${x:-a|b}` and `${x:-a(b}` all pass `bash -n`. Emitting an operator token there
     // would split one word into segments and let a later one be read as a command word.
+    const descriptorRedirection =
+      ch === '&' && (line[i - 1] === '>' || line[i - 1] === '<' || line[i + 1] === '>')
     if (
       state.paramDepth === 0 &&
+      !descriptorRedirection &&
       (ch === ';' || ch === '|' || ch === '&' || ch === '(' || ch === ')')
     ) {
       flush()
@@ -1645,6 +3523,7 @@ export function findMultiGlobRemovals(body) {
       // the abort is pathname expansion failing, and the shell has no idea the word looks like a
       // flag. Skipping leading-`-` words hid that whole class. Options that carry no glob character
       // are still not globs, so they never reach here anyway.
+      //
       const globs = seg.slice(at + 1).flatMap(globPatterns)
       if (globs.length > 1) findings.push({ lineOffset, command, globs })
     }
@@ -2233,8 +4112,9 @@ function makeBashRunner(tmpDir) {
 
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
- * `unterminated` / `syntax` / `multi-glob` / `gh-body-interpolation` /
- * `gh-body-file-interpolation`, plus `missing-bash` when the gate fails closed.
+ * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `inert-guard` /
+ * `gh-body-interpolation` / `gh-body-file-interpolation`, plus `missing-bash` when the gate fails
+ * closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -2305,6 +4185,15 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + fileWrite.lineOffset,
             kind: 'gh-body-file-interpolation',
             message: `body file ${fileLabel} is written with a heredoc; use a delimiter-free literal write before -F body=@"${fileLabel}"`,
+          })
+        }
+
+        for (const guard of findInertGuards(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + guard.lineOffset,
+            kind: 'inert-guard',
+            message: `${guard.guard} can fall through after failure; add set -e or exit/return in its failure branch`,
           })
         }
 

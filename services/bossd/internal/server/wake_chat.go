@@ -145,6 +145,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			}
 		}
 
+		mcpConfigPath := session.SessionManagedMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 		defaultAccountID := ""
 		sessionEnvFunc := func() map[string]string {
 			defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
@@ -161,7 +162,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
 			)
 		}
-		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, "")
+		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
 			WorktreePath:              sess.WorktreePath,
@@ -179,7 +180,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
 				return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 			},
-			Model: chat.Model,
+			Model:                  chat.Model,
+			ManagedMcpConfigPath:   mcpConfigPath,
+			StrictManagedMcpConfig: session.StrictManagedMcpConfigForSession(sess),
 		})
 		if err != nil {
 			return nil, err

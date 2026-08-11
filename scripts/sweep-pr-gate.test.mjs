@@ -834,7 +834,7 @@ test('all four PR-gate sweeps invoke the helper and check its result, in both mi
   // and anything after the guard (`export PR_NUMBER` always exits 0) makes the guard inert —
   // the block then reports success and an empty PR_NUMBER flows into the check-watch phase as
   // a PR that was never created.
-  const RESULT_CHECK = 'test -n "$PR_NUMBER"\n```'
+  const RESULT_CHECK = 'test -n "$PR_NUMBER" || exit 1\n```'
   // START_SHA is the branch-safety guard's only input, and the gate makes it REQUIRED — a caller
   // that omits it aborts at `: "${START_SHA:?}"`, yields an empty PR_NUMBER, and the sweep stops
   // producing PRs with no other signal: the same silent-inertness class as the stale Phase 1
@@ -856,7 +856,7 @@ test('all four PR-gate sweeps invoke the helper and check its result, in both mi
       )
       assert.ok(
         skill.includes(RESULT_CHECK),
-        `${rel} must CLOSE the gate fence with \`test -n "$PR_NUMBER"\`, so an empty capture is a non-zero block`,
+        `${rel} must close the gate fence with an exiting PR-number guard`,
       )
     }
   }
@@ -873,7 +873,7 @@ test('the PR body temp file is removed before the result is checked, where one i
       const skill = fs.readFileSync(path.join(rootDir, rel), 'utf8')
       assert.ok(
         skill.includes(
-          'sweep-pr-gate.sh")"\nrm -f "$PR_BODY"\nexport PR_NUMBER\ntest -n "$PR_NUMBER"\n```',
+          'sweep-pr-gate.sh")"\nrm -f "$PR_BODY"\nexport PR_NUMBER\ntest -n "$PR_NUMBER" || exit 1\n```',
         ),
         `${rel} must rm the PR body on both the success and failure paths, before the guard`,
       )

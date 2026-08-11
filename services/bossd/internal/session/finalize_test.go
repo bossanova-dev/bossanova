@@ -2362,7 +2362,7 @@ func TestFinalizeSession_LoadedAgentKeepsBossdManagedFiles_DeletedNoChanges(t *t
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{statusOut: "?? .superpowers/\n"}
+	wt := &mockWorktreeManager{statusOut: "?? .claude/scheduled_tasks.lock\n"}
 	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
@@ -2738,11 +2738,11 @@ func TestPorcelainHasTrackedChanges(t *testing.T) {
 		want      bool
 	}{
 		{"empty", "", false},
-		{"untracked only", "?? .superpowers/\n?? docs/plans/2026-06-27-x.md", false},
+		{"untracked only", "?? .agent-scratch/\n?? docs/plans/2026-06-27-x.md", false},
 		{"modified tracked", " M services/bossd/internal/session/finalize.go", true},
 		{"staged add", "A  newfile.go", true},
 		{"deleted tracked", " D oldfile.go", true},
-		{"mixed tracked + untracked", "?? .superpowers/\n M finalize.go", true},
+		{"mixed tracked + untracked", "?? .agent-scratch/\n M finalize.go", true},
 		{"blank lines among untracked", "?? a\n\n?? b\n", false},
 	}
 	for _, tc := range cases {
@@ -2756,8 +2756,8 @@ func TestPorcelainHasTrackedChanges(t *testing.T) {
 
 // TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady
 // covers a cron run whose only leftover dirty entries are UNTRACKED scratch
-// artifacts (a plan file the agent forgot to commit and the .superpowers/
-// framework scratch dir). These are not implementation work, so finalize must
+// artifacts (a plan file the agent forgot to commit and an agent scratch dir
+// that no ignore list covers). These are not implementation work, so finalize must
 // still inject PR tags and mark the PR ready (pr_created) rather than publishing
 // a tagless PR or routing the session to pr_failed → Blocked as a tracked change
 // would.
@@ -2768,7 +2768,7 @@ func TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady(t *test
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{
-		statusOut:           "?? .superpowers/\n?? docs/plans/2026-06-27-some-ticket.md\n",
+		statusOut:           "?? .agent-scratch/\n?? docs/plans/2026-06-27-some-ticket.md\n",
 		latestCommitSubject: "feat(bossd): implement the ticket",
 	}
 	vp := newMockVCSProvider()

@@ -387,12 +387,12 @@ func (c *LocalClient) CloseSession(ctx context.Context, id string) (*pb.Session,
 	return resp.Msg.Session, nil
 }
 
-func (c *LocalClient) MergeSession(ctx context.Context, id string) (*pb.Session, error) {
+func (c *LocalClient) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
 	resp, err := c.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return resp.Msg.Session, nil
+	return resp.Msg.GetSession(), resp.Msg.GetDetail(), nil
 }
 
 func (c *LocalClient) RemoveSession(ctx context.Context, id string) error {

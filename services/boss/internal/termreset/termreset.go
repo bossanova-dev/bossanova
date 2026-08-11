@@ -43,6 +43,39 @@ const MouseReset = "" +
 	resetModeMouseUrxvt + // ?1015l
 	ansi.ResetModeMouseX10 // ?9l
 
+// MouseEnable is the DECSET sequence that puts a terminal back into the
+// mouse-reporting mode a proxied tmux expects, undoing MouseReset.
+//
+// It exists because the teardown reset and the PTY manager's process reuse pull
+// in opposite directions. A detach writes MouseReset to the real terminal (the
+// TUI it returns to does not want mouse reporting on), but Process.Detach only
+// drops the output writer — the `tmux attach` CLIENT STAYS ALIVE. On re-attach
+// the manager hands back that same client, which has no reason to re-run its
+// terminal init and whose cached mode still says reporting is on, so nothing
+// re-sends the DECSET. The terminal is then left with reporting off while tmux
+// believes it is on, and NO wheel event is generated for the whole life of that
+// attach: scrolling is dead until the client is killed and respawned. Confirmed
+// by instrumenting the raw stdin read — zero mouse reports across a frozen
+// attach while keystrokes flowed normally.
+//
+// Deliberately NARROWER than MouseReset, which is not its exact inverse.
+// MouseReset is a blanket clear covering exotic encodings (?1005, ?1015, ?9) and
+// ?1003 any-event motion, because clearing a mode that was never set is free.
+// Setting one is not: re-enabling everything would hand the terminal a motion
+// reporting mode the child never asked for, so every idle pointer movement would
+// cross the PTY. This restores only what tmux `mouse on` negotiates in practice —
+// ?1000 normal, ?1002 button-event, ?1006 SGR encoding — which is exactly what a
+// healthy pane is observed running.
+const MouseEnable = ansi.SetModeMouseNormal + // ?1000h
+	ansi.SetModeMouseButtonEvent + // ?1002h
+	ansi.SetModeMouseExtSgr // ?1006h
+
+// WriteMouseEnable writes MouseEnable to w. Best-effort: write errors are
+// ignored, matching the other terminal mode writes.
+func WriteMouseEnable(w io.Writer) {
+	writeSequence(w, MouseEnable)
+}
+
 // resetKittyKeyboard disables the Kitty keyboard protocol. It is a raw literal
 // because ansi.KittyKeyboard is a function, not a constant, and this set has to
 // stay const-foldable; TestAbnormalExitResetMatchesBubbleTeaTeardown pins it to

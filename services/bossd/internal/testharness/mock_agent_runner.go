@@ -18,6 +18,7 @@ var (
 	_ agent.AgentDispatcher                              = (*MockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfileDispatcher          = (*MockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfilePreflightDispatcher = (*MockAgentRunner)(nil)
+	_ agent.HeadlessLaunchOptionsDispatcher              = (*MockAgentRunner)(nil)
 )
 
 // MockAgentRunner is a mock AgentRunner that simulates the coding-agent subprocess
@@ -289,6 +290,13 @@ func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan str
 // StartByAgentWithHeadlessCapabilityProfile forwards to StartByAgent. The mock
 // accepts every profile because it has no plugin capability surface to validate.
 func (m *MockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+}
+
+// StartByAgentWithHeadlessLaunchOptions forwards to StartByAgent. The mock
+// records process behavior only; managed launch controls are covered by the
+// PluginRunner contract tests.
+func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
 	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
 }
 

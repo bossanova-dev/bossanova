@@ -1,4 +1,4 @@
-.PHONY: all all-full format test dev clean build
+.PHONY: all all-full format format-unlocked test dev clean build
 
 ## all: Clean, format, build, and test
 all: clean format build test
@@ -19,6 +19,17 @@ LDFLAGS := -s -w \
 
 ## format: Format Go and JS/TS source files (gofmt + prettier).
 format:
+	@if [ -n "$${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then \
+		$(MAKE) format-unlocked; \
+	else \
+		node ../../scripts/skill-source-rewrite-lock.mjs --repo-root "../.." --repairs-payload -- $(MAKE) -C services/boss format-unlocked; \
+	fi
+
+# The complete module formatter is a payload repair: it rewrites every JS/TS
+# source below services/boss, including the canonical embedded skill toolboxes.
+# Keep this target private to the locked wrapper above so a formatter cannot
+# leave a snapshotter observing the sequential Prettier writes.
+format-unlocked:
 	gofmt -w .
 	@files=$$(find . -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \) -not -path './node_modules/*' -print); \
 	if [ -n "$$files" ]; then \

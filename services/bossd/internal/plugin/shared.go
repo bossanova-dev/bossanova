@@ -34,9 +34,10 @@ func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 }
 
 // NewVersionedPluginMap wraps NewPluginMap in the go-plugin VersionedPlugins
-// shape. Using a versioned map from day one lets us introduce breaking
-// plugin-protocol changes later by adding new versions without having to
-// special-case every client config site.
+// shape. Do not add ProtocolVersionV1 here: its managed-MCP request fields use
+// protobuf tags that are reserved in v2, so accepting a v1 binary would launch
+// an agent without the managed configuration. A mismatched release must fail
+// handshake negotiation instead.
 func NewVersionedPluginMap(hostService *HostServiceServer) map[int]goplugin.PluginSet {
 	return map[int]goplugin.PluginSet{
 		sharedplugin.ProtocolVersion: NewPluginMap(hostService),

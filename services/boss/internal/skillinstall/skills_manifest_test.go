@@ -114,10 +114,11 @@ func TestIsExtensionDirName(t *testing.T) {
 		{"boss-proof", false},
 		// boss-<core>-<suffix> names are extensions.
 		{"boss-plan-draft", true},
+		{"boss-plan-compound-engineering", true},
 		{"boss-review-golang", true},
 		{"boss-review-thermonuclear", true},
 		{"boss-proof-web", true},
-		{"boss-build-superpowers", true},
+		{"boss-build-ce", true},
 		// Non-boss / unrelated names are not extensions.
 		{"golang-pro", false},
 		{"bossnew", false},
@@ -877,7 +878,7 @@ var foreignSkillNamePatterns = func() []*regexp.Regexp {
 }()
 
 // foreignSkillRefs returns the normalized, deduplicated foreign-skill tokens in content: first the
-// plugin-namespaced invocations in full (`superpowers:requesting-code-review`) in first-seen order,
+// plugin-namespaced invocations in full (`compound-engineering:ce-code-review`) in first-seen order,
 // then each denylisted bare name in list order, then the foreign-repo family matches. Bare names are
 // matched on a word boundary so `boss-review` and `api-review` — the core's own siblings and
 // methodology citations — are untouched.
@@ -1009,13 +1010,13 @@ func TestPublishedCoresNameNoForeignSkills(t *testing.T) {
 // own siblings, and methodology citations that name a review kind rather than a skill.
 func TestForeignSkillRefsDetection(t *testing.T) {
 	matched := map[string]string{
-		"run a `superpowers:requesting-code-review` round": "superpowers:requesting-code-review",
-		"prints a `wc-auto-review`-style report":           "wc-auto-review",
-		"the wondercanvas repo owns it":                    "wondercanvas",
-		"`impeccable` for services/web":                    "impeccable",
-		"lenses (`golang-pro` for Go)":                     "golang-pro",
-		"`tui-design` for the TUI":                         "tui-design",
-		"a vendored `thermonuclear-review` round":          "thermonuclear-review",
+		"run a `compound-engineering:ce-code-review` round": "compound-engineering:ce-code-review",
+		"prints a `wc-auto-review`-style report":            "wc-auto-review",
+		"the wondercanvas repo owns it":                     "wondercanvas",
+		"`impeccable` for services/web":                     "impeccable",
+		"lenses (`golang-pro` for Go)":                      "golang-pro",
+		"`tui-design` for the TUI":                          "tui-design",
+		"a vendored `thermonuclear-review` round":           "thermonuclear-review",
 	}
 	for content, want := range matched {
 		got := foreignSkillRefs(content)
@@ -1280,11 +1281,57 @@ func referenceRefs(content string) []string {
 // handles is core-relative by construction and cannot name another core.
 var crossCoreReferencePattern = regexp.MustCompile(`(boss(?:-[a-z]+)*)/references/([A-Za-z0-9._/-]+)`)
 
-// crossCoreReferenceRefs returns the prefixed `<knownCore>/references/<file>` tokens in content.
-// Naming one is illegal: a published core is extracted into a user's global skill directory
-// carrying nothing but its own tree, so a sibling core's references/ is not resolvable there —
-// exactly the failure TestPublishedCoresOnlyReferenceShippedScripts closes for `scripts/`.
-func crossCoreReferenceRefs(content string) []string {
+// installedReferencePattern matches a reference addressed from the installed skill root. This
+// form is valid only when it names a reference carried by the same core that uses it; resolving
+// that ownership requires the payload file path, so missingReferenceRefs handles it separately.
+var installedReferencePattern = regexp.MustCompile(`\$BOSS_SKILLS_HOME/(boss(?:-[a-z]+)*)/references/([A-Za-z0-9._/-]+)`)
+
+type installedReferenceRef struct {
+	core string
+	file string
+}
+
+// installedReferenceRefs returns valid installed-root core/file pairs in first-seen order. It is
+// deliberately distinct from crossCoreReferenceRefs: the latter has no owning-file context, while
+// this form needs that context to distinguish a same-core shipped reference from a cross-core one.
+func installedReferenceRefs(content string) []installedReferenceRef {
+	var out []installedReferenceRef
+	seen := map[string]bool{}
+	for _, loc := range installedReferencePattern.FindAllStringSubmatchIndex(content, -1) {
+		core := content[loc[2]:loc[3]]
+		if !knownCores[core] {
+			continue
+		}
+		file := strings.TrimRight(content[loc[4]:loc[5]], scriptRefTrimCutset)
+		if file == "" || strings.HasSuffix(file, "/") {
+			continue
+		}
+		last := file[strings.LastIndex(file, "/")+1:]
+		hasExt := false
+		for _, ext := range referenceRefExtensions {
+			if strings.HasSuffix(last, ext) {
+				hasExt = true
+				break
+			}
+		}
+		if !hasExt {
+			continue
+		}
+		key := core + "/" + file
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, installedReferenceRef{core: core, file: file})
+	}
+	return out
+}
+
+// crossCoreReferenceRefs returns the prefixed `<knownCore>/references/<file>` tokens that are
+// illegal for owningCore. An installed-root path is legal only when it names owningCore itself;
+// missingReferenceRefs separately confirms that same-core target actually ships. All other core
+// prefixes name a sibling that a published core cannot resolve from its own installed tree.
+func crossCoreReferenceRefs(content, owningCore string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, loc := range crossCoreReferencePattern.FindAllStringSubmatchIndex(content, -1) {
@@ -1294,6 +1341,13 @@ func crossCoreReferenceRefs(content string) []string {
 			if isWord {
 				continue
 			}
+		}
+		core := content[loc[2]:loc[3]]
+		if !knownCores[core] {
+			continue
+		}
+		if strings.HasSuffix(content[:loc[0]], "$BOSS_SKILLS_HOME/") && core == owningCore {
+			continue
 		}
 		// A top-level skills/<core>/references/... token names a path in the source payload,
 		// not a sibling reference from the installed core. Other slash-prefixed paths (such as
@@ -1308,10 +1362,6 @@ func crossCoreReferenceRefs(content string) []string {
 			if !isWord && prev != '/' {
 				continue
 			}
-		}
-		core := content[loc[2]:loc[3]]
-		if !knownCores[core] {
-			continue
 		}
 		file := content[loc[4]:loc[5]]
 		token := strings.TrimRight(core+"/references/"+file, scriptRefTrimCutset)
@@ -1351,6 +1401,9 @@ func TestReferenceRefsDetection(t *testing.T) {
 		// knownCores spelling outright, so this must not be silently resolved core-relative.
 		"docs/references/foo.md is a repo doc",
 		"skills/boss-plan/references/plan-storage.md ships in the payload",
+		// An explicit installed-skill root makes this a real, reachable filesystem path,
+		// not an attempt to resolve a sibling core relative to the target repository.
+		"read $BOSS_SKILLS_HOME/boss-review/references/falsification.md before probing",
 		// Prose that merely contains the word, and the bare directory form.
 		"the references directory is core-relative",
 		"everything under `references/` is markdown",
@@ -1374,24 +1427,29 @@ func TestReferenceRefsDetection(t *testing.T) {
 	// illegal: a published core installs carrying only its own tree, so a sibling core's
 	// references/ is not reachable there. referenceRefs declines to resolve it (asserted above);
 	// crossCoreReferenceRefs is what rejects it.
-	if got := crossCoreReferenceRefs("see boss-plan/references/plan-storage.md for the flow"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
+	if got := crossCoreReferenceRefs("see boss-plan/references/plan-storage.md for the flow", "boss-review"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
 		t.Errorf("crossCoreReferenceRefs = %v, want [boss-plan/references/plan-storage.md]", got)
 	}
 	// Traversal cannot make a sibling reference available to an installed core.
-	if got := crossCoreReferenceRefs("see ../boss-plan/references/plan-storage.md for the flow"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
+	if got := crossCoreReferenceRefs("see ../boss-plan/references/plan-storage.md for the flow", "boss-review"); len(got) != 1 || got[0] != "boss-plan/references/plan-storage.md" {
 		t.Errorf("crossCoreReferenceRefs(traversal) = %v, want [boss-plan/references/plan-storage.md]", got)
 	}
 	// The legal core-relative form is not a cross-core reference.
-	if got := crossCoreReferenceRefs("see `references/plan-storage.md` for the flow"); len(got) != 0 {
+	if got := crossCoreReferenceRefs("see `references/plan-storage.md` for the flow", "boss-review"); len(got) != 0 {
 		t.Errorf("crossCoreReferenceRefs(core-relative) = %v, want none", got)
 	}
 	// A prefix that is not a known core is not this gate's business.
-	if got := crossCoreReferenceRefs("docs/references/plan-storage.md is a repo doc"); len(got) != 0 {
+	if got := crossCoreReferenceRefs("docs/references/plan-storage.md is a repo doc", "boss-review"); len(got) != 0 {
 		t.Errorf("crossCoreReferenceRefs(non-core prefix) = %v, want none", got)
 	}
 	// A repo-qualified core path is not a cross-core token; it names a payload location.
-	if got := crossCoreReferenceRefs("skills/boss-plan/references/plan-storage.md ships in the payload"); len(got) != 0 {
+	if got := crossCoreReferenceRefs("skills/boss-plan/references/plan-storage.md ships in the payload", "boss-review"); len(got) != 0 {
 		t.Errorf("crossCoreReferenceRefs(repo-qualified) = %v, want none", got)
+	}
+	// An installed-root path is legal only for its owning core, where the missing-reference gate
+	// still verifies the target ships.
+	if got := crossCoreReferenceRefs("read $BOSS_SKILLS_HOME/boss-review/references/falsification.md before probing", "boss-review"); len(got) != 0 {
+		t.Errorf("crossCoreReferenceRefs(installed-root same-core) = %v, want none", got)
 	}
 }
 
@@ -1426,7 +1484,18 @@ func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, error) {
 				findings = append(findings, rel+" names references/"+file+" but "+want+" is not in the payload")
 			}
 		}
-		for _, token := range crossCoreReferenceRefs(string(data)) {
+		for _, ref := range installedReferenceRefs(string(data)) {
+			token := ref.core + "/references/" + ref.file
+			if ref.core != core {
+				continue
+			}
+			refsByCore[core]++
+			want := "skills/" + core + "/references/" + ref.file
+			if _, statErr := fs.Stat(fsys, want); statErr != nil {
+				findings = append(findings, rel+" names installed reference $BOSS_SKILLS_HOME/"+token+" but "+want+" is not in the payload")
+			}
+		}
+		for _, token := range crossCoreReferenceRefs(string(data), core) {
 			findings = append(findings, rel+" names the cross-core path "+token+", which is illegal")
 		}
 		return nil
@@ -1475,6 +1544,51 @@ func TestMissingReferenceRefsDetectsAnAbsentFile(t *testing.T) {
 	}
 	if refsByCore["boss-plan"] != 1 {
 		t.Errorf("refsByCore[boss-plan] = %d, want 1 (a MISSING reference still counts as named)", refsByCore["boss-plan"])
+	}
+}
+
+// TestInstalledRootReferenceRefsRequireOwnershipAndShipping drives the installed-root branch:
+// a fresh subagent may be given an absolute installed path, but only to its owning core's shipped
+// reference. The control, missing-file, and cross-core cases must remain distinguishable.
+func TestInstalledRootReferenceRefsRequireOwnershipAndShipping(t *testing.T) {
+	const installedFalsification = "$BOSS_SKILLS_HOME/boss-review/references/falsification.md"
+
+	present := fstest.MapFS{
+		"skills/boss-review/SKILL.md":                    {Data: []byte("read " + installedFalsification + " before probing")},
+		"skills/boss-review/references/falsification.md": {Data: []byte("# falsification")},
+	}
+	findings, refsByCore, err := missingReferenceRefs(present)
+	if err != nil {
+		t.Fatalf("missingReferenceRefs(present installed root): %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("missingReferenceRefs(present installed root) = %v, want none", findings)
+	}
+	if refsByCore["boss-review"] != 1 {
+		t.Errorf("refsByCore[boss-review] = %d, want 1", refsByCore["boss-review"])
+	}
+
+	absent := fstest.MapFS{
+		"skills/boss-review/SKILL.md": {Data: []byte("read " + installedFalsification + " before probing")},
+	}
+	findings, _, err = missingReferenceRefs(absent)
+	if err != nil {
+		t.Fatalf("missingReferenceRefs(absent installed root): %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0], "boss-review/references/falsification.md") || !strings.Contains(findings[0], "not in the payload") {
+		t.Errorf("missingReferenceRefs(absent installed root) = %v, want one missing boss-review falsification reference", findings)
+	}
+
+	crossCore := fstest.MapFS{
+		"skills/boss-plan/SKILL.md":                      {Data: []byte("read " + installedFalsification + " before probing")},
+		"skills/boss-review/references/falsification.md": {Data: []byte("# falsification")},
+	}
+	findings, _, err = missingReferenceRefs(crossCore)
+	if err != nil {
+		t.Fatalf("missingReferenceRefs(cross-core installed root): %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0], "cross-core path boss-review/references/falsification.md") {
+		t.Errorf("missingReferenceRefs(cross-core installed root) = %v, want one cross-core finding", findings)
 	}
 }
 

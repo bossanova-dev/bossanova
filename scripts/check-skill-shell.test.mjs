@@ -13,6 +13,7 @@ import {
   extractFencedBlocks,
   findUnsafeGhFileBodyWrites,
   findUnsafeGhBody,
+  findInertGuards,
   findMultiGlobRemovals,
   findSkillMarkdownFiles,
   findUnterminatedHeredoc,
@@ -608,6 +609,1406 @@ test('extractFencedBlocks reports the 1-based line of the OPENING fence', () => 
   assert.equal(blocks[0].info, 'bash')
   assert.equal(blocks[0].terminated, true)
   assert.equal(blocks[0].body, 'echo hi')
+})
+
+// 14bi. Inert guard rule — only guards whose failure branch can fall through are rejected.
+test('findInertGuards reports a test guard even when a later command exits', () => {
+  assert.deepEqual(
+    findInertGuards(['test -x tool || echo "tool missing"', 'test -r config', 'exit 1'].join('\n')),
+    [
+      { lineOffset: 0, guard: 'test -x tool || echo "tool missing"' },
+      { lineOffset: 1, guard: 'test -r config' },
+    ],
+  )
+})
+
+test('findInertGuards ignores final test and bracket commands', () => {
+  assert.deepEqual(findInertGuards(['echo setup', 'test -f tool'].join('\n')), [])
+  assert.deepEqual(findInertGuards(['echo setup', '[ -f tool ]'].join('\n')), [])
+})
+
+test('findInertGuards accepts failure branches that exit or return', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['[ -x tool ] || exit 1', 'command -v tool || { echo missing; return 1; }'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('findInertGuards accepts an AND guard whose OR fallback exits', () => {
+  assert.deepEqual(findInertGuards('test -f missing && echo ok || exit 1\necho later'), [])
+})
+
+test('findInertGuards does not borrow an exit from after a braced fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing; }; exit 0'), [
+    { lineOffset: 0, guard: 'test -f tool || { echo missing; }; exit 0' },
+  ])
+})
+
+test('findInertGuards does not treat quoted fallback diagnostics as exits', () => {
+  assert.deepEqual(
+    findInertGuards(`test -f tool || { printf '%s\\n' 'missing\nexit 1'; }; echo later`),
+    [{ lineOffset: 0, guard: `test -f tool || { printf '%s\\n' 'missing\nexit 1'; }; echo later` }],
+  )
+})
+
+test('findInertGuards reports OR guards in blocks headed by set -e', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['# shell setup', 'set -euo pipefail', 'test -x tool || echo missing'].join('\n'),
+    ),
+    [{ lineOffset: 2, guard: 'test -x tool || echo missing' }],
+  )
+  assert.deepEqual(findInertGuards('set -e; test -x tool || echo missing'), [
+    { lineOffset: 0, guard: 'set -e; test -x tool || echo missing' },
+  ])
+})
+
+test('findInertGuards accepts an errexit-terminating OR fallback', () => {
+  for (const fallback of ['false', '{ false; }', '( false )']) {
+    const body = ['set -e', `test -f missing || ${fallback}`, 'echo later'].join('\n')
+    assert.deepEqual(findInertGuards(body), [], fallback)
+  }
+})
+
+test('findInertGuards does not treat a negated fallback as errexit-terminating', () => {
+  const body = ['set -e', 'test -f missing || ! true', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing || ! true' }])
+})
+
+test('findInertGuards accepts fallback assignments that clamp values', () => {
+  const clamp = '[ "$value" -ge 1 ] || value=$minimum'
+  assert.deepEqual(findInertGuards(`${clamp}\necho later`), [])
+
+  const unsafe = '[ -f required ] || echo missing\necho later'
+  assert.deepEqual(findInertGuards(unsafe), [
+    { lineOffset: 0, guard: '[ -f required ] || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores documentation placeholder fallbacks', () => {
+  assert.deepEqual(findInertGuards('[ ... ] || <stop — see below>\necho later'), [])
+
+  const unsafe = '[ -f required ] || echo missing\necho later'
+  assert.deepEqual(findInertGuards(unsafe), [
+    { lineOffset: 0, guard: '[ -f required ] || echo missing' },
+  ])
+})
+
+test('findInertGuards recognizes equivalent errexit option forms', () => {
+  for (const option of ['set -o errexit', 'set -E -e', 'shopt -s -o errexit']) {
+    assert.deepEqual(findInertGuards(`${option}\ntest -f tool\necho later`), [], option)
+  }
+})
+
+test('findInertGuards requires shopt -o for set options', () => {
+  const invalidErrexit = ['shopt -s errexit', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(invalidErrexit), [{ lineOffset: 1, guard: 'test -f missing' }])
+
+  const invalidPipefail = [
+    'shopt -s pipefail',
+    'set -e',
+    'test -f missing | cat',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(invalidPipefail), [
+    { lineOffset: 2, guard: 'test -f missing | cat' },
+  ])
+})
+
+test('findInertGuards respects shopt disabling errexit', () => {
+  const body = ['set -e', 'shopt -u -o errexit', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards respects reordered and combined shopt errexit disables', () => {
+  for (const option of ['shopt -o -u errexit', 'shopt -ou errexit']) {
+    const body = ['set -e', option, 'test -f missing', 'echo later'].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }], option)
+  }
+})
+
+test('findInertGuards tracks pipefail changes made through shopt', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'shopt -s -o pipefail', 'test -f missing | cat', 'echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      [
+        'set -e',
+        'set -o pipefail',
+        'shopt -u -o pipefail',
+        'test -f missing | cat',
+        'echo later',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 3, guard: 'test -f missing | cat' }],
+  )
+})
+
+test('findInertGuards keeps subshell option changes out of the parent shell', () => {
+  assert.deepEqual(findInertGuards('( set -e )\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(findInertGuards('set -e\n( set +e )\ntest -f missing\necho later'), [])
+})
+
+test('findInertGuards keeps multiline subshell option changes out of the parent shell', () => {
+  assert.deepEqual(
+    findInertGuards(['set -e', '(', 'set +e', ')', 'test -f missing', 'echo later'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(['(', 'set -e', ')', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 3, guard: 'test -f missing' }],
+  )
+})
+
+test('findInertGuards keeps multiline subshell function definitions out of the parent shell', () => {
+  const body = [
+    'set -e',
+    '(',
+    '  disable() { set +e; }',
+    ')',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports OR guards despite set -e', () => {
+  assert.deepEqual(findInertGuards('set -e\ntest -x tool || echo missing\necho later'), [
+    { lineOffset: 1, guard: 'test -x tool || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores guard-looking heredoc payloads', () => {
+  assert.deepEqual(
+    findInertGuards(["cat <<'EOF'", 'test -x tool || echo missing', 'EOF'].join('\n')),
+    [],
+  )
+})
+
+test('findInertGuards keeps multiline quoted strings inert', () => {
+  assert.deepEqual(findInertGuards('echo "quoted\ntest -f tool\n"\necho later'), [])
+  assert.deepEqual(findInertGuards('test -f tool || {\n  echo "}"\n  exit 1\n}\necho later'), [])
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing;\n  exit 1\n}\necho later'), [])
+})
+
+test('findInertGuards rejects exits scoped to a subshell fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { (exit 1); echo continued; }; echo later'), [
+    { lineOffset: 0, guard: 'test -f tool || { (exit 1); echo continued; }; echo later' },
+  ])
+})
+
+test('findInertGuards rejects exits piped or backgrounded inside a fallback', () => {
+  for (const body of [
+    'test -f tool || { exit 1 | cat; echo continued; }; echo outer',
+    'test -f tool || { exit 1 & wait; echo continued; }; echo outer',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards rejects direct exits piped or backgrounded after a guard', () => {
+  for (const body of [
+    'test -f tool || exit 1 | cat; echo continued',
+    'test -f tool || exit 1 & wait; echo continued',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards accepts a direct exit before later operators', () => {
+  assert.deepEqual(findInertGuards('test -f tool || exit 1; echo later'), [])
+})
+
+test('findInertGuards rejects a braced fallback piped or backgrounded after its closing brace', () => {
+  for (const body of [
+    'test -f tool || { exit 1; } | cat; echo continued',
+    'test -f tool || { return 1; } & wait; echo continued',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards rejects a braced fallback whose terminator is conditional', () => {
+  const body = 'test -f tool || { echo missing || exit 1; }; echo continued'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards keeps a logical operator across a physical newline', () => {
+  for (const operator of ['false &&', 'true ||', 'true |']) {
+    const body = [
+      'test -f tool || { ' + operator,
+      'exit 1',
+      'echo continued',
+      '}; echo outer',
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], operator)
+  }
+})
+
+test('findInertGuards accepts an unconditional exit after a fallback list', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing || true\nexit 1\n}'), [])
+})
+
+test('findInertGuards rejects fallback exits nested in compound commands', () => {
+  for (const body of [
+    'test -f tool || { if false; then; exit 1; fi; echo continued; }; echo outer',
+    'test -f tool || { while false; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { until true; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { for x in; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { select x in; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { { exit 1; } | cat; echo continued; }; echo outer',
+    'test -f tool || { case x in x) exit 1;; esac; echo continued; }; echo outer',
+    'test -f tool || { function stop { exit 1; }; echo continued; }; echo outer',
+    'test -f tool || { stop() { exit 1; }; echo continued; }; echo outer',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards keeps descriptor redirections on terminating commands', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { exit 1 2>&1; }'), [])
+  assert.deepEqual(findInertGuards('test -f tool || { return 1 <&0; }'), [])
+})
+
+test('findInertGuards ignores comment braces while finding a fallback terminator', () => {
+  assert.deepEqual(findInertGuards('test -f tool || {\n  # explain }\n  exit 1\n}\necho later'), [])
+})
+
+test('findInertGuards joins comments before a braced fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool ||\n# explain\n{ exit 1; }\necho later'), [])
+})
+
+test('findInertGuards keeps multiline conditional predicates out of top-level guard analysis', () => {
+  assert.deepEqual(
+    findInertGuards(
+      [
+        'if',
+        '  test -f optional || echo missing',
+        'then',
+        '  echo ready',
+        'fi',
+        'test -f required || echo missing',
+        'echo later',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 5, guard: 'test -f required || echo missing' }],
+  )
+})
+
+test('findInertGuards recognizes inline conditional terminators', () => {
+  const body = [
+    'if test -f optional; then echo ready; fi',
+    'test -f required || echo missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f required || echo missing' },
+  ])
+})
+
+test('findInertGuards inspects an inline conditional body', () => {
+  const body = 'if true; then test -f missing; echo later; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards resumes after an inline conditional closer', () => {
+  const body = 'if true; then echo ready; fi; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards resumes after a braced inline conditional body', () => {
+  const body = 'if true; then { :; }; fi; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards resumes after inline loop closers', () => {
+  for (const opener of ['while false', 'until true']) {
+    const body = `${opener}; do :; done; test -f required || echo missing; echo later`
+    assert.deepEqual(findInertGuards(body), [
+      { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+    ])
+  }
+})
+
+test('findInertGuards resumes through consecutive inline compounds', () => {
+  const body =
+    'if true; then :; fi; while false; do :; done; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards ignores quoted and commented inline compound closers', () => {
+  assert.deepEqual(
+    findInertGuards(
+      'if true; then :; fi; echo "data; fi; test -f fake || echo missing"; echo later',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards('if true; then :; fi; # fi; test -f fake || echo missing\necho later'),
+    [],
+  )
+})
+
+test('findInertGuards does not treat another conditional branch as later flow', () => {
+  const body = ['if true; then', 'test -f tool', 'else', 'false', 'fi'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards recognizes conditionals after function and group prefixes', () => {
+  for (const body of [
+    ['check() { if true; then', 'test -f tool', 'else', 'echo fallback', 'fi', '}'].join('\n'),
+    ['{ if true; then', 'test -f tool', 'else', 'echo fallback', 'fi', '}'].join('\n'),
+  ]) {
+    assert.deepEqual(findInertGuards(body), [], body)
+  }
+})
+
+test('findInertGuards analyzes command substitutions', () => {
+  assert.deepEqual(findInertGuards('value=$(command -v tool || echo missing)'), [
+    { lineOffset: 0, guard: 'command -v tool || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores comment parentheses in command substitutions', () => {
+  const body = ['value=$(', '# explanation (', 'test -f tool', 'echo later', ')'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f tool' }])
+})
+
+test('findInertGuards analyzes legacy backtick substitutions', () => {
+  assert.deepEqual(findInertGuards('value=`command -v tool || echo missing`'), [
+    { lineOffset: 0, guard: 'command -v tool || echo missing' },
+  ])
+})
+
+test('findInertGuards stops at comments after command separators', () => {
+  assert.deepEqual(findInertGuards('echo ok;# note || { echo ignored; }'), [])
+})
+
+test('findInertGuards resets errexit inside command substitutions', () => {
+  assert.deepEqual(findInertGuards('set -e; value=$(test -f tool; echo later); echo outer'), [
+    { lineOffset: 0, guard: 'test -f tool; echo later' },
+  ])
+})
+
+test('findInertGuards reports a final substitution assertion when the enclosing body continues', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f tool)\necho later'), [
+    { lineOffset: 0, guard: 'test -f tool' },
+  ])
+})
+
+test('findInertGuards reports bare guards followed on the same command list', () => {
+  for (const body of [
+    'test -n "$X"; export X',
+    'echo pre; test -n "$X"\nexport X',
+    'test -f tool && echo found; echo later',
+    'test -f tool && echo found\necho later',
+  ]) {
+    assert.equal(findInertGuards(body).length, 1, body)
+  }
+  assert.deepEqual(findInertGuards('test -f tool && echo found'), [])
+  assert.deepEqual(findInertGuards('test -f tool && echo found || exit 1'), [])
+})
+
+test('findInertGuards preserves a bare guard status through argumentless terminators', () => {
+  const body = ['check() {', '  test -f required', '  return', '}'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+  assert.deepEqual(findInertGuards(body.replace('  return', '  return 0')), [
+    { lineOffset: 1, guard: 'test -f required' },
+  ])
+})
+
+test('findInertGuards keeps AND-list guards subject to analysis under errexit', () => {
+  const body = ['set -e', 'test -f tool && echo found', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f tool && echo found' }])
+})
+
+test('findInertGuards keeps non-final pipeline guards subject to analysis under errexit', () => {
+  const body = 'set -e; test -f missing | cat; echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards lets pipefail make non-final pipeline guards terminate under errexit', () => {
+  const body = 'set -euo pipefail; test -f missing | cat; echo later'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards preserves pipefail in selected compound and substitution scopes', () => {
+  const conditional = [
+    'set -euo pipefail',
+    'if true; then',
+    '  test -f missing | cat',
+    '  echo later',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(conditional), [])
+
+  const substitution = [
+    'set -euo pipefail',
+    'shopt -s inherit_errexit',
+    'value=$(test -f missing | cat; echo later)',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(substitution), [])
+})
+
+test('findInertGuards propagates errexit exemptions into grouped OR branches', () => {
+  const body = ['set -e', '{ test -f missing; echo later; } || echo recovered'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: '{ test -f missing; echo later; } || echo recovered' },
+  ])
+})
+
+test('findInertGuards keeps negated guards subject to analysis under errexit', () => {
+  const body = ['set -e', '! test -f tool', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: '! test -f tool' }])
+})
+
+test('findInertGuards selects literal negated conditional branches', () => {
+  const skipped = [
+    'set -e',
+    'if ! true; then',
+    '  set +e',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(skipped), [])
+
+  const selected = [
+    'set -e',
+    'if ! false; then',
+    '  set +e',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(selected), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards accepts a bare guard as the final command in a compound construct', () => {
+  assert.deepEqual(findInertGuards('if true; then\n  test -f tool\nfi'), [])
+  assert.deepEqual(findInertGuards('{ test -f tool; }'), [])
+})
+
+test('findInertGuards inspects guards after same-line braced group openers', () => {
+  const body = '{ test -f missing; echo continued; }'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards does not use top-level commands after a function declaration', () => {
+  const body = ['check_tool() {', '  test -f tool', '}', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not apply options declared in an uninvoked function', () => {
+  const body = [
+    'helper() {',
+    '  set -e',
+    '  test -f helper-input',
+    '  echo helper-continued',
+    '}',
+    'test -f missing',
+    'echo continued',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 5, guard: 'test -f missing' }])
+})
+
+test('findInertGuards uses the option state at a function invocation', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'check() {', 'test -f missing', 'echo later', '}', 'set +e', 'check'].join('\n'),
+    ),
+    [{ lineOffset: 2, guard: 'test -f missing' }],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['check() {', 'test -f missing', 'echo later', '}', 'set -e', 'check'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('findInertGuards preserves option changes from a conditional predicate function', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'if true && disable; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps backgrounded function options out of the outer shell', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable & wait || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps inline function options out of the outer shell', () => {
+  const body = 'helper() { set -e; }\ntest -f missing\necho later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards distinguishes function braces from fallback groups', () => {
+  const body = 'test -f tool || { function helper { :; }; exit 1; }'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards scopes functions with parenthesized bodies', () => {
+  assert.deepEqual(findInertGuards('check_tool() (\n  test -f tool\n)\necho later'), [])
+})
+
+test('findInertGuards reports substitution assertions masked by same-line fallthrough', () => {
+  for (const body of [
+    'value=$(test -f tool); echo later',
+    'value=$(test -f tool) || echo fallback',
+    'value=$(test -f tool) && echo found; echo later',
+    'value=$(test -f tool) && echo found || echo fallback',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }], body)
+  }
+  assert.deepEqual(findInertGuards('value=$(test -f tool) || exit 1'), [])
+})
+
+test('findInertGuards reports a substitution masked by a later substitution in its assignment', () => {
+  const body = 'value=$(test -f tool)$(echo ok)'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }])
+})
+
+test('findInertGuards reports a substitution followed by a command after its assignment', () => {
+  const body = 'value=$(test -f tool) echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }])
+})
+
+test('findInertGuards does not treat errexit inside a substitution as block-level errexit', () => {
+  assert.deepEqual(findInertGuards('value=$(set -e; test -f tool || echo missing)\necho later'), [
+    { lineOffset: 0, guard: 'set -e; test -f tool || echo missing' },
+  ])
+})
+
+test('findInertGuards preserves errexit in substitutions when inherit_errexit is enabled', () => {
+  const body = ['set -e', 'shopt -s inherit_errexit', 'value=$(test -f missing; echo later)'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards forwards active function definitions into command substitutions', () => {
+  const body = [
+    'walk() {',
+    '  if test "$1" = stop; then return 0; fi',
+    '  echo "$(walk stop)"',
+    '}',
+    'walk start',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores inherited errexit in substitutions of status-tested assignments', () => {
+  const body = [
+    'set -e',
+    'shopt -s inherit_errexit',
+    'value=$(test -f missing; echo later) || exit 1',
+    'echo after',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards enables inherit_errexit in POSIX mode', () => {
+  const body = ['set -e -o posix', 'value=$(test -f missing; echo later)'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards respects a later disabling of errexit', () => {
+  const body = ['set -e; set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies same-line errexit changes before later guards', () => {
+  const body = ['set -e', 'set +e; test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'set +e; test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards keeps brace-group command arguments out of preceding set options', () => {
+  assert.deepEqual(findInertGuards('{ set -e; printf +e; }\ntest -f missing\necho later'), [])
+  assert.deepEqual(findInertGuards('{ set +e; printf -e; }\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+})
+
+test('findInertGuards applies errexit options after compound command closers', () => {
+  for (const body of [
+    ['if true; then', '  :', 'fi; set -e', 'test -f missing', 'echo later'].join('\n'),
+    ['while false; do', '  :', 'done; set -e', 'test -f missing', 'echo later'].join('\n'),
+    ['case value in', '  value) : ;;', 'esac; set -e', 'test -f missing', 'echo later'].join('\n'),
+  ])
+    assert.deepEqual(findInertGuards(body), [], body)
+
+  const disabled = [
+    'set -e',
+    'if true; then',
+    '  :',
+    'fi; set +e',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies options after a function closing delimiter', () => {
+  const body = ['check() {', '  :', '}; set -e', 'test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores option changes in skipped AND/OR branches', () => {
+  assert.deepEqual(
+    findInertGuards(['false && set -e', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 1, guard: 'test -f missing' }],
+  )
+  assert.deepEqual(
+    findInertGuards(['set -e', 'false && set +e', 'test -f missing', 'echo later'].join('\n')),
+    [],
+  )
+})
+
+test('findInertGuards carries skipped AND/OR state across physical lines', () => {
+  const body = [
+    'set +e',
+    'command -v definitely_missing &&',
+    'set -e',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies option changes in statically executed AND/OR branches', () => {
+  const andBody = ['set -e', 'true && set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(andBody), [{ lineOffset: 2, guard: 'test -f missing' }])
+
+  const orBody = ['false || set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(orBody), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps pipeline option changes out of the parent shell', () => {
+  const body = 'set -e | cat\ntest -f missing\necho later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards only applies option builtins at their command word', () => {
+  assert.deepEqual(findInertGuards("printf '%s\\n' set -e\ntest -f missing\necho later"), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(
+    findInertGuards("set -e\nprintf '%s\\n' set +e\ntest -f missing\necho later"),
+    [],
+  )
+})
+
+test('findInertGuards keeps backgrounded option changes out of the parent shell', () => {
+  assert.deepEqual(findInertGuards('set -e & wait\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(findInertGuards('set -e\nset +e & wait\ntest -f missing\necho later'), [])
+})
+
+test('findInertGuards treats background operators as guard fallthrough', () => {
+  const body = 'test -f missing & echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards treats errexit-enabled background guards as fallthrough', () => {
+  for (const body of [
+    'set -e; test -f missing & echo later',
+    ['set -e; test -f missing &', 'echo later'].join('\n'),
+  ]) {
+    assert.equal(findInertGuards(body).length, 1, body)
+  }
+})
+
+test('findInertGuards scopes option changes in for and select loop bodies', () => {
+  for (const loop of ['for x in; do', 'select x in; do']) {
+    assert.deepEqual(findInertGuards(`${loop} set -e; done\ntest -f missing\necho later`), [
+      { lineOffset: 1, guard: 'test -f missing' },
+    ])
+    assert.deepEqual(
+      findInertGuards(`set -e\n${loop} set +e; done\ntest -f missing\necho later`),
+      [],
+    )
+  }
+})
+
+test('findInertGuards applies option changes within selected conditional and case branches', () => {
+  const conditional = ['if true; then', '  set -e', '  test -f missing', '  echo later', 'fi'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(conditional), [])
+
+  const caseBody = [
+    'case value in',
+    '  value)',
+    '    set -e',
+    '    test -f missing',
+    '    echo later',
+    '    ;;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(caseBody), [])
+})
+
+test('findInertGuards closes while and until option scopes at done', () => {
+  for (const loop of ['while false; do :; done', 'until true; do :; done']) {
+    assert.deepEqual(findInertGuards(`${loop}\nset -e\ntest -f missing\necho later`), [])
+    assert.deepEqual(findInertGuards(`set -e\n${loop}\nset +e\ntest -f missing\necho later`), [
+      { lineOffset: 3, guard: 'test -f missing' },
+    ])
+  }
+})
+
+test('findInertGuards applies option changes in brace groups', () => {
+  assert.deepEqual(findInertGuards(['{ set -e; }', 'test -f missing', 'echo later'].join('\n')), [])
+  assert.deepEqual(
+    findInertGuards(['set -e', '{ set +e; }', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 2, guard: 'test -f missing' }],
+  )
+})
+
+test('findInertGuards advances options per command inside inline brace groups', () => {
+  assert.deepEqual(
+    findInertGuards(['{ set -e; printf +e; }', 'test -f missing; echo later'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(['{ set +e; printf -e; }', 'test -f missing; echo later'].join('\n')),
+    [{ lineOffset: 1, guard: 'test -f missing; echo later' }],
+  )
+})
+
+test('findInertGuards applies option changes from conditional predicates', () => {
+  const body = ['set -e', 'if set +e; then', '  :', 'fi', 'test -f missing', 'echo later'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards ignores option changes from unselected conditional branches', () => {
+  const body = ['set -e', 'if false; then set +e; fi', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards carries option changes out of a statically selected conditional branch', () => {
+  const body = ['set -e', 'if true; then set +e; fi', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards ignores option changes from nonmatching case arms', () => {
+  const body = ['set -e', 'case x in', 'y) set +e;;', 'esac', 'test -f missing', 'echo later'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards treats multiline elif predicates as conditional syntax', () => {
+  const body = [
+    'set -e',
+    'if false; then',
+    '  :',
+    'elif',
+    '  test -f optional || echo missing',
+    'then',
+    '  :',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards applies option changes after multiline compound closers', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['if true; then', '  :', 'fi; set -e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'if true; then', '  :', 'fi; set +e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [{ lineOffset: 4, guard: 'test -f missing; echo later' }],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['while false; do', '  :', 'done; set -e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'case x in', '  x) :;;', 'esac; set +e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [{ lineOffset: 4, guard: 'test -f missing; echo later' }],
+  )
+})
+
+test('findInertGuards keeps options before an attached else in the prior branch', () => {
+  const body = ['if false; then', 'set -e; else', 'test -f missing', 'echo later', 'fi'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies options after an attached else to the else branch', () => {
+  const body = ['if false; then', ':; else set -e', 'test -f missing', 'echo later', 'fi'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards promotes options from a selected inline else branch', () => {
+  const body = [
+    'set -e',
+    'if false; then :; else set +e; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+
+  const sameLine = 'set -e; if false; then :; else set +e; fi; test -f missing; echo later'
+  assert.deepEqual(findInertGuards(sameLine), [
+    { lineOffset: 0, guard: 'test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards applies options after an attached case terminator to the next arm', () => {
+  const body = [
+    'case z in',
+    'y) :;; *) set -e',
+    'test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+
+  const disabled = [
+    'set -e',
+    'if false; then',
+    ':; else set +e',
+    'test -f missing',
+    'echo later',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards clears errexit for functions invoked from AND/OR lists', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', 'check || exit 1'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f missing; echo later;' },
+  ])
+
+  const finalCall = ['set -e', 'check() { test -f missing; echo later; }', 'false || check'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(finalCall), [])
+})
+
+test('findInertGuards clears errexit for negated function calls', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', '! check'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f missing; echo later;' },
+  ])
+})
+
+test('findInertGuards resolves outer definitions in nested function calls', () => {
+  const body = [
+    'outer() { inner; }',
+    'inner() { test -f missing; echo later; }',
+    'set -e',
+    'outer',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards clears errexit for functions invoked as conditional predicates', () => {
+  const body = 'set -e; check() { set -e; test -f missing; echo later; }; if check; then :; fi'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'set -e; test -f missing; echo later;' },
+  ])
+})
+
+test('findInertGuards inspects every conditional predicate function without recursing forever', () => {
+  const predicateList =
+    'set -e; check() { set -e; test -f missing; echo later; }; if true && check; then :; fi'
+  assert.deepEqual(findInertGuards(predicateList), [
+    { lineOffset: 0, guard: 'set -e; test -f missing; echo later;' },
+  ])
+
+  const recursivePredicate =
+    'walk() { if test "$1" = stop; then return 0; fi; if walk stop; then :; fi; }; walk start'
+  assert.doesNotThrow(() => findInertGuards(recursivePredicate))
+})
+
+test('findInertGuards inspects substitutions in conditional predicates', () => {
+  const body =
+    'set -e; shopt -s inherit_errexit; if value=$(test -f missing; echo later); then :; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards ignores option changes from a short-circuited predicate function', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'if false && disable; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not resolve command operands as functions', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'command disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards resolves functions only after their declaration', () => {
+  const body = [
+    'future_fn || true',
+    'future_fn() { set -e; }',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries direct function option changes into the caller', () => {
+  const disabled = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+
+  const enabled = ['enable() { set -e; }', 'enable', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(enabled), [])
+})
+
+test('findInertGuards carries caller continuation into function bodies', () => {
+  const body = 'check() { test -f missing; }; check; echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing;' }])
+})
+
+test('findInertGuards stops function option tracking after an unconditional return', () => {
+  const body = [
+    'set -e',
+    'disable() { return 0; set +e; }',
+    'disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards carries conditional function option changes into the caller', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable && true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries option changes from a guaranteed AND/OR function RHS', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'true && disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries option changes from a semicolon-separated function call', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'echo ready; disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies only guaranteed predicate option effects', () => {
+  const body = [
+    'set -e',
+    'enable() { set -e; }',
+    'if enable && set +e; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards preserves enabled errexit across tested function calls', () => {
+  const body = [
+    'set -e',
+    'probe() { :; }',
+    'if probe; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores predicate RHS option effects that cannot execute', () => {
+  const body = [
+    'set -e',
+    'if test 1 = 2 && set +e; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores function definitions in statically skipped branches', () => {
+  const body = [
+    'set -e',
+    'if false; then',
+    '  disable() { set +e; }',
+    'fi',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores definitions in statically nonmatching case arms', () => {
+  const body = [
+    'set -e',
+    'case x in',
+    'y)',
+    'disable() { set +e; }',
+    ';;',
+    'esac',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards skips statically short-circuited predicate functions', () => {
+  const body = [
+    'set -e',
+    'check() { set -e; test -f missing; echo later; }',
+    'if false && check; then :; fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps errexit ignored in tested compound bodies', () => {
+  const body = 'set -e; if true; then test -f missing; echo later; fi || exit 1'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards preserves options when a function call is short-circuited', () => {
+  const body = 'set -e; disable() { set +e; }; false && disable; test -f missing; echo later'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports guards inside conditional predicate lists', () => {
+  const body = 'set -e; if test -f missing; echo later; then :; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards keeps multiline tested compounds errexit-exempt', () => {
+  const body = ['set -e', 'if true; then', 'test -f missing', 'echo later', 'fi || exit 1'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps multiline tested brace and subshell groups errexit-exempt', () => {
+  for (const [open, close] of [
+    ['(', ')'],
+    ['{', '}'],
+  ]) {
+    const body = [
+      'set -e',
+      open,
+      'set -e',
+      'test -f missing',
+      'echo later',
+      `${close} || true`,
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+  }
+})
+
+test('findInertGuards keeps redirection-bearing tested group closers errexit-exempt', () => {
+  for (const [open, close, redirection] of [
+    ['(', ')', '2>/dev/null'],
+    ['{', '}', '>out'],
+  ]) {
+    const body = [
+      'set -e',
+      open,
+      'test -f missing',
+      'echo later',
+      `${close} ${redirection} || true`,
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+  }
+})
+
+test('findInertGuards inspects guards inside one-line subshell groups', () => {
+  assert.deepEqual(findInertGuards('( test -f missing; echo later )'), [
+    { lineOffset: 0, guard: 'test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards resolves direct function calls after case-arm patterns', () => {
+  const body = 'set -e; check() { test -f missing; echo later; }; case x in x) check;; esac'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps non-final pipeline compound bodies errexit-exempt', () => {
+  const body = ['set -e', 'if true; then', 'test -f missing', 'echo later', 'fi | cat'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps functions before the final pipeline command errexit-exempt', () => {
+  const body = ['set -e', 'check() { test -f missing; }', 'check | cat', 'echo outer'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing;' }])
+})
+
+test('findInertGuards preserves errexit for functions in the final pipeline command', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', 'echo x | check'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not apply effects from a conditional function RHS', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'test 1 = 2 && disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards terminates recursive function inspection', () => {
+  const body = 'set -e; recurse() { recurse; }; recurse'
+  assert.doesNotThrow(() => findInertGuards(body))
+})
+
+test('findInertGuards stops parsing set options after --', () => {
+  const body = ['set -- -e', 'test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards does not apply later inherit_errexit to earlier substitutions', () => {
+  const body = ['set -e', 'value=$(test -f missing; echo later)', 'shopt -s inherit_errexit'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards accepts exits in nested brace groups', () => {
+  assert.deepEqual(
+    findInertGuards('test -f tool || { { exit 1; }; echo continued; }; echo outer'),
+    [],
+  )
+})
+
+test('findInertGuards treats case-arm terminators as structural closers', () => {
+  const body = ['case "$value" in', '*)', 'test -f tool', ';;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards accepts a guard ended by an attached case terminator', () => {
+  const body = ['case "$value" in', '*)', 'test -f tool;;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards recognizes assignment-prefixed bare guards', () => {
+  const body = ['MODE=strict test -f required', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'MODE=strict test -f required' },
+  ])
+})
+
+test('findInertGuards recognizes assignment-prefixed OR guards', () => {
+  const body = 'MODE=strict test -f required || echo missing'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'MODE=strict test -f required || echo missing' },
+  ])
+})
+
+test('findInertGuards scopes later commands to their case arm', () => {
+  const body = [
+    'case "$value" in',
+    'first)',
+    'test -f tool',
+    ';;',
+    '*)',
+    'echo fallback',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+
+  const disabled = [
+    'set -e',
+    'case z in',
+    'y) :;; *) set +e',
+    'test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards recognizes guards after same-line case arm patterns', () => {
+  const body = ['case x in', 'x) test -f missing', 'echo later', ';;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'x) test -f missing' }])
+})
+
+test('findInertGuards starts a new case arm after an attached terminator', () => {
+  const body = [
+    'case x in',
+    'x) :; set -e;;',
+    '*) test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: '*) test -f missing' }])
+})
+
+test('findInertGuards recognizes case scopes after a function brace prefix', () => {
+  const body = [
+    'helper() { case "$value" in',
+    'first)',
+    'test -f tool',
+    ';;',
+    '*)',
+    'echo fallback',
+    ';;',
+    'esac; }',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports substitution exits when the outer body continues', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f tool || exit 1)\necho later'), [
+    { lineOffset: 0, guard: 'test -f tool || exit 1' },
+  ])
+})
+
+test('findInertGuards preserves an outer substitution assignment exit guard', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f required) || exit 1\necho later'), [])
+})
+
+test('findInertGuards preserves an outer substitution assignment guard after redirections', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f required) >out || exit 1\necho later'), [])
+  assert.deepEqual(findInertGuards('value=$(test -f required) >out 2>&1 || exit 1\necho later'), [])
+})
+
+test('findInertGuards does not promote exits from nested conditionals in brace fallbacks', () => {
+  const body = 'test -f tool || { { if false; then exit 1; fi; }; echo continued; }; echo outer'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards keeps fallthrough case arms in one flow', () => {
+  const body = ['case x in', 'x)', 'test -f missing', ';&', '*)', 'echo later', ';;', 'esac'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards treats commands after a conditional as later flow', () => {
+  const body = ['if true; then', 'test -f missing', 'fi', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards resumes after a multiline elif predicate', () => {
+  const body = [
+    'if false; then',
+    ':',
+    'elif',
+    'false',
+    'then',
+    ':',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 7, guard: 'test -f missing' }])
+})
+
+test('findInertGuards reports assertions masked by an enclosing command', () => {
+  assert.deepEqual(findInertGuards('echo "$(test -f required)"'), [
+    { lineOffset: 0, guard: 'test -f required' },
+  ])
+})
+
+test('checkSkillShellInRepo reports inert guards even when bash is optional', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('inert-guard')]: md('```bash', 'test -x tool || echo missing', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot, {
+      env: { BOSS_SKILL_SHELL_OPTIONAL: '1' },
+      hasBash: () => false,
+      warn: () => {},
+    })
+    assert.deepEqual(findings, [
+      {
+        file: '.claude/skills/inert-guard/SKILL.md',
+        line: 2,
+        kind: 'inert-guard',
+        message:
+          'test -x tool || echo missing can fall through after failure; add set -e or exit/return in its failure branch',
+      },
+    ])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
 })
 
 // 2. >=-length closing, four-backtick.

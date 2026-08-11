@@ -852,8 +852,12 @@ func TestAttachTmuxEnvNormalizesTerm(t *testing.T) {
 }
 
 // TestRenderTmuxAttachDiagnostic verifies the diagnostic includes a
-// copy-pasteable `TERM=<eff> tmux attach -t <name>` reproduction command
+// copy-pasteable `TERM=<eff> tmux -u attach -t <name>` reproduction command
 // plus the captured tmux startup output (e.g. a missing-terminfo error).
+//
+// The `-u` is asserted verbatim because the whole point of this line is that it
+// reproduces the attach boss actually ran; a repro missing a flag the real argv
+// carries is the drift this test exists to catch.
 func TestRenderTmuxAttachDiagnostic(t *testing.T) {
 	out := renderTmuxAttachDiagnostic(
 		"",
@@ -862,7 +866,7 @@ func TestRenderTmuxAttachDiagnostic(t *testing.T) {
 		"missing or unsuitable terminal: xterm-ghostty\n",
 	)
 	for _, want := range []string{
-		"tmux attach -t boss-abc-123",
+		"tmux -u attach -t boss-abc-123",
 		"TERM=xterm-256color",
 		"missing or unsuitable terminal: xterm-ghostty",
 	} {

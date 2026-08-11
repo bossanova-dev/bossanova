@@ -141,7 +141,18 @@ test('size ratchet', () => {
   // BOS-663 adds the Tier-1 path-load clause to the notes-extension dispatch (+310 bytes): the
   // notes extension declares `disable-model-invocation: true`, so a Skill-tool load by descriptor
   // `name` is refused and the layer goes inert silently. Re-baselined 47104 → 48128.
-  const RATCHET = 48128
+  // BOS-825 rewrites Phase 0 step 3 as a transport preflight (+1706 bytes): step 3 now
+  // validates MCP *or* the boss CLI via bossEpicTransportPreflight and BLOCKs only when
+  // neither carrier is complete, step 4 gains the CLI-mode $BOSS_REPO_ID rule, and the
+  // session-adapter bullet documents the per-capability `cli` transport. Re-baselined
+  // 48128 → 50176.
+  // BOS-827 adds the `partial` report to Phase 0's opening-line contract (+186 bytes net,
+  // after trimming the paragraph it extends): a CLI-transport run must name the capabilities
+  // the CLI carries INCOMPLETELY (today getSession, whose missing routing signals are hang
+  // detection, auth-death and conflict-after-green), not only the cli: null ones. The same
+  // edit corrects the now-false claim that a managed spawn always wires the boss MCP server.
+  // Re-baselined 50176 → 50362.
+  const RATCHET = 50362
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })
@@ -697,10 +708,18 @@ test('phase 0 runs a deterministic boss MCP tool-discovery preflight (BOS-301)',
     /requiredBossToolsForEpic/,
     'preflight must derive the required tool list from requiredBossToolsForEpic (source of truth)',
   )
+  // BOS-825 widened the preflight from MCP-only to MCP-or-CLI, so the diagnostic moved
+  // from "missing required tools" to the transport-aware BLOCK. Pin the *new* clause —
+  // the fail-fast-naming-what-is-absent intent is unchanged, only its carrier is.
   assert.match(
     CLAUDE,
-    /missing required tools/i,
-    'missing tools must produce a concise diagnostic naming them',
+    /bossEpicTransportPreflight/,
+    'preflight must choose the carrier through bossEpicTransportPreflight',
+  )
+  assert.match(
+    CLAUDE,
+    /no complete boss transport/i,
+    'neither transport complete must produce a concise diagnostic naming what is missing',
   )
   assert.match(CLAUDE, /before scheduling/i, 'the tool-discovery preflight runs before scheduling')
 })

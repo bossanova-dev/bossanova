@@ -262,8 +262,44 @@ test('the committed manifest carries the variants the epic is measured against',
     'status-quo',
     'status-quo-minus-dup',
     'no-agents',
+    'boss-omitted-remotes-wired',
   ]) {
     assert.ok(names.includes(required), `manifest must define the ${required} variant`)
+  }
+})
+
+// The after-shape for the boss-server default flip, and its measurement pair.
+// The variant is only evidence if it is the shape the new default actually
+// produces: strict mode, no boss stdio server, both HTTP remotes still wired.
+// Any of those three drifting silently turns the recorded delta into a
+// measurement of something else.
+test('the boss-omitted variant matches the shape the new default produces', () => {
+  const manifest = validateManifest(loadManifest(MANIFEST_PATH))
+  const variant = manifest.variants.find((v) => v.name === 'boss-omitted-remotes-wired')
+
+  assert.equal(variant.strictMcpConfig, true, 'strict: the curated doc is the whole surface')
+  assert.equal('boss' in variant.mcpServers, false, 'the boss server must be absent')
+  assert.deepEqual(
+    Object.keys(variant.mcpServers).sort(),
+    ['bossanova-linear', 'bossanova-sentry'],
+    'both third-party HTTP remotes stay wired',
+  )
+
+  // The comparison pair, pinned so the delta cannot quietly be taken against
+  // status-quo (whose non-strict repo-.mcp.json merge no longer exists).
+  const pair = manifest.variants.find((v) => v.name === 'status-quo-minus-dup')
+  assert.equal(pair.strictMcpConfig, true)
+  assert.deepEqual(
+    Object.keys(pair.mcpServers).sort(),
+    ['boss', 'bossanova-linear', 'bossanova-sentry'],
+    'the pair must differ from boss-omitted-remotes-wired by the boss server ALONE',
+  )
+  for (const server of ['bossanova-linear', 'bossanova-sentry']) {
+    assert.deepEqual(
+      variant.mcpServers[server],
+      pair.mcpServers[server],
+      `${server} must be byte-identical across the pair, or the delta is not one boss copy`,
+    )
   }
 })
 

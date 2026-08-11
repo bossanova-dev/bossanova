@@ -442,6 +442,10 @@ type SessionCommandHandler interface {
 	// ListChats returns a session's chats. sessionID scopes the read for authz.
 	// Store-bound — dispatched async.
 	ListChats(ctx context.Context, sessionID string) (*pb.ListChatsResponse, error)
+	// GetChatStatuses returns a session's per-chat statuses. sessionID scopes the
+	// read for authz. Distinct from GetSessionStatuses, which collapses a
+	// session's chats into one aggregate. Store-bound — dispatched async.
+	GetChatStatuses(ctx context.Context, sessionID string) (*pb.GetChatStatusesResponse, error)
 	// GetSessionStatuses returns the aggregate status for the given sessions.
 	// Store-bound — dispatched async.
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) (*pb.GetSessionStatusesResponse, error)

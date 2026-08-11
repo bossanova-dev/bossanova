@@ -103,7 +103,12 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   `operationMap` + `subSkills`. Reference `createBossSessionRunnerAdapter` → the
   boss MCP tools; `subSkills.implement` = `/boss-build`, `subSkills.repair`
   = `/boss-repair`. The tool/arg names named across Phases 3–4 are exactly this
-  map's entries (`merge_session` carries the mandatory `confirm`).
+  map's entries (`merge_session` carries the mandatory `confirm`). Each entry
+  also declares a **`cli` transport** — the equivalent `boss` invocation and the
+  `response` paths where its JSON carries the same values — or an explicit
+  `cli: null` with a reason where no CLI equivalent exists. Phase 0 step 3 picks
+  the transport; the phases below name the MCP spelling, and a CLI-transport run
+  substitutes the entry's `cli` command for each one.
 - **Callback notifier** — `resolveCallbackAdapter(env)`
   (`toolbox/callback/adapter.mjs`). One-shot GitHub PR-event watches
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
@@ -222,32 +227,72 @@ assumeCleared, assumeClearedAndMerge}`.
    assembly uses (an empty result still proves reachability).
    Unreachable → stop `BLOCKED: tracker MCP unreachable`.
 
-3. **Verify boss MCP + discover every required tool before scheduling.**
-   `list_agents` must include the chosen `--agent`; otherwise stop
-   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Derive the
-   required set from the session adapter, never a hand-maintained list:
+3. **Validate a transport before scheduling — MCP _or_ the boss CLI.** Every
+   session operation this skill performs has two possible carriers: the boss MCP
+   tools, and the `boss` CLI. Validate whichever the runtime actually has;
+   BLOCK only when **neither** can carry the run. `list_agents` (or
+   `boss agents --json`) must include the chosen `--agent`; otherwise stop
+   `BLOCKED: boss daemon unreachable or agent '<name>' not loaded`. Derive both
+   required sets from the session adapter, never a hand-maintained list:
 
    ```bash
    BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
-   [ -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ] || BOSS_SKILLS_HOME="$HOME/.codex/skills"
+   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
    test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    node --input-type=module -e '
-     const { requiredBossToolsForEpic } = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/session/boss.mjs`)
-     process.stdout.write(requiredBossToolsForEpic().join("\n") + "\n")
-   '  # → authoritative checklist
+     const m = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/session/boss.mjs`)
+     process.stdout.write("tools:\n" + m.requiredBossToolsForEpic().join("\n") + "\n")
+     process.stdout.write("cli:\n" + m.requiredBossCliCommandsForEpic().join("\n") + "\n")
+   '  # → authoritative checklists, one per transport
    ```
 
-   Enumerate the boss MCP tools this runtime actually exposes (host-specific — do
-   not overfit to one host) and diff them against the checklist via
-   `bossEpicToolPreflight(availableTools)` → `{ ok, missing }`. If `missing` is
-   non-empty, stop
-   `BLOCKED: boss MCP missing required tools: <comma-separated missing>` naming
-   the absent tools (e.g. `list_check_snapshots`). When all are present the
-   preflight is a no-op — scheduling and merge behaviour are unchanged.
+   Enumerate the boss MCP tools this runtime exposes (host-specific — do not
+   overfit to one host) and the `boss` subcommands it can run, then diff both at
+   once via
+   `bossEpicTransportPreflight({availableTools, availableCliCommands})` →
+   `{ ok, transport, missing, degraded, partial }`.
+
+   The CLI is **preferred, not a fallback**: a complete CLI set wins even when
+   the MCP set is also complete. That preference is what made it safe to stop
+   wiring the boss MCP server by default, so on a managed spawn expect `cli`.
+
+   - `transport: 'cli'` — every `cli`-mapped capability is reachable. **Proceed**
+     on the CLI, whether or not MCP is also complete. A runtime missing one tool
+     (historically `merge_session`) runs degraded, it does not stop.
+   - `transport: 'mcp'` — the CLI set is incomplete but the MCP tool set is
+     complete. Proceed on the richer carrier; nothing is degraded.
+   - `ok: false` — neither transport is complete. Stop
+     `BLOCKED: no complete boss transport: <comma-separated missing>`, naming
+     everything absent from both so the repair set is visible in one line.
+
+   Report the outcome in the run's opening line — `transport: <mcp|cli>`, plus
+   `degraded: <capabilities>` and `partial: <capability>(<missing fields>)` when
+   each is non-empty — so a reader can tell a full-fidelity run from one that
+   never consulted those capabilities, and from one that read them half-blind.
+
+   `degraded` = no CLI equivalent at all: `resolveContext`,
+   `getSessionStatuses`, `createPlanningChat` (three, not two — `boss new` has
+   no `--quick-chat`). Substitute their documented fallbacks, do not guess.
+
+   `partial` = a working transport missing response fields, so deliberately not
+   degraded. Today `getSession`: `boss show --json` carries the lifecycle state
+   but none of `last_agent_activity_at`, `repair_active`,
+   `attention_status.reason`, `pr_mergeable`, `merge_block` — hang detection,
+   auth-death and conflict-after-green routing all gone. Poll
+   `boss session checks` for CI, and treat an unreadable signal as "not
+   settled", never as a green.
+
+   `bossEpicToolPreflight(availableTools)` → `{ ok, missing }` remains available
+   for MCP-only callers and is unchanged.
 
 4. **Resolve `repo_id`** from `$BOSS_REPO_ID` (set in boss-managed chats) if
    present, else `resolve_context {working_dir: <cwd>}`. No repo → stop BLOCKED.
+   On the **CLI transport** `resolve_context` does not exist: read
+   `$BOSS_REPO_ID`, falling back to `boss env --json` → `session.repo_id`. If
+   that is empty, this is not a boss session — stop BLOCKED. **Never infer the
+   repo from the directory name or the first `boss ls` row**: in a multi-repo
+   daemon a wrong guess aims every session write at another repository.
 
 5. **Agent choice.** Default `--agent claude`. In Phase 3 every ticket runs as a
    tmux-hosted `create_session` (`tmux_unattended: true` — the prompt is
@@ -647,7 +692,7 @@ After final summary and outcome, resolve and run:
 
 ```bash
 BOSS_EPIC_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-epic/toolbox"
-[ -d "$BOSS_EPIC_TOOLBOX" ] || BOSS_EPIC_TOOLBOX="$HOME/.codex/skills/boss-epic/toolbox"
+if [ ! -d "$BOSS_EPIC_TOOLBOX" ]; then BOSS_EPIC_TOOLBOX="$HOME/.codex/skills/boss-epic/toolbox"; fi
 NOTES_JSON=$(node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" discover --core boss-epic --role notes --json)
 ```
 

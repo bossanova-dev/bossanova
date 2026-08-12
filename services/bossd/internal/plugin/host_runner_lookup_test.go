@@ -90,6 +90,10 @@ func (s *stubAgentRunner) ProbeProgressLiveness(context.Context, *bossanovav1.Pr
 	return &bossanovav1.ProbeProgressLivenessResponse{}, nil
 }
 
+func (s *stubAgentRunner) DescribeMCPSurface(context.Context, *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error) {
+	return &bossanovav1.DescribeMCPSurfaceResponse{}, nil
+}
+
 func (s *stubAgentRunner) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{}, nil
 }

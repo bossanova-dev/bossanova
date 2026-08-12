@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,9 +12,11 @@ import {
   mergeConfig,
   validateConfig,
   loadSkillConfig,
+  detectRepoDefaults,
   lensesForFile,
   detectChangeTypes,
   skillForLens,
+  reviewDefaultRounds,
   command,
   moduleTestCommand,
   manifestPath,
@@ -61,18 +63,58 @@ test('CONFIG_FILENAME is the repo-root dotfile', () => {
   assert.equal(CONFIG_FILENAME, '.boss-skills.json')
 })
 
-test('DEFAULT_CONFIG carries the five current lenses', () => {
+test('DEFAULT_CONFIG carries the four language lenses', () => {
   // Order-independent: adding a lens should be a one-line edit here rather than a
-  // positional merge conflict. The committed file's literal ordering is pinned
+  // positional merge conflict. THIS repo's own (path-anchored) lens set is pinned
   // separately, by the .boss-skills.json reproduction test below.
   const ids = DEFAULT_CONFIG.lensMap.map((r) => r.id)
-  assert.deepEqual([...ids].sort(), ['api', 'db', 'go', 'tui', 'web'])
+  assert.deepEqual([...ids].sort(), ['api', 'db', 'go', 'web'])
   const byId = Object.fromEntries(DEFAULT_CONFIG.lensMap.map((r) => [r.id, r]))
   assert.equal(byId.go.skill, 'golang-pro')
-  assert.equal(byId.tui.skill, 'tui-design')
   assert.equal(byId.web.skill, 'impeccable')
   assert.equal(byId.db.skill, 'database-review')
   assert.equal(byId.api.skill, 'api-review')
+  // `tui` is deliberately NOT a default: its only honest matcher is a repo path, and
+  // a directory-naming guess would dispatch a Bubbletea rubric at a repo using something else.
+  assert.equal(
+    DEFAULT_CONFIG.lensMap.some((r) => r.id === 'tui'),
+    false,
+  )
+})
+
+test('BOS-850: DEFAULT_CONFIG carries no project-specific path literal', () => {
+  // Zero-tolerance agnosticism gate, modelled on the skills_manifest identity gate but scoped
+  // to this object rather than every payload file (14 payload files legitimately say `services/`).
+  // The published cores install into every user's GLOBAL skill directory, so a path literal
+  // from any one checkout leaking back in here would ship to thousands of unrelated repos.
+  const serialized = JSON.stringify(DEFAULT_CONFIG)
+  for (const literal of ['services/', 'lib/bossalib', 'proto/', 'docs/testing/']) {
+    assert.equal(
+      serialized.includes(literal),
+      false,
+      `DEFAULT_CONFIG must not contain the project path literal "${literal}"`,
+    )
+  }
+})
+
+test('BOS-850: every DEFAULT_CONFIG lens glob is language-shaped (starts with **/)', () => {
+  // The structural companion to the literal gate: requiring the `**/` prefix mechanically
+  // forbids anchoring a default lens to any top-level directory, including a directory name
+  // the four banned literals above would not catch.
+  for (const rule of DEFAULT_CONFIG.lensMap) {
+    const globs = Array.isArray(rule.globs) ? rule.globs : [rule.glob]
+    for (const glob of globs) {
+      assert.ok(
+        glob.startsWith('**/'),
+        `default lens "${rule.id}" glob "${glob}" must start with "**/" (no path anchoring)`,
+      )
+    }
+  }
+})
+
+test('BOS-850: DEFAULT_CONFIG ships no commands block and no test manifest', () => {
+  assert.equal('commands' in DEFAULT_CONFIG, false)
+  assert.equal('test' in DEFAULT_CONFIG, false)
 })
 
 test('DEFAULT_CONFIG lenses each carry a non-empty inline fallbackRubric', () => {
@@ -120,8 +162,16 @@ test('loadSkillConfig returns defaults when no file present', () => {
   const { nested, cleanup } = scratchRepo(undefined)
   try {
     const cfg = loadSkillConfig({ cwd: nested })
-    assert.equal(cfg.test.manifestPath, 'docs/testing/test-command-manifest.md')
     assert.equal(cfg.adapters.tracker, 'linear')
+    assert.deepEqual(cfg.lensMap.map((r) => r.id).sort(), ['api', 'db', 'go', 'web'])
+    // A bare scratch dir declares no build system, so detection adds nothing and the
+    // accessors report absence rather than throwing. The key must be ABSENT, not an
+    // empty object: `commands` in cfg is how a consumer distinguishes "nothing declared"
+    // from "declared empty".
+    assert.equal('commands' in cfg, false)
+    assert.equal(manifestPath(cfg), null)
+    assert.equal(command(cfg, 'build'), null)
+    assert.equal(moduleTestCommand(cfg, 'boss'), null)
   } finally {
     cleanup()
   }
@@ -202,20 +252,185 @@ test('validateConfig rejects a non-string / empty command override', () => {
   // A malformed command value must fail here rather than throwing a raw
   // TypeError later when an accessor calls .replace() on it.
   assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, commands: { testModule: null } }, 'test'),
+    /skill-config:.*commands\.testModule must be a non-empty string/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, commands: { build: '' } }, 'test'),
+    /skill-config:.*commands\.build must be a non-empty string/,
+  )
+})
+
+test('BOS-850: validateConfig accepts a config with no commands and no test block', () => {
+  // The defaults themselves are the primary fixture: absent (not {}) must validate.
+  validateConfig(DEFAULT_CONFIG, 'test')
+  validateConfig({ ...DEFAULT_CONFIG, commands: { build: 'make' } }, 'test')
+  validateConfig({ ...DEFAULT_CONFIG, test: {} }, 'test')
+  validateConfig({ ...DEFAULT_CONFIG, test: { manifestPath: 'docs/t.md' } }, 'test')
+})
+
+test('BOS-850: validateConfig still rejects a present-but-malformed commands / test block', () => {
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, commands: [] }, 'test'),
+    /skill-config:.*commands must be an object when present/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, commands: null }, 'test'),
+    /skill-config:.*commands must be an object when present/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, test: [] }, 'test'),
+    /skill-config:.*test must be an object when present/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, test: { manifestPath: 7 } }, 'test'),
+    /skill-config:.*test\.manifestPath must be a non-empty string when present/,
+  )
+})
+
+test('validateConfig rejects an empty test.manifestPath', () => {
+  // Symmetry with commands.*: manifestPath() treats "" as absent and returns null, so accepting
+  // it would let a repo believe it configured a manifest while every core reads "none".
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, test: { manifestPath: '' } }, 'test'),
+    /skill-config:.*test\.manifestPath must be a non-empty string when present/,
+  )
+})
+
+// BOS-856: the opportunistic default-round registry. It is the seam that keeps a concrete
+// reviewer's name out of the published, project-agnostic cores — a core knows only a capability id.
+test('DEFAULT_CONFIG ships the default review rounds and reviewDefaultRounds reads them', () => {
+  const rounds = reviewDefaultRounds(DEFAULT_CONFIG)
+  assert.deepEqual(
+    rounds.map((r) => r.capability),
+    ['second-voice', 'code-review'],
+  )
+  const byId = Object.fromEntries(rounds.map((r) => [r.capability, r]))
+  assert.equal(byId['second-voice'].kind, 'cross-agent')
+  assert.equal(byId['code-review'].kind, 'skill')
+  // A kind:'skill' entry must name what to dispatch; that name lives in config, never in a core.
+  assert.equal(typeof byId['code-review'].skill, 'string')
+  assert.ok(byId['code-review'].skill.length > 0)
+  validateConfig(DEFAULT_CONFIG, 'test')
+})
+
+test('reviewDefaultRounds returns [] for a config carrying no registry', () => {
+  // [] is the honest "this repo default-runs no extra round" — a config predating the block, or one
+  // that merged it away, must degrade to an empty phase rather than failing a review run.
+  assert.deepEqual(reviewDefaultRounds({}), [])
+  assert.deepEqual(reviewDefaultRounds({ reviewDefaults: {} }), [])
+  assert.deepEqual(reviewDefaultRounds(undefined), [])
+  validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: undefined }, 'test')
+})
+
+test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
+  const merged = mergeConfig(DEFAULT_CONFIG, {
+    reviewDefaults: { rounds: [{ capability: 'second-voice', kind: 'cross-agent' }] },
+  })
+  assert.deepEqual(reviewDefaultRounds(merged), [
+    { capability: 'second-voice', kind: 'cross-agent' },
+  ])
+})
+
+test('validateConfig rejects a non-array reviewDefaults.rounds', () => {
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: { rounds: {} } }, 'test'),
+    /skill-config:.*reviewDefaults\.rounds must be an array/,
+  )
+})
+
+test('validateConfig rejects a default round with an empty or non-string capability', () => {
+  // reviewDefaultRounds() hands entries straight to a core's default-round phase, which
+  // dereferences `capability` for its ledger line and its suppression check.
+  assert.throws(
     () =>
       validateConfig(
-        { ...DEFAULT_CONFIG, commands: { ...DEFAULT_CONFIG.commands, testModule: null } },
+        {
+          ...DEFAULT_CONFIG,
+          reviewDefaults: { rounds: [{ capability: '', kind: 'cross-agent' }] },
+        },
         'test',
       ),
-    /skill-config:.*commands\.testModule must be a non-empty string/,
+    /skill-config:.*non-empty string capability/,
   )
   assert.throws(
     () =>
       validateConfig(
-        { ...DEFAULT_CONFIG, commands: { ...DEFAULT_CONFIG.commands, build: '' } },
+        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 7, kind: 'cross-agent' }] } },
         'test',
       ),
-    /skill-config:.*commands\.build must be a non-empty string/,
+    /skill-config:.*non-empty string capability/,
+  )
+})
+
+test('validateConfig rejects a default round with an unknown kind', () => {
+  // An unrecognised kind has no probe, so the round would silently do nothing on every run —
+  // indistinguishable from the capability being unavailable.
+  assert.throws(
+    () =>
+      validateConfig(
+        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 'x', kind: 'telepathy' }] } },
+        'test',
+      ),
+    /skill-config:.*kind must be one of/,
+  )
+})
+
+test("validateConfig rejects a kind:'skill' default round with no skill", () => {
+  assert.throws(
+    () =>
+      validateConfig(
+        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 'x', kind: 'skill' }] } },
+        'test',
+      ),
+    /skill-config:.*needs a non-empty string skill/,
+  )
+})
+
+// Phase D keys duplicate suppression and its ledger lines on `capability`, so two entries
+// sharing an id are one ambiguous id, not two rounds — and a "covered by extension" drop
+// silently applies to both. The collision must fail at config time, not read as a registry.
+test('validateConfig rejects two default rounds sharing a capability', () => {
+  assert.throws(
+    () =>
+      validateConfig(
+        {
+          ...DEFAULT_CONFIG,
+          reviewDefaults: {
+            rounds: [
+              { capability: 'code-review', kind: 'cross-agent' },
+              { capability: 'code-review', kind: 'skill', skill: 'some:reviewer' },
+            ],
+          },
+        },
+        'test',
+      ),
+    /skill-config:.*"code-review" duplicates an earlier capability/,
+  )
+  // Distinct ids are the ordinary case and must stay accepted.
+  validateConfig(
+    {
+      ...DEFAULT_CONFIG,
+      reviewDefaults: {
+        rounds: [
+          { capability: 'second-voice', kind: 'cross-agent' },
+          { capability: 'code-review', kind: 'skill', skill: 'some:reviewer' },
+        ],
+      },
+    },
+    'test',
+  )
+})
+
+test('validateConfig rejects a non-object reviewDefaults or rounds entry', () => {
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: [] }, 'test'),
+    /skill-config:.*reviewDefaults must be an object when present/,
+  )
+  assert.throws(
+    () =>
+      validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: { rounds: ['second-voice'] } }, 'test'),
+    /skill-config:.*reviewDefaults\.rounds entries must be objects/,
   )
 })
 
@@ -374,25 +589,465 @@ test('lensesForFile honours a multi-glob (globs:[...]) rule', () => {
   assert.deepEqual(lensesForFile(cfg, 'main.go'), [])
 })
 
+// --- BOS-850: detected happy defaults -------------------------------------
+
+/** A scratch dir seeded with {relativePath: contents}. Returns {dir, cleanup}. */
+function markerRepo(files) {
+  const dir = mkdtempSync(join(tmpdir(), 'skillcfg-detect-'))
+  for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents)
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+function withMarkers(files, fn) {
+  const { dir, cleanup } = markerRepo(files)
+  try {
+    return fn(dir)
+  } finally {
+    cleanup()
+  }
+}
+
+test('detectRepoDefaults reads declared Makefile targets, not the Makefile itself', () => {
+  withMarkers(
+    {
+      Makefile: [
+        'GO := go', // a variable assignment is not a target
+        '.PHONY: build lint',
+        '',
+        'build: deps',
+        '\t$(GO) build ./...',
+        '',
+        'lint::',
+        '\tgolangci-lint run',
+        '',
+        'deps:',
+        '\techo deps',
+      ].join('\n'),
+    },
+    (dir) => {
+      // No `test:` and no `format:` target were declared, so no test/format command is
+      // invented — the whole point of reading targets instead of marker presence.
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+        commands: { build: 'make build', lint: 'make lint' },
+      })
+    },
+  )
+})
+
+test('detectRepoDefaults returns {} for a Makefile declaring no recognised target', () => {
+  withMarkers({ Makefile: 'deploy:\n\techo deploy\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults reads every target a multi-target or continued rule head declares', () => {
+  // `build lint:` declares BOTH targets, and make joins a head split over a `\` continuation
+  // before parsing it — reading only the first name would miss a real declaration.
+  withMarkers({ Makefile: 'build lint:\n\techo both\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { build: 'make build', lint: 'make lint' },
+    })
+  })
+  withMarkers({ Makefile: 'format \\\n  test:\n\techo joined\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { format: 'make format', test: 'make test' },
+    })
+  })
+})
+
+test('detectRepoDefaults ignores a target-specific variable assignment', () => {
+  // `build: CFLAGS=-O2` scopes a variable to `build`; on its own it declares no recipe, so
+  // `make build` fails. The `test:` rule below it is the only real declaration here.
+  withMarkers({ Makefile: 'build: CFLAGS=-O2\n\ntest:\n\techo real\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { test: 'make test' } })
+  })
+})
+
+test('detectRepoDefaults reads the makefile GNU make itself would read', () => {
+  // GNU make's lookup order is GNUmakefile, makefile, Makefile. A repo carrying two would
+  // otherwise be reported from the file make never opens — `make test` for a rule that,
+  // as `make -n test` shows, does not exist.
+  withMarkers(
+    { GNUmakefile: 'build:\n\techo real\n', Makefile: 'test:\n\techo shadowed\n' },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { build: 'make build' } })
+    },
+  )
+  // `makefile` vs `Makefile` is deliberately NOT exercised: they are the same path on a
+  // case-insensitive filesystem, so the pair cannot be seeded portably.
+})
+
+test('detectRepoDefaults ignores rule heads inside a define ... endef body', () => {
+  withMarkers(
+    {
+      Makefile: [
+        'define MODULE_RULES', // a template, expanded only by an $(eval) that may never happen
+        'build:',
+        '\techo not-a-real-target',
+        'format:',
+        '\techo also-not-real',
+        'endef',
+        '',
+        'test:', // the only rule this Makefile actually declares
+        '\tgo test ./...',
+      ].join('\n'),
+    },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { test: 'make test' } })
+    },
+  )
+})
+
+test('detectRepoDefaults stops scanning at an unterminated define (under-detects, never over-)', () => {
+  withMarkers({ Makefile: 'define BODY\nbuild:\n\techo x\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults ignores rule heads inside an ifeq ... endif body', () => {
+  // Whether the branch is live means evaluating variables this static reader never evaluates, so
+  // a target only reachable there is not a target the repo declares: emitting `make test` for a
+  // repo whose condition is false hands a core a command that fails.
+  withMarkers(
+    {
+      Makefile: [
+        'ifeq ($(CI),1)',
+        'test:',
+        '\techo ci-only',
+        'else',
+        'lint:', // an else branch is still inside the same conditional
+        '\techo not-ci',
+        'endif',
+        '',
+        'build:', // the only unconditional rule this Makefile declares
+        '\techo real',
+      ].join('\n'),
+    },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { build: 'make build' } })
+    },
+  )
+})
+
+test('detectRepoDefaults counts nested conditionals so the first endif does not leak', () => {
+  withMarkers(
+    {
+      Makefile: [
+        'ifdef RELEASE',
+        'ifneq ($(OS),linux)',
+        'lint:',
+        '\techo inner',
+        'endif', // closes only the inner conditional
+        'test:',
+        '\techo outer',
+        'endif',
+        'format:',
+        '\techo real',
+      ].join('\n'),
+    },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { format: 'make format' } })
+    },
+  )
+})
+
+test('detectRepoDefaults stops scanning at an unterminated ifeq (under-detects, never over-)', () => {
+  // Same call as an unterminated `define`: the rest of the file is swallowed, which under-detects
+  // rather than over-detects — and it is the same file make itself would reject.
+  withMarkers({ Makefile: 'ifeq ($(CI),1)\nbuild:\n\techo x\n\ntest:\n\techo y\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults treats a hyphenated ifeq-like target as a target, not a conditional', () => {
+  // `ifeq-check:` is a legal target name. make requires the directive to be a standalone word, so
+  // this opens no conditional — matching it as one would swallow every rule after it.
+  withMarkers(
+    {
+      Makefile: ['ifeq-check:', '\techo x', '', 'build:', '\techo b', '', 'test:', '\techo t'].join(
+        '\n',
+      ),
+    },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+        commands: { build: 'make build', test: 'make test' },
+      })
+    },
+  )
+})
+
+test('detectRepoDefaults does not close a conditional on a hyphenated endif-like rule head', () => {
+  // `endif-foo:` is a rule head, not the `endif` directive: closing on it would reopen scanning
+  // inside the conditional and over-detect the targets declared there.
+  withMarkers(
+    {
+      Makefile: [
+        'ifeq ($(CI),1)',
+        'endif-foo:',
+        '\techo x',
+        'test:', // still inside the conditional
+        '\techo ci-only',
+        'endif',
+        'build:',
+        '\techo real',
+      ].join('\n'),
+    },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { build: 'make build' } })
+    },
+  )
+})
+
+test('detectRepoDefaults maps a Makefile fmt target onto the format key', () => {
+  withMarkers({ Makefile: 'fmt:\n\tgofmt -w .\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { format: 'make fmt' } })
+  })
+})
+
+test('detectRepoDefaults runs package.json scripts through the lockfile package manager', () => {
+  const pkg = JSON.stringify({ scripts: { build: 'vite build', test: 'vitest', deploy: 'x' } })
+  withMarkers({ 'package.json': pkg, 'pnpm-lock.yaml': '' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { build: 'pnpm run build', test: 'pnpm run test' },
+    })
+  })
+  withMarkers({ 'package.json': pkg, 'yarn.lock': '' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { build: 'yarn run build', test: 'yarn run test' },
+    })
+  })
+  // bun ships two lockfile names — the binary `bun.lockb` and the newer text `bun.lock`. Either
+  // one names bun; falling through to `npm run build` would hand a core the wrong runner.
+  for (const lock of ['bun.lockb', 'bun.lock']) {
+    withMarkers({ 'package.json': pkg, [lock]: '' }, (dir) => {
+      assert.deepEqual(
+        detectRepoDefaults({ cwd: dir }),
+        { commands: { build: 'bun run build', test: 'bun run test' } },
+        `${lock} must select bun`,
+      )
+    })
+  }
+  // No lockfile: npm is the safe default rather than no command at all.
+  withMarkers({ 'package.json': pkg }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { build: 'npm run build', test: 'npm run test' },
+    })
+  })
+})
+
+test('detectRepoDefaults detects nothing from a malformed or script-less package.json', () => {
+  withMarkers({ 'package.json': '{ not json' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+  withMarkers({ 'package.json': '{"name":"x"}' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults maps Cargo and Go toolchains onto their standard subcommands', () => {
+  withMarkers({ 'Cargo.toml': '[package]\nname = "x"\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: {
+        build: 'cargo build',
+        lint: 'cargo clippy',
+        format: 'cargo fmt',
+        test: 'cargo test',
+      },
+    })
+  })
+  withMarkers({ 'go.mod': 'module example.com/x\n' }, (dir) => {
+    // No lint: no linter ships with the Go toolchain, so inventing one would fail.
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {
+      commands: { build: 'go build ./...', format: 'go fmt ./...', test: 'go test ./...' },
+    })
+  })
+})
+
+test('detectRepoDefaults resolves precedence first-writer-wins (Makefile outranks go.mod)', () => {
+  withMarkers({ Makefile: 'test:\n\tmake test\n', 'go.mod': 'module example.com/x\n' }, (dir) => {
+    const { commands } = detectRepoDefaults({ cwd: dir })
+    assert.equal(commands.test, 'make test') // the Makefile's declared target wins
+    assert.equal(commands.build, 'go build ./...') // go.mod fills only what it left empty
+    assert.equal(commands.format, 'go fmt ./...')
+    assert.equal(commands.lint, undefined)
+  })
+})
+
+test('detectRepoDefaults returns {} for a directory declaring no build system', () => {
+  withMarkers({ 'README.md': '# hi\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults never invents commands.testModule', () => {
+  // A per-module test target is a repo-shaped convention, not a language fact.
+  const all = {
+    Makefile: 'build:\n\ttrue\nlint:\n\ttrue\nformat:\n\ttrue\ntest:\n\ttrue\n',
+    'package.json': JSON.stringify({ scripts: { build: 'x', lint: 'x', test: 'x' } }),
+    'Cargo.toml': '[package]\n',
+    'go.mod': 'module x\n',
+  }
+  withMarkers(all, (dir) => {
+    const { commands } = detectRepoDefaults({ cwd: dir })
+    assert.equal('testModule' in commands, false)
+    assert.deepEqual(Object.keys(commands).sort(), ['build', 'format', 'lint', 'test'])
+    assert.equal(moduleTestCommand({ commands }, 'boss'), null)
+  })
+})
+
+test('detectRepoDefaults writes nothing — the marker dir is byte-identical afterwards', () => {
+  const all = { Makefile: 'build:\n\ttrue\n', 'package.json': '{"scripts":{"test":"x"}}' }
+  withMarkers(all, (dir) => {
+    const before = readdirSync(dir).sort()
+    detectRepoDefaults({ cwd: dir })
+    loadSkillConfig({ cwd: dir })
+    assert.deepEqual(readdirSync(dir).sort(), before)
+  })
+})
+
+test('loadSkillConfig layers detection between the defaults and the repo config', () => {
+  withMarkers({ Makefile: 'build:\n\ttrue\nlint:\n\ttrue\n' }, (dir) => {
+    const cfg = loadSkillConfig({ cwd: dir })
+    assert.equal(command(cfg, 'build'), 'make build')
+    assert.equal(command(cfg, 'lint'), 'make lint')
+    assert.equal(command(cfg, 'test'), null) // undeclared stays null, never guessed
+    assert.equal(manifestPath(cfg), null) // never detected
+    assert.deepEqual(
+      cfg.lensMap.map((r) => r.id).sort(),
+      ['api', 'db', 'go', 'web'], // the default catalogue is untouched by detection
+    )
+  })
+})
+
+test('loadSkillConfig skips detection PER KEY, not for the whole commands block', () => {
+  // The declared key wins outright; the keys the config leaves absent still get detected, which
+  // is the documented shallow-merge (DEFAULT_CONFIG < detected < file), not all-or-nothing.
+  withMarkers(
+    {
+      Makefile: 'build:\n\ttrue\nlint:\n\ttrue\ntest:\n\ttrue\n',
+      '.boss-skills.json': JSON.stringify({ commands: { build: 'bazel build //...' } }),
+    },
+    (dir) => {
+      const cfg = loadSkillConfig({ cwd: dir })
+      assert.equal(command(cfg, 'build'), 'bazel build //...')
+      assert.equal(command(cfg, 'lint'), 'make lint')
+      assert.equal(command(cfg, 'test'), 'make test')
+      assert.equal(command(cfg, 'format'), null) // undeclared and undetected stays null
+    },
+  )
+})
+
+test('loadSkillConfig still detects for a config declaring only an undetectable key', () => {
+  // The footgun the per-key rule removes: `commands.testModule` is never detected, so an
+  // all-or-nothing short-circuit made declaring it silently forfeit all four detected commands.
+  withMarkers(
+    {
+      Makefile: 'build:\n\ttrue\nlint:\n\ttrue\nformat:\n\ttrue\ntest:\n\ttrue\n',
+      '.boss-skills.json': JSON.stringify({ commands: { testModule: 'make test-{module}' } }),
+    },
+    (dir) => {
+      const cfg = loadSkillConfig({ cwd: dir })
+      assert.equal(moduleTestCommand(cfg, 'boss'), 'make test-boss')
+      assert.equal(command(cfg, 'build'), 'make build')
+      assert.equal(command(cfg, 'lint'), 'make lint')
+      assert.equal(command(cfg, 'format'), 'make format')
+      assert.equal(command(cfg, 'test'), 'make test')
+    },
+  )
+})
+
+test('detectRepoDefaults does no marker-file I/O when no detectable key is wanted', () => {
+  // The property the old whole-block short-circuit bought, kept: a config declaring all four
+  // detectable keys leaves `keys` empty, and detection returns before reading anything. Asserted
+  // through the return value because the marker dir is full of files it would otherwise read.
+  withMarkers(
+    { Makefile: 'build:\n\ttrue\nlint:\n\ttrue\nformat:\n\ttrue\ntest:\n\ttrue\n' },
+    (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir, keys: [] }), {})
+      // `testModule` is not detectable, so wanting only it is also a no-I/O call.
+      assert.deepEqual(detectRepoDefaults({ cwd: dir, keys: ['testModule'] }), {})
+      // ...and the skip happens before a single path is even constructed: a cwd that would throw
+      // the moment it were joined returns cleanly, which no amount of "detects nothing" would.
+      assert.deepEqual(detectRepoDefaults({ cwd: null, keys: [] }), {})
+      // ...and a single wanted key detects only that key.
+      assert.deepEqual(detectRepoDefaults({ cwd: dir, keys: ['lint'] }), {
+        commands: { lint: 'make lint' },
+      })
+    },
+  )
+})
+
+test('loadSkillConfig detects for a config file that declares no commands block', () => {
+  withMarkers(
+    { Makefile: 'test:\n\ttrue\n', '.boss-skills.json': JSON.stringify({ adapters: {} }) },
+    (dir) => {
+      assert.equal(command(loadSkillConfig({ cwd: dir }), 'test'), 'make test')
+    },
+  )
+})
+
+test('loadSkillConfig anchors detection at the config file dir, not a nested cwd', () => {
+  const { dir, cleanup } = markerRepo({
+    Makefile: 'test:\n\ttrue\n',
+    '.boss-skills.json': '{}',
+  })
+  try {
+    const nested = join(dir, 'a', 'b')
+    mkdirSync(nested, { recursive: true })
+    assert.equal(command(loadSkillConfig({ cwd: nested }), 'test'), 'make test')
+  } finally {
+    cleanup()
+  }
+})
+
 // --- Task 4: accessors ----------------------------------------------------
 
 test('lensesForFile matches by glob', () => {
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'services/boss/internal/x.go'), ['go', 'tui'])
   assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'services/web/src/App.tsx'), ['web'])
   assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'docs/foo.md'), [])
+})
+
+test('BOS-850: default lenses match by language anywhere in the tree', () => {
+  // The point of the `**/`-only catalogue: the same file type resolves identically
+  // whatever directory a foreign repo puts it in, and no lens is path-anchored.
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'x/y.go'), ['go'])
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'main.go'), ['go'])
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'db/migrations/001_init.sql'), ['db'])
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'src/api/schema.graphql'), ['api'])
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'app/styles/main.css'), ['web'])
+  // A path under this checkout's own layout gets exactly the language lens and nothing
+  // repo-shaped: the `tui` lens no longer fires on services/boss/**.
+  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'services/boss/internal/x.go'), ['go'])
+})
+
+test('BOS-850: the web lens covers plain JS as well as TypeScript', () => {
+  // A repo that never adopted TypeScript must still select a lens under DEFAULT_CONFIG: without
+  // these globs a JS-only change matched nothing at all.
+  for (const path of [
+    'src/index.js',
+    'scripts/tool.mjs',
+    'config/thing.cjs',
+    'src/App.jsx',
+    'src/App.tsx',
+    'src/lib.ts',
+  ]) {
+    assert.deepEqual(
+      lensesForFile(DEFAULT_CONFIG, path),
+      ['web'],
+      `${path} must select the web lens`,
+    )
+  }
 })
 
 test('detectChangeTypes reports every default lens (one-arg)', () => {
   assert.deepEqual(detectChangeTypes(['services/boss/internal/views/attach.go']), {
     go: true,
-    tui: true,
     web: false,
     db: false,
     api: false,
   })
   assert.deepEqual(detectChangeTypes(['docs/foo.md', 'CONCEPTS.md']), {
     go: false,
-    tui: false,
     web: false,
     db: false,
     api: false,
@@ -405,14 +1060,34 @@ test('skillForLens maps ids to review skills', () => {
   assert.equal(skillForLens(DEFAULT_CONFIG, 'nope'), null)
 })
 
-test('command and moduleTestCommand return the current targets', () => {
-  assert.equal(command(DEFAULT_CONFIG, 'testSmoke'), 'make test-smoke')
-  assert.equal(command(DEFAULT_CONFIG, 'lint'), 'make lint')
-  assert.equal(moduleTestCommand(DEFAULT_CONFIG, 'bossd'), 'make test-bossd')
+test('command and moduleTestCommand read a configured commands block', () => {
+  const cfg = mergeConfig(DEFAULT_CONFIG, {
+    commands: { testSmoke: 'make test-smoke', lint: 'make lint', testModule: 'make test-{module}' },
+  })
+  assert.equal(command(cfg, 'testSmoke'), 'make test-smoke')
+  assert.equal(command(cfg, 'lint'), 'make lint')
+  assert.equal(moduleTestCommand(cfg, 'bossd'), 'make test-bossd')
 })
 
-test('manifestPath returns the current manifest', () => {
-  assert.equal(manifestPath(DEFAULT_CONFIG), 'docs/testing/test-command-manifest.md')
+test('BOS-850: the accessors return null (never throw) when the block is absent', () => {
+  // Regression: moduleTestCommand() used to call .replace() on undefined and throw a
+  // raw TypeError. `null` is the documented "not configured — go discover it" signal.
+  assert.equal(command(DEFAULT_CONFIG, 'lint'), null)
+  assert.equal(command(DEFAULT_CONFIG, 'nope'), null)
+  assert.equal(moduleTestCommand(DEFAULT_CONFIG, 'bossd'), null)
+  assert.equal(manifestPath(DEFAULT_CONFIG), null)
+  // Empty-string entries are treated as absent too, not returned verbatim.
+  assert.equal(command({ commands: { lint: '' } }, 'lint'), null)
+  assert.equal(moduleTestCommand({ commands: { testModule: '' } }, 'x'), null)
+  assert.equal(manifestPath({ test: { manifestPath: '' } }), null)
+  assert.equal(manifestPath({}), null)
+})
+
+test('manifestPath returns a configured manifest', () => {
+  const cfg = mergeConfig(DEFAULT_CONFIG, {
+    test: { manifestPath: 'docs/testing/test-command-manifest.md' },
+  })
+  assert.equal(manifestPath(cfg), 'docs/testing/test-command-manifest.md')
 })
 
 test('isHeadless honours each configured signal', () => {
@@ -854,10 +1529,36 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
       ['api', 'api-review'],
     ],
   )
-  // Byte-identical lensMap invariant: the committed .boss-skills.json lensMap must equal
-  // DEFAULT_CONFIG.lensMap in full (id, skill, glob/globs, AND fallbackRubric) — not just the
-  // [id, skill] pairs — so a one-sided edit to a glob or rubric string in either copy fails CI.
-  assert.deepEqual(cfg.lensMap, DEFAULT_CONFIG.lensMap)
+  // BOS-850 inverts the old byte-identity pin. The committed lensMap USED to be required to
+  // deep-equal DEFAULT_CONFIG.lensMap, which is exactly the coupling that kept this checkout's
+  // path-anchored lenses inside the globally published defaults. The invariant is now the
+  // opposite: this repo's config is path-anchored and DEFAULT_CONFIG must carry none of it.
+  const defaultIds = new Set(DEFAULT_CONFIG.lensMap.map((r) => r.id))
+  assert.equal(defaultIds.has('tui'), false, 'the repo-shaped tui lens must stay out of defaults')
+  const defaultGlobs = new Set(
+    DEFAULT_CONFIG.lensMap.flatMap((r) => (Array.isArray(r.globs) ? r.globs : [r.glob])),
+  )
+  for (const rule of cfg.lensMap) {
+    const globs = Array.isArray(rule.globs) ? rule.globs : [rule.glob]
+    for (const glob of globs) {
+      assert.ok(typeof glob === 'string' && glob.length > 0, `lens "${rule.id}" needs a matcher`)
+      if (!glob.startsWith('**/')) {
+        assert.equal(
+          defaultGlobs.has(glob),
+          false,
+          `path-anchored glob "${glob}" from this checkout leaked into DEFAULT_CONFIG`,
+        )
+      }
+    }
+    assert.ok(rule.fallbackRubric && rule.fallbackRubric.trim().length > 0)
+  }
+  // This checkout still anchors lenses to its own layout — the config seam doing its job.
+  assert.ok(
+    cfg.lensMap.some((r) =>
+      (Array.isArray(r.globs) ? r.globs : [r.glob]).some((g) => g.startsWith('services/')),
+    ),
+    'the committed config is expected to keep its path-anchored lenses',
+  )
   // manifest + commands parity with docs/testing/test-command-manifest.md
   assert.equal(cfg.test.manifestPath, 'docs/testing/test-command-manifest.md')
   assert.equal(cfg.commands.testSmoke, 'make test-smoke')

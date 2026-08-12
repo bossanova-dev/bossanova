@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -719,5 +720,51 @@ func TestLabelNilRegistryFallsBackToPrefix(t *testing.T) {
 	}
 	if got != "abcdef12" {
 		t.Fatalf("nil registry label = %q, want abcdef12", got)
+	}
+}
+
+// TestResolveSpawnEnvForProbeSkipsOnlyLastUsed pins the read-only contract
+// BOS-867's `boss session mcp` depends on: a diagnostic probe must derive the
+// SAME environment a spawn does without advancing LastUsedAt, which is the LRU
+// key DefaultAccountID selects on — otherwise running a read-only command could
+// change which account the NEXT session is handed.
+//
+// Both halves are asserted against ONE stub in ONE test on purpose: a broken
+// resolver that touched nothing at all, or one that returned no env at all,
+// would pass a probe-only assertion while being completely wrong. Requiring the
+// spawn path to touch, the probe path not to, and both to return byte-identical
+// env is what makes the assertion non-vacuous.
+func TestResolveSpawnEnvForProbeSkipsOnlyLastUsed(t *testing.T) {
+	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	mat := &stubMaterializer{supports: true, env: map[string]string{"ANTHROPIC_API_KEY": "sk-x"}}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	probeEnv, err := r.ResolveSpawnEnvForProbe(context.Background(), "acct-1", "claude", now)
+	if err != nil {
+		t.Fatalf("ResolveSpawnEnvForProbe: %v", err)
+	}
+	if reg.touchCalls != 0 {
+		t.Fatalf("probe path called TouchLastUsed %d times, want 0: a read-only probe must not advance the account LRU key", reg.touchCalls)
+	}
+	// The probe still materializes — that IS what produces the env, so skipping
+	// it would return an empty map and break byte-identity with the spawn path.
+	if mat.materializeCall != 1 {
+		t.Fatalf("probe path materialize calls = %d, want 1: materializing is what produces the env", mat.materializeCall)
+	}
+	if probeEnv["ANTHROPIC_API_KEY"] != "sk-x" {
+		t.Fatalf("probe env = %v, want the materialized account env", probeEnv)
+	}
+
+	spawnEnv, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", now)
+	if err != nil {
+		t.Fatalf("ResolveSpawnEnv: %v", err)
+	}
+	if reg.touchCalls != 1 || reg.touchedID != "acct-1" || !reg.touchedAt.Equal(now) {
+		t.Fatalf("spawn path TouchLastUsed = (calls=%d id=%q at=%v), want exactly one touch of acct-1 at %v — without this half the probe assertion above proves nothing",
+			reg.touchCalls, reg.touchedID, reg.touchedAt, now)
+	}
+	if !maps.Equal(probeEnv, spawnEnv) {
+		t.Fatalf("probe env %v differs from spawn env %v: the two must come from one shared body so a probe can never describe an environment the chat never sees", probeEnv, spawnEnv)
 	}
 }

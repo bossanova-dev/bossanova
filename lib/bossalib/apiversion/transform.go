@@ -99,7 +99,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships nine live transforms in non-decreasing version
+// DefaultRegistry. It ships ten live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -120,9 +120,12 @@ type RefMsg struct {
 // (introduced at V20260804), which maps CHAT_STATUS_WAITING back to
 // CHAT_STATUS_WORKING, clears the accompanying waiting_reason, and restores the
 // working display shape on Session.display_label / display_intent /
-// display_spinner.
+// display_spinner; and DraftPRFailureLabelChange (introduced at V20260812),
+// which restores the pre-BOS-855 "? PR failed" composite on
+// Session.display_label / display_intent / display_spinner for a session whose
+// draft-PR creation failed while a chat is live.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260804 (Current) runs zero transforms.
+// request resolved to V20260812 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -131,7 +134,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -663,12 +666,22 @@ func downconvertLimitedSession(s *pb.Session) *pb.Session {
 	if !ok {
 		return s
 	}
-	// Recompute through ComputeBase, NOT Compute: a client older than V20260706
-	// predates BOS-430's errored-recolor overlay (V20260718), so for a BLOCKED
-	// (or ORPHANED) session the idle-style fallback must be the un-recolored base
-	// cascade. Using Compute here would re-apply the DANGER recolor and leak the
-	// new errored shape into a down-convert that is supposed to hide it.
-	out := displaystatus.ComputeBase(displaystatus.Input{
+	// Recompute through a BASE cascade, NOT Compute: a client older than
+	// V20260706 predates BOS-430's errored-recolor overlay (V20260718), so for a
+	// BLOCKED (or ORPHANED) session the idle-style fallback must be the
+	// un-recolored base cascade. Using Compute here would re-apply the DANGER
+	// recolor and leak the new errored shape into a down-convert that is supposed
+	// to hide it.
+	//
+	// ComputeBasePreDraftPRFailure rather than plain ComputeBase: recomputing
+	// means this client inherits every LATER cascade change too, and BOS-855
+	// (V20260812) moved "? PR failed" below the transient
+	// setting-up/merging/archiving branches. Plain ComputeBase would hand a
+	// pre-V20260706 client "initializing"/"merging"/"archiving" for a draft-PR
+	// failure that used to read "? PR failed". DraftPRFailureLabelChange cannot
+	// cover it: this session is usage-limited, which that transform exempts, so
+	// it returns untouched long before this change runs last in the chain.
+	out := displaystatus.ComputeBasePreDraftPRFailure(displaystatus.Input{
 		Session:    clone,
 		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
 	})
@@ -869,8 +882,11 @@ func downconvertWaitingChatStatusDelta(d *pb.ChatStatusDelta) *pb.ChatStatusDelt
 //
 // It recomputes through displaystatus.Compute, NOT ComputeBase — the opposite of
 // downconvertLimitedSession, and for a positional reason. Changes.Apply runs
-// newest-first, and this is the newest change, so it runs BEFORE every older
-// transform: emitting the full Current composite (BOS-430's errored recolor
+// newest-first, and this change sits near the newest end, so it runs BEFORE
+// every older transform (V20260812's draft-PR change is newer still and runs
+// first, but it only ever rewrites a draft-PR-failure session's label away from
+// this one's exact-match guard, so the two never contend): emitting the full
+// Current composite (BOS-430's errored recolor
 // included) is correct, because a client newer than V20260718 must still see
 // that recolor, and a Baseline client has ErroredStatusChange applied
 // afterwards to strip it. The limited transform is last in the chain and so must
@@ -996,6 +1012,143 @@ func (WaitingChatStatusChange) TransformResponse(method string, msg any) {
 			if statusDelta := downconvertWaitingChatStatusDelta(m.GetStatusDelta()); statusDelta != m.GetStatusDelta() {
 				m.Event = &pb.ProxyChatListEvent_StatusDelta{StatusDelta: statusDelta}
 			}
+		}
+	}
+}
+
+// DraftPRFailureLabelChange is the production VersionChange introduced at
+// V20260812.
+//
+// At V20260812 the OrchestratorService stopped letting a session-level
+// draft-PR-creation failure claim the row's primary display composite while a
+// chat is live (BOS-855). The "? PR failed" cascade branch moved from directly
+// below the QUESTION/LIMITED chat branches to immediately below WORKING, so a
+// session whose draft PR failed now serves "working" / "waiting" /
+// "initializing" / "merging" / "archiving" on Session.display_label /
+// display_intent / display_spinner whenever one of those is true, instead of
+// "? PR failed". A client pinned to an older version was built against the old
+// precedence and expects the failure to own the label, so this change restores
+// it (see displaystatus.PreDraftPRFailureOutput).
+//
+// It targets the same FULL unary session-bearing OrchestratorService set that
+// WaitingChatStatusChange's display leg enumerates — the composite is PERSISTED
+// on the sessions row, so every one of those procedures can return it — PLUS the
+// created message in the streaming ProxyCreateSession, exactly as
+// ErroredStatusChange does. Streaming is NOT exempt: the Interceptor's
+// WrapStreamingHandler wraps the connection in a transformingStreamingHandlerConn
+// whose Send calls Changes.Apply on every streamed message (interceptor.go). Omit
+// it and a pre-V20260718 client gets ErroredStatusChange applied over a label
+// this change never restored — a composite no server version ever emitted.
+//
+// Hints are deliberately NOT down-converted: an older client receives
+// "? PR failed" as its label AND the new draft-PR warning hint, so the failure is
+// duplicated rather than lost. Suppressing hints per-version would push
+// client-version logic into the hint producers.
+type DraftPRFailureLabelChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260812, so
+// it is applied to any request resolved to a strictly older version.
+func (DraftPRFailureLabelChange) Version() Version { return V20260812 }
+
+// downconvertDraftPRFailureSession returns the Session to place in the response
+// for a pre-V20260812 client. Cloning is essential: in bosso's single-instance
+// registry path the response holds the same pointers cached in the in-memory
+// registry, so mutating in place would permanently overwrite the live composite
+// every other (current) client should still see. Only sessions whose composite
+// actually changes allocate, keeping the common path clone-free.
+//
+// The whole decision — including the "is this blocked reason a draft-PR-creation
+// failure" test — lives in displaystatus.PreDraftPRFailureOutput. That is
+// deliberate: keeping the sessionreason guard inside displaystatus is what stops
+// this package acquiring a dependency on lib/bossalib/sessionreason.
+func downconvertDraftPRFailureSession(s *pb.Session) *pb.Session {
+	if s == nil {
+		return s
+	}
+	out := displaystatus.PreDraftPRFailureOutput(s)
+	if out.Label == s.GetDisplayLabel() &&
+		out.Intent == s.GetDisplayIntent() &&
+		out.Spinner == s.GetDisplaySpinner() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-855
+// "? PR failed" composite on every session-bearing response — the unary set and
+// the streamed ProxyCreateSession created message alike.
+func (DraftPRFailureLabelChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
+			if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
+				created.Created = downconvertDraftPRFailureSession(created.Created)
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = downconvertDraftPRFailureSession(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
+		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
+		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
+			m.Session = downconvertDraftPRFailureSession(m.GetSession())
 		}
 	}
 }

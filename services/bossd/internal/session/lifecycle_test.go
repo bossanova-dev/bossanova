@@ -1161,6 +1161,7 @@ type mockAgentRunner struct {
 
 type mockPreflightCall struct {
 	agentName string
+	workDir   string
 	model     string
 	env       map[string]string
 	profile   pb.HeadlessCapabilityProfile
@@ -1253,10 +1254,11 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Contex
 	return id, nil
 }
 
-func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, workDir, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) error {
 	m.preflightCalls++
 	m.preflights = append(m.preflights, mockPreflightCall{
 		agentName: agentName,
+		workDir:   workDir,
 		model:     model,
 		env:       extraEnv,
 		profile:   profile,
@@ -1794,6 +1796,15 @@ func TestStartSession_HeadlessRunCarriesExplicitCapabilityProfile(t *testing.T) 
 		got.model != "gpt-5-codex" ||
 		got.env["CODEX_HOME"] != "/managed/codex-home" {
 		t.Fatalf("preflight/start target mismatch: preflight=%+v start=%+v", got, runner.started[0])
+	}
+	// The preflight must inspect the run's own working directory, not the
+	// daemon's cwd: an agent that reads a repo-level config file (codex's
+	// .codex/config.toml) sees a different runtime otherwise, which is the
+	// divergence that manufactured a false capability gap (BOS-865). Comparing
+	// against the recorded start work dir means a future refactor cannot drop
+	// one side without the other.
+	if got := runner.preflights[0].workDir; got == "" || got != runner.started[0].workDir {
+		t.Fatalf("preflight workDir = %q, want the started run's worktree path %q", got, runner.started[0].workDir)
 	}
 }
 
@@ -8355,7 +8366,7 @@ func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, work
 // policy now requires TRACKER_PLAN_ATTACHMENT_V1 for — still exercises real
 // dispatcher routing instead of failing closed on a runner that predates the
 // profile seam. Both record what they saw so routing assertions still hold.
-func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
 	r.profileSeen.Store(int32(profile))
 	return nil
 }

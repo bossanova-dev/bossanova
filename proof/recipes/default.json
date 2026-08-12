@@ -261,6 +261,17 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-sessions-live-past-failure",
+      "surface": "web",
+      "title": "Web Sessions (a live row's past failure goes recessive)",
+      "description": "BOS-855: the sessions list row for 'Proof live rebase run' reads a live 'working' status while its residual 'finalize failed (pr_skipped_no_github)' error line renders in the recessive treatment (the dimmed --text-faint palette plus a visually-hidden 'Earlier:' prefix) rather than the full danger red. The neighbouring rows keep their normal treatment, so the contrast between a present-tense status and a past-tense outcome is visible in one still. Cropped to the sessions table.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-session-waiting",
       "surface": "web",
       "title": "Web Session Detail (parked on an external event)",
@@ -1521,6 +1532,7 @@
         "web-session-detail",
         "web-session-detail-no-pr",
         "web-session-detail-rotation",
+        "web-sessions-live-past-failure",
         "web-session-waiting",
         "web-session-detail-mobile",
         "web-session-edit",

@@ -116,3 +116,36 @@ func TestPollTasksRPCTimeoutIs90s(t *testing.T) {
 		t.Fatalf("pollTasksRPCTimeout (%v) must stay below the 2m orchestrator poll interval", pollTasksRPCTimeout)
 	}
 }
+
+// claudeInitProbeTimeoutMirror mirrors claudeInitProbeTimeout from
+// plugins/bossd-plugin-claude/mcpsurface.go. It is DUPLICATED rather than
+// imported because plugin binaries are separate modules that must not be
+// depended on from the host (and must not depend on this package either — see
+// CLAUDE.md, "module boundaries"); the plugin side keeps its own mirror of
+// defaultPluginRPCTimeout honest in TestClaudeInitProbeTimeoutStaysBelowHostCeiling.
+const claudeInitProbeTimeoutMirror = 20 * time.Second
+
+// pluginProbeTimeoutMargin is the headroom the plugin's own deadline must leave
+// beneath this package's ceiling, for gRPC transport and response encoding
+// after the probe gives up. Mirrored plugin-side as hostProbeTimeoutMargin.
+const pluginProbeTimeoutMargin = 10 * time.Second
+
+// TestDefaultPluginRPCTimeoutClearsPluginProbeCeiling is the mirror-side half of
+// the DescribeMCPSurface in-band-probe_error guard. Lowering
+// defaultPluginRPCTimeout without lowering the claude plugin's own probe
+// deadline would make the HOST deadline fire first on a slow claude cold start,
+// so the RPC would fail with DeadlineExceeded instead of returning the
+// probe_error + empty servers answer BOS-867 requires. Raising the plugin side
+// alone is caught by the test named above, in the plugin's own package.
+func TestDefaultPluginRPCTimeoutClearsPluginProbeCeiling(t *testing.T) {
+	if defaultPluginRPCTimeout < claudeInitProbeTimeoutMirror+pluginProbeTimeoutMargin {
+		t.Fatalf(
+			"defaultPluginRPCTimeout = %s, but the claude plugin's claudeInitProbeTimeout is %s "+
+				"(plugins/bossd-plugin-claude/mcpsurface.go) and must fire first with %s of margin. "+
+				"At or below that sum the host deadline wins and DescribeMCPSurface returns a gRPC "+
+				"DeadlineExceeded instead of the in-band probe_error contract. Raise this ceiling, or "+
+				"lower claudeInitProbeTimeout there and update claudeInitProbeTimeoutMirror here.",
+			defaultPluginRPCTimeout, claudeInitProbeTimeoutMirror, pluginProbeTimeoutMargin,
+		)
+	}
+}

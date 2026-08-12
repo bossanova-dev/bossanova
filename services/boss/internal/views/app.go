@@ -258,6 +258,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// active. Route the result to the retained Home model so a failed
 		// logout clears logoutPending and remains visible after returning.
 		return a.updateHome(msg)
+	case sessionRenamedMsg:
+		// Same shape as logoutMsg: commitRename closes the editor before the
+		// RPC returns, so the very next enter can switch to the chat picker
+		// while the write is still in flight. Routing to the retained Home
+		// model keeps the outcome — above all a "Rename failed", which is the
+		// only report a failed rename ever gets — waiting on the board instead
+		// of being dropped by whichever view happened to be active.
+		return a.updateHome(msg)
 	case tea.KeyMsg:
 		if cmd, handled := a.handleGlobalKey(msg); handled {
 			return a, cmd
@@ -395,7 +403,11 @@ func (a *App) backKeyAliasEligible() bool {
 		// prompt is open (BOS-836), where Esc cancels the edit and ctrl+x is a
 		// line-editing key.
 		return !a.chatPicker.textEntryActive()
-	case ViewHome, ViewRepoList, ViewSettings, ViewLogin,
+	case ViewHome:
+		// The session board is likewise a pure list screen except while the
+		// hidden [r]ename prompt is open (BOS-837).
+		return !a.home.textEntryActive()
+	case ViewRepoList, ViewSettings, ViewLogin,
 		ViewCron, ViewAccounts:
 		// Pure list/hub screens: no text input, and Esc already means "back one
 		// level" on each of them.

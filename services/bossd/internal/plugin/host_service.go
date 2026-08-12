@@ -7,13 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
@@ -1187,7 +1187,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	startReq := &bossanovav1.StartAgentRunRequest{
 		WorkDir:  sess.WorktreePath,
 		Plan:     req.GetPrompt(),
-		LogPath:  filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
+		LogPath:  bossalog.AgentLogFile(s.agentLogsDir, "repair-"+sessionID),
 		Model:    sess.Model,
 		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), s.resolveAccountEnv(ctx, sess)), sess.WorktreePath, repo),
 	}

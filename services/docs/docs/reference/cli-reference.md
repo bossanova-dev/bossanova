@@ -232,8 +232,8 @@ daemon's runners.
 
 #### `--json` on the session read surfaces
 
-`boss ls`, `boss show` and `boss session checks` are the reads a driver polls, so
-each takes `--json` and emits a stable envelope on **stdout**. As with
+`boss ls`, `boss show`, `boss session checks` and `boss session mcp` are the reads
+a driver polls, so each takes `--json` and emits a stable envelope on **stdout**. As with
 `boss merge --json`, a failure puts the shared error envelope on stdout, leaves
 the human `boss: ...` line on stderr, and exits `1`. Passing `--json` changes
 rendering only — the filters, the `--limit`, and the daemon call underneath are
@@ -329,6 +329,76 @@ corrupting the surrounding envelope.
 `computed_status` is the same `DisplayStatus` vocabulary the text rendering
 prints. Snapshots are newest first and `--limit` (default 5) truncates from that
 end, exactly as without `--json`; `snapshots` is `[]` when none are recorded yet.
+
+Read which MCP servers a chat's agent actually resolved:
+
+<CommandTabs
+chat='"which MCP servers does this chat actually have?"'
+cli="boss session mcp <chat-id> --json"
+/>
+
+```json
+{
+  "agent_name": "claude",
+  "worktree_path": "/path/to/worktree",
+  "is_supported": true,
+  "unsupported_reason": "",
+  "source": "claude -p --output-format stream-json (system/init event)",
+  "probed_at": "2026-08-12T10:00:00Z",
+  "probe_error": "",
+  "servers": [
+    {
+      "name": "bossanova-linear",
+      "is_declared": true,
+      "tool_count": 34,
+      "tool_name_prefix": "mcp__bossanova-linear__",
+      "auth_status": "oauth",
+      "source": "repo_file",
+      "source_detail": ".mcp.json",
+      "is_truncated": false
+    }
+  ]
+}
+```
+
+The probe is live: it asks the chat's own agent, in the chat's own worktree,
+under the chat's own resolved environment, and never runs a coding turn to
+completion — it is killed the moment the startup event is read, though a probe
+that never sees that event may briefly start one before its deadline. Asking the
+model itself does not work — a session with dozens of MCP tools loaded has been
+observed answering "none" — and `<agent> mcp list` reports the environment _it_
+inherits rather than the session's.
+
+It is a **fresh invocation**, not an inspection of the running pane: the answer
+is what a new agent process resolves in that worktree under that re-derived
+environment, which is what a restart of the chat would get.
+
+Three outcomes are deliberately distinguishable, because conflating them is what
+turns a five-second question into a multi-hour investigation:
+
+- **`servers: []` with an empty `probe_error`** — the agent really resolved no
+  MCP servers.
+- **`probe_error` set** — the probe ran and failed, so the surface is _unknown_.
+  `servers` is empty, and a caller must not read that as "none configured".
+- **`is_supported: false`** — the agent has no way to report its MCP surface.
+  The command still exits `0` and `unsupported_reason` says why.
+
+Within `servers`, a server that is **declared but exposed zero tools** appears
+with `is_declared: true` and `tool_count: 0` — the state a failed connection or
+a missing credential produces. Read `auth_status` before concluding anything
+from a zero count: it is the harness's own verbatim word, and a Claude session
+can emit its startup event before every server has finished connecting, so a
+server that will connect can appear as `pending` with zero tools. `pending, 0`
+is a race; `failed, 0` is a verdict. A server that was never declared is **absent**
+from the array entirely. `tool_name_prefix` is the literal prefix a skill must
+call, so a config key that does not match the name a skill expects is visible
+without invoking a single tool. `source` is one of `repo_file`, `user_config`,
+`injected` or `unknown`, with `source_detail` naming the scanned file whenever
+it is not `unknown`. `injected` is reserved for a launcher that supplies MCP
+config on argv; boss does not, so it is never emitted today — a server that
+matches no scanned config reports `unknown`. `tool_names` is omitted unless
+`--tools` is passed; with `--tools` every server carries the key, and a
+declared-but-empty server carries `[]` rather than dropping it.
 
 Health-check the auto-repair pipeline:
 
@@ -602,6 +672,46 @@ return real statuses.
 per-chat status, and a session can read quiet while a chat inside it is still
 producing output.
 :::
+
+### `boss tail`
+
+Read logs without needing to know where they live. It reads files on the local
+machine, so `--remote` and `--host` do not redirect it.
+
+Positional sources are `bossd` (the default), `boss`, `bosso` — or an
+**agent-session id**, which reads that agent's own log from the `agent-logs`
+directory beside your worktree base directory:
+
+<CommandTabs
+cli="boss tail 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607 -f"
+/>
+
+Both agent-log formats are read, detected per file: the raw `tmux pipe-pane`
+capture an interactive chat writes, and the `{"ts","text"}` JSON lines a
+headless run writes with `[runner]` diagnostics interleaved. Agent output has no
+level, repo or plugin, so `--level`, `--repo` and `--plugin` never hide it.
+
+Name several sources to interleave them by timestamp. An untimestamped raw line
+inherits the previous timestamp from its own file, falling back to the file's
+modification time, so a capture is never sorted to the Unix epoch:
+
+<CommandTabs
+cli="boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
+/>
+
+| Flag             | Description                                                               |
+| ---------------- | ------------------------------------------------------------------------- |
+| `--all`          | merge every **service** log (mutually exclusive with a positional source) |
+| `-n`, `--lines`  | physical lines to read per source before filtering (default 10)           |
+| `-f`, `--follow` | keep reading as the log grows                                             |
+| `--repo`         | only records for this repo                                                |
+| `--plugin`       | only records from this plugin                                             |
+| `--level`        | only records at this level                                                |
+| `--json`         | emit one parseable JSON object per line                                   |
+
+`--all` stays service-only — the `agent-logs` directory holds one file per agent
+session ever run. An absent `agent-logs` directory prints a notice and exits 0.
+See the [Logging guide](/guides/logging) for the full treatment.
 
 ### `bossd`
 

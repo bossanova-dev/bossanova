@@ -798,8 +798,10 @@ func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *tes
 	oldRestartDaemon := restartDaemon
 	oldTerminateCurrentProfileBossd := terminateCurrentProfileBossd
 	oldWaitForSocketGone := waitForDaemonSocketGone
+	oldWaitForStandaloneBossdExit := waitForStandaloneBossdExit
 	oldDaemonSocketReachable := daemonSocketReachable
 	defer func() {
+		waitForStandaloneBossdExit = oldWaitForStandaloneBossdExit
 		defaultSocketPath = oldDefaultSocketPath
 		daemonGetStatus = oldDaemonGetStatus
 		daemonStop = oldDaemonStop
@@ -831,6 +833,15 @@ func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *tes
 		events = append(events, "wait")
 		return true
 	}
+	// Unstubbed, this reaches waitForDaemonLockRelease, which flocks the running
+	// profile's real bossd.lock and blocks for the whole 20s shutdown timeout on
+	// any machine with a live daemon. restartDaemonAfterUpgrade reaches it through
+	// waitForCurrentProfileBossdExit, a plain func; this var is the seam that func
+	// delegates to, and stubbing it is what handlers_test.go already does.
+	waitForStandaloneBossdExit = func(string) bool {
+		events = append(events, "exit")
+		return true
+	}
 	restartDaemon = func() error {
 		events = append(events, "restart")
 		return nil
@@ -846,7 +857,7 @@ func TestRestartDaemonAfterUpgradeScopesStandaloneCleanupToCurrentProfile(t *tes
 	if err := restartDaemonAfterUpgrade(); err != nil {
 		t.Fatalf("restartDaemonAfterUpgrade() error = %v", err)
 	}
-	if want := []string{"status", "terminate-current-profile", "wait", "restart", "ready"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"status", "terminate-current-profile", "wait", "exit", "restart", "ready"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
 }

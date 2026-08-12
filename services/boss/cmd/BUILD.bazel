@@ -22,6 +22,7 @@ go_library(
         "host.go",
         "hostattach_prod.go",
         "hostwait_prod.go",
+        "init.go",
         "intconv.go",
         "main.go",
         "mcp.go",
@@ -32,6 +33,7 @@ go_library(
         "root.go",
         "session_checks.go",
         "session_json.go",
+        "session_mcp.go",
         "skill_sync.go",
         "tail.go",
         "telemetry.go",
@@ -114,11 +116,13 @@ go_test(
         "handlers_test.go",
         "hangup_test.go",
         "host_test.go",
+        "init_test.go",
         "mcp_test.go",
         "new_test.go",
         "notes_test.go",
         "proof_test.go",
         "repo_resolve_test.go",
+        "session_mcp_test.go",
         "settings_rotation_test.go",
         "skill_coverage_test.go",
         "skill_startup_test.go",
@@ -130,6 +134,7 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":cmd_lib"],
+    embedsrcs = ["session_mcp.go"],
     # keep: skill/upgrade tests go-build the boss binary and install plugins via a
     # runtime.Caller workspace root — genuinely escapes the sandbox. Covered by `make test-boss`.
     tags = [

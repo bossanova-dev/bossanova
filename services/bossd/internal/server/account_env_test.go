@@ -33,7 +33,7 @@ type fakeMaterializer struct {
 // defaultAccountIDForChat, so this shim lives with the tests rather than on the
 // server.
 func (s *Server) resolveChatAccountEnv(ctx context.Context, sess *models.Session, chat *models.AgentChat) map[string]string {
-	return s.resolveChatAccountEnvForSpawn(ctx, sess, chat, "")
+	return s.resolveChatAccountEnvForSpawn(ctx, sess, chat, "", recordAccountUse)
 }
 
 type accountEnvChatStoreFake struct {
@@ -158,7 +158,7 @@ func TestResolveChatAccountEnv_CrossAgent(t *testing.T) {
 	// uses the codex provider's default account, never the parent claude account
 	// — the injected env is codex-shaped and carries no claude credentials.
 	crossAgent := &models.AgentChat{AgentName: "codex"}
-	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, crossAgent, codexAcct.Id)
+	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, crossAgent, codexAcct.Id, recordAccountUse)
 	if got["CODEX_API_KEY"] != "sk-codex" {
 		t.Errorf("cross-agent chat env = %v, want CODEX_API_KEY=sk-codex", got)
 	}
@@ -204,7 +204,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlay(t *testing.T) {
 
 	claudeSession := &models.Session{ID: "sess-1", AccountID: &claudeAcct.Id, AgentName: "claude"}
 	chat := &models.AgentChat{SessionID: claudeSession.ID, AgentSessionID: "agent-1", AgentName: "claude"}
-	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, "")
+	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, "", recordAccountUse)
 	// BOS-326: the proxy resolves the bearer server-side, so the subprocess gets
 	// the sentinel + base URL but NOT the account's OAuth token (which would trip
 	// Claude Code's "both set" warning).
@@ -236,7 +236,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlayForDefaultAccount(t
 
 	claudeSession := &models.Session{ID: "sess-1", AgentName: "claude"}
 	chat := &models.AgentChat{SessionID: claudeSession.ID, AgentSessionID: "agent-1", AgentName: "claude"}
-	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, claudeAcct.Id)
+	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, claudeAcct.Id, recordAccountUse)
 	// BOS-326: proxied subprocess carries the sentinel, not the OAuth token.
 	if _, ok := got["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN must be stripped when proxied: %v", got)
@@ -272,7 +272,7 @@ func TestResolveChatAccountEnvForSpawn_ChatBoundSameAgentUsesChatProxyTarget(t *
 
 	claudeSession := &models.Session{ID: "sess-1", AccountID: &parentAcct.Id, AgentName: "claude"}
 	chat := &models.AgentChat{SessionID: claudeSession.ID, AgentSessionID: "agent-1", AgentName: "claude", AccountID: &chatAcct.Id}
-	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, "")
+	got := s.resolveChatAccountEnvForSpawn(context.Background(), claudeSession, chat, "", recordAccountUse)
 	// BOS-326: the OAuth token is stripped from the proxied subprocess; the chat's
 	// account is instead threaded to the proxy via the path token (asserted on the
 	// registrar below), which is what selects chat-token server-side.
@@ -305,7 +305,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlayForCrossAgentClaude
 
 	codexSession := &models.Session{ID: "sess-1", AccountID: &codexAcct.Id, AgentName: "codex"}
 	chat := &models.AgentChat{SessionID: codexSession.ID, AgentSessionID: "agent-1", AgentName: "claude"}
-	got := s.resolveChatAccountEnvForSpawn(context.Background(), codexSession, chat, claudeAcct.Id)
+	got := s.resolveChatAccountEnvForSpawn(context.Background(), codexSession, chat, claudeAcct.Id, recordAccountUse)
 	// BOS-326: proxied subprocess carries the sentinel, not the OAuth token.
 	if _, ok := got["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN must be stripped when proxied: %v", got)

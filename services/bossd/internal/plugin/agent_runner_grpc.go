@@ -38,6 +38,7 @@ type AgentRunner interface {
 	RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
 	MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
 	ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error)
+	DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
 
 // AgentRunnerGRPCPlugin implements go-plugin's GRPCPlugin interface for
@@ -278,6 +279,22 @@ func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bos
 func (c *agentRunnerGRPCClient) ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
 	resp := &bossanovav1.ProbeProgressLivenessResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ProbeProgressLiveness", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// DescribeMCPSurface forwards to the plugin (BOS-867). The error is returned
+// verbatim — including Unimplemented from a runner binary that predates the RPC
+// or an agent that simply cannot answer — because the caller
+// (server.DescribeChatMCP) is what turns Unimplemented into a typed
+// is_supported=false answer. Degrading here would hide WHICH plugins lack the
+// capability from every other caller.
+//
+// req.probe_env is secret-bearing and is never logged on this path.
+func (c *agentRunnerGRPCClient) DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error) {
+	resp := &bossanovav1.DescribeMCPSurfaceResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/DescribeMCPSurface", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

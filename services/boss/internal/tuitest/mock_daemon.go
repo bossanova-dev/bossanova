@@ -1720,6 +1720,10 @@ func (m *MockDaemon) DescribeChatLaunch(context.Context, *connect.Request[pb.Des
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+func (m *MockDaemon) DescribeChatMCP(context.Context, *connect.Request[pb.DescribeChatMCPRequest]) (*connect.Response[pb.DescribeChatMCPResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 // SendChatMessage records the request and reports delivery. The real daemon
 // pastes into a tmux pane; the mock has none, so the interesting part here is
 // the request itself — SendChatMessageCalls is what a test reads back.

@@ -437,6 +437,13 @@ func (c *RemoteClient) DescribeChatLaunch(_ context.Context, _ string) (*pb.Desc
 	return nil, errLocalOnly("DescribeChatLaunch")
 }
 
+// DescribeChatMCP is local-only by construction: answering it spawns a probe
+// process in the chat's worktree on the daemon host, which a remote
+// orchestrator has neither of.
+func (c *RemoteClient) DescribeChatMCP(_ context.Context, _ string) (*pb.DescribeChatMCPResponse, error) {
+	return nil, errLocalOnly("DescribeChatMCP")
+}
+
 func (c *RemoteClient) UpdateChatTitle(ctx context.Context, agentSessionID, title string) error {
 	_, err := c.rpc.ProxyUpdateChatTitle(ctx, connect.NewRequest(&pb.ProxyUpdateChatTitleRequest{
 		AgentSessionId: agentSessionID,

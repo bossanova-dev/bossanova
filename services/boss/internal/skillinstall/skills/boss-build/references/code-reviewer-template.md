@@ -140,9 +140,16 @@ Subagent (general-purpose):
   caller awaits this dispatch and cannot preempt it, so a budget the caller keeps to itself bounds
   nothing. In `boss-build` it is Step 6's `REVIEW_LEG_SECONDS`, the degraded whole-branch
   reviewer's `DEGRADED_REVIEWER_MINUTES` (10) in seconds as clamped into
-  `DEGRADED_REVIEWER_SECONDS`, the separately priced API
+  `DEGRADED_REVIEWER_SECONDS`, the degraded bounded repair pass's **verification** leg as clamped
+  into `DEGRADED_REPAIR_VERIFY_SECONDS`, the separately priced API
   classification's `DEGRADED_API_CHECK_MINUTES` (5) in seconds, or Step 6b §3's
   `RE_REVIEW_SECONDS` share.
+
+  It is **never** a fix leg's budget — not the degraded repair pass's `DEGRADED_REPAIR_FIX_SECONDS`,
+  and not the full tier's fix legs. This file is a read-only reviewer brief (see **Read-Only Review**
+  above), so filling this slot for a worker that must edit the tree dispatches it under a brief
+  forbidding the edit. A fix leg states its budget as prose in its own brief instead; the rule is
+  that every leg states its own budget, not that every leg uses this template.
 
 **Reviewer returns:** Strengths, Issues (Critical / Important / Minor), Recommendations, Assessment
 

@@ -54,6 +54,7 @@ test('discoverExtensions silently omits notes extensions for established roles',
     'agent-driver',
     'draft',
     'methodology',
+    'knowledge',
   ]
   for (const role of establishedRoles) {
     const discovered = discoverExtensions({ core: 'boss-build', root, role })
@@ -167,7 +168,11 @@ test('validate --role notes returns clean JSON for a missing noteId', () => {
 })
 
 test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
+  // BOS-851 re-baselined this name-exact list from five keys to six by adding `knowledge`.
+  // The list is EXACT rather than a superset check so a role added to `ROLE_SCHEMAS` without a
+  // documented contract (docs/skills/extension-contract.md) cannot arrive unannounced.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
+    'knowledge',
     'lens',
     'notes',
     'plan-reviewer',
@@ -175,6 +180,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'surface',
   ])
   assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
+  assert.deepEqual(ROLE_SCHEMAS.knowledge, ['path', 'title', 'kind'])
 })
 
 test('repo-authored notes extensions are discoverable for each terminal core', () => {
@@ -238,4 +244,169 @@ test('fresh notes workers receive only a bounded completed-run observation artif
     assert.match(extension, /context\.observationPath/, core)
     assert.match(extension, /only completed-run\s+observation source/, core)
   }
+})
+
+// BOS-851: the `knowledge` role. Unlike `notes` (post-terminal, one core each), a knowledge
+// extension runs pre-PR and writes a file into the tree, so `path` is what proves the artifact
+// was persisted — the structural analogue of the notes contract's `noteId`.
+
+// The AC pins the *file* form of the validate CLI specifically, because that is the form the
+// core's dispatch uses (`validate --role knowledge --file "<outPath>"`). Piping stdin would
+// exercise a different read branch than the one that ships.
+function validateEnvelopeFile(role, envelope) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ext-validate-'))
+  const file = path.join(dir, 'result.json')
+  fs.writeFileSync(file, JSON.stringify(envelope))
+  return spawnSync(
+    process.execPath,
+    [
+      path.join(import.meta.dirname, 'skill-extensions.mjs'),
+      'validate',
+      '--role',
+      role,
+      '--file',
+      file,
+    ],
+    { encoding: 'utf8' },
+  )
+}
+
+test('discoverExtensions recognizes a knowledge extension role', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-build-knowledge', [
+    'name: boss-build-knowledge',
+    'x-boss-extension:',
+    '  extends: boss-build',
+    '  role: knowledge',
+    '  order: 40',
+  ])
+
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-build',
+    root,
+    role: 'knowledge',
+  })
+  assert.deepEqual(
+    extensions.map((extension) => extension.name),
+    ['boss-build-knowledge'],
+  )
+  assert.equal(extensions[0].role, 'knowledge')
+  assert.equal(extensions[0].order, 40)
+  assert.deepEqual(skipped, [])
+})
+
+test('validateResult accepts a well-formed knowledge envelope', () => {
+  const envelope = {
+    ok: true,
+    extension: 'boss-build-knowledge',
+    role: 'knowledge',
+    items: [
+      {
+        path: 'docs/solutions/testing/ratchet-rebaseline.md',
+        title: 'Re-baseline a byte ratchet from a measurement',
+        kind: 'solution',
+      },
+    ],
+  }
+  assert.deepEqual(validateResult(envelope, 'knowledge'), { ok: true, errors: [] })
+})
+
+test('an empty knowledge items array is a legitimate success, not a failed dispatch', () => {
+  // A run may genuinely produce nothing worth recording. That has to stay distinguishable from a
+  // dispatch that failed — which reports `{ok:false}` and is rejected by the case below.
+  const result = validateEnvelopeFile('knowledge', {
+    ok: true,
+    extension: 'boss-build-knowledge',
+    role: 'knowledge',
+    items: [],
+  })
+  assert.equal(result.status, 0)
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, errors: [] })
+})
+
+test('validate --role knowledge --file exits 0 for a well-formed envelope', () => {
+  const result = validateEnvelopeFile('knowledge', {
+    ok: true,
+    extension: 'boss-build-knowledge',
+    role: 'knowledge',
+    items: [{ path: 'CONCEPTS.md', title: 'Reviewed tip', kind: 'concept' }],
+  })
+  assert.equal(result.status, 0)
+  assert.equal(result.stderr, '')
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, errors: [] })
+})
+
+test('validate --role knowledge returns clean JSON for a missing path', () => {
+  const result = validateEnvelopeFile('knowledge', {
+    ok: true,
+    extension: 'boss-build-knowledge',
+    role: 'knowledge',
+    items: [{ title: 'Re-baseline a byte ratchet', kind: 'solution' }],
+  })
+
+  assert.equal(result.status, 1)
+  assert.doesNotMatch(result.stderr, /(?:^|\n)(?:Error:|\s+at )/)
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: false,
+    errors: ['item 0 missing "path"'],
+  })
+})
+
+test('the widened item guard rejects an empty or whitespace-only knowledge path', () => {
+  // Without the guard widening, `path: ""` satisfies the `in` check and an extension that wrote
+  // no file at all would report a persisted artifact. `path` is the whole proof of persistence.
+  for (const blank of ['', '   ']) {
+    const result = validateEnvelopeFile('knowledge', {
+      ok: true,
+      extension: 'boss-build-knowledge',
+      role: 'knowledge',
+      items: [{ path: blank, title: 'Ghost artifact', kind: 'solution' }],
+    })
+    assert.equal(result.status, 1, JSON.stringify(blank))
+    assert.deepEqual(
+      JSON.parse(result.stdout).errors,
+      ['item 0 "path" is not a non-empty string'],
+      JSON.stringify(blank),
+    )
+  }
+})
+
+test('a handled-failure knowledge envelope is rejected with its own error text surfaced', () => {
+  const result = validateEnvelopeFile('knowledge', {
+    ok: false,
+    extension: 'boss-build-knowledge',
+    role: 'knowledge',
+    items: [],
+    notes: '',
+    error: 'knowledge methodology skill unavailable',
+  })
+
+  assert.equal(result.status, 1)
+  assert.deepEqual(JSON.parse(result.stdout).errors, [
+    'extension reported failure (ok:false): knowledge methodology skill unavailable',
+  ])
+})
+
+test('the repo-authored knowledge extension is discoverable for boss-build', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-build',
+    root,
+    role: 'knowledge',
+  })
+  const found = extensions.find((extension) => extension.name === 'boss-build-knowledge')
+  assert.ok(found)
+  assert.equal(found.role, 'knowledge')
+  assert.deepEqual(skipped, [])
+})
+
+test('the repo-authored knowledge extension reports failures as unsuccessful envelopes', () => {
+  const root = path.resolve(import.meta.dirname, '..')
+  const skill = fs.readFileSync(
+    path.join(root, '.claude', 'skills', 'boss-build-knowledge', 'SKILL.md'),
+    'utf8',
+  )
+  assert.match(skill, /"ok": false/)
+  assert.match(skill, /"items": \[\]/)
+  assert.match(skill, /"error": "<reason>"/)
 })

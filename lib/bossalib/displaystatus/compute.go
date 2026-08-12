@@ -92,6 +92,56 @@ const (
 	labelClosed = "closed"
 )
 
+// draftPRFailedLabel is the composite emitted when a session's blocked reason
+// records a failed draft-PR creation. Shared by the cascade branch, the
+// pre-errored intent map and the BOS-855 inverse so the literal lives once.
+const draftPRFailedLabel = "? PR failed"
+
+// IsLiveActivityLabel reports whether label describes something the session is
+// doing RIGHT NOW — the present tense.
+//
+// BOS-855 makes this the single definition of "live" for both clients. A
+// session-level outcome hint (a finalize failure, a draft-PR-creation failure)
+// is PAST tense, so whenever the row's own composite is a live-activity label
+// the hint becomes recessive rather than competing with it for the reader's
+// alarm. The predicate is deliberately pure and label-shaped: both the Boss TUI
+// and the Bosso web UI already carry DisplayLabel, so neither needs a new served
+// field to apply the rule.
+//
+// True for the labels emitted by a branch that describes current activity:
+// "? question", any "usage-limited…" banner, "waiting", "working",
+// "initializing", "merging", "archiving", "repairing", "pending", and any
+// "running L/M" workflow leg.
+//
+// False for every other label the cascade can emit — "? PR failed", "paused
+// L/M", "failed L/M", "cancelled", the PR-derived labels ("✓ merged", "closed",
+// "✓ approved", "✓ passing", "✓ review", "⨯ failing", "⨯ conflict",
+// "⨯ rejected", "draft", "checking"), "idle", "stopped" — and for the empty
+// string and any label this package does not recognise. Unknown labels are NOT
+// live on purpose: the failure mode of this predicate must always be "the hint
+// stayed too loud", never "the hint went quiet".
+//
+// Note that "usage-limited…" counts as live even though a session parked on a
+// quota reset may sit there for hours. That follows from the cascade — the
+// limited branch sits above the outcome branches — and is accepted; the per-hint
+// exemption set is what keeps liveness-impeaching hints bright regardless.
+func IsLiveActivityLabel(label string) bool {
+	switch label {
+	case QuestionLabel,
+		WaitingLabel,
+		"working",
+		"initializing",
+		"merging",
+		"archiving",
+		"repairing",
+		"pending":
+		return true
+	}
+	// The two parameterised live labels: the usage-limit banner optionally
+	// carries a reset time, and a running workflow leg carries "L/M".
+	return strings.HasPrefix(label, "usage-limited") || strings.HasPrefix(label, "running ")
+}
+
 // Compute runs the precedence cascade that determines a session's display
 // status and then applies the errored-recolor overlay.
 //
@@ -126,14 +176,59 @@ func ComputeBase(in Input) Output {
 	return baseStatus(in)
 }
 
+// ComputeBasePreDraftPRFailure runs ComputeBase and then restores the
+// PRE-BOS-855 precedence of the draft-PR-creation-failure branch, i.e. the exact
+// base cascade a client older than V20260812 was built against.
+//
+// It exists for LimitedChatStatusChange (V20260706), which reproduces a
+// pre-V20260706 client's idle-style fallback by RECOMPUTING through the current
+// cascade with ChatStatus IDLE. Recomputing means that client silently inherits
+// every later cascade change — including BOS-855 moving "? PR failed" below the
+// transient setting-up/merging/archiving branches. Without this wrapper a
+// session with a draft-PR-creation failure, a LIMITED chat and one of those
+// transient flags would down-convert to "initializing"/"merging"/"archiving"
+// where it used to down-convert to "? PR failed". DraftPRFailureLabelChange
+// cannot repair that: its usage-limited exemption returns such a session
+// untouched before this transform ever runs.
+//
+// Before the move the branch sat directly below QUESTION and LIMITED, so for any
+// draft-PR-failure session the old cascade emitted "? PR failed" / WARNING / no
+// spinner unless the winning chat was QUESTION or LIMITED — hence "leave those
+// two alone, rewrite everything else", the same rule PreDraftPRFailureOutput
+// applies to a served composite.
+//
+// Like ComputeBase (and unlike PreDraftPRFailureOutput) this deliberately omits
+// the BOS-430 errored recolor: its only caller serves a client that predates
+// that overlay, so the restored "? PR failed" must stay WARNING even on an
+// errored session.
+func ComputeBasePreDraftPRFailure(in Input) Output {
+	out := ComputeBase(in)
+	if in.Session == nil || !sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
+		return out
+	}
+	// The two branches that outranked the old position are untouched by the
+	// move, so their computed composite is already the pre-change one.
+	if IsQuestionLabel(out.Label) || strings.HasPrefix(out.Label, "usage-limited") {
+		return out
+	}
+	return Output{Label: draftPRFailedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+}
+
 // errored reports whether the session is in an error state (orphaned by a daemon
 // restart, or blocked). Mirrors HydrateBaseAttention's Blocked/Orphaned scope
 // (services/bossd/internal/server/server.go) and reads only Session.State, which
 // every Compute caller already populates — no new repo/chat plumbing.
 func errored(in Input) bool {
-	return in.Session != nil &&
-		(in.Session.State == pb.SessionState_SESSION_STATE_ORPHANED ||
-			in.Session.State == pb.SessionState_SESSION_STATE_BLOCKED)
+	return erroredSession(in.Session)
+}
+
+// erroredSession is the Session-only half of errored, factored out so the
+// BOS-855 inverse (PreDraftPRFailureOutput) can reapply the same overlay rule
+// without constructing an Input.
+func erroredSession(sess *pb.Session) bool {
+	return sess != nil &&
+		(sess.State == pb.SessionState_SESSION_STATE_ORPHANED ||
+			sess.State == pb.SessionState_SESSION_STATE_BLOCKED)
 }
 
 // isMutedTerminalPR reports whether the computed base status is a terminal muted
@@ -209,7 +304,7 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 	}
 	switch {
 	case IsQuestionLabel(servedLabel),
-		servedLabel == "? PR failed",
+		servedLabel == draftPRFailedLabel,
 		servedLabel == "archiving",
 		servedLabel == "repairing",
 		servedLabel == "idle",
@@ -233,6 +328,61 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 	}
 }
 
+// PreDraftPRFailureOutput reproduces the display Output Compute produced for a
+// session carrying a draft-PR-creation failure BEFORE BOS-855 moved that branch
+// below the live-activity branches. It is the hand-written inverse of that move
+// and exists so the OrchestratorService apiversion down-convert
+// (DraftPRFailureLabelChange, V20260812) can restore the prior observable
+// composite for clients pinned to an older version. sess is a served Session
+// whose DisplayLabel/DisplayIntent/DisplaySpinner are the current (post-move)
+// values.
+//
+// The inverse is hand-written rather than a recompute because the served
+// Session does not carry the ChatStatus that produced the label, and the old
+// branch outranked every state the new label can describe. Concretely: before
+// the move the branch sat directly below QUESTION and LIMITED, so for ANY
+// session whose blocked reason is a draft-PR-creation failure the old cascade
+// emitted "? PR failed" / WARNING / no spinner unless the winning chat was
+// QUESTION or LIMITED. Restoring is therefore "leave those two alone, rewrite
+// everything else".
+//
+// The IsDraftPRCreationFailure guard deliberately lives HERE rather than in the
+// apiversion transform: keeping it inside this package is what stops
+// lib/bossalib/apiversion acquiring a dependency on lib/bossalib/sessionreason.
+//
+// A session whose display was never computed (empty label) is returned
+// unchanged, matching PreErroredOutput: neither the old nor the new Compute
+// wrote to it, so there is nothing to invert and fabricating "? PR failed" would
+// invent a failure the row never showed.
+func PreDraftPRFailureOutput(sess *pb.Session) Output {
+	served := Output{
+		Label:   sess.GetDisplayLabel(),
+		Intent:  sess.GetDisplayIntent(),
+		Spinner: sess.GetDisplaySpinner(),
+	}
+	if served.Label == "" {
+		return served
+	}
+	if !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		return served
+	}
+	// The two branches that outranked the old position are untouched by the
+	// move, so their served composite is already the pre-change one.
+	if IsQuestionLabel(served.Label) || strings.HasPrefix(served.Label, "usage-limited") {
+		return served
+	}
+	out := Output{Label: draftPRFailedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	// "? PR failed" is not a muted terminal PR label, so the BOS-430 overlay
+	// recolored it on an errored session both before and after the move. This
+	// change runs FIRST in the newest-first chain, so it must emit the full
+	// Current-shape composite; ErroredStatusChange strips the recolor afterwards
+	// for a client old enough to predate it.
+	if erroredSession(sess) {
+		out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	return out
+}
+
 // baseStatus runs the precedence cascade that determines a session's base
 // display status, before the errored-recolor overlay in Compute.
 //
@@ -241,22 +391,25 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 //     1b. ChatStatus LIMITED → "usage-limited (resets ~HH:MM)" (or "usage-limited"
 //     when no reset time is known) / WARNING / no spinner (below QUESTION,
 //     above WORKING and the PR-derived labels)
-//  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
-//  3. DisplaySettingUp    → "initializing" / INFO / spinner
-//     3b. DisplayMerging  → "merging" / INFO / spinner (a PR merge in flight;
+//  2. DisplaySettingUp    → "initializing" / INFO / spinner
+//     2b. DisplayMerging  → "merging" / INFO / spinner (a PR merge in flight;
 //     wins over the stale PR-derived labels so a passing/approved session shows
 //     "merging" for the merge's full duration)
-//     3c. ArchivePending  → "archiving" / WARNING / spinner (an archive in
+//     2c. ArchivePending  → "archiving" / WARNING / spinner (an archive in
 //     flight; wins over the stale MERGED label so an auto-archiving session
 //     shows "archiving" until the archive completes or errors)
+//  3. ChatStatus WAITING  → "waiting"    / INFO    / spinner
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
-//  5. Active workflow     → "running L/M", "pending", "paused L/M",
+//  5. Draft PR failure    → "? PR failed" / WARNING / no spinner (BOS-855: a
+//     PAST outcome, so it sits below every live-activity branch above and above
+//     the stale workflow/PR-derived labels below)
+//  6. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
-//  6. DisplayIsRepairing  → "repairing" / WARNING / spinner
-//  7. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
+//  7. DisplayIsRepairing  → "repairing" / WARNING / spinner
+//  8. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
 //     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking"
-//  8. ChatStatus IDLE     → "idle" / WARNING
-//  9. default             → "stopped" / MUTED
+//  9. ChatStatus IDLE     → "idle" / WARNING
+//  10. default            → "stopped" / MUTED
 func baseStatus(in Input) Output {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
@@ -272,9 +425,6 @@ func baseStatus(in Input) Output {
 			label += " (resets ~" + in.ChatResetAt.Format("15:04") + ")"
 		}
 		return Output{Label: label, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
-	}
-	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
-		return Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if in.Session != nil && in.Session.DisplaySettingUp {
 		return Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
@@ -312,6 +462,19 @@ func baseStatus(in Input) Output {
 			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
 		}
 		return Output{Label: "working", Intent: intent, Spinner: true}
+	}
+	// BOS-855: a failed draft-PR creation is a PAST outcome, not a present
+	// activity. It used to sit directly below the LIMITED branch, which let a row
+	// assert "? PR failed" while the chat underneath it read "working" — two
+	// contradictory presents on one row. It now sits immediately below WORKING,
+	// so any live chat (or an in-flight setup/merge/archive) owns the primary
+	// label, and above the workflow branch, so a session with nothing live still
+	// reports the failure rather than a stale "running L/M" or PR label. The
+	// signal is not lost when a chat is live: the TUI carries it as a warning
+	// hint sub-row (see services/boss/internal/views draftPRFailureHint) which is
+	// deliberately EXEMPT from the recessive treatment.
+	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
+		return Output{Label: draftPRFailedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if out, ok := workflowOutput(in.Session); ok {
 		return out

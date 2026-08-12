@@ -44,10 +44,16 @@ type HomeModel struct {
 	table                table.Model
 	err                  error
 	status               string
-	loading              bool
-	width                int
-	height               int
-	repoCount            int // number of registered repos (for empty state guidance)
+	// statusErr marks status as a failure so renderSessionTable colours it as
+	// one. Without it every status reads as success, and a red-on-green
+	// "Rename failed" is worse than no colour at all — it says the opposite of
+	// what happened. Named to match AccountsListModel/CronListModel, which
+	// carry the same pair.
+	statusErr bool
+	loading   bool
+	width     int
+	height    int
+	repoCount int // number of registered repos (for empty state guidance)
 
 	// pollFailures counts consecutive failed session polls. The "Cannot
 	// connect to daemon" screen is only shown once it reaches
@@ -104,9 +110,13 @@ type HomeModel struct {
 	// re-login state (BOS-659): credentials are still stored but cannot be
 	// used. Both are cleared by the next clean poll, so a successful login
 	// removes the warning without any extra bookkeeping.
-	needsRelogin         bool
-	reloginReason        string
-	confirm              confirmPrompt
+	needsRelogin  bool
+	reloginReason string
+	confirm       confirmPrompt
+	// rename is the inline title editor opened by the hidden [r] shortcut
+	// (BOS-837). Like confirm it stands in for the action bar while active and
+	// swallows the keys the board would otherwise act on.
+	rename               renamePrompt
 	cloudAccess          CloudAccessClient
 	cloudStatus          *pb.CloudAccessStatus
 	cloudErr             error
@@ -265,6 +275,19 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleSpinnerTick(msg)
 	case tickMsg:
 		return h.handleTick()
+	case sessionRenamedMsg:
+		return h.handleSessionRenamed(msg)
+	// Bracketed paste is not a KeyMsg, so it must be forwarded explicitly or a
+	// pasted title never reaches the rename input. Placed ahead of the KeyMsg
+	// arm because a tea.PasteMsg would otherwise fall through to the default
+	// return and be dropped. Inert unless the rename prompt is open.
+	case tea.PasteMsg:
+		if !h.rename.Active() {
+			return h, nil
+		}
+		var cmd tea.Cmd
+		h.rename, cmd = h.rename.Update(msg)
+		return h, cmd
 	case tea.KeyMsg:
 		return h.handleKey(msg)
 	}
@@ -390,6 +413,13 @@ func (h HomeModel) View() tea.View {
 	}
 
 	return tea.NewView(h.renderSessionTable())
+}
+
+// textEntryActive reports whether Home is capturing free text, so App can stop
+// aliasing ctrl+x to the back action while a title is being typed
+// (app.go's backKeyAliasEligible). Mirrors ChatPickerModel.textEntryActive.
+func (h HomeModel) textEntryActive() bool {
+	return h.rename.Active()
 }
 
 func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {

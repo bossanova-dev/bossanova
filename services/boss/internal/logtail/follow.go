@@ -14,10 +14,23 @@ import (
 
 const pollInterval = 100 * time.Millisecond
 
-// Source identifies one service log file to follow.
+// Source identifies one log file to follow.
 type Source struct {
 	Service, Path   string
 	SnapshotBackups func() ([]os.FileInfo, error)
+	// Parse turns one physical line into a record. Nil means the service-log
+	// format. An agent log supplies AgentParser.Parse here, which is stateful,
+	// so each Source needs its own parser: a follower calls this from that
+	// source's goroutine only, and a concurrent backlog pass must use a
+	// separate instance.
+	Parse func(line string) Record
+}
+
+func (s Source) parse(line string) Record {
+	if s.Parse != nil {
+		return s.Parse(line)
+	}
+	return Unwrap(ParseLine(s.Service, line))
 }
 
 // InitialOffset records a source's initial byte length, file identity, backup
@@ -224,7 +237,7 @@ func followOne(ctx context.Context, src Source, out chan<- Record, seekEnd bool,
 		pending = remainder
 		for _, line := range complete {
 			select {
-			case out <- Unwrap(ParseLine(src.Service, line)):
+			case out <- src.parse(line):
 			case <-ctx.Done():
 				return nil
 			}

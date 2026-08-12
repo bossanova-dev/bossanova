@@ -26,14 +26,16 @@ type labeledAgentRunner struct {
 type preflightRecordingRunner struct {
 	*labeledAgentRunner
 	calls   int
+	workDir string
 	model   string
 	env     map[string]string
 	profile bossanovav1.HeadlessCapabilityProfile
 	err     error
 }
 
-func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
 	r.calls++
+	r.workDir = workDir
 	r.model = model
 	r.env = extraEnv
 	r.profile = profile
@@ -305,7 +307,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	env := map[string]string{"CODEX_HOME": "/managed/codex-home"}
 
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
-		context.Background(), "codex", "gpt-5-codex", env,
+		context.Background(), "codex", "/worktrees/codex-session", "gpt-5-codex", env,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if err != nil {
@@ -316,6 +318,11 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	}
 	if codexRunner.model != "gpt-5-codex" || codexRunner.env["CODEX_HOME"] != "/managed/codex-home" {
 		t.Fatalf("codex preflight target = model=%q env=%v", codexRunner.model, codexRunner.env)
+	}
+	// The work dir must survive routing: it is what lets the plugin profile the
+	// repo-level agent config the gated run will load.
+	if codexRunner.workDir != "/worktrees/codex-session" {
+		t.Fatalf("codex preflight workDir = %q, want /worktrees/codex-session", codexRunner.workDir)
 	}
 	if codexRunner.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Fatalf("codex profile = %s, want tracker-plan-attachment-v1", codexRunner.profile)
@@ -328,7 +335,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsuppor
 	}, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
-		context.Background(), "claude", "model", nil,
+		context.Background(), "claude", t.TempDir(), "model", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if !errors.Is(err, ErrHeadlessCapabilityProfileUnsupported) {

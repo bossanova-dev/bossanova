@@ -2,6 +2,15 @@
 
 ## Skills
 
+### `boss init [flags]`
+
+Write a detected .boss-skills.json for this repository
+
+**Flags:**
+
+- `--dir` — Repository directory to inspect and write into (default: the working directory)
+- `--force` — Overwrite an existing .boss-skills.json instead of refusing
+
 ### `boss skills`
 
 Manage installed boss skills

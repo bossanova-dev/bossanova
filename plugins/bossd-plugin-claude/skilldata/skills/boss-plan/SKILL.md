@@ -14,6 +14,7 @@ draft extension. Under `BOSS_CRON=true` it runs **fully headless**, dispatching 
 subagent for recon + drafting (Phase 2), so it is safe to schedule unattended.
 
 - **Leave no local artifacts.** At every terminal state, discard the scratch you created (gitignored dirs, seeded design docs, `mktemp` files) so the worktree is clean — in all modes, headless (`BOSS_CRON=true`) especially.
+- **Dispatch zero-change work as such.** Planning runs commit nothing, so a plain session finalizes `blocked` behind an empty draft PR. See _Sessions that change nothing_ in the `boss` skill: `create_session` takes `quick_chat` (no worktree or PR) or `defer_pr` (worktree, no up-front PR).
 
 **Headless mode.** If `BOSS_CRON=true`, no human can answer `AskUserQuestion`, so **never call it** —
 in the orchestrator or the subagent, at any phase. The default path: preflight → select the

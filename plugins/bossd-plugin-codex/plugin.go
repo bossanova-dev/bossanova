@@ -59,6 +59,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "ReadTranscript", Handler: agentReadTranscriptHandler},
 		{MethodName: "RotationCapability", Handler: agentRotationCapabilityHandler},
 		{MethodName: "MaterializeAccount", Handler: agentMaterializeAccountHandler},
+		{MethodName: "DescribeMCPSurface", Handler: agentDescribeMCPSurfaceHandler},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "bossanova/v1/plugin.proto",
@@ -88,6 +89,7 @@ type agentRunnerServiceHandler interface {
 	ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 	RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
 	MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
+	DescribeMCPSurface(context.Context, *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
 
 func agentGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -272,4 +274,12 @@ func agentMaterializeAccountHandler(srv any, ctx context.Context, dec func(any) 
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).MaterializeAccount(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+}
+
+func agentDescribeMCPSurfaceHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.DescribeMCPSurfaceRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).DescribeMCPSurface(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

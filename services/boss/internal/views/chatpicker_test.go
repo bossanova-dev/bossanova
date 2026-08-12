@@ -64,6 +64,10 @@ func (s *chatPickerStub) DescribeChatLaunch(context.Context, string) (*pb.Descri
 	return nil, nil
 }
 
+func (s *chatPickerStub) DescribeChatMCP(context.Context, string) (*pb.DescribeChatMCPResponse, error) {
+	return nil, nil
+}
+
 func (s *chatPickerStub) WakeChat(_ context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -232,3 +232,11 @@ func (p *agentRunnerProxy) ProbeProgressLiveness(ctx context.Context, req *bossa
 	}
 	return r.ProbeProgressLiveness(ctx, req)
 }
+
+func (p *agentRunnerProxy) DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error) {
+	r, err := p.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return r.DescribeMCPSurface(ctx, req)
+}

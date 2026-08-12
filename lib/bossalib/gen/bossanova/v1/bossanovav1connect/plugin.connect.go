@@ -158,6 +158,9 @@ const (
 	// AgentRunnerServiceMaterializeAccountProcedure is the fully-qualified name of the
 	// AgentRunnerService's MaterializeAccount RPC.
 	AgentRunnerServiceMaterializeAccountProcedure = "/bossanova.v1.AgentRunnerService/MaterializeAccount"
+	// AgentRunnerServiceDescribeMCPSurfaceProcedure is the fully-qualified name of the
+	// AgentRunnerService's DescribeMCPSurface RPC.
+	AgentRunnerServiceDescribeMCPSurfaceProcedure = "/bossanova.v1.AgentRunnerService/DescribeMCPSurface"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -911,6 +914,16 @@ type AgentRunnerServiceClient interface {
 	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
 	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
 	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
+	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
+	// chat's worktree under the supplied environment, plus each server's tool
+	// inventory and the tool-name prefix skills must call. Read-only: it never
+	// mutates configuration and never starts a coding turn.
+	//
+	// Fail-honest, never fail-guessing: a plugin that cannot answer returns
+	// codes.Unimplemented; a probe that ran but failed returns a populated
+	// probe_error with servers empty. "No servers" and "could not ask" are
+	// deliberately distinguishable.
+	DescribeMCPSurface(context.Context, *connect.Request[v1.DescribeMCPSurfaceRequest]) (*connect.Response[v1.DescribeMCPSurfaceResponse], error)
 }
 
 // NewAgentRunnerServiceClient constructs a client for the bossanova.v1.AgentRunnerService service.
@@ -1062,6 +1075,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("MaterializeAccount")),
 			connect.WithClientOptions(opts...),
 		),
+		describeMCPSurface: connect.NewClient[v1.DescribeMCPSurfaceRequest, v1.DescribeMCPSurfaceResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceDescribeMCPSurfaceProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("DescribeMCPSurface")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -1090,6 +1109,7 @@ type agentRunnerServiceClient struct {
 	probeProgressLiveness       *connect.Client[v1.ProbeProgressLivenessRequest, v1.ProbeProgressLivenessResponse]
 	rotationCapability          *connect.Client[v1.RotationCapabilityRequest, v1.RotationCapabilityResponse]
 	materializeAccount          *connect.Client[v1.MaterializeAccountRequest, v1.MaterializeAccountResponse]
+	describeMCPSurface          *connect.Client[v1.DescribeMCPSurfaceRequest, v1.DescribeMCPSurfaceResponse]
 }
 
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
@@ -1205,6 +1225,11 @@ func (c *agentRunnerServiceClient) RotationCapability(ctx context.Context, req *
 // MaterializeAccount calls bossanova.v1.AgentRunnerService.MaterializeAccount.
 func (c *agentRunnerServiceClient) MaterializeAccount(ctx context.Context, req *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error) {
 	return c.materializeAccount.CallUnary(ctx, req)
+}
+
+// DescribeMCPSurface calls bossanova.v1.AgentRunnerService.DescribeMCPSurface.
+func (c *agentRunnerServiceClient) DescribeMCPSurface(ctx context.Context, req *connect.Request[v1.DescribeMCPSurfaceRequest]) (*connect.Response[v1.DescribeMCPSurfaceResponse], error) {
+	return c.describeMCPSurface.CallUnary(ctx, req)
 }
 
 // AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
@@ -1332,6 +1357,16 @@ type AgentRunnerServiceHandler interface {
 	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
 	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
 	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
+	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
+	// chat's worktree under the supplied environment, plus each server's tool
+	// inventory and the tool-name prefix skills must call. Read-only: it never
+	// mutates configuration and never starts a coding turn.
+	//
+	// Fail-honest, never fail-guessing: a plugin that cannot answer returns
+	// codes.Unimplemented; a probe that ran but failed returns a populated
+	// probe_error with servers empty. "No servers" and "could not ask" are
+	// deliberately distinguishable.
+	DescribeMCPSurface(context.Context, *connect.Request[v1.DescribeMCPSurfaceRequest]) (*connect.Response[v1.DescribeMCPSurfaceResponse], error)
 }
 
 // NewAgentRunnerServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -1479,6 +1514,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("MaterializeAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceDescribeMCPSurfaceHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceDescribeMCPSurfaceProcedure,
+		svc.DescribeMCPSurface,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("DescribeMCPSurface")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.AgentRunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentRunnerServiceGetInfoProcedure:
@@ -1527,6 +1568,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceRotationCapabilityHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceMaterializeAccountProcedure:
 			agentRunnerServiceMaterializeAccountHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceDescribeMCPSurfaceProcedure:
+			agentRunnerServiceDescribeMCPSurfaceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1626,4 +1669,8 @@ func (UnimplementedAgentRunnerServiceHandler) RotationCapability(context.Context
 
 func (UnimplementedAgentRunnerServiceHandler) MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.MaterializeAccount is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) DescribeMCPSurface(context.Context, *connect.Request[v1.DescribeMCPSurfaceRequest]) (*connect.Response[v1.DescribeMCPSurfaceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.DescribeMCPSurface is not implemented"))
 }

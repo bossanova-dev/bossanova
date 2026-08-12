@@ -103,6 +103,13 @@ func rootCmd() *cobra.Command {
 			if err := requireLocalDaemonTarget(cmd); err != nil {
 				return err
 			}
+			// BOS-864: a bare `brew upgrade` leaves launchd respawning the old
+			// staged bossd, and every prior mitigation was passive — the
+			// daemon's own startup warning goes to a log file nobody reads.
+			// This is the one surface the operator actually touches. It writes
+			// at most one line to stderr, never to stdout, and can never fail
+			// a command.
+			warnIfDaemonBinaryStale(cmd)
 			// gen-skill regenerates the embedded payload; the `skills` subtree is
 			// itself the explicit, no-prompt installer. Both must bypass the
 			// interactive startup installer/self-heal — otherwise `boss skills
@@ -165,7 +172,10 @@ func rootCmd() *cobra.Command {
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
 	addGrouped("mcp", mcpCmd())
-	addGrouped("skills", skillsCmd())
+	// `boss init` joins the existing `skills` group rather than minting a new
+	// one: it writes the config the boss skills read, so it belongs beside the
+	// commands that install them.
+	addGrouped("skills", skillsCmd(), initCmd())
 	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
 	addGrouped("diagnostics", repairCmd(), sessionCmd(), envCmd(), proofCmd(), fixTerminalCmd(), tailCmd())
 	// `boss agents` sits in the plugins group rather than getting one of its
@@ -269,6 +279,25 @@ func sessionCmd() *cobra.Command {
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
 	checks.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
+	mcp := &cobra.Command{
+		Use:   "mcp <chat-id>",
+		Short: "Show which MCP servers this chat's agent actually resolved, with tools and source",
+		Long: "Show which MCP servers this chat's agent actually resolved, with tools and source.\n\n" +
+			"This answers \"what does a fresh probe in this chat's worktree resolve?\", not \"what did the running pane resolve?\" — " +
+			"it starts a new agent invocation in the chat's worktree under the chat's re-derived environment and reads what that " +
+			"invocation reports, rather than inspecting the live process. The probe never runs a coding turn to completion — it " +
+			"is killed the moment the startup event is read — though a probe that never sees that event may briefly start one " +
+			"before its deadline fires.\n\n" +
+			"The source column is repo_file, user_config, injected or unknown. injected is reserved for a launcher that supplies " +
+			"MCP config on argv; boss does not, so it is never emitted today — an unattributable server reports unknown.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionMCP(cmd, args[0])
+		},
+	}
+	mcp.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
+	mcp.Flags().Bool("tools", false, "Include each server's resolved tool names")
+	cmd.AddCommand(mcp)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "link-pr <session-id> <pr-number-or-url>",
 		Short: "Attach an existing pull request to a session",
@@ -838,7 +867,9 @@ func configCmd() *cobra.Command {
 
 	init := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize plugin configuration from a directory",
+		Short: "Initialize bossd plugin settings in settings.json from a plugin directory",
+		Long: "Initialize bossd plugin settings in settings.json from a plugin directory.\n\n" +
+			"Unrelated to `boss init`, which writes the .boss-skills.json the boss skills read.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runConfigInit(cmd)
 		},

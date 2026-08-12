@@ -152,7 +152,13 @@ test('size ratchet', () => {
   // detection, auth-death and conflict-after-green), not only the cli: null ones. The same
   // edit corrects the now-false claim that a managed spawn always wires the boss MCP server.
   // Re-baselined 50176 → 50362.
-  const RATCHET = 50362
+  // BOS-804 wires the shared tracker preflight into Phase 0 step 2 (+1761 bytes): the step now
+  // re-resolves $BOSS_EPIC_TOOLBOX in its own block, best-effort gathers the chat's resolved MCP
+  // servers, classifies the cheap selectPlanned read with trackerMcpPreflight, and stops
+  // BLOCKED: <message> naming which of the two opposite fixes applies — replacing a bare
+  // "tracker MCP unreachable" that sent the reader to fix a correct declaration. Re-baselined
+  // 50362 → 52224.
+  const RATCHET = 52224
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })

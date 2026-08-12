@@ -68,3 +68,66 @@ func TestLogPathFallback(t *testing.T) {
 		t.Errorf("LogPath fallback: got %q, want %q", got, want)
 	}
 }
+
+func TestAgentLogsDirSitsBesideTheWorktreeRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, wantDir, wantPath string
+	}{
+		{
+			name:     "default worktree base",
+			base:     filepath.Join("/home/dev", ".bossanova", "worktrees"),
+			wantDir:  filepath.Join("/home/dev", ".bossanova", "agent-logs"),
+			wantPath: filepath.Join("/home/dev", ".bossanova", "agent-logs", "sess-1.log"),
+		},
+		{
+			name:     "trailing separator is not a second component",
+			base:     filepath.Join("/srv", "wt") + string(filepath.Separator),
+			wantDir:  filepath.Join("/srv", "agent-logs"),
+			wantPath: filepath.Join("/srv", "agent-logs", "sess-1.log"),
+		},
+		{name: "unconfigured base yields no path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AgentLogsDir(tc.base); got != tc.wantDir {
+				t.Errorf("AgentLogsDir(%q): got %q, want %q", tc.base, got, tc.wantDir)
+			}
+			if got := AgentLogPath(tc.base, "sess-1"); got != tc.wantPath {
+				t.Errorf("AgentLogPath(%q): got %q, want %q", tc.base, got, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestAgentLogFileNamesOneSessionInsideAResolvedDir(t *testing.T) {
+	dir := filepath.Join("/home/dev", ".bossanova", "agent-logs")
+	for _, tc := range []struct {
+		name, dir, id, want string
+	}{
+		{
+			name: "agent session id",
+			dir:  dir,
+			id:   "sess-1",
+			want: filepath.Join(dir, "sess-1.log"),
+		},
+		{
+			// A repair run composes its own prefix onto the boss session id
+			// rather than reaching for a second naming helper.
+			name: "repair run prefix composes",
+			dir:  dir,
+			id:   "repair-abc123",
+			want: filepath.Join(dir, "repair-abc123.log"),
+		},
+		{
+			// The callers all guard on an empty dir; returning "" rather than a
+			// stray relative "sess-1.log" is what keeps those guards working.
+			name: "unconfigured dir yields no path",
+			id:   "sess-1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AgentLogFile(tc.dir, tc.id); got != tc.want {
+				t.Errorf("AgentLogFile(%q, %q): got %q, want %q", tc.dir, tc.id, got, tc.want)
+			}
+		})
+	}
+}

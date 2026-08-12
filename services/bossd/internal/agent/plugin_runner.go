@@ -80,9 +80,9 @@ func (r *PluginRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workD
 }
 
 // PreflightHeadlessCapabilityProfile asks the plugin to validate a required
-// operation surface using only the managed account/model inputs available
-// before worktree creation. It performs no run or tailer side effects.
-func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+// operation surface using the same managed account/model/work-dir inputs the
+// gated run will launch with. It performs no run or tailer side effects.
+func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
 	client, ok := r.client.(headlessCapabilityProfilePreflightClient)
 	if !ok {
 		return ErrHeadlessCapabilityProfileUnsupported
@@ -91,6 +91,7 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, m
 		Model:                     model,
 		ExtraEnv:                  extraEnv,
 		HeadlessCapabilityProfile: profile,
+		WorkDir:                   workDir,
 	})
 	if err != nil {
 		return fmt.Errorf("plugin PreflightHeadlessRun: %w", err)

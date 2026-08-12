@@ -109,6 +109,60 @@ test('the generated region routes to per-group references instead of inlining th
   }
 })
 
+// zeroChangeSection returns the bytes of the resident "sessions that change
+// nothing" section — from its heading to the next top-level heading, or EOF.
+// The slice is the point: asserting the option names anywhere in SKILL.md would
+// pass with them scattered across unrelated sections, which is the shape this
+// gate exists to reject. Moving any one row out of the section reds the test.
+const ZERO_CHANGE_HEADING = '## Sessions that change nothing'
+
+const zeroChangeSection = (skill, label) => {
+  const start = skill.indexOf(ZERO_CHANGE_HEADING)
+  assert.ok(start !== -1, `${label} must carry the ${ZERO_CHANGE_HEADING} heading`)
+
+  // Position, not just presence: `make gen-skill` rewrites everything between
+  // the markers wholesale, so hand-written prose placed above END GENERATED is
+  // destroyed on the next regeneration.
+  const endGenerated = skill.indexOf('<!-- END GENERATED -->')
+  assert.ok(endGenerated !== -1, `${label} must carry the END GENERATED marker`)
+  assert.ok(
+    start > endGenerated,
+    `${label}: the ${ZERO_CHANGE_HEADING} section must sit AFTER <!-- END GENERATED --> (${start} vs ${endGenerated}) or gen-skill will discard it`,
+  )
+
+  const next = skill.indexOf('\n## ', start + ZERO_CHANGE_HEADING.length)
+  return next === -1 ? skill.slice(start) : skill.slice(start, next)
+}
+
+test('the resident body tells an agent how to run a session that changes nothing', () => {
+  for (const dir of BOSS_MIRRORS) {
+    const section = zeroChangeSection(read(`${dir}/SKILL.md`), `${dir}/SKILL.md`)
+
+    for (const option of ['quick_chat', 'defer_pr', '--zero-output']) {
+      assert.ok(
+        section.includes(option),
+        `${dir}: the ${ZERO_CHANGE_HEADING} section must name ${option} — an agent that cannot find all three here defaults to a worktree-and-PR session that finalizes blocked behind an empty draft PR`,
+      )
+    }
+
+    // The table names the portable create_session field spellings, which read
+    // the same on every host. Scoped to the hand-written section on purpose:
+    // the generated references/*.md legitimately document the equivalent CLI
+    // flags, so this bans the flag spellings here rather than payload-wide.
+    for (const notAFlag of ['--quick-chat', '--defer-pr']) {
+      assert.ok(
+        !section.includes(notAFlag),
+        `${dir}: the ${ZERO_CHANGE_HEADING} section must not name ${notAFlag} — this table names the create_session field spellings; the CLI flags belong to the generated command reference`,
+      )
+    }
+
+    assert.ok(
+      section.includes('`create_session`'),
+      `${dir}: the ${ZERO_CHANGE_HEADING} section must label quick_chat/defer_pr as create_session fields`,
+    )
+  }
+})
+
 test('the plugin mirror is byte-identical to the canonical payload', () => {
   const [canonicalDir, pluginDir] = BOSS_MIRRORS
   assert.equal(

@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-08-04**. The engineering procedure for adding a new
+The current version is **2026-08-12**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -113,7 +113,7 @@ only raised where the session had no other attention, so clients pinned to an
 older version are down-converted back to no attention reason, the prior
 "keeps spinning" behavior.
 
-### 2026-08-04 — Waiting chat status (Current)
+### 2026-08-04 — Waiting chat status
 
 The OrchestratorService began serving `ChatStatus` value `CHAT_STATUS_WAITING`
 on `ChatStatusEntry.status`, `ChatStatusDelta.status` and
@@ -125,6 +125,24 @@ registered GitHub callback, a background poll tick — rather than computing, an
 status). Before this version such a chat reported `CHAT_STATUS_WORKING`, so
 clients pinned to an older version are down-converted back to
 `CHAT_STATUS_WORKING` with an empty `waiting_reason`.
+
+### 2026-08-12 — Draft-PR failure ranks below live activity (Current)
+
+The OrchestratorService stopped letting a session-level draft-PR-creation failure
+claim the session's primary display composite while a chat is live. The
+`? PR failed` label used to outrank every branch except a pending question and a
+usage-limit banner, so a row could read `? PR failed` while the chat underneath it
+read `working` — two contradictory presents on one row. That branch now sits
+immediately below the working branch, so `Session.display_label`,
+`Session.display_intent` and `Session.display_spinner` carry the live label
+(`working`, `waiting`, `initializing`, `merging`, `archiving`) whenever one
+applies, and still report `? PR failed` when nothing is live. Clients pinned to an
+older version were built against the previous precedence, so they are
+down-converted back to `? PR failed`.
+
+The failure itself is not hidden from a current client: it is surfaced as a
+session warning hint, and that hint is deliberately exempt from the accompanying
+recessive treatment because it is the row's only carrier of the failure.
 
 ## See also
 

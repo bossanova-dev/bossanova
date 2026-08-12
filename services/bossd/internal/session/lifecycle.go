@@ -1799,7 +1799,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, session), l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
 		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
-			ctx, session.AgentName, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
+			ctx, session.AgentName, result.WorktreePath, session.Model, preflightEnv, opts.HeadlessCapabilityProfile,
 		); err != nil {
 			return rollbackPreflightFailure(fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err))
 		}

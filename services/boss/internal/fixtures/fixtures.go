@@ -5,10 +5,12 @@
 package fixtures
 
 import (
+	"errors"
 	"time"
 
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -699,6 +701,113 @@ func ErroredStatusWorld() World {
 		Repos:    Repos(),
 		Sessions: ErroredStatusSessions(),
 		Chats:    ErroredStatusChats(),
+	}
+}
+
+// LivePastFailureSessions returns the BOS-855 dataset: four rows that put the
+// precedence rule and both halves of its exemption set side by side, so a single
+// still shows the contrast rather than requiring two captures.
+//
+// The mock daemon returns sessions verbatim, so the Display* fields are set here
+// to exactly what displaystatus.Compute now produces for each:
+//   - index 0 (sess-855-live): a BLOCKED session whose chat is working. STATUS
+//     reads "working" (recolored DANGER) and the residual "finalize failed"
+//     attention hint is DEMOTED to the faded style — a past outcome must not
+//     compete with the present tense.
+//   - index 1 (sess-855-quiet): the SAME warning text on a row whose STATUS is
+//     "idle". Nothing is live, so the hint stays at full red. Placed directly
+//     under the live row so the two intensities are one line apart.
+//   - index 2 (sess-855-stalled): a live "working" row whose hint IMPEACHES that
+//     liveness ("no progress"). Exempt — fading the one line that says the
+//     working is a lie would be exactly backwards.
+//   - index 3 (sess-855-draftpr): a draft-PR-creation failure on a working
+//     session. The session is never transitioned, so the composite is a plain
+//     SUCCESS "working"; the failure survives the branch move as a
+//     full-intensity hint sub-row rather than being deleted with the label.
+//
+// Every title deliberately avoids the words "working", "idle", "no progress" and
+// "draft PR creation failed" so each proof evidence token binds to the STATUS
+// column or the hint row it is meant to prove, never to a row title.
+func LivePastFailureSessions() []*pb.Session {
+	const finalizeFailure = "finalize failed (pr_skipped_no_github)"
+	draftPRFailure := sessionreason.DraftPRCreationFailure(errors.New("no upstream remote"))
+	return []*pb.Session{
+		{
+			Id: "sess-855-live", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Live rebase run", BranchName: "boss/live-rebase",
+			State:          pb.SessionState_SESSION_STATE_BLOCKED,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner: true,
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+				Summary:        finalizeFailure,
+			},
+			CreatedAt:    ts(-2 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/live-rebase",
+		},
+		{
+			Id: "sess-855-quiet", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Quiet retry run", BranchName: "boss/quiet-retry",
+			State:         pb.SessionState_SESSION_STATE_BLOCKED,
+			DisplayLabel:  "idle",
+			DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+				Summary:        finalizeFailure,
+			},
+			CreatedAt:    ts(-3 * time.Hour),
+			WorktreePath: "/Users/demo/worktrees/my-app/quiet-retry",
+		},
+		{
+			Id: "sess-855-stalled", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Silent search-index run", BranchName: "boss/silent-index",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+			AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED,
+				Summary:        "agent reports working but has made no progress — check the pane",
+			},
+			CreatedAt:    ts(-90 * time.Minute),
+			WorktreePath: "/Users/demo/worktrees/my-app/silent-index",
+		},
+		{
+			Id: "sess-855-draftpr", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Fresh onboarding run", BranchName: "boss/fresh-onboarding",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+			BlockedReason:  &draftPRFailure,
+			CreatedAt:      ts(-30 * time.Minute),
+			WorktreePath:   "/Users/demo/worktrees/my-app/fresh-onboarding",
+		},
+	}
+}
+
+// LivePastFailureChats returns one chat per LivePastFailure session so every
+// chatpicker renders populated (not "Loading chats...").
+func LivePastFailureChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-855-l", AgentSessionId: "claude-855-l", SessionId: "sess-855-live", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
+		{Id: "chat-855-q", AgentSessionId: "claude-855-q", SessionId: "sess-855-quiet", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
+		{Id: "chat-855-s", AgentSessionId: "claude-855-s", SessionId: "sess-855-stalled", Title: "Rebuild the search index", CreatedAt: ts(-90 * time.Minute)},
+		{Id: "chat-855-d", AgentSessionId: "claude-855-d", SessionId: "sess-855-draftpr", Title: "Set up the project", CreatedAt: ts(-30 * time.Minute)},
+	}
+}
+
+// LivePastFailureWorld builds the BOS-855 dataset: the demo repos plus the four
+// rows the bos855-live-row-past-failure proof scenario compares.
+func LivePastFailureWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: LivePastFailureSessions(),
+		Chats:    LivePastFailureChats(),
 	}
 }
 

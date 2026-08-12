@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "logtail",
     srcs = [
+        "agent.go",
         "filter.go",
         "follow.go",
         "format.go",
@@ -11,11 +12,13 @@ go_library(
     ],
     importpath = "github.com/recurser/boss/internal/logtail",
     visibility = ["//services/boss:__subpackages__"],
+    deps = ["@com_github_charmbracelet_x_ansi//:ansi"],
 )
 
 go_test(
     name = "logtail_test",
     srcs = [
+        "agent_test.go",
         "filter_test.go",
         "follow_test.go",
         "format_test.go",

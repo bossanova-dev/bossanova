@@ -108,3 +108,37 @@ func LogPath(service string) string {
 	}
 	return filepath.Join(dir, service+".log")
 }
+
+// AgentLogsDir returns the directory holding per-agent-session logs, given the
+// configured worktree base directory. Agent logs deliberately sit beside the
+// worktree root rather than under it, so a worktree checkout cannot reach them.
+// Unlike the service log dir they are not rotated, and they hold agent output
+// in either of two formats (see the logtail package). Returns "" when no
+// worktree base directory is configured.
+func AgentLogsDir(worktreeBaseDir string) string {
+	if worktreeBaseDir == "" {
+		return ""
+	}
+	// Clean first: filepath.Dir("…/worktrees/") is "…/worktrees", which would
+	// nest agent logs inside the worktree root and defeat the isolation above.
+	return filepath.Join(filepath.Dir(filepath.Clean(worktreeBaseDir)), "agent-logs")
+}
+
+// AgentLogFile names one agent session's log inside an already-resolved
+// agent-logs directory. This is the single definition of the <id>.log
+// convention every producer and reader of these logs shares — bossd's agent
+// runs and tmux chats, and `boss tail <agent-session-id>`. Returns "" for an
+// empty dir, so a caller that has no agent-logs directory configured keeps
+// seeing the empty path its own guards already handle.
+func AgentLogFile(agentLogsDir, agentSessionID string) string {
+	if agentLogsDir == "" {
+		return ""
+	}
+	return filepath.Join(agentLogsDir, agentSessionID+".log")
+}
+
+// AgentLogPath returns the log path for a single agent session. Returns "" when
+// no worktree base directory is configured.
+func AgentLogPath(worktreeBaseDir, agentSessionID string) string {
+	return AgentLogFile(AgentLogsDir(worktreeBaseDir), agentSessionID)
+}

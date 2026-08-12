@@ -241,6 +241,10 @@ func TestPreflightAndStartRunInspectIdenticalRuntimeTarget(t *testing.T) {
 	// against itself, blind to a future path that injects into its own ExtraEnv.
 	preflightEnv := map[string]string{"CODEX_HOME": home, "CODEX_EXTRA": "shared"}
 	startEnv := map[string]string{"CODEX_HOME": home, "CODEX_EXTRA": "shared"}
+	// One work dir sent on BOTH requests. Sending it only on StartRun (as this
+	// test did before WorkDir joined codexRuntimeTarget) is exactly the BOS-865
+	// divergence, and the DeepEqual below is what refuses it.
+	workDir := t.TempDir()
 	// Guard against a real `codex` subprocess: if the profile check ever stops
 	// rejecting, StartRun would otherwise fall through to runner.Start with the
 	// production command factory and leak a detached process out of this test.
@@ -259,12 +263,13 @@ func TestPreflightAndStartRunInspectIdenticalRuntimeTarget(t *testing.T) {
 
 	if _, err := srv.PreflightHeadlessRun(context.Background(), &bossanovav1.PreflightHeadlessRunRequest{
 		ExtraEnv:                  preflightEnv,
+		WorkDir:                   workDir,
 		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("PreflightHeadlessRun code = %s, want FailedPrecondition", status.Code(err))
 	}
 	if _, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
-		WorkDir:                   t.TempDir(),
+		WorkDir:                   workDir,
 		Plan:                      "must not start",
 		SessionId:                 "drift-guard",
 		LogPath:                   t.TempDir() + "/codex.jsonl",
@@ -376,6 +381,169 @@ func TestStartRunTrackerPlanAttachmentStartsOnceWithProjectedHomeAndModel(t *tes
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("actual runner starts = %d, want 1", got)
+	}
+}
+
+// errorInfoFrom extracts the structured diagnostic a capability failure must
+// always carry, failing the test when it is absent.
+func errorInfoFrom(t *testing.T, err error) *errdetails.ErrorInfo {
+	t.Helper()
+	for _, detail := range status.Convert(err).Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok {
+			return info
+		}
+	}
+	t.Fatal("FailedPrecondition must include structured ErrorInfo diagnostics")
+	return nil
+}
+
+// preflightWithServers runs the profiled preflight against a fixed runtime
+// surface, returning the error for message/diagnostic assertions.
+func preflightWithServers(t *testing.T, target codexRuntimeTarget, servers []runtimeMCPServer) error {
+	t.Helper()
+	home := t.TempDir()
+	srv := newTestServer(t)
+	srv.operationRegistry = runtimeOperationRegistryFunc(func(context.Context, codexRuntimeTarget) (runtimeOperationSurface, error) {
+		return runtimeOperationSurface{Source: codexOperationRegistrySource, Servers: servers}, nil
+	})
+	target.Home = home
+	target.ExtraEnv = map[string]string{"CODEX_HOME": home}
+	_, err := srv.preflightHeadlessCapabilityProfile(
+		context.Background(),
+		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		target,
+	)
+	return err
+}
+
+// TestTrackerPlanAttachmentClassifiesDeclaredButEmptyConnector is the BOS-865
+// classification. Codex reports authStatus=bearerToken with ZERO tools when the
+// server's bearer_token_env_var is present-but-empty, which is exactly what
+// dotenv.OverlayWithRepo guarantees when the key is configured nowhere. Feeding
+// that to the requirement matrix produced the full seven-name Missing list and
+// told the operator to fix a declaration that was already correct.
+func TestTrackerPlanAttachmentClassifiesDeclaredButEmptyConnector(t *testing.T) {
+	err := preflightWithServers(t, codexRuntimeTarget{WorkDir: t.TempDir()}, []runtimeMCPServer{
+		{Name: "bossanova-linear", AuthStatus: "bearerToken", Operations: nil},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition; err=%v", status.Code(err), err)
+	}
+	message := status.Convert(err).Message()
+	// The source marker must reach the gRPC message, not only ErrorInfo
+	// metadata: a `boss` operator sees the message and nothing else.
+	if !strings.Contains(message, "connector_declared_but_exposes_no_operations") {
+		t.Errorf("message %q must carry the connector_declared_but_exposes_no_operations marker", message)
+	}
+	// The message must not send the operator to fix a correct declaration.
+	if !strings.Contains(message, "the declaration is present and correct") {
+		t.Errorf("message %q must state the declaration is correct", message)
+	}
+	// Both plausible causes named, neither asserted: an unreachable server at
+	// load looks identical to an empty credential.
+	for _, want := range []string{"bearer-token env var", "reachable at load"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("message %q must mention %q as a candidate cause", message, want)
+		}
+	}
+	// The connector and its auth status are named; the credential never is.
+	if !strings.Contains(message, `"bossanova-linear"`) || !strings.Contains(message, `"bearerToken"`) {
+		t.Errorf("message %q must name the server and its auth status", message)
+	}
+	if !strings.HasPrefix(message, "tracker-plan-attachment unavailable") {
+		t.Errorf("message %q lost the load-bearing prefix", message)
+	}
+	diagnostic := errorInfoFrom(t, err)
+	if diagnostic.GetReason() != "TRACKER_PLAN_ATTACHMENT_UNAVAILABLE" {
+		t.Errorf("ErrorInfo.Reason = %q, want TRACKER_PLAN_ATTACHMENT_UNAVAILABLE", diagnostic.GetReason())
+	}
+	// Missing must stay populated for machine consumers: the profile genuinely
+	// is unmet, so a consumer still needs to know which requirements went
+	// unsatisfied. The zero-operations branch calls failedCapabilityPrecondition
+	// directly, so it fails closed whatever Missing holds — this asserts the
+	// diagnostic stays useful, not that it is what keeps the gate shut.
+	var missing []string
+	if err := json.Unmarshal([]byte(diagnostic.GetMetadata()["missing"]), &missing); err != nil {
+		t.Fatalf("decode missing metadata: %v", err)
+	}
+	if !slices.Equal(missing, uniqueSorted(trackerPlanAttachmentRequirements())) {
+		t.Errorf("missing = %q, want the full requirement set", missing)
+	}
+}
+
+// TestTrackerPlanAttachmentUndeclaredConnectorStillFailsClosed is the AC2 pin
+// for candidate direction 4: a repo that genuinely has not declared the server
+// must keep failing with its existing marker and the full seven-name list. This
+// is the case the gate exists for, and the new classification must not swallow
+// it.
+func TestTrackerPlanAttachmentUndeclaredConnectorStillFailsClosed(t *testing.T) {
+	err := preflightWithServers(t, codexRuntimeTarget{WorkDir: t.TempDir()}, []runtimeMCPServer{
+		{Name: "some-other-connector", AuthStatus: "oAuth", Operations: []string{"unrelated_tool"}},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition; err=%v", status.Code(err), err)
+	}
+	message := status.Convert(err).Message()
+	if !strings.Contains(message, "connector_plugin_disabled_or_missing") {
+		t.Errorf("message %q must carry connector_plugin_disabled_or_missing", message)
+	}
+	if strings.Contains(message, "connector_declared_but_exposes_no_operations") {
+		t.Errorf("message %q must not reclassify an undeclared connector as a credential problem", message)
+	}
+	for _, requirement := range trackerPlanAttachmentRequirements() {
+		if !strings.Contains(message, requirement) {
+			t.Errorf("message %q missing requirement %q", message, requirement)
+		}
+	}
+}
+
+// TestTrackerPlanAttachmentPartialSurfaceStillNamesMissingOperations guards the
+// other edge of the classification: a connector exposing a real but incomplete
+// surface is a genuine capability gap and must keep naming the specific
+// operations, not be absorbed into the credential branch.
+func TestTrackerPlanAttachmentPartialSurfaceStillNamesMissingOperations(t *testing.T) {
+	err := preflightWithServers(t, codexRuntimeTarget{WorkDir: t.TempDir()}, []runtimeMCPServer{
+		{Name: "bossanova-linear", AuthStatus: "bearerToken", Operations: []string{"get_issue", "save_issue"}},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition; err=%v", status.Code(err), err)
+	}
+	message := status.Convert(err).Message()
+	if strings.Contains(message, "connector_declared_but_exposes_no_operations") {
+		t.Fatalf("message %q reclassified a real capability gap as a credential problem", message)
+	}
+	// The three save_issue-backed requirements and get_issue are satisfied; the
+	// attachment operations are the real gap and must be named.
+	for _, want := range []string{
+		"plan_retrieval.download_attachment",
+		"plan_publication.prepare_markdown_attachment",
+		"plan_publication.finalize_markdown_attachment",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("message %q must name missing requirement %q", message, want)
+		}
+	}
+	for _, unwanted := range []string{"ticket_read.named_issue", "ticket_mutation.update_issue_fields"} {
+		if strings.Contains(message, unwanted) {
+			t.Errorf("message %q names %q as missing, but it is provided", message, unwanted)
+		}
+	}
+}
+
+// TestTrackerPlanAttachmentMarksUnsetWorkDir pins the self-diagnosing half of
+// the work-dir fix: a profiled check whose caller never plumbed a work dir
+// cannot have loaded the repo's own .codex/config.toml, so it says so rather
+// than silently regressing to the manufactured capability gap of BOS-865.
+func TestTrackerPlanAttachmentMarksUnsetWorkDir(t *testing.T) {
+	servers := []runtimeMCPServer{{Name: "some-other-connector", AuthStatus: "oAuth", Operations: []string{"unrelated_tool"}}}
+
+	unset := status.Convert(preflightWithServers(t, codexRuntimeTarget{}, servers)).Message()
+	if !strings.Contains(unset, "preflight_work_dir_unset") {
+		t.Errorf("message %q must carry preflight_work_dir_unset when no work dir was supplied", unset)
+	}
+	set := status.Convert(preflightWithServers(t, codexRuntimeTarget{WorkDir: t.TempDir()}, servers)).Message()
+	if strings.Contains(set, "preflight_work_dir_unset") {
+		t.Errorf("message %q must not carry preflight_work_dir_unset when a work dir was supplied", set)
 	}
 }
 
@@ -654,6 +822,54 @@ func TestPreflightAggregatesPaginatedRuntimeOperationRegistry(t *testing.T) {
 
 func registryFixtureCommand(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCodexAppServerRegistryFixture$")
+}
+
+// TestCodexAppServerOperationRegistryHonoursWorkDir pins the half of BOS-865
+// the runtime-target parity ratchet cannot see. Carrying WorkDir on the target
+// buys nothing unless the profiled `codex app-server` process actually runs
+// there: codex resolves a repo-level `.codex/config.toml` relative to its
+// working directory, so a preflight that inherits the daemon's cwd inspects a
+// runtime that never loaded the repo's own MCP declaration.
+//
+// The empty case is equally load-bearing in the other direction — Dir must stay
+// empty so exec inherits the daemon cwd exactly as every pre-BOS-865 caller
+// (the UNSPECIFIED profile, any non-bossd caller) got.
+func TestCodexAppServerOperationRegistryHonoursWorkDir(t *testing.T) {
+	fixture, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	workDir := t.TempDir()
+	tests := []struct {
+		name    string
+		target  codexRuntimeTarget
+		wantDir string
+	}{
+		{name: "work dir set runs there", target: codexRuntimeTarget{WorkDir: workDir}, wantDir: workDir},
+		{name: "work dir unset inherits daemon cwd", target: codexRuntimeTarget{}, wantDir: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CODEX_REGISTRY_FIXTURE_MODE", "paginated")
+			var captured *exec.Cmd
+			registry := codexAppServerOperationRegistry{
+				binary: "codex",
+				commandFactory: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+					captured = exec.CommandContext(ctx, fixture, "-test.run=^TestCodexAppServerRegistryFixture$")
+					return captured
+				},
+			}
+			if _, err := registry.Operations(context.Background(), tc.target); err != nil {
+				t.Fatalf("Operations: %v", err)
+			}
+			if captured == nil {
+				t.Fatal("commandFactory was never called")
+			}
+			if captured.Dir != tc.wantDir {
+				t.Fatalf("cmd.Dir = %q, want %q", captured.Dir, tc.wantDir)
+			}
+		})
+	}
 }
 
 func TestCodexAppServerRegistryFixture(t *testing.T) {

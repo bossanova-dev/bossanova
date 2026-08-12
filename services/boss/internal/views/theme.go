@@ -132,8 +132,14 @@ var (
 	// whose PR has already merged/closed (BOS-246). Still readable as a
 	// warning, but visually recessive.
 	styleStatusDangerFaded = styleStatusDanger.Faint(true)
-	styleStatusInfo        = lipgloss.NewStyle().Foreground(colorInfo)
-	styleStatusMuted       = lipgloss.NewStyle().Foreground(colorMuted)
+	// styleStatusWarningFaded is the warning-tier twin of styleStatusDangerFaded,
+	// used for the attention "!" on a row whose every warning hint has gone
+	// recessive (BOS-855). Without it the indicator would stay at full intensity
+	// above a block of faded hints — the same self-contradiction the recessive
+	// treatment exists to remove.
+	styleStatusWarningFaded = styleStatusWarning.Faint(true)
+	styleStatusInfo         = lipgloss.NewStyle().Foreground(colorInfo)
+	styleStatusMuted        = lipgloss.NewStyle().Foreground(colorMuted)
 	// styleToast is the rotation-notice style: the info color, indented to column 2
 	// so the notice lines up with the table caret and with the rest of the TUI
 	// chrome (styleTitle / styleActionBar / styleError are all Padding(0, 2)) rather

@@ -830,6 +830,61 @@ func TestCreateSessionToolDescriptionWarnsPlanningOnlyCallers(t *testing.T) {
 	}
 }
 
+// TestCreateSessionToolDescriptionIsolatesTheZeroChangeGuidance proves the
+// zero-change options are FINDABLE, not merely present.
+//
+// The sibling
+// TestCreateSessionToolDescriptionWarnsPlanningOnlyCallers asserts substrings
+// anywhere in the description, so it passed while both sentences sat buried
+// mid-paragraph in ~2,000 characters covering dedup, attach semantics, tracker
+// collisions and eight other flags — which is exactly the state that let agents
+// dispatch planning runs as ordinary worktree-and-PR sessions. This test asserts
+// STRUCTURE instead: the guidance is its own newline-delimited segment,
+// introduced by a literal label, and short enough to read at a glance. Join the
+// segment back into the paragraph, or label the whole paragraph, and this fails.
+func TestCreateSessionToolDescriptionIsolatesTheZeroChangeGuidance(t *testing.T) {
+	cs := newConnectedClient(t, &fakeBackend{}, Options{})
+	res, err := cs.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "create_session" {
+			desc = tool.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("create_session tool not registered")
+	}
+
+	const label = "ZERO-CHANGE SESSIONS:"
+	var segment string
+	for _, line := range strings.Split(desc, "\n") {
+		if strings.HasPrefix(line, label) {
+			segment = line
+			break
+		}
+	}
+	if segment == "" {
+		t.Fatalf("create_session description has no %q segment on its own line; the zero-change guidance must not be buried mid-paragraph: %s", label, desc)
+	}
+
+	// Without a bound, labelling the entire description would satisfy the
+	// assertions below while restoring exactly the unfindability this fixes.
+	const maxSegmentBytes = 400
+	if got := len(segment); got > maxSegmentBytes {
+		t.Fatalf("the %q segment is %d bytes; keep it <= %d so it stays scannable: %s", label, got, maxSegmentBytes, segment)
+	}
+
+	for _, want := range []string{"quick_chat", "defer_pr"} {
+		if !strings.Contains(segment, want) {
+			t.Fatalf("the %q segment must name %q inside the segment, not elsewhere in the description: %s", label, want, segment)
+		}
+	}
+}
+
 // TestStartChatToolMintsUUIDAndCallsRecordChat proves the start_chat handler
 // mints a fresh valid UUID for the new chat's agent_session_id, invokes
 // RecordChat with resume=false (spawning a live agent), and threads

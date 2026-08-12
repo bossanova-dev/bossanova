@@ -1263,8 +1263,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260804 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260804)
+	if got := reg.Current(); got != apiversion.V20260812 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260812)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -2584,5 +2584,431 @@ func TestProductionChanges_StalledDownConvertsForPriorReleasedVersion(t *testing
 	changes.Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.V20260723)
 	if msg.GetSession().GetAttentionStatus() != nil {
 		t.Errorf("ProductionChanges did not neutralize AGENT_STALLED for V20260723: %v", msg.GetSession().GetAttentionStatus())
+	}
+}
+
+// --- DraftPRFailureLabelChange (V20260812) ---
+
+// draftPRFailureReason is the shape sessionreason.DraftPRCreationFailure writes
+// into Session.blocked_reason. It is spelled out as a literal rather than
+// imported so this package keeps its BUILD deps (displaystatus, gen, connect,
+// proto) and never acquires lib/bossalib/sessionreason — the guard the change
+// deliberately keeps inside displaystatus.
+const draftPRFailureReason = "draft PR creation failed: create draft PR: gh pr create: authentication required"
+
+func strPtr(s string) *string { return &s }
+
+func TestDraftPRFailureLabelChange_Version(t *testing.T) {
+	if got := (apiversion.DraftPRFailureLabelChange{}).Version(); got != apiversion.V20260812 {
+		t.Errorf("DraftPRFailureLabelChange.Version() = %q, want %q", got, apiversion.V20260812)
+	}
+}
+
+// TestDraftPRFailureLabelChange_RestoresLabel walks the composite cases: a live
+// label on a draft-PR-failure session is rewritten back to "? PR failed", while
+// the branches that outranked the old position, other blocked reasons, and an
+// uncomputed (empty) label are all left exactly as served.
+func TestDraftPRFailureLabelChange_RestoresLabel(t *testing.T) {
+	tests := []struct {
+		name        string
+		sess        *pb.Session
+		wantLabel   string
+		wantIntent  pb.DisplayIntent
+		wantSpinner bool
+	}{
+		{
+			name: "working",
+			sess: &pb.Session{
+				Id:             "sess-1",
+				BlockedReason:  strPtr(draftPRFailureReason),
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			name: "waiting",
+			sess: &pb.Session{
+				Id:             "sess-2",
+				BlockedReason:  strPtr(draftPRFailureReason),
+				DisplayLabel:   "waiting",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+				DisplaySpinner: true,
+			},
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			name: "blocked working keeps the errored recolor",
+			sess: &pb.Session{
+				Id:             "sess-3",
+				State:          pb.SessionState_SESSION_STATE_BLOCKED,
+				BlockedReason:  strPtr(draftPRFailureReason),
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+				DisplaySpinner: true,
+			},
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		},
+		{
+			name: "question is untouched",
+			sess: &pb.Session{
+				Id:            "sess-4",
+				BlockedReason: strPtr(draftPRFailureReason),
+				DisplayLabel:  "? question",
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			},
+			wantLabel:  "? question",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			name: "usage-limited is untouched",
+			sess: &pb.Session{
+				Id:            "sess-5",
+				BlockedReason: strPtr(draftPRFailureReason),
+				DisplayLabel:  "usage-limited (resets ~09:30)",
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			},
+			wantLabel:  "usage-limited (resets ~09:30)",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			// Keyed on the blocked reason, not on the label.
+			name: "working with an unrelated blocked reason is untouched",
+			sess: &pb.Session{
+				Id:             "sess-6",
+				BlockedReason:  strPtr("blocked — needs human intervention"),
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			wantLabel:   "working",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			wantSpinner: true,
+		},
+		{
+			name: "working with no blocked reason is untouched",
+			sess: &pb.Session{
+				Id:             "sess-7",
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			wantLabel:   "working",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			wantSpinner: true,
+		},
+		{
+			name: "empty label is not fabricated into a failure",
+			sess: &pb.Session{
+				Id:            "sess-8",
+				BlockedReason: strPtr(draftPRFailureReason),
+			},
+			wantLabel:  "",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_UNSPECIFIED,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &pb.ProxyGetSessionResponse{Session: tt.sess}
+			(apiversion.DraftPRFailureLabelChange{}).TransformResponse(
+				bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+			got := msg.GetSession()
+			if got.GetDisplayLabel() != tt.wantLabel {
+				t.Errorf("display_label = %q, want %q", got.GetDisplayLabel(), tt.wantLabel)
+			}
+			if got.GetDisplayIntent() != tt.wantIntent {
+				t.Errorf("display_intent = %v, want %v", got.GetDisplayIntent(), tt.wantIntent)
+			}
+			if got.GetDisplaySpinner() != tt.wantSpinner {
+				t.Errorf("display_spinner = %v, want %v", got.GetDisplaySpinner(), tt.wantSpinner)
+			}
+		})
+	}
+}
+
+// TestDraftPRFailureLabelChange_DoesNotMutateCallerSession pins the clone
+// discipline: bosso's single-instance registry path hands the response the SAME
+// *pb.Session it caches, so a down-convert that wrote in place would erase the
+// live composite for every current client.
+func TestDraftPRFailureLabelChange_DoesNotMutateCallerSession(t *testing.T) {
+	cached := &pb.Session{
+		Id:             "sess-cached",
+		BlockedReason:  strPtr(draftPRFailureReason),
+		DisplayLabel:   "working",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+		DisplaySpinner: true,
+	}
+	msg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{cached}}
+	(apiversion.DraftPRFailureLabelChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg)
+
+	if cached.GetDisplayLabel() != "working" || !cached.GetDisplaySpinner() {
+		t.Fatalf("caller's session was mutated in place: %q spinner=%v", cached.GetDisplayLabel(), cached.GetDisplaySpinner())
+	}
+	if got := msg.GetSessions()[0].GetDisplayLabel(); got != "? PR failed" {
+		t.Fatalf("response session label = %q, want %q", got, "? PR failed")
+	}
+	if msg.GetSessions()[0] == cached {
+		t.Fatal("response session is the cached pointer; the transform must clone")
+	}
+}
+
+// TestDraftPRFailureLabelChange_DownConvertsStreamedCreatedSession pins the
+// streaming leg. ProxyCreateSession is NOT exempt from transformation: the
+// Interceptor's WrapStreamingHandler wraps the connection so every Send runs
+// Changes.Apply (interceptor.go), and ErroredStatusChange already down-converts
+// this same created message. Omitting it here would leave a pre-V20260718 client
+// with ErroredStatusChange applied over a label this change never restored — a
+// composite no server version ever emitted.
+func TestDraftPRFailureLabelChange_DownConvertsStreamedCreatedSession(t *testing.T) {
+	created := &pb.Session{
+		Id:             "sess-streamed",
+		BlockedReason:  strPtr(draftPRFailureReason),
+		DisplayLabel:   "working",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+		DisplaySpinner: true,
+	}
+	msg := &pb.ProxyCreateSessionResponse{
+		Body: &pb.ProxyCreateSessionResponse_Created{Created: created},
+	}
+	(apiversion.DraftPRFailureLabelChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure, msg)
+
+	body, ok := msg.GetBody().(*pb.ProxyCreateSessionResponse_Created)
+	if !ok {
+		t.Fatalf("response body = %T, want the created variant", msg.GetBody())
+	}
+	if got := body.Created.GetDisplayLabel(); got != "? PR failed" {
+		t.Fatalf("streamed created session label = %q, want %q", got, "? PR failed")
+	}
+	if body.Created.GetDisplaySpinner() {
+		t.Error("streamed created session kept its spinner; the restored label carries none")
+	}
+	// Same clone discipline as the unary leg.
+	if created.GetDisplayLabel() != "working" {
+		t.Errorf("caller's session was mutated in place: %q", created.GetDisplayLabel())
+	}
+	if body.Created == created {
+		t.Error("streamed session is the caller's pointer; the transform must clone")
+	}
+}
+
+// TestDraftPRFailureLabelChange_NoOpAtCurrent proves the whole production chain
+// runs zero rewrites for a client on Current, and rewrites one version back.
+func TestDraftPRFailureLabelChange_NoOpAtCurrent(t *testing.T) {
+	newSession := func() *pb.Session {
+		return &pb.Session{
+			Id:             "sess-chain",
+			BlockedReason:  strPtr(draftPRFailureReason),
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+		}
+	}
+	current := &pb.ProxyGetSessionResponse{Session: newSession()}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, current, apiversion.V20260812)
+	if got := current.GetSession().GetDisplayLabel(); got != "working" {
+		t.Errorf("at Current: display_label = %q, want %q (zero transforms)", got, "working")
+	}
+
+	back := &pb.ProxyGetSessionResponse{Session: newSession()}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, back, apiversion.V20260804)
+	if got := back.GetSession().GetDisplayLabel(); got != "? PR failed" {
+		t.Errorf("one version back: display_label = %q, want %q", got, "? PR failed")
+	}
+}
+
+// TestDraftPRFailureLabelChange_ProductionChainByVersion is the chain test: one
+// Blocked + draft-PR-failure + waiting-chat session pushed through the FULL
+// ProductionChanges() chain, asserting the composite each pinned client sees.
+// The three pins matter for different reasons — Baseline predates BOS-430 so it
+// must ALSO lose the errored recolor, V20260803 predates CHAT_STATUS_WAITING so
+// the waiting down-convert is ALSO in the chain — though it no-ops here, because
+// Apply runs newest-first and this change has already rewritten the label away
+// from the exact "waiting" that downconvertWaitingSession matches on — and
+// V20260804 is the immediately-preceding version where only this change fires.
+func TestDraftPRFailureLabelChange_ProductionChainByVersion(t *testing.T) {
+	newSession := func() *pb.Session {
+		return &pb.Session{
+			Id:             "sess-chain",
+			State:          pb.SessionState_SESSION_STATE_BLOCKED,
+			BlockedReason:  strPtr(draftPRFailureReason),
+			DisplayLabel:   "waiting",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner: true,
+		}
+	}
+	tests := []struct {
+		version     apiversion.Version
+		wantLabel   string
+		wantIntent  pb.DisplayIntent
+		wantSpinner bool
+	}{
+		{
+			// Pre-BOS-430: the errored recolor is stripped too, so the blocked
+			// session's "? PR failed" falls back to its base WARNING intent.
+			version:    apiversion.Baseline,
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			version:    apiversion.V20260803,
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		},
+		{
+			version:    apiversion.V20260804,
+			wantLabel:  "? PR failed",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		},
+		{
+			version:     apiversion.V20260812,
+			wantLabel:   "waiting",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			wantSpinner: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.version), func(t *testing.T) {
+			msg := &pb.ProxyGetSessionResponse{Session: newSession()}
+			apiversion.ProductionChanges().Apply(
+				bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, tt.version)
+			got := msg.GetSession()
+			if got.GetDisplayLabel() != tt.wantLabel {
+				t.Errorf("display_label = %q, want %q", got.GetDisplayLabel(), tt.wantLabel)
+			}
+			if got.GetDisplayIntent() != tt.wantIntent {
+				t.Errorf("display_intent = %v, want %v", got.GetDisplayIntent(), tt.wantIntent)
+			}
+			if got.GetDisplaySpinner() != tt.wantSpinner {
+				t.Errorf("display_spinner = %v, want %v", got.GetDisplaySpinner(), tt.wantSpinner)
+			}
+		})
+	}
+}
+
+// TestLimitedChatStatusChange_ChainRestoresDraftPRFailureUnderTransientFlags is
+// the cross-change chain test for the interaction BOS-855 created between the
+// NEWEST change and the OLDEST one.
+//
+// LimitedChatStatusChange (V20260706) runs LAST in the newest-first chain and
+// reproduces a pre-V20260706 client's idle-style fallback by RECOMPUTING the
+// composite, so it silently inherits every later cascade change — including
+// BOS-855 moving "? PR failed" below the transient setting-up/merging/archiving
+// branches. A session that is (a) a draft-PR-creation failure, (b) usage-limited
+// and (c) mid setting-up/merge/archive therefore used to recompute to
+// "? PR failed" and would otherwise now recompute to
+// "initializing"/"merging"/"archiving" — a composite change no version bump
+// covers for that client. DraftPRFailureLabelChange cannot repair it: its
+// usage-limited exemption returns this session untouched.
+//
+// The served (Current) shape is the LIMITED branch's own label, because LIMITED
+// outranks all three transient flags in the cascade.
+func TestLimitedChatStatusChange_ChainRestoresDraftPRFailureUnderTransientFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		flag func(*pb.Session)
+	}{
+		{"setting up", func(s *pb.Session) { s.DisplaySettingUp = true }},
+		{"merging", func(s *pb.Session) { s.DisplayMerging = true }},
+		{"archive pending", func(s *pb.Session) { s.ArchivePending = true }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &pb.Session{
+				Id:             "sess-limited-draftpr",
+				State:          pb.SessionState_SESSION_STATE_BLOCKED,
+				BlockedReason:  strPtr(draftPRFailureReason),
+				DisplayLabel:   "usage-limited (resets ~15:00)",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+				DisplaySpinner: false,
+			}
+			tt.flag(sess)
+			msg := &pb.ProxyGetSessionResponse{Session: sess}
+			apiversion.ProductionChanges().Apply(
+				bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+			got := msg.GetSession()
+			if got.GetDisplayLabel() != "? PR failed" {
+				t.Errorf("display_label = %q, want %q", got.GetDisplayLabel(), "? PR failed")
+			}
+			// Baseline predates BOS-430's errored recolor, so the restored label
+			// keeps its base WARNING intent even though the session is BLOCKED.
+			if got.GetDisplayIntent() != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+				t.Errorf("display_intent = %v, want WARNING", got.GetDisplayIntent())
+			}
+			if got.GetDisplaySpinner() {
+				t.Error("display_spinner = true, want false")
+			}
+		})
+	}
+}
+
+// TestLimitedChatStatusChange_ChainKeepsNonDraftPRFallbackUnchanged is the
+// control for the test above: the SAME transient flags on a session with no
+// draft-PR-creation failure must still recompute to the live transient label.
+// The restoration must be scoped to the moved branch, not a blanket rewrite of
+// every limited down-convert.
+func TestLimitedChatStatusChange_ChainKeepsNonDraftPRFallbackUnchanged(t *testing.T) {
+	tests := []struct {
+		name       string
+		flag       func(*pb.Session)
+		wantLabel  string
+		wantIntent pb.DisplayIntent
+	}{
+		{"setting up", func(s *pb.Session) { s.DisplaySettingUp = true }, "initializing", pb.DisplayIntent_DISPLAY_INTENT_INFO},
+		{"merging", func(s *pb.Session) { s.DisplayMerging = true }, "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO},
+		{"archive pending", func(s *pb.Session) { s.ArchivePending = true }, "archiving", pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &pb.Session{
+				Id:            "sess-limited-plain",
+				DisplayLabel:  "usage-limited (resets ~15:00)",
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			}
+			tt.flag(sess)
+			msg := &pb.ProxyGetSessionResponse{Session: sess}
+			apiversion.ProductionChanges().Apply(
+				bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+			got := msg.GetSession()
+			if got.GetDisplayLabel() != tt.wantLabel {
+				t.Errorf("display_label = %q, want %q", got.GetDisplayLabel(), tt.wantLabel)
+			}
+			if got.GetDisplayIntent() != tt.wantIntent {
+				t.Errorf("display_intent = %v, want %v", got.GetDisplayIntent(), tt.wantIntent)
+			}
+			if !got.GetDisplaySpinner() {
+				t.Error("display_spinner = false, want true")
+			}
+		})
+	}
+}
+
+// TestLimitedChatStatusChange_ChainDoesNotMutateCallerSessionForDraftPRFailure
+// pins the clone discipline across the added restoration: the response-local
+// copy is rewritten, never the (possibly registry-shared) Session the caller
+// handed in.
+func TestLimitedChatStatusChange_ChainDoesNotMutateCallerSessionForDraftPRFailure(t *testing.T) {
+	shared := &pb.Session{
+		Id:               "sess-shared",
+		BlockedReason:    strPtr(draftPRFailureReason),
+		DisplaySettingUp: true,
+		DisplayLabel:     "usage-limited (resets ~15:00)",
+		DisplayIntent:    pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+	}
+	msg := &pb.ProxyGetSessionResponse{Session: shared}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, apiversion.Baseline)
+	if shared.GetDisplayLabel() != "usage-limited (resets ~15:00)" {
+		t.Errorf("caller session mutated: display_label = %q", shared.GetDisplayLabel())
+	}
+	if msg.GetSession() == shared {
+		t.Error("response holds the caller's Session pointer, want a clone")
 	}
 }

@@ -11,7 +11,7 @@
     "label": "//services/bossd/internal/testharness:testharness_test",
     "module": "services/bossd",
     "mechanism": "manual + requires-tmux",
-    "command": "cd services/bossd && go test -timeout 300s ./internal/testharness/...",
+    "command": "cd services/bossd && go test -timeout 900s ./internal/testharness/...",
     "disposition": "default-run",
     "reason": "e2e bundle spawns real tmux/processes and reads out-of-module ../../../../plugins testdata; the untagged tests run under today's plain go test ./... (the integration-build-tagged file is separate, covered only by test-integration-bossd)"
   },

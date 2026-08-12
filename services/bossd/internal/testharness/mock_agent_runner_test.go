@@ -13,7 +13,7 @@ func TestMockAgentRunnerSupportsHeadlessCapabilityProfileDispatch(t *testing.T) 
 	profile := bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
 
 	var preflight agent.HeadlessCapabilityProfilePreflightDispatcher = runner
-	if err := preflight.PreflightByAgentWithHeadlessCapabilityProfile(context.Background(), "codex", "", nil, profile); err != nil {
+	if err := preflight.PreflightByAgentWithHeadlessCapabilityProfile(context.Background(), "codex", t.TempDir(), "", nil, profile); err != nil {
 		t.Fatalf("preflight capability profile: %v", err)
 	}
 

@@ -6,7 +6,8 @@
 // committed fixtures and asserts they still match the committed
 // pre-generalization baseline snapshots (BOS-249's capture-baseline.mjs), AND
 // asserts bossanova's authored dogfood extension skills are discovered with the
-// exact shapes the generalized cores expect. Green ⇒ prints a line containing
+// exact shapes the generalized cores expect, and that no authored extension
+// directory is left unclaimed. Green ⇒ prints a line containing
 // `parity: OK` and exits 0; any mismatch ⇒ prints one or more lines each
 // containing the token DRIFT plus the affected skill name, and exits 1.
 //
@@ -16,11 +17,13 @@
 // structural contract the generalized cores rely on: the authored lens/surface/
 // agent-driver/draft extensions are discovered by name with zero skips, their roles
 // resolve in ROLE_SCHEMAS except behavior-shipping roles, and the two
-// agent-driver extensions export valid driver records.
+// agent-driver extensions export valid driver records. Part C (directory
+// coverage) supplies the independent, non-circular teeth for the specs whose
+// membership is discovery-derived — see checkDirectoryCoverage.
 //
 // Node builtins only (no new deps).
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -34,6 +37,15 @@ const SNAPSHOT_SKILL_LABELS = {
   'dag-schedule.snapshot.json': 'boss-epic',
   'plan-sections.snapshot.json': 'boss-plan',
 }
+
+/**
+ * Roles that ship BEHAVIOUR rather than a findings envelope, so ROLE_SCHEMAS deliberately
+ * carries no schema for them and its absence is not drift: an `agent-driver` exports a driver
+ * record (asserted separately below), a `draft` extension authors a plan document, and a
+ * `methodology` extension runs an implementation loop. None of them return `items` for
+ * validateResult to check, so there is nothing for a result schema to describe.
+ */
+const SCHEMALESS_ROLES = new Set(['agent-driver', 'draft', 'methodology'])
 
 /** The authored dogfood extensions each generalized core must discover. */
 const EXPECTED_EXTENSIONS = [
@@ -57,7 +69,18 @@ const EXPECTED_EXTENSIONS = [
     core: 'boss-review',
     role: 'round',
     skill: 'boss-review',
-    names: ['boss-review-ce', 'boss-review-crossmodel', 'boss-review-thermonuclear'],
+    // BOS-852: round membership is open-ended. The core dispatches EVERY discovered round
+    // wholesale (boss-review/SKILL.md `discover --core boss-review --role round`) with no
+    // config registry pinning the set — unlike `lens`, whose literal list encodes a binding to
+    // a `.boss-skills.json` lensMap id, or `agent-driver`, whose list is pinned to a driver.mjs
+    // export. So a literal list here is pure friction: it makes adding a round a gate edit.
+    //
+    // The expected set is therefore the discovered set. That is NOT vacuous, and the reason is
+    // checkDirectoryCoverage below: it reads the `.claude/skills/boss-review-*` directories
+    // straight off disk — a fact produced by an author creating a folder, never by
+    // discoverExtensions — and drifts on any directory no spec claims. Coverage is what keeps
+    // membership honest; delete that check and this spec asserts nothing.
+    discovered: true,
   },
   {
     core: 'boss-proof',
@@ -82,6 +105,18 @@ const EXPECTED_EXTENSIONS = [
     role: 'notes',
     skill: 'boss-build',
     names: ['boss-build-notes'],
+  },
+  {
+    core: 'boss-build',
+    role: 'methodology',
+    skill: 'boss-build',
+    names: ['boss-build-ce'],
+  },
+  {
+    core: 'boss-build',
+    role: 'knowledge',
+    skill: 'boss-build',
+    names: ['boss-build-knowledge'],
   },
   {
     core: 'boss-plan',
@@ -163,19 +198,41 @@ export function isValidDriverShape(d) {
 }
 
 /**
+ * The extension names a spec expects: its literal `names` when it pins them, otherwise —
+ * for a `discovered: true` spec — whatever discovery returns for that core/role. See the
+ * round spec's comment above for why a discovery-derived expectation is not vacuous.
+ * @param {{ core: string, role: string, names?: string[], discovered?: boolean }} spec
+ * @param {string} root
+ * @returns {string[]}
+ */
+function resolveExpectedNames(spec, root) {
+  if (spec.names) return spec.names
+  return discoverExtensions({ core: spec.core, role: spec.role, root }).extensions.map(
+    (e) => e.name,
+  )
+}
+
+/**
  * Names of the authored extensions that legitimately belong to a DIFFERENT role
  * under the SAME core than the given spec — the only role-mismatch skips that
  * are expected cross-role filtering rather than a misconfiguration. Any other
  * role skip (e.g. a typo'd `role:` on an authored or new same-prefix extension)
  * must be surfaced as drift.
+ *
+ * BOS-852: `root` is threaded in so a `discovered` sibling resolves its names through
+ * discovery rather than silently contributing none. Dropping those names would make this
+ * exemption STRICTER, not looser — it cannot let drift through — but it would turn a typo'd
+ * round role into a false red. The carve-out's scope is unchanged: per the discovery contract
+ * a known-role mismatch never reaches `skipped` at all, so this only ever exempts a typo.
  * @param {{ core: string, role: string }} spec
+ * @param {string} root
  * @returns {Set<string>}
  */
-function crossRoleSiblingNames({ core, role }) {
+function crossRoleSiblingNames({ core, role }, root) {
   const names = new Set()
   for (const other of EXPECTED_EXTENSIONS) {
     if (other.core === core && other.role !== role) {
-      for (const name of other.names) names.add(name)
+      for (const name of resolveExpectedNames(other, root)) names.add(name)
     }
   }
   return names
@@ -194,7 +251,8 @@ function sortedNames(extensions) {
 export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
   const findings = []
   for (const spec of EXPECTED_EXTENSIONS) {
-    const { core, role, skill, names: expected } = spec
+    const { core, role, skill } = spec
+    const expected = resolveExpectedNames(spec, root)
     const { extensions, skipped } = discoverExtensions({ core, role, root })
     // A same-prefix sibling that legitimately belongs to a DIFFERENT role is
     // filtered out with a `role "X", not "<role>"` skip — expected cross-role
@@ -203,7 +261,7 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
     // name (e.g. a typo'd `role:` on an authored or new same-prefix extension)
     // is a genuine misconfiguration and must surface as drift, as is any OTHER
     // skip reason (no SKILL.md, unreadable/absent marker, wrong extends).
-    const crossRoleSiblings = crossRoleSiblingNames(spec)
+    const crossRoleSiblings = crossRoleSiblingNames(spec, root)
     const badSkips = skipped.filter(
       (s) => !(/^role "/.test(s.reason) && crossRoleSiblings.has(s.name)),
     )
@@ -230,7 +288,7 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
         )
       }
     }
-    if (role !== 'agent-driver' && role !== 'draft' && !ROLE_SCHEMAS[role]) {
+    if (!SCHEMALESS_ROLES.has(role) && !ROLE_SCHEMAS[role]) {
       findings.push(`DRIFT ${skill} ${core}/${role}: ROLE_SCHEMAS has no schema for role "${role}"`)
     }
   }
@@ -260,10 +318,67 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
   return { ok: findings.length === 0, findings }
 }
 
-// --- Part C: orchestration + CLI --------------------------------------------
+// --- Part C: directory coverage ---------------------------------------------
 
 /**
- * Runs both the deterministic exact-match (A) and the extension-discovery (B)
+ * BOS-852: asserts every authored `.claude/skills/<core>-*` directory is claimed by exactly
+ * one EXPECTED_EXTENSIONS spec.
+ *
+ * This is the independent, non-circular source of truth that keeps a `discovered` spec from
+ * being a tautology. The directory listing is produced by an author adding a folder; the
+ * membership check's expectation is produced by discoverExtensions. The two can genuinely
+ * disagree, and this is the ONLY check that catches the disagreement: a `boss-review-foo`
+ * whose marker declares a valid but UNSPECCED known role (say `role: methodology` under
+ * `extends: boss-review`) is silently `continue`d by discovery
+ * (skills-toolbox/skill-extensions.mjs), so it never lands in `skipped` for badSkips to flag
+ * and never lands in `extensions` for the names check to miss. Without this it is invisible.
+ *
+ * @param {{ root?: string }} [opts]
+ * @returns {{ ok: boolean, findings: string[] }}
+ */
+export function checkDirectoryCoverage({ root = REPO_ROOT } = {}) {
+  const findings = []
+  let entries
+  try {
+    entries = readdirSync(join(root, '.claude', 'skills'), { withFileTypes: true })
+  } catch {
+    // No skills dir -> nothing to cover. Mirrors discoverExtensions' own no-op rather than
+    // throwing, so a consumer checkout without repo-local extensions stays green.
+    return { ok: true, findings }
+  }
+  for (const core of new Set(EXPECTED_EXTENSIONS.map((s) => s.core))) {
+    // Claim COUNTS, not a set: "claimed by exactly one spec" also rules out two specs
+    // listing the same directory, which would hide a role mismatch behind a passing name check.
+    const claims = new Map()
+    for (const spec of EXPECTED_EXTENSIONS) {
+      if (spec.core !== core) continue
+      for (const name of resolveExpectedNames(spec, root)) {
+        claims.set(name, (claims.get(name) ?? 0) + 1)
+      }
+    }
+    // The trailing hyphen in the prefix is load-bearing: the standalone `.claude/skills/boss-proof`
+    // skill is not a `boss-proof-` extension, so it must not be demanded of any spec.
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(`${core}-`)) continue
+      const claimed = claims.get(entry.name) ?? 0
+      if (claimed === 0) {
+        findings.push(
+          `DRIFT ${core} ${entry.name}: directory is not claimed by any EXPECTED_EXTENSIONS spec (add a spec for its role, or fix its x-boss-extension marker)`,
+        )
+      } else if (claimed > 1) {
+        findings.push(
+          `DRIFT ${core} ${entry.name}: directory is claimed by ${claimed} EXPECTED_EXTENSIONS specs, expected exactly one`,
+        )
+      }
+    }
+  }
+  return { ok: findings.length === 0, findings }
+}
+
+// --- Part D: orchestration + CLI --------------------------------------------
+
+/**
+ * Runs the deterministic exact-match (A), extension-discovery (B), and directory-coverage (C)
  * checks over the wired tree.
  * @param {{ root?: string, baselineDir?: string }} [opts]
  * @returns {Promise<{ ok: boolean, findings: string[] }>}
@@ -271,7 +386,8 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
 export async function runParityGate({ root = REPO_ROOT, baselineDir = BASELINE_DIR } = {}) {
   const deterministic = checkDeterministicParity({ baselineDir })
   const extension = await checkExtensionParity({ root })
-  const findings = [...deterministic.findings, ...extension.findings]
+  const coverage = checkDirectoryCoverage({ root })
+  const findings = [...deterministic.findings, ...extension.findings, ...coverage.findings]
   return { ok: findings.length === 0, findings }
 }
 

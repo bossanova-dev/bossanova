@@ -962,3 +962,90 @@ func TestCleanup_FiresOnStalledChangeForRemovedStaleMarkers(t *testing.T) {
 		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
 	}
 }
+
+// --- BOS-805: spinner-aware liveness side-map -------------------------------
+
+// The liveness reading must survive Update recreating the Entry on every
+// heartbeat — that is the entire reason it is a side-map rather than an Entry
+// field, and the failure it prevents is silent (the value simply reads zero).
+func TestTracker_LivenessSurvivesHeartbeat(t *testing.T) {
+	tracker := NewTracker()
+	substantiveAt := time.Now().Add(-30 * time.Minute)
+
+	tracker.SetLiveness("chat-1", true, substantiveAt, true)
+	for i := 0; i < 3; i++ {
+		tracker.Update("chat-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	}
+
+	spinnerPresent, gotSubstantive, seeded := tracker.Liveness("chat-1")
+	if !spinnerPresent {
+		t.Error("spinnerPresent = false after heartbeats, want true")
+	}
+	if !gotSubstantive.Equal(substantiveAt) {
+		t.Errorf("lastSubstantiveOutputAt = %v, want %v", gotSubstantive, substantiveAt)
+	}
+	if !seeded {
+		t.Error("lastOutputSeeded = false after heartbeats, want true")
+	}
+}
+
+func TestTracker_LivenessUnknownChat(t *testing.T) {
+	tracker := NewTracker()
+	spinnerPresent, substantiveAt, seeded := tracker.Liveness("nobody")
+	if spinnerPresent || seeded || !substantiveAt.IsZero() {
+		t.Errorf("Liveness(unknown) = (%v, %v, %v), want (false, zero, false)",
+			spinnerPresent, substantiveAt, seeded)
+	}
+}
+
+// A spinner nobody is re-observing is not evidence the agent is working NOW, so
+// the marker reads as absent once it is staler than StaleThreshold — the same
+// fail-toward-not-flagging rule AuthFailed and Stalled use. The substantive
+// timestamp deliberately does NOT decay: its age IS the signal.
+func TestTracker_LivenessStaleSpinnerReadsAbsent(t *testing.T) {
+	tracker := NewTracker()
+	substantiveAt := time.Now().Add(-time.Hour)
+	tracker.SetLiveness("chat-1", true, substantiveAt, false)
+
+	tracker.mu.Lock()
+	tracker.liveness["chat-1"].spinnerAt = time.Now().Add(-StaleThreshold - time.Second)
+	tracker.mu.Unlock()
+
+	spinnerPresent, gotSubstantive, _ := tracker.Liveness("chat-1")
+	if spinnerPresent {
+		t.Error("spinnerPresent = true for a marker past StaleThreshold, want false")
+	}
+	if !gotSubstantive.Equal(substantiveAt) {
+		t.Errorf("lastSubstantiveOutputAt = %v, want the undecayed %v", gotSubstantive, substantiveAt)
+	}
+}
+
+func TestTracker_LivenessReclaimedOnRemoveAndCleanup(t *testing.T) {
+	t.Run("remove", func(t *testing.T) {
+		tracker := NewTracker()
+		tracker.SetLiveness("chat-1", true, time.Now(), true)
+		tracker.Remove("chat-1")
+		tracker.mu.RLock()
+		defer tracker.mu.RUnlock()
+		if _, ok := tracker.liveness["chat-1"]; ok {
+			t.Error("liveness marker survived Remove")
+		}
+	})
+
+	t.Run("cleanup", func(t *testing.T) {
+		tracker := NewTracker()
+		tracker.Update("chat-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+		tracker.SetLiveness("chat-1", true, time.Now(), true)
+		tracker.mu.Lock()
+		tracker.entries["chat-1"].ReceivedAt = time.Now().Add(-StaleThreshold - time.Second)
+		tracker.mu.Unlock()
+
+		tracker.Cleanup()
+
+		tracker.mu.RLock()
+		defer tracker.mu.RUnlock()
+		if _, ok := tracker.liveness["chat-1"]; ok {
+			t.Error("liveness marker survived Cleanup of a stale entry")
+		}
+	})
+}

@@ -125,6 +125,8 @@ go_library(
         "skills/boss-build/toolbox/tracker/adapter-core.mjs",
         "skills/boss-epic/toolbox/tracker/adapter-core.mjs",
         "skills/boss-build/toolbox/tracker/preflight.mjs",
+        "skills/boss-epic/toolbox/tracker/preflight.mjs",
+        "skills/boss-build/references/knowledge-extensions.md",
     ],
     importpath = "github.com/recurser/bossd-plugin-claude/skilldata",
     visibility = ["//visibility:public"],

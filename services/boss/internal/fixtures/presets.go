@@ -177,6 +177,20 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// live-past-failure: four rows for the BOS-855 proof scenario, built in
+		// the errored-status mould. A live "working" row whose residual
+		// "finalize failed" hint is DIMMED sits directly above a non-live "idle"
+		// row carrying the SAME text at full red, so the contrast is visible in
+		// one still; a third row proves the liveness-impeaching exemption (a
+		// stalled agent stays bright beside the dimmed one) and a fourth proves
+		// the failure was demoted, not deleted (a draft-PR failure still shows as
+		// a full-intensity hint under a live "working" label). Carries the same
+		// cloud-access e2e pin as demo so boss lands on the home session list.
+		"live-past-failure": {
+			World:      LivePastFailureWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// http-endpoints: one session with two machine-local HTTP listeners
 		// (:3000, :5173) plus an endpoint-free neighbour, for the BOS-474 /
 		// BOS-460 proof scenario. Home must show the clickable ":port" links on

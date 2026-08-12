@@ -678,8 +678,17 @@ func TestListIgnoredDirtyFilesIncludesScheduledTasksLock(t *testing.T) {
 // only a real gRPC server can.
 func startGRPCTestServer(t *testing.T, runner *Runner) (*grpc.ClientConn, func()) {
 	t.Helper()
+	return startGRPCTestServerFor(t, &Server{logger: zerolog.Nop(), runner: runner})
+}
 
-	srv := &Server{logger: zerolog.Nop(), runner: runner}
+// startGRPCTestServerFor is startGRPCTestServer for a caller that needs to
+// wire the *Server itself (e.g. injecting a fixture MCP prober). Everything
+// below the construction is identical, and in particular it is the PRODUCTION
+// agentRunnerServiceDesc that gets registered — which is the only reason these
+// round trips can catch a typo in a hand-written MethodName.
+func startGRPCTestServerFor(t *testing.T, srv *Server) (*grpc.ClientConn, func()) {
+	t.Helper()
+
 	lis := bufconn.Listen(1 << 16)
 	grpcServer := grpc.NewServer()
 	grpcServer.RegisterService(&agentRunnerServiceDesc, srv)

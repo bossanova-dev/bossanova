@@ -1655,8 +1655,17 @@ func run(opts runOpts) error {
 	// Bossd-owned log dir for agent runs. Lives outside the worktree so a
 	// hostile/buggy plugin can't path-traverse via symlinks. Plugin opens
 	// log files here with O_NOFOLLOW (Task 7).
-	agentLogsDir := filepath.Join(filepath.Dir(settings.WorktreeBaseDir), "agent-logs")
-	if err := os.MkdirAll(agentLogsDir, 0o700); err != nil {
+	//
+	// An unset worktree base directory yields an empty agent-logs dir, which is
+	// tolerated rather than fatal: agent logging degrades, and every consumer
+	// already guards the empty case (HostServiceServer.StartAgentRun and
+	// StartChatRun, Lifecycle.StartTmuxChat, agentLogIdleFor). The settings RPC
+	// rejects an empty worktree_base_dir, so only a hand-edited settings.json
+	// reaches this state — narrow, but it must not brick the daemon.
+	agentLogsDir := bossalog.AgentLogsDir(settings.WorktreeBaseDir)
+	if agentLogsDir == "" {
+		log.Warn().Msg("no worktree base directory configured: agent logging disabled")
+	} else if err := os.MkdirAll(agentLogsDir, 0o700); err != nil {
 		return fmt.Errorf("create agent-logs dir %s: %w", agentLogsDir, err)
 	}
 

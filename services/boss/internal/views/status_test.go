@@ -1,11 +1,14 @@
 package views
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -523,8 +526,7 @@ func TestAttentionWarningHint_NoEmojiAdded(t *testing.T) {
 // via proto.String.
 func TestSessionWarningHintsIncludesSetupError(t *testing.T) {
 	sess := &pb.Session{SetupError: "npm install failed: ENOENT"}
-	hints := sessionWarningHints(sess)
-	joined := strings.Join(hints, "\n")
+	joined := strings.Join(sessionWarningHintTexts(sess), "\n")
 	if !strings.Contains(joined, "setup script failed") {
 		t.Fatalf("hints missing setup-error surface; got %q", joined)
 	}
@@ -538,8 +540,7 @@ func TestSessionWarningHintsIncludesSetupError(t *testing.T) {
 // setup-script failure can't blow out the warning block.
 func TestSessionWarningHintsIncludesSetupError_FirstLineOnly(t *testing.T) {
 	sess := &pb.Session{SetupError: "npm install failed: ENOENT\nfull stack trace here\nmore detail"}
-	hints := sessionWarningHints(sess)
-	joined := strings.Join(hints, "\n")
+	joined := strings.Join(sessionWarningHintTexts(sess), "\n")
 	if !strings.Contains(joined, "setup script failed: npm install failed: ENOENT") {
 		t.Fatalf("hints missing truncated setup-error; got %q", joined)
 	}
@@ -612,11 +613,11 @@ func TestSessionWarningHints_Aggregates(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("sessionWarningHints len = %d, want 2; hints: %v", len(got), got)
 	}
-	if !strings.Contains(got[0], "repair failed") {
-		t.Errorf("first hint should be repair hint, got %q", got[0])
+	if !strings.Contains(got[0].Text, "repair failed") {
+		t.Errorf("first hint should be repair hint, got %q", got[0].Text)
 	}
-	if !strings.Contains(got[1], "finalize failed") {
-		t.Errorf("second hint should be attention hint, got %q", got[1])
+	if !strings.Contains(got[1].Text, "finalize failed") {
+		t.Errorf("second hint should be attention hint, got %q", got[1].Text)
 	}
 }
 
@@ -1351,5 +1352,487 @@ func TestSessionSubRowCount(t *testing.T) {
 				t.Errorf("sessionSubRowCount = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- BOS-855: live activity owns the row, a past outcome goes recessive ---
+
+// draftPRFailureReason builds the blocked reason bossd persists when the
+// background draft-PR create fails.
+func draftPRFailureReason(detail string) *string {
+	r := sessionreason.DraftPRCreationFailure(errors.New(detail))
+	return &r
+}
+
+// assertFadedStylesDiffer is the anti-vacuous guard the BOS-855 style
+// assertions lean on. Every style comparison below asserts equality against
+// styleStatusDangerFaded AND inequality against styleStatusDanger; under an
+// ANSI-stripping colour profile the equality half alone would pass for any
+// input, so this fails loudly rather than letting the suite go quiet.
+func assertFadedStylesDiffer(t *testing.T) {
+	t.Helper()
+	const probe = "probe"
+	if styleStatusDangerFaded.Render(probe) == styleStatusDanger.Render(probe) {
+		t.Fatalf("styleStatusDangerFaded and styleStatusDanger render identically (%q) — the colour profile is stripping styling, so every style assertion in this file would be vacuous",
+			styleStatusDanger.Render(probe))
+	}
+}
+
+// TestWarningHintStyle_DemotableFadesOnlyOnLiveRow pins the core gate: the same
+// demotable hint fades on a row whose composite is live and stays at full danger
+// on a row whose composite is not.
+func TestWarningHintStyle_DemotableFadesOnlyOnLiveRow(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	const text = "finalize failed (pr_skipped_no_github)"
+	hint := sessionHint{Text: text, Demotable: true}
+
+	live := &pb.Session{DisplayLabel: "working"}
+	if got, want := warningHintStyle(live, hint).Render(text), styleStatusDangerFaded.Render(text); got != want {
+		t.Errorf("live row: rendered %q, want the faded style %q", got, want)
+	}
+	if got, unwanted := warningHintStyle(live, hint).Render(text), styleStatusDanger.Render(text); got == unwanted {
+		t.Errorf("live row: rendered at FULL danger intensity %q", got)
+	}
+
+	notLive := &pb.Session{DisplayLabel: "idle"}
+	if got, want := warningHintStyle(notLive, hint).Render(text), styleStatusDanger.Render(text); got != want {
+		t.Errorf("non-live row: rendered %q, want full danger %q", got, want)
+	}
+	if got, unwanted := warningHintStyle(notLive, hint).Render(text), styleStatusDangerFaded.Render(text); got == unwanted {
+		t.Errorf("non-live row: rendered faded %q", got)
+	}
+}
+
+// TestWarningHintStyle_ExemptHintsStayLoud walks the exemption set on a live
+// row. Each of these is either the row's only carrier of its signal or an
+// impeachment of the liveness claim the label makes, so none may fade.
+func TestWarningHintStyle_ExemptHintsStayLoud(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	respawnCapEvent := []*pb.RotationEvent{{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED}}
+	exhaustedEvent := []*pb.RotationEvent{{
+		Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED,
+		ResetAt: timestamppb.New(time.Now().Add(30 * time.Minute)),
+	}}
+
+	tests := []struct {
+		name     string
+		sess     *pb.Session
+		chats    []*pb.ClaudeChat
+		contains string
+	}{
+		{
+			name: "agent stalled",
+			sess: &pb.Session{DisplayLabel: "working", AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED,
+				Summary:        "agent reports working but has made no progress — check the pane",
+			}},
+			contains: "no progress",
+		},
+		{
+			name: "agent auth failed",
+			sess: &pb.Session{DisplayLabel: "working", AttentionStatus: &pb.AttentionStatus{
+				NeedsAttention: true,
+				Reason:         pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+				Summary:        "agent is not logged in — run /login in the pane",
+			}},
+			contains: "not logged in",
+		},
+		{
+			name:     "rotation respawn cap",
+			sess:     &pb.Session{DisplayLabel: "working", RotationEvents: respawnCapEvent},
+			contains: "respawn cap reached",
+		},
+		{
+			name:     "rotation exhausted",
+			sess:     &pb.Session{DisplayLabel: "working", RotationEvents: exhaustedEvent},
+			contains: "all accounts limited",
+		},
+		{
+			name:     "setup error",
+			sess:     &pb.Session{DisplayLabel: "working", SetupError: "npm install failed: ENOENT"},
+			contains: "setup script failed",
+		},
+		{
+			name:     "draft PR creation failure",
+			sess:     &pb.Session{DisplayLabel: "working", BlockedReason: draftPRFailureReason("gh pr create: auth required")},
+			contains: "draft PR creation failed",
+		},
+		{
+			name:     "chat start error",
+			sess:     &pb.Session{DisplayLabel: "working"},
+			chats:    []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}},
+			contains: "chat failed to start",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hints := sessionWarningHints(tt.sess)
+			if hint := chatStartErrorHint(tt.chats); hint != "" {
+				hints = append(hints, sessionHint{Text: hint})
+			}
+			var found bool
+			for _, h := range hints {
+				if !strings.Contains(h.Text, tt.contains) {
+					continue
+				}
+				found = true
+				if h.Demotable {
+					t.Errorf("hint %q is demotable, want exempt", h.Text)
+				}
+				got := warningHintStyle(tt.sess, h).Render(h.Text)
+				if want := styleStatusDanger.Render(h.Text); got != want {
+					t.Errorf("hint %q rendered %q, want full danger %q", h.Text, got, want)
+				}
+				if unwanted := styleStatusDangerFaded.Render(h.Text); got == unwanted {
+					t.Errorf("hint %q rendered faded on a live row", h.Text)
+				}
+			}
+			if !found {
+				t.Fatalf("no hint containing %q was produced; hints: %+v", tt.contains, hints)
+			}
+		})
+	}
+}
+
+// TestSelectedSessionWarningBlock_MixedDemotableAndExempt is the mixed case: one
+// faded line and one full-intensity line on the same row, never two of either.
+func TestSelectedSessionWarningBlock_MixedDemotableAndExempt(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	sess := &pb.Session{
+		DisplayLabel:           "working",
+		LastRepairAttemptCount: 1,
+		LastRepairExitError:    "exit status 1",
+		SetupError:             "npm install failed: ENOENT",
+	}
+	hints := sessionWarningHints(sess)
+	if len(hints) != 2 {
+		t.Fatalf("sessionWarningHints len = %d, want 2 (one demotable repair hint, one exempt setup hint): %+v", len(hints), hints)
+	}
+	var faded, loud int
+	for _, h := range hints {
+		got := warningHintStyle(sess, h).Render(h.Text)
+		switch {
+		case got == styleStatusDangerFaded.Render(h.Text):
+			faded++
+		case got == styleStatusDanger.Render(h.Text):
+			loud++
+		default:
+			t.Fatalf("hint %q rendered with neither style: %q", h.Text, got)
+		}
+	}
+	if faded != 1 || loud != 1 {
+		t.Fatalf("faded = %d, full-intensity = %d, want exactly one of each", faded, loud)
+	}
+}
+
+// TestWarningHintStyle_MergedRowStillFades keeps BOS-246 intact and pins the
+// overlap: a merged row fades regardless of demotability, a merged AND live row
+// fades exactly once (there is no third, double-faded tier), and a row that is
+// neither renders full danger.
+func TestWarningHintStyle_MergedRowStillFades(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	const text = "finalize failed (pr_skipped_no_github)"
+	exempt := sessionHint{Text: text}
+	demotable := sessionHint{Text: text, Demotable: true}
+
+	merged := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED}
+	closed := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CLOSED}
+	mergedLive := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED, DisplayLabel: "working"}
+	neither := &pb.Session{DisplayLabel: "idle"}
+
+	for _, sess := range []*pb.Session{merged, closed, mergedLive} {
+		for _, h := range []sessionHint{exempt, demotable} {
+			if got, want := warningHintStyle(sess, h).Render(text), styleStatusDangerFaded.Render(text); got != want {
+				t.Errorf("merged/closed row (%v, label %q): rendered %q, want faded %q",
+					sess.GetDisplayStatus(), sess.GetDisplayLabel(), got, want)
+			}
+		}
+	}
+	// Fading twice would have to produce a different string; it does not.
+	if got, want := warningHintStyle(mergedLive, demotable).Render(text), styleStatusDangerFaded.Render(text); got != want {
+		t.Errorf("merged AND live row rendered %q, want a single fade %q", got, want)
+	}
+	if got, want := warningHintStyle(neither, exempt).Render(text), styleStatusDanger.Render(text); got != want {
+		t.Errorf("neither merged nor live: rendered %q, want full danger %q", got, want)
+	}
+}
+
+// TestHomeTableAndSelectedBlockAgreeOnStyle asserts the two render sites resolve
+// the SAME style for the same session — the split that made the list and the
+// detail view disagree before the shared gate existed.
+func TestHomeTableAndSelectedBlockAgreeOnStyle(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	sessions := []*pb.Session{
+		{Id: "s1", Title: "live row", DisplayLabel: "working", AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+			Summary:        "finalize failed (pr_skipped_no_github)",
+		}},
+		{Id: "s2", Title: "idle row", DisplayLabel: "idle", AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+			Summary:        "finalize failed (pr_skipped_no_github)",
+		}},
+		{Id: "s3", Title: "exempt row", DisplayLabel: "working", SetupError: "npm install failed: ENOENT"},
+	}
+	for _, sess := range sessions {
+		for _, h := range sessionWarningHints(sess) {
+			tableStyled := warningHintStyle(sess, h).Render(h.Text)
+			block := selectedSessionWarningBlock(sess, nil, len(h.Text))
+			if !strings.Contains(block, strings.TrimSpace(tableStyled)) {
+				t.Errorf("session %s: selected block %q does not carry the home table's styling of %q (%q)",
+					sess.GetId(), block, h.Text, tableStyled)
+			}
+		}
+	}
+}
+
+// TestAttentionIndicator_FadedOnlyWhenEveryHintIsDemotable covers the mixed case
+// specifically: one demotable plus one exempt hint keeps the "!" loud.
+func TestAttentionIndicator_FadedOnlyWhenEveryHintIsDemotable(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	attention := func() *pb.AttentionStatus {
+		return &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+			Summary:        "finalize failed (pr_skipped_no_github)",
+		}
+	}
+	allDemotable := &pb.Session{DisplayLabel: "working", AttentionStatus: attention()}
+	mixed := &pb.Session{DisplayLabel: "working", AttentionStatus: attention(), SetupError: "npm install failed: ENOENT"}
+	notLive := &pb.Session{DisplayLabel: "idle", AttentionStatus: attention()}
+
+	if got, want := renderAttentionIndicator(allDemotable), styleStatusDangerFaded.Render("!"); got != want {
+		t.Errorf("all-demotable row: indicator = %q, want faded %q", got, want)
+	}
+	if got, want := renderAttentionIndicator(mixed), styleStatusDanger.Render("!"); got != want {
+		t.Errorf("mixed row: indicator = %q, want FULL intensity %q — one exempt hint keeps the ! loud", got, want)
+	}
+	if got, want := renderAttentionIndicator(notLive), styleStatusDanger.Render("!"); got != want {
+		t.Errorf("non-live row: indicator = %q, want full intensity %q", got, want)
+	}
+
+	// A merged/closed row fades its "!" even when a hint is EXEMPT, because
+	// attentionIndicatorDemoted routes through hintDemoted, whose BOS-246
+	// finished arm short-circuits ahead of the demotable check. That extends
+	// BOS-246 — which faded the hint lines but left the "!" loud — and it is the
+	// intended reading: a bright "!" above an entirely faded hint block is the
+	// same self-contradiction this work exists to remove. Pinned so the
+	// extension cannot be undone silently.
+	// Same shape as `mixed` above — whose "!" stays loud — but merged.
+	mergedExempt := &pb.Session{
+		DisplayLabel:    "working",
+		DisplayStatus:   pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		AttentionStatus: attention(),
+		SetupError:      "npm install failed: ENOENT",
+	}
+	if got, want := renderAttentionIndicator(mergedExempt), styleStatusDangerFaded.Render("!"); got != want {
+		t.Errorf("merged row with an exempt hint: indicator = %q, want faded %q", got, want)
+	}
+	if unwanted := styleStatusDanger.Render("!"); renderAttentionIndicator(mergedExempt) == unwanted {
+		t.Error("merged row rendered a full-intensity ! above an entirely faded hint block")
+	}
+}
+
+// TestDraftPRFailure_SuccessCompositeWithExemptHint is the sole-carrier case
+// that forces the exemption. The background create never transitions the
+// session, so displaystatus's errored recolor never fires and the composite is a
+// plain green "working" — a FADED hint here would leave the row strictly quieter
+// than the "? PR failed" it replaced.
+func TestDraftPRFailure_SuccessCompositeWithExemptHint(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	sess := &pb.Session{
+		Id:            "sess-draft-pr",
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		BlockedReason: draftPRFailureReason("gh pr create: authentication required"),
+	}
+	composite := displaystatus.Compute(displaystatus.Input{
+		Session:    sess,
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+	})
+	if composite.Label != "working" || composite.Intent != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS {
+		t.Fatalf("composite = %+v, want a SUCCESS \"working\" label", composite)
+	}
+	sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = composite.Label, composite.Intent, composite.Spinner
+
+	hints := sessionWarningHints(sess)
+	if len(hints) != 1 {
+		t.Fatalf("sessionWarningHints = %+v, want exactly one hint carrying the failure", hints)
+	}
+	if !strings.Contains(hints[0].Text, "draft PR creation failed") {
+		t.Fatalf("hint = %q, want it to carry the draft-PR failure text", hints[0].Text)
+	}
+	if hints[0].Demotable {
+		t.Fatal("the draft-PR failure hint is demotable; it is the row's ONLY alarm and must be exempt")
+	}
+	if got, want := warningHintStyle(sess, hints[0]).Render(hints[0].Text), styleStatusDanger.Render(hints[0].Text); got != want {
+		t.Errorf("hint rendered %q, want full danger %q", got, want)
+	}
+	if unwanted := styleStatusDangerFaded.Render(hints[0].Text); warningHintStyle(sess, hints[0]).Render(hints[0].Text) == unwanted {
+		t.Error("hint rendered faded on a row that is never recolored")
+	}
+	if got := sessionSubRowCount(sess, ""); got != 1 {
+		t.Errorf("sessionSubRowCount = %d, want 1 (the hint adds a row)", got)
+	}
+}
+
+// TestDraftPRFailureHint_TruncatesMultilineError pins the firstLine + rune
+// truncation: an embedded multi-line `gh pr create` error must not put a newline
+// in a table cell nor push the NAME column to its width cap via nameWidthLabels.
+func TestDraftPRFailureHint_TruncatesMultilineError(t *testing.T) {
+	long := "fatal: could not read Username for 'https://github.com': terminal prompts disabled\nhint: see the docs\nhint: and more"
+	sess := &pb.Session{BlockedReason: draftPRFailureReason(long)}
+	got := draftPRFailureHint(sess)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("hint contains a newline: %q", got)
+	}
+	if strings.Contains(got, "hint: see the docs") {
+		t.Fatalf("hint kept text after the first line: %q", got)
+	}
+	if n := len([]rune(got)); n > hintReasonMaxRunes+1 {
+		t.Fatalf("hint is %d runes (%q), want at most %d plus the ellipsis", n, got, hintReasonMaxRunes)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("a truncated hint should end in an ellipsis: %q", got)
+	}
+	if !strings.HasPrefix(got, "draft PR creation failed") {
+		t.Fatalf("hint lost its identifying prefix: %q", got)
+	}
+	// A short reason passes through untouched.
+	short := &pb.Session{BlockedReason: draftPRFailureReason("no remote")}
+	if got, want := draftPRFailureHint(short), "draft PR creation failed: no remote"; got != want {
+		t.Errorf("short hint = %q, want %q", got, want)
+	}
+	if got := draftPRFailureHint(&pb.Session{}); got != "" {
+		t.Errorf("draftPRFailureHint with no blocked reason = %q, want empty", got)
+	}
+	if got := draftPRFailureHint(nil); got != "" {
+		t.Errorf("draftPRFailureHint(nil) = %q, want empty", got)
+	}
+}
+
+// TestAttentionHintDemotable_ClassifiesEveryReason is the exhaustive-enum guard.
+// AttentionReason is actively growing and both recent additions were exemptions,
+// so a new value arriving unclassified must red here rather than silently fade
+// on every live row.
+func TestAttentionHintDemotable_ClassifiesEveryReason(t *testing.T) {
+	want := map[pb.AttentionReason]bool{
+		pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED:                 false,
+		pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS:        true,
+		pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT:        true,
+		pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED:            true,
+		pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE: true,
+		pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED:           false,
+		pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED:               false,
+	}
+	for name, value := range pb.AttentionReason_value {
+		reason := pb.AttentionReason(value)
+		expected, ok := want[reason]
+		if !ok {
+			t.Errorf("AttentionReason %s is not classified for the BOS-855 recessive treatment — add it to attentionHintDemotable AND to this table, deciding deliberately whether a live row may fade it", name)
+			continue
+		}
+		if got := attentionHintDemotable(reason); got != expected {
+			t.Errorf("attentionHintDemotable(%s) = %v, want %v", name, got, expected)
+		}
+	}
+	// The default arm stays loud for a value the switch has never seen.
+	if attentionHintDemotable(pb.AttentionReason(9999)) {
+		t.Error("attentionHintDemotable default arm is demotable; an unclassified reason must stay at full intensity")
+	}
+}
+
+// TestAttentionWarningHint_InFlightMarkerTreatedAsAbsent closes the TUI/web
+// divergence: the transient draft-PR progress marker must not paint a red
+// warning across every healthy new session, but a session that genuinely needs a
+// human must not lose its flag either.
+func TestAttentionWarningHint_InFlightMarkerTreatedAsAbsent(t *testing.T) {
+	inFlight := &pb.Session{AttentionStatus: &pb.AttentionStatus{
+		NeedsAttention: true,
+		Summary:        sessionreason.DraftPRCreationInFlight(),
+	}}
+	if got := attentionWarningHint(inFlight); got != needsAttentionFallback {
+		t.Errorf("exact in-flight marker = %q, want the generic fallback %q", got, needsAttentionFallback)
+	}
+	// Not an exact match — left alone.
+	contains := &pb.Session{AttentionStatus: &pb.AttentionStatus{
+		NeedsAttention: true,
+		Summary:        "stuck: draft PR creation in progress for 40 minutes",
+	}}
+	if got, want := attentionWarningHint(contains), "stuck: draft PR creation in progress for 40 minutes"; got != want {
+		t.Errorf("summary merely containing the phrase = %q, want %q (only an exact match is filtered)", got, want)
+	}
+}
+
+// TestSessionWarningHints_EdgeCasesProduceNoRow pins the empty/nil surface: no
+// hint, no styled empty row, no panic.
+func TestSessionWarningHints_EdgeCasesProduceNoRow(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *pb.Session
+	}{
+		{"nil session", nil},
+		{"nil attention status", &pb.Session{DisplayLabel: "working"}},
+		{"needs attention with empty summary", &pb.Session{AttentionStatus: &pb.AttentionStatus{NeedsAttention: true}}},
+		{"needs attention with whitespace summary", &pb.Session{AttentionStatus: &pb.AttentionStatus{NeedsAttention: true, Summary: "   \t "}}},
+		{"empty display label", &pb.Session{DisplayLabel: ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionWarningHints(tc.sess); len(got) != 0 {
+				t.Errorf("sessionWarningHints = %+v, want none", got)
+			}
+			if got := sessionWarningHintTexts(tc.sess); len(got) != 0 {
+				t.Errorf("sessionWarningHintTexts = %v, want none", got)
+			}
+			if got := selectedSessionWarningBlock(tc.sess, nil, 80); got != "" {
+				t.Errorf("selectedSessionWarningBlock = %q, want an empty string (no styled empty row)", got)
+			}
+			if got := sessionSubRowCount(tc.sess, ""); got != 0 {
+				t.Errorf("sessionSubRowCount = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestSessionSubRowCount_AgreesWithBuildTableRows keeps the auxiliary-row
+// accounting honest across the return-type change: the count must equal the
+// number of extra rows buildTableRows actually emits, for zero, one and several
+// hints.
+func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
+	sessions := []*pb.Session{
+		{Id: "s0", Title: "no hints", DisplayLabel: "idle"},
+		{Id: "s1", Title: "one hint", DisplayLabel: "working", SetupError: "npm install failed"},
+		{Id: "s2", Title: "several hints", DisplayLabel: "working",
+			SetupError:             "npm install failed",
+			LastRepairAttemptCount: 2,
+			LastRepairExitError:    "exit status 1",
+			BlockedReason:          draftPRFailureReason("gh pr create: auth required"),
+		},
+	}
+	wantExtra := 0
+	for _, sess := range sessions {
+		wantExtra += sessionSubRowCount(sess, "")
+	}
+	if wantExtra == 0 {
+		t.Fatal("fixture produced no auxiliary rows; the test would be vacuous")
+	}
+
+	home := HomeModel{sessions: sessions, width: 200, height: 60, spinner: newStatusSpinner()}
+	home.buildTableRows()
+	gotRows := len(home.table.Rows())
+	if want := len(sessions) + wantExtra; gotRows != want {
+		t.Fatalf("buildTableRows emitted %d rows, want %d (%d primary + %d auxiliary)",
+			gotRows, want, len(sessions), wantExtra)
+	}
+	if got, want := sessionSubRowCount(sessions[0], ""), 0; got != want {
+		t.Errorf("no-hint session sub-rows = %d, want %d", got, want)
+	}
+	if got, want := sessionSubRowCount(sessions[1], ""), 1; got != want {
+		t.Errorf("one-hint session sub-rows = %d, want %d", got, want)
+	}
+	if got, want := sessionSubRowCount(sessions[2], ""), 3; got != want {
+		t.Errorf("several-hint session sub-rows = %d, want %d", got, want)
 	}
 }

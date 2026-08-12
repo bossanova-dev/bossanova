@@ -1,0 +1,4 @@
+{"type":"system","subtype":"compact_boundary","uuid":"aaaa"}
+not json at all
+{"type":"system","subtype":"init","cwd":"/w","session_id":"s1","tools":["Bash","Read","mcp__bossanova-linear__get_issue","mcp__bossanova-linear__save_issue","mcp__bossanova-linear__list_issues","mcp__bossanova-sentry__find_projects"],"mcp_servers":[{"name":"bossanova-linear","status":"connected"},{"name":"bossanova-sentry","status":"connected"},{"name":"bossanova-stale","status":"failed"}],"model":"claude-opus-5","permissionMode":"default","apiKeySource":"none","uuid":"bbbb"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}

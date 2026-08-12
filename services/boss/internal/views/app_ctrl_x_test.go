@@ -121,6 +121,29 @@ func TestCtrlXMatchesEscapeForBackNavigation(t *testing.T) {
 			want: ViewHome,
 		},
 		{
+			// BOS-837 gave Home its own eligibility arm (it was in the shared
+			// always-true one), so the list screen needs a row here. Home is the
+			// alias's ROOT: it has no back destination, so what this pins is
+			// containment — with no rename editor open ctrl+x is eligible, and
+			// neither key may take the operator off the session list. It cannot
+			// on its own tell "aliased" from "ignored"; the half that bites is
+			// the rename row in TestCtrlXIsForwardedUnchanged below, where esc
+			// has a real effect (cancel the edit) the alias must not reach.
+			name: "home session list with no rename editor open stays put",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewHome
+				h := renameKeyHome(t)
+				if h.textEntryActive() {
+					t.Fatal("premise broken: a home list with no rename editor open reports text entry")
+				}
+				a.home = h
+				return a
+			},
+			want: ViewHome,
+		},
+		{
 			name: "attach detaches to the chat picker on escape only",
 			build: func(t *testing.T) App {
 				t.Helper()
@@ -580,6 +603,38 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 					t.Fatal("ctrl+x closed the rename prompt; escape's cancel must not be aliased while editing")
 				}
 				if v := got.chatPicker.renameInput.Value(); v != "Initial implementation" {
+					t.Fatalf("rename input = %q after ctrl+x, want the prefilled title preserved", v)
+				}
+			},
+		},
+		{
+			// BOS-837: Home was a pure list screen until the hidden [r] gave it
+			// an inline title editor. While that editor is open Esc cancels the
+			// edit, so aliasing ctrl+x onto it would throw away the operator's
+			// typing — the same trap BOS-836 hit on the chat picker one screen
+			// down. This is the row that fails if Home's eligibility arm stops
+			// consulting textEntryActive.
+			name: "home rename editor is being typed into",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewHome
+				h := homeFromKey(t, mustModel(renameKeyHome(t).handleKey(keyPress('r'))))
+				if !h.rename.Active() {
+					t.Fatal("premise broken: r did not open the rename editor")
+				}
+				a.home = h
+				return a
+			},
+			verify: func(t *testing.T, got App) {
+				t.Helper()
+				if got.activeView != ViewHome {
+					t.Fatalf("activeView = %v after ctrl+x in the rename editor, want ViewHome", got.activeView)
+				}
+				if !got.home.rename.Active() {
+					t.Fatal("ctrl+x closed the rename editor; escape's cancel must not be aliased while editing")
+				}
+				if v := got.home.rename.Value(); v != "Add dark mode" {
 					t.Fatalf("rename input = %q after ctrl+x, want the prefilled title preserved", v)
 				}
 			},

@@ -1191,6 +1191,22 @@ func run(opts runOpts) error {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
 	appDataDir := filepath.Dir(dbPath)
+
+	// Owning-daemon id for tmux panes (BOS-846). Resolved here, ahead of the
+	// tmux client, because the stamper and the reaper must agree on it — and
+	// the upstream identity resolution further down only runs when an
+	// orchestrator is configured. ResolveDaemonID is idempotent: it persists on
+	// first call and reads the same id back afterwards, so both callers get the
+	// same value. It always returns a usable id; on failure that is the
+	// hostname, and an empty one stamps nothing, which leaves every pane
+	// unattributable rather than reapable.
+	tmuxHostname, _ := os.Hostname()
+	tmuxDaemonID, tmuxDaemonIDErr := upstream.ResolveDaemonID(os.Getenv, appDataDir, tmuxHostname)
+	if tmuxDaemonIDErr != nil {
+		log.Warn().Err(tmuxDaemonIDErr).Str("daemon_id", tmuxDaemonID).
+			Msg("stable daemon id unavailable for tmux pane ownership; using fallback")
+	}
+
 	daemonMetadata := daemonstate.Metadata{
 		PID:            os.Getpid(),
 		ExecutablePath: executablePath,
@@ -1561,7 +1577,10 @@ func run(opts runOpts) error {
 	// restricted PATH can't find pnpm and worktree dependency/hook install
 	// silently skips, leaving cron worktrees dependency-free.
 	worktrees.LoginShell = settings.LoginShell
-	tmuxClient := tmux.NewClient()
+	// Every session this client creates carries BOSS_DAEMON_ID, which is the
+	// only thing that lets the reaper tell its own orphans from a peer
+	// daemon's panes on a shared host.
+	tmuxClient := tmux.NewClient(tmux.WithDaemonID(tmuxDaemonID))
 	ghProvider := github.New(log.Logger)
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
 		WithBranchResolver(worktrees).
@@ -3590,6 +3609,14 @@ func run(opts runOpts) error {
 	// Start tmux status poller (captures pane content to detect question/idle/working).
 	tmuxStatusPoller.Run(pollerCtx)
 	trackDone(tmuxStatusPoller.Done())
+
+	// Start the orphaned-tmux reaper (BOS-846): reconciles live panes against
+	// the DB and kills the ones no row can account for. It ships disabled and
+	// dry-run, so with no tmux_reaper settings block Run returns immediately.
+	tmuxReaper := status.NewTmuxReaper(agentChats, sessions, repos, tmuxClient,
+		tmuxDaemonID, settings.TmuxReaper, log.Logger)
+	tmuxReaper.Run(pollerCtx)
+	trackDone(tmuxReaper.Done())
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
 	trackedGo(func() {

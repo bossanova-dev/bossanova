@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -25,13 +24,13 @@ type Runner struct {
 	cmdFactory                 agentruntime.CommandFactory
 }
 
-// StartWithManagedMcpConfig starts a headless Claude run with the daemon's
-// managed MCP surface represented as CLI arguments rather than worktree state.
-func (r *Runner) StartWithManagedMcpConfig(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string, managedMcpConfigPath string, isStrictManagedMcpConfig bool) (string, error) {
+// StartWithModel starts a headless Claude run, pinning the model for this run.
+// It carries no MCP wiring: boss does not own MCP configuration, so a headless
+// run discovers servers exactly as an interactive one does — through Claude
+// Code's own scopes, from what the repo declared.
+func (r *Runner) StartWithModel(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
 	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
-		"model":                        model,
-		"managed_mcp_config_path":      managedMcpConfigPath,
-		"is_strict_managed_mcp_config": strconv.FormatBool(isStrictManagedMcpConfig),
+		"model": model,
 	})
 }
 
@@ -138,11 +137,10 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if model := resolveClaudeModel(in.Options["model"], r.model); model != "" {
 		args = append(args, "--model", model)
 	}
-	if mcpConfigPath := in.Options["managed_mcp_config_path"]; mcpConfigPath != "" {
-		args = append(args, "--mcp-config", mcpConfigPath)
-		if in.Options["is_strict_managed_mcp_config"] == "true" {
-			args = append(args, "--strict-mcp-config")
-		}
-	}
+	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
+	// Code discovers servers its own native way (project .mcp.json gated by
+	// enabledMcpjsonServers, plus the user and local scopes) and the repo is
+	// responsible for declaring them. --strict-mcp-config would suppress exactly
+	// that. See docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md.
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

@@ -36,8 +36,16 @@ type chatStoreFake struct {
 	updateNameCall     int
 	updateProvider     *string
 	updateProviderCall int
-	updateAccount      *string
-	updateAccountCall  int
+	// updateProviderCtxErr records ctx.Err() as the persist saw it, so a test can
+	// prove the write does not inherit an already-spent discovery budget.
+	updateProviderCtxErr error
+	updateAccount        *string
+	updateAccountCall    int
+	// updateNameErr / updateProviderErr fail the row writes that run while a
+	// freshly spawned pane is still unnamed, so a test can prove the pane is
+	// rolled back rather than leaked (BOS-845).
+	updateNameErr     error
+	updateProviderErr error
 }
 
 func (f *chatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
@@ -52,19 +60,26 @@ func (f *chatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (*model
 func (f *chatStoreFake) UpdateTmuxSessionName(_ context.Context, _ string, name *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.updateName = name
 	f.updateNameCall++
+	if f.updateNameErr != nil {
+		return f.updateNameErr
+	}
+	f.updateName = name
 	if f.chat != nil {
 		f.chat.TmuxSessionName = name
 	}
 	return nil
 }
 
-func (f *chatStoreFake) UpdateProviderSessionID(_ context.Context, _ string, providerSessionID *string) error {
+func (f *chatStoreFake) UpdateProviderSessionID(ctx context.Context, _ string, providerSessionID *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.updateProvider = providerSessionID
 	f.updateProviderCall++
+	f.updateProviderCtxErr = ctx.Err()
+	if f.updateProviderErr != nil {
+		return f.updateProviderErr
+	}
+	f.updateProvider = providerSessionID
 	if f.chat != nil {
 		f.chat.ProviderSessionID = providerSessionID
 	}
@@ -993,6 +1008,54 @@ func TestWakeChat_TmuxSpawnFailure_Internal(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("expected Internal, got %v", connect.CodeOf(err))
+	}
+}
+
+// TestWakeChat_ChatRowWriteFailureKillsFreshPane is the wake-path half of the
+// BOS-845 postcondition: a pane this wake created must not outlive a failure to
+// record its name on the chat row, because every cleanup path keys off that name.
+func TestWakeChat_ChatRowWriteFailureKillsFreshPane(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.agentChats = &chatStoreFake{chat: chat, updateNameErr: errors.New("boom")}
+
+	_, _, _, err := s.WakeChatInternal(context.Background(), "agent-1", false)
+	if err == nil {
+		t.Fatalf("expected the tmux name write failure to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "persist tmux name") {
+		t.Fatalf("error = %v, want it to wrap %q", err, "persist tmux name")
+	}
+	wantName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
+	if got := tmuxer.killedSessions(); len(got) != 1 || got[0] != wantName {
+		t.Fatalf("KillSession targets = %v, want exactly [%q]", got, wantName)
+	}
+	if tmuxer.hasSession {
+		t.Fatalf("tmux session still live after a failed row write — the pane leaked")
+	}
+}
+
+// TestWakeChat_AlreadyLivePaneNotKilledOnWriteFailure is the wake-path twin of
+// the anti-regression guard: waking a chat whose pane is already live must not
+// destroy that pane just because the row write failed.
+func TestWakeChat_AlreadyLivePaneNotKilledOnWriteFailure(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.agentChats = &chatStoreFake{chat: chat, updateNameErr: errors.New("boom")}
+
+	_, _, _, err := s.WakeChatInternal(context.Background(), "agent-1", false)
+	if err == nil {
+		t.Fatalf("expected the tmux name write failure to propagate, got nil")
+	}
+	if got := tmuxer.killedSessions(); len(got) != 0 {
+		t.Fatalf("KillSession targets = %v, want none for an already-live pane", got)
+	}
+	if !tmuxer.hasSession {
+		t.Fatalf("already-live tmux session was killed by a failed row write")
 	}
 }
 

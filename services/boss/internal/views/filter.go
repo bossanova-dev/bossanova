@@ -103,16 +103,26 @@ func (f *listFilter) Deactivate() {
 // changed after textinput processed the message.
 func (f *listFilter) Update(msg tea.Msg) (tea.Cmd, bool) {
 	prev := f.Query()
-	if k, ok := msg.(tea.KeyPressMsg); ok {
-		key := k.Key()
-		if key.Text == "" && key.Mod == 0 && unicode.IsPrint(key.Code) {
-			key.Text = string(key.Code)
-			msg = tea.KeyPressMsg(key)
-		}
-	}
 	var cmd tea.Cmd
-	f.input, cmd = f.input.Update(msg)
+	f.input, cmd = f.input.Update(normalizePrintableKey(msg))
 	return cmd, f.Query() != prev
+}
+
+// normalizePrintableKey fills in the Text of a printable key press that carries
+// only a Code. textinput inserts Key.Text, so a synthesized press (as tests and
+// some terminals produce) would otherwise type nothing. Shared by every view
+// that forwards raw key messages into a textinput.
+func normalizePrintableKey(msg tea.Msg) tea.Msg {
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return msg
+	}
+	key := k.Key()
+	if key.Text == "" && key.Mod == 0 && unicode.IsPrint(key.Code) {
+		key.Text = string(key.Code)
+		return tea.KeyPressMsg(key)
+	}
+	return msg
 }
 
 // SetCounts records the matched and total row counts used by View().

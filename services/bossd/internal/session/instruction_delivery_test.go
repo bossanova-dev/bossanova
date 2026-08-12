@@ -181,7 +181,7 @@ func TestLogUndeliveredInstructionsSilentWhenDelivered(t *testing.T) {
 // field added to the record, which is how a body leak would actually arrive.
 func TestLogUndeliveredInstructionsOmitsPromptBody(t *testing.T) {
 	sess := unattendedCronSession("s-secret")
-	text, classes := BuildAppendSystemPrompt(sess, "agent-secret", "codex", "")
+	text, classes := BuildAppendSystemPrompt(sess, "agent-secret", "codex")
 	if text == "" || len(classes) == 0 {
 		t.Fatalf("fixture must build a non-empty prompt, got text=%q classes=%v", text, classes)
 	}

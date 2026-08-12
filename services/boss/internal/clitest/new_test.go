@@ -194,6 +194,209 @@ func TestCLI_New_InvalidTrackerSourceIssuesNoRPC(t *testing.T) {
 	}
 }
 
+// idleHarness scripts CreateSession to return a session with NO chat id, which
+// is what the daemon produces for a quick chat: server.go routes quick_chat to
+// StartQuickChatSession, which never enters StartSession and so launches no
+// agent at create time. This is the shape that would otherwise be a silent
+// no-op.
+func idleHarness(t *testing.T) *clitest.Harness {
+	t.Helper()
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	h.Daemon.SetCreateSessionScript([]*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-idle-777",
+				RepoId:          "repo-1",
+				State:           pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+				RepoDisplayName: "my-app",
+			}},
+		}},
+	}, 0)
+	return h
+}
+
+// TestCLI_New_DeferPRReachesDaemon pins that --defer-pr travels over the wire.
+// The recorded request is what proves it — the CLI's own struct would agree
+// with itself. Detach is asserted alongside because it is what mints the
+// finalize hook token that opens the deferred PR when commits DID land.
+func TestCLI_New_DeferPRReachesDaemon(t *testing.T) {
+	h := newHarness(t)
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--defer-pr")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	req := h.Daemon.LastCreateSession()
+	if req == nil {
+		t.Fatal("no CreateSession request recorded")
+	}
+	if !req.GetDeferPr() {
+		t.Error("defer_pr = false, want true")
+	}
+	if req.GetIsQuickChat() {
+		t.Error("is_quick_chat = true; --defer-pr must not set it")
+	}
+	if !req.GetDetach() {
+		t.Error("detach = false; --defer-pr must not clear it")
+	}
+}
+
+// TestCLI_New_QuickChatReachesDaemon pins the mirrored case for --quick-chat.
+func TestCLI_New_QuickChatReachesDaemon(t *testing.T) {
+	h := newHarness(t)
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--quick-chat")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	req := h.Daemon.LastCreateSession()
+	if req == nil {
+		t.Fatal("no CreateSession request recorded")
+	}
+	if !req.GetIsQuickChat() {
+		t.Error("is_quick_chat = false, want true")
+	}
+	if req.GetDeferPr() {
+		t.Error("defer_pr = true; --quick-chat must not set it")
+	}
+	if !req.GetDetach() {
+		t.Error("detach = false; --quick-chat must not clear it")
+	}
+}
+
+// TestCLI_New_QuickChatWithDeferPRIssuesNoRPC pins that the contradictory pair
+// is refused locally: exit 1, the shared error envelope under --json, and NO
+// CreateSession reaching the daemon. The nil recorded request is the
+// load-bearing assertion — asserting only the error would also pass against an
+// implementation that sends the request first and fails afterwards, which is
+// precisely the bug this guards (the daemon would honour quick_chat and
+// silently drop defer_pr).
+func TestCLI_New_QuickChatWithDeferPRIssuesNoRPC(t *testing.T) {
+	h := newHarness(t)
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing",
+		"--quick-chat", "--defer-pr", "--json")
+
+	if res.ExitCode != 1 {
+		t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if h.Daemon.LastCreateSession() != nil {
+		t.Error("CreateSession was issued for the mutually exclusive flag pair")
+	}
+
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+		t.Fatalf("stdout is not the JSON error envelope: %v (stdout=%q)", err, res.Stdout)
+	}
+	if env.Error.Code != "INVALID_ARGUMENT" {
+		t.Errorf("error.code = %q, want INVALID_ARGUMENT", env.Error.Code)
+	}
+	for _, want := range []string{"--quick-chat", "--defer-pr"} {
+		if !strings.Contains(env.Error.Message, want) {
+			t.Errorf("error.message = %q, want it to name %s", env.Error.Message, want)
+		}
+	}
+}
+
+// TestCLI_New_QuickChatWithDeferPRWithoutJSON pins the same rejection on the
+// human path: exit 1, prose on stderr, and still no RPC.
+func TestCLI_New_QuickChatWithDeferPRWithoutJSON(t *testing.T) {
+	h := newHarness(t)
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing",
+		"--quick-chat", "--defer-pr")
+
+	if res.ExitCode != 1 {
+		t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if h.Daemon.LastCreateSession() != nil {
+		t.Error("CreateSession was issued for the mutually exclusive flag pair")
+	}
+	if !strings.Contains(res.Stderr, "quick-chat") {
+		t.Errorf("stderr = %q, want the rejection to name the flag", res.Stderr)
+	}
+}
+
+// TestCLI_New_QuickChatIdleSessionEmitsNextAction is the guard against this
+// feature creating a NEW silent failure. A create that launched no agent must
+// say so — but only on channels that are safe to change. stdout keeps the
+// frozen two-line shape byte-for-byte (including the empty chat-id line, which
+// existing callers parse positionally); the notice goes to stderr; and the
+// machine surface gets next_action.
+func TestCLI_New_QuickChatIdleSessionEmitsNextAction(t *testing.T) {
+	t.Run("human", func(t *testing.T) {
+		h := idleHarness(t)
+		res := h.Run("new", "--repo", "repo-1", "--prompt", "plan a thing", "--quick-chat")
+
+		if res.ExitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+		}
+		// The whole of stdout, not a substring: the chat-id line must still be
+		// printed even though it is empty.
+		const want = "session-id: sess-idle-777\nchat-id:    \n"
+		if res.Stdout != want {
+			t.Errorf("stdout = %q, want %q", res.Stdout, want)
+		}
+		if !strings.Contains(res.Stderr, "idle awaiting attach") {
+			t.Errorf("stderr = %q, want the idle/no-agent notice", res.Stderr)
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		h := idleHarness(t)
+		res := h.Run("new", "--repo", "repo-1", "--prompt", "plan a thing",
+			"--quick-chat", "--json")
+
+		if res.ExitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+		}
+		var env struct {
+			Session struct {
+				ID         string `json:"id"`
+				ChatID     string `json:"chat_id"`
+				NextAction string `json:"next_action"`
+			} `json:"session"`
+		}
+		if err := json.Unmarshal([]byte(res.Stdout), &env); err != nil {
+			t.Fatalf("stdout is not the JSON envelope: %v (stdout=%q)", err, res.Stdout)
+		}
+		if env.Session.ChatID != "" {
+			t.Errorf("chat_id = %q, want empty for an idle session", env.Session.ChatID)
+		}
+		if env.Session.NextAction == "" {
+			t.Error("next_action is empty; an idle create must say how to start work")
+		}
+	})
+}
+
+// TestCLI_New_OrdinaryCreateOmitsNextAction is the compatibility half of the
+// pair above. An ordinary create's envelope must not carry next_action AT ALL —
+// asserted on the raw JSON bytes, because unmarshalling into a struct cannot
+// distinguish an absent key from a present-but-empty one and would pass against
+// exactly the `omitempty` regression this guards.
+func TestCLI_New_OrdinaryCreateOmitsNextAction(t *testing.T) {
+	h := newHarness(t)
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--json")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if strings.Contains(res.Stdout, "next_action") {
+		t.Errorf("ordinary create's envelope carries next_action; omitempty regressed: %q", res.Stdout)
+	}
+	// Guard the guard: the assertion above is only meaningful if this really is
+	// the populated-chat-id path.
+	if !strings.Contains(res.Stdout, "chat-new-888") {
+		t.Fatalf("stdout = %q, want the populated chat id", res.Stdout)
+	}
+	if strings.Contains(res.Stderr, "idle awaiting attach") {
+		t.Errorf("stderr = %q, want no idle notice for a launched session", res.Stderr)
+	}
+}
+
 // TestCLI_New_InvalidTrackerSourceWithoutJSON pins the same rejection on the
 // human path: exit 1, prose on stderr, and still no RPC.
 func TestCLI_New_InvalidTrackerSourceWithoutJSON(t *testing.T) {

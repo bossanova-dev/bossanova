@@ -257,6 +257,14 @@ type fakeAgentClient struct {
 	resolveErr     error
 	resolveReqs    []*bossanovav1.ResolveInteractiveSessionIDRequest
 	removeHookReqs []*bossanovav1.RemoveAgentRunHookRequest
+	// resolveAwaitCtx makes a resolution consume its entire budget: it blocks
+	// until the caller's discovery context expires before answering. Models the
+	// whole-corpus legacy rollout scan that BOS-844 re-budgeted — the only shape
+	// that can prove the persist no longer shares the discovery deadline.
+	resolveAwaitCtx bool
+	// resolveErrAfterCtx, when set alongside resolveAwaitCtx, is returned once
+	// the budget is spent (what the real codex plugin does: DeadlineExceeded).
+	resolveErrAfterCtx error
 }
 
 var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
@@ -311,15 +319,26 @@ func (f *fakeAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav
 func (f *fakeAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
-func (f *fakeAgentClient) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+func (f *fakeAgentClient) ResolveInteractiveSessionID(ctx context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.resolveReqs = append(f.resolveReqs, req)
-	if f.resolveErr != nil {
-		return nil, f.resolveErr
+	awaitCtx, errAfterCtx := f.resolveAwaitCtx, f.resolveErrAfterCtx
+	resolveErr, resolveResp := f.resolveErr, f.resolveResp
+	f.mu.Unlock()
+
+	// Released the lock first: the wait below is the whole point of this fake
+	// and holding the mutex across it would serialize unrelated callers.
+	if awaitCtx {
+		<-ctx.Done()
+		if errAfterCtx != nil {
+			return nil, errAfterCtx
+		}
 	}
-	if f.resolveResp != nil {
-		return f.resolveResp, nil
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	if resolveResp != nil {
+		return resolveResp, nil
 	}
 	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
 }
@@ -666,6 +685,12 @@ type fakeAgentChatStore struct {
 	chatsBySession map[string][]*models.AgentChat
 	chatsByAgent   map[string]*models.AgentChat
 	updatedTmux    []string
+	// updateProviderCalls / updateProviderCtxErr record the provider-id persist
+	// so a test can prove it no longer runs on the (possibly exhausted)
+	// discovery context (BOS-844). ctxErr is sampled at call time; a live
+	// context reads nil, an inherited spent one reads DeadlineExceeded.
+	updateProviderCalls  int
+	updateProviderCtxErr error
 }
 
 func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
@@ -676,7 +701,9 @@ func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, agentSession
 	return f.chatsByAgent[agentSessionID], nil
 }
 
-func (f *fakeAgentChatStore) UpdateProviderSessionID(_ context.Context, agentSessionID string, providerSessionID *string) error {
+func (f *fakeAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
+	f.updateProviderCalls++
+	f.updateProviderCtxErr = ctx.Err()
 	if chat := f.chatsByAgent[agentSessionID]; chat != nil {
 		chat.ProviderSessionID = providerSessionID
 	}
@@ -2887,6 +2914,13 @@ func TestWaitChatRun_ReturnsProviderSessionID(t *testing.T) {
 }
 
 func TestWaitChatRun_DiscoversCodexProviderSessionIDBeforeResponse(t *testing.T) {
+	// The whole-corpus scan behind this call reads the codex sessions root, so
+	// pin CODEX_HOME away from the developer's real ~/.codex (.bazelrc passes
+	// HOME through to tests). Also shrink the legacy-backfill budget so this
+	// case is bounded by the var under test rather than by its real 30s.
+	t.Setenv("CODEX_HOME", t.TempDir())
+	shrinkLegacyBackfillBudget(t, 2*time.Second)
+
 	srv := newRunCompleteServer()
 	client := newFakeAgentClient()
 	client.resolveResp = &bossanovav1.ResolveInteractiveSessionIDResponse{
@@ -2942,6 +2976,116 @@ func TestWaitChatRun_DiscoversCodexProviderSessionIDBeforeResponse(t *testing.T)
 	}
 	if req.GetChatCreatedAt() == nil {
 		t.Fatal("resolver ChatCreatedAt is nil")
+	}
+}
+
+// newCodexDiscoveryServer wires a run-complete server whose WaitChatRun response
+// path performs the codex legacy-backfill discovery, returning the server, the
+// chat row, the fake plugin client and the fake chat store so budget-sensitive
+// tests can drive and inspect it.
+func newCodexDiscoveryServer(t *testing.T) (*HostServiceServer, *models.AgentChat, *fakeAgentClient, *fakeAgentChatStore) {
+	t.Helper()
+	// Pin the codex sessions root: the discovery under test reads it, and
+	// .bazelrc passes the real HOME through to tests.
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	srv := newRunCompleteServer()
+	client := newFakeAgentClient()
+	srv.agentClients = map[string]agent.AgentRunnerClient{"codex": client}
+	srv.sessionStore = &fakeSessionStore{
+		sessions: map[string]*models.Session{
+			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/worktree"},
+		},
+	}
+	chat := &models.AgentChat{
+		SessionID:      "sess-1",
+		AgentSessionID: "agent-x",
+		AgentName:      "codex",
+		CreatedAt:      time.Now().Add(-time.Minute),
+	}
+	store := &fakeAgentChatStore{chatsByAgent: map[string]*models.AgentChat{"agent-x": chat}}
+	srv.agentChats = store
+	srv.registerRun("sess-1", "agent-x", "tok")
+	return srv, chat, client, store
+}
+
+// shrinkLegacyBackfillBudget shrinks the package-level legacy-backfill budget for
+// the duration of a test and restores it, so budget-sensitive cases never sleep
+// against the real 30s value.
+func shrinkLegacyBackfillBudget(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := legacyBackfillProviderIDDiscoveryTimeout
+	legacyBackfillProviderIDDiscoveryTimeout = d
+	t.Cleanup(func() { legacyBackfillProviderIDDiscoveryTimeout = old })
+}
+
+// A legacy backfill that overruns its budget must degrade to an empty provider
+// session id — it must not turn into a WaitChatRun error, and it must not
+// persist anything.
+func TestWaitChatRun_ProviderSessionIDDiscoveryOverrunDoesNotErrorResponse(t *testing.T) {
+	srv, chat, client, store := newCodexDiscoveryServer(t)
+	shrinkLegacyBackfillBudget(t, 50*time.Millisecond)
+	// Consume the whole budget, then fail the way the codex plugin does.
+	client.resolveAwaitCtx = true
+	client.resolveErrAfterCtx = context.DeadlineExceeded
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = srv.CompleteAgentRun(context.Background(), "agent-x", "tok", "")
+	}()
+
+	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if resp.GetProviderSessionId() != "" {
+		t.Fatalf("ProviderSessionId = %q, want empty after an overrun discovery", resp.GetProviderSessionId())
+	}
+	if resp.GetExitError() != "" {
+		t.Fatalf("ExitError = %q, want empty", resp.GetExitError())
+	}
+	if chat.ProviderSessionID != nil {
+		t.Fatalf("persisted provider session id = %v, want nil", *chat.ProviderSessionID)
+	}
+	if store.updateProviderCalls != 0 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 0", store.updateProviderCalls)
+	}
+}
+
+// The falsifying case for the persist decoupling: a discovery that answers only
+// once its budget is spent must still be written. Before BOS-844 the persist
+// reused the discovery context, so this id was found and then thrown away.
+func TestWaitChatRun_ProviderSessionIDPersistsWhenDiscoveryConsumesItsBudget(t *testing.T) {
+	srv, chat, client, store := newCodexDiscoveryServer(t)
+	shrinkLegacyBackfillBudget(t, 50*time.Millisecond)
+	// Answer successfully, but only after the discovery budget has expired.
+	client.resolveAwaitCtx = true
+	client.resolveResp = &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:     true,
+		SessionId: "codex-provider-late",
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = srv.CompleteAgentRun(context.Background(), "agent-x", "tok", "")
+	}()
+
+	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if resp.GetProviderSessionId() != "codex-provider-late" {
+		t.Fatalf("ProviderSessionId = %q, want codex-provider-late", resp.GetProviderSessionId())
+	}
+	if store.updateProviderCalls != 1 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 1", store.updateProviderCalls)
+	}
+	// The persist must run on a live context, not the exhausted discovery one.
+	if store.updateProviderCtxErr != nil {
+		t.Fatalf("persist context error = %v, want nil (persist must not reuse the spent discovery context)", store.updateProviderCtxErr)
+	}
+	if chat.ProviderSessionID == nil || *chat.ProviderSessionID != "codex-provider-late" {
+		t.Fatalf("persisted provider session id = %v, want codex-provider-late", chat.ProviderSessionID)
 	}
 }
 

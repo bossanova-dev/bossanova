@@ -2144,7 +2144,9 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 	if !res.Deleted {
 		t.Error("Deleted should be true for hard-deleted clean-committed cron session")
 	}
-	assertFinalizeTelemetry(t, recorder, "error")
+	// BOS-854: a non-GitHub origin is not a failure, so it gets its own bucket
+	// rather than inflating the "error" one.
+	assertFinalizeTelemetry(t, recorder, "skipped_no_github")
 	if len(wt.fetchedBases) != 0 {
 		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
 	}
@@ -2220,8 +2222,20 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginInteractivePreserved(t *tes
 	if len(wt.archived) != 0 {
 		t.Errorf("interactive worktree must be preserved, got archived=%v", wt.archived)
 	}
-	if _, ok := sessions.sessions["sess-1"]; !ok {
-		t.Error("interactive session row must be preserved")
+	sess, ok := sessions.sessions["sess-1"]
+	if !ok {
+		t.Fatal("interactive session row must be preserved")
+	}
+	// BOS-854: the clean-committed construction site must finish as quietly as
+	// the dirty one — same benign classification, same resting state.
+	if sess.State == machine.Blocked {
+		t.Errorf("state = %s, want NOT blocked (pr_skipped_no_github is benign)", sess.State)
+	}
+	if sess.State != machine.ReadyForReview {
+		t.Errorf("state = %s, want %s (quiet resting state out of Finalizing)", sess.State, machine.ReadyForReview)
+	}
+	if sess.BlockedReason != nil {
+		t.Errorf("BlockedReason = %q, want nil (no finalize-failure reason persisted)", *sess.BlockedReason)
 	}
 }
 
@@ -2483,12 +2497,14 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 		OriginURL: "git@gitlab.example.com:owner/repo.git", // not github.com
 	}
 	// CronJobID is nil: interactive session, not spawned by cron.
+	hookToken := "secret-token"
 	sessions.sessions["sess-interactive"] = &models.Session{
 		ID:           "sess-interactive",
 		RepoID:       "repo-1",
 		WorktreePath: "/tmp/wt-interactive",
 		State:        machine.ImplementingPlan,
 		CronJobID:    nil,
+		HookToken:    &hookToken,
 	}
 
 	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
@@ -2505,8 +2521,26 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 		t.Errorf("interactive session worktree must NOT be archived, got archived=%v", wt.archived)
 	}
 	// Session row must still exist.
-	if _, ok := sessions.sessions["sess-interactive"]; !ok {
-		t.Error("interactive session row must be preserved on pr_skipped_no_github")
+	sess, ok := sessions.sessions["sess-interactive"]
+	if !ok {
+		t.Fatal("interactive session row must be preserved on pr_skipped_no_github")
+	}
+	// BOS-854: a non-GitHub origin is a benign outcome, not a finalize failure.
+	// The row must finish quietly at ReadyForReview with no blocked reason —
+	// anything in blocked_reason paints a red row on the web even when
+	// needsAttention is false (services/web/src/sessionStatus.ts attentionHint).
+	if sess.State == machine.Blocked {
+		t.Errorf("state = %s, want NOT blocked (pr_skipped_no_github is benign)", sess.State)
+	}
+	if sess.State != machine.ReadyForReview {
+		t.Errorf("state = %s, want %s (quiet resting state out of Finalizing)", sess.State, machine.ReadyForReview)
+	}
+	if sess.BlockedReason != nil {
+		t.Errorf("BlockedReason = %q, want nil (no finalize-failure reason persisted)", *sess.BlockedReason)
+	}
+	// Finalize is over, so a replayed Stop event must no longer authenticate.
+	if sess.HookToken != nil {
+		t.Errorf("HookToken = %q, want nil (cleared once finalize completed)", *sess.HookToken)
 	}
 	// Not deleted: Deleted must be false.
 	if res.Deleted {
@@ -2515,6 +2549,80 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 	// No cron recording (CronJobID == nil skips Step 4).
 	if len(cron.lastRunCalls) != 0 {
 		t.Errorf("expected no UpdateLastRun calls for interactive session, got %d", len(cron.lastRunCalls))
+	}
+}
+
+// TestNeedsAttention_PRSkippedNoGitHub_False pins BOS-854's core classification
+// flip: a repo whose origin simply is not GitHub produced a real, recorded
+// outcome — not a failure — so the session must never be routed to Blocked. The
+// constant must stay LISTED in the switch (the exhaustive linter and the
+// deliberate per-outcome documentation both require it); this test fails loudly
+// if a later change deletes the case rather than moving it.
+func TestNeedsAttention_PRSkippedNoGitHub_False(t *testing.T) {
+	if needsAttention(models.CronJobOutcomePRSkippedNoGitHub) {
+		t.Fatal("needsAttention(pr_skipped_no_github) = true, want false (benign outcome, not a finalize failure)")
+	}
+}
+
+// TestFinalizeSession_PRSkippedNoGitHub_InteractiveSurvivesRestart is the
+// restart-survival guard for BOS-854. Moving pr_skipped_no_github out of
+// needsAttention is not sufficient on its own: with step 6 skipped, the
+// preserved row would sit in Finalizing forever, and the next daemon start's
+// RecoverFinalizingSessions sweep would record failed_recovered and transition
+// it to Blocked — resurrecting the red row one restart later. Step 5's move to
+// ReadyForReview keeps it out of that sweep's ListByState(Finalizing) scan, so
+// this test fails if that move is ever reverted in isolation.
+func TestFinalizeSession_PRSkippedNoGitHub_InteractiveSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "?? new.txt"} // untracked file
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@gitlab.example.com:owner/repo.git", // not github.com
+	}
+	sessions.sessions["sess-interactive"] = &models.Session{
+		ID:           "sess-interactive",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-interactive",
+		State:        machine.ImplementingPlan,
+		CronJobID:    nil,
+	}
+
+	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-interactive")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	}
+
+	// Simulate the next daemon start.
+	recovered, err := lc.RecoverFinalizingSessions(ctx)
+	if err != nil {
+		t.Fatalf("RecoverFinalizingSessions: %v", err)
+	}
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0 (the quiet finalize left nothing stranded in Finalizing)", recovered)
+	}
+
+	sess, ok := sessions.sessions["sess-interactive"]
+	if !ok {
+		t.Fatal("interactive session row must survive daemon-restart recovery")
+	}
+	if sess.State == machine.Blocked {
+		t.Errorf("state = %s, want NOT blocked after restart recovery", sess.State)
+	}
+	if sess.BlockedReason != nil {
+		t.Errorf("BlockedReason = %q, want nil after restart recovery", *sess.BlockedReason)
 	}
 }
 

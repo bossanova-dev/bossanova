@@ -175,6 +175,12 @@ func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.
 	return nil, nil
 }
 
+// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// package drives the orphaned-tmux reaper, so an empty whitelist is correct.
+func (m *mockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1167,8 +1173,6 @@ type mockStartCall struct {
 	model   string
 	env     map[string]string
 	profile pb.HeadlessCapabilityProfile
-	mcpPath string
-	strict  bool
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1238,7 +1242,7 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 }
 
 func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env, profile: options.HeadlessCapabilityProfile, mcpPath: options.ManagedMcpConfigPath, strict: options.StrictManagedMcpConfig})
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env, profile: options.HeadlessCapabilityProfile})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -7418,8 +7422,8 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	if agentSessionID == nil || armer.armedID != *agentSessionID {
 		t.Errorf("armed agent session id = %q, want %v", armer.armedID, agentSessionID)
 	}
-	if len(cr.started) != 1 || !cr.started[0].strict {
-		t.Fatalf("headless start must carry strict managed MCP policy: %+v", cr.started)
+	if len(cr.started) != 1 {
+		t.Fatalf("headless start count = %d, want 1: %+v", len(cr.started), cr.started)
 	}
 }
 

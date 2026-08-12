@@ -124,6 +124,7 @@ go_library(
         "skills/boss-review/toolbox/bs-review-triage.mjs",
         "skills/boss-build/toolbox/tracker/adapter-core.mjs",
         "skills/boss-epic/toolbox/tracker/adapter-core.mjs",
+        "skills/boss-build/toolbox/tracker/preflight.mjs",
     ],
     importpath = "github.com/recurser/bossd-plugin-claude/skilldata",
     visibility = ["//visibility:public"],

@@ -51,6 +51,17 @@ type chatDeletedMsg struct {
 	err            error
 }
 
+// chatRenamedMsg carries the result of an inline [r]ename (BOS-836).
+// previousTitle is the title the row held before the optimistic update, so a
+// failed RPC can put it back rather than leaving the list showing a name the
+// daemon rejected.
+type chatRenamedMsg struct {
+	agentSessionID string
+	title          string
+	previousTitle  string
+	err            error
+}
+
 // newTabResultMsg carries the result of an async openInNewTab call.
 type newTabResultMsg struct {
 	err error

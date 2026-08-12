@@ -91,14 +91,12 @@ type HeadlessCapabilityProfileRunner interface {
 // HeadlessLaunchOptions carries daemon-owned policy that every panel-less
 // launch must forward to its plugin as one atomic request.
 type HeadlessLaunchOptions struct {
-	ManagedMcpConfigPath      string
-	StrictManagedMcpConfig    bool
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
 }
 
 // HeadlessLaunchOptionsRunner is implemented by runners that preserve the
-// complete panel-less launch contract instead of silently dropping strict MCP
-// isolation or a capability profile.
+// complete panel-less launch contract instead of silently dropping a
+// capability profile.
 type HeadlessLaunchOptionsRunner interface {
 	StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
 }

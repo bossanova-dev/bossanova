@@ -147,6 +147,23 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	}
 }
 
+// renameChatCmd runs UpdateChatTitle off the update loop for the inline
+// [r]ename (BOS-836). Captures everything by value, including previousTitle, so
+// the handler can restore the row if the daemon refuses the write.
+func (m ChatPickerModel) renameChatCmd(agentSessionID, title, previousTitle string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		err := client.UpdateChatTitle(ctx, agentSessionID, title)
+		return chatRenamedMsg{
+			agentSessionID: agentSessionID,
+			title:          title,
+			previousTitle:  previousTitle,
+			err:            err,
+		}
+	}
+}
+
 // mergeCmd runs MergeSession off the update loop. Captures everything by value.
 func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	client := m.client

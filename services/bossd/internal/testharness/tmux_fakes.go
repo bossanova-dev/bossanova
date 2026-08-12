@@ -2,9 +2,13 @@ package testharness
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -40,6 +44,23 @@ type CronReadyTmuxFake struct {
 	// has-session consults this map.
 	liveSessions map[string]bool
 
+	// sessionCreated records each live session's tmux `session_created`
+	// instant, reported by the list-sessions arm. new-session stamps the
+	// current time; AgeSession rewinds it so a test can present a pane as
+	// older than a grace window without sleeping.
+	sessionCreated map[string]time.Time
+
+	// sessionEnv records the `-e KEY=VALUE` pairs each session was created
+	// with, so show-environment can read them back the way real tmux does.
+	// This is what lets a test exercise the reaper's ownership stamp.
+	sessionEnv map[string]map[string]string
+
+	// ListSessionsStderr, when non-empty, makes every `tmux list-sessions`
+	// exit non-zero with this string on stderr. Set it to a "no server
+	// running ..." message for the idle-host case and to anything else for
+	// the unreadable-tmux case the reaper must fail closed on.
+	ListSessionsStderr string
+
 	// CapturePaneOutput, when non-empty, replaces the canned capture-pane
 	// stdout. Tests that need the daemon to react to specific pane CONTENT —
 	// a login banner, a usage-limit banner, a transient 5xx banner — script it
@@ -62,8 +83,33 @@ type CronReadyTmuxFake struct {
 // and new-session / kill-session toggle the per-name liveSessions map.
 func NewCronReadyTmuxFake() *CronReadyTmuxFake {
 	return &CronReadyTmuxFake{
-		liveSessions: map[string]bool{},
+		liveSessions:   map[string]bool{},
+		sessionCreated: map[string]time.Time{},
+		sessionEnv:     map[string]map[string]string{},
 	}
+}
+
+// AgeSession rewinds a live session's reported `session_created` by d, so a
+// test can present a pane as older than the reaper's grace window without
+// sleeping. No-op for a session this fake never saw created.
+func (f *CronReadyTmuxFake) AgeSession(name string, d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if created, ok := f.sessionCreated[name]; ok {
+		f.sessionCreated[name] = created.Add(-d)
+	}
+}
+
+// SessionEnv returns the `-e KEY=VALUE` pairs the named session was created
+// with, as show-environment would read them back.
+func (f *CronReadyTmuxFake) SessionEnv(name string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.sessionEnv[name]))
+	for k, v := range f.sessionEnv[name] {
+		out[k] = v
+	}
+	return out
 }
 
 // Factory returns the tmux.CommandFactory backed by this fake. Pass it to
@@ -148,6 +194,8 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 		// new-session takes -s NAME; scan args for it.
 		if sessName := scanFlagValue(args[1:], "-s"); sessName != "" {
 			f.liveSessions[sessName] = true
+			f.sessionCreated[sessName] = time.Now()
+			f.sessionEnv[sessName] = scanSessionEnv(args[1:])
 		}
 		f.mu.Unlock()
 		return exec.CommandContext(ctx, "true")
@@ -155,9 +203,56 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 	case "kill-session":
 		if sessName := scanFlagValue(args[1:], "-t"); sessName != "" {
 			delete(f.liveSessions, sessName)
+			delete(f.sessionCreated, sessName)
+			delete(f.sessionEnv, sessName)
 		}
 		f.mu.Unlock()
 		return exec.CommandContext(ctx, "true")
+
+	case "list-sessions":
+		// Without this arm the default `true` at the bottom of this function
+		// answers with empty stdout, which parses as "nothing is running" —
+		// an orphan-reaper test would then pass while exercising nothing.
+		// Emit the production format instead:
+		// "#{session_name}\t#{session_created}", creation as Unix seconds.
+		if f.ListSessionsStderr != "" {
+			stderr := f.ListSessionsStderr
+			f.mu.Unlock()
+			// #nosec G204 -- test-only tmux fake; message passed as $1 to `sh -c`, no shell interpolation of its contents
+			// owner=@recurser review-by=2027-01-18 issue=BOS-28
+			return exec.CommandContext(ctx, "sh", "-c",
+				`printf '%s\n' "$1" >&2; exit 1`, "sh", stderr)
+		}
+		var b strings.Builder
+		for _, sessName := range slices.Sorted(maps.Keys(f.liveSessions)) {
+			if !f.liveSessions[sessName] {
+				continue
+			}
+			fmt.Fprintf(&b, "%s\t%d\n", sessName, f.sessionCreated[sessName].Unix())
+		}
+		f.mu.Unlock()
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdin = strings.NewReader(b.String())
+		return cmd
+
+	case "show-environment":
+		// args = ["show-environment", "-t", name, key]. Real tmux prints
+		// "KEY=value" for a set variable and exits non-zero otherwise, which
+		// is how an unstamped pane is expressed.
+		sessName := scanFlagValue(args[1:], "-t")
+		var line string
+		if len(args) >= 4 {
+			if v, ok := f.sessionEnv[sessName][args[3]]; ok {
+				line = args[3] + "=" + v + "\n"
+			}
+		}
+		f.mu.Unlock()
+		if line == "" {
+			return exec.CommandContext(ctx, "false")
+		}
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdin = strings.NewReader(line)
+		return cmd
 
 	case "has-session":
 		sessName := scanFlagValue(args[1:], "-t")
@@ -202,6 +297,22 @@ func scanFlagValue(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// scanSessionEnv collects the `-e KEY=VALUE` pairs from a new-session argv,
+// mirroring how tmux seeds a session environment. A flag with no `=` is
+// skipped rather than stored under an empty key.
+func scanSessionEnv(args []string) map[string]string {
+	env := map[string]string{}
+	for i, a := range args {
+		if a != "-e" || i+1 >= len(args) {
+			continue
+		}
+		if k, v, ok := strings.Cut(args[i+1], "="); ok && k != "" {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 // CronReadyTmuxFactory is a convenience constructor for cron e2e tests that

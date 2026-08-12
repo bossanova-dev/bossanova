@@ -3,12 +3,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -138,25 +133,12 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	if req.ResumeId != nil {
 		resume = req.ResumeId
 	}
-	// Project the strict home BEFORE the authoritative preflight. The profile
-	// certifies a runtime by inspecting the operations a CODEX_HOME exposes, so
-	// profiling req.ExtraEnv and then switching CODEX_HOME underneath would
-	// certify a different runtime than the one that starts: the selected account
-	// home can hold an authenticated connector that the daemon-managed one lacks,
-	// and the required-operation check would pass for capabilities the launched
-	// agent does not have.
+	// CODEX_HOME arrives in ExtraEnv already resolved to the selected account's
+	// home — that is credential/account routing, not MCP wiring, and this plugin
+	// no longer projects a synthetic home on top of it. The runtime the preflight
+	// profiles is therefore the runtime that starts, with no substitution between
+	// the two.
 	extraEnv := req.GetExtraEnv()
-	if req.GetIsStrictManagedMcpConfig() {
-		if req.GetManagedMcpConfigPath() == "" {
-			return nil, status.Error(codes.FailedPrecondition, "strict MCP config requires a managed config path")
-		}
-		home, err := s.strictCodexMcpHome(req.GetManagedMcpConfigPath(), req.GetWorkDir(), extraEnv)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "prepare strict codex MCP config: %v", err)
-		}
-		extraEnv = cloneEnv(extraEnv)
-		extraEnv["CODEX_HOME"] = home
-	}
 	if _, err := s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
@@ -175,14 +157,6 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
 	return &bossanovav1.StartAgentRunResponse{SessionId: sid}, nil
-}
-
-func cloneEnv(env map[string]string) map[string]string {
-	clone := make(map[string]string, len(env)+1)
-	for key, value := range env {
-		clone[key] = value
-	}
-	return clone
 }
 
 func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
@@ -266,15 +240,13 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // landed. Flip the declaration to IN_ARGV in the same change that starts
 // appending the flag, never before.
 //
-// req.ManagedMcpConfigPath IS consumed, but differently from claude: codex has no
-// --mcp-config flag, so codexMcpOverrideArgs translates the JSON config bossd
-// wrote (in app-data, never the worktree) into repeatable `-c mcp_servers.boss.*`
-// global overrides. Strict launches instead use an isolated CODEX_HOME whose
-// config contains the entire curated MCP surface, because `-c` overrides layer
-// on top of (rather than replace) a user's config. This exposes the same
-// mcp__boss__* tools without writing anything into the worktree. It is
-// best-effort — a missing/unparseable config is logged and skipped so the
-// launch never fails.
+// No MCP wiring is appended here, deliberately. Boss does not own MCP
+// configuration: codex reads `$CODEX_HOME/config.toml` (the selected account's
+// home, routed through the session environment) plus the repo's own
+// `.codex/config.toml`, and the repo is responsible for declaring the servers
+// it needs. This plugin neither writes nor overrides either file — a `-c
+// mcp_servers.*` override or a synthetic CODEX_HOME would each put boss back in
+// the business of owning a harness's config format.
 //
 // No `tui.notifications` / `tui.notification_method` overrides are appended
 // here, deliberately. BOS-487 proposed launching codex with
@@ -303,24 +275,11 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // Revisit only if codex upstream grows an approval-time notification kind
 // (openai/codex#11808, #19921 track the same gap in the external notify hook).
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	// No `-c mcp_servers.*` overrides and no synthetic CODEX_HOME: codex resolves
+	// MCP servers from `$CODEX_HOME/config.toml` and the repo's `.codex/config.toml`,
+	// which is the repo's responsibility to declare. CODEX_HOME still reaches the
+	// child through the session environment for account selection.
 	args := []string{"codex"}
-	// Codex has no --mcp-config flag (the claude plugin maps the field to that).
-	// It configures MCP servers via repeatable global `-c mcp_servers.<name>.*`
-	// overrides, which keep the wiring on the command line rather than in the
-	// worktree (HARD CONSTRAINT preserved). A `-c` override only layers onto a
-	// user's config, so strict requests require an isolated CODEX_HOME instead.
-	// These are global options, so they go before the `resume` subcommand.
-	// Best-effort: a missing/unparseable managed config is logged and skipped,
-	// never blocking the launch.
-	if req.GetStrictManagedMcpConfig() {
-		home, err := s.strictCodexMcpHome(req.GetManagedMcpConfigPath(), req.GetWorktreePath(), req.GetConfigHomeEnv())
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "prepare strict codex MCP config: %v", err)
-		}
-		args = []string{"env", "CODEX_HOME=" + home, "codex"}
-	} else {
-		args = append(args, s.codexMcpOverrideArgs(req.GetManagedMcpConfigPath())...)
-	}
 	if req.Resume {
 		args = append(args, "resume", req.SessionId)
 	}
@@ -370,285 +329,6 @@ func codexInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
 		return "$" + strings.TrimLeft(req.GetInitialCommand(), "/$")
 	}
 	return req.GetInitialPrompt()
-}
-
-// mcpConfigFile is the subset of the JSON config bossd writes (see
-// services/bossd/internal/session/mcp_config.go) that codex needs to rebuild as
-// `-c` overrides. Kept local to the plugin: module boundaries forbid importing
-// the daemon's session package.
-type mcpConfigFile struct {
-	MCPServers map[string]mcpServer `json:"mcpServers"`
-}
-
-type mcpServer struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Type    string            `json:"type"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
-}
-
-// codexMcpOverrideArgs translates the boss MCP config at path into codex global
-// `-c mcp_servers.boss.*` overrides (codex has no --mcp-config). It returns
-// nil when path is empty or the config cannot be read/parsed/lacks a usable
-// "boss" server — MCP wiring is best-effort and must never block a codex
-// launch. The override values are TOML literals, matching how codex parses
-// `-c key=value`.
-func (s *Server) codexMcpOverrideArgs(path string) []string {
-	boss, ok := s.managedBossMcp(path)
-	if !ok {
-		return nil
-	}
-	out := []string{"-c", "mcp_servers.boss.command=" + tomlString(boss.Command)}
-	if len(boss.Args) > 0 {
-		quoted := make([]string, len(boss.Args))
-		for i, a := range boss.Args {
-			quoted[i] = tomlString(a)
-		}
-		out = append(out, "-c", "mcp_servers.boss.args=["+strings.Join(quoted, ",")+"]")
-	}
-	return out
-}
-
-func (s *Server) managedBossMcp(path string) (mcpServer, bool) {
-	doc, ok := s.managedMcpConfig(path)
-	if !ok {
-		return mcpServer{}, false
-	}
-	boss, ok := doc.MCPServers["boss"]
-	if !ok || boss.Command == "" {
-		s.logger.Warn().Str("mcpConfigPath", path).
-			Msg(`mcp config has no usable "boss" server; codex launches without mcp__boss__*`)
-		return mcpServer{}, false
-	}
-	return boss, true
-}
-
-func (s *Server) managedMcpConfig(path string) (mcpConfigFile, bool) {
-	if path == "" {
-		return mcpConfigFile{}, false
-	}
-	raw, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		s.logger.Warn().Err(err).Str("mcpConfigPath", path).
-			Msg("read managed mcp config failed; codex launches without managed MCP servers")
-		return mcpConfigFile{}, false
-	}
-	var doc mcpConfigFile
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		s.logger.Warn().Err(err).Str("mcpConfigPath", path).
-			Msg("parse managed mcp config failed; codex launches without managed MCP servers")
-		return mcpConfigFile{}, false
-	}
-	return doc, true
-}
-
-// strictCodexMcpHome creates a CODEX_HOME with a config.toml containing the
-// full managed MCP surface. Authentication and transcript state are linked from
-// the selected account home so strictness does not break login or resume. Its
-// directory is beside the daemon-owned managed config when one exists; that
-// gives each session its own stable home without creating worktree artifacts.
-func (s *Server) strictCodexMcpHome(managedPath, worktreePath string, configHomeEnv map[string]string) (string, error) {
-	sourceHome, err := codexConfigDirForEnv(configHomeEnv)
-	if err != nil {
-		return "", err
-	}
-	home := filepath.Join(sourceHome, "boss-strict-mcp-empty")
-	if managedPath != "" {
-		home = filepath.Clean(managedPath) + ".codex-home"
-	}
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return "", fmt.Errorf("create isolated CODEX_HOME: %w", err)
-	}
-	entries, err := os.ReadDir(sourceHome)
-	if err != nil {
-		return "", fmt.Errorf("read selected CODEX_HOME: %w", err)
-	}
-	// Reconcile the destination against the COMPLETE new source set before linking.
-	// `home` is a stable path reused across account rotations, while the projection
-	// loop below visits only names the new source still has — so an entry the
-	// previous account had and this one lacks (`auth.json` above all) is never
-	// passed to linkCodexHomeEntry, and its missing-source cleanup never runs. Left
-	// alone, that stale symlink keeps the strict home authenticating as the previous
-	// account, which is exactly the isolation this home exists to provide.
-	sourceNames := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		sourceNames[entry.Name()] = struct{}{}
-	}
-	projected, err := os.ReadDir(home)
-	if err != nil {
-		return "", fmt.Errorf("read isolated CODEX_HOME: %w", err)
-	}
-	for _, entry := range projected {
-		name := entry.Name()
-		if name == "config.toml" {
-			continue
-		}
-		if _, ok := sourceNames[name]; ok {
-			continue
-		}
-		destination := filepath.Join(home, name)
-		// Match linkCodexHomeEntry's contract: the strict home holds only symlinks
-		// (plus its own config.toml), so anything else here is unexpected and is
-		// refused rather than deleted.
-		if entry.Type()&os.ModeSymlink == 0 {
-			return "", fmt.Errorf("isolated CODEX_HOME entry %s is not a symlink", destination)
-		}
-		if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-			return "", fmt.Errorf("remove stale isolated CODEX_HOME entry %s: %w", destination, err)
-		}
-	}
-
-	// Preserve every selected-home entry except config.toml. The strict home
-	// owns that one file so the managed MCP list cannot merge with user servers.
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == "config.toml" {
-			continue
-		}
-		if err := linkCodexHomeEntry(filepath.Join(sourceHome, name), filepath.Join(home, name)); err != nil {
-			return "", err
-		}
-	}
-
-	config := strictCodexMcpConfig(s.managedMcpConfig(managedPath))
-	if strings.TrimSpace(worktreePath) != "" {
-		absPath, err := filepath.Abs(worktreePath)
-		if err != nil {
-			return "", fmt.Errorf("resolve worktree path: %w", err)
-		}
-		config = setCodexProjectTrust(config, absPath)
-	}
-	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
-		return "", fmt.Errorf("write isolated config: %w", err)
-	}
-	return home, nil
-}
-
-func strictCodexMcpConfig(doc mcpConfigFile, ok bool) string {
-	if !ok {
-		return ""
-	}
-	names := make([]string, 0, len(doc.MCPServers))
-	for name := range doc.MCPServers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var config strings.Builder
-	for _, name := range names {
-		server := doc.MCPServers[name]
-		switch {
-		case server.Command != "":
-			writeCodexMcpServer(&config, name, server)
-		case server.URL != "":
-			writeCodexHTTPMcpServer(&config, name, server)
-		}
-	}
-	return config.String()
-}
-
-func writeCodexMcpServer(config *strings.Builder, name string, server mcpServer) {
-	config.WriteString("[mcp_servers.")
-	config.WriteString(name)
-	config.WriteString("]\ncommand = ")
-	config.WriteString(tomlString(server.Command))
-	config.WriteByte('\n')
-	if len(server.Args) == 0 {
-		return
-	}
-	quoted := make([]string, len(server.Args))
-	for i, arg := range server.Args {
-		quoted[i] = tomlString(arg)
-	}
-	config.WriteString("args = [")
-	config.WriteString(strings.Join(quoted, ", "))
-	config.WriteString("]\n")
-}
-
-func writeCodexHTTPMcpServer(config *strings.Builder, name string, server mcpServer) {
-	config.WriteString("[mcp_servers.")
-	config.WriteString(name)
-	config.WriteString("]\nurl = ")
-	config.WriteString(tomlString(server.URL))
-	config.WriteByte('\n')
-	if tokenEnv, ok := codexBearerTokenEnv(server.Headers); ok {
-		config.WriteString("bearer_token_env_var = ")
-		config.WriteString(tomlString(tokenEnv))
-		config.WriteByte('\n')
-	}
-}
-
-func codexBearerTokenEnv(headers map[string]string) (string, bool) {
-	value, ok := headers["Authorization"]
-	if !ok {
-		return "", false
-	}
-	value = strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
-	if len(value) < 4 || !strings.HasPrefix(value, "${") || !strings.HasSuffix(value, "}") {
-		return "", false
-	}
-	return value[2 : len(value)-1], true
-}
-
-func linkCodexHomeEntry(source, destination string) error {
-	if _, err := os.Lstat(source); err != nil {
-		if os.IsNotExist(err) {
-			if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove stale isolated CODEX_HOME entry %s: %w", destination, err)
-			}
-			return nil
-		}
-		return fmt.Errorf("inspect CODEX_HOME entry %s: %w", source, err)
-	}
-	if info, err := os.Lstat(destination); err == nil {
-		if info.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("isolated CODEX_HOME entry %s is not a symlink", destination)
-		}
-		target, err := os.Readlink(destination)
-		if err != nil {
-			return fmt.Errorf("read isolated CODEX_HOME entry %s: %w", destination, err)
-		}
-		if target == source {
-			return nil
-		}
-		if err := os.Remove(destination); err != nil {
-			return fmt.Errorf("replace isolated CODEX_HOME entry %s: %w", destination, err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect isolated CODEX_HOME entry %s: %w", destination, err)
-	}
-	if err := os.Symlink(source, destination); err != nil {
-		return fmt.Errorf("link CODEX_HOME entry %s: %w", source, err)
-	}
-	return nil
-}
-
-// tomlString renders s as a TOML basic string (double-quoted, with backslashes,
-// quotes, and control characters escaped) for use as a `-c key=value` override
-// value. Real binary/socket paths never contain control characters, but
-// escaping them keeps the emitted override valid TOML regardless of input.
-func tomlString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

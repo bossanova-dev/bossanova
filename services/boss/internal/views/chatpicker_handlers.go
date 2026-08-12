@@ -127,6 +127,24 @@ func (m ChatPickerModel) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.C
 	return m, nil
 }
 
+// handleChatRenamed settles an inline [r]ename. The optimistic title is already
+// on the row, so success is a no-op; a failure puts the previous title back and
+// reports why, rather than leaving the list showing a name the daemon rejected.
+func (m ChatPickerModel) handleChatRenamed(msg chatRenamedMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		return m, nil
+	}
+	for _, chat := range m.chats {
+		if chat.GetAgentSessionId() == msg.agentSessionID {
+			chat.Title = msg.previousTitle
+			break
+		}
+	}
+	m.statusMsg = rpcStatusMessage("Rename failed", msg.err)
+	m.buildTableRows()
+	return m, nil
+}
+
 func (m ChatPickerModel) handleNewTabResult(msg newTabResultMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.statusMsg = rpcStatusMessage("Couldn't open new tab", msg.err)

@@ -91,6 +91,36 @@ func TestCtrlXMatchesEscapeForBackNavigation(t *testing.T) {
 			want: ViewSettings,
 		},
 		{
+			// BOS-836 gave the chat picker its first text input, which turned its
+			// backKeyAliasEligible arm from an unconditional `true` into a
+			// delegation to textEntryActive(). This row pins the half that change
+			// could silently lose: with no rename prompt open the picker is still a
+			// pure list screen, so ctrl+x must keep aliasing onto Esc's "back one
+			// level" exactly as it did before the prompt existed. The negative half
+			// — the alias suppressed *while* the prompt is open — is asserted by
+			// TestCtrlXIsForwardedUnchanged below.
+			name: "chat picker with no rename prompt open returns to the session list",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewChatPicker
+				m := NewChatPickerModel(nil, a.ctx, "sess-1", "")
+				m.loading = false
+				m.chats = []*pb.ClaudeChat{{
+					SessionId:      "sess-1",
+					AgentSessionId: "agent-1",
+					Title:          "Initial implementation",
+				}}
+				m.buildTableRows()
+				if m.textEntryActive() {
+					t.Fatal("premise broken: a chat picker with no prompt open reports text entry")
+				}
+				a.chatPicker = m
+				return a
+			},
+			want: ViewHome,
+		},
+		{
 			name: "attach detaches to the chat picker on escape only",
 			build: func(t *testing.T) App {
 				t.Helper()
@@ -509,6 +539,48 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				}
 				if got.newSession.phase != newSessionPhasePRSelect {
 					t.Fatalf("wizard phase = %v after ctrl+x, want it unchanged", got.newSession.phase)
+				}
+			},
+		},
+		{
+			// BOS-836: the chat picker was a pure list screen until the inline
+			// [r]ename prompt gave it a text input. While that prompt is open,
+			// Esc cancels the edit rather than leaving the picker, so aliasing
+			// ctrl+x onto it would discard the operator's typing.
+			name: "chat picker rename prompt is being typed into",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewChatPicker
+				m := NewChatPickerModel(nil, a.ctx, "sess-1", "")
+				m.loading = false
+				m.chats = []*pb.ClaudeChat{{
+					SessionId:      "sess-1",
+					AgentSessionId: "agent-1",
+					Title:          "Initial implementation",
+				}}
+				m.buildTableRows()
+				updated, _ := m.Update(keyPress('r'))
+				m = updated.(ChatPickerModel)
+				if !m.renaming {
+					t.Fatal("premise broken: r did not open the rename prompt")
+				}
+				a.chatPicker = m
+				return a
+			},
+			verify: func(t *testing.T, got App) {
+				t.Helper()
+				if got.activeView != ViewChatPicker {
+					t.Fatalf("activeView = %v after ctrl+x in the rename prompt, want ViewChatPicker", got.activeView)
+				}
+				if got.chatPicker.Cancelled() {
+					t.Fatal("ctrl+x cancelled the chat picker while a title was being edited")
+				}
+				if !got.chatPicker.renaming {
+					t.Fatal("ctrl+x closed the rename prompt; escape's cancel must not be aliased while editing")
+				}
+				if v := got.chatPicker.renameInput.Value(); v != "Initial implementation" {
+					t.Fatalf("rename input = %q after ctrl+x, want the prefilled title preserved", v)
 				}
 			},
 		},

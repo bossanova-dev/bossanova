@@ -165,32 +165,6 @@ func TestPluginRunner_StartWithHeadlessCapabilityProfileCarriesProfile(t *testin
 	}
 }
 
-func TestPluginRunner_StartWithHeadlessLaunchOptionsCarriesManagedMcpConfig(t *testing.T) {
-	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
-	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
-
-	if _, err := pr.StartWithHeadlessLaunchOptions(
-		context.Background(), "/work", "plan", nil, "sid", "model", nil,
-		HeadlessLaunchOptions{
-			ManagedMcpConfigPath:      "/data/bossanova/mcp-configs/sid.json",
-			StrictManagedMcpConfig:    true,
-			HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
-		},
-	); err != nil {
-		t.Fatalf("StartWithHeadlessLaunchOptions: %v", err)
-	}
-	got := fc.startReq.Load()
-	if got == nil {
-		t.Fatal("StartRun req not recorded")
-	}
-	if got.GetManagedMcpConfigPath() != "/data/bossanova/mcp-configs/sid.json" || !got.GetIsStrictManagedMcpConfig() {
-		t.Fatalf("managed MCP request = path %q strict %t", got.GetManagedMcpConfigPath(), got.GetIsStrictManagedMcpConfig())
-	}
-	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
-		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())
-	}
-}
-
 func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(t *testing.T) {
 	fc := &fakeAgentClient{}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())

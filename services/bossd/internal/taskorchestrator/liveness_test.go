@@ -45,6 +45,12 @@ func (m *mockSessionStoreLiveness) ListByRepoAndPR(_ context.Context, _ string, 
 func (m *mockSessionStoreLiveness) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }
+
+// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// package drives the orphaned-tmux reaper, so an empty whitelist is correct.
+func (m *mockSessionStoreLiveness) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	return nil, nil
+}
 func (m *mockSessionStoreLiveness) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }

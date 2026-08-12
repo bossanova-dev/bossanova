@@ -74,6 +74,393 @@ func writeSessionMetaRollout(t *testing.T, root, id, workDir, originator string,
 	return path
 }
 
+// shardRolloutPathAt returns the canonical codex rollout path for `id` inside
+// the `root/YYYY/MM/DD` shard named by shardDate. Unlike shardedRolloutPath it
+// takes the shard date from the caller, so a test can deliberately place a
+// rollout in a shard that disagrees with the rollout's own timestamp.
+func shardRolloutPathAt(root string, shardDate time.Time, id string) string {
+	d := shardDate.UTC()
+	return filepath.Join(root,
+		d.Format("2006"),
+		d.Format("01"),
+		d.Format("02"),
+		"rollout-"+d.Format("2006-01-02T15-04-05")+"-"+id+".jsonl",
+	)
+}
+
+// writeRolloutAt writes a single-line codex-tui session_meta rollout at an
+// explicit path with an explicit envelope timestamp and an explicit mtime.
+//
+// writeSessionMetaRollout deliberately couples all three (shard directory,
+// envelope timestamp and mtime all derive from one modTime), which is exactly
+// the coupling the BOS-843 prefilter falsification tests must break: the whole
+// risk of an mtime/shard-date prefilter is that it rejects a file whose
+// authoritative meta.Timestamp is inside the window. Originator is fixed at
+// "codex-tui" because every caller here is exercising the prefilter, not the
+// originator filter — use writeSessionMetaRollout for the other originators.
+func writeRolloutAt(tb testing.TB, path, id, workDir string, metaTime, modTime time.Time) string {
+	tb.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		tb.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	line := fmt.Sprintf(
+		`{"timestamp":"%s","type":"session_meta","payload":{"id":%q,"cwd":%q,"originator":"codex-tui","cli_version":"test"}}`+"\n",
+		metaTime.UTC().Format(time.RFC3339Nano),
+		id,
+		workDir,
+	)
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		tb.Fatalf("write rollout %s: %v", path, err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		tb.Fatalf("chtimes rollout %s: %v", path, err)
+	}
+	return path
+}
+
+// buildSyntheticRolloutCorpus writes a date-sharded codex sessions tree under
+// root: `shardCount` day-shards of `perShard` rollouts each, every one of them
+// strictly older than notBefore, plus `inWindow` rollouts inside the window.
+//
+// The out-of-window rollouts are stamped at 09:00 UTC on their shard day while
+// notBefore is expected to be later in the day, so the day-shard immediately
+// preceding notBefore is still rejected on mtime rather than by directory
+// pruning — that keeps the read-count assertions honest about both filters.
+//
+// Returns the ids of the in-window rollouts, newest last.
+func buildSyntheticRolloutCorpus(tb testing.TB, root, workDir string, notBefore time.Time, shardCount, perShard, inWindow int) []string {
+	tb.Helper()
+	for shard := 1; shard <= shardCount; shard++ {
+		day := notBefore.UTC().AddDate(0, 0, -shard)
+		for i := 0; i < perShard; i++ {
+			ts := time.Date(day.Year(), day.Month(), day.Day(), 9, 0, i%60, 0, time.UTC)
+			id := fmt.Sprintf("old-%d-%d", shard, i)
+			writeRolloutAt(tb, shardRolloutPathAt(root, ts, id), id, workDir, ts, ts)
+		}
+	}
+	ids := make([]string, 0, inWindow)
+	for i := 0; i < inWindow; i++ {
+		ts := notBefore.UTC().Add(time.Duration(i+1) * time.Minute)
+		id := fmt.Sprintf("in-window-%d", i)
+		writeRolloutAt(tb, shardRolloutPathAt(root, ts, id), id, workDir, ts, ts)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// countingSessionMetaReader wraps readSessionMeta and records how many
+// rollouts the scan actually opened. The counter is per-call state, never a
+// package-level var, so parallel tests cannot share it.
+func countingSessionMetaReader(reads *int) sessionMetaReader {
+	return func(path string) (codexSessionMetaPayload, bool) {
+		*reads++
+		return readSessionMeta(path)
+	}
+}
+
+// TestScanInteractiveSessionCandidatesInWindowSkipsReadsOutsideWindow is the
+// primary BOS-843 gate: it asserts the EXACT number of readSessionMeta calls
+// for a corpus whose in-window subset is a small fraction of the whole. Before
+// the prefilter the scan opened and read every rollout under the sessions root
+// (32 here, ~10.5k on the reporting host), which is what blew the 2-second
+// ResolveInteractiveSessionID budget. Deliberately not -short-guarded.
+func TestScanInteractiveSessionCandidatesInWindowSkipsReadsOutsideWindow(t *testing.T) {
+	const (
+		shardCount = 10
+		perShard   = 3
+		inWindow   = 2
+		total      = shardCount*perShard + inWindow
+	)
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	notAfter := notBefore.Add(10 * time.Minute)
+
+	t.Run("reads only the in-window rollouts", func(t *testing.T) {
+		root := t.TempDir()
+		workDir := t.TempDir()
+		ids := buildSyntheticRolloutCorpus(t, root, workDir, notBefore, shardCount, perShard, inWindow)
+
+		reads := 0
+		got := scanInteractiveSessionCandidatesInWindowWith(root, workDir, notBefore, notAfter, countingSessionMetaReader(&reads))
+
+		if len(got) != inWindow {
+			t.Fatalf("candidates = %d, want %d", len(got), inWindow)
+		}
+		if got[0].ID != ids[len(ids)-1] {
+			t.Errorf("candidates[0].ID = %q, want %q (newest first)", got[0].ID, ids[len(ids)-1])
+		}
+		if reads != inWindow {
+			t.Errorf("readSessionMeta called %d times over a %d-rollout corpus, want exactly %d "+
+				"(the in-window subset); the mtime/shard prefilter is not being applied",
+				reads, total, inWindow)
+		}
+		t.Logf("readSessionMeta calls = %d over a %d-rollout corpus (in-window = %d)", reads, total, inWindow)
+	})
+
+	t.Run("zero notBefore disables all pruning", func(t *testing.T) {
+		root := t.TempDir()
+		workDir := t.TempDir()
+		buildSyntheticRolloutCorpus(t, root, workDir, notBefore, shardCount, perShard, inWindow)
+
+		reads := 0
+		got := scanInteractiveSessionCandidatesInWindowWith(root, workDir, time.Time{}, time.Time{}, countingSessionMetaReader(&reads))
+
+		if len(got) != total {
+			t.Errorf("candidates = %d, want %d (a zero notBefore is 'no lower bound')", len(got), total)
+		}
+		if reads != total {
+			t.Errorf("readSessionMeta called %d times, want %d — a zero notBefore must disable "+
+				"both the file and the directory prefilter", reads, total)
+		}
+	})
+}
+
+// TestScanInteractiveSessionCandidatesInWindowPrefilterIsConservativeSuperset
+// falsifies the four ways an mtime/shard-date prefilter can silently NARROW
+// behaviour. Each case writes a rollout whose authoritative meta.Timestamp is
+// inside the window but whose mtime or shard directory disagrees, and requires
+// the scan to still return it. A naive implementation — an upper-bound mtime
+// prune, a zero-slack lower bound, an upper-bound shard prune, or fail-CLOSED
+// handling of an unrecognised directory — fails the corresponding case. The
+// shard-date boundaries themselves, which this walk-level test cannot isolate,
+// are pinned directly by TestShardDirEndsBefore.
+func TestScanInteractiveSessionCandidatesInWindowPrefilterIsConservativeSuperset(t *testing.T) {
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	notAfter := notBefore.Add(2 * time.Minute) // the legacy resolver's real upper bound
+	metaTime := notBefore.Add(time.Minute)     // authoritative session time, inside the window
+
+	tests := []struct {
+		name  string
+		write func(t *testing.T, root, workDir, id string) string
+	}{
+		{
+			// mtime runs AHEAD of meta.Timestamp by up to ~a week on real
+			// corpora. Falsifies any mtime.After(notAfter) prune.
+			name: "mtime seven days after an in-window meta.Timestamp",
+			write: func(t *testing.T, root, workDir, id string) string {
+				t.Helper()
+				return writeRolloutAt(t, shardRolloutPathAt(root, metaTime, id), id, workDir,
+					metaTime, metaTime.Add(7*24*time.Hour))
+			},
+		},
+		{
+			// Inside mtimePrefilterSlack. Falsifies a zero-slack lower bound.
+			name: "mtime twelve hours below notBefore",
+			write: func(t *testing.T, root, workDir, id string) string {
+				t.Helper()
+				return writeRolloutAt(t, shardRolloutPathAt(root, metaTime, id), id, workDir,
+					metaTime, notBefore.Add(-12*time.Hour))
+			},
+		},
+		{
+			// Codex dates shards from the LOCAL date; west of UTC that lands a
+			// day early. Pins that sign: a shard dated a day BEFORE an
+			// in-window session must still be descended into. It does not
+			// falsify shardDateSlack — mtimePrefilterSlack alone already puts
+			// the derived floorDate a full day below date(notBefore), so this
+			// case survives at shardDateSlack = 0. See TestShardDirEndsBefore.
+			name: "shard directory dated one day before the UTC session date",
+			write: func(t *testing.T, root, workDir, id string) string {
+				t.Helper()
+				shard := metaTime.AddDate(0, 0, -1)
+				return writeRolloutAt(t, shardRolloutPathAt(root, shard, id), id, workDir,
+					metaTime, metaTime)
+			},
+		},
+		{
+			// East of UTC it lands a day late (22.7% of a real corpus).
+			// Falsifies any upper-bound shard prune.
+			name: "shard directory dated one day after the UTC session date",
+			write: func(t *testing.T, root, workDir, id string) string {
+				t.Helper()
+				shard := metaTime.AddDate(0, 0, 1)
+				return writeRolloutAt(t, shardRolloutPathAt(root, shard, id), id, workDir,
+					metaTime, metaTime)
+			},
+		},
+		{
+			// Codex's shard layout is undocumented; pruning must fail OPEN.
+			name: "rollout under a non-numeric directory",
+			write: func(t *testing.T, root, workDir, id string) string {
+				t.Helper()
+				path := filepath.Join(root, "archive", "rollout-2026-05-08T12-01-00-"+id+".jsonl")
+				return writeRolloutAt(t, path, id, workDir, metaTime, metaTime)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := t.TempDir()
+			const id = "needle"
+			want := tc.write(t, root, workDir, id)
+
+			got := scanInteractiveSessionCandidatesInWindow(root, workDir, notBefore, notAfter)
+
+			if len(got) != 1 {
+				t.Fatalf("candidates = %d, want 1 — the prefilter rejected a rollout whose "+
+					"meta.Timestamp is inside the window", len(got))
+			}
+			if got[0].ID != id {
+				t.Errorf("candidates[0].ID = %q, want %q", got[0].ID, id)
+			}
+			if got[0].Path != want {
+				t.Errorf("candidates[0].Path = %q, want %q", got[0].Path, want)
+			}
+		})
+	}
+}
+
+// TestShardDirEndsBefore pins shardDirEndsBefore directly, at a granularity the
+// walk-level prefilter tests cannot reach. In the walk the floor is always
+// derived (fileFloor is mtimePrefilterSlack below notBefore, dirFloor another
+// shardDateSlack below that), so its floorDate already sits days early and the
+// day-level boundary is never exercised at its edge — which is why zeroing
+// shardDateSlack leaves those tests green. Called with an explicit floor, every
+// boundary is reachable: same-day equality (must NOT prune), year rollover, and
+// each malformed segment that must fail OPEN.
+//
+// Reachable is not the same as falsified. The same-day, year-rollover and
+// month/day comparisons are each pinned by a case that flips when the
+// comparison changes. The fail-open guards are not: a plain malformed case
+// returns false by arithmetic even with its guard deleted, so each guard —
+// the depth cap, the month range, and day > 31 — additionally has a
+// guard-falsifying sibling case that returns the wrong answer without it.
+func TestShardDirEndsBefore(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "sessions")
+	defaultFloor := time.Date(2026, 5, 8, 13, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		rel   string    // shard path relative to root, always slash-separated
+		floor time.Time // zero means defaultFloor
+		want  bool
+	}{
+		{name: "the root itself is never pruned", rel: ".", want: false},
+
+		{name: "year strictly older than the floor year", rel: "2025", want: true},
+		{name: "the floor's own year", rel: "2026", want: false},
+		{name: "year after the floor year", rel: "2027", want: false},
+
+		{name: "month before the floor month in the floor year", rel: "2026/04", want: true},
+		{name: "the floor's own month", rel: "2026/05", want: false},
+		{name: "month after the floor month in the floor year", rel: "2026/06", want: false},
+
+		// Year rollover: the month comparison is only valid within the floor's
+		// own year, so both signs are pinned.
+		{name: "December of the year before a January floor", rel: "2025/12",
+			floor: time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC), want: true},
+		{name: "January of the year after a December floor", rel: "2026/01",
+			floor: time.Date(2025, 12, 15, 0, 0, 0, 0, time.UTC), want: false},
+
+		{name: "day strictly before the floor date", rel: "2026/05/07", want: true},
+		// Same-day equality: the floor's own date still holds rollouts inside
+		// the window, so it must survive the prune.
+		{name: "the floor's own date", rel: "2026/05/08", want: false},
+		{name: "day after the floor date", rel: "2026/05/09", want: false},
+		{name: "last day of the previous month against a first-of-month floor", rel: "2026/04/30",
+			floor: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), want: true},
+
+		// Everything below is malformed and must fail OPEN (false).
+		{name: "month out of range fails open", rel: "2026/13", want: false},
+		{name: "day out of range fails open", rel: "2026/05/32", want: false},
+		{name: "day zero fails open", rel: "2026/05/00", want: false},
+		{name: "three-digit year fails open", rel: "202/05", want: false},
+		{name: "non-digit in the year fails open", rel: "20a6/05/08", want: false},
+		{name: "signed year fails open", rel: "+2026/05/08", want: false},
+		{name: "negative-looking year fails open", rel: "-026/05/08", want: false},
+		{name: "whitespace in a segment fails open", rel: "20 6/05", want: false},
+		{name: "a level deeper than YYYY/MM/DD fails open", rel: "2026/05/08/extra", want: false},
+		// time.Date normalizes February 31 forward to March 3, which is NOT
+		// before a March 1 floor — so an out-of-month day fails open rather
+		// than being pruned on the month alone.
+		{name: "February 31 normalizes forward and fails open", rel: "2026/02/31",
+			floor: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), want: false},
+
+		// Guard-falsifying siblings of the three plain cases above. Those
+		// return false by arithmetic — drop the guard they are named after and
+		// they still pass — so only these pin the guards: each one is pruned
+		// (true), wrongly, if its guard is deleted.
+		{name: "a deeper level whose truncation would prune fails open", rel: "2026/05/07/extra", want: false},
+		{name: "month out of range normalizing past the floor fails open", rel: "2026/13/05",
+			floor: time.Date(2027, 1, 10, 0, 0, 0, 0, time.UTC), want: false},
+		{name: "day above 31 normalizing past the floor fails open", rel: "2026/05/32",
+			floor: time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			floor := tc.floor
+			if floor.IsZero() {
+				floor = defaultFloor
+			}
+			dir := filepath.Join(append([]string{root}, strings.Split(tc.rel, "/")...)...)
+			if got := shardDirEndsBefore(root, dir, floor); got != tc.want {
+				t.Errorf("shardDirEndsBefore(%q, %q, %s) = %v, want %v",
+					root, dir, floor.Format(time.RFC3339), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanInteractiveSessionCandidatesInWindowLargeCorpusBoundsReads exercises
+// the large-corpus behaviour a small fixture cannot show: 8,000 rollouts across
+// 200 day-shards, of which 3 are in the window. The read count must stay
+// proportional to the window, not to the corpus. Guarded by testing.Short() so
+// the module-local -short loop stays fast; it runs under the root/CI bazel run.
+func TestScanInteractiveSessionCandidatesInWindowLargeCorpusBoundsReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds an 8,000-rollout synthetic corpus on disk; skipped in -short mode")
+	}
+	const (
+		shardCount = 200
+		perShard   = 40
+		inWindow   = 3
+		total      = shardCount*perShard + inWindow
+	)
+	root := t.TempDir()
+	workDir := t.TempDir()
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	ids := buildSyntheticRolloutCorpus(t, root, workDir, notBefore, shardCount, perShard, inWindow)
+
+	reads := 0
+	got := scanInteractiveSessionCandidatesInWindowWith(root, workDir, notBefore, notBefore.Add(10*time.Minute), countingSessionMetaReader(&reads))
+
+	if len(got) != inWindow {
+		t.Fatalf("candidates = %d, want %d", len(got), inWindow)
+	}
+	if got[0].ID != ids[len(ids)-1] {
+		t.Errorf("candidates[0].ID = %q, want %q (newest in-window rollout first)", got[0].ID, ids[len(ids)-1])
+	}
+	if reads != inWindow {
+		t.Errorf("readSessionMeta called %d times over a %d-rollout corpus, want %d — the scan's "+
+			"cost must be proportional to the window, not the corpus size", reads, total, inWindow)
+	}
+	t.Logf("readSessionMeta calls = %d over a %d-rollout corpus (in-window = %d)", reads, total, inWindow)
+}
+
+// BenchmarkScanInteractiveSessionCandidatesInWindow measures the whole scan
+// over a realistically sized corpus (BOS-843: a real host carried 10,529
+// rollouts and the pre-prefilter scan opened every one of them, blowing the
+// 2-second ResolveInteractiveSessionID budget). The corpus is built once,
+// outside the timed loop.
+func BenchmarkScanInteractiveSessionCandidatesInWindow(b *testing.B) {
+	root := b.TempDir()
+	workDir := b.TempDir()
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	const inWindow = 3
+	buildSyntheticRolloutCorpus(b, root, workDir, notBefore, 200, 40, inWindow)
+	notAfter := notBefore.Add(10 * time.Minute)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got := scanInteractiveSessionCandidatesInWindow(root, workDir, notBefore, notAfter)
+		if len(got) != inWindow {
+			b.Fatalf("candidates = %d, want %d", len(got), inWindow)
+		}
+	}
+}
+
 // TestTranscriptPathFindsShardedFile verifies findRolloutPath globs the
 // YYYY/MM/DD shard tree and returns the rollout file for a given UUID.
 func TestTranscriptPathFindsShardedFile(t *testing.T) {

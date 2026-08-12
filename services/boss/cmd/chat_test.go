@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,250 @@ func TestChatSendWakeIfAsleepFlag(t *testing.T) {
 			t.Fatal("submit = false, want true: --submit regressed alongside the new flag")
 		}
 	})
+}
+
+// chatRenameRecorder captures the (chat id, title) pair UpdateChatTitle
+// received. That pair is the only observable output of a rename:
+// UpdateChatTitleResponse is an empty message, so nothing comes back to assert
+// on and the confirmation line echoes what the CLI sent, not what the daemon
+// stored. session is what GetSession answers with — nil plus a NotFound error
+// (the chatSendRecorder shape) makes the argument a chat id.
+type chatRenameRecorder struct {
+	session *pb.Session
+	calls   []chatRenameCall
+	err     error
+}
+
+type chatRenameCall struct {
+	agentSessionID string
+	title          string
+}
+
+func (c *chatRenameRecorder) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
+	if c.session != nil {
+		return c.session, nil
+	}
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("session not found"))
+}
+
+func (c *chatRenameRecorder) UpdateChatTitle(_ context.Context, agentSessionID, title string) error {
+	c.calls = append(c.calls, chatRenameCall{agentSessionID: agentSessionID, title: title})
+	return c.err
+}
+
+func TestChatRename(t *testing.T) {
+	t.Parallel()
+
+	t.Run("chat id is forwarded verbatim with the joined title", func(t *testing.T) {
+		t.Parallel()
+		c := &chatRenameRecorder{}
+		var out bytes.Buffer
+		if err := chatRename(context.Background(), c, &out, "agent-123", "my new title"); err != nil {
+			t.Fatalf("chatRename: %v", err)
+		}
+		if len(c.calls) != 1 {
+			t.Fatalf("UpdateChatTitle calls = %d, want 1", len(c.calls))
+		}
+		if c.calls[0].agentSessionID != "agent-123" || c.calls[0].title != "my new title" {
+			t.Fatalf("UpdateChatTitle got %+v, want agent-123/my new title", c.calls[0])
+		}
+	})
+
+	t.Run("session id renames that session's primary chat", func(t *testing.T) {
+		t.Parallel()
+		// The whole point of resolving through resolveChatTarget rather than
+		// resolveSessionID: the daemon is keyed by agent_session_id, so forwarding
+		// "sess-123" would rename nothing at all (the store's UPDATE matches zero
+		// rows and still returns success).
+		agentSessionID := "agent-123"
+		c := &chatRenameRecorder{session: &pb.Session{Id: "sess-123", AgentSessionId: &agentSessionID}}
+		var out bytes.Buffer
+		if err := chatRename(context.Background(), c, &out, "sess-123", "renamed"); err != nil {
+			t.Fatalf("chatRename: %v", err)
+		}
+		if len(c.calls) != 1 {
+			t.Fatalf("UpdateChatTitle calls = %d, want 1", len(c.calls))
+		}
+		if c.calls[0].agentSessionID != agentSessionID {
+			t.Fatalf("UpdateChatTitle id = %q, want the resolved chat id %q", c.calls[0].agentSessionID, agentSessionID)
+		}
+	})
+
+	t.Run("confirmation names the resolved chat and the new title", func(t *testing.T) {
+		t.Parallel()
+		agentSessionID := "agent-123"
+		c := &chatRenameRecorder{session: &pb.Session{Id: "sess-123", AgentSessionId: &agentSessionID}}
+		var out bytes.Buffer
+		if err := chatRename(context.Background(), c, &out, "sess-123", "my new title"); err != nil {
+			t.Fatalf("chatRename: %v", err)
+		}
+		got := out.String()
+		// The resolved chat id, not the session id the user typed — otherwise the
+		// confirmation names something the rename did not touch.
+		if !strings.Contains(got, agentSessionID) {
+			t.Fatalf("confirmation %q does not name the resolved chat %q", got, agentSessionID)
+		}
+		if strings.Contains(got, "sess-123") {
+			t.Fatalf("confirmation %q names the session id, not the chat that was renamed", got)
+		}
+		if !strings.Contains(got, `"my new title"`) {
+			t.Fatalf("confirmation %q does not quote the new title", got)
+		}
+	})
+
+	t.Run("title is trimmed before it is sent", func(t *testing.T) {
+		t.Parallel()
+		c := &chatRenameRecorder{}
+		var out bytes.Buffer
+		if err := chatRename(context.Background(), c, &out, "agent-123", "  padded title  "); err != nil {
+			t.Fatalf("chatRename: %v", err)
+		}
+		if len(c.calls) != 1 || c.calls[0].title != "padded title" {
+			t.Fatalf("UpdateChatTitle calls = %+v, want the trimmed title", c.calls)
+		}
+	})
+
+	// cobra's MinimumNArgs(2) counts arguments, not content, so a
+	// whitespace-only title arrives here as a satisfied arg list. Rejecting it
+	// before the RPC is what stops a chat being renamed to "".
+	for _, title := range []string{"", "   ", "\t\n"} {
+		t.Run(fmt.Sprintf("empty title %q is rejected before any RPC", title), func(t *testing.T) {
+			t.Parallel()
+			c := &chatRenameRecorder{}
+			var out bytes.Buffer
+			err := chatRename(context.Background(), c, &out, "agent-123", title)
+			if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+				t.Fatalf("error = %v, want must not be empty", err)
+			}
+			if len(c.calls) != 0 {
+				t.Fatalf("UpdateChatTitle was called %d times for an empty title", len(c.calls))
+			}
+			if out.Len() != 0 {
+				t.Fatalf("output = %q, want nothing printed for a rejected rename", out.String())
+			}
+		})
+	}
+
+	t.Run("transport failure is wrapped, not swallowed", func(t *testing.T) {
+		t.Parallel()
+		c := &chatRenameRecorder{err: errors.New("dial unix: connection refused")}
+		var out bytes.Buffer
+		err := chatRename(context.Background(), c, &out, "agent-123", "renamed")
+		if err == nil {
+			t.Fatal("error = nil, want the transport failure surfaced")
+		}
+		if !strings.Contains(err.Error(), "rename chat") {
+			t.Fatalf("error = %v, want the rename chat wrap prefix", err)
+		}
+		if !strings.Contains(err.Error(), "connection refused") {
+			t.Fatalf("error = %v, want the underlying cause preserved", err)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("output = %q, want no confirmation for a failed rename", out.String())
+		}
+	})
+
+	// A resolve failure that is NOT NotFound must not be mistaken for a chat id
+	// and renamed blind — resolveChatTarget owns that distinction, and this pins
+	// that chatRename propagates it instead of pressing on.
+	t.Run("resolve failure aborts before the rename", func(t *testing.T) {
+		t.Parallel()
+		c := &chatRenameRecorder{session: &pb.Session{Id: "sess-empty"}}
+		var out bytes.Buffer
+		err := chatRename(context.Background(), c, &out, "sess-empty", "renamed")
+		if err == nil || !strings.Contains(err.Error(), "no primary chat id") {
+			t.Fatalf("error = %v, want no primary chat id", err)
+		}
+		if len(c.calls) != 0 {
+			t.Fatalf("UpdateChatTitle was called %d times despite an unresolved target", len(c.calls))
+		}
+	})
+}
+
+// chatRenameSubcommand returns the registered `rename` subcommand, so the
+// assertions below run against the real cobra wiring rather than a hand-built
+// command that could drift from it.
+func chatRenameSubcommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	for _, sub := range chatCmd().Commands() {
+		if sub.Name() == "rename" {
+			return sub
+		}
+	}
+	t.Fatal("chat rename subcommand not registered")
+	return nil
+}
+
+func TestChatRenameArgWiring(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multi-word titles are joined with single spaces", func(t *testing.T) {
+		t.Parallel()
+		// The registered command's own arg contract, then its own joining: a
+		// trailing multi-word title must reach the client as one string.
+		rename := chatRenameSubcommand(t)
+		args := []string{"agent-123", "my", "new", "title"}
+		if err := rename.Args(rename, args); err != nil {
+			t.Fatalf("Args(%v) = %v, want nil", args, err)
+		}
+		target, title := chatRenameArgs(args)
+		if target != "agent-123" {
+			t.Fatalf("target = %q, want agent-123", target)
+		}
+		if title != "my new title" {
+			t.Fatalf("title = %q, want %q", title, "my new title")
+		}
+
+		c := &chatRenameRecorder{}
+		var out bytes.Buffer
+		if err := chatRename(context.Background(), c, &out, target, title); err != nil {
+			t.Fatalf("chatRename: %v", err)
+		}
+		if len(c.calls) != 1 || c.calls[0].title != "my new title" {
+			t.Fatalf("UpdateChatTitle calls = %+v, want the joined title", c.calls)
+		}
+	})
+
+	t.Run("fewer than two arguments fails arg validation", func(t *testing.T) {
+		t.Parallel()
+		rename := chatRenameSubcommand(t)
+		for _, args := range [][]string{{}, {"agent-123"}} {
+			if err := rename.Args(rename, args); err == nil {
+				t.Fatalf("Args(%v) = nil, want an arg-count error", args)
+			}
+		}
+	})
+
+	t.Run("usage advertises both target forms and a trailing title", func(t *testing.T) {
+		t.Parallel()
+		rename := chatRenameSubcommand(t)
+		if rename.Use != "rename <session-id|chat-id> <new-title...>" {
+			t.Fatalf("Use = %q, want the session-or-chat target and a trailing title", rename.Use)
+		}
+		if rename.Short == "" {
+			t.Fatal("Short is empty; `boss chat --help` would list the command with no description")
+		}
+	})
+}
+
+// TestChatRenameRejectsEmptyTitleThroughTheRegisteredCommand drives the real
+// subcommand end to end — RunE included — rather than calling chatRename
+// directly. BOSS_SOCKET keeps newClient offline (it skips the daemon autostart
+// and client.NewLocal does not dial), so what this pins is the wiring the unit
+// tests above cannot see: that RunE actually routes args through
+// chatRenameArgs into chatRename.
+func TestChatRenameRejectsEmptyTitleThroughTheRegisteredCommand(t *testing.T) {
+	t.Setenv("BOSS_SOCKET", filepath.Join(t.TempDir(), "boss.sock"))
+
+	root := chatCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"rename", "agent-123", "   "})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("error = %v, want must not be empty", err)
+	}
 }
 
 type chatWaitClient struct {

@@ -46,6 +46,7 @@ go_test(
         "e2e_cron_test.go",
         "e2e_keep_current_test.go",
         "e2e_lifecycle_test.go",
+        "e2e_orphan_tmux_reap_test.go",
         "e2e_record_chat_tmux_test.go",
         "e2e_resilience_test.go",
         "e2e_session_deleted_test.go",
@@ -64,6 +65,7 @@ go_test(
         "requires-tmux",  # keep: real-tmux e2e + reads out-of-module ../../../../plugins testdata
     ],
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",

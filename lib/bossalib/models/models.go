@@ -135,12 +135,23 @@ type Session struct {
 	// autonomous pass; drives unattended-class recovery. False for a detach run
 	// that fell back to the paneless headless path.
 	Detach bool
-	// IsQuickChat marks a session created via `create_session {quick_chat: true}`:
-	// a visible, no-worktree/branch/PR chat (planning, recon, plan-review). Such
-	// sessions have no implementation output by design, so finalize must not
-	// surface their expected no-change result as a failed implementation run
-	// (BOS-322). Real quick chats skip finalize entirely; this persisted flag is
-	// the defensive backstop for any path that reaches FinalizeSession.
+	// IsQuickChat marks a session created via `create_session {quick_chat: true}`
+	// or `boss new --quick-chat`: a visible, no-worktree/branch/PR chat (planning,
+	// recon, plan-review). Such sessions have no implementation output by design,
+	// so finalize must not surface their expected no-change result as a failed
+	// implementation run (BOS-322). Real quick chats skip finalize entirely; this
+	// persisted flag is the defensive backstop for any path that reaches
+	// FinalizeSession.
+	//
+	// IsQuickChat is the SESSION-LEVEL realization of the concept whose
+	// JOB-LEVEL declaration is CronJob.IsZeroOutput / StartSessionOpts.ZeroOutput
+	// — two layers of one concept, not two spellings of it, so do not converge
+	// them and do not add a third. ZeroOutput is a persisted cron_jobs column
+	// meaning "run StartSession, but skip its repo-mutating steps"; IsQuickChat
+	// is this per-session fact (sessions.is_quick_chat) meaning "skip
+	// StartSession entirely; there is no worktree". They already converge in the
+	// one direction that matters: ZeroOutput sets this flag, so finalize reads
+	// exactly one session-level truth.
 	IsQuickChat bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

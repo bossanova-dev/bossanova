@@ -412,6 +412,19 @@ func TestRepairResumeSessionIDFallsBackToAgentSessionID(t *testing.T) {
 	}
 }
 
+// The other arm: when the host did discover a provider session id, the repair
+// resume must use it rather than the agent session id. This is the arm BOS-844
+// makes reachable more often — the legacy backfill now gets a budget sized for
+// the whole-corpus scan instead of the 2s foreground deadline it was sharing.
+func TestRepairResumeSessionIDPrefersProviderSessionID(t *testing.T) {
+	got := repairResumeSessionID("agent-1", &bossanovav1.WaitChatRunHostResponse{
+		ProviderSessionId: "provider-1",
+	})
+	if got != "provider-1" {
+		t.Fatalf("resume id = %q, want provider-1 (the discovered provider session id must win)", got)
+	}
+}
+
 func TestRepairSession_DoesNotStartSecondFreshRunWhenChecksFailOnSameInput(t *testing.T) {
 	mock := newTestMock()
 	mock.sessionSequences = [][]*bossanovav1.Session{

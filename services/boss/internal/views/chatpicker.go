@@ -20,6 +20,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -123,6 +124,18 @@ type ChatPickerModel struct {
 	switchSelectedAccount string
 	switching             bool
 	switchNotice          string
+
+	// Inline rename (BOS-836). renaming is true while the prompt owns the
+	// keyboard; renameInput holds the edited title; renameTargetChatID is the
+	// agent_session_id captured when the prompt opened, so a poll that reorders
+	// or re-sorts the list mid-edit cannot redirect the commit at whatever row
+	// the cursor now sits on. renameErr is the inline complaint rendered beside
+	// the input (an empty title), kept out of statusMsg because the prompt is
+	// still open and statusMsg is cleared by the next keypress.
+	renaming           bool
+	renameInput        textinput.Model
+	renameTargetChatID string
+	renameErr          string
 }
 
 // SetTelemetry installs a telemetry client for successful chat-picker actions.
@@ -162,7 +175,20 @@ func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionI
 		// session into the remote worktree instead is the better UX and is left
 		// as a follow-up.
 		newTabSupported: hasNewTabSupport() && !isRemoteHost(),
+		renameInput:     newChatRenameInput(),
 	}
+}
+
+// newChatRenameInput builds the inline [r]ename prompt's text input. The prompt
+// string is what the renderer shows, so the prompt line reads "Rename: <title>"
+// on one line — matching the delete confirm's line count, which is what keeps
+// tableHeight()'s reservation correct without a new term.
+func newChatRenameInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "chat title"
+	ti.Prompt = "Rename: "
+	ti.SetWidth(60)
+	return ti
 }
 
 func (m ChatPickerModel) Init() tea.Cmd {
@@ -214,6 +240,25 @@ func (m ChatPickerModel) canMerge() bool {
 		status == pb.DisplayStatus_DISPLAY_STATUS_APPROVED
 }
 
+// canRename reports whether the [r]ename action should be available — a chat is
+// selected and no other flow already owns the keyboard or is mutating that row.
+// Both the action bar and the `r` key read this single predicate, so the key can
+// never do something the bar does not advertise (and vice versa).
+func (m ChatPickerModel) canRename() bool {
+	if m.loading || m.confirm != confirmNone {
+		return false
+	}
+	if m.merging || m.archiving || m.switching || m.deletingAgentSessionID != "" {
+		return false
+	}
+	return m.selectedChat() != nil
+}
+
+// textEntryActive reports whether the inline rename prompt is focused, so App
+// leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660): inside a text
+// field Esc cancels the edit, and ctrl+x is a line-editing key.
+func (m ChatPickerModel) textEntryActive() bool { return m.renaming }
+
 // selectedChat returns the chat at the current table cursor, or nil if empty.
 func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
 	idx := m.table.Cursor()
@@ -255,6 +300,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatDeletedMsg:
 		return m.handleChatDeleted(msg)
+
+	case chatRenamedMsg:
+		return m.handleChatRenamed(msg)
 
 	case newTabResultMsg:
 		return m.handleNewTabResult(msg)
@@ -324,6 +372,18 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.table.SetWidth(msg.Width - chatPickerBlockPadding*2)
 		m.table.SetHeight(m.tableHeight())
 		return m, nil
+
+	// Bracketed paste is not a KeyMsg, so it must be forwarded explicitly or a
+	// pasted title never reaches the input. Placed ahead of the KeyMsg arm for
+	// the same reason the trash view does it: so paste can never be mistaken for
+	// a list shortcut. Inert unless the rename prompt is open.
+	case tea.PasteMsg:
+		if !m.renaming {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.renameInput, cmd = m.renameInput.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)

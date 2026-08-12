@@ -47,18 +47,21 @@ func TestBuildArgvNoModelWhenEmptyOption(t *testing.T) {
 	}
 }
 
-func TestBuildArgvIncludesStrictManagedMcpConfig(t *testing.T) {
+// Boss does not own MCP configuration: Claude Code discovers servers its own
+// native way (project .mcp.json gated by enabledMcpjsonServers, plus the user
+// and local scopes) and the repo declares them. Emitting --strict-mcp-config
+// would suppress exactly that, so neither flag may reach argv — including when
+// a stale caller still sets the retired options, which is why this passes them.
+func TestBuildArgvNeverEmitsMcpFlags(t *testing.T) {
 	r := NewRunner(zerolog.Nop())
 	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{
 		"managed_mcp_config_path":      "/data/bossanova/mcp-configs/sid.json",
 		"is_strict_managed_mcp_config": "true",
 	}})
-	joined := strings.Join(got, "\x00")
-	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
-		t.Fatalf("buildArgv = %v, want --mcp-config path", got)
-	}
-	if !strings.Contains(joined, "--strict-mcp-config") {
-		t.Fatalf("buildArgv = %v, want --strict-mcp-config", got)
+	for _, a := range got {
+		if a == "--mcp-config" || a == "--strict-mcp-config" {
+			t.Fatalf("buildArgv = %v, want no %s", got, a)
+		}
 	}
 }
 

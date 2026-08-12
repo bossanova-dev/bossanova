@@ -214,7 +214,25 @@ type listSessionsPRAssociationResult struct {
 var (
 	providerSessionIDBackgroundDiscoveryTimeout      = time.Minute
 	providerSessionIDBackgroundDiscoveryPollInterval = time.Second
-	listSessionsPRAssociationTimeout                 = 10 * time.Second
+	// providerSessionIDLegacyBackfillTimeout bounds the attach-path legacy
+	// backfill in ensureChatTmuxSession. That resolution is a whole-corpus codex
+	// rollout scan (no pane pid, AllowLegacyBackfill true), so the 2s the fast
+	// fd path gets in spawn_chat_tmux.go is the wrong size for it. It is also
+	// not the minute above: that budget bounds a genuinely background poll loop,
+	// whereas this one has a caller waiting on chat creation. 30s clears a
+	// cold-cache scan of a multi-thousand-rollout corpus while staying visibly
+	// foreground. Package-level var (not const) so tests can shrink it to
+	// milliseconds.
+	providerSessionIDLegacyBackfillTimeout = 30 * time.Second
+	// providerSessionIDBackfillPersistTimeout bounds the UpdateProviderSessionID
+	// write that records a backfilled id. Like the persist in
+	// plugin.providerSessionIDForAgentSession it is deliberately NOT the scan's
+	// context: a scan that returns an id near the end of its budget would
+	// otherwise hand the write an all-but-spent deadline and throw away the id it
+	// just found, and the caller's warn-and-continue would swallow that loss
+	// silently — leaving every later attach to repeat the whole scan.
+	providerSessionIDBackfillPersistTimeout = 5 * time.Second
+	listSessionsPRAssociationTimeout        = 10 * time.Second
 )
 
 // Config holds all dependencies for creating a new Server.
@@ -3579,7 +3597,7 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 // codex, …) for the given chat. Idempotent: a no-op if the session is
 // already alive. Persists the resolved name onto the chat row so kill/list
 // paths can find it later.
-func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentChat, resume bool) error {
+func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentChat, resume bool) (err error) {
 	if s.tmux == nil || !s.tmux.Available(ctx) {
 		return nil
 	}
@@ -3589,18 +3607,24 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 	}
 	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 
-	deps := spawnDeps{
-		Tmux:        liveTmuxSpawner{c: s.tmux},
-		Transcripts: liveTranscriptOracle{clients: s.agentClients},
-		Argv:        liveArgvBuilder{clients: s.agentClients},
-		Logger:      s.logger,
-	}
-	if s.agentClients != nil {
-		deps.Resolver = liveInteractiveSessionResolver{clients: s.agentClients}
-	}
+	deps := s.chatSpawnDeps()
 	if resume {
-		if _, reason, backfillErr := s.backfillCodexProviderSessionID(ctx, chat, sess.WorktreePath, deps.Resolver); backfillErr != nil {
-			return backfillErr
+		// Detached, dedicated budget: the legacy backfill is a whole-corpus codex
+		// rollout scan, so it must not inherit the RecordChat request's deadline
+		// (the source of the observed DeadlineExceeded) — WithoutCancel keeps the
+		// request-scoped values while escaping its cancellation, matching
+		// proxy_server.go's failover-commit idiom.
+		backfillCtx, cancelBackfill := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDLegacyBackfillTimeout)
+		_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath, deps.Resolver)
+		cancelBackfill()
+		// Warn and continue rather than fail the attach: a missed backfill costs a
+		// correct resume id, a returned error costs the whole chat record. Matches
+		// the ambiguous-result branch immediately below.
+		if backfillErr != nil {
+			s.logger.Warn().Err(backfillErr).
+				Str("agent_session_id", chat.AgentSessionID).
+				Str("agent", chat.AgentName).
+				Msg("legacy provider session id discovery failed before attach; continuing without it")
 		} else if reason != "" {
 			s.logger.Warn().
 				Str("agent_session_id", chat.AgentSessionID).
@@ -3609,7 +3633,6 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 				Msg("legacy provider session id discovery ambiguous before attach")
 		}
 	}
-	mcpConfigPath := session.SessionManagedMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 	defaultAccountID := ""
 	sessionEnvFunc := func() map[string]string {
 		defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
@@ -3628,7 +3651,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
 		)
 	}
-	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath)
+	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:                      chat,
 		WorktreePath:              sess.WorktreePath,
@@ -3646,13 +3669,25 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 		},
-		Model:                  chat.Model,
-		ManagedMcpConfigPath:   mcpConfigPath,
-		StrictManagedMcpConfig: session.StrictManagedMcpConfigForSession(sess),
+		Model: chat.Model,
 	})
 	if err != nil {
 		return err
 	}
+	// Arm the pane rollback for the row-write window. From here until the chat
+	// row names this pane, an error return would strand a live RemainOnExit pane
+	// that no cleanup path can find, because they all key off
+	// agent_chats.tmux_session_name (BOS-845). Not armed for OutcomeAlreadyLive:
+	// that pane belongs to an earlier successful claim and killing it would
+	// destroy a live chat. spawnChatTmux already rolled back its own failures, so
+	// the error return above must not be armed either — hence arming here rather
+	// than before the call.
+	paneNeedsRollback := result.Outcome != OutcomeAlreadyLive
+	defer func() {
+		if err != nil && paneNeedsRollback {
+			killSpawnedChatPaneBestEffort(ctx, deps.Tmux, s.logger, chat.AgentSessionID, tmuxName)
+		}
+	}()
 	if result.Outcome != OutcomeAlreadyLive {
 		s.persistDefaultAccountForChat(ctx, sess, chat, defaultAccountID)
 	}
@@ -3689,6 +3724,8 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			return fmt.Errorf("persist tmux session name: %w", err)
 		}
 	}
+	// The row now names the pane, so cleanup can reach it: disarm.
+	paneNeedsRollback = false
 	return nil
 }
 
@@ -3709,7 +3746,13 @@ func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *model
 		return false, "", nil
 	}
 	providerID := resolution.SessionID
-	if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
+	// Fresh context for the persist: ctx here is the scan budget, which the
+	// resolution above may have all but spent. Dropping a found id because the
+	// budget that bounded the search also bounded the write is exactly the
+	// failure this avoids.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDBackfillPersistTimeout)
+	defer cancelPersist()
+	if err := s.agentChats.UpdateProviderSessionID(persistCtx, chat.AgentSessionID, &providerID); err != nil {
 		return false, "", fmt.Errorf("persist provider session id: %w", err)
 	}
 	chat.ProviderSessionID = &providerID

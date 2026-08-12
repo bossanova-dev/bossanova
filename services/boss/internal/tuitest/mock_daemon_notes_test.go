@@ -75,3 +75,54 @@ func TestMockDaemonUpdateNoteUnknownIDIsNotFound(t *testing.T) {
 		t.Errorf("code = %v, want NotFound", code)
 	}
 }
+
+// TestMockDaemonUpdateChatTitlePersists pins the fixture behaviour the chat
+// picker's inline [r]ename depends on (BOS-836): the mock must actually store
+// the new title, so the next ListChats poll reports it. While UpdateChatTitle
+// was inert, a scenario that renamed a chat captured the rename visibly
+// reverting a moment later — a fixture artefact indistinguishable, on screen,
+// from the feature being broken.
+func TestMockDaemonUpdateChatTitlePersists(t *testing.T) {
+	d := tuitest.NewMockDaemon(t)
+	ctx := context.Background()
+
+	d.AddChat(&pb.ClaudeChat{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-1",
+		Title:          "Initial implementation",
+	})
+
+	if _, err := d.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
+		AgentSessionId: "agent-1",
+		Title:          "Renamed from the chat list",
+	})); err != nil {
+		t.Fatalf("update chat title: %v", err)
+	}
+
+	listed, err := d.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	chats := listed.Msg.GetChats()
+	if len(chats) != 1 {
+		t.Fatalf("listed %d chats, want 1", len(chats))
+	}
+	if got := chats[0].GetTitle(); got != "Renamed from the chat list" {
+		t.Fatalf("title after rename = %q, want the new title to have persisted", got)
+	}
+}
+
+// TestMockDaemonUpdateChatTitleForUnknownChatSucceeds pins the deliberate
+// asymmetry with DeleteChat: renaming a chat this daemon never saw is a no-op,
+// not a NotFound. Tests seed only the chats they care about, and an error here
+// would surface far from its cause.
+func TestMockDaemonUpdateChatTitleForUnknownChatSucceeds(t *testing.T) {
+	d := tuitest.NewMockDaemon(t)
+
+	if _, err := d.UpdateChatTitle(context.Background(), connect.NewRequest(&pb.UpdateChatTitleRequest{
+		AgentSessionId: "never-seeded",
+		Title:          "whatever",
+	})); err != nil {
+		t.Fatalf("update chat title for an unseeded chat = %v, want no error", err)
+	}
+}

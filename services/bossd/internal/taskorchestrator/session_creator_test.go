@@ -66,6 +66,10 @@ func (m *mockSessionStore) ListArchived(ctx context.Context, repoID string) ([]*
 	return nil, nil
 }
 
+func (m *mockSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (m *mockSessionStore) Update(ctx context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }

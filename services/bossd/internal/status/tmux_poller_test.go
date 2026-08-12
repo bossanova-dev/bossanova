@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -398,6 +400,20 @@ func (m *mockSessionStore) ListByRepoAndPR(_ context.Context, _ string, _ int) (
 func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }
+
+// ListTmuxSessionNames is backed by this mock's own session map rather than
+// stubbed to nil: the reaper's whitelist is assembled from it, and a nil stub
+// would let every whitelist test pass while proving nothing.
+func (m *mockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	var names []string
+	for _, id := range slices.Sorted(maps.Keys(m.sessions)) {
+		s := m.sessions[id]
+		if s != nil && s.TmuxSessionName != nil && *s.TmuxSessionName != "" {
+			names = append(names, *s.TmuxSessionName)
+		}
+	}
+	return names, nil
+}
 func (m *mockSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }
@@ -436,6 +452,20 @@ type mockTmuxFactory struct {
 	captures map[string]string // session name -> pane content
 	dead     map[string]bool   // session name -> pane_dead (remain-on-exit zombie)
 	killed   map[string]bool   // session name -> kill-session was requested
+
+	// created carries each live session's tmux `session_created` instant for
+	// the list-sessions arm. A session in `sessions` with no entry here is
+	// reported as created at the Unix epoch, i.e. arbitrarily old.
+	created map[string]time.Time
+	// env is the session-environment `show-environment` reads back:
+	// session name -> key -> value. A missing key answers like real tmux does
+	// for an unset variable (non-zero exit), which is how an unstamped pane is
+	// expressed.
+	env map[string]map[string]string
+	// listSessionsStderr, when non-empty, makes list-sessions fail with that
+	// stderr and a non-zero exit. Set it to "no server running on ..." for the
+	// idle-host case and to anything else for the unreadable-tmux case.
+	listSessionsStderr string
 }
 
 func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -499,6 +529,40 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 					_ = tmpFile.Close()
 					// Use a shell command that cats the file and cleans up.
 					return exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("cat %q && rm -f %q", tmpFile.Name(), tmpFile.Name()))
+				}
+			}
+			return exec.CommandContext(ctx, "false")
+		case "list-sessions":
+			// Without this arm the fall-through below runs `true`, whose empty
+			// stdout parses as "no live sessions" — a reaper suite would then
+			// be uniformly green while proving nothing. Emit the real
+			// production format instead: "#{session_name}\t#{session_created}"
+			// with session_created as Unix seconds.
+			if f.listSessionsStderr != "" {
+				return exec.CommandContext(ctx, "sh", "-c",
+					`printf '%s\n' "$1" >&2; exit 1`, "sh", f.listSessionsStderr)
+			}
+			var b strings.Builder
+			for _, sessName := range slices.Sorted(maps.Keys(f.sessions)) {
+				if !f.sessions[sessName] {
+					continue
+				}
+				fmt.Fprintf(&b, "%s\t%d\n", sessName, f.created[sessName].Unix())
+			}
+			cmd := exec.CommandContext(ctx, "cat")
+			cmd.Stdin = strings.NewReader(b.String())
+			return cmd
+		case "show-environment":
+			// args = ["show-environment", "-t", sessName, key]. Real tmux
+			// prints "KEY=value" for a set variable and exits non-zero with
+			// "unknown variable: KEY" otherwise; an unset key is how this fake
+			// expresses an unstamped pane.
+			if len(args) >= 4 {
+				sessName, key := args[2], args[3]
+				if value, ok := f.env[sessName][key]; ok {
+					cmd := exec.CommandContext(ctx, "cat")
+					cmd.Stdin = strings.NewReader(key + "=" + value + "\n")
+					return cmd
 				}
 			}
 			return exec.CommandContext(ctx, "false")

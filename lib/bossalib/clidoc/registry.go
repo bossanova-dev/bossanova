@@ -234,6 +234,24 @@ func newRegistry() map[string]Prose {
 				},
 			},
 		},
+		"boss chat rename": {
+			Long: "Renames a chat identified by a session id or agent_session_id (the " +
+				"chat-id printed by `boss new --detach` or `boss chat new --json`). " +
+				"When given a session id, boss renames that session's primary chat — " +
+				"use `boss rename` to retitle the session itself. " +
+				"The new title is the trailing arguments joined with single spaces, so a " +
+				"multi-word title needs no quoting; a title that is empty or only " +
+				"whitespace is rejected before anything is sent. " +
+				"Note that renaming a chat id that does not exist reports success: the " +
+				"daemon's update matches no rows and does not fail.",
+			Examples: []Example{
+				{Command: "boss chat rename <session-id|chat-id> \"repair round 2\""},
+				{
+					Command:     "boss chat rename <chat-id> second opinion on PR 42",
+					Explanation: "Trailing words are joined, so the quotes are optional",
+				},
+			},
+		},
 		"boss chat show": {
 			Long: "Prints the full conversation transcript for a chat or session's primary chat. " +
 				"Use --result-only to print just the final assistant response text " +

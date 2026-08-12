@@ -234,6 +234,12 @@ func (s *cleanupSessionStore) ListArchived(context.Context, string) ([]*models.S
 	}
 	return archived, nil
 }
+
+// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// package drives the orphaned-tmux reaper, so an empty whitelist is correct.
+func (s *cleanupSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	return nil, nil
+}
 func (s *cleanupSessionStore) Update(context.Context, string, db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }

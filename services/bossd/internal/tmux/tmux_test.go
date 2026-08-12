@@ -198,6 +198,128 @@ func TestNewSession_RequiredFields(t *testing.T) {
 	}
 }
 
+// TestNewSession_DaemonIDStamp covers the ownership stamp the orphaned-tmux
+// reaper reads back with `show-environment` (BOS-846). It lives on the client
+// rather than at each call site so every pane bossd creates carries it — a
+// single unstamped spawn path would produce panes the reaper cannot attribute.
+func TestNewSession_DaemonIDStamp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tests := []struct {
+		name     string
+		daemonID string
+		env      map[string]string
+		expected []string
+	}{
+		{
+			name:     "stamped alongside no other env",
+			daemonID: "daemon-abc",
+			expected: []string{
+				"tmux", "new-session", "-d", "-s", "stamp-sess",
+				"-c", "/tmp/wt", "-x", "200", "-y", "50",
+				"-e", "BOSS_DAEMON_ID=daemon-abc",
+				"-e", "TERM=xterm-256color",
+				"claude",
+			},
+		},
+		{
+			// Sorted with the rest, not appended: the argv must stay
+			// deterministic whatever the caller's map iteration order.
+			name:     "sorted in with caller env",
+			daemonID: "daemon-abc",
+			env:      map[string]string{"BOSS_CRON": "true", "AAA_FIRST": "1"},
+			expected: []string{
+				"tmux", "new-session", "-d", "-s", "stamp-sess",
+				"-c", "/tmp/wt", "-x", "200", "-y", "50",
+				"-e", "AAA_FIRST=1", "-e", "BOSS_CRON=true",
+				"-e", "BOSS_DAEMON_ID=daemon-abc",
+				"-e", "TERM=xterm-256color",
+				"claude",
+			},
+		},
+		{
+			// The client's identity is authoritative. A caller that passes its
+			// own value must not be able to make a pane look like it belongs to
+			// a different daemon, which would exempt it from reaping forever.
+			name:     "client value wins over a caller-supplied key",
+			daemonID: "daemon-abc",
+			env:      map[string]string{"BOSS_DAEMON_ID": "someone-else"},
+			expected: []string{
+				"tmux", "new-session", "-d", "-s", "stamp-sess",
+				"-c", "/tmp/wt", "-x", "200", "-y", "50",
+				"-e", "BOSS_DAEMON_ID=daemon-abc",
+				"-e", "TERM=xterm-256color",
+				"claude",
+			},
+		},
+		{
+			// No identity resolved: emit nothing rather than an empty stamp,
+			// which would read as "owned by the daemon whose id is the empty
+			// string" instead of as unstamped.
+			name:     "empty daemon id stamps nothing",
+			daemonID: "",
+			expected: []string{
+				"tmux", "new-session", "-d", "-s", "stamp-sess",
+				"-c", "/tmp/wt", "-x", "200", "-y", "50",
+				"-e", "TERM=xterm-256color",
+				"claude",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockCommandFactory{}
+			c := NewClient(WithCommandFactory(mock.factory), WithDaemonID(tt.daemonID))
+
+			opts := NewSessionOpts{
+				Name:    "stamp-sess",
+				WorkDir: "/tmp/wt",
+				Command: []string{"claude"},
+				Env:     tt.env,
+			}
+			if err := c.NewSession(context.Background(), opts); err != nil {
+				t.Fatalf("NewSession() error = %v", err)
+			}
+			if got := mock.calls[0]; !slices.Equal(got, tt.expected) {
+				t.Fatalf("argv = %v, want %v", got, tt.expected)
+			}
+			// The caller's map is shared state; mutating it would leak the
+			// stamp into whatever else the caller reuses it for.
+			if tt.env != nil {
+				if _, ok := tt.env["BOSS_DAEMON_ID"]; ok != (tt.name == "client value wins over a caller-supplied key") {
+					t.Errorf("caller Env map was mutated: %v", tt.env)
+				}
+			}
+		})
+	}
+}
+
+// TestNewSession_NoDaemonIDOptionIsUnstamped pins that a client built without
+// the option behaves exactly as before, so every existing caller and test keeps
+// its argv.
+func TestNewSession_NoDaemonIDOptionIsUnstamped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	if err := c.NewSession(context.Background(), NewSessionOpts{
+		Name:    "plain",
+		WorkDir: "/tmp/wt",
+		Command: []string{"claude"},
+	}); err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	for _, arg := range mock.calls[0] {
+		if strings.Contains(arg, "BOSS_DAEMON_ID") {
+			t.Fatalf("unstamped client emitted %q", arg)
+		}
+	}
+}
+
 func TestSessionName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")

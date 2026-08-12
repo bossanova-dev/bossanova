@@ -279,7 +279,15 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // spawn always wires the boss MCP server" and names the third cli: null capability
   // (createPlanningChat), which BOS-825's text undercounted as two. Resident because the
   // opening line is where the loss is declared. Re-baselined 76145 → 76507.
-  const RATCHET = 76507 // exact measured resident body
+  // The MCP-config retirement adds the tracker-server classification to Preflight (+1212 bytes):
+  // the session runner no longer injects an MCP config, so a repo that has not declared its
+  // tracker server for the harness it runs now fails here instead of mid-run with "tool not
+  // found". Resident because Preflight is where the stop is taken, and because the two statuses
+  // route to opposite fixes — `absent` is the repo's harness configuration, `unreachable` is
+  // credentials/network — so a run that reads only one of them fixes the wrong thing. The pure
+  // classifier and its rationale live in toolbox/tracker/preflight.mjs; the body carries the call
+  // and the decision. Re-baselined 76507 → 77719.
+  const RATCHET = 77719 // exact measured resident body
   assert.ok(
     RATCHET < PRE_EXTRACTION_BASELINE,
     'ratchet must stay below the pre-extraction baseline',

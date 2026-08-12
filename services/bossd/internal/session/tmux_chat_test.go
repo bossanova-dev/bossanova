@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -826,105 +825,6 @@ func TestStartTmuxChat_SeedsFirstChatAgentAccountModel(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChat_PassesManagedMcpConfigPath proves the live spawn wires the
-// per-session boss MCP config: with a trusted `mcp` binary resolvable, the
-// captured request carries an absolute ManagedMcpConfigPath under the app-data dir
-// (NEVER the worktree), keyed by agent-session id, and the file exists.
-func TestStartTmuxChat_PassesManagedMcpConfigPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	appData := withTrustedMcpAndAppData(t)
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{})
-	if err != nil {
-		t.Fatalf("StartTmuxChat: %v", err)
-	}
-	got := h.agentFake.LastBuildInteractiveCommand.GetManagedMcpConfigPath()
-	if got == "" {
-		t.Fatal("BuildInteractiveCommand ManagedMcpConfigPath is empty; want a generated path")
-	}
-	if !filepath.IsAbs(got) {
-		t.Fatalf("ManagedMcpConfigPath = %q, want absolute", got)
-	}
-	want := filepath.Join(appData, "mcp-configs", agentSessionID+".json")
-	if got != want {
-		t.Fatalf("ManagedMcpConfigPath = %q, want %q (under app-data, keyed by id)", got, want)
-	}
-	if strings.Contains(got, h.sessions.sessions["sess-1"].WorktreePath) {
-		t.Fatalf("ManagedMcpConfigPath must NOT be under the worktree: %q", got)
-	}
-	if _, err := os.Stat(got); err != nil {
-		t.Fatalf("generated mcp config not written: %v", err)
-	}
-}
-
-// TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig prevents a parent
-// Claude session from supplying MCP wiring to a resumed OpenCode chat. The
-// chat's stored agent is the launch authority, including for MCP capability.
-func TestStartTmuxChat_CrossAgentOpenCodeResumeOmitsMcpConfig(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	withTrustedMcpAndAppData(t)
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "opencode": h.agentFake})
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
-		"sess-1": {{
-			SessionID:      "sess-1",
-			AgentSessionID: "opencode-chat-1",
-			AgentName:      "opencode",
-		}},
-	}
-
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{
-		Prompt:               "/boss-repair",
-		Delivery:             DeliverySubmit,
-		ResumeAgentSessionID: "opencode-chat-1",
-	}, "title", HookOpts{}); err != nil {
-		t.Fatalf("StartTmuxChat: %v", err)
-	}
-	got := h.agentFake.LastBuildInteractiveCommand
-	if got.GetManagedMcpConfigPath() != "" {
-		t.Fatalf("ManagedMcpConfigPath = %q, want empty for resumed OpenCode chat", got.GetManagedMcpConfigPath())
-	}
-	if strings.Contains(got.GetAppendSystemPrompt(), "mcp__boss__") {
-		t.Fatalf("AppendSystemPrompt advertises MCP tools for OpenCode: %q", got.GetAppendSystemPrompt())
-	}
-}
-
-// TestStartTmuxChat_NonCronSessionGetsStrictManagedMcpConfig is the Part A behavioural
-// tripwire for BOS-672. Harness sess-1 carries no CronJobID — a non-cron,
-// interactive session — so under the pre-Task-1 code, or under a reintroduced
-// `StrictManagedMcpConfig: isCronSession(sess)` bypass at either of this file's two
-// call sites (StartTmuxChat, sendInputToLiveTmuxChat), the captured request
-// would carry StrictManagedMcpConfig=false here. Task 1 routed StartTmuxChat through
-// StrictManagedMcpConfigForSession, which is now unconditionally true, so a non-cron
-// spawn must get strict mode too. This exercises the real call path for the
-// one site (StartTmuxChat) an existing harness makes cheap to assert against;
-// mcp_config_test.go's source-scanning test covers sendInputToLiveTmuxChat and
-// the internal/server sites this harness cannot reach.
-func TestStartTmuxChat_NonCronSessionGetsStrictManagedMcpConfig(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
-	ctx := context.Background()
-	h := newStartTmuxChatHarness(t)
-	if got := h.sessions.sessions["sess-1"].CronJobID; got != nil {
-		t.Fatalf("harness precondition broken: sess-1.CronJobID = %v, want nil (non-cron) for this test to be a genuine tripwire", *got)
-	}
-
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
-		t.Fatalf("StartTmuxChat: %v", err)
-	}
-	if got := h.agentFake.LastBuildInteractiveCommand.GetStrictManagedMcpConfig(); !got {
-		t.Fatalf("BuildInteractiveCommand StrictManagedMcpConfig = %v, want true for a non-cron session (BOS-672: every spawn is strict)", got)
-	}
-}
-
 func TestStartTmuxChat_PassesSelectedConfigHomeWithoutSessionSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -947,27 +847,6 @@ func TestStartTmuxChat_PassesSelectedConfigHomeWithoutSessionSecrets(t *testing.
 	if _, leaked := got["ACCOUNT_SECRET"]; leaked {
 		t.Fatalf("ConfigHomeEnv must not pass session secrets to the plugin: %v", got)
 	}
-}
-
-// withTrustedMcpAndAppData makes ResolveSessionFacts resolve a non-empty McpBin
-// by planting a user-owned (non group/world-writable) `mcp` executable on PATH,
-// and points config at a hermetic temp app-data dir. Returns the app-data dir.
-func withTrustedMcpAndAppData(t *testing.T) string {
-	t.Helper()
-	binDir := t.TempDir()
-	mcpPath := filepath.Join(binDir, "mcp")
-	if err := os.WriteFile(mcpPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake mcp: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	appData := t.TempDir()
-	settings := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(settings, []byte(`{"app_data_dir":`+strconv.Quote(appData)+`}`), 0o600); err != nil {
-		t.Fatalf("write settings: %v", err)
-	}
-	t.Setenv("BOSS_SETTINGS_PATH", settings)
-	return appData
 }
 
 func TestStartTmuxChat_HappyPath(t *testing.T) {
@@ -2367,12 +2246,6 @@ func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
 	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
 		t.Error("expected BuildInteractiveCommand Resume=true on provider-id live-pane resume")
 	}
-	if got := h.agentFake.LastBuildInteractiveCommand.GetManagedMcpConfigPath(); got != "" {
-		t.Errorf("metadata-only live-pane request ManagedMcpConfigPath = %q, want empty", got)
-	}
-	if h.agentFake.LastBuildInteractiveCommand.GetStrictManagedMcpConfig() {
-		t.Error("metadata-only live-pane request must not enable strict managed MCP config")
-	}
 	if got := h.agentFake.LastConfigureHookReq; got == nil {
 		t.Fatal("expected run-keyed hook to be configured for provider-id live-pane resume")
 	} else if got.GetAgentSessionId() != logicalAgentSessionID {
@@ -2580,14 +2453,14 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	plainSess := &models.Session{ID: "s2", Title: "Manual"}
 	const agentSessionID = "agent-123"
 
-	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude", "")
+	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude")
 	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, unattendedSubagentDirective, "rename"} {
 		if !strings.Contains(cronPrompt, want) {
 			t.Fatalf("cron prompt missing %q: %q", want, cronPrompt)
 		}
 	}
 
-	zeroOutputPrompt := AppendSystemPromptFor(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude", "")
+	zeroOutputPrompt := AppendSystemPromptFor(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude")
 	if !strings.Contains(zeroOutputPrompt, zeroOutputCronAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
 		t.Fatalf("zero-output prompt = %q, want dedicated no-commit directive", zeroOutputPrompt)
 	}
@@ -2597,7 +2470,7 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 		t.Fatalf("zero-output prompt missing the subagent directive: %q", zeroOutputPrompt)
 	}
 
-	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude", "")
+	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude")
 	if !strings.Contains(plainPrompt, "s2") {
 		t.Fatalf("plain prompt missing session id: %q", plainPrompt)
 	}
@@ -2609,7 +2482,7 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	if strings.Contains(plainPrompt, unattendedSubagentDirective) {
 		t.Fatalf("attended prompt must not contain the subagent directive: %q", plainPrompt)
 	}
-	if AppendSystemPromptFor(nil, agentSessionID, "", "") != "" {
+	if AppendSystemPromptFor(nil, agentSessionID, "") != "" {
 		t.Fatalf("nil session should yield empty prompt")
 	}
 
@@ -2669,18 +2542,32 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	})
 }
 
+// bossd does not configure MCP servers for a chat: each harness discovers them
+// natively and the repo declares them, so bossd cannot know whether this chat
+// has the boss server and must never claim it. BOSS_MCP_BIN is a separate
+// thing — an env export that still happens — so this asserts the tool claim is
+// gone WITHOUT asserting the identifier is (that pairing is guarded by
+// TestBossSessionContext_AdvertisesExactlyExportedIdentifiers).
+func TestBuildAppendSystemPrompt_NeverAdvertisesBossMcpTools(t *testing.T) {
+	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: t.TempDir()}
+	text, classes := BuildAppendSystemPrompt(sess, "chat-1", "claude")
+	if strings.Contains(text, "mcp__boss__") {
+		t.Fatalf("prompt must not advertise mcp__boss__*:\n%s", text)
+	}
+	if strings.Contains(text, "MCP server is also wired into this chat") {
+		t.Fatalf("prompt must not claim a wired MCP server:\n%s", text)
+	}
+	if len(classes) == 0 {
+		t.Fatal("session-context instruction class must still be carried")
+	}
+}
+
 // TestBossPromptHasNoStaleCapabilityList guards against re-introducing the
-// hand-listed tool subset (the original bug). Neither `boss env` (BOS-94) nor
-// the mcp__boss__* namespace (BOS-95) is banned anymore: BOS-94 landed `boss env`
-// as the authoritative, self-describing entry point the prompt now points at, and
-// BOS-95 wires the boss MCP server into the session so bossSessionContext
-// advertises that namespace when a trusted mcp binary is resolved and a config
-// path is written (see TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath /
-// TestBossSessionContext_MentionsMcpWhenAvailable). This case passes an empty
-// mcpConfigPath, so no mcp mention is produced; it only asserts the stale
-// hand-listed subset never returns.
+// hand-listed tool subset (the original bug). `boss env` (BOS-94) is not banned:
+// it is the authoritative, self-describing entry point the prompt points at.
+// This only asserts the stale hand-listed subset never returns.
 func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
-	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude", "")
+	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude")
 	for _, banned := range []string{
 		"list_sessions", "get_session", "create_session", "record_chat",
 		"wake_chat", "update_session",
@@ -2688,48 +2575,6 @@ func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("prompt must not reference %q (Phase-1 drift guard): %q", banned, prompt)
 		}
-	}
-}
-
-// TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath proves the mention is
-// gated on the config path ACTUALLY written for the spawn, not merely on a
-// resolvable mcp binary: with a trusted mcp binary resolvable (so McpBin != ""),
-// an empty mcpConfigPath (a failed/absent write) must still produce no mention,
-// while a non-empty path produces one. This keeps the prompt from claiming tools
-// claude will not receive (it only gets --mcp-config when the path is non-empty).
-//
-// It drives the explicit-[] rollback settings so the boss server is wired: since
-// BOS-827 the mention is gated on TWO things — a written path AND the boss
-// server surviving the disabled set — and under the default the second gate
-// alone suppresses it, which would make the path gate untested here.
-// TestAppendSystemPromptDropsBossToolsWhenBossServerDisabled covers the other gate.
-func TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath(t *testing.T) {
-	// Resolves McpBin != "" and wires every managed server (explicit []).
-	settingsWithDisabledServers(t)
-	sess := &models.Session{ID: "s1", AgentName: "claude"}
-
-	withPath := AppendSystemPromptFor(sess, "agent-1", "claude", "/data/bossanova/mcp-configs/agent-1.json")
-	if !strings.Contains(withPath, "mcp__boss__") {
-		t.Fatalf("expected mcp__boss__ mention when a config path was written: %q", withPath)
-	}
-	noPath := AppendSystemPromptFor(sess, "agent-1", "claude", "")
-	if strings.Contains(noPath, "mcp__boss__") {
-		t.Fatalf("must NOT mention mcp__boss__ when no config was written, even with McpBin resolvable: %q", noPath)
-	}
-}
-
-// TestBossSessionContext_MentionsMcpWhenAvailable proves the BOS-95 amendment:
-// the injected context advertises mcp__boss__* exactly when a trusted mcp binary
-// is wired (McpBin != ""), and stays silent otherwise so it never claims a
-// capability that is not actually reachable.
-func TestBossSessionContext_MentionsMcpWhenAvailable(t *testing.T) {
-	with := bossSessionContext(SessionFacts{SessionID: "s", McpBin: "/trusted/mcp"})
-	if !strings.Contains(with, "mcp__boss__") {
-		t.Fatalf("expected mcp__boss__ mention when McpBin set: %q", with)
-	}
-	without := bossSessionContext(SessionFacts{SessionID: "s"})
-	if strings.Contains(without, "mcp__boss__") {
-		t.Fatalf("should not mention mcp tools when McpBin empty: %q", without)
 	}
 }
 
@@ -3025,7 +2870,7 @@ func TestManagedSessionEnv_IsTmuxUnattended(t *testing.T) {
 // appended for a tmux_unattended session (no CronJobID), just as for cron.
 func TestAppendSystemPromptFor_IsTmuxUnattended(t *testing.T) {
 	sess := &models.Session{ID: "s9", Title: "Epic child", IsTmuxUnattended: true}
-	prompt := AppendSystemPromptFor(sess, "agent-9", "claude", "")
+	prompt := AppendSystemPromptFor(sess, "agent-9", "claude")
 	if !strings.Contains(prompt, cronAutonomyDirective) {
 		t.Fatal("tmux_unattended session must get the autonomy directive")
 	}
@@ -3209,13 +3054,13 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude", "")
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude")
 			if strings.Join(classes, ",") != strings.Join(tc.wantClasses, ",") {
 				t.Fatalf("classes = %v, want %v", classes, tc.wantClasses)
 			}
 			// The exported wrapper must stay byte-identical to the text the
 			// class-bearing builder produces: argv is unchanged by this feature.
-			if got := AppendSystemPromptFor(tc.sess, "agent-1", "claude", ""); got != text {
+			if got := AppendSystemPromptFor(tc.sess, "agent-1", "claude"); got != text {
 				t.Fatalf("AppendSystemPromptFor diverged from BuildAppendSystemPrompt:\n got %q\nwant %q", got, text)
 			}
 			// text-iff-class: the directive class is claimed exactly when some
@@ -3237,12 +3082,12 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 // empty suffix would still report a class, and bossd would log a drop for an
 // instruction it never built.
 func TestBuildAppendSystemPromptNilSession(t *testing.T) {
-	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude", "")
+	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude")
 	if text != "" || classes != nil {
 		t.Fatalf("nil session = (%q, %v), want empty text and nil classes", text, classes)
 	}
 
-	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude", "")
+	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude")
 	if text == "" || len(classes) == 0 {
 		t.Fatalf("plain session = (%q, %v), want a non-empty suffix and its class", text, classes)
 	}

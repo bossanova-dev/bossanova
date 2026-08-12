@@ -64,16 +64,18 @@ type FinalizeResult struct {
 //   - cleanup_failed           — empty status but worktree removal errored
 //   - pr_skipped_no_github     — changes present, origin is not GitHub:
 //     cron session → hard-deleted (Archive + Delete, Deleted=true)
-//     interactive  → preserved, transitions to Blocked
+//     interactive  → preserved and finishes quietly at ReadyForReview; benign,
+//     so it is never routed to Blocked and demands no attention
 //   - pr_failed                — dirty output present but the PR could not be opened
 //   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
 //   - pr_failed                — clean committed branch could not open or attach a PR
 //   - pr_created               — clean committed branch opened/attached a PR; PR tags injected
 //
 // After the outcome is classified, FinalizeSession writes
-// cron_jobs.last_run_outcome (step 4) and, on the pr_created success path,
-// clears session.hook_token so a replayed Stop event can no longer
-// authenticate against this session (step 5). Failure outcomes also fire the
+// cron_jobs.last_run_outcome (step 4) and, on the terminal-success paths
+// (pr_created, and a preserved pr_skipped_no_github), moves the session to
+// ReadyForReview and clears session.hook_token so a replayed Stop event can no
+// longer authenticate against this session (step 5). Failure outcomes also fire the
 // Block state-machine event so the session shows up as attention-needed in
 // the UI — the Finalizing state itself is intentionally silent per
 // vcs/attention.go.
@@ -194,11 +196,21 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		}
 	}
 
-	// Step 5: clear hook_token on success only, so a replayed Stop event can
-	// no longer authenticate as this session. The PR was already marked ready
-	// by the classifier, so move the session out of Finalizing before daemon
-	// startup recovery can mistake it for an interrupted finalize.
-	if result.Outcome == models.CronJobOutcomePRCreated {
+	// Step 5: clear hook_token on the terminal-success outcomes only, so a
+	// replayed Stop event can no longer authenticate as this session. The PR was
+	// already marked ready by the classifier, so move the session out of
+	// Finalizing before daemon startup recovery can mistake it for an
+	// interrupted finalize.
+	//
+	// pr_skipped_no_github joins pr_created here for the PRESERVED (interactive)
+	// case: finalize genuinely completed — the repo's origin just is not GitHub,
+	// so no PR was possible — and without this move the row would sit in
+	// Finalizing until RecoverFinalizingSessions swept it to Blocked with
+	// failed_recovered on the next daemon start, undoing the benign
+	// classification one restart later. A deleted (cron) session has no row to
+	// update, so that path stays byte-identical.
+	if result.Outcome == models.CronJobOutcomePRCreated ||
+		(result.Outcome == models.CronJobOutcomePRSkippedNoGitHub && !result.Deleted) {
 		var nilToken *string
 		readyState := int(machine.ReadyForReview)
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
@@ -245,8 +257,12 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		models.CronJobOutcomeZeroOutput,
 		models.CronJobOutcomeWorktreeGone:
 		outcome = "no_changes"
+	case models.CronJobOutcomePRSkippedNoGitHub:
+		// Not an error: the session produced work and the origin simply is not
+		// GitHub. Its own bucket keeps it out of the error rate rather than
+		// inflating it on every session in a non-GitHub repo.
+		outcome = "skipped_no_github"
 	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomePRSkippedNoGitHub,
 		models.CronJobOutcomeChatSpawnFailed,
 		models.CronJobOutcomeCleanupFailed,
 		models.CronJobOutcomeFailedRecovered,
@@ -1293,15 +1309,14 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 // exhaustive. (gated blocks the fire before any session exists, so there is
 // no session to mark attention-needed.)
 //
-// Note pr_skipped_no_github returns true here for the preserved (interactive)
-// case, but a cron session on that path is hard-deleted (FinalizeResult.Deleted)
-// — the deletion is suppressed by the caller's `&& !result.Deleted` guard in
-// FinalizeSession step 6, not by this function. The outcome alone does not gate
-// the Blocked transition.
+// Note the caller gates on `needsAttention(...) && !result.Deleted`: for the
+// outcomes a cron session can reach by hard-deleting itself (pr_skipped_no_github,
+// deleted_no_changes, zero_output), there is no row left to transition, and the
+// Deleted guard — not this function — is what suppresses the write. The outcome
+// alone therefore does not gate the Blocked transition either way.
 func needsAttention(o models.CronJobOutcome) bool {
 	switch o {
 	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomePRSkippedNoGitHub,
 		models.CronJobOutcomeChatSpawnFailed,
 		models.CronJobOutcomeCleanupFailed,
 		models.CronJobOutcomePRNoChanges:
@@ -1315,7 +1330,17 @@ func needsAttention(o models.CronJobOutcome) bool {
 		// worktree_gone: finalize ran against an already-removed worktree
 		// (archived/deleted session). A benign no-op, not a housekeeping
 		// failure — so the session must NOT be routed to Blocked.
-		models.CronJobOutcomeWorktreeGone:
+		models.CronJobOutcomeWorktreeGone,
+		// pr_skipped_no_github: the session produced real work and the repo's
+		// origin simply is not GitHub, so no PR could ever be opened. That is an
+		// expected, benign result — for a non-GitHub repo it would otherwise fire
+		// on EVERY session — so it must not read as a finalize failure. The
+		// outcome stays recorded (FinalizeResult.Outcome and, for cron rows,
+		// cron_jobs.last_run_outcome); it is deliberately just not
+		// attention-worthy. Preserved interactive sessions are moved to
+		// ReadyForReview by step 5 instead, which also keeps them out of
+		// RecoverFinalizingSessions' Finalizing sweep on the next daemon start.
+		models.CronJobOutcomePRSkippedNoGitHub:
 		return false
 	}
 	return false

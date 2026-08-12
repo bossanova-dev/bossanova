@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "title": "BOS-836 chat picker — the advertised [r]ename action opens an inline prompt that writes the new title through to the chat list",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the chat picker advertises [r]ename beside the action it sits next to",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the session board is populated, so the picker below is opened on real fixture state and not an empty shell"
+          },
+          "timeoutMs": 15000,
+          "caption": "The demo session board lists the session whose chats this scenario renames."
+        },
+        {
+          "key": "enter",
+          "caption": "Open the session's chat picker — the list that owns the per-chat actions."
+        },
+        {
+          "waitFor": {
+            "text": "Initial implementation",
+            "match": "normalized",
+            "label": "a real chat row rendered, so the action bar below belongs to a populated picker rather than a loading frame"
+          },
+          "timeoutMs": 15000,
+          "caption": "The chat picker lists the session's chats, cursor on the newest."
+        },
+        {
+          "expect": [
+            {
+              "text": "Initial implementation",
+              "match": "normalized",
+              "label": "the selected chat still carries its fixture title — the before state the rename is measured against"
+            },
+            {
+              "text": "[r]ename",
+              "match": "normalized",
+              "label": "BOS-836: rename is advertised in the action bar, so the key is discoverable rather than hidden"
+            },
+            {
+              "text": "[d]elete",
+              "match": "normalized",
+              "label": "the pre-existing per-chat actions are intact — [r]ename was added beside them, not in place of them"
+            }
+          ],
+          "caption": "BOS-836: the action bar now offers [r]ename next to the chat actions that were already there."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "pressing r opens an inline prompt, prefilled and editable, in place of the action bar",
+      "steps": [
+        { "key": "r", "caption": "Press the advertised [r]ename key on the selected chat." },
+        {
+          "waitFor": {
+            "text": "Rename:",
+            "match": "normalized",
+            "label": "the inline prompt took over the footer, so the keystrokes below are going into the editor and not the list"
+          },
+          "timeoutMs": 15000,
+          "caption": "The rename prompt replaces the action bar, prefilled with the chat's current title."
+        },
+        {
+          "key": "ctrl+u",
+          "caption": "Clear the prefilled title — the prompt is a real text editor, not a fixed label."
+        },
+        {
+          "type": "Renamed from the chat list",
+          "caption": "Type the new title into the prompt."
+        },
+        {
+          "waitFor": {
+            "text": "Renamed from the chat list",
+            "match": "normalized",
+            "label": "the typed characters are echoed live in the prompt, so the input is focused and receiving keys"
+          },
+          "timeoutMs": 15000,
+          "caption": "The typed title renders live in the prompt."
+        },
+        {
+          "expect": [
+            {
+              "text": "Rename:",
+              "match": "normalized",
+              "label": "the prompt is still open and labelled while the title is being edited"
+            },
+            {
+              "text": "[enter] save",
+              "match": "normalized",
+              "label": "the prompt advertises how to commit the edit"
+            },
+            {
+              "text": "[esc] cancel",
+              "match": "normalized",
+              "label": "the prompt advertises how to abandon the edit — the escape hatch scene 4 exercises"
+            }
+          ],
+          "caption": "BOS-836: while the prompt owns the keyboard it advertises both of its exits."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "enter commits the rename and the row settles under its new title",
+      "steps": [
+        { "key": "enter", "caption": "Commit the rename." },
+        {
+          "waitFor": {
+            "text": "[enter] select",
+            "match": "normalized",
+            "label": "the action bar is back, so the prompt closed and the list has the keyboard again"
+          },
+          "timeoutMs": 15000,
+          "caption": "The prompt closes and the chat list takes the keyboard back."
+        },
+        {
+          "expect": [
+            {
+              "text": "Renamed from the chat list",
+              "match": "normalized",
+              "label": "BOS-836: the renamed row carries the new title in the table, and survives the picker's next poll because the daemon accepted the write"
+            },
+            {
+              "text": "[r]ename",
+              "match": "normalized",
+              "label": "the action bar is fully restored, rename included — the prompt was transient, not a mode the list gets stuck in"
+            }
+          ],
+          "caption": "BOS-836: the new title is settled in the chat table with the action bar restored."
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "esc abandons a second edit and leaves the committed title untouched",
+      "steps": [
+        { "key": "r", "caption": "Open the rename prompt again on the renamed chat." },
+        {
+          "waitFor": {
+            "text": "Rename:",
+            "match": "normalized",
+            "label": "the prompt reopened, so the escape below is cancelling a genuinely open edit"
+          },
+          "timeoutMs": 15000,
+          "caption": "The prompt reopens, prefilled with the title just committed."
+        },
+        { "key": "esc", "caption": "Cancel the edit with escape." },
+        {
+          "waitFor": {
+            "text": "[enter] select",
+            "match": "normalized",
+            "label": "the action bar returned, so escape closed the prompt instead of leaving the view"
+          },
+          "timeoutMs": 15000,
+          "caption": "Escape closes the prompt and returns to the chat list — it does not leave the picker."
+        },
+        {
+          "expect": [
+            {
+              "text": "Renamed from the chat list",
+              "match": "normalized",
+              "label": "BOS-836: the cancelled edit left the committed title exactly as it was"
+            },
+            {
+              "text": "[enter] select",
+              "match": "normalized",
+              "label": "the list is interactive again — escape cancelled the edit rather than backing out of the chat picker"
+            }
+          ],
+          "caption": "BOS-836: cancelling changes nothing and hands the list back intact."
+        }
+      ]
+    }
+  ]
+}

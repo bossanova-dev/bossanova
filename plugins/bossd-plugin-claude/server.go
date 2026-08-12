@@ -106,10 +106,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	if req.GetIsStrictManagedMcpConfig() && req.GetManagedMcpConfigPath() == "" {
-		return nil, status.Error(codes.FailedPrecondition, "strict MCP config requires a managed config path")
-	}
-	sid, err := s.runner.StartWithManagedMcpConfig(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv(), req.GetManagedMcpConfigPath(), req.GetIsStrictManagedMcpConfig())
+	sid, err := s.runner.StartWithModel(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetExtraEnv())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -189,7 +186,12 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 //
 // req.LogPath is accepted for API compatibility but intentionally
 // unused — bossd reads it from its own state, not from this response.
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+//
+// The error result is always nil now that argv assembly is pure: the only
+// failure this ever had was the strict-MCP guard, and boss no longer owns MCP
+// configuration. The signature stays as-is because it implements the plugin
+// interface.
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
 	args := []string{"claude"}
 	if req.Resume {
 		args = append(args, "--resume", req.SessionId)
@@ -213,23 +215,12 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if model := resolveClaudeModel(req.GetModel(), pluginModel); model != "" {
 		args = append(args, "--model", model)
 	}
-	// --mcp-config wires the boss MCP server into this session so mcp__boss__*
-	// tools are reachable. bossd writes the config to its app-data dir (never the
-	// worktree) and passes the absolute path. Strict mode must never continue
-	// without it: omitting both flags would re-enable user/project MCP servers.
-	mcpCfg := req.GetManagedMcpConfigPath()
-	if req.GetStrictManagedMcpConfig() && mcpCfg == "" {
-		return nil, status.Error(codes.FailedPrecondition, "strict MCP config requires a managed config path")
-	}
-	if mcpCfg != "" {
-		args = append(args, "--mcp-config", mcpCfg)
-		// --strict-mcp-config makes the curated --mcp-config the WHOLE surface:
-		// the agent ignores project .mcp.json / settings MCP servers. bossd sets
-		// StrictManagedMcpConfig for every spawn, whose config includes boss and Linear.
-		if req.GetStrictManagedMcpConfig() {
-			args = append(args, "--strict-mcp-config")
-		}
-	}
+	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
+	// Code discovers servers its own native way (project .mcp.json gated by
+	// enabledMcpjsonServers, plus the user and local scopes) and the repo is
+	// responsible for declaring them. --strict-mcp-config would suppress exactly
+	// that — it is the coupling this removes, not an isolation guarantee worth
+	// keeping. See docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md.
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell

@@ -236,6 +236,11 @@ type SessionStore interface {
 	ListWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
 	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*SessionWithRepo, error)
 	ListArchived(ctx context.Context, repoID string) ([]*models.Session, error)
+	// ListTmuxSessionNames returns every non-empty sessions.tmux_session_name
+	// across all repos, archived rows included. It backs the orphaned-tmux
+	// reaper's whitelist (BOS-846): every other list here is repo-scoped, and a
+	// repo-scoped whitelist would leave other repos' live panes reapable.
+	ListTmuxSessionNames(ctx context.Context) ([]string, error)
 	Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error)
 	// UpdateStateConditional runs the conditional `UPDATE sessions SET
 	// state=newState WHERE id=? AND state=expectedState` used as the

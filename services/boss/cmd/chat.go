@@ -77,7 +77,20 @@ func chatCmd() *cobra.Command {
 	}
 	wait.Flags().Duration("timeout", 30*time.Minute, "Maximum time to wait (e.g. 5m, 1h)")
 
-	cmd.AddCommand(newChat, send, show, wait)
+	// rename subcommand. MinimumNArgs(2) plus the strings.Join mirrors
+	// `boss rename` (main.go renameCmd) so a multi-word title can be typed
+	// without quoting, exactly as it can for a session.
+	rename := &cobra.Command{
+		Use:   "rename <session-id|chat-id> <new-title...>",
+		Short: "Rename a chat (updates its title)",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, title := chatRenameArgs(args)
+			return runChatRename(cmd, target, title)
+		},
+	}
+
+	cmd.AddCommand(newChat, send, show, wait, rename)
 	return cmd
 }
 
@@ -120,6 +133,59 @@ func chatSend(ctx context.Context, c chatSendClient, cmd *cobra.Command, chatID,
 	}
 
 	reportChatSendOutcome(cmd.OutOrStdout(), resp)
+	return nil
+}
+
+// chatRenameArgs splits `rename <target> <title...>` into the target and a
+// single-spaced title, the same way renameCmd does for `boss rename`. It is a
+// named function rather than an inline join so the multi-word wiring is
+// assertable on its own: everything downstream of it needs a live client, so a
+// test that went through RunE could never observe the joined title.
+func chatRenameArgs(args []string) (target, title string) {
+	return args[0], strings.Join(args[1:], " ")
+}
+
+func runChatRename(cmd *cobra.Command, target, title string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	return chatRename(context.Background(), c, cmd.OutOrStdout(), target, title)
+}
+
+// chatRenameClient is the client surface `boss chat rename` needs. It is
+// narrowed for the same reason chatSendClient is: a test can then drive the real
+// rename path and read back the (chat id, title) pair that reached the daemon,
+// which is the only place the resolution and the joined title are observable —
+// UpdateChatTitleResponse is an empty message.
+type chatRenameClient interface {
+	GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error)
+	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
+}
+
+// chatRename renames the chat named by a session id or a chat id. The empty
+// check runs BEFORE resolution so `boss chat rename <id> "   "` costs no RPC:
+// cobra's MinimumNArgs(2) counts arguments, not content, so a whitespace-only
+// title reaches here as a satisfied arg list.
+func chatRename(ctx context.Context, c chatRenameClient, w io.Writer, target, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("rename: new title must not be empty")
+	}
+
+	resolved, err := resolveChatTarget(ctx, c, target)
+	if err != nil {
+		return err
+	}
+
+	if err := c.UpdateChatTitle(ctx, resolved.AgentSessionID, title); err != nil {
+		return fmt.Errorf("rename chat: %w", err)
+	}
+
+	// UpdateChatTitleResponse is an empty message, so — unlike `boss rename`,
+	// which echoes the server's own Title back — there is nothing to echo. Print
+	// the id we resolved and the title we sent.
+	_, _ = fmt.Fprintf(w, "Chat %s renamed to %q.\n", resolved.AgentSessionID, title)
 	return nil
 }
 

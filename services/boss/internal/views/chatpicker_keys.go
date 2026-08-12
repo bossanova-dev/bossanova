@@ -7,6 +7,8 @@ package views
 // That ordering is behaviour; do not reorder these checks.
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -30,6 +32,12 @@ func (m ChatPickerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.pickingAccount {
 		return m.updateSwitchAccountSelect(msg)
+	}
+	// The inline rename prompt owns the keyboard while it is open, ahead of the
+	// confirm overlay: canRename() refuses to open it while a confirm is up, so
+	// the two can never both be live, and typing must never reach the list keys.
+	if m.renaming {
+		return m.updateRename(msg)
 	}
 	if m.confirm != confirmNone {
 		return m.updateConfirm(msg)
@@ -101,6 +109,8 @@ func (m ChatPickerModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keySwitchAccount()
 	case "d":
 		return m.keyDelete()
+	case "r":
+		return m.keyRename()
 	case "enter":
 		return m.keyOpenChat()
 	}
@@ -237,6 +247,83 @@ func (m ChatPickerModel) keyDelete() (tea.Model, tea.Cmd) {
 		m.confirm = confirmDelete
 	}
 	return m, nil
+}
+
+// keyRename handles [r]ename: open the inline title prompt over the selected
+// row, prefilled with the current title. When the action is hidden, swallow the
+// key (like [g]ithub and [m]erge) rather than letting it fall through to the
+// table, whose default keymap could otherwise move the cursor — a hidden
+// shortcut must do nothing.
+func (m ChatPickerModel) keyRename() (tea.Model, tea.Cmd) {
+	if !m.canRename() {
+		return m, nil
+	}
+	chat := m.selectedChat()
+	m.renaming = true
+	m.renameTargetChatID = chat.AgentSessionId
+	m.renameErr = ""
+	m.renameInput.SetValue(chat.GetTitle())
+	m.renameInput.CursorEnd()
+	return m, m.renameInput.Focus()
+}
+
+// updateRename handles keys while the inline rename prompt is open: enter
+// commits, esc cancels, everything else edits the title.
+func (m ChatPickerModel) updateRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		return m.commitRename()
+	case "esc":
+		return m.cancelRename(), nil
+	}
+
+	var cmd tea.Cmd
+	// Normalized for the same reason the list filter normalizes: a synthesized
+	// KeyPressMsg carrying only Code (as tests and some terminals produce) has
+	// an empty Text, and textinput inserts Text.
+	m.renameInput, cmd = m.renameInput.Update(normalizePrintableKey(msg))
+	m.renameErr = ""
+	return m, cmd
+}
+
+// commitRename validates the edited title, applies it optimistically so the row
+// updates immediately, and dispatches the UpdateChatTitle RPC. The RPC is
+// addressed at renameTargetChatID — the chat captured when the prompt opened —
+// so a poll that reorders the list mid-edit cannot retarget the write.
+func (m ChatPickerModel) commitRename() (tea.Model, tea.Cmd) {
+	title := strings.TrimSpace(m.renameInput.Value())
+	if title == "" {
+		// Keep the prompt open: an empty title is a correctable mistake, and
+		// closing it would discard what the operator typed.
+		m.renameErr = "Title cannot be empty"
+		return m, nil
+	}
+
+	target := m.renameTargetChatID
+	var previous string
+	for _, chat := range m.chats {
+		if chat.GetAgentSessionId() == target {
+			previous = chat.GetTitle()
+			chat.Title = title
+			break
+		}
+	}
+
+	m.renaming = false
+	m.renameErr = ""
+	m.renameInput.Blur()
+	m.buildTableRows()
+	return m, m.renameChatCmd(target, title, previous)
+}
+
+// cancelRename closes the prompt and discards the edit, leaving the title as it
+// was. It deliberately does NOT set m.cancel — esc inside a text field cancels
+// the edit, not the view.
+func (m ChatPickerModel) cancelRename() ChatPickerModel {
+	m.renaming = false
+	m.renameErr = ""
+	m.renameInput.Blur()
+	return m
 }
 
 // keyOpenChat handles [enter]: attach to the selected chat.

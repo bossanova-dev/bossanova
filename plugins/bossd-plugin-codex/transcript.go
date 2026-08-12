@@ -161,10 +161,111 @@ func scanInteractiveSessionCandidates(root, workDir string, launchedAfter time.T
 	return scanInteractiveSessionCandidatesInWindow(root, workDir, launchedAfter.Add(-2*time.Second), time.Time{})
 }
 
+// mtimePrefilterSlack is how far below notBefore a rollout's mtime may fall and
+// still be opened and read (BOS-843).
+//
+// Why a lower-bound mtime prefilter is safe at all: readSessionMeta reads only
+// the FIRST line of a rollout, so meta.Timestamp is the session-START time,
+// while ModTime() is the last-write time of a file codex appends to for the
+// whole life of the session. Measured over 340 randomly sampled rollouts on a
+// real 10,529-file corpus, mtime − meta.Timestamp was never negative (min
+// +18.5s, p50 +213s, max +6.7 days). So mtime < notBefore implies
+// meta.Timestamp <= mtime < notBefore, and the file would have been rejected by
+// the authoritative sessionTime.Before(notBefore) check below anyway. The
+// prefilter can therefore only ever skip reads whose result would be discarded.
+//
+// The measured requirement is thus zero slack; 24h is insurance, not necessity.
+// It absorbs coarse filesystem timestamp granularity, NTP steps, mtimes
+// preserved by `cp -p` / `tar -x`, and any future codex change that weakens the
+// invariant — while still pruning essentially all of a corpus spanning months.
+//
+// The UPPER bound is deliberately NOT prefiltered on mtime, at any slack:
+// because mtime runs AHEAD of meta.Timestamp by up to about a week, an
+// mtime.After(notAfter) prune would reject exactly the long-running or
+// recently-touched session the legacy resolver is looking for.
+// TestResolveLegacyInteractiveSessionIDAtUsesSessionMetaTimestamp is the
+// committed guard against that mistake. Only the notBefore side is prefiltered;
+// notAfter is still evaluated on sessionTime after readSessionMeta.
+const mtimePrefilterSlack = 24 * time.Hour
+
+// shardDateSlack widens the day-shard directory prune by a further day in the
+// only direction a lower-bound-only rule can be wrong (BOS-843).
+//
+// Codex names <YYYY>/<MM>/<DD> shard directories from the LOCAL date while the
+// rollout's own meta.Timestamp is UTC (340/340 sampled rollouts ended in `Z`).
+// On the sampled host the shard directory was one day AFTER the UTC date for
+// 68/300 rollouts (22.7%); on a host west of UTC the offset lands one day
+// BEFORE. Pruning only shards strictly older than the floor already tolerates a
+// shard dated later than its contents' UTC timestamps, so this extra day covers
+// the remaining sign. As with mtimePrefilterSlack, no upper-bound shard prune
+// exists — a shard can never be too new to descend into.
+//
+// This day is MARGIN, not necessity, and TestShardDirEndsBefore — which pins
+// shardDirEndsBefore's boundaries directly rather than through the walk —
+// records why: no realistic corpus case falsifies shardDateSlack = 0, and
+// zeroing it leaves the package suite green (mutation-verified). The
+// local-vs-UTC shard-dating offset is at most one day, and mtimePrefilterSlack
+// alone already buys that day, since 24h of file slack puts the derived
+// floorDate a full day below date(notBefore). The second day is defence against
+// a future shrink of mtimePrefilterSlack or a dating skew larger than one day,
+// not against anything today's corpus can produce.
+const shardDateSlack = 24 * time.Hour
+
+// sessionMetaReader reads the leading session_meta payload of a rollout file.
+// It exists so tests can count how many rollouts the scan actually opens; the
+// production path always passes readSessionMeta. Injected as a parameter rather
+// than a package-level var so parallel tests never share a counter.
+type sessionMetaReader func(path string) (codexSessionMetaPayload, bool)
+
 func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, notAfter time.Time) []interactiveSessionCandidate {
+	return scanInteractiveSessionCandidatesInWindowWith(root, workDir, notBefore, notAfter, readSessionMeta)
+}
+
+// scanInteractiveSessionCandidatesInWindowWith is the body of
+// scanInteractiveSessionCandidatesInWindow with the metadata read injected.
+//
+// The walk applies the cheap filters before the expensive one: whole day-shard
+// directories older than the window are skipped with filepath.SkipDir, and a
+// file whose mtime is below the window floor is rejected before it is opened.
+// Both are disabled entirely when notBefore is zero ("no lower bound"). See
+// mtimePrefilterSlack and shardDateSlack.
+//
+// The two prefilters are conservative supersets of the authoritative post-read
+// window check to DIFFERENT degrees, and the difference is load-bearing:
+//
+//   - The mtime prefilter is a conservative superset unconditionally. A file
+//     whose mtime is at or above fileFloor always survives it, and when
+//     meta.Timestamp is missing or unparseable sessionTime falls back to that
+//     same mtime — so the post-read check can only agree with it or be stricter.
+//   - The directory prune is a conservative superset only WHILE meta.Timestamp
+//     parses as RFC3339Nano — the regime shardDateSlack's 340-sample
+//     measurement covers. It is not a superset otherwise: with no parseable
+//     timestamp, sessionTime falls back to info.ModTime(), which for a
+//     long-running or recently-appended session can exceed its shard's date by
+//     far more than shardDateSlack. Such a rollout is skipped before it is ever
+//     stat'd, so it degrades to a silently MISSED rollout, not to a slow scan.
+//
+// That is the one place shardDirEndsBefore's fail-open does not reach: it fails
+// open on an unrecognised LAYOUT, which it can see, and not on a
+// timestamp-format change, which it cannot. The case is narrow — it needs a
+// well-formed session_meta envelope carrying no parseable timestamp in either
+// the payload or the envelope, i.e. a codex timestamp-format change or a
+// corrupt rollout — but it is real, and it is not covered by the layout
+// fail-open.
+func scanInteractiveSessionCandidatesInWindowWith(root, workDir string, notBefore, notAfter time.Time, readMeta sessionMetaReader) []interactiveSessionCandidate {
+	prefilter := !notBefore.IsZero()
+	fileFloor := notBefore.Add(-mtimePrefilterSlack)
+	dirFloor := fileFloor.Add(-shardDateSlack)
+
 	var candidates []interactiveSessionCandidate
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if prefilter && shardDirEndsBefore(root, path, dirFloor) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if matched, _ := filepath.Match("rollout-*.jsonl", filepath.Base(path)); !matched {
@@ -174,7 +275,11 @@ func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, n
 		if err != nil {
 			return nil
 		}
-		meta, ok := readSessionMeta(path)
+		// Cheap mtime rejection BEFORE the open+read. Lower bound only.
+		if prefilter && info.ModTime().Before(fileFloor) {
+			return nil
+		}
+		meta, ok := readMeta(path)
 		if !ok {
 			return nil
 		}
@@ -207,6 +312,81 @@ func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, n
 		return candidates[i].Time.After(candidates[j].Time)
 	})
 	return candidates
+}
+
+// shardDirEndsBefore reports whether dir is a codex date-shard directory
+// (<root>/YYYY, <root>/YYYY/MM or <root>/YYYY/MM/DD) whose entire date range is
+// strictly older than floor, and which may therefore be skipped wholesale.
+//
+// It FAILS OPEN — returning false, i.e. "descend as before" — for the root
+// itself, a filepath.Rel error, any depth beyond the three shard levels, and
+// any segment that is not the expected zero-padded numeric form or is out of
+// range. Codex's shard layout is undocumented and unversioned, so an
+// unrecognised tree must degrade to today's (slow) behaviour, never to a
+// silently missing rollout.
+//
+// That fail-open covers unrecognised LAYOUT only. A directory name carries no
+// timestamp, so this function cannot detect the other regime: a rollout whose
+// meta.Timestamp is absent or unparseable, whose caller-side sessionTime
+// therefore falls back to mtime and can be arbitrarily newer than this shard's
+// date. See scanInteractiveSessionCandidatesInWindowWith for that bound.
+//
+// TestShardDirEndsBefore is the committed direct coverage of the boundaries
+// below. The comparisons — same-day equality (a shard on the floor's own date
+// must NOT be pruned), the year rollover, and the month and day edges — are
+// each falsified by a case that flips when the comparison changes. Each
+// fail-open guard (the depth cap, the month range, and the day bounds) also
+// has a case that returns the wrong answer if that guard alone is deleted.
+func shardDirEndsBefore(root, dir string, floor time.Time) bool {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || rel == "" {
+		return false
+	}
+	segments := strings.Split(rel, string(filepath.Separator))
+	if len(segments) > 3 {
+		return false
+	}
+	year, ok := parseShardSegment(segments[0], 4)
+	if !ok {
+		return false
+	}
+	f := floor.UTC()
+	if len(segments) == 1 {
+		return year < f.Year()
+	}
+	month, ok := parseShardSegment(segments[1], 2)
+	if !ok || month < 1 || month > 12 {
+		return false
+	}
+	if len(segments) == 2 {
+		return year < f.Year() || (year == f.Year() && month < int(f.Month()))
+	}
+	day, ok := parseShardSegment(segments[2], 2)
+	if !ok || day < 1 || day > 31 {
+		return false
+	}
+	shardDate := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	floorDate := time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, time.UTC)
+	return shardDate.Before(floorDate)
+}
+
+// parseShardSegment parses a zero-padded, all-digit shard path segment of
+// exactly width characters ("2026", "05", "08"). Anything else — a different
+// length, a sign, whitespace, or a non-digit — is rejected so the caller can
+// fail open on a directory that is not a date shard.
+func parseShardSegment(segment string, width int) (int, bool) {
+	if len(segment) != width {
+		return 0, false
+	}
+	value := 0
+	for i := 0; i < len(segment); i++ {
+		c := segment[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		value = value*10 + int(c-'0')
+	}
+	return value, true
 }
 
 func readSessionMeta(path string) (codexSessionMetaPayload, bool) {

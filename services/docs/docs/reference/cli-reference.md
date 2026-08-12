@@ -387,24 +387,30 @@ same reach, from an MCP agent):
 
 <CommandTabs
 chat='"start a session on the bossanova repo to fix the flaky login test"'
-cli="boss new --repo <r> --prompt <p> --detach"
+cli="boss new --repo <r> --prompt <p>"
 mcp="create_session"
 />
 
 The CLI form creates the session, prints its session-id and chat-id, and exits.
+`--detach` is deliberately absent: the `--repo` + `--prompt` path always detaches, so
+passing it changes nothing. For a run that is **not** expected to change the
+repository, reach for `--defer-pr` instead — see [Runs that may change
+nothing](#runs-that-may-change-nothing) below.
 
 `boss new` runs non-interactively when both `--repo` and `--prompt` are given (`--detach`
 is then implicit; `--no-attach` is an alias). `--agent <a>` overrides the default agent
 plugin; `--title <t>` is optional (auto-derived from the prompt when absent).
 
-| Flag                      | Description                                                                                                       |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `--detach`, `--no-attach` | Exit after creating the session. The `--repo` + `--prompt` path **always** detaches, so the flag is a no-op there |
-| `--tmux-unattended`       | Host the session in a durable tmux pane that survives a daemon restart and is attach-safe                         |
-| `--tracker-id <id>`       | External issue id to bind the session to (e.g. `BOS-821`)                                                         |
-| `--tracker-source <src>`  | External issue tracker: `linear` or `sentry`. Any other value is rejected before any RPC is issued                |
-| `--tracker-url <url>`     | URL of the external issue the session is bound to                                                                 |
-| `--json`                  | Emit the created session as a stable JSON object instead of the two-line output                                   |
+| Flag                      | Description                                                                                                                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--detach`, `--no-attach` | Exit after creating the session. The `--repo` + `--prompt` path **always** detaches, so the flag is a no-op there                                                                                                                  |
+| `--tmux-unattended`       | Host the session in a durable tmux pane that survives a daemon restart and is attach-safe                                                                                                                                          |
+| `--defer-pr`              | Create the worktree-backed session but open **no** draft PR up front; a PR is opened at finalize only if the run produced commits. No PR exists until the run finalizes, so pair with `--tmux-unattended` for long unattended runs |
+| `--quick-chat`            | Create a session with no worktree, branch, or PR, in the repository checkout. The agent starts when you attach. Mutually exclusive with `--defer-pr`                                                                               |
+| `--tracker-id <id>`       | External issue id to bind the session to (e.g. `BOS-821`)                                                                                                                                                                          |
+| `--tracker-source <src>`  | External issue tracker: `linear` or `sentry`. Any other value is rejected before any RPC is issued                                                                                                                                 |
+| `--tracker-url <url>`     | URL of the external issue the session is bound to                                                                                                                                                                                  |
+| `--json`                  | Emit the created session as a stable JSON object instead of the two-line output                                                                                                                                                    |
 
 `--detach` and `--tmux-unattended` are independent, and the pairing is the part most
 often got wrong. `--detach` governs only whether this command attaches a chat pane
@@ -413,6 +419,44 @@ tmux pane that outlives a daemon restart and can be attached to later. Neither o
 decides whether the agent runs: supplying a prompt is what launches it headlessly. A
 scripted launch that should stay reachable wants `--tmux-unattended`, not `--detach`,
 which the non-interactive path already implies.
+
+#### Runs that may change nothing
+
+By default a scripted launch opens a draft PR up front. That is right for a run meant
+to produce code, but wrong for planning, recon or review work: a run that legitimately
+commits nothing leaves an empty PR behind and finalizes as a no-op that needs
+attention. `--defer-pr` is the fix — the session still gets a worktree and branch, but
+the PR is opened at finalize **only if** commits actually landed, so a no-op finishes
+cleanly and nothing is left to clean up:
+
+<CommandTabs
+chat='"do a read-only review of the auth module on the bossanova repo"'
+cli="boss new --repo <r> --prompt <p> --defer-pr --tmux-unattended"
+mcp="create_session"
+/>
+
+The `--tmux-unattended` in that example is load-bearing, not decoration. `--defer-pr`
+means no PR exists until the run finalizes, and the daemon opens it there — through the
+finalize Stop hook on the durable tmux-hosted path, or through the run-completion poller
+that drives finalize for a paneless headless run. What neither path can do is finalize a
+run that was killed first: a bossd restart marks a paneless headless run _orphaned_
+rather than finalizing it, so its commits stay on a branch with no PR at all — where a
+run without `--defer-pr` would at least still have its up-front draft PR.
+`--tmux-unattended` hosts the run in a pane that survives the restart, so pair the two
+for anything long-running.
+
+`--quick-chat` is the other shape, and the two are not interchangeable. It creates a
+session with no worktree, branch or PR at all, directly in the repository checkout, and
+starts no agent: the prompt is stored and runs when somebody attaches. Because such a
+create launches nothing, the `chat-id:` line comes back empty, a notice is written to
+stderr, and the `--json` envelope carries a `next_action` field saying how to start the
+work. Use it for a chat you intend to attach to yourself.
+
+For **unattended** runs — anything scripted, batched or scheduled — prefer `--defer-pr`.
+Concurrent `--quick-chat` sessions share the one repository checkout, so they contend
+over the working tree and git index with each other and with any uncommitted local work.
+The two flags are mutually exclusive and passing both is rejected before any RPC is
+issued: a quick chat has no worktree, branch or draft PR for `--defer-pr` to defer.
 
 Bind a scripted launch to a tracker issue and read the ids back as JSON:
 
@@ -437,12 +481,13 @@ A failure under `--json` writes the shared error envelope — `.error.code`,
 `--tracker-source` is caught locally and reported as `INVALID_ARGUMENT` without a
 session ever being created.
 
-| Subcommand                                   | Description                                                                                   |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `boss chat new <session-id>`                 | Start a new live chat inside an existing session (clean context, same worktree and branch)    |
-| `boss chat send <session-id\|chat-id> <msg>` | Deliver a follow-up message to a running chat; wakes a sleeping chat by default               |
-| `boss chat show <session-id\|chat-id>`       | Print the transcript (`--result-only` for just the final result, `--limit N` to cap messages) |
-| `boss chat wait <session-id\|chat-id>`       | Block until the chat is idle / waiting, then print the final result (`--timeout 30m`)         |
+| Subcommand                                              | Description                                                                                   |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `boss chat new <session-id>`                            | Start a new live chat inside an existing session (clean context, same worktree and branch)    |
+| `boss chat rename <session-id\|chat-id> <new-title...>` | Rename a chat; the trailing words are joined into the new title                               |
+| `boss chat send <session-id\|chat-id> <msg>`            | Deliver a follow-up message to a running chat; wakes a sleeping chat by default               |
+| `boss chat show <session-id\|chat-id>`                  | Print the transcript (`--result-only` for just the final result, `--limit N` to cap messages) |
+| `boss chat wait <session-id\|chat-id>`                  | Block until the chat is idle / waiting, then print the final result (`--timeout 30m`)         |
 
 A `<session-id>` targets that session's primary chat; a `<chat-id>` (the
 `agent_session_id` printed by `boss new --detach` or `boss chat new --json`)

@@ -8,6 +8,7 @@ go_library(
         "display_tracker.go",
         "repair_lease.go",
         "tmux_poller.go",
+        "tmux_reaper.go",
         "tracker.go",
     ],
     importpath = "github.com/recurser/bossd/internal/status",
@@ -36,6 +37,7 @@ go_test(
         "display_tracker_test.go",
         "repair_lease_test.go",
         "tmux_poller_test.go",
+        "tmux_reaper_test.go",
         "tracker_test.go",
         "waiting_test.go",
     ],
@@ -44,6 +46,7 @@ go_test(
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     shard_count = 4,  # keep: 199s serial under --config=race
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/migrate",

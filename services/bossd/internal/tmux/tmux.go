@@ -49,9 +49,18 @@ const (
 // CommandFactory creates exec.Cmd instances. Allows injection for testing.
 type CommandFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 
+// DaemonIDEnvKey is the session-environment variable every pane this client
+// creates carries, naming the bossd instance that created it. The orphaned-tmux
+// reaper (BOS-846) reads it back with `show-environment` so it only ever
+// considers killing panes it can attribute to itself: a pane stamped with
+// another daemon's id belongs to that daemon, and one carrying no stamp at all
+// predates this mechanism or was created by something else entirely.
+const DaemonIDEnvKey = "BOSS_DAEMON_ID"
+
 // Client wraps tmux CLI operations.
 type Client struct {
-	cmdFunc CommandFactory
+	cmdFunc  CommandFactory
+	daemonID string
 }
 
 // Option configures a Client.
@@ -61,6 +70,20 @@ type Option func(*Client)
 func WithCommandFactory(f CommandFactory) Option {
 	return func(c *Client) {
 		c.cmdFunc = f
+	}
+}
+
+// WithDaemonID makes every session this client creates carry DaemonIDEnvKey.
+//
+// The stamp lives on the client rather than at each spawn site deliberately:
+// bossd constructs exactly one production client, so one option covers every
+// present and future call site, whereas a per-call-site stamp would silently
+// leave any new spawn path producing panes the reaper cannot attribute. An
+// empty id stamps nothing — "unstamped" and "owned by the daemon whose id is
+// the empty string" must not be the same thing.
+func WithDaemonID(id string) Option {
+	return func(c *Client) {
+		c.daemonID = id
 	}
 }
 
@@ -138,9 +161,23 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 	// would make tmux exit with "missing or unsuitable terminal". termnorm
 	// keeps a resolvable TERM and otherwise falls back to xterm-256color. It
 	// returns a copy, so the caller's Env map is never mutated.
-	sessionEnv := make([]string, 0, len(opts.Env)+1)
-	for _, k := range sortedKeys(opts.Env) {
-		sessionEnv = append(sessionEnv, k+"="+opts.Env[k])
+	//
+	// The client's daemon-id stamp is merged in before sorting rather than
+	// appended, so it takes its place in the deterministic ordering, and it
+	// overwrites any caller-supplied value: a caller must not be able to make a
+	// pane look like another daemon's and thereby exempt it from reaping. The
+	// merge happens into a copy — the caller's map is shared state.
+	env := opts.Env
+	if c.daemonID != "" {
+		env = make(map[string]string, len(opts.Env)+1)
+		for k, v := range opts.Env {
+			env[k] = v
+		}
+		env[DaemonIDEnvKey] = c.daemonID
+	}
+	sessionEnv := make([]string, 0, len(env)+1)
+	for _, k := range sortedKeys(env) {
+		sessionEnv = append(sessionEnv, k+"="+env[k])
 	}
 	for _, kv := range termnorm.Normalize(sessionEnv) {
 		args = append(args, "-e", kv)
@@ -257,6 +294,65 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 		return false, fmt.Errorf("tmux has-session %q: %w (stderr: %s)", name, err, msg)
 	}
 	return true, nil
+}
+
+// LiveSession is one session tmux currently reports as running: its name and
+// the instant tmux created it. Created comes from tmux's own `session_created`
+// clock rather than any database column, so it is available for a pane that has
+// no row at all and survives a daemon restart (BOS-846 D4).
+type LiveSession struct {
+	Name    string
+	Created time.Time
+}
+
+// listSessionsFormat is the `-F` format ListSessions parses. Fields are
+// tab-separated because a tmux session name may contain spaces but never a tab.
+// The test fakes in internal/status and internal/testharness emit this exact
+// shape, so changing it means changing them too.
+const listSessionsFormat = "#{session_name}\t#{session_created}"
+
+// ListSessions returns every tmux session the server currently reports.
+//
+// It is the only place in bossd that asks tmux what is actually running rather
+// than starting from a database row, so its error contract is deliberately
+// asymmetric (BOS-846 D6). "no server running" is an *affirmative* absent
+// signal — an idle host genuinely has zero sessions — and returns an empty
+// slice with a nil error. Every other failure returns an error, because a
+// destructive caller must never read an unreadable tmux as an empty one.
+//
+// Malformed lines are skipped rather than guessed at: a line with no tab, an
+// empty name, or a non-numeric creation stamp contributes nothing and the
+// remaining well-formed lines are still returned.
+func (c *Client) ListSessions(ctx context.Context) ([]LiveSession, error) {
+	cmd := c.cmdFunc(ctx, "tmux", "list-sessions", "-F", listSessionsFormat)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "no server running") {
+			return nil, nil
+		}
+		if msg == "" {
+			return nil, fmt.Errorf("tmux list-sessions: %w", err)
+		}
+		return nil, fmt.Errorf("tmux list-sessions: %w (stderr: %s)", err, msg)
+	}
+
+	var out []LiveSession
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimRight(line, "\r")
+		name, created, ok := strings.Cut(line, "\t")
+		if !ok || name == "" {
+			continue
+		}
+		secs, err := strconv.ParseInt(strings.TrimSpace(created), 10, 64)
+		if err != nil {
+			continue
+		}
+		out = append(out, LiveSession{Name: name, Created: time.Unix(secs, 0)})
+	}
+	return out, nil
 }
 
 // ShowEnv reads a single environment variable baked into a tmux session's

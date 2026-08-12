@@ -58,6 +58,12 @@ type Options struct {
 	// this nil — the daemon then short-circuits ensureChatTmuxSession on
 	// the !Available check.
 	TmuxCommandFactory tmux.CommandFactory
+	// TmuxDaemonID, when non-empty, makes the daemon's tmux.Client stamp
+	// every session it creates with that owning-daemon id, exactly as
+	// production does. Tests that reconcile panes against the DB need it:
+	// without a stamp the reaper cannot tell this daemon's panes from a
+	// peer daemon's and refuses to touch them.
+	TmuxDaemonID string
 	// WorkflowServices receive display status notifications from the same
 	// DisplayTracker change point that production wires to the plugin host.
 	WorkflowServices []pluginpkg.WorkflowService
@@ -206,11 +212,14 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// whose Available() returns false, which short-circuits both paths and
 	// preserves the prior "no tmux side effects" behaviour for legacy tests.
 	var tmuxClient *tmux.Client
+	tmuxOpts := []tmux.Option{tmux.WithCommandFactory(unavailableTmuxFactory)}
 	if opts.TmuxCommandFactory != nil {
-		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(opts.TmuxCommandFactory))
-	} else {
-		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(unavailableTmuxFactory))
+		tmuxOpts = []tmux.Option{tmux.WithCommandFactory(opts.TmuxCommandFactory)}
 	}
+	if opts.TmuxDaemonID != "" {
+		tmuxOpts = append(tmuxOpts, tmux.WithDaemonID(opts.TmuxDaemonID))
+	}
+	tmuxClient = tmux.NewClient(tmuxOpts...)
 
 	// Lifecycle. Wired with tmuxClient so cron-spawned sessions route
 	// through startTmuxChat instead of the headless claude.Start path.

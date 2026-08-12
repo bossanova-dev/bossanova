@@ -45,6 +45,12 @@ type fakeTmuxClient struct {
 	panePID       int
 	panePIDByName map[string]int
 	panePIDErr    error
+	// killed records every KillSession target in order, so a test can assert
+	// that a spawn which failed after pane creation rolled the pane back
+	// (BOS-845). killErr makes the rollback kill itself fail, exercising the
+	// best-effort contract.
+	killed  []string
+	killErr error
 }
 
 type sentMessage struct {
@@ -121,6 +127,26 @@ func (f *fakeTmuxClient) PanePID(_ context.Context, sessionName string) (int, er
 	return f.panePID, nil
 }
 
+// KillSession records the target and marks the fake's single pane dead, so a
+// rollback is observable both as a call and as a subsequent HasSession false.
+func (f *fakeTmuxClient) KillSession(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = append(f.killed, name)
+	if f.killErr != nil {
+		return f.killErr
+	}
+	f.hasSession = false
+	return nil
+}
+
+// killedSessions returns a race-safe copy of the recorded kill targets.
+func (f *fakeTmuxClient) killedSessions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.killed...)
+}
+
 // fakeTranscriptOracle controls TranscriptExists for tests.
 type fakeTranscriptOracle struct {
 	exists    bool
@@ -150,11 +176,24 @@ type fakeInteractiveSessionResolver struct {
 	legacyAmbiguous   bool
 	legacyReason      string
 	cancelOnFreshCall func()
-	calls             []resolverCall
+	// resolveErr fails every resolution, modeling the production
+	// DeadlineExceeded that left a pane live but unnamed (BOS-845).
+	resolveErr error
+	calls      []resolverCall
 	// byPanePID maps a pane pid to the session id fd resolution returns for it,
 	// modeling each sibling chat's process holding its OWN rollout open
 	// (BOS-290). When a call's panePID matches, it wins over sessionID.
 	byPanePID map[int]string
+	// legacyResolveErr fails only the legacy-backfill arm, so a test can drive
+	// the attach-path backfill into DeadlineExceeded while leaving the fd arm
+	// (and the pane-rollback cases that depend on it) untouched (BOS-844).
+	legacyResolveErr error
+	// cancelOnLegacyCall runs at the top of a legacy-backfill resolution and
+	// legacyCtxErr records that call's ctx.Err() immediately afterwards. Together
+	// they prove the backfill context survives the caller's cancellation.
+	cancelOnLegacyCall func()
+	legacyCtxErr       error
+	legacyCtxSeen      bool
 }
 
 type resolverCall struct {
@@ -167,7 +206,7 @@ type resolverCall struct {
 	panePID             int
 }
 
-func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
+func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
 	f.calls = append(f.calls, resolverCall{
 		agentName:           agentName,
 		workDir:             workDir,
@@ -177,6 +216,22 @@ func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.C
 		allowLegacyBackfill: allowLegacyBackfill,
 		panePID:             panePID,
 	})
+	if allowLegacyBackfill {
+		// Sample the backfill's own context: cancelling the caller's request
+		// context here must leave this one live (BOS-844). CancelFunc propagates
+		// synchronously, so the reading below is deterministic.
+		if f.cancelOnLegacyCall != nil {
+			f.cancelOnLegacyCall()
+		}
+		f.legacyCtxErr = ctx.Err()
+		f.legacyCtxSeen = true
+		if f.legacyResolveErr != nil {
+			return interactiveSessionResolution{}, f.legacyResolveErr
+		}
+	}
+	if f.resolveErr != nil {
+		return interactiveSessionResolution{}, f.resolveErr
+	}
 	if !allowLegacyBackfill && panePID > 0 {
 		if id, ok := f.byPanePID[panePID]; ok {
 			if f.cancelOnFreshCall != nil {
@@ -230,15 +285,13 @@ type argvCall struct {
 	logPath            string
 	appendSystemPrompt string
 	model              string
-	mcpConfigPath      string
-	strictMcpConfig    bool
 	configHomeEnv      map[string]string
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, mcpConfigPath: mcpConfigPath, strictMcpConfig: strictMcpConfig, configHomeEnv: configHomeEnv})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, configHomeEnv: configHomeEnv})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -365,64 +418,6 @@ func TestSpawnChatTmux_ThreadsModel(t *testing.T) {
 	}
 	if got := builder.calls[0].model; got != "sonnet" {
 		t.Fatalf("BuildInteractive model = %q, want sonnet", got)
-	}
-}
-
-// TestSpawnChatTmux_ThreadsManagedMcpConfigPath mirrors the model threading: the
-// per-spawn boss MCP config path must reach BuildInteractive so a woken or
-// re-ensured pane exposes the same mcp__boss__* tools as the initial spawn.
-func TestSpawnChatTmux_ThreadsManagedMcpConfigPath(t *testing.T) {
-	wd := t.TempDir()
-	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
-	builder := claudeArgvBuilder()
-	const mcpPath = "/data/bossanova/mcp-configs/aaa.json"
-	_, err := spawnChatTmux(context.Background(), spawnDeps{
-		Tmux:        tmuxer,
-		Transcripts: &fakeTranscriptOracle{exists: false},
-		Argv:        builder,
-	}, spawnInput{
-		Chat:                 newTestChat(t),
-		WorktreePath:         wd,
-		TmuxName:             "boss-aaa-bbb",
-		ManagedMcpConfigPath: mcpPath,
-	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(builder.calls) != 1 {
-		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
-	}
-	if got := builder.calls[0].mcpConfigPath; got != mcpPath {
-		t.Fatalf("BuildInteractive mcpConfigPath = %q, want %q", got, mcpPath)
-	}
-}
-
-// TestSpawnChatTmux_ThreadsStrictManagedMcpConfig mirrors the mcp-config threading: the
-// strict flag (cron-derived) must reach BuildInteractive so a woken or
-// re-ensured cron pane strictly loads the curated set (boss + Linear) just like
-// the initial cron spawn.
-func TestSpawnChatTmux_ThreadsStrictManagedMcpConfig(t *testing.T) {
-	wd := t.TempDir()
-	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
-	builder := claudeArgvBuilder()
-	_, err := spawnChatTmux(context.Background(), spawnDeps{
-		Tmux:        tmuxer,
-		Transcripts: &fakeTranscriptOracle{exists: false},
-		Argv:        builder,
-	}, spawnInput{
-		Chat:                   newTestChat(t),
-		WorktreePath:           wd,
-		TmuxName:               "boss-aaa-bbb",
-		StrictManagedMcpConfig: true,
-	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(builder.calls) != 1 {
-		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
-	}
-	if !builder.calls[0].strictMcpConfig {
-		t.Fatalf("BuildInteractive strictMcpConfig = false, want true")
 	}
 }
 

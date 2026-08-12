@@ -138,90 +138,31 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveCommand_AppendsMcpConfig(t *testing.T) {
+// Boss does not own MCP configuration. Claude Code discovers servers its own
+// native way — project .mcp.json gated by enabledMcpjsonServers, plus the user
+// and local scopes — and the repo is responsible for declaring them.
+// --strict-mcp-config would suppress precisely that, so neither flag may reach
+// argv. The request carries every field the interactive path still populates,
+// so this fails if any of them reintroduces MCP wiring. It was confirmed
+// failing against the pre-change argv builder before that branch was deleted;
+// the fields it read are now retired from the proto, so this stands as a
+// reintroduction guard.
+func TestBuildInteractiveCommand_NeverEmitsMcpFlags(t *testing.T) {
 	srv := &Server{}
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:            "sid",
-		LogPath:              filepath.Join(t.TempDir(), "claude.log"),
-		ManagedMcpConfigPath: "/data/bossanova/mcp-configs/sid.json",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(resp.GetArgv(), "\x00")
-	if !strings.Contains(joined, "--mcp-config\x00/data/bossanova/mcp-configs/sid.json") {
-		t.Fatalf("argv %v missing --mcp-config <path>", resp.GetArgv())
-	}
-}
-
-// argvHas reports whether argv contains an exact token.
-func argvHas(argv []string, want string) bool {
-	for _, a := range argv {
-		if a == want {
-			return true
-		}
-	}
-	return false
-}
-
-func TestBuildInteractiveCommand_AppendsStrictManagedMcpConfig(t *testing.T) {
-	srv := &Server{}
-	// StrictManagedMcpConfig true with a non-empty config path → --strict-mcp-config is
-	// appended so the curated config is the whole MCP surface.
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:              "sid",
-		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
-		ManagedMcpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
-		StrictManagedMcpConfig: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !argvHas(resp.GetArgv(), "--strict-mcp-config") {
-		t.Fatalf("argv %v missing --strict-mcp-config when strict + config set", resp.GetArgv())
-	}
-
-	// StrictManagedMcpConfig false → never append --strict-mcp-config (interactive path).
-	respOff, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:              "sid",
-		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
-		ManagedMcpConfigPath:   "/data/bossanova/mcp-configs/sid.json",
-		StrictManagedMcpConfig: false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if argvHas(respOff.GetArgv(), "--strict-mcp-config") {
-		t.Fatalf("argv %v must not contain --strict-mcp-config when strict false", respOff.GetArgv())
-	}
-
-	// StrictManagedMcpConfig true but empty config path must abort the launch. Omitting
-	// both flags would fall back to user/project MCP servers and violate strict isolation.
-	_, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:              "sid",
-		LogPath:                filepath.Join(t.TempDir(), "claude.log"),
-		StrictManagedMcpConfig: true,
-	})
-	if err == nil {
-		t.Fatal("BuildInteractiveCommand strict mode without config path returned nil error")
-	}
-	if got := status.Code(err); got != codes.FailedPrecondition {
-		t.Fatalf("BuildInteractiveCommand strict mode without config path code = %v, want %v", got, codes.FailedPrecondition)
-	}
-}
-
-func TestBuildInteractiveCommand_NoMcpConfigWhenEmpty(t *testing.T) {
-	srv := &Server{}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: "sid",
-		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+		SessionId:          "sid",
+		LogPath:            filepath.Join(t.TempDir(), "claude.log"),
+		WorktreePath:       t.TempDir(),
+		AppendSystemPrompt: "context",
+		Model:              "claude-opus-5",
+		ConfigHomeEnv:      map[string]string{"HOME": t.TempDir()},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range resp.GetArgv() {
-		if a == "--mcp-config" {
-			t.Fatalf("argv should not contain --mcp-config when path empty: %v", resp.GetArgv())
+		if a == "--mcp-config" || a == "--strict-mcp-config" {
+			t.Fatalf("argv %v must not contain %s", resp.GetArgv(), a)
 		}
 	}
 }

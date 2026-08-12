@@ -1247,6 +1247,21 @@ type StartSessionOpts struct {
 
 	// ZeroOutput runs a cron job from the repository checkout without a
 	// worktree, branch, draft PR, setup script, or Stop-hook file.
+	//
+	// ZeroOutput is the JOB-LEVEL declaration and models.Session.IsQuickChat is
+	// its SESSION-LEVEL realization — they are two layers of one concept, not two
+	// spellings of it, so do not converge them and do not add a third. ZeroOutput
+	// says "run StartSession, but skip its repo-mutating steps": it is a persisted
+	// cron_jobs column (CronJob.IsZeroOutput) surfaced through the TUI cron form,
+	// MCP create_cron_job, the web UI and the cron proto messages, and it is read
+	// INSIDE StartSession (below) to short-circuit worktree, setup script, branch
+	// and PR. IsQuickChat says "skip StartSession entirely; there is no worktree"
+	// — the daemon routes such a create to StartQuickChatSession instead.
+	//
+	// The two already converge in the one direction that matters: setting
+	// ZeroOutput sets the session's IsQuickChat (see below), so finalize reads
+	// exactly one session-level truth (isPlanningOnlyNoChangeSession) and a
+	// zero-output cron run finalizes benignly rather than as a failed run.
 	ZeroOutput bool
 }
 
@@ -1923,14 +1938,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// (claude, codex) are skipped entirely, so their env is byte-identical
 		// to what it was before BOS-486.
 		headlessEnv = l.withQuestionHookEnv(session.AgentName, headlessEnv)
-		headlessMcpConfigPath := l.writeSessionMcpConfig(session, sessionID, sessionID, resolvedAgentName)
 		launchRunner, ok := l.agentRunner.(agent.HeadlessLaunchOptionsDispatcher)
 		if !ok {
-			return fmt.Errorf("headless launch for agent %q requires managed-MCP-aware agent dispatcher", resolvedAgentName)
+			return fmt.Errorf("headless launch for agent %q requires a launch-options-aware agent dispatcher", resolvedAgentName)
 		}
 		claudeSessionID, err = launchRunner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model, headlessEnv, agent.HeadlessLaunchOptions{
-			ManagedMcpConfigPath:      headlessMcpConfigPath,
-			StrictManagedMcpConfig:    StrictManagedMcpConfigForSession(session),
 			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
 		})
 		if err != nil {

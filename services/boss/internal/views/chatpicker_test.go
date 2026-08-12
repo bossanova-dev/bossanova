@@ -41,6 +41,17 @@ type chatPickerStub struct {
 	switchResp  *pb.SwitchSessionAccountResponse
 	switchErr   error
 	switchCalls []*pb.SwitchSessionAccountRequest
+
+	// Inline rename (BOS-836). titleUpdates records every UpdateChatTitle the
+	// picker dispatched; titleErr is the canned answer.
+	titleUpdates []titleUpdateCall
+	titleErr     error
+}
+
+// titleUpdateCall is one recorded UpdateChatTitle RPC.
+type titleUpdateCall struct {
+	agentSessionID string
+	title          string
 }
 
 type wakeChatCall struct {
@@ -151,8 +162,28 @@ func (s *chatPickerStub) RecordChat(context.Context, string, string, string, str
 func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) UpdateChatTitle(context.Context, string, string) error { panic("unused") }
-func (s *chatPickerStub) DeleteChat(context.Context, string) error              { panic("unused") }
+
+// UpdateChatTitle records the rename RPC the inline [r]ename prompt dispatches
+// (BOS-836) and answers with titleErr, so a test can assert both what the TUI
+// sent and how it recovers from a daemon refusal. It records rather than panics
+// because the picker now has a key that reaches it.
+func (s *chatPickerStub) UpdateChatTitle(_ context.Context, agentSessionID, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.titleUpdates = append(s.titleUpdates, titleUpdateCall{agentSessionID: agentSessionID, title: title})
+	return s.titleErr
+}
+
+// titleUpdateCalls returns a copy of the recorded rename RPCs.
+func (s *chatPickerStub) titleUpdateCalls() []titleUpdateCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]titleUpdateCall, len(s.titleUpdates))
+	copy(out, s.titleUpdates)
+	return out
+}
+
+func (s *chatPickerStub) DeleteChat(context.Context, string) error { panic("unused") }
 func (s *chatPickerStub) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }
@@ -3148,4 +3179,414 @@ func seedChatPickerHint(width int, chats []*pb.ClaudeChat, statuses, reasons map
 	m = updated.(ChatPickerModel)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
 	return updated.(ChatPickerModel)
+}
+
+// --- Inline [r]ename (BOS-836) -------------------------------------------
+//
+// The prompt is a fifth picker mode: `r` swaps the action bar for a focused
+// textinput over the selected row, enter commits through UpdateChatTitle, and
+// esc closes it having sent nothing. The load-bearing half is the swallow —
+// `r` must be consumed by handleListKey in every state where the action is
+// hidden, never forwarded to the table underneath.
+
+// chatPickerSized returns a seeded picker that has been given a terminal, so
+// View() renders the full chat list rather than a zero-width frame.
+func chatPickerSized(stub *chatPickerStub) ChatPickerModel {
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	return updated.(ChatPickerModel)
+}
+
+// typeIntoPicker presses each rune of s through Update, as a user typing would.
+func typeIntoPicker(m ChatPickerModel, s string) ChatPickerModel {
+	for _, r := range s {
+		updated, _ := m.Update(keyPress(r))
+		m = updated.(ChatPickerModel)
+	}
+	return m
+}
+
+// runChatPickerCmd runs cmd and feeds the resulting message back into the
+// model, mirroring what the bubbletea runtime does with a returned command.
+func runChatPickerCmd(m ChatPickerModel, cmd tea.Cmd) ChatPickerModel {
+	if cmd == nil {
+		return m
+	}
+	msg := cmd()
+	if msg == nil {
+		return m
+	}
+	updated, _ := m.Update(msg)
+	return updated.(ChatPickerModel)
+}
+
+// TestChatPicker_RendersRenameActionWithSelectedChat pins acceptance criterion
+// 1: the action bar advertises the rename with a chat highlighted.
+func TestChatPicker_RendersRenameActionWithSelectedChat(t *testing.T) {
+	m := chatPickerSized(&chatPickerStub{})
+	view := m.View().Content
+	if !strings.Contains(view, "[r]ename") {
+		t.Fatalf("action bar does not advertise [r]ename with a chat selected:\n%s", view)
+	}
+	// It sits with the other per-chat actions, not among the session actions.
+	if !strings.Contains(view, "[d]elete") {
+		t.Fatalf("action bar lost [d]elete:\n%s", view)
+	}
+}
+
+// TestChatPicker_HidesRenameActionWithEmptyChatList pins acceptance criterion
+// 1's negative half: with nothing selected there is nothing to rename, so the
+// bar must not advertise it.
+func TestChatPicker_HidesRenameActionWithEmptyChatList(t *testing.T) {
+	m := chatPickerSized(&chatPickerStub{})
+	m.chats = nil
+	m.buildTableRows()
+	if view := m.View().Content; strings.Contains(view, "[r]ename") {
+		t.Fatalf("action bar advertises [r]ename with an empty chat list:\n%s", view)
+	}
+}
+
+// TestChatPicker_RKey_RenameOpensPromptPrefilledWithCurrentTitle pins acceptance
+// criterion 2: the prompt opens over the selected row, pre-filled, in place of
+// the action bar.
+func TestChatPicker_RKey_RenameOpensPromptPrefilledWithCurrentTitle(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+
+	updated, cmd := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	if cmd == nil {
+		t.Fatal("pressing r returned no command; the textinput was never focused")
+	}
+	if !m.renaming {
+		t.Fatal("renaming = false after r; the prompt never opened")
+	}
+	if got := m.renameTargetChatID; got != "agent-1" {
+		t.Fatalf("renameTargetChatID = %q, want the selected chat's agent session id", got)
+	}
+	if got := m.renameInput.Value(); got != "Test chat" {
+		t.Fatalf("rename input = %q, want the chat's current title", got)
+	}
+
+	view := m.View().Content
+	for _, want := range []string{"Rename:", "Test chat", "[enter] save", "[esc] cancel"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("rename prompt missing %q:\n%s", want, view)
+		}
+	}
+	// The prompt stands in for the action bar rather than sitting beside it.
+	if strings.Contains(view, "[d]elete") {
+		t.Fatalf("action bar still rendered while the rename prompt is open:\n%s", view)
+	}
+	if calls := stub.titleUpdateCalls(); len(calls) != 0 {
+		t.Fatalf("UpdateChatTitle called %d time(s) just for opening the prompt", len(calls))
+	}
+}
+
+// TestChatPicker_RenameCommitCallsUpdateChatTitle pins acceptance criterion 3:
+// enter on a non-empty value renames through the RPC and the row updates.
+func TestChatPicker_RenameCommitCallsUpdateChatTitle(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	m = typeIntoPicker(m, " renamed")
+
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = updated.(ChatPickerModel)
+	m = runChatPickerCmd(m, cmd)
+
+	if m.renaming {
+		t.Fatal("renaming = true after enter; the prompt stayed open on a valid commit")
+	}
+	calls := stub.titleUpdateCalls()
+	if len(calls) != 1 {
+		t.Fatalf("UpdateChatTitle called %d time(s), want exactly 1", len(calls))
+	}
+	if calls[0].agentSessionID != "agent-1" {
+		t.Fatalf("renamed agent session %q, want agent-1", calls[0].agentSessionID)
+	}
+	if calls[0].title != "Test chat renamed" {
+		t.Fatalf("renamed to %q, want %q", calls[0].title, "Test chat renamed")
+	}
+	if got := m.chats[0].Title; got != "Test chat renamed" {
+		t.Fatalf("local chat title = %q, want the committed title", got)
+	}
+	if view := m.View().Content; !strings.Contains(view, "Test chat renamed") {
+		t.Fatalf("renamed title never reached the table:\n%s", view)
+	}
+	if m.statusMsg != "" {
+		t.Fatalf("statusMsg = %q after a successful rename, want empty", m.statusMsg)
+	}
+}
+
+// TestChatPicker_RenameCommitsAgainstTheCapturedChat pins the reorder hazard:
+// a background listChats can reshuffle rows while the prompt is open, so the
+// commit must target the chat the prompt opened on, not whatever the cursor
+// now points at.
+func TestChatPicker_RenameCommitsAgainstTheCapturedChat(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+
+	// A poll lands mid-edit and puts a different chat under the cursor.
+	m.chats = append([]*pb.ClaudeChat{{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Newer chat",
+		CreatedAt:      timestamppb.Now(),
+	}}, m.chats...)
+	m.buildTableRows()
+
+	m = typeIntoPicker(m, "!")
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = updated.(ChatPickerModel)
+	m = runChatPickerCmd(m, cmd)
+
+	calls := stub.titleUpdateCalls()
+	if len(calls) != 1 {
+		t.Fatalf("UpdateChatTitle called %d time(s), want exactly 1", len(calls))
+	}
+	if calls[0].agentSessionID != "agent-1" {
+		t.Fatalf("renamed %q, want the captured chat agent-1 — a reordering poll retargeted the commit", calls[0].agentSessionID)
+	}
+	if got := m.chats[0].Title; got != "Newer chat" {
+		t.Fatalf("the chat under the cursor was renamed to %q; the wrong row was rewritten", got)
+	}
+}
+
+// TestChatPicker_RenameEscCancels pins acceptance criterion 4: esc closes the
+// prompt, sends nothing, and leaves the title alone.
+func TestChatPicker_RenameEscCancels(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	m = typeIntoPicker(m, " edited")
+
+	updated, _ = m.Update(specialKeyPress(tea.KeyEsc))
+	m = updated.(ChatPickerModel)
+
+	if m.renaming {
+		t.Fatal("renaming = true after esc; the prompt did not close")
+	}
+	if m.cancel {
+		t.Fatal("esc closing the rename prompt also cancelled the picker")
+	}
+	if calls := stub.titleUpdateCalls(); len(calls) != 0 {
+		t.Fatalf("UpdateChatTitle called %d time(s) on cancel, want 0", len(calls))
+	}
+	if got := m.chats[0].Title; got != "Test chat" {
+		t.Fatalf("chat title = %q after cancel, want it unchanged", got)
+	}
+	if view := m.View().Content; !strings.Contains(view, "[r]ename") {
+		t.Fatalf("action bar did not come back after cancel:\n%s", view)
+	}
+}
+
+// TestChatPicker_RenameRejectsEmptyTitle pins acceptance criterion 5: an empty
+// or whitespace-only commit fires no RPC and keeps the prompt open with an
+// inline complaint.
+func TestChatPicker_RenameRejectsEmptyTitle(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	for range len("Test chat") {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		m = updated.(ChatPickerModel)
+	}
+	m = typeIntoPicker(m, "  ")
+
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		t.Fatal("an empty rename returned a command; nothing may be dispatched")
+	}
+	if !m.renaming {
+		t.Fatal("renaming = false after an empty commit; the prompt must stay open")
+	}
+	if calls := stub.titleUpdateCalls(); len(calls) != 0 {
+		t.Fatalf("UpdateChatTitle called %d time(s) for an empty title, want 0", len(calls))
+	}
+	if view := m.View().Content; !strings.Contains(view, "cannot be empty") {
+		t.Fatalf("empty rename gave no inline explanation:\n%s", view)
+	}
+}
+
+// TestChatPicker_RenameFailureRestoresPreviousTitle pins acceptance criterion
+// 6: the optimistic local rename is rolled back and the failure is reported.
+func TestChatPicker_RenameFailureRestoresPreviousTitle(t *testing.T) {
+	stub := &chatPickerStub{titleErr: errors.New("boom")}
+	m := chatPickerSized(stub)
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	m = typeIntoPicker(m, " renamed")
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = updated.(ChatPickerModel)
+
+	if got := m.chats[0].Title; got != "Test chat renamed" {
+		t.Fatalf("local title = %q before the RPC answered, want the optimistic rename", got)
+	}
+
+	m = runChatPickerCmd(m, cmd)
+
+	if got := m.chats[0].Title; got != "Test chat" {
+		t.Fatalf("local title = %q after a failed rename, want the previous title restored", got)
+	}
+	if !strings.Contains(m.statusMsg, "Rename failed") {
+		t.Fatalf("statusMsg = %q, want it to report the failed rename", m.statusMsg)
+	}
+	if view := m.View().Content; !strings.Contains(view, "Rename failed") {
+		t.Fatalf("failed rename never reached the screen:\n%s", view)
+	}
+}
+
+// TestChatPicker_RKey_RenameSwallowedWithEmptyChatList pins acceptance criterion 7. The
+// rename action is hidden with nothing selected, so r must do nothing at all
+// rather than fall through to the table underneath.
+func TestChatPicker_RKey_RenameSwallowedWithEmptyChatList(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+	m.chats = nil
+	m.buildTableRows()
+
+	// An empty table clamps its cursor to -1, and the table's go-to-top binding
+	// would clamp to the same value, so the cursor cannot discriminate here —
+	// it is pinned as a regression guard only. The discriminating swallow
+	// assertion is the non-actionable row in
+	// TestChatPicker_RKey_RenameSwallowedWhileDeleteInFlight, where a fall-through moves
+	// the cursor from 1 to 0.
+	before := m.table.Cursor()
+	updated, cmd := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		_ = cmd()
+	}
+	if m.renaming {
+		t.Fatal("renaming = true with no chat selected; the prompt has no target")
+	}
+	if got := m.table.Cursor(); got != before {
+		t.Fatalf("table cursor after hidden r = %d, want %d (r must be swallowed)", got, before)
+	}
+	if view := m.View().Content; strings.Contains(view, "Rename:") {
+		t.Fatalf("rename prompt rendered with no chat selected:\n%s", view)
+	}
+	if calls := stub.titleUpdateCalls(); len(calls) != 0 {
+		t.Fatalf("UpdateChatTitle called %d time(s) on an empty list, want 0", len(calls))
+	}
+}
+
+// TestChatPicker_RKey_RenameSwallowedWhileDeleteInFlight pins acceptance criterion 8:
+// on a row where the action is not offered, r must not move the cursor.
+func TestChatPicker_RKey_RenameSwallowedWhileDeleteInFlight(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := chatPickerSized(stub)
+	m.chats = append(m.chats, &pb.ClaudeChat{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Second chat",
+		CreatedAt:      timestamppb.Now(),
+	})
+	m.buildTableRows()
+	m.table.SetCursor(1)
+	// A delete is in flight, so the picker is not accepting a rename.
+	m.deletingAgentSessionID = "agent-1"
+
+	if m.canRename() {
+		t.Fatal("canRename() = true while a delete is in flight; the row is not actionable")
+	}
+
+	// Premise: unhandled keys really do reach the table's navigation bindings
+	// from here, so "the cursor did not move" below is a statement about r's
+	// routing and not about a table that ignores everything. home is the
+	// go-to-top binding the picker deliberately leaves to the table.
+	probe, _ := m.Update(specialKeyPress(tea.KeyHome))
+	if got := probe.(ChatPickerModel).table.Cursor(); got != 0 {
+		t.Fatalf("premise broken: home left the cursor at %d, so the table fall-through this test guards is not live", got)
+	}
+
+	updated, cmd := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	if cmd != nil {
+		_ = cmd()
+	}
+	if m.renaming {
+		t.Fatal("renaming = true on a non-actionable row")
+	}
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("table cursor after hidden r = %d, want 1 (r must be swallowed)", got)
+	}
+	if calls := stub.titleUpdateCalls(); len(calls) != 0 {
+		t.Fatalf("UpdateChatTitle called %d time(s), want 0", len(calls))
+	}
+}
+
+// TestChatPicker_RenameActivatesTextEntry pins acceptance criterion 9's
+// picker half: the model reports text entry exactly while the prompt is open,
+// which is what keeps ctrl+x out of the input.
+func TestChatPicker_RenameActivatesTextEntry(t *testing.T) {
+	m := chatPickerSized(&chatPickerStub{})
+	if m.textEntryActive() {
+		t.Fatal("textEntryActive() = true with no prompt open")
+	}
+
+	updated, _ := m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	if !m.textEntryActive() {
+		t.Fatal("textEntryActive() = false while the rename prompt is open")
+	}
+
+	updated, _ = m.Update(specialKeyPress(tea.KeyEsc))
+	m = updated.(ChatPickerModel)
+	if m.textEntryActive() {
+		t.Fatal("textEntryActive() = true after the prompt closed")
+	}
+}
+
+// TestChatPicker_RenamePromptMatchesDeleteConfirmHeight pins acceptance
+// criterion 10 and, with it, the tableHeight reservation invariant: the rename
+// prompt occupies exactly the rows the delete confirm does, so no new
+// reservation term is needed for it.
+func TestChatPicker_RenamePromptMatchesDeleteConfirmHeight(t *testing.T) {
+	base := chatPickerSized(&chatPickerStub{})
+
+	updated, _ := base.Update(keyPress('r'))
+	renamed := updated.(ChatPickerModel)
+
+	confirming := base
+	confirming.confirm = confirmDelete
+
+	renameLines := strings.Count(renamed.View().Content, "\n")
+	confirmLines := strings.Count(confirming.View().Content, "\n")
+	if renameLines != confirmLines {
+		t.Fatalf("rename prompt renders %d newlines, delete confirm renders %d; the block must occupy the rows tableHeight reserves\nrename:\n%s\nconfirm:\n%s",
+			renameLines, confirmLines, renamed.View().Content, confirming.View().Content)
+	}
+}
+
+// TestChatPicker_RenamePasteReachesTheInput pins that a bracketed paste lands
+// in the prompt while it is open, and is inert otherwise.
+func TestChatPicker_RenamePasteReachesTheInput(t *testing.T) {
+	m := chatPickerSized(&chatPickerStub{})
+
+	updated, _ := m.Update(pasteText("ignored"))
+	m = updated.(ChatPickerModel)
+	if m.renameInput.Value() != "" {
+		t.Fatalf("paste reached the rename input while it was closed: %q", m.renameInput.Value())
+	}
+
+	updated, _ = m.Update(keyPress('r'))
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(pasteText(" pasted"))
+	m = updated.(ChatPickerModel)
+	if got := m.renameInput.Value(); got != "Test chat pasted" {
+		t.Fatalf("rename input = %q after paste, want %q", got, "Test chat pasted")
+	}
 }

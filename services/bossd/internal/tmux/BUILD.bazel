@@ -24,6 +24,7 @@ go_test(
     srcs = [
         "attach_test.go",
         "intconv_test.go",
+        "list_sessions_test.go",
         "tmux_e2e_test.go",
         "tmux_modal_test.go",
         "tmux_submit_verify_codex_test.go",

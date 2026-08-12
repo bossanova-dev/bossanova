@@ -162,6 +162,7 @@ go_test(
         "@com_connectrpc_connect//:connect",
         "@com_github_99designs_keyring//:keyring",
         "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
         "@land_charm_bubbles_v2//table",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],

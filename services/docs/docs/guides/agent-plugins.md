@@ -105,10 +105,11 @@ create its own `ses_*` identifier; a resumed chat uses `opencode --session
 <ses_id>`. Boss session context and any initial user input are delivered as the
 first user turn through `--prompt`, which OpenCode submits on launch.
 
-OpenCode has no `--mcp-config` equivalent, so boss MCP tools are unavailable
-inside an interactive OpenCode chat. Its TUI status polling also remains
-limited: question and working-state detection do not yet parse OpenCode's pane
-grammar.
+MCP servers are the repository's to declare, through whatever mechanism the
+harness natively supports — bossd configures none of them for any agent, so
+OpenCode is no different from claude or codex here. Its TUI status polling does
+remain limited: question and working-state detection do not yet parse OpenCode's
+pane grammar.
 
 ### Permission posture
 

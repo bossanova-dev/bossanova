@@ -243,6 +243,40 @@ func (s *SQLiteSessionStore) ListByStates(ctx context.Context, states []int) ([]
 	return s.querySessionList(ctx, query, args...)
 }
 
+// ListTmuxSessionNames returns every non-empty sessions.tmux_session_name in
+// the database, across all repos and including archived rows.
+//
+// It exists for the orphaned-tmux reaper (BOS-846), which needs a whitelist of
+// every pane name any row can account for: every other SessionStore list is
+// repo-scoped, so there was no global read. Archived rows are deliberately
+// included — BOS-428 routes `--detach` runs through durable tmux so they
+// outlive the daemon, and an archived-but-still-running unattended run is
+// exactly the pane a repo-scoped or active-only read would leave reapable.
+//
+// This leg is near-dead by design: tmux.SessionName has no production callers
+// and the only non-test writer clears the column, so in practice the result is
+// usually empty. It is kept so a legacy row's pane is not reaped; an empty leg
+// costs nothing and a missing one costs a live pane.
+func (s *SQLiteSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tmux_session_name FROM sessions
+		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("list session tmux names: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan session tmux name: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {
 	if repoID == "" {
 		query := sessionSelectSQL + " WHERE s.archived_at IS NULL ORDER BY s.created_at DESC"

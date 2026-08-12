@@ -98,6 +98,13 @@ type tmuxSpawner interface {
 	// process holds open (BOS-290). Errors are non-fatal to the caller, which
 	// then resolves with pane pid 0 (time-window fallback).
 	PanePID(ctx context.Context, sessionName string) (int, error)
+	// KillSession destroys the named tmux session. It exists on this interface
+	// so a spawn that fails after the pane is already live can roll the pane
+	// back (BOS-845): chat panes are spawned with RemainOnExit, so a pane whose
+	// name never reached agent_chats.tmux_session_name is invisible to every
+	// cleanup path and leaks for the host's lifetime. Callers treat the error as
+	// advisory — see killSpawnedChatPaneBestEffort.
+	KillSession(ctx context.Context, name string) error
 }
 
 // chatReadyMarker returns the input-box prompt glyph the given agent's TUI
@@ -149,7 +156,7 @@ func chatCommandPrefix(agentName string) string {
 // instructions that never reached the command line. Callers still spawn from
 // GetArgv() alone — the declaration is reported, never enforced.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -196,17 +203,6 @@ type spawnInput struct {
 	// launches on the same model as the initial StartTmuxChat rather than
 	// silently reverting to the plugin default.
 	Model string
-	// ManagedMcpConfigPath is the absolute path to the per-spawn boss MCP config in the
-	// app-data dir (never the worktree), or "" when no trusted mcp binary
-	// resolved. Threading it through means re-ensured (RecordChat) and woken
-	// (WakeChat) panes expose the same mcp__boss__* tools as the initial spawn.
-	ManagedMcpConfigPath string
-	// StrictManagedMcpConfig, when true, makes the curated ManagedMcpConfigPath the whole MCP
-	// surface (Claude Code's --strict-mcp-config): the agent ignores project
-	// .mcp.json / settings servers. Derived from the session's cron-ness so
-	// re-ensured (RecordChat) and woken (WakeChat) panes strictly load the same
-	// curated set (boss + Linear) as the initial cron spawn; false for interactive.
-	StrictManagedMcpConfig bool
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
 	// SessionEnvFunc lazily builds SessionEnv after liveness checks pass. It lets
@@ -243,11 +239,88 @@ func freshFallbackReason(chat *models.AgentChat, forceFresh bool, hasProviderSes
 	return WakeFallbackReasonTranscriptMissing
 }
 
+// chatPaneRollbackTimeout bounds a rollback kill. The kill runs on a context
+// detached from the caller's, so it needs a deadline of its own.
+const chatPaneRollbackTimeout = 5 * time.Second
+
+// killSpawnedChatPaneBestEffort destroys a chat pane this attempt created but
+// could not finish claiming, and never fails the caller: the error being rolled
+// back is the one worth reporting, and a kill that could not run leaves the
+// caller no better option than the log line below.
+//
+// Why it exists: chat panes are spawned with RemainOnExit (see
+// liveTmuxSpawner.NewSessionWithCmd), so they never self-reap, and every
+// cleanup path keys off agent_chats.tmux_session_name. A pane that went live
+// while the row still carries no name (or a different one) is therefore
+// invisible to teardown and leaks for the host's lifetime. Rolling the pane back
+// makes "pane exists" and "row names the pane" a single atomic outcome (BOS-845).
+// The invariant the rollback upholds: no live chat pane without a recorded name.
+//
+// The rollback context is deliberately detached from the caller's with
+// context.WithoutCancel: the failure being rolled back is frequently a context
+// failure itself (the observed production case is a DeadlineExceeded out of
+// ResolveInteractiveSessionID), and issuing the kill on an already-dead context
+// would fail immediately — leaking exactly the pane this exists to reclaim.
+// This is the one deliberate deviation from the shape of the sibling helper
+// Lifecycle.killTmuxChatBestEffort, which is only reached on live contexts.
+//
+// # Audited return paths between pane creation and the name write (BOS-845)
+//
+// The pane becomes live at deps.Tmux.NewSessionWithCmd in spawnChatTmux; the
+// claim completes when UpdateTmuxSessionName has stored TmuxName. Every return
+// in between is covered as follows.
+//
+// In spawnChatTmux, after NewSessionWithCmd succeeds:
+//   - the resolver error return inside the discovery loop — covered by
+//     spawnChatTmux's own deferred rollback. This is the path that produced the
+//     reported leak (`agent "codex" ResolveInteractiveSessionID: ... DeadlineExceeded`).
+//   - every success return (resumed, resolved id, ambiguous, ctx done, discovery
+//     timeout, no resolver) — not rolled back here: the pane is handed to the
+//     caller, which arms its own rollback for the row-write window.
+//
+// Before NewSessionWithCmd (tmux unavailable, session already live, stat
+// worktree, nil argv builder, BuildInteractive error, empty argv, and
+// NewSessionWithCmd's own error) no pane of this attempt exists, so nothing is
+// armed — notably OutcomeAlreadyLive, where the pane belongs to an earlier
+// claim and killing it would destroy a live chat.
+//
+// In ensureChatTmuxSession, after a spawn with Outcome != OutcomeAlreadyLive:
+//   - spawnChatTmux's error return — spawnChatTmux already killed the pane, and
+//     the caller arms only after a successful spawn, so there is no double kill.
+//   - "persist provider session id" — armed.
+//   - "persist tmux session name" — armed.
+//   - the final nil return — disarmed the moment the row names the pane,
+//     including when the write was skipped because it already did.
+//
+// In WakeChatInternal, after a spawn with Outcome != OutcomeAlreadyLive: the
+// same four, with the name write reported as "persist tmux name". Its earlier
+// returns (chat/session lookup, the headless-run refusal, the legacy
+// provider-id backfill) all precede the spawn, so no pane exists yet.
+func killSpawnedChatPaneBestEffort(ctx context.Context, spawner tmuxSpawner, logger zerolog.Logger, agentSessionID, tmuxName string) {
+	if spawner == nil || tmuxName == "" {
+		return
+	}
+	killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatPaneRollbackTimeout)
+	defer cancel()
+	if err := spawner.KillSession(killCtx, tmuxName); err != nil {
+		logger.Warn().Err(err).
+			Str("agentSessionID", agentSessionID).
+			Str("tmuxSession", tmuxName).
+			Msg("failed to kill orphaned chat tmux pane during spawn rollback")
+	}
+}
+
 // spawnChatTmux is the single source of truth for "ensure a tmux pane
 // running this chat's agent exists". Used by ensureChatTmuxSession (start
 // path) and WakeChat (revive path). Idempotent: returns OutcomeAlreadyLive
 // without spawning when the named tmux is already alive or tmux is
 // unavailable.
+//
+// Once the pane is live, every error return kills it again before returning, so
+// a failed spawn never hands back an unnamed pane the cleanup paths cannot see
+// (BOS-845). Callers remain responsible for the window between a *successful*
+// spawn and the tmux_session_name write — see killSpawnedChatPaneBestEffort for
+// the audited enumeration of both halves.
 //
 // When a spawn is required, resume vs. fresh is decided by a transcript
 // pre-flight: if ForceFresh is set, always fresh; otherwise consult the
@@ -258,7 +331,7 @@ func freshFallbackReason(chat *models.AgentChat, forceFresh bool, hasProviderSes
 // own CLI shape and per-plugin user settings (e.g. claude's
 // `--dangerously-skip-permissions`, codex's `--sandbox`/`--ask-for-approval`/
 // `--model`). spawnChatTmux stays agent-agnostic.
-func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnResult, error) {
+func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spawnResult, err error) {
 	if deps.Tmux == nil || !deps.Tmux.Available(ctx) {
 		return spawnResult{Outcome: OutcomeAlreadyLive}, nil
 	}
@@ -295,7 +368,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	if in.SessionEnvFunc != nil {
 		sessionEnv = in.SessionEnvFunc()
 	}
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, in.ManagedMcpConfigPath, in.StrictManagedMcpConfig, configHomeEnv(sessionEnv, in.WorktreePath))
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, configHomeEnv(sessionEnv, in.WorktreePath))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -309,9 +382,19 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 		in.Chat.AgentName, in.AppendSystemPromptClasses, cmdResp.GetAppendSystemPromptSupport())
 
 	launchedAt := time.Now().UTC()
-	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, sessionEnv); err != nil {
-		return spawnResult{}, fmt.Errorf("new tmux session: %w", err)
+	if createErr := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, sessionEnv); createErr != nil {
+		return spawnResult{}, fmt.Errorf("new tmux session: %w", createErr)
 	}
+
+	// The pane is live from here down. Roll it back on any error return rather
+	// than handing the caller a pane whose name no cleanup path can learn: this
+	// is registered after the create so the failures above — where no pane of
+	// ours exists — stay untouched (BOS-845).
+	defer func() {
+		if err != nil {
+			killSpawnedChatPaneBestEffort(ctx, deps.Tmux, deps.Logger, in.Chat.AgentSessionID, in.TmuxName)
+		}
+	}()
 
 	if resume {
 		return spawnResult{Outcome: OutcomeResumed, LaunchedAt: launchedAt}, nil
@@ -358,6 +441,39 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: fallbackReason}, nil
 }
 
+// chatSpawnDeps builds the spawn dependencies for a chat pane: the live
+// adapters, with any wakeHook test overrides layered on top. Both spawn callers
+// (ensureChatTmuxSession and WakeChatInternal) go through it, so a seam
+// installed on the server is honoured on both paths — the record path used to
+// build its deps inline and ignore the hook, which left its half of the
+// pane-rollback contract unreachable from a test (BOS-845).
+func (s *Server) chatSpawnDeps() spawnDeps {
+	deps := spawnDeps{
+		Transcripts: liveTranscriptOracle{clients: s.agentClients},
+		Argv:        liveArgvBuilder{clients: s.agentClients},
+		Logger:      s.logger,
+	}
+	if s.tmux != nil {
+		deps.Tmux = liveTmuxSpawner{c: s.tmux}
+	}
+	if s.agentClients != nil {
+		deps.Resolver = liveInteractiveSessionResolver{clients: s.agentClients}
+	}
+	if s.wakeHook.spawner != nil {
+		deps.Tmux = s.wakeHook.spawner
+	}
+	if s.wakeHook.transcripts != nil {
+		deps.Transcripts = s.wakeHook.transcripts
+	}
+	if s.wakeHook.argv != nil {
+		deps.Argv = s.wakeHook.argv
+	}
+	if s.wakeHook.resolver != nil {
+		deps.Resolver = s.wakeHook.resolver
+	}
+	return deps
+}
+
 // liveTmuxSpawner adapts *tmux.Client to the tmuxSpawner interface.
 type liveTmuxSpawner struct{ c *tmux.Client }
 
@@ -390,6 +506,13 @@ func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text stri
 // PanePID returns the first pane's login-shell pid for the named session.
 func (l liveTmuxSpawner) PanePID(ctx context.Context, sessionName string) (int, error) {
 	return l.c.PanePID(ctx, sessionName)
+}
+
+// KillSession destroys the named tmux session. The underlying client already
+// treats a definitely-absent session as success, so a rollback that races a
+// pane which died on its own is not an error.
+func (l liveTmuxSpawner) KillSession(ctx context.Context, name string) error {
+	return l.c.KillSession(ctx, name)
 }
 
 type liveInteractiveSessionResolver struct {
@@ -487,7 +610,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string, strictMcpConfig bool, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -500,15 +623,13 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, agent.AgentRunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:              agentSessionID,
-		Resume:                 resume,
-		WorktreePath:           worktreePath,
-		LogPath:                logPath,
-		AppendSystemPrompt:     appendSystemPrompt,
-		Model:                  model,
-		ManagedMcpConfigPath:   mcpConfigPath,
-		StrictManagedMcpConfig: strictMcpConfig,
-		ConfigHomeEnv:          configHomeEnv,
+		SessionId:          agentSessionID,
+		Resume:             resume,
+		WorktreePath:       worktreePath,
+		LogPath:            logPath,
+		AppendSystemPrompt: appendSystemPrompt,
+		Model:              model,
+		ConfigHomeEnv:      configHomeEnv,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)

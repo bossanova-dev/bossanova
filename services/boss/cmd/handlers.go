@@ -1282,6 +1282,8 @@ func runNew(cmd *cobra.Command) error {
 	// callers already pass; `--detach`'s help text is what says it is a no-op
 	// here and points at --tmux-unattended for the durable-pane behaviour.
 	tmuxUnattended, _ := cmd.Flags().GetBool("tmux-unattended")
+	deferPR, _ := cmd.Flags().GetBool("defer-pr")
+	quickChat, _ := cmd.Flags().GetBool("quick-chat")
 	trackerID, _ := cmd.Flags().GetString("tracker-id")
 	trackerSource, _ := cmd.Flags().GetString("tracker-source")
 	trackerURL, _ := cmd.Flags().GetString("tracker-url")
@@ -1298,6 +1300,20 @@ func runNew(cmd *cobra.Command) error {
 		return emitJSONFailure(cmd, asJSON, err)
 	}
 
+	// --quick-chat and --defer-pr are contradictory, so refuse the pair here —
+	// before any RPC — rather than sending a request whose two fields ask the
+	// daemon for incompatible shapes. A quick chat has no worktree, no branch and
+	// no up-front draft PR (server.go routes it to StartQuickChatSession, which
+	// never enters StartSession), so there is nothing for --defer-pr to defer:
+	// the daemon would silently honour quick_chat and drop defer_pr, leaving the
+	// caller believing it asked for something it did not get.
+	if quickChat && deferPR {
+		return emitJSONFailure(cmd, asJSON, codedError(codeInvalidArgument, fmt.Errorf(
+			"--quick-chat and --defer-pr are mutually exclusive: a quick chat has no "+
+				"worktree, branch, or draft PR to defer; use --defer-pr for an "+
+				"unattended run that may produce commits")))
+	}
+
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
 		return runNewDetach(cmd, newSessionOpts{
@@ -1308,6 +1324,8 @@ func runNew(cmd *cobra.Command) error {
 			Model:          model,
 			Account:        accountArg,
 			TmuxUnattended: tmuxUnattended,
+			DeferPR:        deferPR,
+			QuickChat:      quickChat,
 			TrackerID:      trackerID,
 			TrackerSource:  trackerSource,
 			TrackerURL:     trackerURL,
@@ -1360,6 +1378,16 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 		// this scripting path's always-true Detach rather than replacing it.
 		Detach:           true,
 		IsTmuxUnattended: opts.TmuxUnattended,
+		// Plain (non-optional) proto bools, so they are set unconditionally from
+		// the flag value — false is the wire default and means "not requested",
+		// with no presence-pointer distinction to preserve like --account's.
+		// Neither may disturb Detach above: Detach is what makes the daemon mint
+		// the finalize hook token, and finalize is what opens --defer-pr's PR
+		// when the run did produce commits. That hook drives finalize on the
+		// durable tmux-hosted path; a paneless headless run reaches the same
+		// finalize through the daemon's run-completion poller instead.
+		DeferPr:     opts.DeferPR,
+		IsQuickChat: opts.QuickChat,
 	}
 	if opts.AgentName != "" {
 		req.AgentName = &opts.AgentName
@@ -1399,6 +1427,18 @@ type newSessionOpts struct {
 	// TmuxUnattended requests a durable tmux-hosted pane that survives a daemon
 	// restart. Independent of Detach — see newDetachRequest.
 	TmuxUnattended bool
+	// DeferPR suppresses the up-front draft PR: the session still gets a worktree
+	// and branch, and a PR is opened at finalize only if the run committed work.
+	// This is the flag for an unattended run that may legitimately change
+	// nothing, since a no-op then finalizes benignly instead of leaving an empty
+	// PR behind.
+	DeferPR bool
+	// QuickChat creates a worktree-less, branch-less, PR-less session in the repo
+	// checkout. The daemon never enters StartSession for one, so no agent runs at
+	// create time and the returned session carries no chat id — runNewDetach says
+	// so on stderr and in the --json envelope's next_action. Mutually exclusive
+	// with DeferPR, which runNew rejects before any RPC.
+	QuickChat bool
 	// Tracker* bind the session to an external issue. Empty = flag absent, which
 	// leaves the corresponding optional proto field unset.
 	TrackerID     string
@@ -1509,15 +1549,41 @@ func runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON bool) error {
 		return emitJSONFailure(cmd, asJSON, fmt.Errorf("daemon did not return a session"))
 	}
 
+	// A session that came back without a chat id started no agent — the
+	// --quick-chat shape, which the daemon creates idle and only runs once
+	// somebody attaches. Left unsaid that is a silent no-op, so name it. It goes
+	// to STDERR on BOTH paths: the two lines below are a frozen scripting
+	// surface, and under --json stdout must stay exactly one JSON object (setup
+	// output already uses stderr for the same reason). The --json envelope
+	// carries the machine-readable next_action in addition.
+	if session.GetAgentSessionId() == "" {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), idleSessionNotice)
+	}
+
 	if asJSON {
 		return emitJSON(cmd, newSessionJSON(session))
 	}
 	// Byte-identical to what this path printed before --json existed: it is a
 	// documented scripting surface and existing callers parse it positionally.
+	// The chat-id line is printed even when empty, for the same reason.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\nchat-id:    %s\n",
 		session.GetId(), session.GetAgentSessionId())
 	return nil
 }
+
+// idleSessionNotice is the stderr warning for a create that launched no agent,
+// and nextActionIdleSession its machine-readable counterpart in the --json
+// envelope. Both mirror the MCP create_session surface's existing precedent
+// (lib/bossalib/bossmcp/tools_mutating.go), so a caller reading either surface
+// is told the same thing about the same outcome.
+const (
+	idleSessionNotice = "notice: this session is idle awaiting attach — no agent was launched, " +
+		"so the prompt has not run yet. Attach the session to start it, or re-create " +
+		"without --quick-chat (adding --defer-pr) to run the prompt unattended."
+	nextActionIdleSession = "session is idle awaiting attach; no agent was launched. Attach the " +
+		"session to start it, or re-create without --quick-chat (adding --defer-pr) to run " +
+		"the prompt unattended."
+)
 
 // newSessionEnvelope is the `boss new --json` success envelope. It nests under
 // "session" like `boss merge --json` so a driver reads one shape across the
@@ -1531,14 +1597,23 @@ type newSessionBody struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	ChatID string `json:"chat_id"`
+	// NextAction is set only when the create launched no agent (empty chat id).
+	// `omitempty` is load-bearing: it keeps the envelope byte-identical for every
+	// existing caller on the ordinary path, so the key's mere presence is the
+	// signal that this session needs attaching before anything runs.
+	NextAction string `json:"next_action,omitempty"`
 }
 
 func newSessionJSON(session *pb.Session) newSessionEnvelope {
-	return newSessionEnvelope{Session: newSessionBody{
+	body := newSessionBody{
 		ID:     session.GetId(),
 		Title:  session.GetTitle(),
 		ChatID: session.GetAgentSessionId(),
-	}}
+	}
+	if body.ChatID == "" {
+		body.NextAction = nextActionIdleSession
+	}
+	return newSessionEnvelope{Session: body}
 }
 
 // resolveRepoArg resolves a --repo argument (id, unique id prefix, display

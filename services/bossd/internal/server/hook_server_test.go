@@ -79,6 +79,12 @@ func (m *hookMockSessionStore) ListByRepoAndPR(context.Context, string, int) ([]
 func (m *hookMockSessionStore) ListArchived(context.Context, string) ([]*models.Session, error) {
 	panic("not used")
 }
+
+// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// package drives the orphaned-tmux reaper, so an empty whitelist is correct.
+func (m *hookMockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	return nil, nil
+}
 func (m *hookMockSessionStore) Update(context.Context, string, db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/spf13/pflag"
 )
 
 // TestNewDetachRequestSetsModel pins the BOS-179 `boss new --model` wiring: a
@@ -158,6 +160,137 @@ func TestNewDetachRequestTmuxUnattended(t *testing.T) {
 	}
 	if !off.GetDetach() {
 		t.Fatalf("detach = false, want true for the scripting path")
+	}
+}
+
+// TestNewDetachRequestDeferPR pins the `--defer-pr` wiring: the flag reaches
+// defer_pr and must not synthesize is_quick_chat, which selects an entirely
+// different daemon path (StartQuickChatSession, no worktree at all).
+func TestNewDetachRequestDeferPR(t *testing.T) {
+	req := newDetachRequest(newSessionOpts{
+		RepoID: "repo-1", Prompt: "do work", Title: "T", DeferPR: true,
+	})
+	if !req.GetDeferPr() {
+		t.Fatalf("defer_pr = false, want true when --defer-pr is set")
+	}
+	if req.GetIsQuickChat() {
+		t.Fatalf("is_quick_chat = true; --defer-pr must not set it")
+	}
+
+	off := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T"})
+	if off.GetDeferPr() {
+		t.Fatalf("defer_pr = true, want false when the flag is omitted")
+	}
+}
+
+// TestNewDetachRequestQuickChat pins the `--quick-chat` wiring, mirrored: the
+// flag reaches is_quick_chat and leaves defer_pr alone.
+func TestNewDetachRequestQuickChat(t *testing.T) {
+	req := newDetachRequest(newSessionOpts{
+		RepoID: "repo-1", Prompt: "do work", Title: "T", QuickChat: true,
+	})
+	if !req.GetIsQuickChat() {
+		t.Fatalf("is_quick_chat = false, want true when --quick-chat is set")
+	}
+	if req.GetDeferPr() {
+		t.Fatalf("defer_pr = true; --quick-chat must not set it")
+	}
+
+	off := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T"})
+	if off.GetIsQuickChat() {
+		t.Fatalf("is_quick_chat = true, want false when the flag is omitted")
+	}
+}
+
+// TestNewDetachRequestDeferPRAndQuickChatLeaveDetachSet is the regression guard
+// for the specific way this feature can be broken silently. Detach is what makes
+// the daemon mint the finalize hook token (services/bossd/internal/server/server.go),
+// and that hook is exactly what opens --defer-pr's PR at finalize when the run
+// DID produce commits. A plausible-looking "quick chat / deferred PR means we
+// are not really detaching" simplification would clear Detach and disable the
+// feature while every other assertion here still passed — so assert it head-on
+// rather than relying on an incidental field check elsewhere.
+func TestNewDetachRequestDeferPRAndQuickChatLeaveDetachSet(t *testing.T) {
+	cases := []struct {
+		name string
+		opts newSessionOpts
+	}{
+		{"defer-pr", newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T", DeferPR: true}},
+		{"quick-chat", newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T", QuickChat: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if req := newDetachRequest(tc.opts); !req.GetDetach() {
+				t.Fatalf("detach = false, want true — --%s must not clear Detach, "+
+					"which mints the finalize hook token", tc.name)
+			}
+		})
+	}
+}
+
+// TestNewCmdRegistersDeferPRAndQuickChatFlags guards the flag surface so both
+// stay wired and documented in `boss new --help`.
+func TestNewCmdRegistersDeferPRAndQuickChatFlags(t *testing.T) {
+	cmd := newCmd()
+	for _, name := range []string{"defer-pr", "quick-chat"} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			t.Fatalf("`boss new` is missing the --%s flag", name)
+		}
+		if f.Value.Type() != "bool" {
+			t.Errorf("--%s type = %q, want bool", name, f.Value.Type())
+		}
+		if f.DefValue != "false" {
+			t.Errorf("--%s default = %q, want false", name, f.DefValue)
+		}
+		if f.Usage == "" {
+			t.Errorf("--%s has no usage text, so it documents nothing in --help", name)
+		}
+	}
+}
+
+// TestNewFlagHelpIsProjectAgnostic pins the constraint that makes these usage
+// strings safe to publish. `boss new`'s help is harvested into the globally
+// installed `boss` skill core, which TestPublishedCoresAreProjectAgnostic
+// forbids from naming this project's backlog. Catching it here names the actual
+// cause at the flag, rather than as a mystified failure in the manifest test.
+func TestNewFlagHelpIsProjectAgnostic(t *testing.T) {
+	cmd := newCmd()
+	// Assembled at runtime so this test file does not itself contain the literal
+	// token the published-core guard scans for.
+	forbidden := []string{"BOS" + "-", "bossanova-", "Internal Bossanova"}
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		for _, bad := range forbidden {
+			if strings.Contains(f.Usage, bad) {
+				t.Errorf("--%s usage contains project-specific token %q: %q", f.Name, bad, f.Usage)
+			}
+		}
+	})
+}
+
+// TestNewSessionJSONNextAction pins the --json envelope's idle signal. A session
+// that came back with no chat id launched no agent, so the envelope must say so;
+// an ordinary create must leave the key ABSENT, not present-and-empty, because
+// `omitempty` is what keeps the envelope byte-identical for existing callers.
+// Asserted on the marshalled BYTES — unmarshalling into a struct cannot tell an
+// absent key from a zero-value one, so it would pass against the regression.
+func TestNewSessionJSONNextAction(t *testing.T) {
+	idle, err := json.Marshal(newSessionJSON(&pb.Session{Id: "sess-1", Title: "T"}))
+	if err != nil {
+		t.Fatalf("marshal idle envelope: %v", err)
+	}
+	if !strings.Contains(string(idle), `"next_action"`) {
+		t.Errorf("idle envelope is missing next_action: %s", idle)
+	}
+
+	launched, err := json.Marshal(newSessionJSON(&pb.Session{
+		Id: "sess-1", Title: "T", AgentSessionId: strptr("chat-1"),
+	}))
+	if err != nil {
+		t.Fatalf("marshal launched envelope: %v", err)
+	}
+	if strings.Contains(string(launched), "next_action") {
+		t.Errorf("ordinary create's envelope carries next_action; omitempty regressed: %s", launched)
 	}
 }
 

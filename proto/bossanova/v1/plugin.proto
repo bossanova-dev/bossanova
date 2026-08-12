@@ -574,12 +574,13 @@ message StartAgentRunRequest {
   // Explicit required runtime operation surface for a headless launch. The
   // zero/default profile is legacy-compatible and performs no preflight.
   HeadlessCapabilityProfile headless_capability_profile = 8;
-  // daemon-owned MCP config for a panel-less run. Empty preserves the legacy
-  // launch behavior for agents that cannot consume a managed MCP surface.
-  string managed_mcp_config_path = 9;
-  // When true, the plugin must use only managed_mcp_config_path and must not
-  // fall back to user or project MCP configuration.
-  bool is_strict_managed_mcp_config = 10;
+  // Never reuse 9 and 10: they carried a daemon-owned MCP config for a
+  // panel-less run. Boss no longer owns MCP configuration at all — each harness
+  // discovers servers its own native way and the repo declares them — and an
+  // older bossd can still serialize these to a newer plugin, so the numbers and
+  // names stay retired.
+  reserved 9, 10;
+  reserved "managed_mcp_config_path", "is_strict_managed_mcp_config";
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -651,14 +652,12 @@ message BuildInteractiveCommandRequest {
   string append_system_prompt = 7;
   string model = 8;           // opaque agent model id; "" = plugin default.
   // Never reuse the original automatic-MCP field numbers or names: older
-  // bossd binaries can still serialize them to a newer plugin.
-  reserved 9, 10;
-  reserved "mcp_config_path", "strict_mcp_config";
-  // managed_mcp_config_path, when non-empty, is an absolute path to a JSON
-  // config written in bossd app data for this launch's managed MCP servers.
-  string managed_mcp_config_path = 11;
-  // strict_managed_mcp_config makes that managed config the entire MCP surface.
-  bool strict_managed_mcp_config = 12;
+  // bossd binaries can still serialize them to a newer plugin. 11 and 12
+  // carried the daemon-owned managed MCP config that replaced them; boss no
+  // longer owns MCP configuration at all, so they are retired on the same
+  // terms. See docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md.
+  reserved 9, 10, 11, 12;
+  reserved "mcp_config_path", "strict_mcp_config", "managed_mcp_config_path", "strict_managed_mcp_config";
   // config_home_env contains only the home-selection variables (CODEX_HOME and
   // HOME) from the environment that will launch the interactive agent. Plugins
   // use it when they must prepare configuration before the child process starts;

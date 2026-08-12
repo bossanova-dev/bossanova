@@ -24,6 +24,18 @@ boss chat new <session-id>
 boss chat new <session-id> --title "repair round" --json
 ```
 
+### `boss chat rename <session-id|chat-id> <new-title...>`
+
+Rename a chat (updates its title)
+
+Renames a chat identified by a session id or agent_session_id (the chat-id printed by `boss new --detach` or `boss chat new --json`). When given a session id, boss renames that session's primary chat — use `boss rename` to retitle the session itself. The new title is the trailing arguments joined with single spaces, so a multi-word title needs no quoting; a title that is empty or only whitespace is rejected before anything is sent. Note that renaming a chat id that does not exist reports success: the daemon's update matches no rows and does not fail.
+
+```bash
+boss chat rename <session-id|chat-id> "repair round 2"
+# Trailing words are joined, so the quotes are optional
+boss chat rename <chat-id> second opinion on PR 42
+```
+
 ### `boss chat send <session-id|chat-id> <message> [flags]`
 
 Send a message to a chat

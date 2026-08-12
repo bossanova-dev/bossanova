@@ -190,6 +190,70 @@ func (c StallDetectionConfig) ExecutingToolThreshold() time.Duration {
 	return 45 * time.Minute
 }
 
+// TmuxReaperConfig holds the policy knobs for bossd's orphaned-tmux reaper
+// (BOS-846), which reconciles live tmux panes against the database and kills
+// boss-owned panes no row accounts for.
+//
+// Every default here is the safe one, because the failure mode is killing a
+// running agent rather than leaking a pane:
+//
+//   - Enabled defaults OFF, so an upgrade never silently arms a killer.
+//   - DryRun defaults ON, so the first thing an operator who flips Enabled gets
+//     is a log of what would have been reaped, not a reaping.
+//   - ReapUnstamped defaults OFF: a pane with no BOSS_DAEMON_ID predates the
+//     stamp or belongs to something else, and is not ours to kill.
+//
+// All three are *bool rather than bool because the interesting states are
+// three-valued — unset, explicitly true, explicitly false — and the bool zero
+// value cannot distinguish "unset" from "off" for a knob whose default is on.
+type TmuxReaperConfig struct {
+	Enabled              *bool `json:"enabled,omitempty"`
+	DryRun               *bool `json:"dry_run,omitempty"`
+	ReapUnstamped        *bool `json:"reap_unstamped,omitempty"`
+	SweepIntervalSeconds int   `json:"sweep_interval_seconds,omitempty"`
+	GracePeriodSeconds   int   `json:"grace_period_seconds,omitempty"`
+}
+
+// IsEnabled reports whether the reaper runs at all. Unset means off.
+func (c TmuxReaperConfig) IsEnabled() bool {
+	return c.Enabled != nil && *c.Enabled
+}
+
+// IsDryRun reports whether the reaper only logs what it would kill. Unset means
+// dry-run: the operator must opt in to destruction twice, once to enable the
+// sweep and once to arm it.
+func (c TmuxReaperConfig) IsDryRun() bool {
+	return c.DryRun == nil || *c.DryRun
+}
+
+// ReapsUnstamped reports whether panes carrying no BOSS_DAEMON_ID are eligible.
+// Unset means no.
+func (c TmuxReaperConfig) ReapsUnstamped() bool {
+	return c.ReapUnstamped != nil && *c.ReapUnstamped
+}
+
+// SweepInterval returns the configured gap between sweeps or the default of 5
+// minutes. A non-positive value (unset, or a hand-edited negative) falls back
+// rather than spinning the sweep loop.
+func (c TmuxReaperConfig) SweepInterval() time.Duration {
+	if c.SweepIntervalSeconds > 0 {
+		return time.Duration(c.SweepIntervalSeconds) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+// GracePeriod returns how old a pane must be, and how long it must have been
+// unaccounted-for, before it can be reaped; the default is 10 minutes. A
+// non-positive value falls back to the default: a zero grace window would make
+// every pane instantly old enough, which is exactly the race the window exists
+// to prevent (a pane is created before its row is written).
+func (c TmuxReaperConfig) GracePeriod() time.Duration {
+	if c.GracePeriodSeconds > 0 {
+		return time.Duration(c.GracePeriodSeconds) * time.Second
+	}
+	return 10 * time.Minute
+}
+
 // ManagedAccountsConfig holds account-rotation policy knobs.
 type ManagedAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
@@ -807,55 +871,9 @@ type Settings struct {
 	Repair                         RepairConfig          `json:"repair,omitzero"`
 	StallDetection                 StallDetectionConfig  `json:"stall_detection,omitzero"`
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
+	TmuxReaper                     TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
-	// ManagedMcpTools narrows the boss MCP server's advertised tool surface for
-	// every agent spawn to the named tools (MCP tool names, e.g. "get_session").
-	// Empty or absent — the default — advertises all 55, which is what every
-	// install did before this key existed.
-	//
-	// It exists because those tool schemas are re-sent on every turn and a run
-	// uses a fraction of them, so the unused ones are a standing context cost.
-	// It applies ONLY to the boss server: the managed config's other two entries
-	// are third-party HTTP servers whose tool lists bossd does not control.
-	//
-	// Naming a tool that does not exist is silently ignored, and an agent cannot
-	// call a tool left out here — so a too-narrow list makes capability vanish
-	// rather than fail loudly. Widen it if a run reports a missing mcp__boss__*
-	// tool.
-	ManagedMcpTools []string `json:"managed_mcp_tools,omitempty"`
-	// DisabledManagedMcpServers names managed MCP servers to omit from every
-	// agent spawn — "boss", "bossanova-linear", "bossanova-sentry". Disabling
-	// all three writes no config at all, so the spawn omits --mcp-config
-	// entirely.
-	//
-	// It is the coarse counterpart to ManagedMcpTools: the boss server's tool
-	// list can be narrowed because bossd owns that server, but the other two are
-	// third-party HTTP servers whose tool lists bossd does not control, so the
-	// only lever for those is omitting the server.
-	//
-	// It is a POINTER because absent and explicitly-empty must mean different
-	// things (BOS-827), and only a pointer survives the Load -> mutate -> Save
-	// round trip UpdateSettings performs:
-	//
-	//   - nil (key absent) — apply bossd's default, which omits "boss". The
-	//     boss skills prefer the boss CLI for the same operations (BOS-825), so
-	//     the ~20k tokens of mcp__boss__* schemas re-sent on every turn are not
-	//     worth their cost by default.
-	//   - non-nil and empty ([]) — the operator's explicit rollback: wire every
-	//     managed server, including "boss". This is a settings change only, no
-	//     rebuild. On a plain []string this override could not be expressed:
-	//     omitempty drops an empty slice whether or not it is nil, so Save
-	//     would rewrite the file without the key and the next spawn would
-	//     silently re-apply the default.
-	//   - populated — omit exactly the named servers, verbatim; the default
-	//     does not merge into an operator-supplied list.
-	//
-	// Whoever reads this must go through the effective-disabled-set resolver in
-	// services/bossd/internal/session/mcp_config.go, not the raw field: the
-	// config writer and the system-prompt builder have to agree about which
-	// servers a spawn actually receives.
-	DisabledManagedMcpServers *[]string `json:"disabled_managed_mcp_servers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this
 	// daemon. It is PRESENTATION METADATA ONLY: it feeds the self-reported
 	// hostname bossd advertises to the orchestrator, and never the daemon's

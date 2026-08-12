@@ -30,6 +30,7 @@ go_test(
         "pluginsum_test.go",
         "plugintrust_test.go",
         "plugintrust_unix_test.go",
+        "tmux_reaper_config_test.go",
     ],
     embed = [":config"],
 )

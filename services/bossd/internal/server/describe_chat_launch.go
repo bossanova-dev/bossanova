@@ -52,7 +52,7 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// append_system_prompt, so there are no instruction classes to report and
 	// this path emits no undelivered-instruction record whatever the runner
 	// declares.
-	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, "", false, nil)
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, nil)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

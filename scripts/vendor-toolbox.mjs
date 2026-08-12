@@ -46,6 +46,12 @@ export const VENDOR_MAP = {
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
+    // Preflight classifies a failed tracker read as "the repo never declared this MCP server for
+    // this harness" vs "declared but not answering". The session runner does not configure MCP
+    // servers, so that distinction is the difference between fixing the repo and fixing
+    // credentials — it must ship in boss-build's own installed toolbox, which cannot reach into
+    // another skill's copy.
+    'tracker/preflight.mjs',
     'linear-gate-lib.mjs',
     'linear-deps-lib.mjs',
     'linear-claim.mjs',

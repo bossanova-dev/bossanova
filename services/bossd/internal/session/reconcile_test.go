@@ -316,6 +316,12 @@ func (m *reconcileMockSessionStore) ListArchived(_ context.Context, _ string) ([
 	return result, nil
 }
 
+// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// package drives the orphaned-tmux reaper, so an empty whitelist is correct.
+func (m *reconcileMockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
 	if err := m.updateErr[id]; err != nil {
 		return nil, err

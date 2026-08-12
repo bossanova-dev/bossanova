@@ -275,6 +275,9 @@ func (f *fakeSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, p
 func (f *fakeSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
+	panic("not used")
+}
 func (f *fakeSessionStore) Update(ctx context.Context, id string, p db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }

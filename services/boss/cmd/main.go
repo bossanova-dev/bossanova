@@ -378,6 +378,16 @@ func newCmd() *cobra.Command {
 		"Host the session in a durable tmux pane that survives a daemon restart and is "+
 			"attach-safe (independent of --detach, which only governs whether this command "+
 			"attaches a chat pane before it exits)")
+	cmd.Flags().Bool("defer-pr", false,
+		"Open no draft PR up front; a PR is opened at finalize only if the run produced "+
+			"commits. For runs not expected to change the repository. Pair with "+
+			"--tmux-unattended so a restart cannot strand commits before finalize. "+
+			"Non-interactive --repo + --prompt path only")
+	cmd.Flags().Bool("quick-chat", false,
+		"Create a session with no worktree, branch, or PR, in the repository checkout. "+
+			"The agent starts when you attach; unattended runs want --defer-pr. "+
+			"Mutually exclusive with --defer-pr. Non-interactive --repo + --prompt "+
+			"path only")
 	// The example is a generic placeholder on purpose: this usage string is
 	// harvested into the globally-installed `boss` skill core, which
 	// TestPublishedCoresAreProjectAgnostic forbids from carrying a real

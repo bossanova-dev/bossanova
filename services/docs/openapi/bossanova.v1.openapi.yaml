@@ -3564,16 +3564,6 @@ components:
           type: string
           title: model
           description: opaque agent model id; "" = plugin default.
-        managedMcpConfigPath:
-          type: string
-          title: managed_mcp_config_path
-          description: |-
-            managed_mcp_config_path, when non-empty, is an absolute path to a JSON
-             config written in bossd app data for this launch's managed MCP servers.
-        strictManagedMcpConfig:
-          type: boolean
-          title: strict_managed_mcp_config
-          description: strict_managed_mcp_config makes that managed config the entire MCP surface.
         configHomeEnv:
           type: object
           title: config_home_env
@@ -12834,18 +12824,6 @@ components:
             Explicit required runtime operation surface for a headless launch. The
              zero/default profile is legacy-compatible and performs no preflight.
           $ref: '#/components/schemas/bossanova.v1.HeadlessCapabilityProfile'
-        managedMcpConfigPath:
-          type: string
-          title: managed_mcp_config_path
-          description: |-
-            daemon-owned MCP config for a panel-less run. Empty preserves the legacy
-             launch behavior for agents that cannot consume a managed MCP surface.
-        isStrictManagedMcpConfig:
-          type: boolean
-          title: is_strict_managed_mcp_config
-          description: |-
-            When true, the plugin must use only managed_mcp_config_path and must not
-             fall back to user or project MCP configuration.
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:

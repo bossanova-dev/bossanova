@@ -390,7 +390,12 @@ func (a *App) backKeyAliasEligible() bool {
 		return !a.accountEdit.textEntryActive()
 	case ViewAccountRegister:
 		return !a.accountRegister.textEntryActive()
-	case ViewHome, ViewChatPicker, ViewRepoList, ViewSettings, ViewLogin,
+	case ViewChatPicker:
+		// The chat list is a pure list screen except while the inline [r]ename
+		// prompt is open (BOS-836), where Esc cancels the edit and ctrl+x is a
+		// line-editing key.
+		return !a.chatPicker.textEntryActive()
+	case ViewHome, ViewRepoList, ViewSettings, ViewLogin,
 		ViewCron, ViewAccounts:
 		// Pure list/hub screens: no text input, and Esc already means "back one
 		// level" on each of them.

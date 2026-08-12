@@ -19,6 +19,10 @@ import (
 // instance. Stored on the server struct (not in a package-level var) so
 // parallel tests with separate *Server values don't trample each other —
 // adding t.Parallel() to a wake test is now a safe edit.
+//
+// Despite the name it is not wake-specific: (*Server).chatSpawnDeps applies it
+// to every chat spawn, so the record path (ensureChatTmuxSession) honours the
+// same overrides.
 type wakeHook struct {
 	spawner     tmuxSpawner
 	transcripts transcriptOracle
@@ -75,7 +79,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		reason   string
 	}
 
-	v, err, _ := s.chatWakeGroup.Do(agentSessionID, func() (any, error) {
+	// The singleflight body names its error result so the pane rollback below can
+	// observe it from a defer (BOS-845).
+	v, err, _ := s.chatWakeGroup.Do(agentSessionID, func() (_ any, err error) {
 		chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 		if err != nil || chat == nil {
 			return nil, fmt.Errorf("%w: %s", ErrWakeChatNotFound, agentSessionID)
@@ -86,29 +92,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 		tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 
-		deps := spawnDeps{
-			Transcripts: liveTranscriptOracle{clients: s.agentClients},
-			Argv:        liveArgvBuilder{clients: s.agentClients},
-			Logger:      s.logger,
-		}
-		if s.tmux != nil {
-			deps.Tmux = liveTmuxSpawner{c: s.tmux}
-		}
-		if s.agentClients != nil {
-			deps.Resolver = liveInteractiveSessionResolver{clients: s.agentClients}
-		}
-		if s.wakeHook.spawner != nil {
-			deps.Tmux = s.wakeHook.spawner
-		}
-		if s.wakeHook.transcripts != nil {
-			deps.Transcripts = s.wakeHook.transcripts
-		}
-		if s.wakeHook.argv != nil {
-			deps.Argv = s.wakeHook.argv
-		}
-		if s.wakeHook.resolver != nil {
-			deps.Resolver = s.wakeHook.resolver
-		}
+		deps := s.chatSpawnDeps()
 
 		// Refuse to wake a chat whose headless run (codex exec / claude
 		// --print) is still active. A live headless run reports WORKING in
@@ -145,7 +129,6 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			}
 		}
 
-		mcpConfigPath := session.SessionManagedMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 		defaultAccountID := ""
 		sessionEnvFunc := func() map[string]string {
 			defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
@@ -162,7 +145,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
 			)
 		}
-		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath)
+		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
 			WorktreePath:              sess.WorktreePath,
@@ -180,13 +163,22 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
 				return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
 			},
-			Model:                  chat.Model,
-			ManagedMcpConfigPath:   mcpConfigPath,
-			StrictManagedMcpConfig: session.StrictManagedMcpConfigForSession(sess),
+			Model: chat.Model,
 		})
 		if err != nil {
 			return nil, err
 		}
+		// Arm the pane rollback for the row-write window: until the chat row names
+		// this pane, an error return would strand a live RemainOnExit pane that no
+		// cleanup path can find (BOS-845). OutcomeAlreadyLive is deliberately not
+		// armed — that pane belongs to an earlier claim — and spawnChatTmux already
+		// rolled back its own failures, so the return above stays unarmed too.
+		paneNeedsRollback := result.Outcome != OutcomeAlreadyLive
+		defer func() {
+			if err != nil && paneNeedsRollback {
+				killSpawnedChatPaneBestEffort(ctx, deps.Tmux, s.logger, chat.AgentSessionID, tmuxName)
+			}
+		}()
 		if result.Outcome != OutcomeAlreadyLive {
 			s.persistDefaultAccountForChat(ctx, sess, chat, defaultAccountID)
 		}
@@ -240,6 +232,8 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				return nil, fmt.Errorf("persist tmux name: %w", err)
 			}
 		}
+		// The row now names the pane, so cleanup can reach it: disarm.
+		paneNeedsRollback = false
 
 		// Register with the poller so the next status snapshot reflects
 		// the revived session immediately rather than waiting for the

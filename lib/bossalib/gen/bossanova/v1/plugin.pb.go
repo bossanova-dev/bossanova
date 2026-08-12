@@ -3109,14 +3109,8 @@ type StartAgentRunRequest struct {
 	// Explicit required runtime operation surface for a headless launch. The
 	// zero/default profile is legacy-compatible and performs no preflight.
 	HeadlessCapabilityProfile HeadlessCapabilityProfile `protobuf:"varint,8,opt,name=headless_capability_profile,json=headlessCapabilityProfile,proto3,enum=bossanova.v1.HeadlessCapabilityProfile" json:"headless_capability_profile,omitempty"`
-	// daemon-owned MCP config for a panel-less run. Empty preserves the legacy
-	// launch behavior for agents that cannot consume a managed MCP surface.
-	ManagedMcpConfigPath string `protobuf:"bytes,9,opt,name=managed_mcp_config_path,json=managedMcpConfigPath,proto3" json:"managed_mcp_config_path,omitempty"`
-	// When true, the plugin must use only managed_mcp_config_path and must not
-	// fall back to user or project MCP configuration.
-	IsStrictManagedMcpConfig bool `protobuf:"varint,10,opt,name=is_strict_managed_mcp_config,json=isStrictManagedMcpConfig,proto3" json:"is_strict_managed_mcp_config,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *StartAgentRunRequest) Reset() {
@@ -3203,20 +3197,6 @@ func (x *StartAgentRunRequest) GetHeadlessCapabilityProfile() HeadlessCapability
 		return x.HeadlessCapabilityProfile
 	}
 	return HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
-}
-
-func (x *StartAgentRunRequest) GetManagedMcpConfigPath() string {
-	if x != nil {
-		return x.ManagedMcpConfigPath
-	}
-	return ""
-}
-
-func (x *StartAgentRunRequest) GetIsStrictManagedMcpConfig() bool {
-	if x != nil {
-		return x.IsStrictManagedMcpConfig
-	}
-	return false
 }
 
 type StartAgentRunResponse struct {
@@ -3784,11 +3764,6 @@ type BuildInteractiveCommandRequest struct {
 	// chat, plus the cron autonomy directive for scheduler-spawned runs.
 	AppendSystemPrompt string `protobuf:"bytes,7,opt,name=append_system_prompt,json=appendSystemPrompt,proto3" json:"append_system_prompt,omitempty"`
 	Model              string `protobuf:"bytes,8,opt,name=model,proto3" json:"model,omitempty"` // opaque agent model id; "" = plugin default.
-	// managed_mcp_config_path, when non-empty, is an absolute path to a JSON
-	// config written in bossd app data for this launch's managed MCP servers.
-	ManagedMcpConfigPath string `protobuf:"bytes,11,opt,name=managed_mcp_config_path,json=managedMcpConfigPath,proto3" json:"managed_mcp_config_path,omitempty"`
-	// strict_managed_mcp_config makes that managed config the entire MCP surface.
-	StrictManagedMcpConfig bool `protobuf:"varint,12,opt,name=strict_managed_mcp_config,json=strictManagedMcpConfig,proto3" json:"strict_managed_mcp_config,omitempty"`
 	// config_home_env contains only the home-selection variables (CODEX_HOME and
 	// HOME) from the environment that will launch the interactive agent. Plugins
 	// use it when they must prepare configuration before the child process starts;
@@ -3882,20 +3857,6 @@ func (x *BuildInteractiveCommandRequest) GetModel() string {
 		return x.Model
 	}
 	return ""
-}
-
-func (x *BuildInteractiveCommandRequest) GetManagedMcpConfigPath() string {
-	if x != nil {
-		return x.ManagedMcpConfigPath
-	}
-	return ""
-}
-
-func (x *BuildInteractiveCommandRequest) GetStrictManagedMcpConfig() bool {
-	if x != nil {
-		return x.StrictManagedMcpConfig
-	}
-	return false
 }
 
 func (x *BuildInteractiveCommandRequest) GetConfigHomeEnv() map[string]string {
@@ -5933,7 +5894,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
 	"\x1cPreflightHeadlessRunResponse\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
-	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xb1\x04\n" +
+	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xfd\x03\n" +
 	"\x14StartAgentRunRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x12\n" +
 	"\x04plan\x18\x02 \x01(\tR\x04plan\x12 \n" +
@@ -5943,15 +5904,14 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\blog_path\x18\x05 \x01(\tR\alogPath\x12\x14\n" +
 	"\x05model\x18\x06 \x01(\tR\x05model\x12M\n" +
 	"\textra_env\x18\a \x03(\v20.bossanova.v1.StartAgentRunRequest.ExtraEnvEntryR\bextraEnv\x12g\n" +
-	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x125\n" +
-	"\x17managed_mcp_config_path\x18\t \x01(\tR\x14managedMcpConfigPath\x12>\n" +
-	"\x1cis_strict_managed_mcp_config\x18\n" +
-	" \x01(\bR\x18isStrictManagedMcpConfig\x1a;\n" +
+	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n" +
 	"\n" +
-	"_resume_id\"6\n" +
+	"_resume_idJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\x17managed_mcp_config_pathR\x1cis_strict_managed_mcp_config\"6\n" +
 	"\x15StartAgentRunResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"4\n" +
@@ -5990,7 +5950,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xfc\x04\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xca\x04\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -6000,15 +5960,13 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\x12#\n" +
 	"\rworktree_path\x18\x06 \x01(\tR\fworktreePath\x120\n" +
 	"\x14append_system_prompt\x18\a \x01(\tR\x12appendSystemPrompt\x12\x14\n" +
-	"\x05model\x18\b \x01(\tR\x05model\x125\n" +
-	"\x17managed_mcp_config_path\x18\v \x01(\tR\x14managedMcpConfigPath\x129\n" +
-	"\x19strict_managed_mcp_config\x18\f \x01(\bR\x16strictManagedMcpConfig\x12g\n" +
+	"\x05model\x18\b \x01(\tR\x05model\x12g\n" +
 	"\x0fconfig_home_env\x18\r \x03(\v2?.bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntryR\rconfigHomeEnv\x1a@\n" +
 	"\x12ConfigHomeEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vR\x0fmcp_config_pathR\x11strict_mcp_config\"\x9f\x02\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rR\x0fmcp_config_pathR\x11strict_mcp_configR\x17managed_mcp_config_pathR\x19strict_managed_mcp_config\"\x9f\x02\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +

@@ -138,7 +138,9 @@ func (m ChatPickerModel) renderChatList() string {
 	b.WriteString(chatPickerContentBlock(m.table.View()))
 	b.WriteString("\n")
 
-	if prompt, handled := m.renderConfirm(); handled {
+	if prompt, handled := m.renderRenamePrompt(); handled {
+		b.WriteString(prompt)
+	} else if prompt, handled := m.renderConfirm(); handled {
 		b.WriteString(prompt)
 	} else {
 		b.WriteString(m.renderActionBar())
@@ -158,6 +160,32 @@ func (m ChatPickerModel) renderChatList() string {
 	}
 
 	return b.String()
+}
+
+// renderRenamePrompt renders the inline [r]ename editor that stands in for the
+// action bar while the prompt is open (BOS-836). The bool reports ownership, on
+// the same contract as renderConfirm.
+//
+// The layout deliberately matches the delete confirm's line count — a blank
+// line, the prompt line, then the key hints — because tableHeight()'s
+// reservation is computed from the steady-state action bar and is not adjusted
+// for transient prompts. The "cannot be empty" complaint is therefore appended
+// to the prompt line rather than given a line of its own; a fourth line here
+// would push the table one row past its reservation.
+func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
+	if !m.renaming {
+		return "", false
+	}
+	line := m.renameInput.View()
+	if m.renameErr != "" {
+		line += lipgloss.NewStyle().Foreground(colorDanger).Render("  " + m.renameErr)
+	}
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+	b.WriteString("\n")
+	b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
+	return b.String(), true
 }
 
 // renderConfirm renders the transient in-flight spinner or y/n prompt that
@@ -273,6 +301,11 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	}
 	if chat := m.selectedChat(); chat != nil {
 		left = []string{"[enter] select", "[d]elete"}
+		// Bar and key read the same predicate, so the advertised action and the
+		// one `r` performs cannot drift apart.
+		if m.canRename() {
+			left = append(left, "[r]ename")
+		}
 		// Only advertise [w]ake when the highlighted chat is actually
 		// stopped — for any other status the keypress is a no-op, so
 		// dangling the action in the bar would mislead users.

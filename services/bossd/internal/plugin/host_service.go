@@ -50,7 +50,22 @@ const waitAgentRunPollInterval = 500 * time.Millisecond
 // the run state. Spec §"Failure modes" sets this at 30 minutes.
 const defaultWaitChatRunDeadline = 30 * time.Minute
 
-const waitChatRunProviderIDDiscoveryTimeout = 2 * time.Second
+// legacyBackfillProviderIDDiscoveryTimeout bounds the pre-response codex
+// provider-session-id discovery in providerSessionIDForAgentSession. That call
+// is never the fast process-fd path: it always sends AllowLegacyBackfill: true
+// and never sets PanePid, and the codex plugin gates its fd branch on
+// !AllowLegacyBackfill && PanePid > 0, so 100% of these calls take the
+// whole-corpus legacy rollout scan. Budgeted for that scan (30s), not for the
+// 2s the fd path gets in
+// services/bossd/internal/server/spawn_chat_tmux.go. Package-level var (not
+// const) so tests can shrink it to milliseconds.
+var legacyBackfillProviderIDDiscoveryTimeout = 30 * time.Second
+
+// providerSessionIDPersistTimeout bounds the UpdateProviderSessionID write that
+// records a successful discovery. It is deliberately NOT the discovery context:
+// a discovery that consumes most of its budget would otherwise hand the persist
+// an already-exhausted deadline and throw away the id it just found.
+var providerSessionIDPersistTimeout = 5 * time.Second
 
 // watchdogPollInterval is how often the WaitChatRun idle watchdog samples the
 // chat tracker while a run is armed (idle_fail_after_seconds > 0). Package-level
@@ -1993,7 +2008,7 @@ func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context
 		return ""
 	}
 
-	discoveryCtx, cancel := context.WithTimeout(context.Background(), waitChatRunProviderIDDiscoveryTimeout)
+	discoveryCtx, cancel := context.WithTimeout(context.Background(), legacyBackfillProviderIDDiscoveryTimeout)
 	defer cancel()
 	resp, err := client.ResolveInteractiveSessionID(discoveryCtx, &bossanovav1.ResolveInteractiveSessionIDRequest{
 		WorkDir:             sess.WorktreePath,
@@ -2017,7 +2032,12 @@ func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context
 		return ""
 	}
 	providerID := resp.GetSessionId()
-	if err := s.agentChats.UpdateProviderSessionID(discoveryCtx, chat.AgentSessionID, &providerID); err != nil {
+	// Fresh context for the persist: discoveryCtx may be all but spent by the
+	// scan above, and dropping a found id because the budget that bounded the
+	// search also bounded the write is exactly the failure this avoids.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDPersistTimeout)
+	defer cancelPersist()
+	if err := s.agentChats.UpdateProviderSessionID(persistCtx, chat.AgentSessionID, &providerID); err != nil {
 		log.Warn().Err(err).
 			Str("agent_session_id", chat.AgentSessionID).
 			Str("provider_session_id", providerID).

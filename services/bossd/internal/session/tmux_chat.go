@@ -467,20 +467,17 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
-	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID, spawnAgentName)
-	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, mcpConfigPath)
+	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:              providerSessionID,
-		Resume:                 resuming,
-		LogPath:                logPath,
-		InitialPrompt:          input.Prompt,
-		InitialCommand:         input.Command,
-		WorktreePath:           sess.WorktreePath,
-		AppendSystemPrompt:     appendPrompt,
-		Model:                  spawnModel,
-		ManagedMcpConfigPath:   mcpConfigPath,
-		StrictManagedMcpConfig: StrictManagedMcpConfigForSession(sess),
-		ConfigHomeEnv:          configHomeEnv(tmuxEnv),
+		SessionId:          providerSessionID,
+		Resume:             resuming,
+		LogPath:            logPath,
+		InitialPrompt:      input.Prompt,
+		InitialCommand:     input.Command,
+		WorktreePath:       sess.WorktreePath,
+		AppendSystemPrompt: appendPrompt,
+		Model:              spawnModel,
+		ConfigHomeEnv:      configHomeEnv(tmuxEnv),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -1448,16 +1445,12 @@ func bossSessionContext(f SessionFacts) string {
 		"Never edit the boss database or session files directly, and never invent a workaround " +
 		"for a missing capability. If no documented boss command covers what you need, stop and " +
 		"report that you are blocked."
-	if f.McpBin != "" {
-		// The boss MCP server is wired into this chat (see BOS-95). Announce the
-		// namespace, not a tool subset: hand-listing individual tools is the
-		// drift bug this prompt deliberately avoids, so point at the live tool
-		// list instead of enumerating it.
-		prompt += " The boss MCP server is also wired into this chat: its mcp__boss__* tools " +
-			"are available to you in-session as another way to run boss operations. Discover " +
-			"the current set from your own tool list rather than assuming which mcp__boss__* " +
-			"tools exist."
-	}
+	// No mcp__boss__* claim. bossd does not configure MCP servers for a chat —
+	// each harness discovers them natively and the repo declares them — so it
+	// cannot know whether this chat has the boss server, and a prompt that
+	// asserted it would be advertising tools the agent may not have. BOSS_MCP_BIN
+	// above is a different thing: it is an env export that still happens, and the
+	// idVars list must keep mirroring managedSessionEnv exactly.
 	if warning := installedSkillDriftWarning(f); warning != "" {
 		prompt += " " + warning
 	}
@@ -1496,14 +1489,8 @@ func installedSkillDriftWarning(f SessionFacts) string {
 // Resolution of facts is shared with ManagedSessionEnv via ResolveSessionFacts.
 //
 // agentName is the running agent for this chat (see ResolveSessionFacts).
-//
-// mcpConfigPath is the per-spawn boss MCP config path actually written for this
-// launch ("" when none). The mcp__boss__* mention is gated on it — not merely on
-// a resolvable mcp binary — so the prompt never claims tools the agent will not
-// receive: claude only gets --mcp-config when this path is non-empty, and a
-// failed config write yields "" even when McpBin resolves.
-func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpConfigPath string) string {
-	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, mcpConfigPath)
+func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName string) string {
+	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName)
 	return text
 }
 
@@ -1517,20 +1504,11 @@ func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpC
 // The class names are deliberately coarse — they name what kind of instruction
 // was lost, never its contents, so the report can be logged without leaking the
 // prompt body.
-func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName, mcpConfigPath string) (string, []string) {
+func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName string) (string, []string) {
 	if sess == nil {
 		return "", nil
 	}
 	f := ResolveSessionFacts(sess, agentSessionID, agentName)
-	if mcpConfigPath == "" || IsManagedMcpServerDisabled("boss") {
-		// No config was written for this spawn, or a config was written that
-		// omits the boss server: either way the chat gets no mcp__boss__* tools,
-		// so do not advertise them. The second case is why a non-empty path is no
-		// longer sufficient on its own — a config can now carry Linear/Sentry
-		// while omitting boss, and the prompt must not claim tools that are not
-		// there.
-		f.McpBin = ""
-	}
 	prompt := bossSessionContext(f)
 	classes := []string{InstructionClassSessionContext}
 	if f.IsUnattended {
@@ -1545,38 +1523,6 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName, mc
 		classes = append(classes, InstructionClassAutonomyDirective)
 	}
 	return prompt, classes
-}
-
-// writeSessionMcpConfig generates the per-spawn boss MCP config for this chat
-// and returns its absolute path (in the app-data dir, never the worktree), or
-// "" when no trusted mcp binary is resolved. MCP wiring is best-effort: a write
-// failure must never block a chat launch, so it is logged and the chat
-// continues without mcp__boss__* rather than failing.
-func (l *Lifecycle) writeSessionMcpConfig(sess *models.Session, agentSessionID, sessionID, agentName string) string {
-	path, err := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, agentName))
-	if err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", sessionID).
-			Str("agentSessionID", agentSessionID).
-			Msg("write session mcp config failed; chat continues without mcp__boss__*")
-		return ""
-	}
-	return path
-}
-
-// SessionManagedMcpConfigPath writes the per-spawn boss MCP config for this chat and
-// returns its absolute path (in the app-data dir, never the worktree), or ""
-// when no trusted mcp binary is resolved OR the write failed. MCP wiring is
-// best-effort and must never block a launch, so a write error degrades to "".
-// This mirrors AppendSystemPromptFor as a pure helper for spawn call sites that
-// have no Lifecycle logger (RecordChat/WakeChat); the Lifecycle path uses
-// writeSessionMcpConfig instead so it can log the failure.
-func SessionManagedMcpConfigPath(sess *models.Session, agentSessionID, agentName string) string {
-	if sess == nil {
-		return ""
-	}
-	path, _ := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, agentName))
-	return path
 }
 
 // killTmuxChatBestEffort tears down a tmux session created during a failed

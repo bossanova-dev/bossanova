@@ -222,8 +222,29 @@ fi
 ```
 
 Confirm the tracker is reachable with a cheap read through the adapter's status/select capability
-(Linear: the statuses read for the configured backlog team). On failure, stop with `NO_CHANGE` (do not edit
-files).
+(Linear: the statuses read for the configured backlog team).
+
+MCP servers are **not** configured by the session runner: each harness discovers them its own native
+way and the repo declares them. So a failed read has two causes with opposite fixes, and the stop
+must say which. Classify it with `trackerMcpPreflight` (`toolbox/tracker/preflight.mjs`), passing
+your **own tool list** — never read a harness config file:
+
+```bash
+node --input-type=module -e '
+  const { trackerMcpPreflight } = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/tracker/preflight.mjs`)
+  process.stdout.write(JSON.stringify(trackerMcpPreflight({
+    operationMap: ADAPTER_OPERATION_MAP, mcpServer: TRACKER_MCP_SERVER,
+    agent: process.env.BOSS_AGENT || "", availableTools: AVAILABLE_TOOLS, probeOk: PROBE_OK,
+  })))
+'
+```
+
+On `ok: false` stop `NO_CHANGE: <message>` — no tracker write, no file edit. `absent` ⇒ the repo
+never declared that server for this harness (or declared it without enabling it, where the harness
+has a separate approval step): fix the **repo**, not credentials. `unreachable` ⇒ it is declared and
+did not answer: fix **credentials/network**, not the declaration. The probe decides — a harness that
+reaches the tracker another way passes on `probeOk` alone, so tool-name matching only ever explains
+a failure.
 
 **Require the full run configuration.** The tracker config validator accepts a block carrying only
 `mcpServer` + `team` (and `publishConfig` defaults to `{}`, validated only where an entry exists), so

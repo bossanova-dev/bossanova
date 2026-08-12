@@ -1232,7 +1232,25 @@ func (m *MockDaemon) DeleteChat(_ context.Context, req *connect.Request[pb.Delet
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %q not found", req.Msg.AgentSessionId))
 }
 
-func (m *MockDaemon) UpdateChatTitle(_ context.Context, _ *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
+// UpdateChatTitle persists the new title onto the seeded chat so a subsequent
+// ListChats reports it. Before BOS-836 this was inert, which made the TUI's
+// inline [r]ename look like it silently reverted the moment the next chat poll
+// landed — the fixture, not the feature, was wrong.
+//
+// A title for a chat this daemon has never seen is answered with success rather
+// than NotFound: the chat list is seeded per test, and a stricter answer would
+// turn "this test did not seed that chat" into a confusing RPC failure far from
+// its cause. DeleteChat is the one that needs NotFound, because deleting a
+// missing chat is what its own tests assert on.
+func (m *MockDaemon) UpdateChatTitle(_ context.Context, req *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.chats {
+		if c.AgentSessionId == req.Msg.AgentSessionId {
+			c.Title = req.Msg.Title
+			break
+		}
+	}
 	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
 }
 

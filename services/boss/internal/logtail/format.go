@@ -26,6 +26,11 @@ func FormatJSON(w io.Writer, rec Record) error {
 		}
 	} else {
 		fields = map[string]any{"_boss_raw": true, "line": rec.Raw}
+		// Agent output is raw but timestamped. Service diagnostics are raw with
+		// no timestamp at all, and stay shaped exactly as before.
+		if !rec.Time.IsZero() {
+			fields["time"] = rec.Time.Format(time.RFC3339Nano)
+		}
 	}
 	fields["_boss_service"] = rec.Service
 	encoded, err := json.Marshal(fields)
@@ -39,6 +44,10 @@ func FormatJSON(w io.Writer, rec Record) error {
 // FormatPretty writes a readable record with source and time context.
 func FormatPretty(w io.Writer, rec Record) error {
 	if !rec.Parsed {
+		if !rec.Time.IsZero() {
+			_, err := fmt.Fprintf(w, "%s %-5s | %s\n", rec.Time.Format(time.TimeOnly), rec.Service, rec.Raw)
+			return err
+		}
 		_, err := fmt.Fprintf(w, "%-5s | %s\n", rec.Service, rec.Raw)
 		return err
 	}

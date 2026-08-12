@@ -122,6 +122,35 @@ func (h HomeModel) statusLine(fg color.Color, text string) string {
 	return s.Render(text)
 }
 
+// statusColor is the foreground for the status line: danger when the status
+// reports a failure, success otherwise. A single accessor rather than a
+// conditional at the render site, so the next status producer cannot render an
+// error in the success colour by forgetting the branch.
+func (h HomeModel) statusColor() color.Color {
+	if h.statusErr {
+		return colorDanger
+	}
+	return colorSuccess
+}
+
+// statusHeight is the rendered height of the status line, or 0 when there is
+// none. tableHeight reserves it: statusLine WRAPS at statusWrapWidth, and a
+// session title is operator-supplied text of no bounded length, so a renamed-to
+// message can easily cost more than the one row an assumed literal would
+// reserve. Measured the same way sessionTableFooterLineCount measures the
+// re-login warning, and for the same reason — an unreserved rendered row pushes
+// the board past the terminal.
+//
+// No separator to account for, unlike that warning: renderSessionTable writes
+// the status between the table's own trailing newline and the footer, so it
+// costs exactly the rows it renders.
+func (h HomeModel) statusHeight() int {
+	if h.status == "" {
+		return 0
+	}
+	return lipgloss.Height(h.statusLine(h.statusColor(), h.status))
+}
+
 // loginAction returns the login/logout action label for the action bar,
 // or "" if auth is not configured.
 func (h HomeModel) loginAction() string {
@@ -342,11 +371,21 @@ func (h HomeModel) renderSessionTable() string {
 		b.WriteString("\n")
 	}
 	if h.status != "" {
-		b.WriteString(h.statusLine(colorSuccess, h.status))
+		b.WriteString(h.statusLine(h.statusColor(), h.status))
 		b.WriteString("\n")
 	}
 
-	if h.confirm.active {
+	// The rename editor takes precedence over every other footer: it is the only
+	// one that is capturing keystrokes, so it has to be the one on screen.
+	//
+	// No separator newline before it, unlike the confirm prompt below: the
+	// editor stands in for the action bar, which is written bare because
+	// styleActionBar's own top padding is the gap. Adding one here would make
+	// the editor two lines taller than the bar it replaces where tableHeight
+	// only gives a row back for one.
+	if h.rename.Active() {
+		b.WriteString(h.rename.footer(h.width))
+	} else if h.confirm.active {
 		b.WriteString("\n")
 		b.WriteString(h.confirm.footer(h.width))
 	} else if h.upgrading || h.restarting {

@@ -119,6 +119,7 @@ func TestIsExtensionDirName(t *testing.T) {
 		{"boss-review-thermonuclear", true},
 		{"boss-proof-web", true},
 		{"boss-build-ce", true},
+		{"boss-build-knowledge", true},
 		// Non-boss / unrelated names are not extensions.
 		{"golang-pro", false},
 		{"bossnew", false},

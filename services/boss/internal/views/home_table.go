@@ -82,16 +82,29 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 
 // renderAttentionIndicator returns a colored "!" for sessions needing attention,
 // or an empty string otherwise.
+//
+// BOS-855: the indicator goes recessive only when every warning hint on the row
+// is itself demoted (attentionIndicatorDemoted). It reads only
+// AttentionStatus.Reason, so it cannot see the rotation/setup/start-error/
+// draft-PR hints — routing the decision through the shared gate is what stops a
+// faded "!" appearing above a bright exempt hint.
 func renderAttentionIndicator(sess *pb.Session) string {
 	if sess.AttentionStatus == nil || !sess.AttentionStatus.NeedsAttention {
 		return ""
 	}
+	demoted := attentionIndicatorDemoted(sess)
 	switch sess.AttentionStatus.Reason {
 	case pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS:
+		if demoted {
+			return styleStatusDangerFaded.Render("!")
+		}
 		return styleStatusDanger.Render("!")
 	case pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE:
 		return ""
 	default:
+		if demoted {
+			return styleStatusWarningFaded.Render("!")
+		}
 		return styleStatusWarning.Render("!")
 	}
 }
@@ -123,7 +136,7 @@ func (h *HomeModel) buildTableRows() {
 		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
 			nameWidthLabels = append(nameWidthLabels, waitingHint)
 		}
-		nameWidthLabels = append(nameWidthLabels, sessionWarningHints(sess)...)
+		nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
@@ -254,15 +267,15 @@ func (h *HomeModel) buildTableRows() {
 		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess)); waitingHint != "" {
 			rows = append(rows, project(table.Row{"", "", "", styleStatusInfo.Render(waitingHint), "", ""}))
 		}
-		// A merged/closed row's warnings no longer need to alarm — dim them
-		// (BOS-246). Part A clears the reason at the source, so this only paints
-		// the brief window before the next poll reconciles the session.
-		hintStyle := styleStatusDanger
-		if merged {
-			hintStyle = styleStatusDangerFaded
-		}
+		// Warning sub-rows. The style is resolved PER HINT through the shared
+		// BOS-855 gate, which folds in both reasons a hint goes recessive: the
+		// merged/closed fade (BOS-246 — Part A clears the reason at the source, so
+		// that half only paints the brief window before the next poll reconciles
+		// the session) and a demotable hint on a row whose composite is a
+		// live-activity label. selectedSessionWarningBlock calls the same helper,
+		// so the list and the detail view cannot disagree.
 		for _, hint := range sessionWarningHints(sess) {
-			hintRow := project(table.Row{"", "", "", hintStyle.Render(hint), "", ""})
+			hintRow := project(table.Row{"", "", "", warningHintStyle(sess, hint).Render(hint.Text), "", ""})
 			rows = append(rows, hintRow)
 		}
 	}
@@ -312,9 +325,16 @@ func StateLabel(state pb.SessionState) string {
 // tableHeight returns the height to pass to table.SetHeight.
 func (h HomeModel) tableHeight() int {
 	footerLines := 1
-	if !h.confirm.active && !h.upgrading && !h.restarting {
+	switch {
+	case h.rename.Active():
+		// The rename editor is two content lines (input + key hints) where the
+		// action bar it replaces is one at a wide terminal, so reserving the
+		// default would leave the board a row too tall (BOS-837).
+		footerLines = h.rename.lineCount()
+	case !h.confirm.active && !h.upgrading && !h.restarting:
 		footerLines = h.sessionTableFooterLineCount()
 	}
-	overhead := bannerOverhead + 1 + actionBarPadY + footerLines // banner+newline + gap + actionbar padding + actionbar
+	// banner+newline + gap + actionbar padding + status + actionbar
+	overhead := bannerOverhead + 1 + actionBarPadY + h.statusHeight() + footerLines
 	return clampedTableHeight(h.tableDataRowCount(), h.height, overhead)
 }

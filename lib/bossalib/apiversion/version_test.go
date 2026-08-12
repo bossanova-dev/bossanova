@@ -183,20 +183,20 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has nine versions ordered oldest→newest:
+	// Production registry has ten versions ordered oldest→newest:
 	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
-	// V20260723, V20260803 and V20260804. Current is V20260804 (newest
-	// behavior) while Default stays Baseline (header-less callers pin to the
-	// oldest version). V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260804 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260804)
+	// V20260723, V20260803, V20260804 and V20260812. Current is V20260812
+	// (newest behavior) while Default stays Baseline (header-less callers pin to
+	// the oldest version). V20260701 is NOT a member (example/test use only).
+	if reg.Current() != apiversion.V20260812 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260812)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 9 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 9", len(all))
+	if len(all) != 10 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 10", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -224,6 +224,9 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260804) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260804) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260812) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260812) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {
@@ -269,5 +272,26 @@ func TestConstants(t *testing.T) {
 	}
 	if apiversion.V20260706.String() != "2026-07-06" {
 		t.Errorf("V20260706 = %q, want 2026-07-06", apiversion.V20260706)
+	}
+}
+
+// TestDefaultRegistry_CurrentIsNewestReleasedLiteral pins Current to the RAW
+// date literal of the newest shipped version, for the same reason
+// ReleasedVersions stores raw literals (see released.go): referencing the
+// V2026xxxx constant here would let the constant and the registry be re-pointed
+// at a different date together and the guard would never notice. Bumping the API
+// version is therefore a deliberate two-line edit — the registry and this
+// literal — not an accident.
+func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
+	const wantCurrent = apiversion.Version("2026-08-12")
+	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
+	}
+	released := apiversion.ReleasedVersions
+	if len(released) == 0 {
+		t.Fatal("ReleasedVersions is empty")
+	}
+	if got := released[len(released)-1]; got != wantCurrent {
+		t.Errorf("newest ReleasedVersions entry = %q, want %q — Current and the golden ledger must be appended in lockstep", got, wantCurrent)
 	}
 }

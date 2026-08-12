@@ -16,7 +16,7 @@ Manage configuration
 
 ### `boss config init [flags]`
 
-Initialize plugin configuration from a directory
+Initialize bossd plugin settings in settings.json from a plugin directory
 
 **Flags:**
 

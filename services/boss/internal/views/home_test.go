@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/fixtures"
 	"github.com/recurser/boss/internal/upgrade"
@@ -1198,8 +1199,12 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 		}
 	})
 
+	// "r" is deliberately absent from this list: BOS-837 brought it back to Home
+	// as the hidden rename shortcut, with the same meaning it has on the chat
+	// picker it was moved to. Its coverage is TestHomeConsumesTheHiddenRenameKey-
+	// BeforeTheTable and the TestHomeRename* tests below.
 	t.Run("moved keys are inert", func(t *testing.T) {
-		for _, key := range []string{"r", "t", "c", "a"} {
+		for _, key := range []string{"t", "c", "a"} {
 			t.Run("key="+key, func(t *testing.T) {
 				h := HomeModel{
 					ctx:       context.Background(),
@@ -4676,4 +4681,456 @@ func (s *countingLogoutTokenStore) Load() (*auth.Tokens, error) {
 func (s *countingLogoutTokenStore) Delete() error {
 	s.deletes++
 	return nil
+}
+
+// --- BOS-837: the hidden [r] rename shortcut --------------------------------
+
+// renameStubClient records every write the rename path issues. It layers on
+// stubSessionSettingsClient, whose other methods panic, so an unexpected RPC
+// from Home fails loudly rather than being quietly absorbed.
+type renameStubClient struct {
+	*stubSessionSettingsClient
+	reqs []*pb.UpdateSessionRequest
+}
+
+var _ client.BossClient = (*renameStubClient)(nil)
+
+func (c *renameStubClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error) {
+	c.reqs = append(c.reqs, req)
+	return c.stubSessionSettingsClient.UpdateSession(ctx, req)
+}
+
+// renamingHome is the three-session board with the rename editor already open
+// on the first session, plus the client that counts its writes.
+func renamingHome(t *testing.T, updated *pb.Session) (HomeModel, *renameStubClient) {
+	t.Helper()
+	stub := &renameStubClient{stubSessionSettingsClient: &stubSessionSettingsClient{updated: updated}}
+	h := renameKeyHome(t)
+	h.client = stub
+	h = homeFromKey(t, mustModel(h.handleKey(keyPress('r'))))
+	if !h.rename.Active() {
+		t.Fatal("fixture failed to open the rename editor")
+	}
+	return h, stub
+}
+
+func TestHomeRenameCommitWritesExactlyOneUpdate(t *testing.T) {
+	h, stub := renamingHome(t, &pb.Session{Id: "sess-1", Title: "Renamed board"})
+	// Surrounding whitespace is what the operator would leave behind after
+	// editing; the bytes tested for emptiness must be the bytes committed.
+	h.rename.input.SetValue("  Renamed board  ")
+
+	model, cmd := h.handleKey(specialKeyPress(tea.KeyEnter))
+	h = homeFromKey(t, model)
+
+	if cmd == nil {
+		t.Fatal("enter scheduled no write")
+	}
+	msg := cmd()
+	if _, ok := msg.(sessionRenamedMsg); !ok {
+		t.Fatalf("the write produced %T, want sessionRenamedMsg", msg)
+	}
+	if len(stub.reqs) != 1 {
+		t.Fatalf("UpdateSession called %d times, want exactly 1", len(stub.reqs))
+	}
+	if got := stub.reqs[0].GetId(); got != "sess-1" {
+		t.Fatalf("wrote to session %q, want the selected sess-1", got)
+	}
+	if got := stub.reqs[0].GetTitle(); got != "Renamed board" {
+		t.Fatalf("wrote title %q, want the trimmed title", got)
+	}
+	if h.rename.Active() {
+		t.Fatal("the editor stayed open after a committed rename")
+	}
+}
+
+func TestHomeRenameRefusesAWhitespaceOnlyTitle(t *testing.T) {
+	h, stub := renamingHome(t, nil)
+	h.rename.input.SetValue("   \t ")
+
+	model, cmd := h.handleKey(specialKeyPress(tea.KeyEnter))
+	h = homeFromKey(t, model)
+
+	if cmd != nil {
+		t.Fatal("a whitespace-only title scheduled a command")
+	}
+	if len(stub.reqs) != 0 {
+		t.Fatalf("UpdateSession called %d times for a whitespace-only title, want 0", len(stub.reqs))
+	}
+	// The editor stays open with the typed text intact: a blank title is a
+	// correctable mistake, and closing would discard the edit.
+	if !h.rename.Active() {
+		t.Fatal("the editor closed on a refused title")
+	}
+	if content := h.View().Content; !strings.Contains(content, "Title cannot be empty") {
+		t.Fatalf("the refusal is not on screen:\n%s", content)
+	}
+}
+
+// TestHomeRenameSuccessUpdatesTheRowWithoutAPoll drives the response message
+// directly: the board has to show the new title as soon as the write returns,
+// not two seconds later when the next poll happens to land.
+func TestHomeRenameSuccessUpdatesTheRowWithoutAPoll(t *testing.T) {
+	h := renameKeyHome(t)
+
+	model, _ := h.Update(sessionRenamedMsg{session: &pb.Session{Id: "sess-1", Title: "Renamed board"}})
+	h = homeFromKey(t, model)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Renamed board") {
+		t.Fatalf("the renamed title is not on the board:\n%s", content)
+	}
+	if strings.Contains(content, "Add dark mode") {
+		t.Fatalf("the old title survived the rename:\n%s", content)
+	}
+	if !strings.Contains(content, "Renamed session to Renamed board") {
+		t.Fatalf("the rename is not confirmed on the status line:\n%s", content)
+	}
+	if !strings.Contains(content, h.statusLine(colorSuccess, h.status)) {
+		t.Fatalf("the confirmation is not rendered in the success colour:\n%q", content)
+	}
+	// Only the renamed row moves; the rest of the board is untouched.
+	if !strings.Contains(content, "Fix login bug") {
+		t.Fatalf("a sibling row was lost by the rename:\n%s", content)
+	}
+}
+
+// TestHomeRenameLeavesThePublishedSessionPointerAlone is the data-race guard.
+// applySessionList hands the very pointers it stores in h.sessions to
+// notifyForSessions (home_sessions.go:417-418), whose tea.Cmd runs on its own
+// goroutine and reads GetTitle() off them — so patching a title THROUGH the
+// stored pointer would write a field another goroutine is reading. The fix
+// clones and swaps the slice entry instead, which is what this asserts: the
+// pointer the notify command captured must come back byte-identical.
+//
+// -race cannot see this on its own; no test pairs a question-state
+// notification with a rename, so the two goroutines never overlap under the
+// detector. The pointer identity below is the observable proxy for the
+// invariant.
+//
+// Falsification: restore `h.sessions[i].Title = renamed.GetTitle()` in
+// handleSessionRenamed and this fails on the first assertion. Performed once
+// and the clone restored.
+func TestHomeRenameLeavesThePublishedSessionPointerAlone(t *testing.T) {
+	h := renameKeyHome(t)
+	published := h.sessions[0]
+
+	model, _ := h.Update(sessionRenamedMsg{session: &pb.Session{Id: "sess-1", Title: "Renamed board"}})
+	h = homeFromKey(t, model)
+
+	if got := published.GetTitle(); got != "Add dark mode" {
+		t.Fatalf("the rename wrote through the published pointer: title = %q, want the original %q", got, "Add dark mode")
+	}
+	if h.sessions[0] == published {
+		t.Fatal("the renamed row still holds the published pointer; the patch must land on a clone")
+	}
+	if got := h.sessions[0].GetTitle(); got != "Renamed board" {
+		t.Fatalf("the clone did not receive the new title: %q", got)
+	}
+	// The clone must be a full copy, not a stub carrying only the title.
+	if got := h.sessions[0].GetRepoDisplayName(); got != "bossanova" {
+		t.Fatalf("the clone dropped poll-derived fields: repo = %q, want %q", got, "bossanova")
+	}
+}
+
+// TestHomeRenameAcknowledgesASessionThatLeftTheBoard covers the response for a
+// session no longer in h.sessions. The 2s poll runs throughout the rename, so
+// the row can be archived — or filtered out — between the keystroke and the
+// daemon's reply. The write still landed, so reporting only on a matched row
+// would make a successful rename look like it was swallowed.
+func TestHomeRenameAcknowledgesASessionThatLeftTheBoard(t *testing.T) {
+	h := renameKeyHome(t)
+
+	model, cmd := h.Update(sessionRenamedMsg{session: &pb.Session{Id: "sess-gone", Title: "Renamed elsewhere"}})
+	h = homeFromKey(t, model)
+
+	if cmd != nil {
+		t.Fatal("adopting a rename response scheduled a command")
+	}
+	content := h.View().Content
+	if !strings.Contains(content, "Renamed session to Renamed elsewhere") {
+		t.Fatalf("a rename whose session left the board went unacknowledged:\n%s", content)
+	}
+	if h.statusErr {
+		t.Fatal("a successful rename was recorded as a failure")
+	}
+	// The absent session must not be adopted onto the board either: the reply
+	// is an acknowledgement, not a row source.
+	if len(h.sessions) != 3 {
+		t.Fatalf("the board holds %d sessions, want the original 3", len(h.sessions))
+	}
+	for _, want := range []string{"Add dark mode", "Fix login bug", "Add rate limiting"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("row %q was disturbed by a rename it had nothing to do with:\n%s", want, content)
+		}
+	}
+}
+
+func TestHomeRenameFailureKeepsTheOriginalTitle(t *testing.T) {
+	h := renameKeyHome(t)
+
+	model, _ := h.Update(sessionRenamedMsg{err: errors.New("daemon unavailable")})
+	h = homeFromKey(t, model)
+
+	content := h.View().Content
+	// Nothing was written optimistically, so nothing has to be rolled back —
+	// but the row must not have drifted either.
+	if !strings.Contains(content, "Add dark mode") {
+		t.Fatalf("a failed rename disturbed the original title:\n%s", content)
+	}
+	if !strings.Contains(content, "Rename failed") {
+		t.Fatalf("the failure is not surfaced:\n%s", content)
+	}
+	// The substring above is colour-blind: it matches whether the line is drawn
+	// in the failure colour or the success one, and Home's only status renderer
+	// used to hard-code the success colour — a green "Rename failed" tells the
+	// operator the opposite of what happened. Guard the two renderings apart
+	// first, so a stripped colour profile fails this test rather than passing
+	// the two assertions below vacuously.
+	if h.statusLine(colorDanger, h.status) == h.statusLine(colorSuccess, h.status) {
+		t.Fatal("danger and success render identically here; the colour assertions below would prove nothing")
+	}
+	if !strings.Contains(content, h.statusLine(colorDanger, h.status)) {
+		t.Fatalf("the failure is not rendered in the danger colour:\n%q", content)
+	}
+	if strings.Contains(content, h.statusLine(colorSuccess, h.status)) {
+		t.Fatalf("the failure is rendered in the success colour:\n%q", content)
+	}
+}
+
+// TestHomeRenameStartClearsThePreviousOutcome: no poll clears the status line,
+// so without this the last rename's result sits on the board forever — and a
+// stale "Rename failed" hanging above a freshly opened editor reads as a
+// complaint about the edit in progress.
+func TestHomeRenameStartClearsThePreviousOutcome(t *testing.T) {
+	h := homeFromKey(t, mustModel(renameKeyHome(t).Update(sessionRenamedMsg{err: errors.New("daemon unavailable")})))
+	if h.status == "" {
+		t.Fatal("fixture produced no status for the reopened editor to clear")
+	}
+
+	h = homeFromKey(t, mustModel(h.handleKey(keyPress('r'))))
+
+	if !h.rename.Active() {
+		t.Fatal("r did not reopen the rename editor")
+	}
+	if h.status != "" || h.statusErr {
+		t.Fatalf("reopening the editor kept the previous outcome %q (statusErr=%v)", h.status, h.statusErr)
+	}
+	if content := h.View().Content; strings.Contains(content, "Rename failed") {
+		t.Fatalf("the stale failure is still on screen:\n%s", content)
+	}
+}
+
+func TestHomeRenameEscapeRestoresTheOriginalTitle(t *testing.T) {
+	h, stub := renamingHome(t, nil)
+	h.rename.input.SetValue("half-typed replacement")
+
+	model, cmd := h.handleKey(specialKeyPress(tea.KeyEsc))
+	h = homeFromKey(t, model)
+
+	if cmd != nil {
+		t.Fatal("esc scheduled a command")
+	}
+	if h.rename.Active() {
+		t.Fatal("esc left the editor open")
+	}
+	if len(stub.reqs) != 0 {
+		t.Fatalf("esc issued %d writes, want 0", len(stub.reqs))
+	}
+	content := h.View().Content
+	if !strings.Contains(content, "Add dark mode") {
+		t.Fatalf("esc did not leave the original title on the row:\n%s", content)
+	}
+	if strings.Contains(content, "half-typed replacement") {
+		t.Fatalf("the discarded edit is still on screen:\n%s", content)
+	}
+}
+
+// TestHomePasteReachesTheRenameInput covers bracketed paste, which is not a
+// KeyMsg and so has to be forwarded by its own arm in Update or a pasted title
+// is silently dropped. Off the rename path it must be equally silently ignored.
+func TestHomePasteReachesTheRenameInput(t *testing.T) {
+	t.Run("while renaming", func(t *testing.T) {
+		h, _ := renamingHome(t, nil)
+		h.rename.input.SetValue("")
+
+		model, _ := h.Update(pasteText("Pasted title"))
+		h = homeFromKey(t, model)
+
+		if got := h.rename.Value(); got != "Pasted title" {
+			t.Fatalf("rename value = %q, want the pasted text", got)
+		}
+	})
+
+	t.Run("with no rename active", func(t *testing.T) {
+		h := renameKeyHome(t)
+		before := h.View().Content
+
+		model, cmd := h.Update(pasteText("Pasted title"))
+		h = homeFromKey(t, model)
+
+		if cmd != nil {
+			t.Fatal("a stray paste scheduled a command")
+		}
+		if h.rename.Active() {
+			t.Fatal("a stray paste opened the rename editor")
+		}
+		if got := h.View().Content; got != before {
+			t.Fatalf("a stray paste changed the board:\n%s", got)
+		}
+	})
+}
+
+// TestHomeRenamePromptFitsTheTerminalHeight is the reservation contract: the
+// editor is one line taller than the action bar it replaces, so tableHeight has
+// to give a row back or the board grows every time the operator presses r and
+// the bottom of the list scrolls off.
+//
+// The bound that bites is RELATIVE, not the absolute `<= height`. Home's
+// overhead formula over-reserves by a constant handful of lines (the footers'
+// bottom padding, among others), so at any terminal size the rendered board
+// sits several lines inside the terminal — measured 19 at height 24 — and an
+// absolute assertion has enough slack to swallow a one-row error silently. The
+// renaming board is compared against the same board's action-bar height
+// instead, which has no slack in it. The absolute bound is asserted too, since
+// a board that outgrows the terminal is the failure this is ultimately about.
+//
+// Falsification: delete the `case h.rename.Active():` arm from tableHeight
+// (home_table.go) so the editor is reserved the action bar's single line, and
+// "while renaming" fails with a board one line taller than the baseline. This
+// was performed once and the arm restored.
+func TestHomeRenamePromptFitsTheTerminalHeight(t *testing.T) {
+	const (
+		width  = 120
+		height = 24
+	)
+
+	build := func(t *testing.T) HomeModel {
+		t.Helper()
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.loading = false
+		h.repoCount = 1
+		// Far more sessions than fit, so the terminal height is what bounds the
+		// table and the reservation arithmetic is load-bearing.
+		for i := range 100 {
+			h.sessions = append(h.sessions, &pb.Session{
+				Id:              fmt.Sprintf("sess-%d", i),
+				Title:           fmt.Sprintf("Session %d", i),
+				RepoDisplayName: "bossanova",
+			})
+		}
+		return homeFromKey(t, mustModel(h.Update(tea.WindowSizeMsg{Width: width, Height: height})))
+	}
+
+	baseline := lipgloss.Height(build(t).View().Content)
+
+	t.Run("baseline", func(t *testing.T) {
+		if baseline > height {
+			t.Fatalf("the board renders %d lines at height %d:\n%s", baseline, height, build(t).View().Content)
+		}
+	})
+
+	t.Run("while renaming", func(t *testing.T) {
+		h := homeFromKey(t, mustModel(build(t).handleKey(keyPress('r'))))
+		if !h.rename.Active() {
+			t.Fatal("r did not open the rename editor")
+		}
+
+		content := h.View().Content
+		got := lipgloss.Height(content)
+		if got > baseline {
+			t.Fatalf("opening the editor grew the board from %d lines to %d; tableHeight did not give the row back:\n%s", baseline, got, content)
+		}
+		if got > height {
+			t.Fatalf("the renaming board renders %d lines at height %d:\n%s", got, height, content)
+		}
+	})
+
+	// The other half of the reservation, and the half the subtests above cannot
+	// see: they run on a board whose status line is EMPTY, so the layout that
+	// exists after a rename lands is the untested one. The status is rendered
+	// between the table and the footer and wraps at statusWrapWidth, and a
+	// session title is operator-supplied text of no bounded length — so the
+	// confirmation can cost several rows, none of which tableHeight reserved
+	// before BOS-837's follow-up.
+	//
+	// Falsification: drop `h.statusHeight()` from tableHeight's overhead
+	// (home_table.go) and this fails with a board taller than the baseline by
+	// the number of rows the status wrapped to. Performed once, then restored.
+	t.Run("after a rename lands", func(t *testing.T) {
+		long := strings.Repeat("a very long session title ", 8)
+		h := homeFromKey(t, mustModel(build(t).Update(sessionRenamedMsg{
+			session: &pb.Session{Id: "sess-0", Title: long},
+		})))
+
+		if h.status == "" {
+			t.Fatal("fixture produced no status line, so the reservation under test is not exercised")
+		}
+		// Positive control: a one-line status would make this pass against a
+		// hard-coded reservation of 1 and prove nothing about the measurement.
+		if lines := h.statusHeight(); lines < 2 {
+			t.Fatalf("fixture status wrapped to %d line(s); the test needs a multi-line status to bite", lines)
+		}
+
+		content := h.View().Content
+		got := lipgloss.Height(content)
+		if got > baseline {
+			t.Fatalf("the confirmed rename grew the board from %d lines to %d; tableHeight did not reserve the status:\n%s", baseline, got, content)
+		}
+		if got > height {
+			t.Fatalf("the board renders %d lines at height %d after a rename:\n%s", got, height, content)
+		}
+	})
+}
+
+// TestHomeNeverAdvertisesTheRenameKey is the hidden half of BOS-837: the
+// shortcut is deliberately undocumented on screen, so none of Home's three
+// action bars may mention it. Asserted on the rendered view rather than on the
+// action slices, because a bar assembled somewhere else would slip past a
+// slice-level check.
+func TestHomeNeverAdvertisesTheRenameKey(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T) HomeModel
+	}{
+		{"no repositories", func(t *testing.T) HomeModel {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.loading = false
+			h.width = 120
+			h.height = 30
+			return h
+		}},
+		{"no sessions", func(t *testing.T) HomeModel {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.loading = false
+			h.repoCount = 1
+			h.width = 120
+			h.height = 30
+			return h
+		}},
+		{"session list", renameKeyHome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := tc.build(t).View().Content
+			if strings.Contains(strings.ToLower(content), "rename") {
+				t.Fatalf("the action bar advertises the hidden shortcut:\n%s", content)
+			}
+		})
+	}
+}
+
+func TestHomeRenameFooterReplacesTheActionBar(t *testing.T) {
+	h, _ := renamingHome(t, nil)
+
+	content := h.View().Content
+	for _, want := range []string{"[enter] rename", "[esc] cancel"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("the editor does not offer %q:\n%s", want, content)
+		}
+	}
+	// The action bar's keys are not live while the editor has the keyboard, so
+	// leaving it on screen would advertise keys that now type letters.
+	if strings.Contains(content, "[n]ew session") {
+		t.Fatalf("the action bar is still on screen under the editor:\n%s", content)
+	}
 }

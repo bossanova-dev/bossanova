@@ -89,6 +89,15 @@ type logoutMsg struct {
 	notify tea.Cmd
 }
 
+// sessionRenamedMsg carries the result of the UpdateSession RPC issued when a
+// rename is committed (BOS-837). session is the daemon's post-write record, so
+// the board adopts the title the daemon actually stored rather than the one the
+// TUI hoped for; it is nil when err is set, and the row keeps its old title.
+type sessionRenamedMsg struct {
+	session *pb.Session
+	err     error
+}
+
 // tickMsg signals a polling refresh.
 type tickMsg struct{}
 

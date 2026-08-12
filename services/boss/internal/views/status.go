@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 // Status constants (previously from bosspty package).
@@ -134,27 +135,214 @@ func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	return styleForIntent(sess.GetDisplayIntent()).Render(label)
 }
 
-func sessionWarningHints(sess *pb.Session) []string {
+// sessionHint is one warning sub-row plus its BOS-855 demotability.
+//
+// Demotable marks a hint that reports a PAST session-level outcome and so may
+// render recessively while the row's own composite says the session is doing
+// something right now (see warningHintStyle). A hint is EXEMPT — Demotable
+// false — whenever it is the row's only carrier of a signal the label does not
+// itself convey, or whenever it impeaches the liveness claim the label makes.
+// The failure mode of this flag must always be "too loud", never "too quiet",
+// which is why every producer states it explicitly and the attention-reason
+// classification defaults to exempt.
+type sessionHint struct {
+	// Text is the plain, unstyled hint line. Kept retrievable without the flag
+	// (see sessionWarningHintTexts) because the home table's NAME width
+	// calculation splats hint text into a []string of label widths.
+	Text string
+	// Demotable is true when the recessive treatment may apply to this hint.
+	Demotable bool
+}
+
+func sessionWarningHints(sess *pb.Session) []sessionHint {
 	if sess == nil {
 		return nil
 	}
-	hints := make([]string, 0, 3)
+	hints := make([]sessionHint, 0, 4)
+	// A repair failure is a past outcome and the composite carries its own
+	// signal (a failing/repairing label), so it may go recessive.
 	if hint := repairHint(sess); hint != "" {
-		hints = append(hints, hint)
+		hints = append(hints, sessionHint{Text: hint, Demotable: true})
 	}
+	// BOS-855: the dedicated draft-PR hint below is the row's carrier for that
+	// failure. ComputeAttentionStatus copies blocked_reason into the summary
+	// verbatim, so on a session that reached Blocked while a draft-PR failure was
+	// parked on it the attention hint would repeat the same sentence — once
+	// demotable and once exempt. Drop the duplicate rather than render both.
+	draftPRFailure := draftPRFailureHint(sess)
 	if hint := attentionWarningHint(sess); hint != "" {
-		hints = append(hints, hint)
+		duplicatesDraftPR := draftPRFailure != "" && sessionreason.IsDraftPRCreationFailure(&hint)
+		if !duplicatesDraftPR {
+			hints = append(hints, sessionHint{Text: hint, Demotable: attentionHintDemotable(sess.GetAttentionStatus().GetReason())})
+		}
 	}
+	// Both rotation hints describe a wedge the operator must act on now, and
+	// neither is restated by the composite — exempt.
 	if hint := rotationExhaustedHint(sess, time.Now()); hint != "" {
-		hints = append(hints, hint)
+		hints = append(hints, sessionHint{Text: hint})
 	}
 	if hint := rotationRespawnCapHint(sess); hint != "" {
-		hints = append(hints, hint)
+		hints = append(hints, sessionHint{Text: hint})
 	}
+	// A setup-script failure never reaches the composite at all, so the hint is
+	// its sole carrier — exempt.
 	if hint := setupErrorHint(sess); hint != "" {
-		hints = append(hints, hint)
+		hints = append(hints, sessionHint{Text: hint})
+	}
+	// The draft-PR failure is exempt for the sharpest version of that reason: a
+	// session that fails the background draft-PR create is never transitioned to
+	// Blocked, so displaystatus's errored recolor never fires and the composite
+	// renders a plain SUCCESS "working". Fading this line would leave the row
+	// strictly quieter than the "? PR failed" it replaced — a regression wearing
+	// a bug fix's clothes.
+	if draftPRFailure != "" {
+		hints = append(hints, sessionHint{Text: draftPRFailure})
 	}
 	return hints
+}
+
+// sessionWarningHintTexts returns just the hint strings, for callers that need
+// the text without the demotability flag — notably the home table's NAME column
+// width calculation, which measures rendered label widths.
+func sessionWarningHintTexts(sess *pb.Session) []string {
+	hints := sessionWarningHints(sess)
+	if len(hints) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(hints))
+	for _, h := range hints {
+		texts = append(texts, h.Text)
+	}
+	return texts
+}
+
+// attentionHintDemotable classifies an AttentionReason for the BOS-855
+// recessive treatment.
+//
+// It is written as an EXHAUSTIVE allow-list with a not-demotable default, not as
+// an exemption list, and that shape is the point. AttentionReason is actively
+// growing — AGENT_AUTH_FAILED and AGENT_STALLED are both recent additions and
+// both are exemptions — so if "demotable" were the default the next reason added
+// would silently fade on every live row with no test failing.
+// TestAttentionHintDemotable_ClassifiesEveryReason reds when a new
+// ATTENTION_REASON_* value is added without a decision here.
+//
+// The two exemptions are liveness-IMPEACHING: AGENT_STALLED is raised precisely
+// when the chat reports WORKING but the agent has made no progress, and
+// AGENT_AUTH_FAILED means the pane is wedged at a login prompt. Fading the one
+// line that says the "working" is a lie would be exactly backwards.
+func attentionHintDemotable(reason pb.AttentionReason) bool {
+	switch reason {
+	case pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+		pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+		pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED,
+		pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE:
+		// Past-tense outcomes on a row whose composite already carries the state.
+		return true
+	case pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+		pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED:
+		return false
+	case pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED:
+		return false
+	default:
+		// A reason nobody has classified yet. Stay loud.
+		return false
+	}
+}
+
+// draftPRFailureHint surfaces a failed background draft-PR creation as a warning
+// sub-row (BOS-855).
+//
+// The TUI never had this hint: lifecycle.go writes only blocked_reason on that
+// failure and never transitions the session, and HydrateBaseAttention emits an
+// AttentionStatus only for Blocked/Orphaned — so such a session carried ZERO
+// hint rows and the composite label was the only place the TUI reported it.
+// Moving the "? PR failed" branch below the live-activity branches without
+// adding this hint would have deleted the signal outright rather than demoted
+// it. The web already showed it, via attentionHint's bare-blockedReason
+// fallback; this is the TUI catching up.
+//
+// The reason embeds a raw `gh pr create` / push error, which is routinely long
+// and multi-line, so it gets the same firstLine + rune truncation the other
+// daemon-error hints use: an untruncated one would put a newline inside a table
+// cell and drag the NAME column to its width cap through nameWidthLabels.
+func draftPRFailureHint(sess *pb.Session) string {
+	if sess == nil || !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
+		return ""
+	}
+	return truncateHintReason(firstLine(sess.GetBlockedReason()))
+}
+
+// hintReasonMaxRunes caps an embedded daemon error inside a single-line warning
+// hint. Rune-based so a multibyte character is never split mid-sequence.
+const hintReasonMaxRunes = 48
+
+// truncateHintReason applies the shared warning-hint length cap.
+func truncateHintReason(reason string) string {
+	if runes := []rune(reason); len(runes) > hintReasonMaxRunes {
+		return string(runes[:hintReasonMaxRunes]) + "…"
+	}
+	return reason
+}
+
+// sessionHintsFinished reports whether the row has reached a terminal
+// merged/closed PR state, where BOS-246 already fades every residual warning.
+func sessionHintsFinished(sess *pb.Session) bool {
+	return sess != nil &&
+		(sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CLOSED)
+}
+
+// hintDemoted is the BOS-855 style gate: the single predicate deciding whether
+// one hint on this session's row renders recessively.
+//
+// Two independent reasons demote a hint, and a row can satisfy both — it fades
+// once either way:
+//   - the PR merged/closed, so a residual warning no longer needs to alarm
+//     (BOS-246, unchanged);
+//   - the hint is demotable AND the row's own composite is a live-activity
+//     label, so a past outcome must not compete with the present tense.
+//
+// Note it deliberately does NOT exempt a DANGER composite. For the ticket's
+// second reported symptom the label is already red — the reason rides a Blocked
+// session, so displaystatus's errored overlay paints it DANGER — and fading the
+// hint there does not hide the error: the red label keeps the alarm. Exempting
+// DANGER wholesale would leave that symptom unfixed.
+func hintDemoted(sess *pb.Session, hint sessionHint) bool {
+	if sessionHintsFinished(sess) {
+		return true
+	}
+	return hint.Demotable && displaystatus.IsLiveActivityLabel(sess.GetDisplayLabel())
+}
+
+// warningHintStyle resolves the style for one warning hint. It is THE shared
+// gate: the home session list, the selected-session block and the attention
+// indicator all route through it, so the list and the detail views cannot
+// disagree about the same session.
+func warningHintStyle(sess *pb.Session, hint sessionHint) lipgloss.Style {
+	if hintDemoted(sess, hint) {
+		return styleStatusDangerFaded
+	}
+	return styleStatusDanger
+}
+
+// attentionIndicatorDemoted reports whether the row's "!" should render
+// recessively: only when the row carries at least one hint and EVERY one of them
+// is demoted. renderAttentionIndicator reads only AttentionStatus.Reason and so
+// cannot see the rotation, setup, start-error or draft-PR hints at all — without
+// this rule an implementer can ship a faded "!" above a bright exempt hint,
+// which is the same self-contradiction the recessive treatment exists to remove.
+func attentionIndicatorDemoted(sess *pb.Session) bool {
+	hints := sessionWarningHints(sess)
+	if len(hints) == 0 {
+		return false
+	}
+	for _, h := range hints {
+		if !hintDemoted(sess, h) {
+			return false
+		}
+	}
+	return true
 }
 
 // setupErrorHint returns a short "setup script failed: <reason>" hint when
@@ -369,11 +557,35 @@ func rotationEventLabel(ev *pb.RotationEvent) string {
 	}
 }
 
+// needsAttentionFallback mirrors ComputeAttentionStatus's Blocked default text
+// (lib/bossalib/vcs/attention.go) and the web's NEEDS_ATTENTION_FALLBACK. It
+// stands in whenever the only wording available was the draft-PR in-flight
+// marker. Deliberately generic: its only job is to keep the signal when the
+// words have to go, and dropping the wrong text must never drop a session that
+// needs a human.
+const needsAttentionFallback = "blocked — needs human intervention"
+
 func attentionWarningHint(sess *pb.Session) string {
 	if sess == nil || sess.GetAttentionStatus() == nil || !sess.GetAttentionStatus().GetNeedsAttention() {
 		return ""
 	}
 	summary := strings.TrimSpace(sess.GetAttentionStatus().GetSummary())
+	if summary == "" {
+		return ""
+	}
+	// BOS-855: close the divergence with the web, which has filtered this since
+	// BOS-540. ComputeAttentionStatus copies blocked_reason verbatim, so a
+	// session whose background draft-PR create is still running surfaced the
+	// transient progress marker "draft PR creation in progress" as a RED warning
+	// in the TUI — every default session create carries it for the ~12-60s the
+	// create takes. This is a suppression of a MARKER, not of a failure: the
+	// codebase keeps the in-flight string deliberately distinct from the failure
+	// string, and the fallback below keeps the row flagged when the session
+	// genuinely needs a human. The match is exact, so a summary that merely
+	// mentions the phrase is left alone.
+	if sessionreason.IsDraftPRCreationInFlight(&summary) {
+		return needsAttentionFallback
+	}
 	return summary
 }
 
@@ -415,10 +627,7 @@ func repairBlockedHint(sess *pb.Session) string {
 	if reason == "" {
 		return ""
 	}
-	if runes := []rune(reason); len(runes) > 48 {
-		reason = string(runes[:48]) + "…"
-	}
-	return "repair blocked: " + reason
+	return "repair blocked: " + truncateHintReason(reason)
 }
 
 func repairFailureHint(sess *pb.Session) string {
@@ -507,21 +716,23 @@ func shortDuration(d time.Duration) string {
 // entirely (no empty block, no layout shift).
 func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.ClaudeChat, width int) string {
 	hints := sessionWarningHints(sess)
+	// A tmux launch failure is the row's only carrier of that state, so it is
+	// exempt from the recessive treatment.
 	if hint := chatStartErrorHint(chats); hint != "" {
-		hints = append(hints, hint)
+		hints = append(hints, sessionHint{Text: hint})
 	}
 	if len(hints) == 0 {
 		return ""
 	}
-	// Dim a resolved session's residual warning so it no longer alarms; mirrors
-	// the merged/closed hint fade in the home table (BOS-246).
-	style := styleStatusDanger
-	if sess != nil &&
-		(sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
-			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED) {
-		style = styleStatusDangerFaded
+	// Style PER LINE through the shared gate (BOS-855): a row carrying one
+	// demotable and one exempt hint must render exactly one faded line and one
+	// full-intensity line, and the style each hint resolves to here must match
+	// what the home table resolves for the same session.
+	lines := make([]string, 0, len(hints))
+	for _, h := range hints {
+		lines = append(lines, warningHintStyle(sess, h).Width(width).Render(h.Text))
 	}
-	return style.Width(width).Render(strings.Join(hints, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 // styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.

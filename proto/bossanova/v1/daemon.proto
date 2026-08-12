@@ -69,6 +69,12 @@ service DaemonService {
   // same per-agent BuildInteractiveCommand the spawn path uses.
   rpc DescribeChatLaunch(DescribeChatLaunchRequest) returns (DescribeChatLaunchResponse);
 
+  // DescribeChatMCP reports which MCP servers a chat's agent actually resolved,
+  // with tool counts, tool-name prefixes, auth status and source, by routing to
+  // the owning agent plugin's DescribeMCPSurface under the chat's OWN re-derived
+  // environment. Read-only; it starts no coding turn.
+  rpc DescribeChatMCP(DescribeChatMCPRequest) returns (DescribeChatMCPResponse);
+
   // GetChatTranscript returns a chat's conversation and final result by routing
   // to the owning agent plugin's ReadTranscript. Request-response (pollable).
   rpc GetChatTranscript(GetChatTranscriptRequest) returns (GetChatTranscriptResponse);
@@ -777,6 +783,31 @@ message DescribeChatLaunchResponse {
   string captured_output = 5;
 }
 
+message DescribeChatMCPRequest {
+  string agent_session_id = 1;  // chat to probe
+}
+
+message DescribeChatMCPResponse {
+  string agent_name = 1;     // resolved agent (claude, codex, …)
+  string worktree_path = 2;  // directory the probe ran in
+  // is_supported is false when the owning plugin does not implement
+  // DescribeMCPSurface (codes.Unimplemented). That is NOT an error: the RPC
+  // succeeds and unsupported_reason carries a human sentence. Callers must not
+  // read is_supported=false as "no servers".
+  bool is_supported = 3;
+  string unsupported_reason = 4;
+  // source_label is the plugin's provenance line, so an operator can re-run the
+  // probe by hand.
+  string source_label = 5;
+  // MCPServerReport is reused from plugin.proto rather than redeclared, so the
+  // daemon surface and the plugin surface cannot drift.
+  repeated MCPServerReport servers = 6;
+  // probe_error is set when the probe RAN and FAILED; servers is then empty and
+  // the caller must NOT read that as "no servers configured".
+  string probe_error = 7;
+  google.protobuf.Timestamp probed_at = 8;
+}
+
 message GetChatTranscriptRequest {
   string agent_session_id = 1;  // chat to read
   // session_id, when set, scopes the read: the daemon rejects the request
@@ -872,6 +903,29 @@ message ChatStatusEntry {
   // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
   // CHAT_STATUS_WAITING.
   string waiting_reason = 4;
+  // True when the chat's pane currently shows a live agent spinner (either
+  // agent's "esc to interrupt" footer, or Claude's background-agent wait).
+  // Additive with last_substantive_output_at below: together they separate an
+  // agent that is genuinely working from one whose only sign of life is the
+  // spinner redraw that keeps last_output_at permanently fresh.
+  bool spinner_present = 5;
+  // Last time the captured pane changed by something OTHER than a spinner
+  // redraw — the elapsed counter ticking, the token counter growing, or the
+  // rotating gerund. This is the liveness signal a driver should gate on;
+  // last_output_at cannot discriminate, because a spinner alone advances it.
+  // Unset when nothing is known about the chat.
+  google.protobuf.Timestamp last_substantive_output_at = 6;
+  // True while EITHER last_output_at or last_substantive_output_at is still the
+  // SEED stamped when the daemon first saw this chat, rather than an observation
+  // of real output. Every chat registered in one poll tick is seeded with the
+  // same instant, so without this flag a consumer cannot tell a
+  // nanosecond-identical value shared across every chat from a real collision of
+  // simultaneous observations. It clears on the chat's first SUBSTANTIVE
+  // observation — the first pane change that is not merely a spinner redraw —
+  // and never re-arms after that. A spinner-only redraw therefore leaves it
+  // true, because last_substantive_output_at is still the seed even though
+  // last_output_at has moved.
+  bool last_output_seeded = 7;
 }
 
 message GetChatStatusesResponse {

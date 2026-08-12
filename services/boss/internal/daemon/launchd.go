@@ -578,11 +578,93 @@ func platformRestart() error {
 		return nil
 	}
 
-	out, bootstrapErr := runLaunchctl("bootstrap", domainTarget, plistPath)
-	if bootstrapErr != nil {
-		bootstrapErr = fmt.Errorf("launchctl bootstrap: %w: %s", bootstrapErr, strings.TrimSpace(string(out)))
+	// BOS-864: the bootout above has already happened by the time we get here.
+	// The observed `exit status 5: Input/output error` immediately after a
+	// bootout is a launchd transition race that succeeded on a plain retry
+	// moments later, so retry a bounded number of times before giving up.
+	//
+	// The FIRST failure is the one kept, with the output bytes captured on that
+	// same attempt. When attempt 1 loses the transition race but launchd
+	// registers the job anyway, later attempts fail with "already loaded"
+	// noise; reporting the last error would hide the real cause behind it and
+	// leave the retry diagnosing worse than the single attempt it replaced.
+	var (
+		firstOut  []byte
+		firstErr  error
+		succeeded bool
+	)
+	for attempt := 1; attempt <= launchdBootstrapAttempts; attempt++ {
+		out, err := runLaunchctl("bootstrap", domainTarget, plistPath)
+		if err == nil {
+			succeeded = true
+			break
+		}
+		if firstErr == nil {
+			firstErr, firstOut = err, out
+		}
+		if launchctlAlreadyBootstrapped(err) {
+			// The job is already registered in the domain, so no further
+			// attempt can change the outcome — stop paying the backoff.
+			break
+		}
+		if attempt < launchdBootstrapAttempts {
+			time.Sleep(launchdBootstrapRetryDelay)
+		}
+	}
+
+	var bootstrapErr error
+	if !succeeded {
+		// Reporting only the bootstrap half is what left the operator with no
+		// daemon at all and no idea of it. Verify what is actually running
+		// rather than assuming, and name the recovery command.
+		bootstrapErr = fmt.Errorf("launchctl bootstrap: %w: %s; %s",
+			firstErr, strings.TrimSpace(string(firstOut)), verifiedRestartOutcome())
 	}
 	return errors.Join(refreshErr, bootstrapErr)
+}
+
+// launchctlAlreadyBootstrapped reports whether a `launchctl bootstrap` failure
+// means the job is already registered in the domain, in which case retrying
+// cannot help.
+//
+// Exit code, not message text, following the BOS-627 precedent above
+// (bootoutLaunchdService): launchctl's human-readable strings vary across macOS
+// builds, its exit codes are plain errno values. 17 is EEXIST ("File exists" —
+// the service is already loaded) and 37 is EALREADY ("Operation already in
+// progress" — a load is already under way). Both are definitive in the same
+// sense 3 and 113 are definitive for bootout. Deliberately NOT listed is 5, the
+// generic EIO the BOS-864 incident produced: it is ambiguous, so it keeps
+// retrying and is then verified against actual status by
+// verifiedRestartOutcome. Misclassifying here can only end the retry early — it
+// never changes the error reported (always the first) nor the verified outcome.
+func launchctlAlreadyBootstrapped(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	switch exitErr.ExitCode() {
+	case 17, 37:
+		return true
+	default:
+		return false
+	}
+}
+
+const launchdBootstrapAttempts = 3
+
+// launchdBootstrapRetryDelay keeps the bounded retry short. It is a package var
+// so tests exercise the retry without sleeping.
+var launchdBootstrapRetryDelay = 250 * time.Millisecond
+
+// verifiedRestartOutcome probes the real post-failure state through the same
+// path platformStop uses. bossdStillRunningProbe fails closed — a probe error
+// reads as "still running" — so this can never falsely claim the daemon is
+// stopped.
+func verifiedRestartOutcome() string {
+	if bossdStillRunningProbe() {
+		return "bootstrap failed but a daemon is still running"
+	}
+	return "the daemon is now stopped — run 'boss daemon start'"
 }
 
 // platformStop bootouts the LaunchAgent so the running bossd terminates but

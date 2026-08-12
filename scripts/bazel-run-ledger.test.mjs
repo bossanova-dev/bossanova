@@ -35,7 +35,10 @@ test('an unknown --disposition fails loudly (exit 2), not a silent empty run', (
 test('--disposition default-run --print lists the default-run commands, not loadtest', () => {
   const out = run(['--disposition', 'default-run', '--print'])
   assert.match(out, /cd lib\/bossalib && go test -timeout 300s \.\/apiversion\/\.\.\./)
-  assert.match(out, /cd services\/bossd && go test -timeout 300s \.\/internal\/testharness\/\.\.\./)
+  // testharness carries a larger budget than the other rows: RACE=1 injects
+  // -race into this command, and under race the real-tmux e2e bundle ran right
+  // on a 300s ceiling in CI (300.054s timeout panic vs 300.260s pass).
+  assert.match(out, /cd services\/bossd && go test -timeout 900s \.\/internal\/testharness\/\.\.\./)
   // loadtest is explicit-only — it must NOT appear in the default-run selection.
   assert.doesNotMatch(out, /internal\/loadtest/)
 })

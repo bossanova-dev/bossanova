@@ -15,7 +15,7 @@ TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "ERR: not in a git 
 CANON_TOP="$(cd "$TOP" && pwd -P)"
 HOME_DIR="${BLI_LOCK_HOME:-$HOME/.local/state/bossanova}"
 SLUG="${BLI_SLUG:-bossanova}"
-STALE_SECS="${BLI_LOCK_STALE_SECS:-14400}"  # 4h: exceeds boss-build's three-hour phase cap
+STALE_SECS="${BLI_LOCK_STALE_SECS:-18000}"  # 5h: exceeds boss-build's four-hour phase cap
 
 # Collision-safe per-worktree key: <basename>-<short sha256 of canonical path>.
 # NOT slashes->underscores (that collides /a/b_c with /a_b/c and skips canonicalization).

@@ -227,7 +227,11 @@ func TestTUI_HomeView_MovedKeysAreInert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, key := range []byte{'r', 't', 'c', 'a'} {
+	// 'r' left this list when BOS-837 gave it the hidden rename shortcut; the
+	// keys below are still the ones that moved to the session detail view. The
+	// rename round trip, its cancel path and its hidden-ness are covered by
+	// TestTUI_HomeView_HiddenRename* further down this file.
+	for _, key := range []byte{'t', 'c', 'a'} {
 		if err := h.Driver.SendKey(key); err != nil {
 			t.Fatal(err)
 		}
@@ -271,6 +275,162 @@ func TestTUI_HomeView_JKNavigation(t *testing.T) {
 		func() error { return h.Driver.SendKey('j') },
 		func() error { return h.Driver.SendKey('k') },
 	)
+}
+
+// startHomeRename opens the hidden [r] editor on the first session of a freshly
+// started home list and returns once its footer is on screen.
+func startHomeRename(t *testing.T, h *tuitest.Harness) {
+	t.Helper()
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "[enter] rename"); err != nil {
+		t.Fatalf("[r] did not open the rename editor: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+}
+
+// TestTUI_HomeView_HiddenRenameCommitsTheNewTitle drives the whole BOS-837 round
+// trip through a real terminal: the unit tests in internal/views stub the client,
+// so this is the only place that proves the keystrokes reach a daemon and that
+// what comes back is what lands on the list.
+func TestTUI_HomeView_HiddenRenameCommitsTheNewTitle(t *testing.T) {
+	h := newHomeWithSessions(t)
+	startHomeRename(t, h)
+
+	if err := h.Driver.SendString(" renamed"); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the edit to show up in the input before committing, so a failure
+	// here reads as "typing was dropped" rather than "the wrong title was saved".
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode renamed"); err != nil {
+		t.Fatalf("typed text never reached the rename input: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(waitTimeout)
+	calls := h.Daemon.UpdateSessionCalls()
+	for time.Now().Before(deadline) && len(calls) == 0 {
+		time.Sleep(50 * time.Millisecond)
+		calls = h.Daemon.UpdateSessionCalls()
+	}
+	if len(calls) == 0 {
+		t.Fatalf("UpdateSession was never called; screen:\n%s", h.Driver.Screen())
+	}
+	if len(calls) != 1 {
+		t.Fatalf("UpdateSession called %d times, want exactly 1: %v", len(calls), calls)
+	}
+	req := calls[0]
+	if req.Id != "sess-aaa-111" {
+		t.Fatalf("UpdateSession wrote session %q, want sess-aaa-111", req.Id)
+	}
+	if req.Title == nil {
+		t.Fatal("UpdateSession sent no title")
+	}
+	if *req.Title != "Add dark mode renamed" {
+		t.Fatalf("UpdateSession title = %q, want %q", *req.Title, "Add dark mode renamed")
+	}
+
+	// The editor closes and the renamed row is what the operator is left looking
+	// at — checking both together rules out a screen that still shows the title
+	// only because the input is still open.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Add dark mode renamed") &&
+			strings.Contains(screen, "[n]ew session") &&
+			!strings.Contains(screen, "[enter] rename")
+	}); err != nil {
+		t.Fatalf("renamed title never settled on the list: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+	for _, s := range h.Daemon.Sessions() {
+		if s.Id == "sess-aaa-111" && s.Title != "Add dark mode renamed" {
+			t.Fatalf("daemon session title = %q, want %q", s.Title, "Add dark mode renamed")
+		}
+	}
+}
+
+// TestTUI_HomeView_HiddenRenameSwallowsQuit is the regression guard for the trap
+// BOS-837 introduced: home's [q] quits the whole binary, so a rename editor that
+// let 'q' fall through would kill boss mid-edit. This cannot pass vacuously — a
+// real quit ends the process and Done() closes.
+func TestTUI_HomeView_HiddenRenameSwallowsQuit(t *testing.T) {
+	h := newHomeWithSessions(t)
+	startHomeRename(t, h)
+
+	if err := h.Driver.SendString("q"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.Driver.Done():
+		t.Fatal("boss quit while the rename editor was open; [q] must be typed, not obeyed")
+	case <-time.After(750 * time.Millisecond):
+	}
+	// 'q' is not merely swallowed, it is text: it belongs in the title.
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "[enter] rename") &&
+			strings.Contains(screen, "Add dark modeq")
+	}); err != nil {
+		t.Fatalf("q did not reach the rename input: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+}
+
+// TestTUI_HomeView_HiddenRenameIsUnadvertised pins the "hidden" half of the
+// ticket: the shortcut exists but the action bar never grows a [r]ename hint.
+func TestTUI_HomeView_HiddenRenameIsUnadvertised(t *testing.T) {
+	h := newHomeWithSessions(t)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	screen := h.Driver.Screen()
+	// Positive control: the keys that ARE advertised are on screen, so a blank or
+	// half-drawn frame cannot pass this test by containing nothing at all.
+	for _, advertised := range []string{"[n]ew session", "[s]ettings"} {
+		if !strings.Contains(screen, advertised) {
+			t.Fatalf("expected the action bar to advertise %q; screen:\n%s", advertised, screen)
+		}
+	}
+	if strings.Contains(screen, "[r]ename") {
+		t.Fatalf("the rename shortcut must stay hidden; screen:\n%s", screen)
+	}
+}
+
+// TestTUI_HomeView_HiddenRenameEscapeCancels covers the abandon path: esc must
+// leave the title alone and write nothing at all.
+func TestTUI_HomeView_HiddenRenameEscapeCancels(t *testing.T) {
+	h := newHomeWithSessions(t)
+	startHomeRename(t, h)
+
+	if err := h.Driver.SendString(" nope"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode nope"); err != nil {
+		t.Fatalf("typed text never reached the rename input: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "[n]ew session") && !strings.Contains(screen, "[enter] rename")
+	}); err != nil {
+		t.Fatalf("esc did not close the rename editor: %v; screen:\n%s", err, h.Driver.Screen())
+	}
+	// Give a wrongly dispatched save time to land before declaring none happened.
+	time.Sleep(250 * time.Millisecond)
+	if calls := h.Daemon.UpdateSessionCalls(); len(calls) != 0 {
+		t.Fatalf("esc wrote %d session update(s), want none: %v", len(calls), calls)
+	}
+	screen := h.Driver.Screen()
+	if !strings.Contains(screen, "Add dark mode") {
+		t.Fatalf("original title missing after cancel; screen:\n%s", screen)
+	}
+	if strings.Contains(screen, "Add dark mode nope") {
+		t.Fatalf("abandoned edit survived the cancel; screen:\n%s", screen)
+	}
 }
 
 func newHomeWithSessions(t *testing.T) *tuitest.Harness {

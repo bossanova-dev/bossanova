@@ -103,9 +103,14 @@ type HeadlessLaunchOptionsRunner interface {
 
 // HeadlessCapabilityProfilePreflightRunner is implemented only by runners
 // that can validate a required headless operation surface without starting a
-// run or depending on a worktree.
+// run.
+//
+// workDir is the directory the gated run will execute in. It is passed so the
+// preflight profiles the same repo-level agent configuration the run will load
+// — agents discover per-repo config relative to their working directory — and
+// an empty value preserves the historical inherit-the-daemon-cwd behaviour.
 type HeadlessCapabilityProfilePreflightRunner interface {
-	PreflightHeadlessCapabilityProfile(ctx context.Context, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
+	PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
 }
 
 // HeadlessCapabilityProfileDispatcher is the explicit-by-agent equivalent for
@@ -138,7 +143,7 @@ type HeadlessCapabilityProfilePreflightDispatcher interface {
 	AgentDispatcher
 	PreflightByAgentWithHeadlessCapabilityProfile(
 		ctx context.Context,
-		agentName, model string,
+		agentName, workDir, model string,
 		extraEnv map[string]string,
 		profile bossanovav1.HeadlessCapabilityProfile,
 	) error

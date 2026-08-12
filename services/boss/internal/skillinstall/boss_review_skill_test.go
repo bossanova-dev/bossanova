@@ -541,9 +541,47 @@ TMP_ROOT=${TMP_ROOT_OUTPUT%x}`)
 				"phase-1-reviewer":         sectionBetween(t, skill, "### Tier 2 — the lens entry's `skill`", "### Tier 3 — the lens entry's inline `fallbackRubric`"),
 				"phase-r-extension":        sectionBetween(t, skill, "### Tier 1 — repo-local round extensions", "### Tier 2 — host-native whole-diff review"),
 				"phase-r-native":           sectionBetween(t, skill, "### Tier 2 — host-native whole-diff review", "### Tier 3 — inline whole-diff rubric"),
-				"phase-r-inline":           sectionBetween(t, skill, "### Tier 3 — inline whole-diff rubric", "## Phase 5"),
-				"phase-6-fix":              sectionBetween(t, skill, "## Phase 6 — Fix must-fix", "## Phase 7"),
+				// Phase D (the opportunistic default rounds) now sits between Phase R's last tier and
+				// Phase 5, so the window ends at Phase D rather than Phase 5 — sectionBetween refuses a
+				// window that would silently span an intervening section.
+				"phase-r-inline": sectionBetween(t, skill, "### Tier 3 — inline whole-diff rubric", "## Phase D"),
+				"phase-d":        sectionBetween(t, skill, "## Phase D — Default rounds", "## Phase 5"),
+				"phase-6-fix":    sectionBetween(t, skill, "## Phase 6 — Fix must-fix", "## Phase 7"),
 			}
+
+			// Phase D is opportunistic, so every property that keeps it from degrading the
+			// guaranteed review lives in prose alone — nothing downstream fails when one is
+			// dropped. Pin the ones that are load-bearing rather than descriptive.
+			//
+			// The leg-list price. Phase D's findings join the ordinary must-fix set, so gating
+			// its admission on the dispatch leg alone can commit the run to a Phase 6 round it
+			// cannot fund — an optional add-on that forces a capped report.
+			assertContains(t, skill, "- **Phase D** — the opportunistic default-round batch → `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS`.")
+			assertContains(t, citationWindows["phase-d"], "`LEG_SECONDS=$(( DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS ))`")
+			// Additive, never a tier: without this, an all-skipped Phase D could be read as
+			// licence to treat a default round as a substitute for Phase R's own fallbacks.
+			assertContains(t, citationWindows["phase-d"], "It never suppresses Phase R's Tier 2 or Tier 3")
+			// The operator escape hatch, which needs no config edit.
+			assertContains(t, citationWindows["phase-d"], "When `BOSS_REVIEW_DEFAULT_ROUNDS=0`, skip this entire phase")
+			// Termination: a second voice that re-opens findings each round turns a converging
+			// fix loop into one bounded only by $MAX_ROUNDS.
+			assertContains(t, citationWindows["phase-6-fix"], "**Phase D MUST NOT re-run on a confirming pass**")
+			// The whole point of a cross-agent round is that the judgement happens in the OTHER
+			// model. A worker that reads the diff itself still emits a well-formed envelope
+			// under the second-voice lens, so the failure is a same-model round wearing the
+			// label — undetectable downstream, and pinned only here.
+			assertContains(t, citationWindows["phase-d"], "the worker does **not** review the branch itself")
+			assertContains(t, citationWindows["phase-d"], "same-model round wearing the label**")
+			assertContains(t, citationWindows["phase-d"], `node "<TOOLBOX>/<SECOND_VOICE>-review.mjs" run`)
+			assertContains(t, citationWindows["phase-d"], "never a finding and never a fallback to")
+			// A worker is a fresh subagent with a fresh shell. Shipping the dispatch with live
+			// `$VAR` references instead of substituted placeholders degrades the round from
+			// same-model to always-skipped — inert either way, and equally silent.
+			assertContains(t, citationWindows["phase-d"], "a worker inherits no shell variable from here")
+			// The helper returns prose; triage requires a non-blank `file` and a severity from a
+			// closed vocabulary. Without the schema, unmappable items land in `invalid`, which
+			// denies the run a clean verdict for the sin of having consulted a second model.
+			assertContains(t, citationWindows["phase-d"], `{ "severity": "Critical|Warning|Suggestion", "file": "<path>", "line": <int|null>,`)
 			for _, site := range []string{"acceptance-certification"} {
 				window := citationWindows[site]
 				t.Run(site, func(t *testing.T) {

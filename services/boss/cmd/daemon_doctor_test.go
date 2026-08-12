@@ -7,8 +7,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/termreset"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
@@ -197,6 +201,7 @@ func TestRunDaemonDoctorReadsConfiguredDaemonAppDataState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write configured daemon state: %v", err)
 	}
+	stubDaemonDoctorProcess(t, nil)
 
 	var output bytes.Buffer
 	cmd := &cobra.Command{}
@@ -360,6 +365,150 @@ func TestRunDaemonDoctorFailsNonStagedLaunchAgentPathWithoutPermissionGuidance(t
 	}
 }
 
+// TestRunDaemonDoctorReportsRunningImageBehindStagedFile is the exact BOS-864
+// state that used to be reported as fully healthy: the staged file is current,
+// but the live process started before that file was written, so it is
+// executing different bytes than the path it names.
+func TestRunDaemonDoctorReportsRunningImageBehindStagedFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now().Add(-time.Hour))
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("runDaemonDoctor error = %v, want unhealthy error", err)
+	}
+
+	// The two facts must be visibly separate: the file is fine, the process is not.
+	if !strings.Contains(output.String(), "staged bossd: "+stagedPath+" — up to date") {
+		t.Fatalf("staged-file verdict changed; it must stay a separate, correct line:\n%s", output.String())
+	}
+	for _, want := range []string{
+		"running executable: " + stagedPath,
+		"stale: the process started",
+		"but the staged binary was written",
+		"run 'boss daemon restart'",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, output.String())
+		}
+	}
+	// A running-image mismatch is a restart problem, not a grant problem.
+	if strings.Contains(output.String(), "System Settings") || strings.Contains(output.String(), "Files and Folders") {
+		t.Fatalf("running-image mismatch incorrectly suggested permission remediation:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "run 'boss daemon start'") {
+		t.Fatalf("a live daemon should not be offered the start remediation:\n%s", output.String())
+	}
+}
+
+func TestRunDaemonDoctorReportsRunningImageUpToDate(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	staged := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stagedPath, staged, staged); err != nil {
+		t.Fatalf("backdate staged binary: %v", err)
+	}
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+	if !strings.Contains(output.String(), "running executable: "+stagedPath) || !strings.Contains(output.String(), "up to date (started") {
+		t.Fatalf("output missing healthy running-image verdict:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "Remediation:") || strings.Contains(output.String(), "boss daemon restart") {
+		t.Fatalf("healthy daemon offered remediation:\n%s", output.String())
+	}
+}
+
+// TestRunDaemonDoctorReportsDeadRecordedPID covers the second diagnostic
+// defect: doctor printed a `running executable:` line for a PID it never
+// probed, and a stale record never set unhealthy at all.
+func TestRunDaemonDoctorReportsDeadRecordedPID(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now())
+	stubDaemonDoctorProcess(t, syscall.ESRCH)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("runDaemonDoctor error = %v, want unhealthy error", err)
+	}
+	for _, want := range []string{"not running", "stale", "run 'boss daemon start'"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "run 'boss daemon restart'") {
+		t.Fatalf("a dead daemon must not be told to restart:\n%s", output.String())
+	}
+}
+
+func TestRunDaemonDoctorReportsMissingStateRecordAsUnknown(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+	if !strings.Contains(output.String(), "running bossd: unknown") {
+		t.Fatalf("output missing explicit unknown running verdict:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "running executable:") {
+		t.Fatalf("doctor fabricated a running-executable line without a state record:\n%s", output.String())
+	}
+}
+
+// TestRunDaemonDoctorReportsUnknownStartTimeAsUnknown pins that an
+// undeterminable running-image comparison is never rendered as healthy — and
+// never as unhealthy either, so doctor does not gain a second
+// unknown-as-broken check.
+func TestRunDaemonDoctorReportsUnknownStartTimeAsUnknown(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Time{})
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+	if !strings.Contains(output.String(), "running executable: "+stagedPath) ||
+		!strings.Contains(output.String(), "— unknown (daemon start time unknown)") {
+		t.Fatalf("output missing explicit unknown running-image verdict:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "up to date (started") {
+		t.Fatalf("an undeterminable running image was reported as healthy:\n%s", output.String())
+	}
+}
+
 func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	previous := daemonDoctorGOOS
 	daemonDoctorGOOS = "linux"
@@ -374,6 +523,255 @@ func TestRunDaemonDoctorReportsMacOSChecksNotApplicable(t *testing.T) {
 	if !strings.Contains(output.String(), "not applicable") {
 		t.Fatalf("output missing not-applicable status:\n%s", output.String())
 	}
+	// Linux behaviour is unchanged: no staging comparison and no liveness probe.
+	for _, unwanted := range []string{"staged bossd", "running executable", "running bossd"} {
+		if strings.Contains(output.String(), unwanted) {
+			t.Fatalf("non-darwin doctor emitted %q:\n%s", unwanted, output.String())
+		}
+	}
+}
+
+// TestWarnIfDaemonBinaryStaleWritesExactlyOneStderrLine is the BOS-864 headline
+// behaviour: a stale staged copy under a Homebrew install warns on every
+// subcommand, on stderr, leaving stdout untouched for --json consumers.
+func TestWarnIfDaemonBinaryStaleWritesExactlyOneStderrLine(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareStaleHomebrewInstall(t)
+
+	stdout, stderr, cmd := newStalenessWarningCommand(t, "boss")
+	warnIfDaemonBinaryStale(cmd)
+
+	if !strings.Contains(stderr.String(), "bossd is running an older build") ||
+		!strings.Contains(stderr.String(), "boss daemon restart") ||
+		!strings.Contains(stderr.String(), "boss daemon doctor") {
+		t.Fatalf("stderr missing the staleness warning:\n%s", stderr.String())
+	}
+	if got := strings.Count(strings.TrimSpace(stderr.String()), "\n"); got != 0 {
+		t.Fatalf("stderr = %q, want exactly one line", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want untouched", stdout.String())
+	}
+}
+
+// TestRootCommandEmitsStaleDaemonWarningThroughPersistentPreRun drives a real
+// rootCmd() so the PersistentPreRunE call to warnIfDaemonBinaryStale is the
+// thing under test, not the helper. Every other test in this file calls the
+// helper directly against a synthetic cobra.Command, so deleting that one line
+// from rootCmd would leave all of them green while the headline acceptance
+// criterion ("every boss subcommand prints exactly one warning line") silently
+// became false. This is the test that fails when the wiring goes away.
+//
+// fix-terminal is the subcommand because it dials no daemon, mutates no global
+// state, touches no network, and is not one of the four remedy paths the
+// warning deliberately skips. rootCmd's PersistentPreRunE calls
+// warnIfDaemonBinaryStale BEFORE the gen-skill / fix-terminal / skills bypass
+// returns, so the bypass does not suppress the warning — and fix-terminal
+// writes a fixed sequence to cmd.OutOrStdout(), which makes the stdout
+// assertion below a real stream separation rather than an empty buffer nobody
+// ever wrote to.
+func TestRootCommandEmitsStaleDaemonWarningThroughPersistentPreRun(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareStaleHomebrewInstall(t)
+
+	root := rootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetArgs([]string{"fix-terminal"})
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("boss fix-terminal through the real root: %v", err)
+	}
+
+	if !strings.Contains(stderr.String(), daemonStalenessWarningText) {
+		t.Fatalf("rootCmd PersistentPreRunE did not emit the staleness warning on stderr:\n%q", stderr.String())
+	}
+	if got := strings.Count(strings.TrimSpace(stderr.String()), "\n"); got != 0 {
+		t.Fatalf("stderr = %q, want exactly one line", stderr.String())
+	}
+	if got := stdout.String(); got != termreset.AbnormalExitReset {
+		t.Fatalf("stdout = %q, want only the fix-terminal reset sequence %q", got, termreset.AbnormalExitReset)
+	}
+}
+
+func TestWarnIfDaemonBinaryStaleStaysSilentForDevBuilds(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	// prepareDaemonDoctorInstall resolves the source to a checkout-style
+	// <home>/opt/bossanova/bin/bossd, not a Cellar keg.
+	_, _, stagedPath := prepareDaemonDoctorInstall(t)
+	if err := os.WriteFile(stagedPath, []byte("older staged dev bossd fixture with a different size\n"), 0o755); err != nil {
+		t.Fatalf("make staged bossd stale: %v", err)
+	}
+
+	// Guard against a vacuous pass: the staged copy really is stale, so the
+	// Cellar predicate is the only thing suppressing the warning.
+	sourcePath, err := daemon.ResolveBossdPath()
+	if err != nil {
+		t.Fatalf("ResolveBossdPath: %v", err)
+	}
+	staleness, err := daemonbin.Inspect(sourcePath, stagedPath, time.Time{})
+	if err != nil {
+		t.Fatalf("daemonbin.Inspect: %v", err)
+	}
+	if !staleness.StagedBehindSource {
+		t.Fatalf("fixture is not actually stale: %+v", staleness)
+	}
+	if daemonbin.IsHomebrewCellarBinary(sourcePath) {
+		t.Fatalf("dev fixture %q classified as a Homebrew Cellar binary", sourcePath)
+	}
+
+	_, stderr, cmd := newStalenessWarningCommand(t, "boss")
+	warnIfDaemonBinaryStale(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("dev build warned about staleness: %q", stderr.String())
+	}
+}
+
+func TestWarnIfDaemonBinaryStaleIsSuppressible(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareStaleHomebrewInstall(t)
+	t.Setenv(skipDaemonStalenessWarningEnv, "1")
+
+	_, stderr, cmd := newStalenessWarningCommand(t, "boss")
+	warnIfDaemonBinaryStale(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("suppression variable ignored: %q", stderr.String())
+	}
+}
+
+func TestWarnIfDaemonBinaryStaleIsDarwinOnly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareStaleHomebrewInstall(t)
+	previous := daemonStalenessGOOS
+	daemonStalenessGOOS = "linux"
+	t.Cleanup(func() { daemonStalenessGOOS = previous })
+
+	_, stderr, cmd := newStalenessWarningCommand(t, "boss")
+	warnIfDaemonBinaryStale(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("non-darwin emitted a staleness warning: %q", stderr.String())
+	}
+}
+
+func TestWarnIfDaemonBinaryStaleSkipsRemedyCommands(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	prepareStaleHomebrewInstall(t)
+
+	for _, path := range [][]string{
+		{"boss", "daemon", "doctor"},
+		{"boss", "daemon", "restart"},
+		{"boss", "daemon", "start"},
+		{"boss", "upgrade"},
+	} {
+		_, stderr, cmd := newStalenessWarningCommand(t, path...)
+		warnIfDaemonBinaryStale(cmd)
+		if stderr.Len() != 0 {
+			t.Errorf("%q emitted a staleness warning: %q", cmd.CommandPath(), stderr.String())
+		}
+	}
+
+	// The remedy list is a prefix match, not a substring match: a command that
+	// merely starts with the same words must still warn.
+	_, stderr, cmd := newStalenessWarningCommand(t, "boss", "daemon", "status")
+	warnIfDaemonBinaryStale(cmd)
+	if stderr.Len() == 0 {
+		t.Fatalf("%q suppressed the staleness warning", cmd.CommandPath())
+	}
+}
+
+func TestWarnIfDaemonBinaryStaleSwallowsUnresolvableInputs(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PATH", "")
+
+	_, stderr, cmd := newStalenessWarningCommand(t, "boss")
+	warnIfDaemonBinaryStale(cmd)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("unresolvable source produced output: %q", stderr.String())
+	}
+}
+
+func TestRunDaemonStatusReportsRunningImage(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("stable daemon staging is a macOS install behavior")
+	}
+	restoreDaemonCommandStubs(t)
+	stagedPath := prepareStaleHomebrewInstall(t)
+	writeDaemonDoctorStateStartedAt(t, stagedPath, time.Now().Add(-time.Hour))
+
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 4242}, nil
+	}
+	daemonSocketReachable = func(string) bool { return true }
+
+	output := captureStdout(t, func() {
+		if err := runDaemonStatus(nil); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "standalone executable:") {
+		t.Fatalf("status lost the existing executable line:\n%s", output)
+	}
+	if !strings.Contains(output, "running image: stale") || !strings.Contains(output, "boss daemon restart") {
+		t.Fatalf("status missing the running-image distinction:\n%s", output)
+	}
+}
+
+// prepareStaleHomebrewInstall builds the released layout the warning exists
+// for: a Cellar keg holding a newer bossd than the staged copy launchd keeps
+// respawning.
+func prepareStaleHomebrewInstall(t *testing.T) (stagedPath string) {
+	t.Helper()
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	cellarBinDir := filepath.Join(home, "opt", "homebrew", "Cellar", "bossanova", "1.91.0", "bin")
+	if err := os.MkdirAll(cellarBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir Cellar bin: %v", err)
+	}
+	sourcePath := filepath.Join(cellarBinDir, "bossd")
+	if err := os.WriteFile(sourcePath, []byte("newly installed bossd v1.91.0, a different size entirely\n"), 0o755); err != nil {
+		t.Fatalf("write Cellar bossd: %v", err)
+	}
+	t.Setenv("PATH", cellarBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return stagedPath
+}
+
+func newStalenessWarningCommand(t *testing.T, path ...string) (stdout, stderr *bytes.Buffer, leaf *cobra.Command) {
+	t.Helper()
+	if len(path) == 0 {
+		t.Fatal("newStalenessWarningCommand needs at least a root name")
+	}
+	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+	leaf = &cobra.Command{Use: path[0]}
+	for _, use := range path[1:] {
+		child := &cobra.Command{Use: use}
+		leaf.AddCommand(child)
+		leaf = child
+	}
+	leaf.SetOut(stdout)
+	leaf.SetErr(stderr)
+	return stdout, stderr, leaf
 }
 
 func TestDaemonCommandRegistersDoctor(t *testing.T) {
@@ -502,4 +900,38 @@ func writeDaemonDoctorState(t *testing.T, executablePath string, probeCompleted 
 	}); err != nil {
 		t.Fatalf("daemonstate.Write: %v", err)
 	}
+	// Doctor now probes the recorded PID (BOS-864). Picking a real PID would be
+	// flaky, so every state fixture pins the liveness answer.
+	stubDaemonDoctorProcess(t, nil)
+}
+
+// writeDaemonDoctorStateStartedAt writes a healthy-probe state record whose
+// StartedAt drives doctor's running-image comparison.
+func writeDaemonDoctorStateStartedAt(t *testing.T, executablePath string, startedAt time.Time) {
+	t.Helper()
+	appDataDir, err := config.DefaultAppDataDir()
+	if err != nil {
+		t.Fatalf("config.DefaultAppDataDir: %v", err)
+	}
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:               4242,
+		ExecutablePath:    executablePath,
+		StartedAt:         startedAt,
+		TCCProbeCompleted: true,
+	}); err != nil {
+		t.Fatalf("daemonstate.Write: %v", err)
+	}
+	stubDaemonDoctorProcess(t, nil)
+}
+
+// stubDaemonDoctorProcess makes doctor's signal-0 liveness probe deterministic.
+// A nil signalErr means the recorded PID is alive; syscall.ESRCH means it is
+// gone.
+func stubDaemonDoctorProcess(t *testing.T, signalErr error) {
+	t.Helper()
+	previous := findDaemonProcess
+	findDaemonProcess = func(int) (processSignaler, error) {
+		return fakeProcess{err: signalErr}, nil
+	}
+	t.Cleanup(func() { findDaemonProcess = previous })
 }

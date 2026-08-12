@@ -531,6 +531,18 @@ service AgentRunnerService {
   // returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
   // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
   rpc MaterializeAccount(MaterializeAccountRequest) returns (MaterializeAccountResponse);
+
+  // DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
+  // chat's worktree under the supplied environment, plus each server's tool
+  // inventory and the tool-name prefix skills must call. Read-only: it never
+  // mutates configuration and never starts a coding turn.
+  //
+  // Fail-honest, never fail-guessing: a plugin that cannot answer returns
+  // codes.Unimplemented; a probe that ran but failed returns a populated
+  // probe_error with servers empty. "No servers" and "could not ask" are
+  // deliberately distinguishable.
+  rpc DescribeMCPSurface(DescribeMCPSurfaceRequest)
+      returns (DescribeMCPSurfaceResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -551,6 +563,15 @@ message PreflightHeadlessRunRequest {
   string model = 1;
   map<string, string> extra_env = 2;
   HeadlessCapabilityProfile headless_capability_profile = 3;
+  // The directory the gated run will execute in, so the preflight profiles the
+  // same repo-level agent configuration the run will load. Agents discover
+  // per-repo config relative to their working directory (codex reads a
+  // repo-level `.codex/config.toml` in addition to `$CODEX_HOME/config.toml`),
+  // so a preflight launched without it inspects a runtime that never saw the
+  // repo's own MCP declaration while the run it gates does. Mirrors
+  // StartAgentRunRequest.work_dir; empty preserves the historical
+  // inherit-the-daemon-cwd behaviour for callers that do not set it.
+  string work_dir = 4;
 }
 
 message PreflightHeadlessRunResponse {
@@ -936,6 +957,76 @@ message MaterializeAccountResponse {
   // Env key that must point at the per-account home dir (e.g. "CODEX_HOME").
   // Empty for env-token agents (claude).
   string home_dir_env_key = 3;
+}
+
+// MCPServerSource names where a declaration was found. UNKNOWN is a first-class,
+// honest answer: neither harness reports provenance, so it is derived from a
+// bounded scan of that harness's own config locations and is UNKNOWN whenever the
+// scan cannot attribute the server. Never inferred from tool names.
+enum MCPServerSource {
+  MCP_SERVER_SOURCE_UNSPECIFIED = 0;
+  MCP_SERVER_SOURCE_UNKNOWN = 1;      // resolved at runtime, attributable to no scanned file
+  MCP_SERVER_SOURCE_REPO_FILE = 2;    // the worktree's own declaration
+  MCP_SERVER_SOURCE_USER_CONFIG = 3;  // the user/home-scope declaration
+  MCP_SERVER_SOURCE_INJECTED = 4;     // supplied on argv / by the launcher, not by a config file
+}
+
+message MCPServerReport {
+  // name as the HARNESS exposes it — the key skills' tool prefixes are built from.
+  string name = 1;
+  // is_declared is true whenever the harness itself listed this server, EVEN WITH
+  // ZERO TOOLS. This is the first-class signal BOS-804 needs: it separates
+  // "declared but failed to connect / unauthenticated" from "never declared",
+  // which a tool list alone can never do because a failed server publishes no
+  // tools and is otherwise indistinguishable from an absent one.
+  bool is_declared = 2;
+  // tool_count is the number of tools the session actually loaded. Zero alongside
+  // is_declared=true is the declared-but-empty state.
+  int32 tool_count = 3;
+  // tool_name_prefix is the literal prefix a skill must call, e.g.
+  // "mcp__bossanova-linear__". Claude reports already-prefixed tool names, so the
+  // prefix is read back from them; codex reports BARE names, so the plugin
+  // RECONSTRUCTS the prefix from the server key. A key/`mcpServer` mismatch is
+  // visible here without invoking a tool.
+  string tool_name_prefix = 4;
+  // tool_names is the resolved inventory, sorted, unprefixed-or-prefixed exactly
+  // as tool_name_prefix documents. May be truncated by the plugin; see is_truncated.
+  repeated string tool_names = 5;
+  bool is_truncated = 6;
+  // auth_status is the harness's own verbatim string (codex: authStatus, e.g.
+  // "oauth"/"bearerToken"/"unsupported"; claude: the init event's per-server
+  // status). Deliberately NOT normalized to an enum: the harnesses disagree and a
+  // lossy normalization is how a "healthy" server hides a 401.
+  string auth_status = 7;
+  MCPServerSource source = 8;
+  // source_detail names the scanned file the attribution came from (e.g.
+  // ".mcp.json", "~/.codex/config.toml"), empty when source is UNKNOWN.
+  string source_detail = 9;
+}
+
+message DescribeMCPSurfaceRequest {
+  string work_dir = 1;
+  // agent_session_id scopes the probe to one chat; plugins that cannot scope a
+  // probe per-chat ignore it and answer for work_dir.
+  string agent_session_id = 2;
+  string model = 3;
+  // probe_env is the chat's OWN resolved environment overlay, re-derived by the
+  // daemon from the same chain the spawn path uses. Secret-bearing: NEVER logged
+  // by bossd or the plugin, and NEVER echoed into the response.
+  map<string, string> probe_env = 4;
+}
+
+message DescribeMCPSurfaceResponse {
+  // source_label names how the answer was obtained, e.g.
+  // "claude -p --output-format stream-json (system/init event)" or
+  // "codex app-server mcpServerStatus/list". It is the provenance line the human
+  // output prints, so an operator can re-run the probe by hand.
+  string source_label = 1;
+  repeated MCPServerReport servers = 2;
+  // probe_error is set when the probe RAN and FAILED. servers is then empty and
+  // the caller must NOT read that as "no servers configured".
+  string probe_error = 3;
+  google.protobuf.Timestamp probed_at = 4;
 }
 
 message UserSetting {

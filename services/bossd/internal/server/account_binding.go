@@ -182,7 +182,18 @@ func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) ma
 // Like resolveAccountEnv, a resolver error never blocks a spawn: it logs and
 // returns nil so the agent falls back to the ambient CLI login. Env values are
 // never logged.
-func (s *Server) resolveChatAccountEnvForSpawn(ctx context.Context, sess *models.Session, chat *models.AgentChat, defaultAccountID string) map[string]string {
+//
+// use selects the account bookkeeping only. recordAccountUse bumps the
+// account's last-used timestamp, which is the LRU key account selection reads;
+// skipAccountUseRecord does not. The ENV is derived identically either way,
+// through account.Resolver's one shared body — see accountUseRecording.
+func (s *Server) resolveChatAccountEnvForSpawn(
+	ctx context.Context,
+	sess *models.Session,
+	chat *models.AgentChat,
+	defaultAccountID string,
+	use accountUseRecording,
+) map[string]string {
 	if s.resolver == nil || chat == nil {
 		return nil
 	}
@@ -199,7 +210,11 @@ func (s *Server) resolveChatAccountEnvForSpawn(ctx context.Context, sess *models
 	default:
 		accountID = defaultAccountID
 	}
-	env, err := s.resolver.ResolveSpawnEnv(ctx, accountID, chat.AgentName, time.Now())
+	resolve := s.resolver.ResolveSpawnEnv
+	if use == skipAccountUseRecord {
+		resolve = s.resolver.ResolveSpawnEnvForProbe
+	}
+	env, err := resolve(ctx, accountID, chat.AgentName, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", chat.AgentName).
 			Msg("account: resolve chat spawn env failed; using system default")

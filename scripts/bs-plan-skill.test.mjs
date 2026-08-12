@@ -1558,6 +1558,37 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   )
 })
 
+test('the resident body cross-references how to dispatch a zero-change planning session', () => {
+  // boss-plan is itself the canonical zero-change workload: it reads, drafts and
+  // writes to the tracker, and commits nothing. Dispatched as an ordinary
+  // session it finalizes blocked behind an empty draft PR.
+  //
+  // The pointer must live in the RESIDENT body, not references/*.md — the
+  // default headless orchestrator path reads no reference (see the on-demand
+  // references table above), so a cross-reference hidden in one is invisible to
+  // exactly the path that needs it. Reading SKILL.md, not a whole-payload glob,
+  // is what enforces that.
+  const bullet = SKILL.split('\n').find(
+    (line) => line.includes('Sessions that change nothing') && line.trimStart().startsWith('-'),
+  )
+  assert.ok(
+    bullet,
+    'the resident SKILL.md body must carry a bullet cross-referencing the boss skill section "Sessions that change nothing"',
+  )
+  for (const option of ['quick_chat', 'defer_pr', 'create_session']) {
+    assert.ok(
+      bullet.includes(option),
+      `the zero-change cross-reference must name ${option}: ${bullet.trim()}`,
+    )
+  }
+  for (const notAFlag of ['--quick-chat', '--defer-pr']) {
+    assert.ok(
+      !bullet.includes(notAFlag),
+      `the zero-change cross-reference must not name ${notAFlag} — the pointer names the create_session field spellings; the CLI flags live in the boss skill's generated command reference`,
+    )
+  }
+})
+
 test('BOS-458: the published core carries no hard-coded ${TRACKER:-…} shell default', () => {
   // Direct regression guard for the BOS-458 fix, which lives in this SKILL.md body (not the
   // skill-config library the skill-config.test.mjs jira test covers). The bug was a shell

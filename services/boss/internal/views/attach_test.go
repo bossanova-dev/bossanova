@@ -663,6 +663,10 @@ func (s *attachLaunchOrderStub) DescribeChatLaunch(context.Context, string) (*pb
 	return &pb.DescribeChatLaunchResponse{Argv: []string{"claude"}}, nil
 }
 
+func (s *attachLaunchOrderStub) DescribeChatMCP(context.Context, string) (*pb.DescribeChatMCPResponse, error) {
+	return nil, nil
+}
+
 func (s *attachLaunchOrderStub) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	s.calls = append(s.calls, "report")
 	return nil

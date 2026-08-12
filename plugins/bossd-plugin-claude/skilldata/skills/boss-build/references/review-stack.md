@@ -34,7 +34,9 @@ node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review "$(node "$CAPS" sentinel clea
 Emit `sentinel clean` when the blocking Step 6/6b path exited clean (zero open must-fix, including any
 outside-voice-triggered re-review); emit `sentinel capped <N>` (N = the rounds reached) only when the
 blocking Step 6 loop or outside-voice re-review capped with open must-fix, **or** the degraded tier
-detected one (there `<N>` is `1` — it runs exactly one round). Do **not** copy the Step 6c
+detected one (there `<N>` is the number of rounds that tier actually reached: `1` when its single
+detection round is all that ran, `2` when its bounded repair pass ran as well). Do **not** copy the
+Step 6c
 `boss-review` sentinel into this run-file verdict: Step 6c is advisory and returns report text/status for
 Step 7. The orchestrator classifies this file with `matchSentinel` and never reads your reply — so if
 you write nothing (a crash or watchdog kill), a **missing** sentinel becomes a `dispatch-failure` → the
@@ -113,7 +115,7 @@ STEP_6C_MINUTES = 15                     # Step 6c's ENTIRE allowance: its lens/
                                          # ever dropped, this line becomes an underestimate and the
                                          # full tier overruns exactly as the note below warns.
 
-DEGRADED_REVIEWER_MINUTES = 10           # one whole-branch reviewer, no fix round of its own
+DEGRADED_REVIEWER_MINUTES = 10           # the one whole-branch detection reviewer, which fixes nothing
 DEGRADED_API_CHECK_MINUTES = 5           # conditional API classification; required when triggered
 DEGRADED_TIER_MINUTES = $DEGRADED_REVIEWER_MINUTES
                        + $DEGRADED_API_CHECK_MINUTES
@@ -231,12 +233,21 @@ publishing the result is what stops the cheap path from being the invisible defa
 
 The degraded tier is the documented middle between the full stack and no review at all. It runs:
 
-- **Exactly one** awaited, read-only whole-branch reviewer over `$REVIEW_BASE...HEAD`, filling the
-  [code-reviewer prompt template](code-reviewer-template.md) with the plan/acceptance-criteria, as
-  the full tier's round 1 does. Awaited, **never** `run_in_background`. The reviewer only reports —
-  it writes nothing.
-- Bounded to a **single round**: **no fix→re-review loop**, no mechanical remediation extension, no
-  outside-voice re-review. The reviewer runs once and the tier ends.
+- **Exactly one** awaited, read-only whole-branch **detection** reviewer over `$REVIEW_BASE...HEAD`,
+  filling the [code-reviewer prompt template](code-reviewer-template.md) with the
+  plan/acceptance-criteria, as the full tier's round 1 does. Awaited, **never** `run_in_background`.
+  The reviewer only reports — it writes nothing. It is the tier's only **unconditional** reviewer: a
+  branch the bounded repair pass below actually repairs is read by a **second** one, the verification
+  leg, which is what makes that pass safe. "Exactly one" bounds detection, never the tier's reviewer
+  count.
+- **Detection is a single round.** The whole-branch reviewer above runs exactly once — no detection
+  re-review, no outside-voice re-review, and none of the mechanical remediation extension's extra
+  rounds (this tier reuses that extension's **eligibility predicate** below, never its `40`-minute
+  price). What may follow the reviewer is not a second detection pass: at most **one** bounded repair
+  round, and only behind the eligibility and affordability gates in
+  the **Bounded repair pass (conditional)** section below. Both passes are capped at one, so neither
+  iterates: this tier funds at most one fix and the one verification round that fix makes mandatory,
+  never the full tier's iterating fix→re-review loop.
 - The whole-branch reviewer is bounded on the **wall clock** as well as the round count, at
   `DEGRADED_REVIEWER_MINUTES` (10). A round
   cap of one is not a time bound: this tier is selected precisely when the clock is short — as
@@ -287,15 +298,18 @@ The degraded tier is the documented middle between the full stack and no review 
   At a non-positive clamp, route to `bs-review capped:` → BLOCKED: a required gate may not be
   skipped to preserve the reserve.
 
-**Its findings still block, and it does not fix them.** Categorize exactly as the full tier does:
-must-fix = Critical + Important, deferred = Minor. Then, because this tier has **no** fix→re-review
-loop, **any** must-fix finding is recorded by `file:line` and routed through the **same run-file
+**Its findings still block, and it repairs them only under the bounded pass below.** Categorize
+exactly as the full tier does: must-fix = Critical + Important, deferred = Minor. Then, unless that
+pass runs and its independent verification round confirms the repair,
+**any** must-fix finding is recorded by `file:line` and routed through the **same run-file
 sentinel** the full tier writes — `bs-review capped:` → **BLOCKED**. Only a pass that **ran to
 completion and found zero** must-fix writes `bs-review clean:`.
 
-**A reviewer that did not report is not a reviewer that found nothing.** This tier has exactly one
-reviewer and no second opinion — no fix→re-review round, Steps 6b and 6c skipped — so unlike the full
-tier nothing else would notice its absence. If that single dispatch errors, times out, or returns no
+**A reviewer that did not report is not a reviewer that found nothing.** At this point the tier has
+exactly one reviewer and no second opinion — the bounded repair pass below is reached only _through_
+this reviewer's findings, so an empty result gates it out rather than triggering it, and Steps 6b and
+6c are skipped — so unlike the full tier nothing else would notice its absence. If that single
+dispatch errors, times out, or returns no
 structured findings, do **not** read the empty result as zero must-fix — run the same
 generate-and-persist command the below-floor route uses, with `sentinel capped 1`:
 
@@ -311,12 +325,14 @@ owes. This is the run-file sentinel's
 own "wrote clean" vs "wrote nothing" distinction applied one level down; collapsing them would let a
 branch nobody reviewed reach REVIEW_READY through the cheapest path in the protocol.
 
-The tier is a **detector, not a repairer**, and that is deliberate: do not fix a must-fix here and
-then emit `clean`. The change gate re-runs `make` targets, which cannot confirm a _semantic_ finding
-was actually resolved, and the single-round bound means no independent reviewer ever sees the fix —
-so "fixed it myself, then declared myself clean" would be self-certification, precisely the
-unverified-fix path the full tier's mandatory re-review exists to prevent. Routing to BLOCKED is
-recoverable (a later run repairs it with a real budget); an unverified fix shipped as `clean` is not.
+**This tier may repair, but it may never self-certify.** Do not fix a must-fix here and then emit
+`clean` **on your own assertion**: on a repaired branch `clean` requires the independent verification
+round in the **Bounded repair pass (conditional)** section below, and nothing else. The reasoning is unchanged
+and is exactly why that round — and not the change gate — is the evidence: the change gate re-runs
+`make` targets, which cannot confirm a _semantic_ finding was actually resolved, so "fixed it myself,
+then declared myself clean" would be self-certification, precisely the unverified-fix path the full
+tier's mandatory re-review exists to prevent. Routing to BLOCKED is recoverable (a later run repairs
+it with a real budget); an unverified fix shipped as `clean` is not.
 
 The degraded tier therefore reduces **coverage**, never the **gate**: it must not be able to carry an
 open — or a silently self-resolved — must-fix into a REVIEW_READY, and the `SKILL.md`
@@ -331,6 +347,19 @@ Step 7, so a reader never mistakes silence for full coverage:
   the run capped early — name it here rather than emitting a bare token: `full (skipped: <pass list>)`.
 - `degraded: <reason> (skipped: <pass list>)` — e.g.
   `degraded: insufficient remaining wall clock (skipped: Step 6 fix→re-review loop, Step 6b outside voice, Step 6c boss-review)`.
+  When the bounded repair pass below actually **ran**, append its outcome as a **suffix**
+  parenthetical and drop the fix→re-review loop from the skipped list — that run did not skip it:
+  `degraded: <reason> (skipped: Step 6b outside voice, Step 6c boss-review) (repaired: <N> finding(s), verified by one independent whole-branch reviewer)`.
+  That suffix asserts a **verified** repair, so only a run whose verification reviewer returned zero
+  must-fix may publish it. A repair pass that ran and did **not** clear verification — the verifier
+  reported must-fix, errored, timed out, returned nothing structured, or its own clamp came back
+  non-positive — takes the `capped` → BLOCKED route, and the token published there (by
+  §BLOCKED-route publication, which publishes on exactly that route) must say so rather than borrow
+  the verified form:
+  `degraded: <reason> (skipped: Step 6b outside voice, Step 6c boss-review) (repair attempted: <N> finding(s), verification did not clear: <outcome>)`.
+  A pass that was **gated out** — an ineligible finding, or a non-positive affordability clamp — did
+  not run, so its token keeps the original skipped list unchanged and its run takes the `capped`
+  route rather than emitting a coverage token from a clean exit at all.
 - `none: review verdict unreadable (<reason>)` — the orchestrator's token for a `dispatch-failure`
   whose sentinel was **present but unmatchable** and whose subagent returned nothing usable. A tier
   may well have run here, so this says the verdict could not be read — never that no review happened.
@@ -359,6 +388,116 @@ Step 7, so a reader never mistakes silence for full coverage:
 
 Emit a `full` token on a full-tier run too — the token is never omitted. On a resume, the orchestrator
 **replaces** this section rather than appending a duplicate.
+
+#### Bounded repair pass (conditional)
+
+`capped` must mean **unfixed by policy or by budget**, never **unfixable**. This tier locates its
+findings at `file:line`, so when the correction is mechanical and the clock can still pay for it,
+**one** bounded repair round may apply it rather than stranding finished work behind minutes of
+mechanical work the tier had already specified. Repair is permitted **only** behind both gates below,
+and a repaired branch reaches `clean` **only** through the independent verification round — never on
+the fixer's own assertion.
+
+**Eligibility — cited, never restated.** Every open must-fix finding must satisfy the eligibility
+predicate in the **Mechanical remediation extension (after the default cap)** section below; read that
+paragraph and apply it verbatim rather than paraphrasing it here, because two copies drift and the
+abort set is the costly half to drift. That predicate already carries this tier's hard-ABORT set
+**unchanged**: auth, secrets, credentials, migrations, production/deploy configuration, dependencies,
+or an observable public API change. **One** ineligible open finding — including any **Critical** one
+— disqualifies the whole pass, and the run records its findings by `file:line` and takes the existing
+`bs-review capped:` → **BLOCKED** route. What this tier does **not** inherit from that extension is
+its pricing: it buys two extra rounds at another `40` minutes, which a tier that can be admitted at
+the 40-minute floor cannot afford.
+
+**Price — named here, deliberately outside the tier price.** Two constants, alongside the other
+degraded constants:
+
+- `DEGRADED_REPAIR_FIX_MINUTES` (10) — the fix leg.
+- `DEGRADED_REPAIR_VERIFY_MINUTES` (10) — the fresh independent verification reviewer.
+
+Neither is summed into `DEGRADED_TIER_MINUTES`, which stays `DEGRADED_REVIEWER_MINUTES` +
+`DEGRADED_API_CHECK_MINUTES` (15), so the branch-2 floor stays at 40. Summing them in would lift that
+floor by 20 minutes, and every run in the gap would get **no tier at all** — no review whatsoever —
+rather than a detect-only one, which is strictly worse than the outcome this pass exists to improve.
+The pass is therefore **conditionally affordable**: it is decided by a re-measurement at its own
+dispatch site, in the same shape the reviewer clamp above uses, so a run admitted at the floor simply
+behaves as it does without this pass.
+
+**Affordability gate.** Re-measure against `PREFLIGHT_DEADLINE` immediately before the repair pass —
+the tier-selection reading and the detection reviewer's own spend are both already behind you.
+Preserve the conditional `DEGRADED_API_CHECK_MINUTES` allowance still owed after both legs **and**
+the whole `POST_REVIEW_RESERVE_MINUTES` (25):
+
+```bash
+DEGRADED_REPAIR_FIX_MINUTES=10     # the fix leg (see the price above)
+DEGRADED_REPAIR_VERIFY_MINUTES=10  # the fresh independent verification reviewer
+DEGRADED_API_CHECK_MINUTES=5       # the conditional API classification, still owed after both legs
+POST_REVIEW_RESERVE_MINUTES=25     # Steps 7-12; the clamp may never spend into it
+DEGRADED_REPAIR_FIX_SECONDS=$(( DEGRADED_REPAIR_FIX_MINUTES * 60 ))
+DEGRADED_REPAIR_VERIFY_SECONDS=$(( DEGRADED_REPAIR_VERIFY_MINUTES * 60 ))
+preflight="${PREFLIGHT_DEADLINE:-}"
+if [ -n "$preflight" ]; then
+  now=$(date +%s)
+  # The fix leg owes the verification ITS OWN repair makes mandatory, plus the API allowance and the
+  # reserve. By the time the verifier runs, that owed work IS the verifier, so it owes only the API
+  # allowance and the reserve.
+  spendable=$(( preflight - now - (DEGRADED_REPAIR_VERIFY_MINUTES + DEGRADED_API_CHECK_MINUTES + POST_REVIEW_RESERVE_MINUTES) * 60 ))
+  [ "$spendable" -ge "$DEGRADED_REPAIR_FIX_SECONDS" ] || DEGRADED_REPAIR_FIX_SECONDS=$spendable
+  spendable=$(( preflight - now - (DEGRADED_API_CHECK_MINUTES + POST_REVIEW_RESERVE_MINUTES) * 60 ))
+  [ "$spendable" -ge "$DEGRADED_REPAIR_VERIFY_SECONDS" ] || DEGRADED_REPAIR_VERIFY_SECONDS=$spendable
+fi
+```
+
+Dispatch a leg only while its own budget is **positive**. A non-positive budget is neither a clean
+exit nor a licence for an unbudgeted round: it takes the generated `capped` → **BLOCKED** route
+described under the clean edge below, exactly as a non-positive reviewer clamp does. Both legs are
+clamped from one reading, so an affordable fix leg whose verification leg is **not** affordable is no
+repair opportunity at all — do not start the fix, because a fix nobody can verify is worth less than
+the detection report it would replace.
+
+**Fix leg.** Fix **only** the findings this tier already recorded, at the `file:line` it recorded
+them; commit tagless; run their focused tests. Never broaden the ticket, never defer a required item,
+and never treat the fix as evidence of its own success. State `DEGRADED_REPAIR_FIX_SECONDS` to the
+worker as a hard return-by **in the fix brief itself** — _"HARD TIME BUDGET: `<seconds>` seconds —
+return what you have rather than run past it."_ — and hold an inline fix to the identical clock. A
+budget the holder never states bounds nothing, which is how a clamp ships inert.
+
+Carry that budget as **prose**, and **not** through the
+[code-reviewer prompt template](code-reviewer-template.md). That template is a whole read-only
+_reviewer_ brief — it forbids mutating the working tree, the index, HEAD or branch state — so a fixer
+dispatched under it is forbidden to do the one thing this leg exists for, and both legs' budget would
+burn on a repair that could never land. That failure is worse than detect-only, because the run pays
+for a repair pass and still BLOCKs. The template's `[TIME_BUDGET_SECONDS]` slot is the hand-off for
+the **verification** leg below and for the detection reviewer above, exactly as the full tier states
+its fix leg's budget as prose and reserves the slot for its confirming round. The invariant is that
+**each leg states its own budget to its own worker**; the carrier differs because the briefs differ.
+
+**Verification leg.** Dispatch **one** fresh independent reviewer over `$REVIEW_BASE...HEAD`, awaited
+and read-only, filling the [code-reviewer prompt template](code-reviewer-template.md) — including its
+`[TIME_BUDGET_SECONDS]` slot, with `DEGRADED_REPAIR_VERIFY_SECONDS`. Its brief must name its purpose:
+**verifying fixes it did not write**, over the whole branch rather than the patch, with the recorded
+findings and their claimed dispositions handed to it. It inherits this tier's did-not-report rule
+**verbatim** — a verifier that errored, timed out, or returned nothing structured is **not** a
+verifier that found zero must-fix.
+
+**The clean edge.** On a **repaired** branch, only the verification reviewer returning **zero**
+must-fix writes `bs-review clean:`, and only after the conditional API-surface check has also run.
+Every other outcome — it reports must-fix, it errored, it timed out, it returned nothing structured,
+or its own clamp came back non-positive — routes through the generated sentinel to **BLOCKED**, using
+the same generate-and-persist command shape as above: `bs-review-caps.mjs sentinel capped <N>` piped
+into `bs-run-sentinel.mjs write`, never a hand-written literal and never a generated line that does
+not reach the run file. `<N>` is the rounds this tier actually **reached**, counted from what ran
+rather than from which paragraph routed here: `2` once the fix leg was dispatched — the detection
+round plus this repair round — and `1` when the pass never started, which is every eligibility or
+affordability gate-out above, since those reach only the detection round. A
+fixed-but-unverified finding is a **capped** run, not a clean one. The
+pre-existing route is untouched: a detection reviewer that found zero must-fix reaches `clean`
+without any repair round, because there is nothing to verify.
+
+**Stopping payment is not dismissing findings.** When the pass is gated out or its budget is
+exhausted, record every unresolved finding by `file:line` and BLOCK. That is a decision to stop
+paying for those findings on this run — a later run repairs them with a real budget — never a
+judgement that they were noise, and never a licence to downgrade one to Minor so the gate can pass.
 
 ### BLOCKED-route publication (the orchestrator's job, not the subagent's)
 
@@ -717,8 +856,11 @@ spendable second and leave its findings with nowhere to be fixed, so the round w
 bought an opinion it could not act on.
 
 Dispatch a leg only while its budget is **positive**, and state it to the worker as a hard
-return-by: _"HARD TIME BUDGET: <N> seconds — return what you have rather than run past it."_ The
-reviewer template's `[TIME_BUDGET_SECONDS]` slot is that hand-off; a budget its holder never states
+return-by: _"HARD TIME BUDGET: <N> seconds — return what you have rather than run past it."_ For the
+**reviewer** leg that hand-off is the reviewer template's `[TIME_BUDGET_SECONDS]` slot; the **fix**
+leg carries the same sentence as prose in its own brief, because the template is a read-only reviewer
+brief and dispatching a fixer under it forbids the edit the leg exists to make. Either way a budget
+its holder never states
 is inert while every instruction here still reads as satisfied. At or below zero there is no clock
 left for that leg: **stop looping now and take the capped path** — record the unresolved findings by
 `file:line` and route to **BLOCKED**. That is the arithmetic form of the "wall-clock breaker trips

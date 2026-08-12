@@ -170,12 +170,12 @@ command -v git; command -v gh; gh auth status
 ```
 
 Arm one wall-clock deadline during Preflight and preserve that absolute value for the whole run. Treat
-~3 hours as the cap. If it is exceeded at any phase boundary, stop at the nearest honest terminal
+~4 hours as the cap. If it is exceeded at any phase boundary, stop at the nearest honest terminal
 state. Capture the baseline and branch facts:
 
 ```bash
 PREFLIGHT_STARTED_AT="$(date +%s)"
-PREFLIGHT_DEADLINE=$(( PREFLIGHT_STARTED_AT + 3 * 60 * 60 ))
+PREFLIGHT_DEADLINE=$(( PREFLIGHT_STARTED_AT + 4 * 60 * 60 ))
 export PREFLIGHT_DEADLINE
 
 START_SHA="$(git rev-parse HEAD)"
@@ -1015,7 +1015,7 @@ node "$RUN_SENTINEL" cleanup "$RUN_DIR"
 
 **Route on the file verdict.**
 
-- `clean` → proceed to Step 7.
+- `clean` → proceed to **Step 6.5**, which is the only route onward to Step 7.
 - `capped` → see the review-stack extension; otherwise record findings and **Stop cleanly** `BLOCKED`.
 - `dispatch-failure` (a **missing/stale** sentinel, or one present but unmatchable) → the safe
   non-clean branch: **Stop cleanly** with `BLOCKED`, **never clean**. The two sub-cases do **not**
@@ -1028,6 +1028,17 @@ Steps 6b and 6c are **non-fatal** — they never flip the terminal state on thei
 breaker trips mid-review, flush to `BLOCKED`. If the review-subagent **dispatch itself** fails (a tool
 error — textually distinct from a missing sentinel), run `references/review-stack.md` inline as an
 awaited, non-fatal fallback (it writes the same run-file sentinel).
+
+## Step 6.5: Knowledge extensions (repo opt-in, non-fatal)
+
+After `clean`, before Step 7, run the `knowledge` phase — **budget gate first, then** discover:
+`node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role knowledge --json`.
+**No extensions → do nothing, print nothing, create no scratch**; go straight to Step 7. Otherwise
+dispatch each descriptor by reading its `skillPath`, validate each result with
+`validate --role knowledge --file`, and append `extension <name>: skipped (<reason>)` per failure.
+An extension commits a knowledge artifact to this branch, so Step 7 must capture the reviewed tip
+**after** this phase returns. Non-fatal in every case; it may never produce `BLOCKED`. Full spec:
+[`references/knowledge-extensions.md`](references/knowledge-extensions.md).
 
 ## Step 7: PR gate (create/reuse)
 

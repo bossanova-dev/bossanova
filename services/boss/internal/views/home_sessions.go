@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // saveSettings persists config.Settings to disk. Tests stub this to avoid
@@ -148,6 +149,76 @@ func (h *HomeModel) applyMergedOptimisticOverride() {
 		}
 		return
 	}
+}
+
+// renameSessionCmd writes a new title for one session (BOS-837). The client,
+// context, id and title are captured by value so the command is unaffected by
+// anything the model does — including the 2s poll replacing h.sessions — between
+// the keypress and the RPC returning.
+func renameSessionCmd(c client.BossClient, ctx context.Context, sessionID, title string) tea.Cmd {
+	return func() tea.Msg {
+		sess, err := c.UpdateSession(ctx, &pb.UpdateSessionRequest{
+			Id:    sessionID,
+			Title: &title,
+		})
+		return sessionRenamedMsg{session: sess, err: err}
+	}
+}
+
+// handleSessionRenamed adopts the daemon's post-write session record. The title
+// comes from the response rather than from what was typed, so the board shows
+// what the daemon actually stored (it may normalize).
+//
+// The patch is not immune to the poll: a sessionListMsg that was already in
+// flight when the response landed carries the pre-rename title and replaces
+// h.sessions wholesale, so the old title can reappear for up to one poll
+// interval. That is cosmetic and self-healing — the daemon has already stored
+// the new title, so the next poll brings it back — which is why no override is
+// retained for it the way applyMergedOptimisticOverride retains merge state.
+//
+// A failure leaves every title untouched — nothing was written optimistically —
+// and reports it on the status line in the failure colour, where the next poll
+// will not clear it. The next rename does: handleRenameStartKey drops the
+// previous outcome as the editor opens.
+func (h HomeModel) handleSessionRenamed(msg sessionRenamedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		h.status, h.statusErr = rpcStatusMessage("Rename failed", msg.err), true
+		h.table.SetHeight(h.tableHeight())
+		return h, nil
+	}
+	renamed := msg.session
+	if renamed.GetId() == "" {
+		return h, nil
+	}
+	for i, sess := range h.sessions {
+		if sess.GetId() != renamed.GetId() {
+			continue
+		}
+		// Patch only the title: the response is a snapshot from the write, and
+		// replacing the whole row would discard the poll-derived display state
+		// (heartbeat status, waiting reason) the board has since layered on.
+		//
+		// The patch lands on a CLONE, and the slice entry is swapped rather
+		// than written through. h.sessions holds the very pointers
+		// applySessionList handed to notifyForSessions, which reads GetTitle()
+		// off them from a tea.Cmd goroutine while this runs on the update loop
+		// — assigning sess.Title in place would race that read. Never mutate a
+		// *pb.Session already published into h.sessions.
+		patched := proto.CloneOf(sess)
+		patched.Title = renamed.GetTitle()
+		h.sessions[i] = patched
+		h.buildTableRows()
+		break
+	}
+	// Outside the loop deliberately: the write already succeeded, so the
+	// operator is owed the acknowledgement even when the renamed session is no
+	// longer on the board — a poll can archive it, or move it to another repo's
+	// filter, between the keystroke and the response. Reporting only on a
+	// matched row would make exactly that case look like the rename was
+	// swallowed.
+	h.status, h.statusErr = "Renamed session to "+renamed.GetTitle(), false
+	h.table.SetHeight(h.tableHeight())
+	return h, nil
 }
 
 // sessionByID returns the session with the given id, or nil when none matches
@@ -344,6 +415,7 @@ func (h HomeModel) handleSessionListError(err error) (tea.Model, tea.Cmd) {
 		h.err = err
 		h.daemonRemediation = daemonDownRemediation()
 	}
+	h = h.cancelRenameIfHidden()
 	h.buildTableRows()
 	return h, nil
 }
@@ -366,6 +438,7 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.daemonWaitingReasons = msg.daemonWaitingReasons
 	h.applyMergedOptimisticOverride()
 	h.reconcileArchivingSessions()
+	h = h.cancelRenameIfHidden()
 	h.buildTableRows()
 	h.restoreTableCursor(selectedID)
 	return h, notifyCmd

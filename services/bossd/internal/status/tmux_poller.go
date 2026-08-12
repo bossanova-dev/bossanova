@@ -66,6 +66,30 @@ type progressLivenessProber interface {
 type captureEntry struct {
 	content string
 	at      time.Time
+
+	// normalized is content with the volatile agent-spinner regions removed
+	// (statusdetect.NormalizeSpinner). Diffing THIS is what tells real agent
+	// output from a spinner redraw, which is the whole discrimination BOS-805
+	// adds. `content` deliberately stays RAW so `at` — exported as
+	// last_output_at — keeps its exact existing value semantics: a spinner
+	// redraw still advances it, because an existing consumer treating it as a
+	// floor must not silently start seeing a different number.
+	normalized string
+
+	// substantiveAt is when `normalized` last changed, i.e. the last time the
+	// pane showed something other than the same frame with a different counter.
+	substantiveAt time.Time
+
+	// seeded records that `at` and `substantiveAt` are PLACEHOLDERS stamped when
+	// the poller first saw this chat, not observations of a content change.
+	// Every chat registered in one tick is seeded with the same `now`, which is
+	// how last_output_at came to collide to the nanosecond across every chat for
+	// a dozen poll cycles; the flag is what lets a consumer tell that shared
+	// value from a real simultaneous observation. It stays true while EITHER
+	// stamp is still the placeholder — so it survives ticks where nothing
+	// changed AND ticks where only the spinner redrew — and clears on the first
+	// SUBSTANTIVE change, which is when `substantiveAt` stops being a seed.
+	seeded bool
 }
 
 // NewTmuxStatusPoller creates a new poller. sessions may be nil in tests that
@@ -277,9 +301,23 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
+		// Normalize the volatile spinner regions out of the SAME already-captured
+		// content and read off whether a live spinner is on screen. One pure
+		// call, no extra tmux round-trip and no plugin RPC — deliberately not
+		// routed through HasWorkingIndicator, which the codex runner answers
+		// false unconditionally and which pollOnce only consults in the
+		// would-be-idle branch anyway.
+		normalized, spinnerPresent := statusdetect.NormalizeSpinner([]byte(content))
+		normalizedContent := string(normalized)
+
 		p.mu.Lock()
 		prev, hasPrev := p.prevCaptures[agentSessionID]
-		captureChanged := !hasPrev || content != prev.content || prev.at.IsZero()
+		// No prior capture at all, or only the zero-valued placeholder
+		// RegisterChat inserts: there is nothing to diff against, so this tick's
+		// timestamps are seeds rather than observations of a change.
+		firstObservation := !hasPrev || prev.at.IsZero()
+		captureChanged := firstObservation || content != prev.content
+		substantiveChanged := firstObservation || normalizedContent != prev.normalized
 
 		var status pb.ChatStatus
 		wouldBeIdle := false
@@ -314,14 +352,43 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		}
 
 		// LastOutputAt is the last pane content change time; ReceivedAt in the
-		// tracker remains the fresh heartbeat time.
+		// tracker remains the fresh heartbeat time. Its value semantics are
+		// unchanged by BOS-805 — a spinner redraw still advances it — because
+		// consumers already read it as a floor.
 		lastOutputAt := now
-		if captureChanged {
-			p.prevCaptures[agentSessionID] = captureEntry{content: content, at: now}
-		} else {
+		if !captureChanged {
 			lastOutputAt = prev.at
 		}
+		// The substantive stamp moves only when the pane changed by something
+		// other than a spinner frame, which is the signal a driver can gate on.
+		substantiveAt := now
+		if !substantiveChanged {
+			substantiveAt = prev.substantiveAt
+		}
+		// The flag describes BOTH served stamps, so it may only clear once
+		// NEITHER is still a placeholder — and substantiveAt is the later of the
+		// two to leave its seed. Keying it on captureChanged instead would clear
+		// it on a spinner-only redraw, one tick after registration, while
+		// substantiveAt still carries the registration seed: that is exactly the
+		// nanosecond-identical shared placeholder this flag exists to disclose,
+		// merely relocated onto last_substantive_output_at. On the first
+		// observation both stamps are seeds (true); a spinner-only redraw carries
+		// the previous value forward; the first substantive observation clears it,
+		// and because the carry reads prev.seeded it can never re-arm afterwards.
+		lastOutputSeeded := firstObservation || (prev.seeded && !substantiveChanged)
+		// Written unconditionally, unlike before: when nothing changed every
+		// field above already equals its stored value, so this is a no-op for
+		// content/at and simply carries the spinner-aware halves forward.
+		p.prevCaptures[agentSessionID] = captureEntry{
+			content:       content,
+			at:            lastOutputAt,
+			normalized:    normalizedContent,
+			substantiveAt: substantiveAt,
+			seeded:        lastOutputSeeded,
+		}
 		p.mu.Unlock()
+
+		p.tracker.SetLiveness(agentSessionID, spinnerPresent, substantiveAt, lastOutputSeeded)
 
 		// Consult the working indicator only when we would otherwise report
 		// IDLE (RPC held outside p.mu, and skipped entirely for active chats).
@@ -501,9 +568,23 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
 		}
 
+		// Bootstrap's pastTime is a seed by construction — see the comment where
+		// it is computed: on restart we have observed no genuine output at all.
+		// Marking it as such is what stops a consumer reading a whole restored
+		// fleet's identical timestamps as simultaneous real observations.
+		normalized, spinnerPresent := statusdetect.NormalizeSpinner([]byte(content))
+
 		p.mu.Lock()
-		p.prevCaptures[chat.AgentSessionID] = captureEntry{content: content, at: pastTime}
+		p.prevCaptures[chat.AgentSessionID] = captureEntry{
+			content:       content,
+			at:            pastTime,
+			normalized:    string(normalized),
+			substantiveAt: pastTime,
+			seeded:        true,
+		}
 		p.mu.Unlock()
+
+		p.tracker.SetLiveness(chat.AgentSessionID, spinnerPresent, pastTime, true)
 
 		if paneLimited {
 			p.tracker.UpdateLimited(chat.AgentSessionID, limitResetAt, pastTime)

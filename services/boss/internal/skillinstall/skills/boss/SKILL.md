@@ -207,3 +207,13 @@ A note is repo-scoped free-text one run records so a later one can read it back:
 - **`repo_id` is required on the four id- and body-keyed tools** — `create_note`, `get_note`, `update_note`, `delete_note` — and omitting it fails schema validation before the call runs. On `list_notes` it is just another optional filter: omit it to search every repo.
 - **On `get_note`/`update_note`/`delete_note`, `repo_id` routes without scoping.** It only picks which daemon to ask; that daemon then addresses the note by **id alone** and never checks the note against `repo_id`. Naming one repo while passing an id that lives in another acts on the other note — so treat the id, not the repo, as the thing to get right before confirming a delete.
 - **Tag normalisation is lossy.** Display casing is not preserved, so file notes under tags you are willing to read back lowercased.
+
+## Sessions that change nothing
+
+Planning and review runs commit nothing, so a default session finalizes `blocked` behind an empty draft PR. Pick the shape up front; the first two are `create_session` fields and `boss new` flags.
+
+| Shape                    | Option          | When                                                  |
+| ------------------------ | --------------- | ----------------------------------------------------- |
+| No worktree, no PR       | `quick_chat`    | one interactive planning chat, not concurrent batches |
+| Worktree, no up-front PR | `defer_pr`      | planning or read-only runs, including concurrent ones |
+| Cron job, no output      | `--zero-output` | scheduled sweeps, on `boss cron add`                  |

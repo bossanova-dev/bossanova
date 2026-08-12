@@ -55,6 +55,11 @@ type Server struct {
 	// which the daemon calls on its poll tick for every live chat. Its zero
 	// value is usable, so it needs no setup in newServer.
 	progress progressProbe
+
+	// initProber reads the stream-json system/init event backing
+	// DescribeMCPSurface. Nil means the live prober, which spawns a real claude
+	// process; tests replace it so they never exec claude.
+	initProber claudeInitProber
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...RunnerOption) *Server {

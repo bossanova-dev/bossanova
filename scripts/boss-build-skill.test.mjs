@@ -116,11 +116,14 @@ test('headless mode + mode-aware proof are present', () => {
   assert.match(finalizeAndStop(), /proof\.mjs plan/)
 })
 
-test('BOS-703: Preflight allows approximately three hours, not the retired 45-minute cap', () => {
+test('BOS-840: Preflight allows approximately four hours, not the retired three-hour or 45-minute caps', () => {
   const skill = fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
   const preflight = skill.slice(skill.indexOf('## Preflight'), skill.indexOf('## Step 1:'))
 
-  assert.match(preflight, /~3 hours/i)
+  assert.match(preflight, /~4 hours/i)
+  // Both retired caps stay named, so a prose-only revert to either cannot pass while the
+  // arithmetic below still reads four hours.
+  assert.doesNotMatch(preflight, /~3 hours/i)
   assert.doesNotMatch(preflight, /~45 min/i)
 })
 
@@ -138,6 +141,7 @@ test('every moved reference is reachable: a body pointer plus an existing file',
     'references/troubleshooting.md',
     'references/resume-assessment.md',
     'references/standalone-mode.md',
+    'references/knowledge-extensions.md',
   ]
 
   for (const skillDir of skillDirs) {
@@ -287,7 +291,24 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // credentials/network — so a run that reads only one of them fixes the wrong thing. The pure
   // classifier and its rationale live in toolbox/tracker/preflight.mjs; the body carries the call
   // and the decision. Re-baselined 76507 → 77719.
-  const RATCHET = 77719 // exact measured resident body
+  // BOS-851 adds the Step 6.5 `knowledge` phase between review and the PR gate (+771 bytes). Only
+  // the routing pointer is resident: the role name, the discover/validate calls, the empty-discovery
+  // no-op, the skip-line shape, and the one ordering fact Step 7 depends on — that the reviewed tip
+  // is captured AFTER this phase, because the phase commits. That ordering cannot live only in the
+  // reference: a reader who follows the body straight from Step 6 to Step 7 would capture the tip
+  // first and then read this phase's own commit as an unreviewed advance, failing the run BLOCKED.
+  // The dispatch mechanics, context envelope and boundary rationale are in
+  // references/knowledge-extensions.md. Re-baselined 77719 → 78490.
+  // Re-baselined a further +48 (78490 → 78538) for the review-feedback round: Step 6's verdict
+  // switch still routed `clean` straight to Step 7, so an agent following the routing skipped the
+  // Step 6.5 phase entirely — the heading was present but unreachable, and the byte-offset ordering
+  // assertion below passed anyway because position is not reachability. The `clean` arm now names
+  // Step 6.5 as the only route onward, and the ordering test asserts that arm's target.
+  // Re-baselined a further +41 (78538 → 78579) for the second review round: the resident router told
+  // the reader to discover, while the budget gate that must run BEFORE discovery lived only in the
+  // reference — so following the resident text alone created scratch and printed output on exactly
+  // the tight runs the gate exists to protect. The router now names the gate first.
+  const RATCHET = 78579 // exact measured resident body
   assert.ok(
     RATCHET < PRE_EXTRACTION_BASELINE,
     'ratchet must stay below the pre-extraction baseline',
@@ -298,6 +319,71 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
       bytes <= RATCHET,
       `${skillPath} is ${bytes} bytes; must stay <= ${RATCHET} (post-extraction ratchet) — move situational content into a reference`,
     )
+  }
+})
+
+test('BOS-851: the knowledge phase is resident and sits between Step 6 and Step 7 (both mirrors)', () => {
+  // The phase commits to the session branch, so its position relative to Step 7's reviewed-tip
+  // capture is load-bearing rather than cosmetic: moved after Step 7 it would either land outside
+  // the PR or read as an unreviewed advance. Pin the ordering by byte offset, not by mere presence.
+  for (const dir of BUILD_MIRRORS) {
+    const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    const step6 = body.indexOf('## Step 6: Whole-branch review')
+    const phase = body.indexOf('## Step 6.5: Knowledge extensions')
+    const step7 = body.indexOf('## Step 7: PR gate')
+    assert.ok(step6 >= 0, `${dir}/SKILL.md must still carry Step 6`)
+    assert.ok(phase >= 0, `${dir}/SKILL.md must carry the Step 6.5 knowledge phase`)
+    assert.ok(step7 >= 0, `${dir}/SKILL.md must still carry Step 7`)
+    assert.ok(
+      step6 < phase && phase < step7,
+      `${dir}/SKILL.md: the knowledge phase must sit between Step 6 and Step 7`,
+    )
+    // Position is not reachability. Step 6 ends in a verdict switch whose `clean` arm is the only
+    // way onward; while it still said "proceed to Step 7" the phase above was correctly placed and
+    // completely unreachable, and every assertion in this test passed. Pin the arm's target too.
+    const verdictSwitch = body.slice(body.indexOf('**Route on the file verdict.**'), phase)
+    const cleanArm = verdictSwitch.split('\n').find((l) => l.startsWith('- `clean`'))
+    assert.ok(cleanArm, `${dir}: Step 6 must carry a \`clean\` verdict arm`)
+    assert.match(
+      cleanArm,
+      /Step 6\.5/,
+      `${dir}: the \`clean\` arm must route through Step 6.5, not straight to Step 7 — otherwise the knowledge phase is unreachable`,
+    )
+
+    const section = body.slice(phase, step7)
+    // The resident section is a router: it must name the role it discovers, link the full spec, and
+    // carry the two facts a reader cannot get anywhere else on this path.
+    assert.match(section, /--role knowledge/, `${dir}: the phase must name the knowledge role`)
+    assert.match(
+      section,
+      /references\/knowledge-extensions\.md/,
+      `${dir}: the phase must link its reference`,
+    )
+    assert.match(section, /never produce `BLOCKED`/, `${dir}: the phase must state it is non-fatal`)
+    assert.equal(
+      fs.existsSync(path.join(rootDir, dir, 'references/knowledge-extensions.md')),
+      true,
+      `${dir}/references/knowledge-extensions.md must exist`,
+    )
+  }
+})
+
+test('BOS-851: the published core names no knowledge methodology (project-agnosticism)', () => {
+  // boss-* cores are extracted into every user's GLOBAL skill directory, so they appear in
+  // thousands of unrelated repos. The core may therefore learn the `knowledge` ROLE and nothing
+  // about whichever methodology this repo happens to implement it with — that coupling lives only
+  // in the repo-local `.claude/skills/boss-build-knowledge` extension, which is never published.
+  // Naming a vendor plugin here would ship a dangling dependency to every one of those repos.
+  const vendorCoupling = /compound-engineering|\bce-[a-z]/
+  for (const dir of BUILD_MIRRORS) {
+    for (const rel of ['SKILL.md', 'references/knowledge-extensions.md']) {
+      const file = path.join(rootDir, dir, rel)
+      assert.doesNotMatch(
+        fs.readFileSync(file, 'utf8'),
+        vendorCoupling,
+        `${dir}/${rel} must not name a specific knowledge methodology — put it in a repo-local extension`,
+      )
+    }
   }
 })
 
@@ -3103,15 +3189,34 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
       /\$REVIEW_BASE\.\.\.HEAD/,
       `${dir}: the degraded reviewer must still read the whole branch`,
     )
+    // BOS-859 RE-SCOPED these two. The tier may now spend ONE bounded repair round, so "the tier is
+    // a single round" and "there is no fix→re-review loop" are no longer the invariants — but both
+    // bounds they carried are still owed, so neither assertion is dropped, each is narrowed to what
+    // is still true and joined by the companion the narrowing would otherwise lose.
+    //
+    // (i) DETECTION is still exactly one round. A bare /single round/ would now be satisfied by the
+    // repair round's own cap, so pin the detection clause itself.
     assert.match(
       degraded,
-      /single round|one round/i,
-      `${dir}: the degraded tier must be bounded to a single round`,
+      /\*\*Detection\s+is\s+a\s+single\s+round\.?\*\*/i,
+      `${dir}: the degraded tier's DETECTION pass must still be bounded to a single round`,
     )
+    // (ii) …and the companion bound: the repair round is capped at one too, so neither pass
+    // iterates. Without this, re-scoping (i) to "detection" would silently license an unbounded
+    // repair loop in a tier selected precisely because the clock is short.
     assert.match(
       degraded,
-      /no fix→re-review loop|no fix→review loop/i,
-      `${dir}: the degraded tier must state there is no fix→re-review loop`,
+      /at\s+most\s+\*\*one\*\*\s+bounded\s+repair\s+round/i,
+      `${dir}: the degraded tier's repair round must itself be capped at one`,
+    )
+    // (iii) The replacement for "no fix→re-review loop": repair is permitted, but ONLY behind both
+    // gates. Pin the conditionality rather than the old prohibition — a mutant that permits repair
+    // unconditionally (the actual regression risk now) reds here, where the old assertion would
+    // have been merely deleted.
+    assert.match(
+      degraded,
+      /Repair\s+is\s+permitted\s+\*\*only\*\*\s+behind\s+both\s+gates/i,
+      `${dir}: degraded-tier repair must be permitted only behind the eligibility and affordability gates`,
     )
     assert.match(
       degraded,
@@ -3322,15 +3427,23 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
       /BLOCKED/,
       `${dir}: an open must-fix from the degraded tier must still reach BLOCKED`,
     )
-    // Detect-only, and say so. With no fix→re-review loop, a tier that may fix its own must-fix and
-    // then emit `clean` is self-certifying: the change gate re-runs `make` targets, which cannot
-    // confirm a semantic finding was resolved, and no independent reviewer ever sees the fix. That
-    // would let the cheap tier launder an unverified fix into REVIEW_READY — the one thing it must
-    // never do. Pin both halves: any must-fix blocks, and only a zero-must-fix pass writes clean.
+    // BOS-859 REPLACED "detector, not a repairer" with the narrower rule that is now true. The old
+    // sentence forbade repair as such; the argument underneath it was never about repair, it was
+    // about SELF-certification — repair without an independent witness. Pin that, because it is the
+    // property the repair pass must not erode, and deleting the old assertion outright would have
+    // left the cheap tier free to launder an unverified fix into REVIEW_READY.
     assert.match(
       degraded,
-      /detector, not a repairer/i,
-      `${dir}: the degraded tier must state it detects rather than repairs`,
+      /may\s+repair,\s+but\s+it\s+may\s+never\s+self-certify/i,
+      `${dir}: the degraded tier must forbid self-certification, not merely detection-only`,
+    )
+    // …and it must KEEP the reasoning the replaced paragraph carried. That reasoning is exactly why
+    // the independent verification round, and not the change gate, is the evidence — a replacement
+    // that dropped it would leave the new rule looking arbitrary and re-openable.
+    assert.match(
+      degraded,
+      /change\s+gate\s+re-runs\s+`make`\s+targets,\s+which\s+cannot\s+confirm\s+a\s+_semantic_\s+finding/i,
+      `${dir}: the self-certification rule must keep the change-gate reasoning it replaced`,
     )
     // The dead-reviewer rule is the tier's single-point-of-failure guard: with one reviewer and no
     // second opinion, an errored/timed-out/empty dispatch yields zero findings and would otherwise
@@ -3406,6 +3519,512 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     reviewStackFor(canonicalDir),
     `${pluginDir}/references/review-stack.md must be byte-identical to the canonical mirror (run \`make copy-skills\`)`,
   )
+})
+
+// ---------------------------------------------------------------------------
+// BOS-859. The degraded tier used to stop at DETECTION: it located must-fix findings at `file:line`
+// and was then forbidden to fix them, so an otherwise finished run BLOCKED with pushed work
+// stranded behind minutes of mechanical repair the tier had already specified precisely. It now
+// gets ONE bounded repair round — eligibility-gated, affordability-gated, and witnessed by a fresh
+// independent whole-branch reviewer that did not write the fix.
+//
+// The assertion class that matters most here is the HAND-OFF, not the prose: this exact tier once
+// shipped a budget its dispatch brief never carried, with every prose gate green and three
+// independent reviewers needed to catch it. A prose-presence pin on the clamp would not have caught
+// that, so every leg below is asserted to state its own budget into the template slot.
+// ---------------------------------------------------------------------------
+
+// The repair pass is an H4 inside `### Degraded tier (minimal)`, so bound it at the next heading of
+// ANY level at or above H3 — unbounded, `### BLOCKED-route publication` and the full tier's prose
+// downstream would satisfy assertions the repair pass itself had lost.
+const degradedRepairOf = (dir) => {
+  const reviewStack = reviewStackFor(dir)
+  const at = reviewStack.indexOf('#### Bounded repair pass (conditional)')
+  assert.ok(at >= 0, `${dir}: review-stack.md must carry the bounded repair pass subsection`)
+  const rest = reviewStack.slice(at + 1)
+  const end = rest.search(/\n#{1,3} /)
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
+// The fix leg as a REGION — `**Fix leg.**` through `**Verification leg.**` — never a single
+// paragraph. The fix leg is multi-paragraph, and a per-paragraph slice silently covers only the
+// first: that exact narrowing shipped green against a fix-leg→`clean` route appended to the second
+// paragraph. Region-slicing also closes the sibling hole where a mutant routes the fixer through the
+// reviewer template without naming `DEGRADED_REPAIR_FIX_SECONDS`, which a constant-keyed paragraph
+// filter would never see.
+const sliceFixLeg = (repair) => {
+  const from = repair.search(/\*\*Fix\s+leg\.\*\*/)
+  assert.ok(from >= 0, 'the repair pass must carry a fix leg')
+  const rest = repair.slice(from)
+  const to = rest.search(/\*\*Verification\s+leg\.\*\*/)
+  return to === -1 ? rest : rest.slice(0, to)
+}
+
+// The hard-ABORT set, as one run. Asserted as a single sequence rather than term-by-term so that
+// dropping ONE term reds — a per-term `includes` would stay green on a set that silently lost
+// `credentials` to a neighbouring word elsewhere in the section.
+const HARD_ABORT_SET =
+  /auth,\s+secrets,\s+credentials,\s+migrations,\s+production\/deploy\s+configuration,\s+dependencies,\s+or\s+an\s+observable\s+public\s+API\s+change/i
+
+test('BOS-859: the degraded repair pass is eligibility-gated and cites the abort set unchanged (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const repair = degradedRepairOf(dir)
+
+    // Both gates exist and are named. Two separate pins, not one distance window: the prose between
+    // them grows, and a `[\s\S]{0,N}` span over it starts failing for reasons unrelated to the gate.
+    assert.match(
+      repair,
+      /\*\*Eligibility\s+—\s+cited,\s+never\s+restated\.\*\*/i,
+      `${dir}: the repair pass must carry an eligibility gate`,
+    )
+    assert.match(
+      repair,
+      /\*\*Affordability\s+gate\.\*\*/i,
+      `${dir}: the repair pass must carry an affordability gate`,
+    )
+
+    // Eligibility is REUSED, not restated — two copies drift and the abort set is the costly half
+    // to drift. Pin the citation of the full tier's predicate…
+    assert.match(
+      repair,
+      /Mechanical\s+remediation\s+extension\s+\(after\s+the\s+default\s+cap\)/i,
+      `${dir}: the repair pass must cite the full tier's mechanical-remediation eligibility predicate`,
+    )
+    // …and the abort set itself, in BOTH places: the citation would be worthless if the cited
+    // predicate quietly lost a term, and the repair pass would be unsafe if its own copy did.
+    assert.match(repair, HARD_ABORT_SET, `${dir}: the repair pass must carry the hard-ABORT set`)
+    const extension = sliceSection(
+      reviewStack,
+      '### Mechanical remediation',
+      '### API-surface check',
+      `${dir}: review-stack.md`,
+    )
+    assert.match(
+      extension,
+      HARD_ABORT_SET,
+      `${dir}: the cited mechanical-remediation predicate must keep the hard-ABORT set unchanged`,
+    )
+
+    // One ineligible finding disqualifies the WHOLE pass — a per-finding gate would let the tier
+    // repair the easy half of a mixed set and then present a partially repaired branch for
+    // verification, which is not the thing the verification round is evidence for.
+    assert.match(
+      repair,
+      /\*\*One\*\*\s+ineligible\s+open\s+finding[\s\S]{0,120}disqualifies\s+the\s+whole\s+pass/i,
+      `${dir}: a single ineligible finding must disqualify the entire repair pass`,
+    )
+    // …and Critical is never mechanical, exactly as the cited extension has it. Pin the EXCLUSION,
+    // not the bare token: a mere /\*\*Critical\*\*/ presence check is satisfied by prose that says
+    // the opposite ("…excluding any **Critical** one, which this pass MAY repair"), so it defends
+    // nothing. Match the clause that actually disqualifies the pass.
+    assert.match(
+      repair,
+      /including\s+any\s+\*\*Critical\*\*\s+one/i,
+      `${dir}: the repair pass must exclude Critical findings, as the cited predicate does`,
+    )
+  }
+})
+
+test('BOS-859: the degraded repair pass is priced without moving the branch-2 floor (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const repair = degradedRepairOf(dir)
+
+    // Named constants, in the DEGRADED_REPAIR_*_MINUTES shape, pinned as named numbers exactly as
+    // `DEGRADED_REVIEWER_MINUTES = 10` is pinned above — both in the runnable clamp and beside the
+    // prose that explains what each leg buys.
+    for (const name of ['DEGRADED_REPAIR_FIX_MINUTES', 'DEGRADED_REPAIR_VERIFY_MINUTES']) {
+      assert.match(
+        repair,
+        new RegExp(`${name}\\s*=\\s*10\\b`),
+        `${dir}: ${name} must be priced as a named constant in the repair clamp`,
+      )
+      assert.match(
+        repair,
+        new RegExp('`' + name + '`\\s*\\(10\\)'),
+        `${dir}: ${name} must be named beside its value in the prose, not only inside the clamp`,
+      )
+    }
+
+    // THE FLOOR DID NOT MOVE. This is the gate that stops a later edit "tidying" the repair price
+    // into the tier price: `DEGRADED_TIER_MINUTES` feeds the branch-2 floor, so folding either
+    // constant in would lift that floor by 20 minutes and hand every run in the gap NO review at
+    // all — strictly worse than the detect-only review this whole change exists to improve on.
+    const tierPrice = sliceSection(
+      reviewStack,
+      'DEGRADED_TIER_MINUTES = $DEGRADED_REVIEWER_MINUTES',
+      '# Review is NOT the last phase',
+      `${dir}: review-stack.md`,
+    )
+    assert.doesNotMatch(
+      tierPrice,
+      /DEGRADED_REPAIR_/,
+      `${dir}: the repair constants must NOT be summed into DEGRADED_TIER_MINUTES — that lifts the branch-2 floor`,
+    )
+    assert.match(
+      repair,
+      /Neither\s+is\s+summed\s+into\s+`DEGRADED_TIER_MINUTES`/i,
+      `${dir}: the repair pass must say its constants stay out of the tier price`,
+    )
+    assert.match(
+      repair,
+      /branch-2\s+floor\s+stays\s+at\s+40/i,
+      `${dir}: the repair pass must state that the branch-2 floor is unchanged`,
+    )
+  }
+})
+
+test('BOS-859: the degraded repair clamp is runnable and refuses a non-positive budget (both mirrors)', () => {
+  // EXECUTED, not pattern-matched — the precedent in this file is that an executed gate catches the
+  // unwritten/unmatchable pairs a regex over the same block sails past. A clamp that computes 0 for
+  // every run reads identically to a correct one in prose.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const repair = degradedRepairOf(dir)
+
+    const clamp = bashBlocksOf(repair).find((b) => /^DEGRADED_REPAIR_FIX_SECONDS=/m.test(b))
+    assert.ok(clamp, `${dir}: the repair pass must ship an executable deadline clamp`)
+
+    // Constants assigned above the arithmetic that reads them: the budget block near the top of the
+    // file is a pricing FORMULA, not a script, so an unset name is ZERO inside `$(( ))`.
+    const arithmeticAt = clamp.search(/^DEGRADED_REPAIR_FIX_SECONDS=/m)
+    for (const name of [
+      'DEGRADED_REPAIR_FIX_MINUTES',
+      'DEGRADED_REPAIR_VERIFY_MINUTES',
+      'DEGRADED_API_CHECK_MINUTES',
+      'POST_REVIEW_RESERVE_MINUTES',
+    ]) {
+      const assignedAt = clamp.search(new RegExp(`^${name}=\\d+`, 'm'))
+      assert.ok(
+        assignedAt >= 0 && assignedAt < arithmeticAt,
+        `${dir}: ${name} must be assigned in the repair clamp, above the arithmetic that reads it`,
+      )
+    }
+
+    const fixMin = Number(/^DEGRADED_REPAIR_FIX_MINUTES=(\d+)/m.exec(clamp)?.[1])
+    const verMin = Number(/^DEGRADED_REPAIR_VERIFY_MINUTES=(\d+)/m.exec(clamp)?.[1])
+    const api = Number(/^DEGRADED_API_CHECK_MINUTES=(\d+)/m.exec(clamp)?.[1])
+    const reserve = Number(/^POST_REVIEW_RESERVE_MINUTES=(\d+)/m.exec(clamp)?.[1])
+    // The clamp's own constants must track the priced ones, not drift from them.
+    assert.equal(
+      api,
+      Number(/DEGRADED_API_CHECK_MINUTES\s*=\s*(\d+)/.exec(reviewStack)?.[1]),
+      `${dir}: the repair clamp's API allowance must equal the priced allowance`,
+    )
+    assert.equal(
+      reserve,
+      Number(/POST_REVIEW_RESERVE_MINUTES =[\s\S]{0,400}?=\s*(\d+) minutes/.exec(reviewStack)?.[1]),
+      `${dir}: the repair clamp's reserve must equal the priced post-review reserve`,
+    )
+
+    const at = (minutes) => String(Math.floor(Date.now() / 1000) + minutes * 60)
+    const fixSecs = (env) => Number(runBlock(clamp, env, '$DEGRADED_REPAIR_FIX_SECONDS').trim())
+    const verSecs = (env) => Number(runBlock(clamp, env, '$DEGRADED_REPAIR_VERIFY_SECONDS').trim())
+
+    // (a) No deadline set → the full priced allowances. Empty means "no cap", never zero.
+    assert.equal(fixSecs({}), fixMin * 60, `${dir}: with no deadline the fix leg keeps its price`)
+    assert.equal(
+      verSecs({}),
+      verMin * 60,
+      `${dir}: with no deadline the verify leg keeps its price`,
+    )
+
+    // (b) Roomy deadline → allowances intact.
+    const roomy = { PREFLIGHT_DEADLINE: at(reserve + api + verMin + fixMin + 5) }
+    assert.equal(
+      fixSecs(roomy),
+      fixMin * 60,
+      `${dir}: a roomy deadline must not shrink the fix leg`,
+    )
+    assert.equal(
+      verSecs(roomy),
+      verMin * 60,
+      `${dir}: a roomy deadline must not shrink the verify leg`,
+    )
+
+    // (c) Squeezed → the fix leg clamps strictly below its allowance rather than spending the
+    // verification, the API allowance, or the reserve.
+    const squeezed = { PREFLIGHT_DEADLINE: at(reserve + api + verMin + fixMin - 6) }
+    const gotFix = fixSecs(squeezed)
+    assert.ok(
+      gotFix > 0 && gotFix < fixMin * 60,
+      `${dir}: a squeezed deadline must clamp the fix leg below its allowance, got ${gotFix}`,
+    )
+
+    // (d) THE REFUSAL. With only the reserve, the API allowance and the verification left there is
+    // no fix time at all — and with only the reserve and the API allowance left, no verify time
+    // either. A clamp that returns a positive number here funds an unbudgeted round out of the
+    // post-review reserve, which is the mid-review overrun the whole tier ladder exists to prevent.
+    assert.ok(
+      fixSecs({ PREFLIGHT_DEADLINE: at(reserve + api + verMin) }) <= 0,
+      `${dir}: the fix leg must go non-positive once only the verify, API and reserve allowances fit`,
+    )
+    assert.ok(
+      verSecs({ PREFLIGHT_DEADLINE: at(reserve + api) }) <= 0,
+      `${dir}: the verify leg must preserve the API allowance as well as the post-review reserve`,
+    )
+
+    // …and the prose must say what a non-positive budget means, or the arithmetic above is a number
+    // nobody acts on.
+    assert.match(
+      repair,
+      /Dispatch\s+a\s+leg\s+only\s+while\s+its\s+own\s+budget\s+is\s+\*\*positive\*\*/i,
+      `${dir}: the repair pass must dispatch a leg only on a positive budget`,
+    )
+    assert.match(
+      repair,
+      /non-positive\s+budget\s+is\s+neither\s+a\s+clean\s+exit\s+nor\s+a\s+licence\s+for\s+an\s+unbudgeted\s+round/i,
+      `${dir}: a non-positive repair budget must be neither a clean exit nor an unbudgeted round`,
+    )
+  }
+})
+
+test('BOS-859: both repair legs state their budget into the dispatch template slot (both mirrors)', () => {
+  // THE HAND-OFF GATE. A budget its holder never states to the worker is inert while every other
+  // instruction still reads as satisfied — this tier has shipped exactly that bug, and every prose
+  // gate stayed green through it. Assert PER LEG and PER PARAGRAPH: one shared mention somewhere in
+  // the section would let a mutant drop either leg's budget and stay green.
+  //
+  // The CARRIER differs per leg, and that is the invariant — not "both legs fill the template".
+  // code-reviewer-template.md is a whole read-only REVIEWER brief that forbids mutating the tree, so
+  // routing the FIX leg through its [TIME_BUDGET_SECONDS] slot dispatches a fixer forbidden to fix:
+  // both legs' budget burns on a repair that can never land, which is worse than detect-only. The
+  // rule is that every leg states its own budget to its own worker, in the carrier its brief allows.
+  for (const dir of BUILD_MIRRORS) {
+    const repair = degradedRepairOf(dir)
+    const paragraphs = repair.split(/\n\s*\n/)
+
+    // The FIX leg states its budget as PROSE, in its own paragraph, and never through the slot.
+    const fixStated = paragraphs.filter(
+      (p) => p.includes('DEGRADED_REPAIR_FIX_SECONDS') && /HARD\s+TIME\s+BUDGET/i.test(p),
+    )
+    assert.ok(
+      fixStated.length > 0,
+      `${dir}: the fix leg must state DEGRADED_REPAIR_FIX_SECONDS to its worker as a prose HARD TIME BUDGET in its own paragraph`,
+    )
+    // Scoped to the fix-leg REGION, not to paragraphs naming the constant: a mutant that routes the
+    // fixer through the template WITHOUT naming DEGRADED_REPAIR_FIX_SECONDS would never appear in a
+    // constant-keyed filter, and the fix leg is multi-paragraph so a per-paragraph slice covers only
+    // its first. The one legitimate mention of the slot inside the region is the sentence that
+    // REFUSES it, so match the refusal explicitly and forbid every other occurrence.
+    const fixRegion = sliceFixLeg(repair)
+    const slotMentions = fixRegion.match(/\[TIME_BUDGET_SECONDS\]/g) ?? []
+    assert.match(
+      fixRegion,
+      /\*\*not\*\*\s+through\s+the\n?\[code-reviewer\s+prompt\s+template\]/i,
+      `${dir}: the fix-leg region must explicitly refuse the reviewer template as its budget carrier`,
+    )
+    assert.ok(
+      slotMentions.length <= 1,
+      `${dir}: the fix leg must NOT carry its budget in the read-only reviewer template's [TIME_BUDGET_SECONDS] slot — that brief forbids mutating the tree`,
+    )
+    // …and the section must say so explicitly, so the next editor does not "restore symmetry".
+    assert.match(
+      repair,
+      /read-only\s+_?reviewer_?\s+brief/i,
+      `${dir}: the repair pass must state WHY the fix leg does not use the reviewer template (it is a read-only reviewer brief)`,
+    )
+
+    // The VERIFICATION leg is a reviewer, so it does fill the shared template's slot.
+    const verifyStated = paragraphs.filter(
+      (p) => p.includes('DEGRADED_REPAIR_VERIFY_SECONDS') && p.includes('[TIME_BUDGET_SECONDS]'),
+    )
+    assert.ok(
+      verifyStated.length > 0,
+      `${dir}: the verification leg must hand DEGRADED_REPAIR_VERIFY_SECONDS to the template's [TIME_BUDGET_SECONDS] slot in its own paragraph`,
+    )
+    // The slot is a real hand-off into the shared template, not a name invented here.
+    assert.match(
+      repair,
+      /code-reviewer-template\.md/,
+      `${dir}: the verification leg must brief through the shared code-reviewer template`,
+    )
+  }
+})
+
+test('BOS-859: the tier lead bullet scopes "exactly one" to detection, not to its reviewer count', () => {
+  // RESIDUAL-PROSE GATE. The tier's opening bullet described a detect-only tier: "Exactly one
+  // awaited, read-only whole-branch reviewer". Once a repaired branch is read by the verification
+  // leg the tier can dispatch TWO, and the unqualified sentence becomes a false cap that a reader
+  // reaching this section first would enforce over the repair pass below — the same stale-lead
+  // failure the rewrite already had to clear five times elsewhere in this subsection.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const at = reviewStack.indexOf('### Degraded tier (minimal)')
+    assert.ok(at >= 0, `${dir}: review-stack.md must carry the degraded tier subsection`)
+    // Slice to the NEXT bullet, not a character window: a distance window starts failing when the
+    // prose it spans grows, which reds for a prose-growth reason rather than a defect one.
+    const afterHeading = reviewStack.slice(at)
+    const nextBullet = afterHeading.search(/\n- \*\*Detection is a single round\.\*\*/)
+    const lead = nextBullet === -1 ? afterHeading.slice(0, 1200) : afterHeading.slice(0, nextBullet)
+
+    // "Exactly one" must be bound to DETECTION, not left as a bare reviewer count.
+    assert.match(
+      lead,
+      /\*\*Exactly\s+one\*\*\s+awaited,\s+read-only\s+whole-branch\s+\*\*detection\*\*\s+reviewer/i,
+      `${dir}: the lead bullet's "exactly one" must be scoped to the detection reviewer`,
+    )
+    // …and the bullet must acknowledge the second reviewer a repaired branch gets, so the cap is
+    // not re-read as the tier's total.
+    assert.match(
+      lead,
+      /"Exactly\s+one"\s+bounds\s+detection,\s+never\s+the\s+tier'?s?\s+reviewer\s+count/i,
+      `${dir}: the lead bullet must say "exactly one" bounds detection, never the tier's reviewer count`,
+    )
+  }
+})
+
+test('BOS-859: the reviewer template refuses to carry a fix leg budget (both mirrors)', () => {
+  // The other half of the same defect: review-stack.md can be correct while the template still
+  // advertises itself as the carrier for every budget. Pin the refusal at the template end too, so
+  // neither file can drift back on its own.
+  for (const dir of BUILD_MIRRORS) {
+    const template = fs.readFileSync(
+      path.join(rootDir, dir, 'references/code-reviewer-template.md'),
+      'utf8',
+    )
+    assert.match(
+      template,
+      /DEGRADED_REPAIR_VERIFY_SECONDS/,
+      `${dir}: the [TIME_BUDGET_SECONDS] slot must name the degraded repair verification leg as one of its suppliers`,
+    )
+    assert.match(
+      template,
+      /\*\*never\*\*\s+a\s+fix\s+leg'?s?\s+budget/i,
+      `${dir}: the template must state that [TIME_BUDGET_SECONDS] is never a fix leg's budget`,
+    )
+    assert.match(
+      template,
+      /DEGRADED_REPAIR_FIX_SECONDS/,
+      `${dir}: the template must name DEGRADED_REPAIR_FIX_SECONDS as a budget it does NOT carry`,
+    )
+  }
+})
+
+test('BOS-859: only an independent verification round may write clean on a repaired branch (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const repair = degradedRepairOf(dir)
+    const paragraphs = repair.split(/\n\s*\n/)
+
+    // The verification leg is FRESH, INDEPENDENT, WHOLE-BRANCH, and knows its own purpose. Drop any
+    // of those and the "independent witness" that justifies repair at all stops existing.
+    assert.match(
+      repair,
+      /Dispatch\s+\*\*one\*\*\s+fresh\s+independent\s+reviewer\s+over\s+`\$REVIEW_BASE\.\.\.HEAD`/i,
+      `${dir}: verification must be one fresh independent reviewer over the whole branch`,
+    )
+    assert.match(
+      repair,
+      /\*\*verifying\s+fixes\s+it\s+did\s+not\s+write\*\*/i,
+      `${dir}: the verification brief must name its verify-what-it-did-not-write purpose`,
+    )
+    // The tier's did-not-report rule is inherited VERBATIM: a verifier that produced nothing is not
+    // a verifier that found nothing. Without this the cheapest possible failure — a dead dispatch —
+    // reads as zero must-fix on a branch that was just modified.
+    assert.match(
+      repair,
+      /verifier\s+that\s+errored,\s+timed\s+out,\s+or\s+returned\s+nothing\s+structured\s+is\s+\*\*not\*\*\s+a\s+verifier\s+that\s+found\s+zero\s+must-fix/i,
+      `${dir}: a verifier that did not report must not be read as zero must-fix`,
+    )
+
+    // THE CLEAN EDGE. On a repaired branch there is exactly one route to `clean`, and it is
+    // downstream of the reviewer that did not write the fix.
+    assert.match(
+      repair,
+      /On\s+a\s+\*\*repaired\*\*\s+branch,\s+only\s+the\s+verification\s+reviewer\s+returning\s+\*\*zero\*\*\s+must-fix\s+writes\s+`bs-review\s+clean:`/i,
+      `${dir}: only the verification reviewer may write clean on a repaired branch`,
+    )
+    assert.match(
+      repair,
+      /fixed-but-unverified\s+finding\s+is\s+a\s+\*\*capped\*\*\s+run,\s+not\s+a\s+clean\s+one/i,
+      `${dir}: a fixed-but-unverified finding must route capped, not clean`,
+    )
+    // …and the pre-existing route is untouched: a detection reviewer finding zero must-fix still
+    // reaches clean with no repair round, because there is nothing to verify.
+    assert.match(
+      repair,
+      /detection\s+reviewer\s+that\s+found\s+zero\s+must-fix\s+reaches\s+`clean`\s+without\s+any\s+repair\s+round/i,
+      `${dir}: the pre-existing zero-must-fix route must be preserved unchanged`,
+    )
+
+    // STRUCTURAL, not prose: the fix leg must not name the clean sentinel anywhere. This is the
+    // property the control flow rests on — no path reaches clean from the fix leg directly.
+    //
+    // Slice the fix-leg REGION (`**Fix leg.**` through `**Verification leg.**`), never a single
+    // paragraph. A paragraph-scoped version of this gate shipped green against a direct violation:
+    // the fix leg is TWO paragraphs, and appending a `bs-review clean:` route to the second one
+    // left the whole suite passing. Any edit that splits a leg silently halves a per-paragraph
+    // gate's coverage, and the split is exactly what an editor does while "clarifying" prose.
+    const fixLegRegion = sliceFixLeg(repair)
+    assert.ok(
+      /\*\*Fix\s+leg\.\*\*/.test(fixLegRegion),
+      `${dir}: the repair pass must carry a fix leg`,
+    )
+    assert.doesNotMatch(
+      fixLegRegion,
+      /bs-review\s+clean:/,
+      `${dir}: the fix leg may never reach the clean sentinel directly`,
+    )
+    // The capped route stays the GENERATED one; a hand-written literal is unmatchable and silently
+    // downgrades the terminal state to `dispatch-failure`.
+    assert.match(
+      repair,
+      /sentinel\s+capped\s+<N>[\s\S]{0,80}bs-run-sentinel\.mjs\s+write/i,
+      `${dir}: the repair pass must route through the generated-and-persisted capped sentinel`,
+    )
+    // Exhaustion is a decision to stop paying, never a re-triage of the findings into noise.
+    assert.match(
+      repair,
+      /record\s+every\s+unresolved\s+finding\s+by\s+`file:line`\s+and\s+BLOCK/i,
+      `${dir}: an exhausted repair pass must record its unresolved findings and BLOCK`,
+    )
+  }
+})
+
+test('BOS-859: the degraded coverage token distinguishes a repaired run from a detect-only one', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    // A SUFFIX parenthetical, not an infix edit: the existing `degraded: <reason> (skipped: <pass
+    // list>)` shape is pinned by its literal form above, so the repair outcome is appended.
+    assert.match(
+      reviewStack,
+      /\(repaired:\s+<N>\s+finding\(s\),\s+verified\s+by\s+one\s+independent\s+whole-branch\s+reviewer\)/,
+      `${dir}: a repaired degraded run must publish its repair outcome in the coverage token`,
+    )
+    // …and it must stop claiming it skipped the pass it just ran.
+    assert.match(
+      reviewStack,
+      /drop\s+the\s+fix→re-review\s+loop\s+from\s+the\s+skipped\s+list/i,
+      `${dir}: a repaired run's coverage token must not list the fix→re-review loop as skipped`,
+    )
+    // A repair pass that RAN and did not clear verification also "actually ran", so a token keyed
+    // only on "ran" would publish `verified by one independent whole-branch reviewer` on the
+    // BLOCKED route — an over-claim in the one section whose whole purpose is honesty, and a
+    // reachable one, since §BLOCKED-route publication publishes on exactly that route. Pin the
+    // separate failure form.
+    assert.match(
+      reviewStack,
+      /\(repair\s+attempted:\s+<N>\s+finding\(s\),\s+verification\s+did\s+not\s+clear:\s+<outcome>\)/,
+      `${dir}: a repaired-but-unverified degraded run must publish a distinct, non-over-claiming coverage token`,
+    )
+    // The sentinel's round count is not the same on both routes. The top-of-file rule prices the
+    // degraded tier at exactly one round; once a repair round can run, a repaired-but-unverified
+    // run reached two, and a reader falling back to the stale parenthetical emits `1` for it.
+    assert.match(
+      reviewStack,
+      /`2`\s+once\s+the\s+fix\s+leg\s+was\s+dispatched\s+—\s+the\s+detection\s+round\s+plus\s+this\s+repair\s+round/i,
+      `${dir}: the repaired capped route must state its own sentinel round count, not inherit the detect-only 1`,
+    )
+    // …and the COUNT IS COUNTED, not read off the paragraph that routed here. The eligibility and
+    // affordability gate-outs both jump into the clean edge's capped command while having reached
+    // only the detection round, so a flat `2` there over-reports a repair round that never ran.
+    assert.match(
+      reviewStack,
+      /`1`\s+when\s+the\s+pass\s+never\s+started/i,
+      `${dir}: a gated-out repair pass must emit the detection-only round count, not the repaired 2`,
+    )
+  }
 })
 
 test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirrors)', () => {
@@ -4127,8 +4746,8 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
     const preflight = skill.slice(skill.indexOf('## Preflight'), skill.indexOf('## Step 1:'))
     assert.match(
       preflight,
-      /PREFLIGHT_STARTED_AT="\$\(date \+%s\)"[\s\S]{0,160}PREFLIGHT_DEADLINE=\$\(\( PREFLIGHT_STARTED_AT \+ 3 \* 60 \* 60 \)\)[\s\S]{0,80}export PREFLIGHT_DEADLINE/,
-      `${dir}: Preflight must stamp and export one absolute three-hour deadline`,
+      /PREFLIGHT_STARTED_AT="\$\(date \+%s\)"[\s\S]{0,160}PREFLIGHT_DEADLINE=\$\(\( PREFLIGHT_STARTED_AT \+ 4 \* 60 \* 60 \)\)[\s\S]{0,80}export PREFLIGHT_DEADLINE/,
+      `${dir}: Preflight must stamp and export one absolute four-hour deadline`,
     )
     const remainingSnapshot = bashBlocksOf(skill).find((b) => /^NOW="\$\(date \+%s\)"/m.test(b))
     assert.ok(
@@ -4169,6 +4788,7 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
       ).trim()
     assert.equal(skip6b(null), '[]', `${dir}: no deadline supplied must mean no cap, not a skip`)
     assert.equal(skip6b(180), '[]', `${dir}: three hours must fund the Step 6b chain`)
+    assert.equal(skip6b(240), '[]', `${dir}: four hours must fund the Step 6b chain`)
     // The default expression is 15 + 20 + 25 = 60 minutes; 59 must refuse and 61 must admit.
     assert.equal(skip6b(59), '[budget]', `${dir}: 59 minutes must not admit a 60-minute chain`)
     assert.equal(skip6b(61), '[]', `${dir}: 61 minutes must admit the 60-minute chain`)

@@ -281,6 +281,69 @@ keys the grant to the installed path, not to the bytes.
 If you must use the GUI route on a headless host, reach it over Screen Sharing
 or push the grant with MDM.
 
+### macOS: bossd keeps running the build you just upgraded away from
+
+The staged daemon copy that keeps macOS privacy grants alive has a
+consequence: a bare `brew upgrade` no longer deletes the binary out from under
+the running daemon, so launchd's `KeepAlive` respawns the **staged** copy and
+bossd keeps executing the previous build until something restarts it. The
+symptom is that a fix you know shipped does not appear to take effect.
+
+`boss` now says so on its own. Every command prints one line to stderr when
+the installed build is ahead of the running daemon:
+
+```
+boss: bossd is running an older build than the one installed — run 'boss daemon restart' (details: boss daemon doctor)
+```
+
+The line appears only on Homebrew installs, never for a locally built binary
+in a checkout, and never on the commands that are themselves the remedy
+(`boss daemon doctor`, `boss daemon restart`, `boss daemon start`,
+`boss upgrade`). Set `BOSS_DAEMON_SKIP_STALE_WARNING=1` to silence it in
+scripts.
+
+To see the detail:
+
+<CommandTabs
+cli="boss daemon doctor"
+/>
+
+The doctor answers two separate questions, and the difference matters:
+
+- **`staged bossd: … — stale` / `— up to date`** is about the _file_. It
+  compares the staged copy against the binary Homebrew installed.
+- **`running executable: … (PID N) — stale` / `— up to date`** is about the
+  _process_. It probes the recorded PID for liveness and compares when the
+  process started against when the staged file was last written.
+
+They can disagree. A restart re-stages the file between stopping and starting
+the daemon, so after a restart that failed halfway the file is current while
+the live process is not — the file line reads `up to date` and the process
+line reads `stale`. Only a PID change proves a restart actually happened.
+
+`boss daemon status` reports the same process verdict as a `running image:`
+line.
+
+#### The restart stopped the daemon and did not start it
+
+`boss daemon restart` stops the daemon before starting it, and the start can
+fail on its own. It now retries a raced `launchctl bootstrap` a few times, and
+if every attempt fails it verifies what is actually running before reporting:
+
+```
+boss: restart daemon failed: launchctl bootstrap: exit status 5: Bootstrap failed: 5: Input/output error; the daemon is now stopped — run 'boss daemon start'
+```
+
+When the message names `boss daemon start`, nothing is running — run it:
+
+<CommandTabs
+cli="boss daemon start"
+/>
+
+`boss daemon doctor` reports the same state: a recorded PID that is no longer
+alive is reported as `not running`, with `run 'boss daemon start'` as the
+remediation rather than a restart.
+
 ## Workspace and worktree
 
 ### Worktree directory missing

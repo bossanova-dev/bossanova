@@ -352,6 +352,35 @@ func TestAppRoutesLogoutResultToHomeWhileBugReportIsOpen(t *testing.T) {
 	}
 }
 
+// TestAppRoutesRenameFailureToHomeWhileTheChatPickerIsOpen covers the window
+// commitRename opens: it closes the editor and returns before the RPC does, so
+// the very next enter can switch to the chat picker while the write is still in
+// flight. Without an explicit arm the reply reaches whichever view happens to
+// be active, which drops it — and the status line is the ONLY report a failed
+// rename ever gets, so the operator would be left believing a rename landed
+// that never did.
+//
+// Falsification: delete the `case sessionRenamedMsg:` arm from App.Update
+// (app.go:261) and this fails — home.status stays empty. Performed once and the
+// arm restored.
+func TestAppRoutesRenameFailureToHomeWhileTheChatPickerIsOpen(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+
+	model, _ := a.Update(sessionRenamedMsg{err: errors.New("daemon unavailable")})
+	got := model.(App)
+
+	if got.activeView != ViewChatPicker {
+		t.Fatalf("activeView = %v, want ViewChatPicker; routing must not yank the operator back", got.activeView)
+	}
+	if !strings.Contains(got.home.status, "Rename failed") {
+		t.Fatalf("home.status = %q, want the rename failure waiting on the board", got.home.status)
+	}
+	if !got.home.statusErr {
+		t.Fatal("the rename failure was not recorded as a failure")
+	}
+}
+
 func TestAppPreservesDeferredLogoutFailureReturningFromSettings(t *testing.T) {
 	a := NewApp(nil, nil)
 	a.activeView = ViewSettings

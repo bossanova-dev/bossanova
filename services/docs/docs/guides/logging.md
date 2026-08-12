@@ -14,9 +14,10 @@ file, and `boss tail` reads those files for you so you never have to remember
 where they are.
 
 Agent output — what Claude or Codex actually printed in a session — is a
-**separate** surface that `boss tail` does not read. See
-[Agent and chat logs](#agent-and-chat-logs-are-a-different-surface) below before
-you go looking for it in `bossd.log`.
+**separate** surface, stored elsewhere in a different format, so you will not
+find it in `bossd.log`. `boss tail` reads it too, but you have to ask for it by
+agent-session id. See
+[Agent and chat logs](#agent-and-chat-logs-are-a-different-surface) below.
 
 ## The `boss tail` command
 
@@ -37,13 +38,16 @@ the message:
 
 ### Sources
 
-`boss tail` takes at most one positional source. There are three:
+`boss tail` takes any number of positional sources. Three name a service log:
 
 | Source  | Contents                                                                                                                          |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `bossd` | The daemon: session lifecycle, git operations, plugin dispatch. **Default.**                                                      |
 | `boss`  | Every `boss` command except `boss tail` itself, TUI included. It logs to file only, so this is the only place its records appear. |
 | `bosso` | The server backing the web UI.                                                                                                    |
+
+Anything else is read as an **agent-session id**, which selects one agent log —
+see [Agent logs](#agent-logs) below.
 
 Name a source explicitly to choose which one you read:
 
@@ -63,14 +67,15 @@ cli="boss tail bosso"
 a daemon call, so the global `--remote` and `--host` flags do not redirect it —
 to read another machine's logs, run `boss tail` over there.
 
-An unrecognised source is rejected rather than silently treated as a filter:
+A source that is neither a service nor a plausible agent-session id is rejected
+rather than silently treated as a filter:
 
 <CommandTabs
 cli="boss tail daemon"
 />
 
 ```
-boss: unknown log source "daemon" (want one of: bossd, boss, bosso)
+boss: unknown log source "daemon" (want one of: bossd, boss, bosso, or an agent-session id)
 ```
 
 ### `--all` merges every service
@@ -226,20 +231,62 @@ the coding agent printed. Agent output is captured separately:
   directory — the sibling of `worktree_base_dir` from your settings. With the
   default `worktree_base_dir` of `~/.bossanova/worktrees`, that is
   `~/.bossanova/agent-logs`.
-- **`boss tail` does not read them.** `bossd`, `boss`, and `bosso` are its only
-  sources, so no amount of `boss tail` will show you agent output.
+- **`boss tail` reads them too**, by agent-session id — see [Agent
+  logs](#agent-logs) below.
 
 So: to see why a session failed to _start_, read `bossd.log` via `boss tail`. To
 see what the agent _said_, read the chat — attach to the session, or read the
-transcript — and fall back to the agent log for a headless run that is still in
-flight:
-
-```bash
-tail -f ~/.bossanova/agent-logs/<agent-session-id>.log | jq -r .text
-```
+transcript — or point `boss tail` at the agent-session id, which is the quickest
+route for a headless run that is still in flight.
 
 Attaching to a chat whose headless run is still going is refused, and the
 refusal prints the exact agent-log path to follow instead.
+
+### Agent logs
+
+Pass an agent-session id where you would pass a service name:
+
+<CommandTabs
+cli="boss tail 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607 -f"
+/>
+
+`boss tail` detects which of the two formats above the file holds, **per file**,
+from its first non-empty line — the caller does not have to know whether the
+chat ran interactively or headless. JSON lines are unwrapped to their `text`,
+raw captures have their terminal escape sequences stripped, and either way the
+result prints as an unstructured line, so a malformed entry is shown verbatim
+rather than dropped.
+
+Because agent output carries no level, repo or plugin, it is never removed by
+`--level`, `--repo` or `--plugin` — the same rule that keeps raw diagnostics
+visible. Filtering a mixed tail narrows the service records only.
+
+Naming several sources interleaves them by timestamp, which is the point when
+you want to see a daemon event next to what the agent was doing at the time:
+
+<CommandTabs
+cli="boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
+/>
+
+That raises the question of what timestamp an interactive capture has, since it
+has none of its own. The rule: **an untimestamped line inherits the last
+timestamp seen in its own file**, and a line with nothing before it inherits the
+log file's modification time. A raw line therefore sits next to the output it
+followed. It is never left at the zero time, which would sort the whole capture
+to the Unix epoch and float it ahead of every other source.
+
+`--all` is unaffected: it still means "every _service_ log". The agent-logs
+directory holds one file per agent session ever run, so merging all of them is
+not a useful default. Name the sessions you want instead.
+
+An agent-session id whose log does not exist yet is still a valid source under
+`-f` — the follower waits for the agent to create it. If the agent-logs
+directory itself is absent, which is simply a Bossanova that has never run an
+agent, `boss tail` says so and exits successfully rather than failing:
+
+```
+no agent logs: /Users/you/.bossanova/agent-logs does not exist
+```
 
 ## JSON output and filtering
 

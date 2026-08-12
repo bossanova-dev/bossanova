@@ -12,6 +12,7 @@ const KNOWN_EXTENSION_ROLES = new Set([
   'draft',
   'methodology',
   'notes',
+  'knowledge',
 ])
 
 // Minimal YAML-frontmatter reader. Supports the flat scalar keys and the single
@@ -73,6 +74,15 @@ export function extensionMarker(frontmatter) {
   // inert rather than a discovery failure. Absent/blank/non-string omits the field entirely,
   // so an unbound descriptor's JSON is byte-identical to what it was before the key existed.
   if (typeof block.lens === 'string' && block.lens !== '') marker.lens = block.lens
+  // Optional binding to a review CAPABILITY id — an exact structural mirror of `lens` above.
+  // It is meaningful only for `role: round`, where a core's opportunistic default-round phase
+  // uses it to tell that a discovered round already covers a capability the core would otherwise
+  // default-run, so the repo gets one pass instead of two. Deliberately NOT validated against the
+  // role (same reason as `lens`), and absent/blank/non-string omits the field entirely so an
+  // undeclared descriptor's JSON is byte-identical to what it was before the key existed.
+  if (typeof block.capability === 'string' && block.capability !== '') {
+    marker.capability = block.capability
+  }
   return marker
 }
 
@@ -142,6 +152,7 @@ export function discoverExtensions({ core, root, role }) {
       order: marker.order,
     }
     if (marker.lens !== undefined) descriptor.lens = marker.lens
+    if (marker.capability !== undefined) descriptor.capability = marker.capability
     extensions.push(descriptor)
   }
   extensions.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
@@ -154,6 +165,9 @@ export const ROLE_SCHEMAS = {
   surface: ['path', 'caption', 'evidenceTokens'],
   'plan-reviewer': ['severity', 'section', 'title', 'detail'],
   notes: ['tag', 'body', 'noteId'],
+  // A knowledge artifact is a file in the tree, so `path` is its proof of persistence — the same
+  // role `noteId` plays for `notes`. Both are enforced as non-empty below.
+  knowledge: ['path', 'title', 'kind'],
 }
 
 export function validateResult(envelope, role) {
@@ -194,7 +208,11 @@ export function validateResult(envelope, role) {
     for (const key of requiredKeys) {
       if (!(key in item)) errors.push(`item ${idx} missing "${key}"`)
     }
-    if (role === 'notes') {
+    // Roles whose items are a *claim of persistence* need every declared key to carry real text:
+    // an empty `noteId` or `path` satisfies the `in` check above while proving nothing was
+    // written. Roles whose items are findings (lens/round/plan-reviewer) legitimately carry
+    // blank fields, so the guard stays scoped rather than global.
+    if (role === 'notes' || role === 'knowledge') {
       for (const key of requiredKeys) {
         if (key in item && (typeof item[key] !== 'string' || item[key].trim() === '')) {
           errors.push(`item ${idx} "${key}" is not a non-empty string`)

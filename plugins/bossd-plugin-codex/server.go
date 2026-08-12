@@ -97,25 +97,38 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 }
 
 // runtimeTarget describes the Codex runtime a capability-profile check should
-// inspect. Both the pre-worktree PreflightHeadlessRun and the real StartRun
-// build their target here, so for the same request inputs the early check
-// profiles the same runtime the real run launches: the model follows the same
-// per-request-wins/env-fallback rule as the launch argv (resolveCodexModel),
-// because the operation registry passes it to `codex app-server` as
-// `-c model="…"` and a different model can expose a different operation
-// surface. Keeping this in one place means a field added to
-// codexRuntimeTarget cannot be populated on only one of the two paths.
+// inspect. Both PreflightHeadlessRun and the real StartRun build their target
+// here, so for the same request inputs the early check profiles the same
+// runtime the real run launches. Keeping this in one place means a field added
+// to codexRuntimeTarget cannot be populated on only one of the two paths;
+// TestPreflightAndStartRunInspectIdenticalRuntimeTarget is the ratchet that
+// enforces it.
 //
-// Scope: this reconciles only what the two requests carry. The daemon may
-// still hand the two RPCs different ExtraEnv — the preflight runs before the
-// worktree exists, so StartRun's env is additionally dotenv-overlaid from the
-// worktree (see services/bossd/internal/session/lifecycle.go) — and that
-// divergence is created above this helper and is not resolvable here.
-func (s *Server) runtimeTarget(reqModel string, extraEnv map[string]string) codexRuntimeTarget {
+// The four inputs the two RPCs now reconcile:
+//
+//   - Model — resolved by the same per-request-wins/env-fallback rule as the
+//     launch argv (resolveCodexModel), because the operation registry passes it
+//     to `codex app-server` as `-c model="…"` and a different model can expose a
+//     different operation surface.
+//   - Home — the selected account's CODEX_HOME, read out of ExtraEnv rather
+//     than projected, so the profiled home is the launched home.
+//   - ExtraEnv — the daemon builds both the preflight env and the run env from
+//     the same dotenv.OverlayWithRepo expression over the created worktree
+//     (services/bossd/internal/session/lifecycle.go, the preflight env and the
+//     headless run env; tmux_chat.go passes the same map the tmux child gets).
+//     Since BOS-1749 the preflight runs after worktree creation and after the
+//     setup script, with rollback on rejection, so the two are no longer
+//     divergent by construction.
+//   - WorkDir — the directory the gated run executes in. Codex resolves a
+//     repo-level `.codex/config.toml` relative to its working directory, so a
+//     preflight launched without it profiles a runtime that never saw the MCP
+//     servers the repo declares for itself (BOS-865).
+func (s *Server) runtimeTarget(reqModel, workDir string, extraEnv map[string]string) codexRuntimeTarget {
 	home, _ := codexConfigDirForEnv(extraEnv)
 	return codexRuntimeTarget{
 		Home:     home,
 		Model:    resolveCodexModel(reqModel, s.runner.model),
+		WorkDir:  workDir,
 		ExtraEnv: extraEnv,
 	}
 }
@@ -124,7 +137,7 @@ func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.Pref
 	return s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), req.GetExtraEnv()),
+		s.runtimeTarget(req.GetModel(), req.GetWorkDir(), req.GetExtraEnv()),
 	)
 }
 
@@ -142,7 +155,7 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	if _, err := s.preflightHeadlessCapabilityProfile(
 		ctx,
 		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), extraEnv),
+		s.runtimeTarget(req.GetModel(), req.GetWorkDir(), extraEnv),
 	); err != nil {
 		return nil, err
 	}

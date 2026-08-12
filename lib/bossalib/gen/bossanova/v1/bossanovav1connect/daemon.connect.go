@@ -130,6 +130,9 @@ const (
 	// DaemonServiceDescribeChatLaunchProcedure is the fully-qualified name of the DaemonService's
 	// DescribeChatLaunch RPC.
 	DaemonServiceDescribeChatLaunchProcedure = "/bossanova.v1.DaemonService/DescribeChatLaunch"
+	// DaemonServiceDescribeChatMCPProcedure is the fully-qualified name of the DaemonService's
+	// DescribeChatMCP RPC.
+	DaemonServiceDescribeChatMCPProcedure = "/bossanova.v1.DaemonService/DescribeChatMCP"
 	// DaemonServiceGetChatTranscriptProcedure is the fully-qualified name of the DaemonService's
 	// GetChatTranscript RPC.
 	DaemonServiceGetChatTranscriptProcedure = "/bossanova.v1.DaemonService/GetChatTranscript"
@@ -305,6 +308,11 @@ type DaemonServiceClient interface {
 	// only reproduces on the daemon host. Read-only: it re-derives argv via the
 	// same per-agent BuildInteractiveCommand the spawn path uses.
 	DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error)
+	// DescribeChatMCP reports which MCP servers a chat's agent actually resolved,
+	// with tool counts, tool-name prefixes, auth status and source, by routing to
+	// the owning agent plugin's DescribeMCPSurface under the chat's OWN re-derived
+	// environment. Read-only; it starts no coding turn.
+	DescribeChatMCP(context.Context, *connect.Request[v1.DescribeChatMCPRequest]) (*connect.Response[v1.DescribeChatMCPResponse], error)
 	// GetChatTranscript returns a chat's conversation and final result by routing
 	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
 	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
@@ -679,6 +687,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DescribeChatLaunch")),
 			connect.WithClientOptions(opts...),
 		),
+		describeChatMCP: connect.NewClient[v1.DescribeChatMCPRequest, v1.DescribeChatMCPResponse](
+			httpClient,
+			baseURL+DaemonServiceDescribeChatMCPProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DescribeChatMCP")),
+			connect.WithClientOptions(opts...),
+		),
 		getChatTranscript: connect.NewClient[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse](
 			httpClient,
 			baseURL+DaemonServiceGetChatTranscriptProcedure,
@@ -957,6 +971,7 @@ type daemonServiceClient struct {
 	deleteChat                  *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
 	wakeChat                    *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
 	describeChatLaunch          *connect.Client[v1.DescribeChatLaunchRequest, v1.DescribeChatLaunchResponse]
+	describeChatMCP             *connect.Client[v1.DescribeChatMCPRequest, v1.DescribeChatMCPResponse]
 	getChatTranscript           *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
 	sendChatMessage             *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
 	reportChatStatus            *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
@@ -1162,6 +1177,11 @@ func (c *daemonServiceClient) WakeChat(ctx context.Context, req *connect.Request
 // DescribeChatLaunch calls bossanova.v1.DaemonService.DescribeChatLaunch.
 func (c *daemonServiceClient) DescribeChatLaunch(ctx context.Context, req *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error) {
 	return c.describeChatLaunch.CallUnary(ctx, req)
+}
+
+// DescribeChatMCP calls bossanova.v1.DaemonService.DescribeChatMCP.
+func (c *daemonServiceClient) DescribeChatMCP(ctx context.Context, req *connect.Request[v1.DescribeChatMCPRequest]) (*connect.Response[v1.DescribeChatMCPResponse], error) {
+	return c.describeChatMCP.CallUnary(ctx, req)
 }
 
 // GetChatTranscript calls bossanova.v1.DaemonService.GetChatTranscript.
@@ -1419,6 +1439,11 @@ type DaemonServiceHandler interface {
 	// only reproduces on the daemon host. Read-only: it re-derives argv via the
 	// same per-agent BuildInteractiveCommand the spawn path uses.
 	DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error)
+	// DescribeChatMCP reports which MCP servers a chat's agent actually resolved,
+	// with tool counts, tool-name prefixes, auth status and source, by routing to
+	// the owning agent plugin's DescribeMCPSurface under the chat's OWN re-derived
+	// environment. Read-only; it starts no coding turn.
+	DescribeChatMCP(context.Context, *connect.Request[v1.DescribeChatMCPRequest]) (*connect.Response[v1.DescribeChatMCPResponse], error)
 	// GetChatTranscript returns a chat's conversation and final result by routing
 	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
 	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
@@ -1789,6 +1814,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DescribeChatLaunch")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceDescribeChatMCPHandler := connect.NewUnaryHandler(
+		DaemonServiceDescribeChatMCPProcedure,
+		svc.DescribeChatMCP,
+		connect.WithSchema(daemonServiceMethods.ByName("DescribeChatMCP")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetChatTranscriptHandler := connect.NewUnaryHandler(
 		DaemonServiceGetChatTranscriptProcedure,
 		svc.GetChatTranscript,
@@ -2097,6 +2128,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceWakeChatHandler.ServeHTTP(w, r)
 		case DaemonServiceDescribeChatLaunchProcedure:
 			daemonServiceDescribeChatLaunchHandler.ServeHTTP(w, r)
+		case DaemonServiceDescribeChatMCPProcedure:
+			daemonServiceDescribeChatMCPHandler.ServeHTTP(w, r)
 		case DaemonServiceGetChatTranscriptProcedure:
 			daemonServiceGetChatTranscriptHandler.ServeHTTP(w, r)
 		case DaemonServiceSendChatMessageProcedure:
@@ -2316,6 +2349,10 @@ func (UnimplementedDaemonServiceHandler) WakeChat(context.Context, *connect.Requ
 
 func (UnimplementedDaemonServiceHandler) DescribeChatLaunch(context.Context, *connect.Request[v1.DescribeChatLaunchRequest]) (*connect.Response[v1.DescribeChatLaunchResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DescribeChatLaunch is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DescribeChatMCP(context.Context, *connect.Request[v1.DescribeChatMCPRequest]) (*connect.Response[v1.DescribeChatMCPResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DescribeChatMCP is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error) {

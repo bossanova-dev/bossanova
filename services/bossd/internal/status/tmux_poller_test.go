@@ -1148,6 +1148,30 @@ func TestRefreshChatTitle(t *testing.T) {
 			wantCalls:      1,
 		},
 		{
+			// The accepted trade-off (BOS-839). `explicit` short-circuits the
+			// placeholder guard above: refreshChatTitle only consults
+			// shouldRefreshChatTitle when !resp.GetExplicit(), so an explicit
+			// hook write always wins — including a *stale* one. A flaky
+			// `/rename` hook that fires late can therefore land an older
+			// explicit title on top of a rename the user just made, and the
+			// user's newer name loses.
+			//
+			// This is known and accepted, not a defect. Pinning user renames
+			// against the hook would need a precedence column on the chat row
+			// (a per-title source plus timestamp to compare against); that was
+			// considered and deliberately rejected in favour of the simpler
+			// last-explicit-write-wins rule, which is correct for every
+			// non-flaky ordering. Do not "fix" this row — it encodes the
+			// intended behaviour, and changing it is a schema decision rather
+			// than a bug fix.
+			name:           "late explicit hook write wins over a user rename (accepted)",
+			currentTitle:   "Manual investigation",
+			pluginTitle:    "an older name",
+			pluginExplicit: true,
+			wantTitle:      "an older name",
+			wantCalls:      1,
+		},
+		{
 			name:         "non-explicit title does not clobber non-placeholder title",
 			currentTitle: "Manual investigation",
 			pluginTitle:  "First user prompt",
@@ -2837,5 +2861,302 @@ func TestTmuxStatusPoller_StalledMarkerClearedWhenTmuxSessionGone(t *testing.T) 
 	}
 	if tracker.Stalled(stallChatID) {
 		t.Fatal("Stalled = true after the tmux session vanished, want false")
+	}
+}
+
+// --- BOS-805: spinner-aware liveness ---------------------------------------
+
+// codexNoWorkingIndicatorClient mirrors the REAL codex plugin, whose
+// HasWorkingIndicator returns IsWorking=false unconditionally
+// (plugins/bossd-plugin-codex/server.go). The spinner-aware tests below use it
+// deliberately: if the poller ever routed spinner detection back through that
+// RPC, every codex case here would report "no spinner" and fail — which is the
+// silently-wrong signal this whole ticket exists to remove.
+type codexNoWorkingIndicatorClient struct {
+	claudeFakeClient
+}
+
+func (c *codexNoWorkingIndicatorClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
+	return &pb.PluginInfo{Name: "codex"}, nil
+}
+
+func (c *codexNoWorkingIndicatorClient) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
+	return &pb.HasQuestionPromptResponse{}, nil
+}
+
+func (c *codexNoWorkingIndicatorClient) HasWorkingIndicator(context.Context, *pb.HasWorkingIndicatorRequest) (*pb.HasWorkingIndicatorResponse, error) {
+	return &pb.HasWorkingIndicatorResponse{IsWorking: false}, nil
+}
+
+// spinnerAwareAgentClients registers both agents so a test case can pick either
+// grammar by the chat's AgentName.
+func spinnerAwareAgentClients() map[string]agent.AgentRunnerClient {
+	return map[string]agent.AgentRunnerClient{
+		"claude": &claudeFakeClient{},
+		"codex":  &codexNoWorkingIndicatorClient{},
+	}
+}
+
+// claudeSpinnerPane renders Claude's live working footer (· separator, U+00B7)
+// under a line of agent output.
+func claudeSpinnerPane(output, verb, elapsed string) string {
+	return output + "\n✻ " + verb + " (" + elapsed + " · esc to interrupt)"
+}
+
+// codexSpinnerPane renders codex's live working footer (• separator, U+2022).
+func codexSpinnerPane(output, elapsed string) string {
+	return output + "\n• Working (" + elapsed + " • esc to interrupt)"
+}
+
+// TestTmuxStatusPoller_SubstantiveOutputDiscriminatesSpinnerRedraw is the core
+// BOS-805 claim: two captures that differ ONLY in spinner chrome must not
+// advance the substantive-output stamp, while any genuine change must. The
+// negative cases are the load-bearing half — over-normalizing fails silently by
+// making a working chat read as wedged.
+func TestTmuxStatusPoller_SubstantiveOutputDiscriminatesSpinnerRedraw(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+
+	tests := []struct {
+		name               string
+		agentName          string
+		first              string
+		second             string
+		wantAdvance        bool
+		wantSpinnerPresent bool
+	}{
+		{
+			name:               "claude elapsed counter only",
+			agentName:          "claude",
+			first:              claudeSpinnerPane("⏺ Reviewing the diff", "Working", "3s"),
+			second:             claudeSpinnerPane("⏺ Reviewing the diff", "Working", "48s"),
+			wantAdvance:        false,
+			wantSpinnerPresent: true,
+		},
+		{
+			name:               "claude gerund rotates with the counter",
+			agentName:          "claude",
+			first:              claudeSpinnerPane("⏺ Reviewing the diff", "Thinking…", "3s"),
+			second:             claudeSpinnerPane("⏺ Reviewing the diff", "Percolating…", "1m"),
+			wantAdvance:        false,
+			wantSpinnerPresent: true,
+		},
+		{
+			name:               "codex elapsed counter only",
+			agentName:          "codex",
+			first:              codexSpinnerPane("• Ran make test", "3s"),
+			second:             codexSpinnerPane("• Ran make test", "41s"),
+			wantAdvance:        false,
+			wantSpinnerPresent: true,
+		},
+		{
+			name:               "claude emits real new output",
+			agentName:          "claude",
+			first:              claudeSpinnerPane("⏺ Reviewing the diff", "Working", "3s"),
+			second:             claudeSpinnerPane("⏺ Reviewing the diff\n⏺ Wrote tracker.go", "Working", "48s"),
+			wantAdvance:        true,
+			wantSpinnerPresent: true,
+		},
+		{
+			name:               "codex emits real new output",
+			agentName:          "codex",
+			first:              codexSpinnerPane("• Ran make test", "3s"),
+			second:             codexSpinnerPane("• Ran make test\n• Ran make lint", "41s"),
+			wantAdvance:        true,
+			wantSpinnerPresent: true,
+		},
+		{
+			// Over-normalization negative case: a single character on a line
+			// adjacent to the spinner must survive the normalizer.
+			name:               "one character changes on the line above the spinner",
+			agentName:          "claude",
+			first:              claudeSpinnerPane("⏺ Wrote 1 file", "Working", "3s"),
+			second:             claudeSpinnerPane("⏺ Wrote 2 file", "Working", "3s"),
+			wantAdvance:        true,
+			wantSpinnerPresent: true,
+		},
+		{
+			// Same, with the spinner counter ALSO ticking, so the only thing
+			// separating this from the first case is the one character.
+			name:               "one character changes while the counter also ticks",
+			agentName:          "codex",
+			first:              codexSpinnerPane("• Ran 1 test", "3s"),
+			second:             codexSpinnerPane("• Ran 2 test", "41s"),
+			wantAdvance:        true,
+			wantSpinnerPresent: true,
+		},
+		{
+			name:               "spinner disappears and the pane settles",
+			agentName:          "claude",
+			first:              claudeSpinnerPane("⏺ Reviewing the diff", "Working", "3s"),
+			second:             "⏺ Reviewing the diff\n⏺ Done",
+			wantAdvance:        true,
+			wantSpinnerPresent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := NewTracker()
+			tmuxName := "boss-test-spinner-" + tt.agentName
+			agentSessionID := "chat-spinner-" + tt.agentName
+
+			captures := map[string]string{tmuxName: tt.first}
+			factory := &mockTmuxFactory{
+				sessions: map[string]bool{tmuxName: true},
+				captures: captures,
+			}
+			tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+			chatStore := &mockChatStore{
+				chats: map[string]*models.AgentChat{
+					agentSessionID: {AgentSessionID: agentSessionID, AgentName: tt.agentName, TmuxSessionName: &tmuxName},
+				},
+			}
+
+			poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, spinnerAwareAgentClients(), zerolog.Nop())
+			poller.RegisterChat(agentSessionID)
+			poller.pollOnce(context.Background())
+
+			_, firstSubstantive, _ := tracker.Liveness(agentSessionID)
+			if firstSubstantive.IsZero() {
+				t.Fatal("last substantive output is zero after the first poll")
+			}
+			firstEntry := tracker.Get(agentSessionID)
+			if firstEntry == nil {
+				t.Fatal("no tracker entry after the first poll")
+			}
+
+			factory.mu.Lock()
+			captures[tmuxName] = tt.second
+			factory.mu.Unlock()
+			poller.pollOnce(context.Background())
+
+			spinnerPresent, secondSubstantive, _ := tracker.Liveness(agentSessionID)
+			advanced := secondSubstantive.After(firstSubstantive)
+			if advanced != tt.wantAdvance {
+				t.Errorf("last substantive output advanced = %v, want %v (first %v, second %v)",
+					advanced, tt.wantAdvance, firstSubstantive, secondSubstantive)
+			}
+			if spinnerPresent != tt.wantSpinnerPresent {
+				t.Errorf("spinner present = %v, want %v", spinnerPresent, tt.wantSpinnerPresent)
+			}
+
+			// last_output_at keeps its existing value semantics: any raw pane
+			// change — spinner redraw included — still advances it.
+			secondEntry := tracker.Get(agentSessionID)
+			if secondEntry == nil {
+				t.Fatal("no tracker entry after the second poll")
+			}
+			if secondEntry.LastOutputAt.Before(firstEntry.LastOutputAt) {
+				t.Errorf("LastOutputAt went backwards: %v then %v", firstEntry.LastOutputAt, secondEntry.LastOutputAt)
+			}
+			if tt.first != tt.second && !secondEntry.LastOutputAt.After(firstEntry.LastOutputAt) {
+				t.Errorf("LastOutputAt did not advance on a raw pane change: %v then %v",
+					firstEntry.LastOutputAt, secondEntry.LastOutputAt)
+			}
+		})
+	}
+}
+
+// TestTmuxStatusPoller_SameTickRegistrationsAreMarkedSeeded pins the collision
+// half: two chats registered in the same tick DO share a timestamp — that is
+// unchanged, and existing consumers depend on it — but a consumer can now tell
+// the shared value is a seed rather than a real simultaneous observation.
+func TestTmuxStatusPoller_SameTickRegistrationsAreMarkedSeeded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxA, tmuxB := "boss-test-seed-a", "boss-test-seed-b"
+	chatA, chatB := "chat-seed-a", "chat-seed-b"
+	pane := claudeSpinnerPane("⏺ Starting up", "Working", "3s")
+
+	captures := map[string]string{tmuxA: pane, tmuxB: pane}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxA: true, tmuxB: true},
+		captures: captures,
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			chatA: {AgentSessionID: chatA, AgentName: "claude", TmuxSessionName: &tmuxA},
+			chatB: {AgentSessionID: chatB, AgentName: "claude", TmuxSessionName: &tmuxB},
+		},
+	}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, spinnerAwareAgentClients(), zerolog.Nop())
+	poller.RegisterChat(chatA)
+	poller.RegisterChat(chatB)
+	poller.pollOnce(context.Background())
+
+	for _, id := range []string{chatA, chatB} {
+		_, _, seeded := tracker.Liveness(id)
+		if !seeded {
+			t.Errorf("%s: last output reads as observed after registration, want seeded", id)
+		}
+		if entry := tracker.Get(id); entry == nil || entry.LastOutputAt.IsZero() {
+			t.Errorf("%s: expected a seeded LastOutputAt, got %+v", id, entry)
+		}
+	}
+
+	// Only chat A produces genuine output. Its seed flag clears; chat B, whose
+	// pane only redrew its spinner, keeps reporting a seeded value.
+	factory.mu.Lock()
+	captures[tmuxA] = claudeSpinnerPane("⏺ Starting up\n⏺ Read tracker.go", "Working", "6s")
+	captures[tmuxB] = claudeSpinnerPane("⏺ Starting up", "Working", "6s")
+	factory.mu.Unlock()
+	poller.pollOnce(context.Background())
+
+	if _, _, seeded := tracker.Liveness(chatA); seeded {
+		t.Error("chat A still reads as seeded after producing real output")
+	}
+	_, substantiveB, seededB := tracker.Liveness(chatB)
+	if !seededB {
+		t.Error("chat B's seed flag cleared on a spinner-only redraw, want still seeded")
+	}
+	_, substantiveA, _ := tracker.Liveness(chatA)
+	if !substantiveA.After(substantiveB) {
+		t.Errorf("chat A's substantive stamp %v did not overtake chat B's %v", substantiveA, substantiveB)
+	}
+}
+
+// TestTmuxStatusPoller_BootstrapSeedsAreMarkedSeeded covers the other seeding
+// path: a daemon restart stamps every restored chat with the same pastTime.
+func TestTmuxStatusPoller_BootstrapSeedsAreMarkedSeeded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tracker := NewTracker()
+	tmuxName := "boss-test-seed-bootstrap"
+	agentSessionID := "chat-seed-bootstrap"
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: claudeSpinnerPane("⏺ Restored", "Working", "3s")},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, spinnerAwareAgentClients(), zerolog.Nop())
+	poller.Bootstrap(context.Background())
+
+	spinnerPresent, substantiveAt, seeded := tracker.Liveness(agentSessionID)
+	if !seeded {
+		t.Error("bootstrap-restored chat does not report a seeded last output")
+	}
+	if !spinnerPresent {
+		t.Error("bootstrap did not record the live spinner on the restored pane")
+	}
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("no tracker entry after bootstrap")
+	}
+	if !substantiveAt.Equal(entry.LastOutputAt) {
+		t.Errorf("bootstrap substantive stamp %v != seeded LastOutputAt %v", substantiveAt, entry.LastOutputAt)
 	}
 }

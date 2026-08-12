@@ -85,11 +85,20 @@ boss session link-pr abc123 477
 boss session link-pr abc123 https://github.com/owner/repo/pull/477
 ```
 
-### `boss tail [source] [flags]`
+### `boss session mcp <chat-id> [flags]`
 
-Tail daemon logs
+Show which MCP servers this chat's agent actually resolved, with tools and source
 
-Prints recent rotated service logs without needing to locate them on disk. It defaults to bossd; pass boss or bosso to select one source, or use --all to merge all three by timestamp. Use -f to follow new output. Raw non-JSON diagnostics always remain visible, including when filtering.
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+- `--tools` — Include each server's resolved tool names
+
+### `boss tail [source...] [flags]`
+
+Tail daemon and agent logs
+
+Prints recent logs without needing to locate them on disk. It defaults to bossd; pass boss or bosso to select another service, or --all to merge all three by timestamp. Pass an agent-session id to read that agent's log from the agent-logs directory instead — both formats are read, the raw tmux capture an interactive chat writes and the JSON lines a headless run writes. Naming several sources interleaves them by timestamp. Use -f to follow new output. Raw non-JSON diagnostics always remain visible, including when filtering, and agent output carries no level so it is never filtered out.
 
 **Flags:**
 
@@ -105,6 +114,10 @@ Prints recent rotated service logs without needing to locate them on disk. It de
 boss tail
 boss tail -f
 boss tail --all -n 50
+# Follow one agent session's log
+boss tail 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607 -f
+# Interleave daemon and agent output
+boss tail bossd 3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607
 boss tail --plugin dependabot
 boss tail --json | jq 'select(.level=="error")'
 ```

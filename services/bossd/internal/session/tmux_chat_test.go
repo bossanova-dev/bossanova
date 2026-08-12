@@ -661,6 +661,20 @@ func TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent(t *testing.T) {
 	if got.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Errorf("preflight profile = %v, want TRACKER_PLAN_ATTACHMENT_V1", got.profile)
 	}
+	// The gate must profile the session's own worktree, so an agent that reads
+	// a repo-level config file sees the same runtime the spawned chat will
+	// (BOS-865). A future refactor that drops it fails here.
+	// The guard keeps the comparison below from passing vacuously on "" == "".
+	// StartTmuxChat itself rejects an empty worktree path today, so the guard is
+	// belt-and-braces against that precondition being relaxed — not the only
+	// thing standing between this assertion and a vacuous pass.
+	want := h.sessions.sessions["sess-1"].WorktreePath
+	if want == "" {
+		t.Fatal("fixture bug: session worktree path is empty, so the workDir assertion below would be vacuous")
+	}
+	if got.workDir != want {
+		t.Errorf("preflight workDir = %q, want the session worktree path %q", got.workDir, want)
+	}
 }
 
 // TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat covers the opposite,

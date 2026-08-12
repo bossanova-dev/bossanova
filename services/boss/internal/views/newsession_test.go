@@ -206,6 +206,10 @@ func (s *stubClient) WakeChat(context.Context, string, string, bool) (*pb.WakeCh
 func (s *stubClient) DescribeChatLaunch(context.Context, string) (*pb.DescribeChatLaunchResponse, error) {
 	panic("unused")
 }
+
+func (s *stubClient) DescribeChatMCP(context.Context, string) (*pb.DescribeChatMCPResponse, error) {
+	return nil, nil
+}
 func (s *stubClient) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }

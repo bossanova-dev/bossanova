@@ -225,7 +225,38 @@ assumeCleared, assumeClearedAndMerge}`.
 2. **Verify the tracker MCP** with a cheap read — the adapter's `selectPlanned`
    capability (`operationMap.selectPlanned`), the same planned-queue list the epic
    assembly uses (an empty result still proves reachability).
-   Unreachable → stop `BLOCKED: tracker MCP unreachable`.
+
+   A failed read has two causes with **opposite** fixes, so classify it with
+   `trackerMcpPreflight` instead of reporting a bare unreachable. Each block is a
+   fresh shell and `$BOSS_EPIC_TOOLBOX` is exported in step 3's, so re-resolve it:
+
+   ```bash
+   set -euo pipefail
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+   # A server failing at CONNECT publishes no tools, so the tool list alone cannot
+   # tell it from one never declared. Older binaries lack this read — hence the
+   # explicit failure branch; no report is supported and degrades to today.
+   DECLARED="$("${BOSS:-boss}" session mcp "${BOSS_AGENT_SESSION_ID:-}" --json 2>/dev/null)" || DECLARED=''
+   export DECLARED
+   node --input-type=module -e '
+     const { trackerMcpPreflight } = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/tracker/preflight.mjs`)
+     let declaredServers = []
+     try { declaredServers = JSON.parse(process.env.DECLARED || "{}").servers || [] } catch {}
+     process.stdout.write(JSON.stringify(trackerMcpPreflight({
+       operationMap: ADAPTER_OPERATION_MAP, mcpServer: TRACKER_MCP_SERVER,
+       agent: process.env.BOSS_AGENT || "", availableTools: AVAILABLE_TOOLS,
+       probeOk: PROBE_OK, declaredServers,
+     })))
+   '
+   ```
+
+   On `ok: false` stop `BLOCKED: <message>` — no spawn, no tracker write. `absent`
+   ⇒ the repo never declared it for this harness: fix the **repo**. `unreachable` ⇒
+   declared but silent: fix **credentials/network**. Log
+   `tracker preflight: <status> (declared: <true|false|no report>)` on **both**
+   paths, so a green run also says which evidence decided it.
 
 3. **Validate a transport before scheduling — MCP _or_ the boss CLI.** Every
    session operation this skill performs has two possible carriers: the boss MCP

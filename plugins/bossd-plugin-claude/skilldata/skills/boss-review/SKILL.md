@@ -1,6 +1,6 @@
 ---
 name: boss-review
-description: Multi-lens, subagent-driven code review for the current branch. Runs conditional golang-pro / tui-design / impeccable lenses, discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-build. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
+description: Multi-lens, subagent-driven code review for the current branch. Runs the conditional lenses the repo's registry defines (golang-pro / impeccable / database-review / api-review by default), discovered whole-branch round extensions with a host/inline fallback contract, fixes every must-fix finding locally, and emits an Assessment/Evidence/Confidence report plus a copy-able follow-up-ticket prompt. Used by boss-build. Use when asked to "review this branch", "boss-review", or to run automated review before a PR.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Task, Skill
 ---
 
@@ -199,6 +199,15 @@ The legs, each with its `LEG_SECONDS`:
 - **Phase 6** — each fix→confirm round → `FIX_ROUND_SECONDS`.
 - **Phase 8** — each post-terminal notes-extension dispatch, in a repository that opted in by
   providing one → `DEADLINE_LEG_SECONDS`.
+- **Phase D** — the opportunistic default-round batch → `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS`.
+  **One** leg for the whole phase however many capabilities it admits, because they go out as a
+  single parallel batch, and it is charged only on the initial pass — Phase D never re-runs in a
+  Phase 6 confirming round. The `FIX_ROUND_SECONDS` surcharge is what makes ordering it last an
+  actual bound rather than a hope: Phase D's findings enter the same must-fix set Phase 6 remediates,
+  so a Phase D admitted with only its own leg affordable can hand Phase 6 a must-fix it has no round
+  left to fix, turning an optional add-on into a capped report. Requiring the fix round up front
+  means a run that cannot fund **both** records `Phase D: skipped (caller deadline)` and loses
+  nothing guaranteed — which is the honest form of that claim.
 
 Phase 0 is **not** gated, and that is deliberate rather than an omission: it is local `git`/`node`
 work measured in seconds with no awaited subagent to overrun on. Phases 5 and 7 are local too.
@@ -218,11 +227,20 @@ go straight to Phase 7 and exit through the **capped report** — `status: "capp
 run that dispatched no reviewer at all still reports honestly through that path; it never reports
 `clean`.
 
-**Phase 8 is the one exception, because it runs after that report exists.** Its gate refuses a
-dispatch the caller's clock cannot fund; it does not re-enter Phase 7, does not touch the capped
-report, and does not change the outcome, exit code, or any tracker or PR write. Record
+**Two phases are exempt, for opposite reasons — everything else caps.**
+
+**Phase 8, because it runs after that report exists.** Its gate refuses a dispatch the caller's
+clock cannot fund; it does not re-enter Phase 7, does not touch the capped report, and does not
+change the outcome, exit code, or any tracker or PR write. Record
 `extension <name>: skipped (caller deadline)` in the ledger and continue to cleanup. Routing a
 post-terminal phase through the capped exit would rewrite a verdict already handed to the caller.
+
+**Phase D, because it was never part of the guarantee.** It runs before the report, but it is
+opportunistic by construction: on most machines its capabilities are simply absent, and that absence
+is already a silent ledger line rather than a cap. A refusal for want of clock is the same absence
+arriving by a different route, so capping the report for it would report a run as truncated whenever
+it was merely ordinary. Record `Phase D: skipped (caller deadline)` and continue to Phase 5. The
+guaranteed review is Phase R's, and Phase R still caps.
 
 Ignoring a supplied deadline — or checking only that it has not yet passed, or checking it only in
 the fix loop — makes the caller's bound inert while every other instruction here still reads as
@@ -315,7 +333,14 @@ Variable meanings:
   path.
 - `BOSS_REVIEW_FALSIFICATION_REFERENCE` — resolved absolute installed path handed explicitly to
   every fresh reviewer; a Phase 0 shell export does not carry into native subagents.
-- `SECOND_VOICE` — the opposite agent for the optional independent-review fallback path.
+- `SECOND_VOICE` — the opposite agent that serves Phase D's **default second-voice round**. An
+  independent voice is worth defaulting to rather than falling back to: it is the reviewer least
+  likely to repeat the authoring agent's blind spots, so it is run whenever the environment supplies
+  it, and silently skipped when it does not.
+- `BOSS_REVIEW_DEFAULT_ROUNDS` — Phase D's kill switch, read from the environment rather than
+  derived here. `0` disables the phase outright; any other value, including unset, leaves it
+  enabled. Listed with the variables Phase D consumes because an operator looking for the escape
+  hatch looks here, not in the phase that honours it.
 - `LENSES_JSON` — the matched specialist lenses to add on top of the whole-branch rounds: a JSON
   array `[{lens, skill, fallbackRubric, files}]` from the `.boss-skills.json` `lensMap` registry.
   An **empty array** means no specialist pass runs; the round step (Phase R) still reviews
@@ -421,7 +446,7 @@ inert are not alike and the ledger must not conflate them. Judge the binding aga
 `$LENSES_JSON`, which holds only the lenses whose globs matched this diff, and never by reading the
 repo-root `.boss-skills.json` directly. That file is an **override**, not the registry: a repo that
 ships no `.boss-skills.json`, or one whose file omits `lensMap`, still has the full default
-registry, so reading the raw file there would find no `tui` or `web` row and report those
+registry, so reading the raw file there would find no `web` or `api` row and report those
 correctly-bound extensions as misconfigured — the very confusion this split exists to prevent. The
 two cases are:
 
@@ -749,6 +774,203 @@ If none, output [].
 Validate that the output parses before categorize. A malformed Tier 3 output is recorded as a
 skipped round and the pipeline continues honestly.
 
+## Phase D — Default rounds (opportunistic; additive, never a tier)
+
+Phase R guarantees that the branch is reviewed. Phase D adds the review **capabilities** this
+repository's config asks for by default — an independent second voice from the other agent, a
+configured code-review pass — **when the environment happens to supply them**, and adds nothing at
+all when it does not. Every absence is a silent, non-fatal skip: one ledger line, never a warning,
+never `BLOCKED`, never a failed run.
+
+It sits **after Phase R and before Phase 5** for two reasons, both load-bearing:
+
+- Phase R's per-extension outcomes are settled by now, which is what lets duplicate suppression key
+  on an extension having **run successfully** rather than merely existing. Keying on presence would
+  let a repo-local round that failed to load silently retire the capability it declares.
+- As the **last** dispatch leg it is the first thing the [§Caller deadline](#caller-deadline-wall-clock-cap)
+  gate refuses, so this opportunistic add-on can never starve the guaranteed review above it — and
+  because it is priced with a fix round included (below), it cannot starve the remediation of its own
+  findings either.
+
+**Phase D is not a fourth tier.** It never suppresses Phase R's Tier 2 or Tier 3, and it is never a
+substitute for them: an all-skipped Phase D changes no control flow, and a run whose only reviewer
+was a default round would be a run with no guaranteed whole-branch pass — exactly the state Phase R's
+own fallbacks exist to prevent. Phase D is read after Phase R has already decided its tier.
+
+**Kill switch.** When `BOSS_REVIEW_DEFAULT_ROUNDS=0`, skip this entire phase — no registry read, no
+probe, no dispatch — and append `default rounds: disabled (BOSS_REVIEW_DEFAULT_ROUNDS=0)` to the
+ledger. Any other value, including unset, leaves Phase D enabled. This is the escape hatch for a
+repository or operator that finds the added round unhelpful; it needs no config edit.
+
+**Deadline gate.** Apply the §Caller deadline gate **once**, with
+`LEG_SECONDS=$(( DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS ))`, immediately before the single dispatch
+batch below — one leg for the whole phase, never one per capability. The surcharge is deliberate and
+is what distinguishes Phase D's gate from every other leg's: a Phase D finding is an ordinary
+must-fix, so admitting the phase commits the run to a Phase 6 round it may not be able to afford, and
+an optional add-on that forces a capped report is worse than no add-on. Buy the remediation with the
+round or do not buy the round. If the gate refuses, dispatch nothing, append
+`Phase D: skipped (caller deadline)` to the ledger, and continue to Phase 5 with what Phase R
+produced. Phase D does **not** exit through the
+capped report: it is optional by construction, so refusing it is a normal outcome, not a truncated
+review. Bound each dispatch by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) and the
+`LEG_TIMEOUT_SECONDS` clamp, stated in the worker brief as a hard cooperative return-by.
+
+Read the registry — the effective config's default-round list:
+
+```bash
+DEFAULT_ROUNDS_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, reviewDefaultRounds } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(reviewDefaultRounds(loadSkillConfig())))')
+```
+
+Each entry is `{capability, kind, skill?}`. `capability` is an id this core knows only as an id — the
+registry, not this file, decides what serves it, which is what keeps a concrete reviewer's name out
+of the portable core. `reviewDefaultRounds` returns `[]` for a config carrying no registry, and `[]`
+is simply an empty phase: the same silent no-op as every capability being unavailable.
+
+Walk the entries in registry order and resolve each one:
+
+1. **Already covered?** If a Phase R round extension that **ran successfully** declares
+   `capability === <capability>` in its discovered descriptor
+   (`ROUNDS_JSON.extensions[].capability`), drop the entry and append
+   `default round <capability>: skipped (covered by extension <name>)` to the ledger. One pass, not
+   two. An extension that was skipped — failed to load, errored, timed out, or returned no valid
+   envelope — does **not** cover its capability, and the entry stays admitted.
+2. **Probe**, by `kind`:
+   - **`cross-agent`** — the capability is served by the opposite agent's CLI, `$SECOND_VOICE` from
+     Phase 0. The helper's `probe` subcommand is exactly `resolveAgentBin` + `classifyProbe`, so use
+     it rather than re-deriving either:
+
+     ```bash
+     PROBE_STATE=$(node "$BOSS_REVIEW_TOOLBOX/$SECOND_VOICE-review.mjs" probe 2>/dev/null || echo error)
+     ```
+
+     It prints one of `ready`, `not_installed`, `not_authed`, `error`. **Only `ready` admits the
+     entry**; anything else drops it with `default round <capability>: skipped (probe <state>)`. A
+     missing or unauthenticated CLI is the expected case on most machines, not a fault.
+
+   - **`skill`** — there is no shell-queryable fact to probe here, so **the probe is the dispatch**:
+     admit the entry, and require the worker to attempt to load the registry's configured `skill`
+     and, when it cannot, return the skip envelope below instead of findings. Never report an
+     unavailable skill as an `ok: true` envelope with empty `items[]` — that shape says "this
+     capability ran and found nothing", which would silently retire the round.
+3. **Dispatch** every admitted entry as **one parallel awaited batch**: a single message carrying one
+   `Task` call per entry. Parallel means several **awaited** calls issued together; `run_in_background`
+   stays forbidden. Each worker is a fresh `general-purpose` subagent, read-only — it MUST NOT mutate
+   the worktree, index, or HEAD — and writes exactly one envelope to
+   `<RUN_TMP>/findings-round-default-<capability>.json`. Exactly six placeholders in this step are
+   substituted by **this phase** before the brief is handed over — `<RUN_TMP>`, `<capability>`,
+   `<TOOLBOX>`, `<SECOND_VOICE>`, `<MERGE_BASE>`, `<FALSIFICATION_REFERENCE>` — the way Phase R
+   substitutes its reviewer template, because a worker inherits no shell variable from here. The
+   angle brackets inside the JSON shapes below (`<path>`, `<short>`, `<int|null>`, `<why + fix>`)
+   and the `<reason>` in a ledger line are the worker's own fill-in slots and stay literal:
+
+   ```json
+   {
+     "ok": true,
+     "extension": "default-round-<capability>",
+     "role": "round",
+     "items": [],
+     "notes": "",
+     "error": null
+   }
+   ```
+
+   `items[]` entries are the [§Findings contract](#findings-contract). Attribution is **derived, not
+   declared**: Phase 5 stamps every item's `lens` from the envelope's filename, so a `lens` a worker
+   writes into an item is overwritten and a worker that omits it loses nothing. What the worker must
+   get right is the filename — the `findings-round-` prefix is **required**, not cosmetic, because
+   Phase 5 infers an envelope's expected role from that prefix and rejects an envelope file it cannot
+   place, so a differently-named default round would have its findings discarded silently. Pass
+   `<FALSIFICATION_REFERENCE>` — the resolved absolute installed path from Phase 0 — into every
+   worker and require it, and any nested reviewer it launches, to read that recipe and use Tier A
+   only when a finding depends on whether an assertion is load-bearing.
+
+   **What the worker does inside that envelope depends on the entry's `kind`:**
+
+   - **`kind: 'cross-agent'`** — the worker does **not** review the branch itself. It shells out to
+     the opposite agent's helper — the same one Phase 0 probed — and normalizes what comes back.
+     Put the command in the brief **already substituted**, exactly as Phase R substitutes its
+     reviewer template: `<TOOLBOX>` → the `BOSS_REVIEW_TOOLBOX` path this phase resolved,
+     `<SECOND_VOICE>` → the Phase 0 agent name, `<MERGE_BASE>` → the resolved merge-base SHA,
+     `<FALSIFICATION_REFERENCE>` → the resolved absolute installed path. A worker is a fresh
+     subagent with a fresh shell and inherits none of this phase's variables, so a brief that ships
+     `$BOSS_REVIEW_TOOLBOX` and `$SECOND_VOICE` unexpanded has the worker run
+     `node "/-review.mjs" run --base "" --head HEAD`, exit non-zero, and get silently skipped by the
+     very rule two paragraphs down — the same inertness as reviewing it here, wearing a different
+     costume.
+
+     ```bash
+     node "<TOOLBOX>/<SECOND_VOICE>-review.mjs" run \
+       --base "<MERGE_BASE>" --head HEAD \
+       --falsification-reference "<FALSIFICATION_REFERENCE>"
+     ```
+
+     The helper carries the recipe path down to its nested reviewer, which is how falsification
+     reaches the other model, and bounds its own wall time (`BOSS_CROSS_REVIEW_TIMEOUT_MS`, 300s by
+     default). That bound is **independent** of this phase's allowance: it does not track
+     `BOSS_SKILL_EXTENSION_TIMEOUT_MS` the way `DEADLINE_LEG_SECONDS` does, so on a stock host the
+     two coincide at 300s and a helper that runs to its own timeout has spent the entire dispatch
+     leg. Treat it as a backstop against an outside CLI that never returns, never as headroom, and
+     move it explicitly on a host that has moved the other one — in either direction.
+
+     The helper prints the outside model's review as **prose**, not JSON, so the worker's remaining
+     job is to turn that prose into the same finding objects Phase R's Tier 3 rubric produces — and
+     to drop what it cannot. Require exactly:
+
+     ```
+     { "severity": "Critical|Warning|Suggestion", "file": "<path>", "line": <int|null>,
+       "title": "<short>", "detail": "<why + fix>" }
+     ```
+
+     Omit `lens`; Phase 5 stamps it from the filename either way. A blank `file`, a missing `title`,
+     or a severity outside that vocabulary sends the item to `invalid` at triage, and unrepaired
+     `invalid` items deny the run a clean verdict — so a remark the outside model made about no
+     particular file is dropped rather than guessed at, and belongs in `notes` if it matters at all.
+     **A cross-agent worker that reads the diff and reports its own findings has produced another
+     same-model round wearing the label** — the one outcome this entry exists to prevent, and one
+     nothing downstream can detect. A non-zero exit, an empty stdout, or a timeout is a skip
+     (`default round <capability>: skipped (<reason>)`), never a finding and never a fallback to
+     reviewing it here.
+
+   - **`kind: 'skill'`** — the worker loads the registry's configured `skill` and reviews
+     `<MERGE_BASE>..HEAD` through it, returning its findings.
+
+     <!-- tier: opus (no override) because a skill default round is the same whole-branch
+     correctness and second-opinion judgement as a Phase R round. Not tiered down. -->
+
+     This dispatch stays on the orchestrator's model (Opus): it is the same whole-branch judgement
+     Phase R performs, so no cheaper `model:` override is applied. A `cross-agent` entry is not
+     tiered at all — its judgement happens inside the other agent's CLI, so the model behind the
+     worker that shells out to it is immaterial.
+
+4. **Validate and merge.** Validate each envelope, then merge as Phase R does — after **all**
+   dispatches have returned, walking the entries in registry order so the ledger and Phase 7's
+   evidence rows stay byte-stable whatever order the workers finish in:
+
+   ```bash
+   node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role round --file "$RUN_TMP/findings-round-default-<capability>.json"
+   ```
+
+   On a validation failure, worker error, timeout, or missing file, append
+   `default round <capability>: skipped (<reason>)` and continue. Do **not** register default-round
+   outputs in `$RUN_TMP/expected-reviewer-outputs.json`: a registered-but-missing output is reported
+   as an unread reviewer, and an unavailable capability here is a legitimate absence, not an unread
+   review.
+
+On a non-`ready` probe, an unloadable skill, or any other unavailability, the worker (or the
+orchestrator, when it never dispatched) records the skip envelope shape below and the run continues
+unchanged:
+
+```json
+{
+  "ok": false,
+  "extension": "default-round-<capability>",
+  "role": "round",
+  "items": [],
+  "notes": "",
+  "error": "default round <capability> skipped (<reason>)"
+}
+```
+
 ## Phase 5 — Categorize
 
 Triage every round's findings through the deterministic helper rather than by hand — it dedupes on
@@ -851,8 +1073,9 @@ Each round:
    Open the cited file rather than the diff hunk, and re-derive any claimed count or affected-site
    set from the code; a fix authored to an unchecked premise is how one round manufactures the next
    round's finding. Then: one item at a time; no unrelated refactors; write behaviour-focused tests
-   for coverage gaps. It fixes, runs the affected module tests/lint (per
-   `docs/testing/test-command-manifest.md`), and commits with `git commit --no-verify`. Each item
+   for coverage gaps. It fixes, runs the affected module tests/lint (per the repo's test-command
+   manifest at `manifestPath(cfg)`, or its own discovery prose when that returns `null`), and
+   commits with `git commit --no-verify`. Each item
    ends in exactly one disposition: **fixed** (code changed) or **verified** (adjudication refuted
    the finding — requires a recorded `rationale` **and** the `evidence` that settled it: the file
    and lines read, or the command run and its output). Record `fixed` items to `## Fixed`; record
@@ -872,8 +1095,11 @@ Each round:
    the confirming surface; re-dispatch a Phase 1 specialist lens only if a confirming-surface
    file matches its change type. **When no specialist lens matches** (e.g. the fix touched only
    scripts/docs), the confirming pass is exactly Phase R over the surface — never skip the pass
-   entirely. Optional independent-voice rounds may be skipped on confirming passes if they were
-   unavailable the first time.
+   entirely. **Phase D MUST NOT re-run on a confirming pass** — not "may be skipped", must not run.
+   Its rounds are opportunistic add-ons, and the known failure mode of an independent second voice is
+   a reviewer that re-opens fresh findings every round, which turns a fix loop that should converge
+   into one bounded only by `$MAX_ROUNDS`. Pinning Phase D to the initial pass makes termination
+   structural rather than hopeful, and caps its whole-run cost at a single dispatch batch.
    Feed the confirming round the ledger's `## Leave as-is` entries — every declined finding with its
    rationale and evidence — so it neither re-litigates a settled item nor inherits one that rests on
    a false premise. A declined finding's rationale is itself reviewable: a factually false
@@ -1054,8 +1280,10 @@ fi
 
 A refused gate skips **that** descriptor: append `extension <name>: skipped (caller deadline)` and
 move to the next. When it refuses the first one, skip the phase — remove `NOTES_RUN_TMP` and go
-straight to cleanup. Unlike every other gated leg this one never re-enters Phase 7 and never touches
-the capped report: the terminal outcome was decided before this phase began. No extra execution
+straight to cleanup. This leg never re-enters Phase 7 and never touches the capped report, because
+the terminal outcome was decided before this phase began. It shares that exemption only with
+Phase D, and for the opposite reason — see §Caller deadline; every gated leg that carries part of
+the review guarantee does cap. No extra execution
 clamp is needed here either — unlike the Tier-2/Tier-3 fallbacks these dispatches carry their own
 `BOSS_SKILL_EXTENSION_TIMEOUT_MS` bound, and `DEADLINE_LEG_SECONDS` is derived from exactly that
 value, so requiring the whole allowance up front is the whole bound. A repository that has not

@@ -42,14 +42,21 @@ export function globToRegExp(glob) {
   return new RegExp(re + '$')
 }
 
-/** Bossanova's current values — the fallback when no config file is present. */
+/** Project-agnostic happy defaults — the fallback when no config file is present. */
 export const DEFAULT_CONFIG = Object.freeze({
-  // Byte-identical to the committed .boss-skills.json lensMap: DEFAULT_CONFIG is
-  // the fallback when no config file is present, so it must carry the same
-  // fallbackRubric on every lens. Without it, `--lenses` in a checkout lacking
-  // .boss-skills.json would emit go/tui/web with no inline fallback, and a
-  // non-vendored lens skill (e.g. impeccable) could be dispatched with nothing
-  // to substitute into Phase 1 — the graceful-degradation path the skill relies on.
+  // Deliberately NOT a copy of any one checkout's lensMap — the inverse of the pin this
+  // block used to carry. The published cores install into every user's GLOBAL skill
+  // directory, so these defaults are what a foreign repo inherits: a static, language-shaped
+  // catalogue whose every glob starts with `**/` and therefore anchors to no top-level
+  // directory. A repo's own path-anchored lenses (and its build commands, test manifest and
+  // tracker identity) live ONLY in that checkout's own .boss-skills.json. The catalogue is
+  // not gated on marker files because a lens self-selects by matching changed files: an
+  // entry that matches nothing is simply inert, whereas gating could only subtract a lens
+  // that would otherwise have been correct. Every entry still carries a non-empty
+  // fallbackRubric, written for a FOREIGN repo, because bs-review substitutes it into
+  // Phase 1 when the named skill can't be loaded (e.g. an operator-global skill like
+  // impeccable off the author's machine) — the graceful-degradation path the skill relies on.
+  // The `commands` and `test` blocks are absent by design: see detectRepoDefaults().
   lensMap: [
     {
       id: 'go',
@@ -59,49 +66,52 @@ export const DEFAULT_CONFIG = Object.freeze({
         'review through an inline Go rubric: idiomatic error handling and wrapping, goroutine/channel safety and leaks, interface and generics design, allocation on hot paths, and table-driven test coverage for new/changed logic',
     },
     {
-      id: 'tui',
-      skill: 'tui-design',
-      glob: 'services/boss/**',
-      fallbackRubric:
-        'review through an inline Bubbletea v2 rubric: view/update purity, key-binding and action-bar consistency, layout-constant reuse, confirmation-dialog patterns, and no blocking work in Update',
-    },
-    {
       id: 'web',
       skill: 'impeccable',
-      glob: 'services/web/**',
+      // Multi-extension matchers MUST use the globs array: globToRegExp escapes `{`/`}`
+      // as literals, so `**/*.{ts,tsx}` would match a file literally named that.
+      // Plain JS carries the same rubric as TS: a repo that never adopted TypeScript (and
+      // dependency-free `.mjs` tooling anywhere) would otherwise match no lens at all.
+      globs: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs', '**/*.css'],
       fallbackRubric:
         'review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code',
     },
     {
       id: 'db',
       skill: 'database-review',
-      glob: '**/migrations/**',
+      globs: ['**/migrations/**', '**/*.sql'],
       fallbackRubric:
-        'review through an inline schema/migration rubric: audit each changed column/table against the database-design standard — boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)',
+        'review through an inline schema/migration rubric: audit each changed column and table for naming and shape — snake_case identifiers, boolean columns prefixed is_/has_/should_/can_, counts as {noun}_count rather than num_*, timestamps as {event}_at and dates as {event}_on, foreign keys as {singular_table}_id — then check that each migration is reversible or explicitly documented as one-way, that an added column is nullable or carries a default so the deploy does not block on a table rewrite, that every new query predicate is indexed, and that no destructive drop or rename ships without a backfill and a compatibility window',
     },
     {
       id: 'api',
       skill: 'api-review',
-      globs: [
-        'proto/**',
-        'lib/bossalib/apiversion/**',
-        'services/bosso/internal/server/**',
-        'services/web/src/api.ts',
-      ],
+      globs: ['**/*.proto', '**/*.graphql', '**/openapi*.yaml'],
       fallbackRubric:
-        'review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break — an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply Go/gRPC hygiene: deliberate error codes, edge-case validation, context honoured, reserved tags on field removal, and snake_case field names with is_/has_/should_/can_ boolean prefixes',
+        'review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break — an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply the schema hygiene the format supports: deliberate and specific error codes, edge-case validation, cancellation/deadline propagation, reserved tags or deprecation markers when a field is removed, and consistent snake_case field names with is_/has_/should_/can_ boolean prefixes',
     },
   ],
-  commands: {
-    build: 'make build',
-    lint: 'make lint',
-    format: 'make format',
-    testSmoke: 'make test-smoke',
-    testAffected: 'make test-affected',
-    testFull: 'make test-full',
-    testModule: 'make test-{module}',
+  // Opportunistic default review rounds — the registry boss-review's Phase D probes.
+  //
+  // The published core knows only the CAPABILITY id and the dispatch shape; a vendor skill name
+  // appears ONLY here, in config, and never in core markdown. That split is deliberate and is the
+  // seam the published-core foreign-skill gate scopes itself out of: it scans markdown, because a
+  // config default naming a skill is the intended design rather than a leak. Keep it that way — a
+  // core that learned the name below would fail that gate, and the remedy is always to reword the
+  // core, never to widen the gate.
+  //
+  // `kind` decides how the capability is probed:
+  //   - 'cross-agent' — a shell-queryable binary. The core resolves the opposite agent and probes
+  //     it; anything other than a ready classification is a silent skip.
+  //   - 'skill' — no shell-queryable fact exists, so the probe IS the dispatch: the worker attempts
+  //     to load `skill` and returns a skip envelope rather than findings when it cannot.
+  // Every absent capability is a silent, non-fatal skip: a ledger line, never a warning or BLOCKED.
+  reviewDefaults: {
+    rounds: [
+      { capability: 'second-voice', kind: 'cross-agent' },
+      { capability: 'code-review', kind: 'skill', skill: 'compound-engineering:ce-code-review' },
+    ],
   },
-  test: { manifestPath: 'docs/testing/test-command-manifest.md' },
   env: {
     headlessSignals: [
       { var: 'BOSS_CRON', equals: 'true' },
@@ -181,6 +191,10 @@ export function mergeConfig(base, override) {
 
 export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 
+// How a default review round's capability is probed. 'cross-agent' is shell-queryable (resolve the
+// opposite agent's binary and classify the probe); 'skill' is not, so its probe is the dispatch.
+export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
+
 // The `required` classifications a planContract section may carry.
 export const PLAN_SECTION_REQUIRED_KINDS = new Set(['always', 'needs-human', 'open-questions'])
 
@@ -222,18 +236,88 @@ export function validateConfig(config, source) {
       fail(`lensMap entry "${rule.id}" needs a non-empty string fallbackRubric`)
     }
   }
-  if (!config.commands || typeof config.commands !== 'object' || Array.isArray(config.commands)) {
-    fail('commands must be an object')
-  }
-  for (const [key, val] of Object.entries(config.commands)) {
-    // Accessors like moduleTestCommand() call .replace() on these; a non-string
-    // override must fail here with a skill-config: error rather than throwing a
-    // raw TypeError deep in a headless skill run.
-    if (typeof val !== 'string' || val.length === 0) {
-      fail(`commands.${key} must be a non-empty string`)
+  // reviewDefaults: the opportunistic default-round registry. Optional as a whole (a hand-built
+  // config predating the block, or a repo that merged it away, resolves to no default rounds and
+  // the accessor returns []), but a PRESENT block must be usable: reviewDefaultRounds() hands each
+  // entry straight to a core's Phase D, which dereferences `capability`, switches on `kind`, and —
+  // for kind:'skill' — dispatches `skill`. A malformed entry would otherwise surface as a default
+  // round that silently probes nothing, which is indistinguishable from a capability being absent.
+  if (config.reviewDefaults !== undefined) {
+    if (
+      !config.reviewDefaults ||
+      typeof config.reviewDefaults !== 'object' ||
+      Array.isArray(config.reviewDefaults)
+    ) {
+      fail('reviewDefaults must be an object when present')
+    }
+    if (config.reviewDefaults.rounds !== undefined) {
+      if (!Array.isArray(config.reviewDefaults.rounds)) {
+        fail('reviewDefaults.rounds must be an array')
+      }
+      // Phase D's duplicate suppression and its ledger lines are both keyed on `capability`, so
+      // two entries sharing one id are not two rounds — they are one id whose ledger line cannot
+      // say which entry produced it, and whose "covered by extension" drop silently applies to
+      // both. Reject the collision at config time rather than let it read as a working registry.
+      const seenCapabilities = new Set()
+      for (const round of config.reviewDefaults.rounds) {
+        if (!round || typeof round !== 'object' || Array.isArray(round)) {
+          fail('reviewDefaults.rounds entries must be objects')
+        }
+        if (typeof round.capability !== 'string' || round.capability.length === 0) {
+          fail(
+            `reviewDefaults.rounds entry ${JSON.stringify(round)} needs a non-empty string capability`,
+          )
+        }
+        if (!REVIEW_DEFAULT_ROUND_KINDS.has(round.kind)) {
+          fail(
+            `reviewDefaults.rounds entry "${round.capability}" kind must be one of ${[...REVIEW_DEFAULT_ROUND_KINDS].join(', ')}`,
+          )
+        }
+        // A kind:'skill' entry with no skill names nothing to dispatch, so its round would probe
+        // an undefined skill and skip every time — a capability quietly retired, not configured.
+        if (
+          round.kind === 'skill' &&
+          (typeof round.skill !== 'string' || round.skill.length === 0)
+        ) {
+          fail(`reviewDefaults.rounds entry "${round.capability}" needs a non-empty string skill`)
+        }
+        if (seenCapabilities.has(round.capability)) {
+          fail(`reviewDefaults.rounds entry "${round.capability}" duplicates an earlier capability`)
+        }
+        seenCapabilities.add(round.capability)
+      }
     }
   }
-  if (typeof config.test?.manifestPath !== 'string') fail('test.manifestPath must be a string')
+  // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
+  // declare no recognised target legitimately resolves with no `commands` key at all (absent,
+  // not {}), and a test-command manifest is a project artifact rather than a portable concept.
+  // Only a present-but-malformed block fails here; the accessors return null on absence.
+  if (config.commands !== undefined) {
+    if (!config.commands || typeof config.commands !== 'object' || Array.isArray(config.commands)) {
+      fail('commands must be an object when present')
+    }
+    for (const [key, val] of Object.entries(config.commands)) {
+      // Accessors like moduleTestCommand() call .replace() on these; a non-string
+      // override must fail here with a skill-config: error rather than throwing a
+      // raw TypeError deep in a headless skill run.
+      if (typeof val !== 'string' || val.length === 0) {
+        fail(`commands.${key} must be a non-empty string`)
+      }
+    }
+  }
+  if (config.test !== undefined) {
+    if (!config.test || typeof config.test !== 'object' || Array.isArray(config.test)) {
+      fail('test must be an object when present')
+    }
+    // Non-empty, exactly like commands.*: manifestPath() treats "" as absent and returns null, so
+    // an empty string is a config that silently does nothing rather than a configured manifest.
+    if (
+      config.test.manifestPath !== undefined &&
+      (typeof config.test.manifestPath !== 'string' || config.test.manifestPath.length === 0)
+    ) {
+      fail('test.manifestPath must be a non-empty string when present')
+    }
+  }
   if (!Array.isArray(config.env?.headlessSignals)) fail('env.headlessSignals must be an array')
   for (const sig of config.env.headlessSignals) {
     // isHeadless() dereferences sig.var/sig.present/sig.equals; a non-object or
@@ -384,6 +468,203 @@ export function validateConfig(config, source) {
   }
 }
 
+// --- Detected happy defaults ----------------------------------------------
+//
+// DEFAULT_CONFIG deliberately ships no `commands` block (see above), so a repo without a
+// .boss-skills.json would otherwise hand every core a null build/lint/test command. This layer
+// recovers the obvious ones from what the repo ITSELF declares — a Makefile target, a package.json
+// script, a Cargo/Go module — rather than from what any one checkout happens to use.
+//
+// Two rules keep it honest:
+//   1. Read DECLARED TARGETS, not marker presence. A Makefile with no `lint:` target yields no
+//      lint command; guessing `make lint` there would hand a core a command that fails.
+//   2. First writer wins, in the fixed order Makefile -> package.json -> Cargo.toml -> go.mod.
+//      A Makefile is the repo's own front door, so where one exists it outranks the toolchain
+//      underneath it; the rest fill only the keys it left empty.
+// `commands.testModule` is NEVER detected: per-module test targets are a repo-shaped convention,
+// not a language fact, so its absence stays the honest answer outside a repo that configures it.
+
+/** Command keys this layer can detect. `testModule` is deliberately absent. */
+const DETECTED_COMMAND_KEYS = ['build', 'lint', 'format', 'test']
+
+// A Makefile rule head: everything before `:` / `::`, excluding `:=` / `::=` assignments. One head
+// can declare SEVERAL targets (`build lint:`), so the names are captured as a group and split.
+const MAKE_RULE_RE = /^([A-Za-z0-9][^:=]*?)\s*:{1,2}(?![=:])(.*)$/
+/** A single target name, once the head is split on whitespace. */
+const MAKE_TARGET_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_./-]*$/
+// `build: CFLAGS=-O2` scopes a variable to a target; on its own it declares no rule and no recipe,
+// so `make build` there fails. Only a head NOT followed by an assignment counts as a declaration.
+const MAKE_TARGET_VAR_RE = /^\s*[A-Za-z_][A-Za-z0-9_.]*\s*[:+?]?=/
+
+// `define NAME` ... `endef` brackets a multi-line variable body. Its lines are TEXT, not rules —
+// a `build:` inside one is a template make only sees after an `$(eval)` that may never happen, so
+// scanning it would emit `make build` for a target the repo does not declare.
+const MAKE_DEFINE_RE = /^\s*define\s/
+const MAKE_ENDEF_RE = /^\s*endef\b/
+
+// `ifeq`/`ifneq`/`ifdef`/`ifndef` ... `endif` brackets a conditional body. Whether that body is
+// live depends on variables this static reader does not evaluate, so a target declared only there
+// is not a target the repo unconditionally declares — reporting it would emit e.g. `make test` for
+// a repo where the branch is false. Skipped wholesale, exactly like a `define` body.
+// An `else` / `else ifeq (...)` line opens no new conditional: the same `endif` closes it.
+// The lookahead, not `\b`, is what make requires: `\b` also matches before a `-`, so the legal
+// target `ifeq-check:` would open a conditional that swallows the rest of the file (and
+// `endif-foo:` would close one early, reopening scanning inside a conditional body).
+const MAKE_COND_RE = /^\s*(?:ifeq|ifneq|ifdef|ifndef)(?=[\s(]|$)/
+const MAKE_ENDIF_RE = /^\s*endif(?=[\s(]|$)/
+
+function readTextFile(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null // unreadable is indistinguishable from absent for detection purposes
+  }
+}
+
+/**
+ * The declared Makefile targets in `dir`, as a Set (empty when there is no makefile).
+ *
+ * This is a static reader, not a make implementation, so it resolves every gap the same way — by
+ * under-detecting rather than reporting a target the repo may not actually declare:
+ *   - **Conditionals.** A target reachable only inside an `ifeq`/`ifneq`/`ifdef`/`ifndef` body
+ *     (including its `else` branches) is NOT reported: whether that branch is live means evaluating
+ *     variables, and emitting `make test` for a repo where the condition is false hands a core a
+ *     command that fails. A target declared after the closing `endif` is reported as usual.
+ *   - **`include`d makefiles.** Only the top-level file is read, so a target defined in an included
+ *     fragment is missed. That under-detects too.
+ */
+function makefileTargets(dir) {
+  const out = new Set()
+  // GNU make's own lookup order, not alphabetical: GNUmakefile, then makefile, then Makefile.
+  // Scanning the wrong one in a repo carrying two would report targets make never reads.
+  for (const name of ['GNUmakefile', 'makefile', 'Makefile']) {
+    const text = readTextFile(join(dir, name))
+    if (text === null) continue
+    let inDefine = false
+    let condDepth = 0 // nesting depth of open ifeq/ifneq/ifdef/ifndef blocks
+    // make joins a line ending in `\` with the next before parsing, so a rule head split across
+    // two lines is still one declaration. Recipe lines stay indented and so still never match.
+    for (const line of text.replace(/\\\n/g, ' ').split('\n')) {
+      // An unterminated `define` or `ifeq` swallows the rest of the file, which under-detects
+      // rather than over-detects — the safe direction, and the same file make itself would reject.
+      if (inDefine) {
+        if (MAKE_ENDEF_RE.test(line)) inDefine = false
+        continue
+      }
+      if (condDepth > 0) {
+        // Nested conditionals must not let the first `endif` reopen scanning, and an `else` (or
+        // `else ifeq ...`) branch is still inside the same conditional, so it changes no depth.
+        if (MAKE_COND_RE.test(line)) condDepth++
+        else if (MAKE_ENDIF_RE.test(line)) condDepth--
+        continue
+      }
+      if (MAKE_DEFINE_RE.test(line)) {
+        inDefine = true
+        continue
+      }
+      if (MAKE_COND_RE.test(line)) {
+        condDepth = 1
+        continue
+      }
+      const m = MAKE_RULE_RE.exec(line)
+      if (!m || MAKE_TARGET_VAR_RE.test(m[2])) continue
+      for (const target of m[1].split(/\s+/)) {
+        if (MAKE_TARGET_NAME_RE.test(target)) out.add(target)
+      }
+    }
+    break // one makefile per directory; the one make itself would read wins
+  }
+  return out
+}
+
+/** The declared package.json scripts in `dir`, as an object (empty when absent/malformed). */
+function packageScripts(dir) {
+  const text = readTextFile(join(dir, 'package.json'))
+  if (text === null) return {}
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return {} // a broken package.json detects nothing rather than throwing at load time
+  }
+  const scripts = parsed && typeof parsed === 'object' ? parsed.scripts : null
+  return scripts && typeof scripts === 'object' && !Array.isArray(scripts) ? scripts : {}
+}
+
+/**
+ * The package manager a JS repo declares via its lockfile (npm is the safe default).
+ *
+ * `bun.lockb` is bun's binary lockfile and `bun.lock` its newer text one; either names bun. The
+ * probe order is fixed rather than meaningful — a repo carrying two lockfiles is already ambiguous,
+ * and a stable answer beats a clever one.
+ */
+function packageManager(dir) {
+  if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
+  if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
+  if (existsSync(join(dir, 'bun.lockb')) || existsSync(join(dir, 'bun.lock'))) return 'bun'
+  return 'npm'
+}
+
+/**
+ * Detect a repo's build/lint/format/test commands from the files it declares.
+ *
+ * Pure and side-effect-free apart from reading the marker files in `cwd` itself: it never walks
+ * the tree, never executes anything, and never mutates DEFAULT_CONFIG. Returns a PARTIAL config
+ * — `{}` when nothing is declared, otherwise `{commands: {...}}` — so it composes through the
+ * ordinary mergeConfig() layering with no special-casing at the call site.
+ *
+ * @param {{cwd?: string, keys?: string[]}} [opts] `cwd` is the directory to inspect (the repo root,
+ *   not a nested dir); `keys` narrows detection to the command keys still wanted, and an empty
+ *   intersection with the detectable set returns `{}` without reading a single marker file.
+ * @returns {{commands?: Record<string,string>}}
+ */
+export function detectRepoDefaults({ cwd = process.cwd(), keys = DETECTED_COMMAND_KEYS } = {}) {
+  const wanted = new Set(keys.filter((key) => DETECTED_COMMAND_KEYS.includes(key)))
+  if (wanted.size === 0) return {} // nothing to learn: do no marker-file I/O at all
+  const commands = {}
+  const set = (key, value) => {
+    if (!wanted.has(key)) return
+    if (!(key in commands) && typeof value === 'string' && value.length > 0) commands[key] = value
+  }
+
+  // 1. Makefile — the repo's own front door.
+  const targets = makefileTargets(cwd)
+  if (targets.size > 0) {
+    for (const key of DETECTED_COMMAND_KEYS) {
+      if (targets.has(key)) set(key, `make ${key}`)
+    }
+    if (targets.has('fmt')) set('format', 'make fmt')
+  }
+
+  // 2. package.json scripts, run through whichever manager the lockfile names.
+  const scripts = packageScripts(cwd)
+  const scriptNames = Object.keys(scripts)
+  if (scriptNames.length > 0) {
+    const pm = packageManager(cwd)
+    for (const key of DETECTED_COMMAND_KEYS) {
+      if (typeof scripts[key] === 'string' && scripts[key].length > 0) set(key, `${pm} run ${key}`)
+    }
+    if (typeof scripts.fmt === 'string' && scripts.fmt.length > 0) set('format', `${pm} run fmt`)
+  }
+
+  // 3. Cargo — the subcommands below are part of the toolchain a Cargo.toml declares.
+  if (existsSync(join(cwd, 'Cargo.toml'))) {
+    set('build', 'cargo build')
+    set('lint', 'cargo clippy')
+    set('format', 'cargo fmt')
+    set('test', 'cargo test')
+  }
+
+  // 4. Go — same reasoning; no lint, because no linter ships with the toolchain.
+  if (existsSync(join(cwd, 'go.mod'))) {
+    set('build', 'go build ./...')
+    set('format', 'go fmt ./...')
+    set('test', 'go test ./...')
+  }
+
+  return Object.keys(commands).length > 0 ? { commands } : {}
+}
+
 export function loadSkillConfig({ cwd = process.cwd() } = {}) {
   const file = findConfigFile(cwd)
   let user = {}
@@ -406,7 +687,23 @@ export function loadSkillConfig({ cwd = process.cwd() } = {}) {
       throw new Error(`skill-config: ${file} must contain a JSON object`)
     }
   }
-  const merged = mergeConfig(DEFAULT_CONFIG, user)
+  // Detection fills only what nothing else declares, PER KEY: a config that declares just
+  // `commands.testModule` still gets the detected build/lint/format/test, matching the documented
+  // shallow-merge semantics rather than losing all four to an all-or-nothing short-circuit. When
+  // the config already declares every detectable key, no key is wanted and detectRepoDefaults()
+  // returns without reading a marker file — a fully-configured repo still does no I/O at all.
+  // Composition order is DEFAULT_CONFIG < detected < user: repo config beats detection, and
+  // detection beats nothing. Detection is anchored at the config file's directory (the repo root)
+  // when there is one, and at `cwd` otherwise — never at a nested dir under a discovered config.
+  const declared =
+    user.commands && typeof user.commands === 'object' && !Array.isArray(user.commands)
+      ? user.commands
+      : {}
+  const detected = detectRepoDefaults({
+    cwd: file ? dirname(file) : cwd,
+    keys: DETECTED_COMMAND_KEYS.filter((key) => !(key in declared)),
+  })
+  const merged = mergeConfig(mergeConfig(DEFAULT_CONFIG, detected), user)
   validateConfig(merged, file || '(defaults)')
   return merged
 }
@@ -439,16 +736,52 @@ export function skillForLens(config, id) {
   return rule ? rule.skill : null
 }
 
+/**
+ * The opportunistic default review rounds this repo resolves — `[]` when the config carries none.
+ *
+ * `[]` is the honest "this repo default-runs no extra round", and it is what a core's Phase D
+ * treats as an empty (silent, non-fatal) phase. Returning the array rather than throwing is what
+ * lets a config predating the block, or one that deliberately merged it away, degrade to no
+ * default rounds instead of failing a review run.
+ * @returns {{capability: string, kind: 'cross-agent'|'skill', skill?: string}[]}
+ */
+export function reviewDefaultRounds(config) {
+  const rounds = config?.reviewDefaults?.rounds
+  return Array.isArray(rounds) ? rounds : []
+}
+
+/**
+ * A configured/detected command string, or null when this repo declares none. `null` is the
+ * honest "no command is known here" — a core that needs one falls back to its own discovery
+ * prose (project instructions, CI config, command files) rather than running a wrong target.
+ * @returns {string|null}
+ */
 export function command(config, key) {
-  return config.commands[key]
+  const value = config.commands?.[key]
+  return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/**
+ * The per-module test command with `{module}` substituted, or null when the repo declares no
+ * `commands.testModule`. `testModule` is a repo-shaped convention rather than a language fact,
+ * so it is never detected — absence is the norm outside a repo that configures it.
+ * @returns {string|null}
+ */
 export function moduleTestCommand(config, module) {
-  return config.commands.testModule.replace('{module}', module)
+  const template = config.commands?.testModule
+  return typeof template === 'string' && template.length > 0
+    ? template.replace('{module}', module)
+    : null
 }
 
+/**
+ * The configured test-command manifest path, or null when this repo has none (the default —
+ * a manifest is a project artifact, not a portable concept).
+ * @returns {string|null}
+ */
 export function manifestPath(config) {
-  return config.test.manifestPath
+  const value = config.test?.manifestPath
+  return typeof value === 'string' && value.length > 0 ? value : null
 }
 
 export function isHeadless(config, env = process.env, { isTTY = process.stdin.isTTY } = {}) {

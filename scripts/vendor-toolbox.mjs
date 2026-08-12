@@ -102,6 +102,14 @@ export const VENDOR_MAP = {
     'tracker/adapter.mjs',
     'tracker/linear.mjs',
     'tracker/cli.mjs',
+    // boss-epic reaches the tracker through the same MCP-backed operation map as
+    // boss-build, so it inherits the same failure: a repo that has not declared the
+    // configured server for the harness it is running gets a mid-run "tool not found".
+    // Preflight separates "the repo never declared it" (fix the REPO) from "declared but
+    // it did not answer" (fix CREDENTIALS). An installed core cannot reach into another
+    // skill's toolbox, so boss-epic needs its own copy or the distinction is unavailable
+    // to it.
+    'tracker/preflight.mjs',
     'linear-gate-lib.mjs',
     'linear-deps-lib.mjs',
     'linear-claim.mjs',

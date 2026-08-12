@@ -109,6 +109,38 @@ The epic-run rule that at most one merge is in flight at any time, in the
 order computed by `nextToMerge` (dependency-clean greens first, then
 priority, then age), even while implementation runs in parallel.
 
+## Agent runtime gating
+
+### Agent runner
+
+A plugin that owns one coding-agent CLI's subprocess lifecycle on behalf of the daemon — starting
+runs, building interactive commands, and reporting the agent's capabilities. Sessions cannot start
+unless at least one is loaded; the daemon stays healthy without one and fails the session request
+instead.
+
+### Capability preflight
+
+The check an agent runner performs, before a gated run starts, that the agent runtime can actually
+do the work the run requires — and which fails the run closed when it cannot, rather than letting it
+start and discover the gap mid-flight. Its defining obligation is that it must profile the **same**
+runtime the gated run will get: same account home, same model, same environment, and the same
+working directory, since agents discover per-repo configuration relative to where they run. A
+preflight that profiles anything else reports on a runtime nobody will use.
+
+A preflight verdict is only as trustworthy as its ability to tell apart causes with opposite fixes.
+"The repo declared nothing" and "the credential never reached the session" both surface as an empty
+capability inventory, so a preflight must classify the empty case explicitly instead of deriving a
+list of unmet requirements from it — otherwise every credential failure instructs the operator to
+repair a declaration that is already correct.
+
+### Headless capability profile
+
+A named, versioned contract naming the set of runtime operations an unattended run needs before it
+is allowed to start — the thing a capability preflight checks against. Requesting no profile means
+no gating. Each profile is an exact allowlist of real operations rather than a pattern or a set of
+plausible synonyms, because a name no runtime can satisfy buys no tolerance and only risks admitting
+a runtime the caller cannot actually drive.
+
 ## Account rotation
 
 ### Account

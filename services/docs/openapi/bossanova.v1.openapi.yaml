@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-08-04'
+  version: '2026-08-12'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -3787,6 +3787,38 @@ components:
             Short human-readable reason the chat is waiting, e.g.
              "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
              CHAT_STATUS_WAITING.
+        spinnerPresent:
+          type: boolean
+          title: spinner_present
+          description: |-
+            True when the chat's pane currently shows a live agent spinner (either
+             agent's "esc to interrupt" footer, or Claude's background-agent wait).
+             Additive with last_substantive_output_at below: together they separate an
+             agent that is genuinely working from one whose only sign of life is the
+             spinner redraw that keeps last_output_at permanently fresh.
+        lastSubstantiveOutputAt:
+          title: last_substantive_output_at
+          description: |-
+            Last time the captured pane changed by something OTHER than a spinner
+             redraw — the elapsed counter ticking, the token counter growing, or the
+             rotating gerund. This is the liveness signal a driver should gate on;
+             last_output_at cannot discriminate, because a spinner alone advances it.
+             Unset when nothing is known about the chat.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        lastOutputSeeded:
+          type: boolean
+          title: last_output_seeded
+          description: |-
+            True while EITHER last_output_at or last_substantive_output_at is still the
+             SEED stamped when the daemon first saw this chat, rather than an observation
+             of real output. Every chat registered in one poll tick is seeded with the
+             same instant, so without this flag a consumer cannot tell a
+             nanosecond-identical value shared across every chat from a real collision of
+             simultaneous observations. It clears on the chat's first SUBSTANTIVE
+             observation — the first pane change that is not merely a spinner redraw —
+             and never re-arms after that. A spinner-only redraw therefore leaves it
+             true, because last_substantive_output_at is still the seed even though
+             last_output_at has moved.
       title: ChatStatusEntry
       additionalProperties: false
       description: ChatStatusEntry is a single chat's cached status.
@@ -5848,6 +5880,127 @@ components:
              bump. Shown verbatim (sanitized) in the attach diagnostic.
       title: DescribeChatLaunchResponse
       additionalProperties: false
+    bossanova.v1.DescribeChatMCPRequest:
+      type: object
+      properties:
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: chat to probe
+      title: DescribeChatMCPRequest
+      additionalProperties: false
+    bossanova.v1.DescribeChatMCPResponse:
+      type: object
+      properties:
+        agentName:
+          type: string
+          title: agent_name
+          description: resolved agent (claude, codex, …)
+        worktreePath:
+          type: string
+          title: worktree_path
+          description: directory the probe ran in
+        isSupported:
+          type: boolean
+          title: is_supported
+          description: |-
+            is_supported is false when the owning plugin does not implement
+             DescribeMCPSurface (codes.Unimplemented). That is NOT an error: the RPC
+             succeeds and unsupported_reason carries a human sentence. Callers must not
+             read is_supported=false as "no servers".
+        unsupportedReason:
+          type: string
+          title: unsupported_reason
+        sourceLabel:
+          type: string
+          title: source_label
+          description: |-
+            source_label is the plugin's provenance line, so an operator can re-run the
+             probe by hand.
+        servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.MCPServerReport'
+          title: servers
+          description: |-
+            MCPServerReport is reused from plugin.proto rather than redeclared, so the
+             daemon surface and the plugin surface cannot drift.
+        probeError:
+          type: string
+          title: probe_error
+          description: |-
+            probe_error is set when the probe RAN and FAILED; servers is then empty and
+             the caller must NOT read that as "no servers configured".
+        probedAt:
+          title: probed_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: DescribeChatMCPResponse
+      additionalProperties: false
+    bossanova.v1.DescribeMCPSurfaceRequest:
+      type: object
+      properties:
+        workDir:
+          type: string
+          title: work_dir
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: |-
+            agent_session_id scopes the probe to one chat; plugins that cannot scope a
+             probe per-chat ignore it and answer for work_dir.
+        model:
+          type: string
+          title: model
+        probeEnv:
+          type: object
+          title: probe_env
+          additionalProperties:
+            type: string
+            title: value
+          description: |-
+            probe_env is the chat's OWN resolved environment overlay, re-derived by the
+             daemon from the same chain the spawn path uses. Secret-bearing: NEVER logged
+             by bossd or the plugin, and NEVER echoed into the response.
+      title: DescribeMCPSurfaceRequest
+      additionalProperties: false
+    bossanova.v1.DescribeMCPSurfaceRequest.ProbeEnvEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: ProbeEnvEntry
+      additionalProperties: false
+    bossanova.v1.DescribeMCPSurfaceResponse:
+      type: object
+      properties:
+        sourceLabel:
+          type: string
+          title: source_label
+          description: |-
+            source_label names how the answer was obtained, e.g.
+             "claude -p --output-format stream-json (system/init event)" or
+             "codex app-server mcpServerStatus/list". It is the provenance line the human
+             output prints, so an operator can re-run the probe by hand.
+        servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.MCPServerReport'
+          title: servers
+        probeError:
+          type: string
+          title: probe_error
+          description: |-
+            probe_error is set when the probe RAN and FAILED. servers is then empty and
+             the caller must NOT read that as "no servers configured".
+        probedAt:
+          title: probed_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: DescribeMCPSurfaceResponse
+      additionalProperties: false
     bossanova.v1.DetectUsageLimitRequest:
       type: object
       properties:
@@ -7686,6 +7839,82 @@ components:
           title: configs
       title: ListWebhookConfigsResponse
       additionalProperties: false
+    bossanova.v1.MCPServerReport:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: name as the HARNESS exposes it — the key skills' tool prefixes are built from.
+        isDeclared:
+          type: boolean
+          title: is_declared
+          description: |-
+            is_declared is true whenever the harness itself listed this server, EVEN WITH
+             ZERO TOOLS. This is the first-class signal BOS-804 needs: it separates
+             "declared but failed to connect / unauthenticated" from "never declared",
+             which a tool list alone can never do because a failed server publishes no
+             tools and is otherwise indistinguishable from an absent one.
+        toolCount:
+          type: integer
+          title: tool_count
+          format: int32
+          description: |-
+            tool_count is the number of tools the session actually loaded. Zero alongside
+             is_declared=true is the declared-but-empty state.
+        toolNamePrefix:
+          type: string
+          title: tool_name_prefix
+          description: |-
+            tool_name_prefix is the literal prefix a skill must call, e.g.
+             "mcp__bossanova-linear__". Claude reports already-prefixed tool names, so the
+             prefix is read back from them; codex reports BARE names, so the plugin
+             RECONSTRUCTS the prefix from the server key. A key/`mcpServer` mismatch is
+             visible here without invoking a tool.
+        toolNames:
+          type: array
+          items:
+            type: string
+          title: tool_names
+          description: |-
+            tool_names is the resolved inventory, sorted, unprefixed-or-prefixed exactly
+             as tool_name_prefix documents. May be truncated by the plugin; see is_truncated.
+        isTruncated:
+          type: boolean
+          title: is_truncated
+        authStatus:
+          type: string
+          title: auth_status
+          description: |-
+            auth_status is the harness's own verbatim string (codex: authStatus, e.g.
+             "oauth"/"bearerToken"/"unsupported"; claude: the init event's per-server
+             status). Deliberately NOT normalized to an enum: the harnesses disagree and a
+             lossy normalization is how a "healthy" server hides a 401.
+        source:
+          title: source
+          $ref: '#/components/schemas/bossanova.v1.MCPServerSource'
+        sourceDetail:
+          type: string
+          title: source_detail
+          description: |-
+            source_detail names the scanned file the attribution came from (e.g.
+             ".mcp.json", "~/.codex/config.toml"), empty when source is UNKNOWN.
+      title: MCPServerReport
+      additionalProperties: false
+    bossanova.v1.MCPServerSource:
+      type: string
+      title: MCPServerSource
+      enum:
+        - MCP_SERVER_SOURCE_UNSPECIFIED
+        - MCP_SERVER_SOURCE_UNKNOWN
+        - MCP_SERVER_SOURCE_REPO_FILE
+        - MCP_SERVER_SOURCE_USER_CONFIG
+        - MCP_SERVER_SOURCE_INJECTED
+      description: |-
+        MCPServerSource names where a declaration was found. UNKNOWN is a first-class,
+         honest answer: neither harness reports provenance, so it is derived from a
+         bounded scan of that harness's own config locations and is UNKNOWN whenever the
+         scan cannot attribute the server. Never inferred from tool names.
     bossanova.v1.MaterializeAccountRequest:
       type: object
       properties:
@@ -8738,6 +8967,18 @@ components:
         headlessCapabilityProfile:
           title: headless_capability_profile
           $ref: '#/components/schemas/bossanova.v1.HeadlessCapabilityProfile'
+        workDir:
+          type: string
+          title: work_dir
+          description: |-
+            The directory the gated run will execute in, so the preflight profiles the
+             same repo-level agent configuration the run will load. Agents discover
+             per-repo config relative to their working directory (codex reads a
+             repo-level `.codex/config.toml` in addition to `$CODEX_HOME/config.toml`),
+             so a preflight launched without it inspects a runtime that never saw the
+             repo's own MCP declaration while the run it gates does. Mirrors
+             StartAgentRunRequest.work_dir; empty preserves the historical
+             inherit-the-daemon-cwd behaviour for callers that do not set it.
       title: PreflightHeadlessRunRequest
       additionalProperties: false
     bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry:

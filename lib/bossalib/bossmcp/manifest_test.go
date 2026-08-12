@@ -164,7 +164,7 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// the numbers below. Do not read them as any one profile's resident cost.
 	const (
 		maxToolCount   = 69
-		maxSchemaBytes = 58531
+		maxSchemaBytes = 58507
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

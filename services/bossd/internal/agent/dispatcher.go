@@ -233,7 +233,7 @@ func (d *Dispatcher) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, 
 // PreflightByAgentWithHeadlessCapabilityProfile routes a required capability
 // check to the named runner without starting it. Required profiles fail closed
 // when the selected runner does not implement the narrower preflight seam.
-func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
@@ -242,7 +242,7 @@ func (d *Dispatcher) PreflightByAgentWithHeadlessCapabilityProfile(ctx context.C
 	if !ok {
 		return fmt.Errorf("agent %q: %w", name, ErrHeadlessCapabilityProfileUnsupported)
 	}
-	return preflight.PreflightHeadlessCapabilityProfile(ctx, model, extraEnv, profile)
+	return preflight.PreflightHeadlessCapabilityProfile(ctx, workDir, model, extraEnv, profile)
 }
 
 // StopByAgent routes Stop to the named agent runner, bounded by ctx.

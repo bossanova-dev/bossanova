@@ -131,12 +131,81 @@ func TestChatPicker_BackfillTitlesStillRunsLocally(t *testing.T) {
 	}
 }
 
+// TestChatPicker_BackfillTitlesLeavesNonPlaceholderTitleAlone pins writer 4 of
+// the five chat-title writers (BOS-839): the client-side backfill is *guarded*.
+// backfillTitles only collects chats whose title is still a placeholder
+// (`c.Title == "" || c.Title == "New chat"` in chatpicker_cmds.go), so a chat
+// carrying a real name is never re-derived from the JSONL transcript and never
+// reaches the unguarded UpdateChatTitle RPC.
+//
+// This is the counterpart to the RPC's deliberate lack of a guard
+// (TestUpdateChatTitle_ExplicitWriteOverwritesExistingTitle in
+// services/bossd/internal/server): explicit renames always win, auto-derived
+// titles must yield. The nil cmd is the strongest signal available here —
+// backfillTitles returns early once `needsUpdate` is empty, so zero transcript
+// reads and zero RPCs both follow from it. The spy's read count is asserted too,
+// so a future change that returned a cmd doing nothing would still be caught.
+//
+// The destination is forced local so the remote-host short-circuit above is not
+// what this test is measuring; TestChatPicker_BackfillTitlesStillRunsLocally is
+// the falsification half proving this fixture really does reach the guard.
+func TestChatPicker_BackfillTitlesLeavesNonPlaceholderTitleAlone(t *testing.T) {
+	withHostDestination(t, "")
+	spy := withTranscriptSpy(t, "a parsed title", false)
+
+	m := chatPickerHoldingChatTitled("Manual investigation")
+	if cmd := m.backfillTitles(); cmd != nil {
+		t.Error("backfillTitles returned a cmd for a chat with a real title, want nil (the placeholder guard must skip it)")
+		runAttachCmdGraph(t, cmd, func(tea.Msg) {})
+	}
+	if spy.titleCalls != 0 {
+		t.Fatalf("agent.ChatTitle called %d time(s) for a non-placeholder title, want 0", spy.titleCalls)
+	}
+}
+
+// TestChatPicker_BackfillTitlesGuardIsExactMatch pins a deliberate asymmetry
+// between the two guarded writers, so a future reader knows it was observed
+// rather than overlooked.
+//
+// This guard is an exact string comparison — `c.Title == "New chat"` in
+// backfillTitles (services/boss/internal/views/chatpicker_cmds.go). The poller's
+// equivalent guard, shouldRefreshChatTitle in
+// services/bossd/internal/status/tmux_poller.go, lowercases and trims first, so
+// it treats "new chat", " New Chat " and friends as placeholders too.
+//
+// A chat titled "new chat" is therefore refreshed server-side by the poller but
+// left alone by this client-side backfill. Both call sites are conservative in
+// the safe direction — neither clobbers a real name — so the divergence is
+// harmless today, and it is pinned here rather than "fixed" because making the
+// two agree is a behaviour change outside this test-only ticket's scope.
+func TestChatPicker_BackfillTitlesGuardIsExactMatch(t *testing.T) {
+	withHostDestination(t, "")
+	spy := withTranscriptSpy(t, "a parsed title", false)
+
+	// Lowercase: a placeholder to shouldRefreshChatTitle, a real name here.
+	m := chatPickerHoldingChatTitled("new chat")
+	if cmd := m.backfillTitles(); cmd != nil {
+		t.Error(`backfillTitles returned a cmd for a chat titled "new chat", want nil (this guard is an exact match, unlike shouldRefreshChatTitle)`)
+		runAttachCmdGraph(t, cmd, func(tea.Msg) {})
+	}
+	if spy.titleCalls != 0 {
+		t.Fatalf(`agent.ChatTitle called %d time(s) for a chat titled "new chat", want 0`, spy.titleCalls)
+	}
+}
+
 // chatPickerAwaitingBackfill builds a picker holding one untitled chat, which is
 // the only state backfillTitles does any work in.
 func chatPickerAwaitingBackfill() ChatPickerModel {
+	return chatPickerHoldingChatTitled("New chat")
+}
+
+// chatPickerHoldingChatTitled is chatPickerAwaitingBackfill with the single
+// chat's title as a parameter, so the BOS-839 guard tests exercise the exact
+// same fixture and differ only in the one field under test.
+func chatPickerHoldingChatTitled(title string) ChatPickerModel {
 	m := NewChatPickerModel(&chatPickerHostStub{}, context.Background(), "session-1", "")
 	m.session = &pb.Session{Id: "session-1", WorktreePath: "/home/deploy/worktrees/feature"}
-	m.chats = []*pb.ClaudeChat{{AgentSessionId: "agent-1", Title: "New chat"}}
+	m.chats = []*pb.ClaudeChat{{AgentSessionId: "agent-1", Title: title}}
 	return m
 }
 

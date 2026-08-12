@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "title": "BOS-837 hidden [r] renames a session straight from the home list",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home session list, no rename hint anywhere",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "top session (sess-aaa-111), the rename target"
+            },
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "action bar advertises [n]ew session"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "action bar advertises [q]uit"
+            }
+          ],
+          "caption": "The action bar lists the visible shortcuts; renaming is not among them, so the [r] pressed next is genuinely hidden"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "hidden [r] opens the inline title editor",
+      "steps": [
+        { "key": "r", "caption": "Press the hidden [r] on the selected session" },
+        {
+          "waitFor": "[enter] rename",
+          "timeoutMs": 10000,
+          "caption": "Inline rename editor replaced the action bar"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode",
+              "match": "normalized",
+              "label": "editor is pre-filled with the current title"
+            },
+            {
+              "text": "[enter] rename",
+              "match": "normalized",
+              "label": "commit hint"
+            },
+            {
+              "text": "[esc] cancel",
+              "match": "normalized",
+              "label": "cancel hint"
+            }
+          ],
+          "caption": "The editor stands in for the action bar, pre-filled with the current title and offering commit or cancel"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "committed rename lands on the list",
+      "steps": [
+        { "type": " renamed", "caption": "Append \" renamed\" to the title" },
+        {
+          "waitFor": "Add dark mode renamed",
+          "timeoutMs": 10000,
+          "caption": "Edited title visible in the input"
+        },
+        { "key": "enter", "caption": "Commit the rename" },
+        {
+          "waitFor": {
+            "text": "❯.*Add dark mode renamed",
+            "match": "regex",
+            "label": "renamed session still selected on the list"
+          },
+          "timeoutMs": 10000,
+          "caption": "Editor closed; the renamed row is back on the list under the cursor"
+        },
+        {
+          "expect": [
+            {
+              "text": "Add dark mode renamed",
+              "match": "normalized",
+              "label": "new title persisted onto the session row"
+            },
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "action bar restored, so the editor really closed"
+            }
+          ],
+          "caption": "The rename round trip finished without leaving the home list"
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "esc abandons a second rename",
+      "steps": [
+        { "key": "down", "caption": "Move the cursor to Fix login bug" },
+        {
+          "waitFor": {
+            "text": "❯.*Fix login bug",
+            "match": "regex",
+            "label": "cursor on Fix login bug (sess-bbb-222)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Second session selected"
+        },
+        { "key": "r", "caption": "Open the rename editor again" },
+        {
+          "waitFor": "[esc] cancel",
+          "timeoutMs": 10000,
+          "caption": "Editor open on Fix login bug"
+        },
+        { "type": " abandoned", "caption": "Type an edit that will be thrown away" },
+        {
+          "waitFor": "Fix login bug abandoned",
+          "timeoutMs": 10000,
+          "caption": "Edit visible in the input"
+        },
+        { "key": "esc", "caption": "Cancel the rename" },
+        {
+          "waitFor": "[n]ew session",
+          "timeoutMs": 10000,
+          "caption": "Action bar back; the editor is gone"
+        },
+        {
+          "expect": [
+            {
+              "text": "Fix login bug",
+              "match": "normalized",
+              "label": "original title intact after cancel"
+            },
+            {
+              "text": "[n]ew session",
+              "match": "normalized",
+              "label": "back on the ordinary home list"
+            }
+          ],
+          "caption": "The abandoned edit left no trace: the session keeps its original title"
+        }
+      ]
+    }
+  ]
+}

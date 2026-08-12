@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/sessionreason",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

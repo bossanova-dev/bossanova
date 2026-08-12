@@ -90,6 +90,12 @@ func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if h.confirm.active {
 		return h.handleConfirmKey(msg)
 	}
+	// The rename editor swallows everything, and must be tested BEFORE the quit
+	// arm below: "q" is an ordinary letter in a session title, and a rename
+	// prompt that exits the whole TUI on it would be unusable.
+	if h.rename.Active() {
+		return h.handleRenameKey(msg)
+	}
 	if msg.String() == "q" {
 		return h, tea.Quit
 	}
@@ -134,8 +140,91 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 	case "enter":
 		model, cmd := h.handleSelectKey()
 		return model, cmd, true
+	case "r":
+		// Hidden shortcut (BOS-837): deliberately absent from the action bar,
+		// like the chat picker's own [r]. handled is true on every path,
+		// including the no-session-selected one — "r" must never reach the
+		// table, where a user rebinding could turn it into navigation.
+		model, cmd := h.handleRenameStartKey()
+		return model, cmd, true
 	}
 	return h, nil, false
+}
+
+// handleRenameStartKey opens the inline title editor on the selected session.
+// With nothing selected it is a no-op that still counts as handled.
+func (h HomeModel) handleRenameStartKey() (HomeModel, tea.Cmd) {
+	sess := h.selectedSession()
+	if sess == nil {
+		return h, nil
+	}
+	var cmd tea.Cmd
+	h.rename, cmd = newRenamePrompt(sess.GetId(), sess.GetTitle())
+	// Drop the previous rename's outcome. Nothing else clears the status line,
+	// and a stale "Rename failed" sitting above a freshly opened editor reads
+	// as a complaint about the edit in progress.
+	h.status, h.statusErr = "", false
+	// The prompt replaces the action bar, which is one line shorter than the
+	// editor, so the table has to give a row back or the board overflows. The
+	// cleared status may free another; tableHeight reads both.
+	h.table.SetHeight(h.tableHeight())
+	return h, cmd
+}
+
+// handleRenameKey owns the two keys that end the edit; everything else is text.
+func (h HomeModel) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		return h.commitRename()
+	case "esc":
+		return h.cancelRename()
+	}
+	var cmd tea.Cmd
+	h.rename, cmd = h.rename.Update(msg)
+	return h, cmd
+}
+
+// commitRename issues the write for the session the prompt was opened on. An
+// empty title is refused in place — the prompt stays open with the typed text
+// intact and no RPC is sent, because a blank title would leave the row with
+// nothing to identify it by.
+func (h HomeModel) commitRename() (tea.Model, tea.Cmd) {
+	title := h.rename.Value()
+	if title == "" {
+		h.rename = h.rename.withEmptyTitleError()
+		return h, nil
+	}
+	sessionID := h.rename.SessionID()
+	h.rename = renamePrompt{}
+	h.table.SetHeight(h.tableHeight())
+	return h, renameSessionCmd(h.client, h.ctx, sessionID, title)
+}
+
+// cancelRename closes the editor and discards the edit.
+func (h HomeModel) cancelRename() (tea.Model, tea.Cmd) {
+	h.rename = renamePrompt{}
+	h.table.SetHeight(h.tableHeight())
+	return h, nil
+}
+
+// cancelRenameIfHidden closes the editor when a poll has moved Home onto a
+// screen that does not draw it. handleKey routes every key into an active
+// prompt regardless of which View branch is rendering, but only
+// renderSessionTable draws the footer — so an editor left open behind the
+// daemon-error or empty-state screen would keep swallowing keys, including the
+// [q] those screens advertise, with nothing on screen to explain why. The
+// conditions below mirror View's branch order exactly; they must be kept in
+// step with it.
+func (h HomeModel) cancelRenameIfHidden() HomeModel {
+	if !h.rename.Active() {
+		return h
+	}
+	if h.err == nil && !h.loading && len(h.sessions) > 0 {
+		return h
+	}
+	h.rename = renamePrompt{}
+	h.table.SetHeight(h.tableHeight())
+	return h
 }
 
 func (h HomeModel) handleNewSessionKey() (HomeModel, tea.Cmd) {

@@ -935,3 +935,423 @@ func TestPreErroredBlockedIntent_WaitingIsInfo(t *testing.T) {
 		t.Fatalf("PreErroredOutput(waiting).Intent = %v, want INFO", got.Intent)
 	}
 }
+
+// TestBaseStatus_DraftPRFailureLosesToLiveActivity pins BOS-855's precedence
+// rule at the cascade level: a draft-PR-creation failure is a PAST outcome, so
+// it must not claim the row's primary label while a chat is live. The
+// "? PR failed" branch therefore sits immediately BELOW the WORKING branch and
+// above the workflow branch — every live-activity label wins, every non-live
+// state still falls through to "? PR failed".
+func TestBaseStatus_DraftPRFailureLosesToLiveActivity(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	reset := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		in   Input
+		want Output
+	}{
+		{
+			name: "working chat wins the label",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			name: "waiting chat wins the label",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING},
+			want: Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "initializing wins the label",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure, DisplaySettingUp: true}},
+			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "merging wins the label",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure, DisplayMerging: true}},
+			want: Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "archiving wins the label",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure, ArchivePending: true}},
+			want: Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true},
+		},
+		{
+			// The branches ABOVE the moved one must be undisturbed.
+			name: "question still wins",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION},
+			want: Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "usage-limited still wins",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED, ChatResetAt: reset},
+			want: Output{Label: "usage-limited (resets ~09:30)", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			// Nothing live: the past outcome is still the most informative label.
+			name: "idle chat still reads ? PR failed",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "no chat status still reads ? PR failed",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure}},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			// A workflow is not live activity by the row's own reckoning here: the
+			// moved branch sits ABOVE the workflow branch, so "? PR failed" wins.
+			name: "active workflow still reads ? PR failed",
+			in: Input{Session: &pb.Session{
+				BlockedReason:          &prFailure,
+				WorkflowDisplayStatus:  pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING,
+				WorkflowDisplayLeg:     2,
+				WorkflowDisplayMaxLegs: 5,
+			}},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "repairing still reads ? PR failed",
+			in:   Input{Session: &pb.Session{BlockedReason: &prFailure, DisplayIsRepairing: true}},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Compute(tt.in); got != tt.want {
+				t.Errorf("Compute() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCompute_DraftPRFailureWorkingOnErroredSessionIsDanger pins the interaction
+// with BOS-430: a BLOCKED session whose chat is working now reads "working", and
+// the errored overlay still recolors it DANGER so the row stays alarming.
+func TestCompute_DraftPRFailureWorkingOnErroredSessionIsDanger(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	got := Compute(Input{
+		Session: &pb.Session{
+			State:         pb.SessionState_SESSION_STATE_BLOCKED,
+			BlockedReason: &prFailure,
+		},
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+	})
+	want := Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true}
+	if got != want {
+		t.Fatalf("Compute() = %+v, want %+v", got, want)
+	}
+}
+
+// TestIsLiveActivityLabel_Classification pins the BOS-855 predicate against the
+// exact label list both clients mirror. Every live label is present tense;
+// everything else — including the empty string and an unrecognised label — is
+// not, so the recessive treatment can never be applied to a row whose label this
+// package does not understand.
+func TestIsLiveActivityLabel_Classification(t *testing.T) {
+	live := []string{
+		QuestionLabel,
+		"usage-limited",
+		"usage-limited (resets ~09:30)",
+		WaitingLabel,
+		"working",
+		"initializing",
+		"merging",
+		"archiving",
+		"repairing",
+		"pending",
+		"running 1/5",
+		"running 12/12",
+	}
+	notLive := []string{
+		"? PR failed",
+		"paused 2/5",
+		"failed 3/5",
+		"cancelled",
+		labelMerged,
+		labelClosed,
+		"✓ approved",
+		"✓ passing",
+		"✓ review",
+		"⨯ failing",
+		"⨯ conflict",
+		"⨯ rejected",
+		"draft",
+		"checking",
+		"idle",
+		"stopped",
+		"",
+		"orphaned",
+		"something nobody has written yet",
+		// Near misses: the two prefix rules must not fire on a bare word or on
+		// an unrelated label that merely starts with the same letters.
+		"running",
+		"runningfast",
+		"usage",
+	}
+	for _, label := range live {
+		if !IsLiveActivityLabel(label) {
+			t.Errorf("IsLiveActivityLabel(%q) = false, want true", label)
+		}
+	}
+	for _, label := range notLive {
+		if IsLiveActivityLabel(label) {
+			t.Errorf("IsLiveActivityLabel(%q) = true, want false", label)
+		}
+	}
+}
+
+// TestIsLiveActivityLabel_CoversEveryCascadeLabel is the anti-rot guard: it
+// enumerates every label baseStatus, prOutput and workflowOutput can emit by
+// DRIVING them, and fails when one is classified in neither the live nor the
+// non-live set. Adding a cascade branch without deciding its liveness reds here
+// rather than silently defaulting to "not live" in production.
+func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("gh pr create failed"))
+	reset := time.Date(2026, 1, 1, 9, 30, 0, 0, time.UTC)
+
+	// The declared classification. Every label the producers emit must appear
+	// here exactly once.
+	classified := map[string]bool{
+		QuestionLabel:                   true,
+		"usage-limited":                 true,
+		"usage-limited (resets ~09:30)": true,
+		WaitingLabel:                    true,
+		"working":                       true,
+		"initializing":                  true,
+		"merging":                       true,
+		"archiving":                     true,
+		"repairing":                     true,
+		"pending":                       true,
+		"running 2/5":                   true,
+		"? PR failed":                   false,
+		"paused 2/5":                    false,
+		"failed 2/5":                    false,
+		"cancelled":                     false,
+		labelMerged:                     false,
+		labelClosed:                     false,
+		"✓ approved":                    false,
+		"✓ passing":                     false,
+		"✓ review":                      false,
+		"⨯ failing":                     false,
+		"⨯ conflict":                    false,
+		"⨯ rejected":                    false,
+		"draft":                         false,
+		"checking":                      false,
+		"idle":                          false,
+		"stopped":                       false,
+	}
+
+	// Drive every producer branch. workflow/PR cases are enumerated over their
+	// enums so a NEW enum value that produces a label lands here automatically.
+	emitted := make(map[string]struct{})
+	add := func(out Output) { emitted[out.Label] = struct{}{} }
+
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION}))
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED}))
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED, ChatResetAt: reset}))
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}))
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING}))
+	add(baseStatus(Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE}))
+	add(baseStatus(Input{}))
+	add(baseStatus(Input{Session: &pb.Session{DisplaySettingUp: true}}))
+	add(baseStatus(Input{Session: &pb.Session{DisplayMerging: true}}))
+	add(baseStatus(Input{Session: &pb.Session{ArchivePending: true}}))
+	add(baseStatus(Input{Session: &pb.Session{DisplayIsRepairing: true}}))
+	add(baseStatus(Input{Session: &pb.Session{BlockedReason: &prFailure}}))
+	for _, ws := range []pb.WorkflowStatus{
+		pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING,
+		pb.WorkflowStatus_WORKFLOW_STATUS_PENDING,
+		pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED,
+		pb.WorkflowStatus_WORKFLOW_STATUS_FAILED,
+		pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED,
+	} {
+		out, ok := workflowOutput(&pb.Session{WorkflowDisplayStatus: ws, WorkflowDisplayLeg: 2, WorkflowDisplayMaxLegs: 5})
+		if !ok {
+			t.Fatalf("workflowOutput(%v) reported no output", ws)
+		}
+		add(out)
+	}
+	for name, value := range pb.DisplayStatus_value {
+		out, ok := prOutput(&pb.Session{DisplayStatus: pb.DisplayStatus(value)})
+		if !ok {
+			continue // UNSPECIFIED and any future non-label value
+		}
+		if out.Label == "" {
+			t.Errorf("prOutput(%s) produced an empty label", name)
+		}
+		add(out)
+	}
+
+	for label := range emitted {
+		want, ok := classified[label]
+		if !ok {
+			t.Errorf("cascade emits label %q which IsLiveActivityLabel's test table does not classify — decide whether it is live activity and add it here and to the predicate", label)
+			continue
+		}
+		if got := IsLiveActivityLabel(label); got != want {
+			t.Errorf("IsLiveActivityLabel(%q) = %v, want %v", label, got, want)
+		}
+	}
+	for label := range classified {
+		if _, ok := emitted[label]; !ok {
+			t.Errorf("test table classifies %q but no cascade producer emits it — the table has drifted from the cascade", label)
+		}
+	}
+}
+
+// TestPreDraftPRFailureOutput_RestoresPreMoveComposite locks the BOS-855
+// down-convert inverse: an older client must still see "? PR failed" for every
+// state the moved branch used to outrank, and nothing else may be rewritten.
+func TestPreDraftPRFailureOutput_RestoresPreMoveComposite(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	otherReason := "blocked — needs human intervention"
+
+	tests := []struct {
+		name string
+		sess *pb.Session
+		want Output
+	}{
+		{
+			name: "working restores ? PR failed",
+			sess: &pb.Session{
+				BlockedReason:  &prFailure,
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "waiting restores ? PR failed",
+			sess: &pb.Session{
+				BlockedReason:  &prFailure,
+				DisplayLabel:   WaitingLabel,
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+				DisplaySpinner: true,
+			},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "blocked working restores ? PR failed recolored DANGER",
+			sess: &pb.Session{
+				State:          pb.SessionState_SESSION_STATE_BLOCKED,
+				BlockedReason:  &prFailure,
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+				DisplaySpinner: true,
+			},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+		{
+			name: "question is left alone",
+			sess: &pb.Session{
+				BlockedReason: &prFailure,
+				DisplayLabel:  QuestionLabel,
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			},
+			want: Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "usage-limited is left alone",
+			sess: &pb.Session{
+				BlockedReason: &prFailure,
+				DisplayLabel:  "usage-limited (resets ~09:30)",
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			},
+			want: Output{Label: "usage-limited (resets ~09:30)", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			// Keyed on the blocked reason, NOT on label == "working": a working
+			// session with any other blocked reason is untouched.
+			name: "other blocked reason is left alone",
+			sess: &pb.Session{
+				BlockedReason:  &otherReason,
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			name: "no blocked reason is left alone",
+			sess: &pb.Session{
+				DisplayLabel:   "working",
+				DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				DisplaySpinner: true,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			name: "empty label is returned unchanged, not fabricated",
+			sess: &pb.Session{BlockedReason: &prFailure},
+			want: Output{},
+		},
+		{
+			name: "nil session is returned unchanged",
+			sess: nil,
+			want: Output{},
+		},
+		{
+			// Idle already reads "? PR failed" post-move — the inverse is a no-op.
+			name: "already ? PR failed is idempotent",
+			sess: &pb.Session{
+				BlockedReason: &prFailure,
+				DisplayLabel:  "? PR failed",
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			},
+			want: Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PreDraftPRFailureOutput(tt.sess); got != tt.want {
+				t.Errorf("PreDraftPRFailureOutput() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPreDraftPRFailureOutput_MatchesOldCascade proves the hand-written inverse
+// against the behavior it claims to reproduce, rather than against a restated
+// expectation: it reimplements the PRE-BOS-855 branch order inline and asserts
+// the inverse agrees with it for every live state the move affected.
+func TestPreDraftPRFailureOutput_MatchesOldCascade(t *testing.T) {
+	prFailure := sessionreason.DraftPRCreationFailure(errors.New("gh pr create failed"))
+
+	// oldCompute is the pre-BOS-855 cascade for a draft-PR-failure session: the
+	// branch sat directly below QUESTION/LIMITED, so it beat everything else.
+	oldCompute := func(in Input) Output {
+		if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION ||
+			in.ChatStatus == pb.ChatStatus_CHAT_STATUS_LIMITED {
+			return Compute(in)
+		}
+		out := Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+		if errored(in) {
+			out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		}
+		return out
+	}
+
+	inputs := []Input{
+		{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+		{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING},
+		{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE},
+		{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION},
+		{Session: &pb.Session{BlockedReason: &prFailure}, ChatStatus: pb.ChatStatus_CHAT_STATUS_LIMITED},
+		{Session: &pb.Session{BlockedReason: &prFailure, DisplaySettingUp: true}},
+		{Session: &pb.Session{BlockedReason: &prFailure, DisplayMerging: true}},
+		{Session: &pb.Session{BlockedReason: &prFailure, ArchivePending: true}},
+		{Session: &pb.Session{BlockedReason: &prFailure, State: pb.SessionState_SESSION_STATE_BLOCKED}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+		{Session: &pb.Session{BlockedReason: &prFailure, State: pb.SessionState_SESSION_STATE_ORPHANED}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}
+	for i, in := range inputs {
+		served := Compute(in)
+		sess := in.Session
+		sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = served.Label, served.Intent, served.Spinner
+		got := PreDraftPRFailureOutput(sess)
+		if want := oldCompute(in); got != want {
+			t.Errorf("input %d: PreDraftPRFailureOutput() = %+v, want (old cascade) %+v", i, got, want)
+		}
+	}
+}

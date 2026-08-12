@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossd/internal/dotenv"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -54,7 +53,7 @@ var ErrHeadlessRunActive = errors.New("headless run in progress")
 func headlessRunActiveMessage(agentLogsDir, agentSessionID string) error {
 	return fmt.Errorf(
 		"%w: attaching would duplicate the agent — tail the live run instead: %s",
-		ErrHeadlessRunActive, filepath.Join(agentLogsDir, agentSessionID+".log"),
+		ErrHeadlessRunActive, bossalog.AgentLogFile(agentLogsDir, agentSessionID),
 	)
 }
 
@@ -130,21 +129,6 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		defaultAccountID := ""
-		sessionEnvFunc := func() map[string]string {
-			defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
-			// Merge the bound account's spawn env UNDER the managed session env so a
-			// persisted account_id gets its credentials materialized on the wake
-			// path, mirroring the attach path (ensureChatTmuxSession). The account
-			// is resolved for the CHAT's agent so cross-agent chats receive their
-			// own provider's default account env; a nil resolver or account 0
-			// leaves SessionEnv byte-identical to the ambient-login behavior. This
-			// closure runs only after spawnChatTmux has proved a new tmux session
-			// is needed, avoiding account last-used updates on already-live wakes.
-			return mergeManagedOverAccount(
-				session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
-				s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
-			)
-		}
 		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
@@ -154,14 +138,21 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			AppendSystemPrompt:        appendPrompt,
 			AppendSystemPromptClasses: promptClasses,
 			SessionEnvFunc: func() map[string]string {
-				// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath
-				// the worktree .env so the woken chat authenticates to its own
-				// repo's Linear workspace, not the daemon's ambient one. Fetched
-				// lazily here because this closure runs only when a fresh tmux is
-				// actually needed; a missing/failed repo lookup is non-fatal
-				// (OverlayWithRepo still guarantees LINEAR_API_KEY is present).
-				repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
-				return dotenv.OverlayWithRepo(sessionEnvFunc(), sess.WorktreePath, repo)
+				// The bound account's spawn env sits UNDER the managed session env
+				// so a persisted account_id gets its credentials materialized on
+				// the wake path, and the repo's stored LINEAR_API_KEY / SENTRY_*
+				// secrets are filled beneath the worktree .env so the woken chat
+				// authenticates to its OWN repo's Linear workspace rather than the
+				// daemon's ambient one. Built through chatSpawnEnv, the single
+				// named chain DescribeChatMCP also probes under — that shared
+				// helper is what keeps a probe from describing a different
+				// environment than the chat it claims to describe.
+				//
+				// This closure runs only after spawnChatTmux has proved a new tmux
+				// session is needed, which is what keeps account last-used updates
+				// off already-live wakes.
+				defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
+				return s.chatSpawnEnv(ctx, sess, chat, defaultAccountID, "wake chat", recordAccountUse)
 			},
 			Model: chat.Model,
 		})

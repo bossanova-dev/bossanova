@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "title": "BOS-855 session list — a live row's past-outcome hint goes recessive while an exempt hint stays bright, and the draft-PR failure survives the label change",
+  "fixture": { "preset": "live-past-failure" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "a dimmed 'finalize failed' hint under a live 'working' row sits directly above the same text at full red under a non-live 'idle' row",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Live rebase run",
+            "match": "normalized",
+            "label": "home session list loaded (live-past-failure preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the live row and its quiet twin are listed one above the other"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the live row's STATUS column reads 'working' (no row title contains the word, so this binds to the STATUS column)"
+          },
+          "caption": "The live row's composite is the present tense — 'working' — not the past-tense outcome below it"
+        },
+        {
+          "expect": {
+            "text": "Quiet retry run",
+            "match": "normalized",
+            "label": "the non-live twin is listed directly beneath the live row"
+          },
+          "caption": "The quiet row carries the SAME warning text, so the two intensities are one line apart"
+        },
+        {
+          "expect": {
+            "text": "idle",
+            "match": "normalized",
+            "label": "the quiet row's STATUS column reads 'idle' — nothing is live there"
+          },
+          "caption": "Nothing is live on the quiet row, so its hint keeps the full danger colour"
+        },
+        {
+          "expect": {
+            "text": "finalize failed",
+            "match": "normalized",
+            "label": "the shared warning text appears as a hint sub-row under both rows — dimmed under the live one, full red under the idle one"
+          },
+          "caption": "Demote, never delete: the live row's 'finalize failed' hint is faded but still legible, while the idle row's identical hint stays at full danger intensity"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the exemption — a stalled-agent hint impeaches the 'working' label, so it stays at full intensity beside the dimmed one",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Silent search-index run",
+            "match": "normalized",
+            "label": "the stalled row is listed"
+          },
+          "timeoutMs": 10000,
+          "caption": "The stalled row sits in the same list as the dimmed one"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the stalled row's STATUS column also reads 'working'"
+          },
+          "caption": "Its composite claims the present tense just like the first row"
+        },
+        {
+          "expect": {
+            "text": "no progress",
+            "match": "normalized",
+            "label": "the stalled-agent hint renders at FULL danger intensity under that live row"
+          },
+          "caption": "This hint says the 'working' is a lie, so it is exempt — fading the one line that contradicts the label would be exactly backwards"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the not-deleted case — a draft-PR failure that no longer owns the label still shows as a full-intensity hint sub-row",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Fresh onboarding run",
+            "match": "normalized",
+            "label": "the draft-PR-failure row is listed"
+          },
+          "timeoutMs": 10000,
+          "caption": "The session whose background draft-PR create failed while its chat kept working"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "its STATUS column now reads the live 'working' label, no longer '? PR failed'"
+          },
+          "caption": "The live chat wins the primary label — the row no longer asserts a failure and a live chat at the same time"
+        },
+        {
+          "expect": {
+            "text": "draft PR creation failed",
+            "match": "normalized",
+            "label": "the failure survives as a full-intensity hint sub-row rather than being lost with the label"
+          },
+          "caption": "The session is never transitioned, so the composite is never recolored — the hint is the row's only alarm and is therefore exempt from the recessive treatment"
+        }
+      ]
+    }
+  ]
+}

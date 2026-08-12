@@ -302,7 +302,7 @@ func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Cont
 
 // PreflightByAgentWithHeadlessCapabilityProfile succeeds because the mock
 // runner can exercise any headless capability profile in test scenarios.
-func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.Context, string, string, map[string]string, bossanovav1.HeadlessCapabilityProfile) error {
+func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.Context, string, string, string, map[string]string, bossanovav1.HeadlessCapabilityProfile) error {
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/logtail"
+	"github.com/recurser/bossalib/config"
 	bossalog "github.com/recurser/bossalib/log"
 )
 
@@ -24,20 +26,32 @@ func tailCmd() *cobra.Command {
 	var lines int
 	var filter logtail.Filter
 	cmd := &cobra.Command{
-		Use: "tail [source]", Short: "Tail daemon logs",
+		Use: "tail [source...]", Short: "Tail daemon and agent logs",
 		Long: "Show recent log lines without needing to know where the log files live.\n\n" +
-			"Sources: " + strings.Join(bossalog.Services(), ", ") + " (default bossd).\n" +
+			"Sources: " + strings.Join(bossalog.Services(), ", ") + " (default bossd), or an\n" +
+			"agent-session id to read that agent's log — the raw tmux capture an interactive\n" +
+			"chat writes, or the JSON lines a headless run writes, detected per file. Pass\n" +
+			"several sources to interleave them by timestamp; --all merges the service logs.\n" +
+			"Agent output has no level, so it always passes --level, --repo and --plugin.\n" +
 			"-n counts physical lines read from each source before filtering. Non-JSON lines always pass filters.",
-		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Go otherwise exits with SIGPIPE before a stdout write can return
 			// EPIPE, which makes `boss tail -f | head` report status 141 instead
 			// of the conventional clean tail exit. quietOnClosedPipe handles the
 			// resulting write error below.
 			signal.Ignore(syscall.SIGPIPE)
-			sources, err := resolveSources(args, all)
+			settings, _ := config.Load()
+			sources, notice, err := resolveSources(args, all, bossalog.AgentLogsDir(settings.WorktreeBaseDir))
 			if err != nil {
 				return err
+			}
+			if notice != "" {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), notice); err != nil {
+					return quietOnClosedPipe(err)
+				}
+			}
+			if len(sources) == 0 {
+				return nil
 			}
 			write := func(rec logtail.Record) error {
 				if !filter.Match(rec) {
@@ -64,42 +78,121 @@ func tailCmd() *cobra.Command {
 	return cmd
 }
 
-func resolveSources(args []string, all bool) ([]string, error) {
-	if all {
-		if len(args) > 0 {
-			return nil, errors.New("pass a source or --all, not both")
-		}
-		return bossalog.Services(), nil
-	}
-	if len(args) == 0 {
-		return []string{"bossd"}, nil
-	}
-	if !bossalog.KnownService(args[0]) {
-		return nil, fmt.Errorf("unknown log source %q (want one of: %s)", args[0], strings.Join(bossalog.Services(), ", "))
-	}
-	return args[:1], nil
+// tailSource is one resolved log to read. A service log is rotated and keyed
+// by service name; an agent log is a single unrotated file keyed by
+// agent-session id, in one of two formats the logtail package detects.
+type tailSource struct {
+	Name  string
+	Path  string
+	Agent bool
+	// Seed anchors untimestamped agent output. Captured once, here, so a raw
+	// pipe-pane capture never sorts to the epoch.
+	Seed time.Time
 }
 
-func writeBacklog(sources []string, lines int, offsets logtail.InitialOffsets, write func(logtail.Record) error) error {
+// agentSessionID matches the identifiers bossd names agent logs after: the
+// UUID minted for an agent session, and the boss session id of a repair run.
+var agentSessionID = regexp.MustCompile(`^(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|repair-[0-9a-f]+)$`)
+
+func serviceSource(service string) tailSource {
+	return tailSource{Name: service, Path: bossalog.LogPath(service)}
+}
+
+func serviceSources(services []string) []tailSource {
+	sources := make([]tailSource, 0, len(services))
+	for _, service := range services {
+		sources = append(sources, serviceSource(service))
+	}
+	return sources
+}
+
+// resolveSources is the single place a source name becomes a log to read, so
+// the positional arguments and --all stay coherent. It returns a notice to
+// print when an agent log was asked for but the agent-logs directory does not
+// exist: that is a clean message rather than a failure, because a fresh
+// install has simply never run an agent.
+func resolveSources(args []string, all bool, agentLogsDir string) ([]tailSource, string, error) {
+	if all {
+		if len(args) > 0 {
+			return nil, "", errors.New("pass a source or --all, not both")
+		}
+		// --all stays service-only: the agent-logs directory can hold one file
+		// per agent session ever run, which is not a merge anyone wants.
+		return serviceSources(bossalog.Services()), "", nil
+	}
+	if len(args) == 0 {
+		return serviceSources([]string{"bossd"}), "", nil
+	}
+	var sources []tailSource
+	var notice string
+	for _, arg := range args {
+		if bossalog.KnownService(arg) {
+			sources = append(sources, serviceSource(arg))
+			continue
+		}
+		// Empty when no agent-logs directory is configured, which the
+		// dirExists check below then reports as a clean notice.
+		path := bossalog.AgentLogFile(agentLogsDir, arg)
+		// Reject a plain typo before reporting on the agent-logs directory, so
+		// an unknown source still names the sources that do exist.
+		if !fileExists(path) && !agentSessionID.MatchString(arg) {
+			return nil, "", fmt.Errorf("unknown log source %q (want one of: %s, or an agent-session id)",
+				arg, strings.Join(bossalog.Services(), ", "))
+		}
+		if !dirExists(agentLogsDir) {
+			notice = fmt.Sprintf("no agent logs: %s does not exist", agentLogsDirLabel(agentLogsDir))
+			continue
+		}
+		// A log that does not exist yet is still a valid source under -f: the
+		// follower waits for the agent to create it.
+		sources = append(sources, tailSource{Name: arg, Path: path, Agent: true, Seed: logtail.AgentSeedTime(path)})
+	}
+	return sources, notice, nil
+}
+
+func agentLogsDirLabel(dir string) string {
+	if dir == "" {
+		return "the agent-logs directory (no worktree base directory configured)"
+	}
+	return dir
+}
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func writeBacklog(sources []tailSource, lines int, offsets logtail.InitialOffsets, write func(logtail.Record) error) error {
 	groups := make([][]logtail.Record, 0, len(sources))
-	for _, service := range sources {
-		var text string
-		var err error
-		if offsets == nil {
-			text, err = bossalog.TailRotating(service, lines)
-		} else {
-			offset := offsets[service]
-			text, err = bossalog.TailRotatingHandoff(service, lines, offset.Offset, offset.Info, offset.PartialLine)
-		}
+	for _, src := range sources {
+		text, err := readBacklog(src, lines, offsets)
 		if err != nil {
-			return fmt.Errorf("read %s log: %w", service, err)
+			return fmt.Errorf("read %s log: %w", src.Name, err)
 		}
+		// Each pass gets its own parser: it is stateful, and the follower holds
+		// a separate one for the same source.
+		parser := logtail.NewAgentParser(src.Name, src.Seed)
 		var group []logtail.Record
-		lines := strings.Split(text, "\n")
-		for _, line := range lines {
-			if line != "" {
-				group = append(group, logtail.Unwrap(logtail.ParseLine(service, line)))
+		for _, line := range strings.Split(text, "\n") {
+			if line == "" {
+				continue
 			}
+			if src.Agent {
+				group = append(group, parser.Parse(line))
+				continue
+			}
+			group = append(group, logtail.Unwrap(logtail.ParseLine(src.Name, line)))
 		}
 		groups = append(groups, group)
 	}
@@ -111,22 +204,57 @@ func writeBacklog(sources []string, lines int, offsets logtail.InitialOffsets, w
 	return nil
 }
 
-func followSources(ctx context.Context, services []string, lines int, write func(logtail.Record) error, afterReady func()) error {
+// readBacklog returns the physical lines a source contributes to the backlog.
+// Agent logs are never rotated, so they read straight from their own path.
+func readBacklog(src tailSource, lines int, offsets logtail.InitialOffsets) (string, error) {
+	if !src.Agent {
+		if offsets == nil {
+			return bossalog.TailRotating(src.Name, lines)
+		}
+		offset := offsets[src.Name]
+		return bossalog.TailRotatingHandoff(src.Name, lines, offset.Offset, offset.Info, offset.PartialLine)
+	}
+	if offsets == nil {
+		return bossalog.Tail(src.Path, lines)
+	}
+	offset := offsets[src.Name]
+	limit := lines
+	if offset.PartialLine {
+		// Read one extra physical line so dropping the partial below does not
+		// shrink the requested backlog.
+		limit++
+	}
+	text, err := bossalog.TailAt(src.Path, limit, offset.Offset)
+	if err != nil || !offset.PartialLine {
+		return text, err
+	}
+	// The snapshot ended inside a line that the follower still holds; emitting
+	// it here too would print the record twice.
+	if end := strings.LastIndex(text, "\n"); end >= 0 {
+		return text[:end], nil
+	}
+	return "", nil
+}
+
+func followSources(ctx context.Context, tailSources []tailSource, lines int, write func(logtail.Record) error, afterReady func()) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	sources := make([]logtail.Source, 0, len(services))
-	for _, service := range services {
-		service := service
-		sources = append(sources, logtail.Source{
-			Service: service,
-			Path:    bossalog.LogPath(service),
-			SnapshotBackups: func() ([]os.FileInfo, error) {
-				return bossalog.BackupInfos(service)
-			},
-		})
+	sources := make([]logtail.Source, 0, len(tailSources))
+	for _, src := range tailSources {
+		src := src
+		source := logtail.Source{Service: src.Name, Path: src.Path}
+		if src.Agent {
+			// Owned by this follower alone; the backlog pass parses with its own.
+			source.Parse = logtail.NewAgentParser(src.Name, src.Seed).Parse
+		} else {
+			source.SnapshotBackups = func() ([]os.FileInfo, error) {
+				return bossalog.BackupInfos(src.Name)
+			}
+		}
+		sources = append(sources, source)
 	}
 	records, errs := make(chan logtail.Record, 128), make(chan error, 1)
 	ready := make(chan logtail.InitialOffsets, 1)
@@ -140,7 +268,7 @@ func followSources(ctx context.Context, services []string, lines int, write func
 		if afterReady != nil {
 			afterReady()
 		}
-		err := writeBacklog(services, lines, offsets, write)
+		err := writeBacklog(tailSources, lines, offsets, write)
 		close(resume)
 		if err != nil {
 			return err
@@ -153,14 +281,14 @@ func followSources(ctx context.Context, services []string, lines int, write func
 		}
 		return err
 	}
-	return writeLiveRecords(ctx, services, records, errs, write)
+	return writeLiveRecords(ctx, tailSources, records, errs, write)
 }
 
 // writeLiveRecords gives concurrently polled sources a short chance to report
 // together, then merges that batch with the same ordering used for the initial
 // backlog. A single source retains tail's immediate write behavior.
-func writeLiveRecords(ctx context.Context, services []string, records <-chan logtail.Record, errs <-chan error, write func(logtail.Record) error) error {
-	if len(services) < 2 {
+func writeLiveRecords(ctx context.Context, sources []tailSource, records <-chan logtail.Record, errs <-chan error, write func(logtail.Record) error) error {
+	if len(sources) < 2 {
 		for {
 			select {
 			case rec := <-records:
@@ -178,10 +306,10 @@ func writeLiveRecords(ctx context.Context, services []string, records <-chan log
 		}
 	}
 
-	groups := make([][]logtail.Record, len(services))
-	groupIndex := make(map[string]int, len(services))
-	for index, service := range services {
-		groupIndex[service] = index
+	groups := make([][]logtail.Record, len(sources))
+	groupIndex := make(map[string]int, len(sources))
+	for index, src := range sources {
+		groupIndex[src.Name] = index
 	}
 	flush := func() error {
 		for _, rec := range logtail.Merge(groups) {

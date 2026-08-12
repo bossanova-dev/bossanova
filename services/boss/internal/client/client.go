@@ -101,6 +101,12 @@ type BossClient interface {
 	// Local-only: the remote orchestrator does not host tmux panes.
 	DescribeChatLaunch(ctx context.Context, agentSessionID string) (*pb.DescribeChatLaunchResponse, error)
 
+	// DescribeChatMCP reports which MCP servers a chat's agent actually
+	// resolved, with tool counts, tool-name prefixes, auth status and source.
+	// Local-only for the same reason as DescribeChatLaunch: the probe spawns a
+	// process on the daemon host.
+	DescribeChatMCP(ctx context.Context, agentSessionID string) (*pb.DescribeChatMCPResponse, error)
+
 	// Chat transcript and messaging
 	GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
 	SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)

@@ -23,8 +23,16 @@ import (
 const codexOperationRegistrySource = "codex app-server mcpServerStatus/list"
 
 type codexRuntimeTarget struct {
-	Home     string
-	Model    string
+	Home  string
+	Model string
+	// WorkDir is the directory the profiled codex process runs in. It matters
+	// because codex reads a repo-level `.codex/config.toml` in addition to
+	// `$CODEX_HOME/config.toml`, and it resolves that repo file relative to its
+	// working directory — so a runtime profiled without it never sees the MCP
+	// servers the repo declares for itself. Empty means "inherit the daemon's
+	// cwd", which is the historical behaviour and is preserved for the
+	// UNSPECIFIED profile and any non-bossd caller.
+	WorkDir  string
 	ExtraEnv map[string]string
 }
 
@@ -32,6 +40,14 @@ type runtimeMCPServer struct {
 	Name       string
 	AuthStatus string
 	Operations []string
+	// IsDeclared records that `mcpServerStatus/list` returned a row for this
+	// server. Every row it returns sets it — including a row whose tool map is
+	// empty, which is the declared-but-empty state a tool list alone cannot
+	// express (a server that fails at connect publishes no tools and is
+	// otherwise indistinguishable from one that was never declared). It is a
+	// field rather than an implicit "you are holding a value, so it existed"
+	// so that DescribeMCPSurface reports the signal instead of re-deriving it.
+	IsDeclared bool
 }
 
 type runtimeOperationSurface struct {
@@ -73,6 +89,12 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 	}
 	cmd := commandFactory(ctx, args[0], args[1:]...)
 	cmd.Env = runtimeEnv(target.ExtraEnv)
+	// An empty Dir is exec's own "inherit the daemon's cwd", which is what every
+	// pre-BOS-865 caller got and what a request carrying no work dir must keep
+	// getting byte-identically. Assigning it unconditionally is therefore the
+	// same behaviour as guarding on non-empty, with one fewer branch to read as
+	// load-bearing.
+	cmd.Dir = target.WorkDir
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -164,6 +186,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 				Name:       server.Name,
 				AuthStatus: server.AuthStatus,
 				Operations: uniqueSorted(operations),
+				IsDeclared: true,
 			})
 		}
 	}
@@ -243,6 +266,11 @@ type capabilityDiagnostic struct {
 	Missing  []string `json:"missing"`
 	Provided []string `json:"provided"`
 	Source   []string `json:"source"`
+	// Reason is an operator-facing sentence explaining what the runtime
+	// actually reported, for the cases where the bare Missing list would
+	// mislead. It is optional: when empty the message keeps its historical
+	// "unavailable: <missing>" shape.
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *Server) preflightHeadlessCapabilityProfile(
@@ -260,17 +288,36 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 		})
 	}
 
+	// A profiled check whose caller never supplied a work dir is inspecting a
+	// codex runtime that cannot have loaded the repo's own .codex/config.toml.
+	// That is not fatal — a repo may declare everything in $CODEX_HOME — but it
+	// is the exact shape of the BOS-865 bug, so it rides along on every
+	// diagnostic this branch emits. A future caller that forgets to plumb the
+	// work dir then shows up in the operator-visible message instead of
+	// silently regressing to a manufactured capability gap.
+	//
+	// sourced prefixes that marker (when it applies) onto a branch's own source
+	// markers. It always returns a fresh slice so no two call sites can alias a
+	// shared backing array.
+	sourced := func(markers ...string) []string {
+		out := make([]string, 0, len(markers)+1)
+		if target.WorkDir == "" {
+			out = append(out, "preflight_work_dir_unset")
+		}
+		return append(out, markers...)
+	}
+
 	home := strings.TrimSpace(target.Home)
 	if home == "" {
 		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
 			Missing: trackerPlanAttachmentRequirements(),
-			Source:  []string{"base_home_unavailable"},
+			Source:  sourced("base_home_unavailable"),
 		})
 	}
 	if info, err := os.Stat(home); err != nil || !info.IsDir() {
 		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
 			Missing: trackerPlanAttachmentRequirements(),
-			Source:  []string{"base_home_unavailable_or_not_projected"},
+			Source:  sourced("base_home_unavailable_or_not_projected"),
 		})
 	}
 	target.Home = home
@@ -283,7 +330,7 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 	if err != nil {
 		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
 			Missing: trackerPlanAttachmentRequirements(),
-			Source:  []string{"runtime_operation_registry_unavailable"},
+			Source:  sourced("runtime_operation_registry_unavailable"),
 		})
 	}
 
@@ -291,14 +338,45 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 	if len(linearServers) == 0 {
 		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
 			Missing: trackerPlanAttachmentRequirements(),
-			Source:  append([]string{"connector_plugin_disabled_or_missing"}, surface.Source),
+			Source:  sourced("connector_plugin_disabled_or_missing", surface.Source),
 		})
 	}
 	authenticatedServers := authenticatedLinearRuntimeServers(linearServers)
 	if len(authenticatedServers) == 0 {
 		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
 			Missing: trackerPlanAttachmentRequirements(),
-			Source:  append([]string{"connector_authentication_unavailable"}, surface.Source),
+			Source:  sourced("connector_authentication_unavailable", surface.Source),
+		})
+	}
+
+	// A connector that authenticated but exposes no tools at all is a
+	// credential/reachability signature, not a capability gap. Codex reports
+	// authStatus=bearerToken with zero tools when the server's
+	// bearer_token_env_var is present-but-empty — which is precisely what
+	// dotenv.OverlayWithRepo guarantees when the key is configured nowhere — so
+	// running that through trackerPlanAttachmentMatrix yields the full
+	// seven-name Missing set and tells the operator to fix a declaration that
+	// is already correct.
+	//
+	// Missing stays populated because the profile genuinely is unmet: a
+	// connector exposing nothing cannot attach a plan, so the caller must still
+	// see which requirements went unsatisfied. (This branch calls
+	// failedCapabilityPrecondition directly, so it fails closed regardless of
+	// what Missing holds — populating it is about preserving the diagnostic,
+	// not about avoiding a fail-open.) The distinction between "declared but
+	// empty" and "genuinely undeclared" lives in the reason and the source
+	// marker, both of which now reach the message.
+	if allRuntimeServersExposeNoOperations(authenticatedServers) {
+		reported := authenticatedServers[0]
+		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
+			Missing: trackerPlanAttachmentRequirements(),
+			Source:  sourced("connector_declared_but_exposes_no_operations", surface.Source),
+			Reason: fmt.Sprintf(
+				"connector %q is declared and reports auth status %q but exposed 0 operations — "+
+					"the declaration is present and correct; check that its bearer-token env var "+
+					"reaches the session, and that the connector was reachable at load",
+				reported.Name, reported.AuthStatus,
+			),
 		})
 	}
 
@@ -318,7 +396,7 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 		}
 		combined = append(combined, server.Operations...)
 	}
-	source := append([]string{}, surface.Source)
+	source := sourced(surface.Source)
 	_, combinedMissing := trackerPlanAttachmentMatrix(combined)
 	if len(combinedMissing) == 0 {
 		source = append(source, "connector_capabilities_split_across_runtime_surfaces")
@@ -355,7 +433,10 @@ func failedCapabilityPrecondition(diagnostic capabilityDiagnostic) error {
 			metadata[key] = string(encoded)
 		}
 	}
-	st := status.New(codes.FailedPrecondition, "tracker-plan-attachment unavailable: "+strings.Join(diagnostic.Missing, ", "))
+	if diagnostic.Reason != "" {
+		metadata["reason"] = diagnostic.Reason
+	}
+	st := status.New(codes.FailedPrecondition, capabilityDiagnosticMessage(diagnostic))
 	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{
 		Reason:   "TRACKER_PLAN_ATTACHMENT_UNAVAILABLE",
 		Domain:   "bossanova.codex",
@@ -365,6 +446,33 @@ func failedCapabilityPrecondition(diagnostic capabilityDiagnostic) error {
 		return st.Err()
 	}
 	return withDetails.Err()
+}
+
+// capabilityDiagnosticMessage renders the single line an operator actually
+// sees. `boss` surfaces the gRPC message and nothing else, so the source
+// markers — which until now lived only in ErrorInfo metadata — are appended
+// here; without them every failure mode read identically as "these seven
+// capabilities are missing", which sends operators to fix a declaration that is
+// usually correct.
+//
+// The leading "tracker-plan-attachment unavailable" literal is load-bearing:
+// callers up the stack match on it. When no Reason is set the message keeps its
+// exact historical "unavailable: <missing>" shape and only gains the source
+// suffix.
+func capabilityDiagnosticMessage(diagnostic capabilityDiagnostic) string {
+	var sb strings.Builder
+	sb.WriteString("tracker-plan-attachment unavailable: ")
+	if diagnostic.Reason != "" {
+		sb.WriteString(diagnostic.Reason)
+		sb.WriteString("; missing: ")
+	}
+	sb.WriteString(strings.Join(diagnostic.Missing, ", "))
+	if len(diagnostic.Source) > 0 {
+		sb.WriteString(" (source: ")
+		sb.WriteString(strings.Join(diagnostic.Source, ", "))
+		sb.WriteString(")")
+	}
+	return sb.String()
 }
 
 func trackerPlanAttachmentRequirements() []string {
@@ -453,6 +561,19 @@ func authenticatedLinearRuntimeServers(servers []runtimeMCPServer) []runtimeMCPS
 		}
 	}
 	return authenticated
+}
+
+// allRuntimeServersExposeNoOperations reports whether every supplied server
+// loaded with an empty tool list. Requiring ALL of them keeps a real partial
+// surface on one server from being reclassified as a credential problem: if any
+// server exposes tools, the matrix runs and names the specific gaps.
+func allRuntimeServersExposeNoOperations(servers []runtimeMCPServer) bool {
+	for _, server := range servers {
+		if len(server.Operations) > 0 {
+			return false
+		}
+	}
+	return len(servers) > 0
 }
 
 func onlyReadOperations(operations []string) bool {

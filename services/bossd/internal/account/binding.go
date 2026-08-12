@@ -348,7 +348,9 @@ func lastUsed(a AccountMeta) time.Time {
 	return *a.LastUsedAt
 }
 
-// ResolveSpawnEnv produces the per-account spawn environment for accountID.
+// ResolveSpawnEnv produces the per-account spawn environment for accountID and
+// records the account as used. Call it from paths that are actually launching
+// an agent; read-only diagnostics must call ResolveSpawnEnvForProbe instead.
 //
 // Degrade-safe rules:
 //   - accountID == "" (account 0): return (nil, nil) immediately, with NO
@@ -359,6 +361,48 @@ func lastUsed(a AccountMeta) time.Time {
 //   - otherwise materialize the account's env, best-effort bump last-used
 //     (log-and-continue on error), and return the env.
 func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider string, now time.Time) (map[string]string, error) {
+	return r.resolveSpawnEnv(ctx, accountID, provider, now, true)
+}
+
+// ResolveSpawnEnvForProbe produces the SAME environment ResolveSpawnEnv does,
+// through the same body, but performs no last-used bookkeeping. It exists for
+// read-only diagnostics — today boss session mcp / DescribeChatMCP — which must
+// be able to describe a chat's environment without changing anything about it.
+//
+// Why sharing the body matters: LastUsedAt is the LRU key DefaultAccountID
+// selects on, so a diagnostic that bumped it could change which account the
+// NEXT session is handed. But a probe that derived a DIFFERENT environment than
+// the live chat would report on a world the chat never sees, which is the exact
+// misdiagnosis BOS-867 exists to end. Both requirements are met only by one
+// implementation with the bookkeeping varied, never by a forked derivation.
+//
+// Side effects this path DOES perform: MaterializeAccount. That is deliberate
+// and not skippable — materializing IS what produces the env (the claude plugin
+// turns the stored credential blob into the token overlay; the codex plugin
+// emits its auth.json file spec), so skipping it would return an empty map and
+// break the byte-identical guarantee above. Any credential refresh or rotation
+// a provider performs inside MaterializeAccount therefore still happens on the
+// probe path, by design: the probe must run under the credentials a real spawn
+// would get.
+//
+// Side effect this path SKIPS: TouchLastUsed. That is the only one, and it is
+// pure bookkeeping — nothing about the returned env depends on it.
+//
+// now is accepted for signature symmetry with ResolveSpawnEnv and is unused
+// beyond the shared body's degrade paths; it must not become a second way for
+// the two to diverge.
+func (r *Resolver) ResolveSpawnEnvForProbe(ctx context.Context, accountID, provider string, now time.Time) (map[string]string, error) {
+	return r.resolveSpawnEnv(ctx, accountID, provider, now, false)
+}
+
+// resolveSpawnEnv is the one body both exported entry points share.
+// recordLastUsed is the ONLY behavioural difference between them.
+func (r *Resolver) resolveSpawnEnv(
+	ctx context.Context,
+	accountID, provider string,
+	now time.Time,
+	recordLastUsed bool,
+) (map[string]string, error) {
 	if accountID == SystemDefaultAccountID {
 		return nil, nil
 	}
@@ -398,9 +442,11 @@ func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider stri
 	if err != nil {
 		return nil, err
 	}
-	if touchErr := r.reg.TouchLastUsed(ctx, acct.ID, now); touchErr != nil {
-		r.logWarn().Err(touchErr).Str("account_id", acct.ID).
-			Msg("account: failed to record last-used; continuing")
+	if recordLastUsed {
+		if touchErr := r.reg.TouchLastUsed(ctx, acct.ID, now); touchErr != nil {
+			r.logWarn().Err(touchErr).Str("account_id", acct.ID).
+				Msg("account: failed to record last-used; continuing")
+		}
 	}
 	return env, nil
 }

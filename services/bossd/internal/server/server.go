@@ -171,6 +171,7 @@ type Server struct {
 	mergeMu              sync.Mutex
 	repoMergeGates       map[string]*repoMergeGate
 	wakeHook             wakeHook             // test-only: zero in production; see wake_chat.go
+	mcpSurfaceHook       mcpSurfaceProber     // test-only: nil in production; see describe_chat_mcp.go
 	keepCurrentSweepHook keepCurrentSweepHook // test-only: zero in production; see keep_current.go
 	completionNotifier   session.SessionCompletionNotifier
 	authNotifier         AuthNotifier
@@ -3648,7 +3649,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		// on already-live attaches.
 		return mergeManagedOverAccount(
 			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
-			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID),
+			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, recordAccountUse),
 		)
 	}
 	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
@@ -4022,6 +4023,8 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 			entry.Status = pb.ChatStatus_CHAT_STATUS_IDLE
 		}
 		applyWaitingMarker(entry, s.chatStatus.Waiting(id))
+		spinnerPresent, substantiveAt, seeded := s.chatStatus.Liveness(id)
+		applyLivenessMarkers(entry, spinnerPresent, substantiveAt, seeded)
 		statuses = append(statuses, entry)
 	}
 
@@ -4038,10 +4041,13 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 			}
 		}
 		if !found {
-			statuses = append(statuses, &pb.ChatStatusEntry{
+			synthetic := &pb.ChatStatusEntry{
 				AgentSessionId: c.AgentSessionID,
 				Status:         pb.ChatStatus_CHAT_STATUS_IDLE,
-			})
+			}
+			spinnerPresent, substantiveAt, seeded := s.chatStatus.Liveness(c.AgentSessionID)
+			applyLivenessMarkers(synthetic, spinnerPresent, substantiveAt, seeded)
+			statuses = append(statuses, synthetic)
 		}
 	}
 
@@ -4105,6 +4111,25 @@ func applyWaitingMarker(entry *pb.ChatStatusEntry, reason string) {
 		return
 	}
 	entry.Status, entry.WaitingReason = status.PromoteWaiting(entry.GetStatus(), reason)
+}
+
+// applyLivenessMarkers projects the poller's spinner-aware liveness reading
+// (BOS-805) onto a chat status entry. Called for BOTH kinds of entry
+// GetChatStatuses builds — the ones backed by a tracker heartbeat and the
+// synthetic ones added for a tmux-alive chat that has none — so a consumer never
+// has to guess which flavour it received. A chat the tracker knows nothing about
+// simply reports the zero values: no spinner, no substantive timestamp, and
+// last_output_seeded=false, which is honest because such an entry carries no
+// last_output_at to mislabel in the first place.
+func applyLivenessMarkers(entry *pb.ChatStatusEntry, spinnerPresent bool, lastSubstantiveOutputAt time.Time, lastOutputSeeded bool) {
+	if entry == nil {
+		return
+	}
+	entry.SpinnerPresent = spinnerPresent
+	entry.LastOutputSeeded = lastOutputSeeded
+	if !lastSubstantiveOutputAt.IsZero() {
+		entry.LastSubstantiveOutputAt = timestamppb.New(lastSubstantiveOutputAt)
+	}
 }
 
 // sessionChatStatusRank orders chat statuses for the session-level aggregate:

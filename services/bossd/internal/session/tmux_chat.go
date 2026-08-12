@@ -14,6 +14,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/models"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
@@ -510,7 +511,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		if !ok {
 			return "", capabilityPreflightError{fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", hookOpts.HeadlessCapabilityProfile, spawnAgentName)}
 		}
-		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, spawnModel, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, sess.WorktreePath, spawnModel, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
 			return "", capabilityPreflightError{fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", spawnAgentName, hookOpts.HeadlessCapabilityProfile, err)}
 		}
 	}
@@ -1115,7 +1116,7 @@ func (l *Lifecycle) agentLogPathFor(agentSessionID string) string {
 }
 
 func agentLogPathFor(agentLogsDir, agentSessionID string) string {
-	return filepath.Join(agentLogsDir, agentSessionID+".log")
+	return bossalog.AgentLogFile(agentLogsDir, agentSessionID)
 }
 
 // startTmuxChat is a thin wrapper around StartTmuxChat that supplies the

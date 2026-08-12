@@ -140,7 +140,7 @@ func New(store CredentialStore, logger zerolog.Logger, opts ...Option) (*Materia
 }
 
 // defaultBaseDir resolves the app-data dir, honoring a configured override and
-// falling back to the platform default — mirroring session.mcpConfigDir.
+// falling back to the platform default.
 func defaultBaseDir() (string, error) {
 	if s, err := config.Load(); err == nil {
 		if dir, ok, derr := config.ConfiguredAppDataDir(s); derr == nil && ok {

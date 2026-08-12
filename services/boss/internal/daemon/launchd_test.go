@@ -273,6 +273,277 @@ func TestPlatformRestartBootstrapsExistingPlistWhenResolutionFails(t *testing.T)
 	}
 }
 
+// TestPlatformRestartRetriesTransientBootstrapFailure converts the BOS-864
+// incident — `bootstrap` returning exit 5 immediately after a bootout, then
+// succeeding on a plain retry moments later — into an overall success.
+func TestPlatformRestartRetriesTransientBootstrapFailure(t *testing.T) {
+	prepareRestartEnvironment(t)
+	bootstraps := 0
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		if args[0] != "bootstrap" {
+			return nil, nil
+		}
+		bootstraps++
+		if bootstraps == 1 {
+			return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+		}
+		return nil, nil
+	})
+
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart after a transient bootstrap failure = %v, want nil", err)
+	}
+	if got := countBootstrapCalls(*calls); got != 2 {
+		t.Fatalf("bootstrap invocations = %d, want 2 (one failure, one success)", got)
+	}
+}
+
+// TestPlatformRestartReportsTheFirstBootstrapFailure pins which of the bounded
+// attempts' errors reaches the operator. The first failure is the informative
+// one — it is the cause; anything a later attempt reports is a consequence of
+// the state the first one left behind. Overwriting it per attempt would make
+// the retry diagnose worse than the single attempt it replaced.
+func TestPlatformRestartReportsTheFirstBootstrapFailure(t *testing.T) {
+	prepareRestartEnvironment(t)
+	bootstraps := 0
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			bootstraps++
+			if bootstraps == 1 {
+				return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+			}
+			// A different, non-already-loaded failure on every later attempt, so
+			// this test isolates first-versus-last from the short-circuit below.
+			return []byte("Bootstrap failed: 1: Operation not permitted"), fakeExitError(t, 1)
+		case "list":
+			return nil, fakeExitError(t, 113)
+		default:
+			return nil, nil
+		}
+	})
+
+	err := platformRestart()
+	if err == nil {
+		t.Fatal("platformRestart with a permanently failing bootstrap returned nil")
+	}
+	if !strings.Contains(err.Error(), "Input/output error") {
+		t.Errorf("platformRestart error %q dropped the first (informative) failure", err.Error())
+	}
+	if strings.Contains(err.Error(), "Operation not permitted") {
+		t.Errorf("platformRestart error %q reported a later attempt instead of the first", err.Error())
+	}
+	// The verified outcome and the bounded count are unchanged by this.
+	if !strings.Contains(err.Error(), "the daemon is now stopped") ||
+		!strings.Contains(err.Error(), "boss daemon start") {
+		t.Errorf("platformRestart error %q lost the verified outcome", err.Error())
+	}
+	if got := countBootstrapCalls(*calls); got != launchdBootstrapAttempts {
+		t.Fatalf("bootstrap invocations = %d, want exactly %d", got, launchdBootstrapAttempts)
+	}
+}
+
+// TestPlatformRestartStopsRetryingWhenAlreadyBootstrapped covers the exact
+// shape the BOS-864 incident takes when attempt 1 loses the transition race but
+// launchd registers the job anyway: every later attempt fails with
+// already-loaded noise that no amount of retrying can clear.
+func TestPlatformRestartStopsRetryingWhenAlreadyBootstrapped(t *testing.T) {
+	prepareRestartEnvironment(t)
+	if launchdBootstrapAttempts < 3 {
+		t.Fatalf("launchdBootstrapAttempts = %d; this test needs >= 3 to prove a short-circuit", launchdBootstrapAttempts)
+	}
+	bootstraps := 0
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			bootstraps++
+			if bootstraps == 1 {
+				return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+			}
+			// EEXIST: the job attempt 1 appeared to fail on is in fact loaded.
+			return []byte("Bootstrap failed: 17: File exists"), fakeExitError(t, 17)
+		case "list":
+			return []byte("{\n\t\"PID\" = 4242;\n}\n"), nil
+		default:
+			return nil, nil
+		}
+	})
+
+	err := platformRestart()
+	if err == nil {
+		t.Fatal("platformRestart with a permanently failing bootstrap returned nil")
+	}
+	// Two attempts, not launchdBootstrapAttempts: the already-loaded exit ends
+	// the loop instead of sleeping through the remaining backoffs.
+	if got := countBootstrapCalls(*calls); got != 2 {
+		t.Fatalf("bootstrap invocations = %d, want exactly 2 (the already-loaded exit short-circuits)", got)
+	}
+	if !strings.Contains(err.Error(), "Input/output error") {
+		t.Errorf("platformRestart error %q dropped the first (informative) failure", err.Error())
+	}
+	if strings.Contains(err.Error(), "File exists") {
+		t.Errorf("platformRestart error %q showed already-loaded noise instead of the real cause", err.Error())
+	}
+	// AC-mandated: still an error, still carrying the verified outcome.
+	if !strings.Contains(err.Error(), "a daemon is still running") {
+		t.Errorf("platformRestart error %q does not report the surviving daemon", err.Error())
+	}
+	if strings.Contains(err.Error(), "the daemon is now stopped") {
+		t.Fatalf("platformRestart claimed a stopped daemon while one is running: %v", err)
+	}
+	if !strings.Contains(err.Error(), "launchctl bootstrap") {
+		t.Errorf("platformRestart error %q lost the underlying launchctl detail", err.Error())
+	}
+}
+
+func TestPlatformRestartExhaustedRetriesReportsStoppedDaemon(t *testing.T) {
+	prepareRestartEnvironment(t)
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+		case "list":
+			// Not loaded: platformGetStatus reads this as not running.
+			return nil, fakeExitError(t, 113)
+		default:
+			return nil, nil
+		}
+	})
+
+	err := platformRestart()
+	if err == nil {
+		t.Fatal("platformRestart with a permanently failing bootstrap returned nil")
+	}
+	for _, want := range []string{
+		"launchctl bootstrap",
+		"Input/output error",
+		"the daemon is now stopped",
+		"boss daemon start",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("platformRestart error %q missing %q", err.Error(), want)
+		}
+	}
+	// Bounded: a regression to an unbounded loop fails here.
+	if got := countBootstrapCalls(*calls); got != launchdBootstrapAttempts {
+		t.Fatalf("bootstrap invocations = %d, want exactly %d", got, launchdBootstrapAttempts)
+	}
+}
+
+func TestPlatformRestartExhaustedRetriesReportsStillRunningDaemon(t *testing.T) {
+	prepareRestartEnvironment(t)
+	stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+		case "list":
+			return []byte("{\n\t\"PID\" = 4242;\n}\n"), nil
+		default:
+			return nil, nil
+		}
+	})
+
+	err := platformRestart()
+	if err == nil {
+		t.Fatal("platformRestart with a permanently failing bootstrap returned nil")
+	}
+	if !strings.Contains(err.Error(), "a daemon is still running") {
+		t.Errorf("platformRestart error %q does not report the surviving daemon", err.Error())
+	}
+	if strings.Contains(err.Error(), "the daemon is now stopped") {
+		t.Fatalf("platformRestart claimed a stopped daemon while one is running: %v", err)
+	}
+	if !strings.Contains(err.Error(), "launchctl bootstrap") {
+		t.Errorf("platformRestart error %q lost the underlying launchctl detail", err.Error())
+	}
+}
+
+// TestPlatformRestartSkipLaunchctlContractUnchanged pins the test-mode
+// contract: no service-manager calls, no error, and the file-refresh path
+// still runs.
+func TestPlatformRestartSkipLaunchctlContractUnchanged(t *testing.T) {
+	prepareRestartEnvironment(t)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	calls := stubRestartLaunchctl(t, func([]string) ([]byte, error) { return nil, nil })
+
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart under BOSS_DAEMON_SKIP_LAUNCHCTL = %v, want nil", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("launchctl calls under BOSS_DAEMON_SKIP_LAUNCHCTL = %v, want none", *calls)
+	}
+	stagedPath := expectedStagedBossdPath(t)
+	staged, err := os.ReadFile(stagedPath)
+	if err != nil {
+		t.Fatalf("read staged bossd: %v", err)
+	}
+	if string(staged) != "version one" {
+		t.Fatalf("staged bossd = %q, want the refreshed source contents", staged)
+	}
+}
+
+// prepareRestartEnvironment gives platformRestart a resolvable source and an
+// existing plist so only the bootstrap outcome varies between tests.
+func prepareRestartEnvironment(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+
+	// PATH is deliberately left intact: executablePath below resolves bossd
+	// before ResolveBossdPath ever consults PATH, and fakeExitError needs `sh`.
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+	originalExecutablePath := executablePath
+	executablePath = func() (string, error) { return filepath.Join(filepath.Dir(sourcePath), "boss"), nil }
+	originalDelay := launchdBootstrapRetryDelay
+	launchdBootstrapRetryDelay = 0
+	t.Cleanup(func() {
+		executablePath = originalExecutablePath
+		launchdBootstrapRetryDelay = originalDelay
+	})
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("create LaunchAgents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing plist"), 0o600); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+	return plistPath
+}
+
+// stubRestartLaunchctl installs a recording runLaunchctl fake, following the
+// save / reassign / t.Cleanup-restore shape the rest of this file uses.
+func stubRestartLaunchctl(t *testing.T, respond func(args []string) ([]byte, error)) *[][]string {
+	t.Helper()
+	original := runLaunchctl
+	calls := &[][]string{}
+	runLaunchctl = func(args ...string) ([]byte, error) {
+		*calls = append(*calls, append([]string(nil), args...))
+		if len(args) == 0 {
+			return nil, nil
+		}
+		return respond(args)
+	}
+	t.Cleanup(func() { runLaunchctl = original })
+	return calls
+}
+
+// countBootstrapCalls counts the recorded `launchctl bootstrap` invocations,
+// which is what pins platformRestart's retry as bounded.
+func countBootstrapCalls(calls [][]string) int {
+	count := 0
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == "bootstrap" {
+			count++
+		}
+	}
+	return count
+}
+
 func TestGeneratePlist(t *testing.T) {
 	plist, err := generatePlist("/usr/local/bin/bossd")
 	if err != nil {

@@ -45,6 +45,7 @@ go_library(
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/keyedgate",
+        "//lib/bossalib/log",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/safego",

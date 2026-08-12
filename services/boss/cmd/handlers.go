@@ -31,6 +31,7 @@ import (
 	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -863,15 +864,12 @@ func brewExecutableForBinDir(binDir string) string {
 	return "brew"
 }
 
+// homebrewPrefixesForBinDir delegates to daemonbin so the Cellar shape has a
+// single definition shared with the staleness classifier (BOS-864). This
+// helper lives in package main and is therefore unimportable; delegating
+// rather than duplicating leaves its three callers untouched.
 func homebrewPrefixesForBinDir(binDir string) (string, string, bool) {
-	clean := filepath.Clean(binDir)
-	parts := strings.Split(filepath.ToSlash(clean), "/")
-	for i := 0; i+3 < len(parts); i++ {
-		if parts[i] == "Cellar" && parts[i+1] == "bossanova" && parts[i+3] == "bin" {
-			return filepath.FromSlash(strings.Join(parts[:i+3], "/")), filepath.FromSlash(strings.Join(parts[:i], "/")), true
-		}
-	}
-	return "", "", false
+	return daemonbin.HomebrewCellarPrefixes(binDir)
 }
 
 func isHomebrewCellarBinDir(binDir string) bool {
@@ -2336,6 +2334,12 @@ func runDaemonStatus(_ *cobra.Command) error {
 			fmt.Printf("  standalone PID: %d\n", metadata.PID)
 			if metadata.ExecutablePath != "" {
 				fmt.Printf("  standalone executable: %s\n", metadata.ExecutablePath)
+			}
+			// The staged file being current does not mean the live process is
+			// running those bytes (BOS-864). Keep the two facts distinct here
+			// too, so status and doctor can never disagree.
+			if line := daemonRunningImageLine(metadata.StartedAt); line != "" {
+				fmt.Printf("  %s\n", line)
 			}
 		}
 	} else {

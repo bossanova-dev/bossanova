@@ -709,6 +709,38 @@ function webStageScript(recipe) {
           { id: 'chat-e2e-busy', agentSessionId: 'claude-e2e-busy', title: 'Rebuild the search index', status: 'working', agentName: 'claude' },
         ],
       }, {
+        // BOS-855: a session-level outcome hint is PAST tense, so on a row whose
+        // own status reads as live activity it renders recessively. This row
+        // pairs a live "working" status with a residual
+        // "finalize failed (pr_skipped_no_github)" attention hint under a
+        // DEMOTABLE reason (AttentionReason.BLOCKED_MAX_ATTEMPTS = 1), so the
+        // sessions list shows the error line in its recessive treatment beside a
+        // live status — the contradiction the ticket reported, reconciled.
+        id: 'sess-e2e-live-past-failure',
+        title: 'Proof live rebase run',
+        branchName: 'proof/live-past-failure',
+        baseBranch: 'main',
+        daemonId: 'daemon-proof',
+        repoId: 'repo-proof',
+        repoDisplayName: 'bossanova',
+        repoOriginUrl: 'https://github.com/e2e/repo-proof',
+        prNumber: 855,
+        prUrl: 'https://github.com/recurser/bossanova/pull/855',
+        // The live composite: 'working' with DisplayIntent.DANGER (=3) and a
+        // spinner, exactly what displaystatus.Compute serves for a blocked
+        // session whose chat is still working.
+        displayLabel: 'working',
+        displayIntent: 3,
+        displaySpinner: true,
+        attentionStatus: {
+          needsAttention: true,
+          reason: 1,
+          summary: 'finalize failed (pr_skipped_no_github)',
+        },
+        chats: [
+          { id: 'chat-e2e-live-past-failure', agentSessionId: 'claude-e2e-live-past-failure', title: 'Rebase onto main', status: 'working', agentName: 'claude' },
+        ],
+      }, {
         // A session carrying a BOS-409 stale-failover-proxy-port audit record
         // (UNSPECIFIED outcome, whole message in detail) so the
         // web-session-detail-rotation recipe proves BOS-432: the row renders the

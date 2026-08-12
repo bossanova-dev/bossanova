@@ -26,6 +26,23 @@ type Entry struct {
 	ResetAt time.Time
 }
 
+// livenessMarker is the poller-derived liveness state for one chat (BOS-805).
+// See Tracker.liveness for why it is not an Entry field.
+type livenessMarker struct {
+	// spinnerAt is when a live agent spinner was last observed on the chat's
+	// pane. Zero means the last observation saw none.
+	spinnerAt time.Time
+	// substantiveAt is when the captured pane last changed in a way that was not
+	// purely a spinner redraw. Zero when nothing is known.
+	substantiveAt time.Time
+	// seeded records that the chat's LastOutputAt (and substantiveAt) is a
+	// placeholder stamped when the poller first saw the chat, not an observed
+	// content change. It is what lets a consumer tell two chats registered in the
+	// same poll tick — which share a timestamp to the nanosecond — from a real
+	// collision of observations.
+	seeded bool
+}
+
 // Tracker is a thread-safe in-memory cache of chat process statuses.
 type Tracker struct {
 	mu      sync.RWMutex
@@ -63,6 +80,26 @@ type Tracker struct {
 	// a false "your session is dead" banner on a healthy long build burns
 	// operator trust faster than the missed detection does.
 	stalled map[string]time.Time // agent_session_id -> last observed stalled
+
+	// liveness holds, per agent session ID, the spinner-aware liveness signals the
+	// tmux poller derives from each captured pane (BOS-805): whether a live
+	// spinner is on screen, when the pane last changed in a way that was NOT
+	// purely a spinner redraw, and whether the chat's LastOutputAt is a seeded
+	// placeholder rather than an observed change.
+	//
+	// It lives outside entries for the same reason authFailed and stalled do:
+	// update recreates the Entry on every heartbeat, which would wipe values the
+	// poller writes on its own cadence. Keeping it out of Update's signature also
+	// keeps the non-poller callers honest — ReportChatStatus (a CLI client), the
+	// headless session lifecycle and the test harness all call Update with no
+	// pane content in hand, and forcing them to supply a spinner verdict would
+	// mean inventing one.
+	//
+	// Only spinnerAt carries StaleThreshold "reads as absent" semantics, because
+	// only it asserts something about NOW. substantiveAt is a historical
+	// observation whose whole point is that it may be old, and seeded describes
+	// the provenance of a value that is served for as long as that value is.
+	liveness map[string]*livenessMarker // agent_session_id -> derived liveness
 
 	// waiting holds, per agent session ID, the canonical human-readable reason a
 	// chat is parked on an external event rather than actively working
@@ -157,9 +194,52 @@ func NewTracker() *Tracker {
 		authFailed:        make(map[string]time.Time),
 		transientAPIError: make(map[string]time.Time),
 		stalled:           make(map[string]time.Time),
+		liveness:          make(map[string]*livenessMarker),
 		waiting:           make(map[string]string),
 		capturedOutput:    make(map[string]string),
 	}
+}
+
+// SetLiveness records the spinner-aware liveness signals the tmux poller derived
+// from a chat's captured pane (BOS-805). Called once per tick per chat with the
+// current verdict; the poller is the only writer.
+//
+// Unlike SetAuthFailed / SetStalled this fires no hook. Those markers gate an
+// attention overlay a human must see, so a transition has to be published; these
+// values are a liveness READING a caller polls for over get_chat_statuses, and
+// spinnerPresent flips several times a minute on a healthy chat — publishing
+// each flip would storm the stream with an oscillation nobody acts on.
+func (t *Tracker) SetLiveness(agentSessionID string, spinnerPresent bool, lastSubstantiveOutputAt time.Time, lastOutputSeeded bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	m := &livenessMarker{substantiveAt: lastSubstantiveOutputAt, seeded: lastOutputSeeded}
+	if spinnerPresent {
+		m.spinnerAt = time.Now()
+	}
+	t.liveness[agentSessionID] = m
+}
+
+// Liveness returns the chat's spinner-aware liveness signals.
+//
+// spinnerPresent reads as false once the marker is staler than StaleThreshold,
+// exactly like AuthFailed and Stalled: a spinner nobody is re-observing (the
+// poller stopped, the chat died, the pane went quiet) is not evidence the agent
+// is working now, and this fails toward NOT claiming liveness.
+//
+// lastSubstantiveOutputAt and lastOutputSeeded carry no freshness gate. The
+// timestamp's whole purpose is to be allowed to age — that age IS the signal a
+// caller gates on — and blanking it after fifteen seconds would erase precisely
+// the reading that distinguishes a wedged chat from a working one. Both are
+// reclaimed by Remove and Cleanup along with the chat's other state.
+func (t *Tracker) Liveness(agentSessionID string) (spinnerPresent bool, lastSubstantiveOutputAt time.Time, lastOutputSeeded bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	m, ok := t.liveness[agentSessionID]
+	if !ok {
+		return false, time.Time{}, false
+	}
+	spinnerPresent = !m.spinnerAt.IsZero() && time.Since(m.spinnerAt) <= StaleThreshold
+	return spinnerPresent, m.substantiveAt, m.seeded
 }
 
 // SetCapturedOutput stores (or, when tail is empty, clears) the bounded final
@@ -559,6 +639,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	delete(t.authFailed, agentSessionID)
 	delete(t.transientAPIError, agentSessionID)
 	delete(t.stalled, agentSessionID)
+	delete(t.liveness, agentSessionID)
 	delete(t.waiting, agentSessionID)
 	delete(t.capturedOutput, agentSessionID)
 	hook := t.onAuthChange
@@ -594,6 +675,11 @@ func (t *Tracker) Cleanup() {
 			// diagnostic is stale too — drop it here rather than leak it for the
 			// daemon's lifetime.
 			delete(t.capturedOutput, id)
+			// The spinner-aware liveness reading (BOS-805) is collected here for
+			// the same reason: its substantiveAt/seeded halves carry no clock of
+			// their own by design, so a chat that stopped heartbeating would
+			// otherwise leave them for the daemon's lifetime.
+			delete(t.liveness, id)
 			// The waiting reason (BOS-668) has no clock of its own, so this is
 			// where it gets collected: a chat that stopped heartbeating is no
 			// longer parked on anything, and nothing would recompute it to "".

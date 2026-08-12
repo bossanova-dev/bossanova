@@ -1,6 +1,6 @@
 ---
 title: Extension System
-description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the seven extension roles available.
+description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the nine extension roles available.
 slug: /skills/extensions
 ---
 
@@ -42,7 +42,7 @@ x-boss-extension:
 
 - `extends` — the core skill this extension joins. An extension is only accepted when
   `extends` equals the core being discovered.
-- `role` — one of the seven roles below; it decides which pipeline the extension
+- `role` — one of the nine roles below; it decides which pipeline the extension
   plugs into.
 - `order` — optional integer run order, default `100`. Extensions run in ascending
   `(order, name)` order, so runs are reproducible regardless of filesystem
@@ -51,6 +51,11 @@ x-boss-extension:
   repository's own lens registry, that this extension serves. Declaring it is what binds the
   extension into `boss-review`'s lens phase; an extension that declares none is discovered but
   never dispatched as a lens.
+- `capability` — optional, and meaningful only for `role: round`: the id of the review capability
+  this round already covers, such as `second-voice` or `code-review`. It is what lets a core tell
+  that a repo-local round already does the job of a **default round** it would otherwise run itself,
+  so the repository gets one pass instead of two. Declaring none is safe — the round still runs, it
+  just suppresses nothing.
 
 ### Discovery command
 
@@ -67,7 +72,7 @@ wrong `role`, unreadable frontmatter). With nothing installed it prints
 
 ## Extension roles
 
-There are seven roles. Each attaches to a specific core skill and plugs into a
+There are nine roles. Each attaches to a specific core skill and plugs into a
 specific step of that core's pipeline.
 
 | Role            | Extends       | What it adds                                                                           | Example extension                |
@@ -79,6 +84,8 @@ specific step of that core's pipeline.
 | `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                 | `boss-proof-tui`                 |
 | `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                      | `boss-plan-compound-engineering` |
 | `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs.                                 | `boss-build-ce`                  |
+| `notes`         | `boss-build`  | Post-terminal persistence of end-of-run notes to an external store.                    | `boss-build-notes`               |
+| `knowledge`     | `boss-build`  | Pre-PR capture of what the run learned, committed as an artifact inside the PR.        | `boss-build-knowledge`           |
 
 The `plan-reviewer` role has no default Bossanova extension shipped; the example name
 above is illustrative of the `<core>-<suffix>` convention. Every other role has a
@@ -94,6 +101,24 @@ inline fallback rubric. A lens with no bound extension simply starts at the seco
 declaring the binding is purely additive — nothing about the lens registry changes. A bound
 extension that fails to run is recorded as skipped and its lens falls through to the next tier
 rather than going unreviewed.
+
+### Default rounds and the `capability` binding
+
+A core can also run a **default round**: a review capability it attempts on every run — an
+independent second opinion from the other coding agent, say — and quietly does without when the
+machine cannot supply it. Which capabilities a repository wants is configuration, not something
+baked into the portable core, so the core knows a capability only by its id and how to probe for it.
+
+Two things make this safe to leave on by default:
+
+- A **default round** is checked against the `capability` each discovered round extension declares.
+  When a repo-local round already covers that capability and actually ran, the default round is
+  dropped — the repository gets its own round, not a duplicate pass.
+- When the capability is unavailable — the other agent's CLI is not installed or not signed in, the
+  configured review skill is not present — the round is **silently** skipped. It is recorded in the
+  run's ledger and nowhere else: never a warning, never a blocked run. Absence is the normal case on
+  most machines, and a default round is additive, so it is never a substitute for the core's own
+  guaranteed review pass.
 
 ## Graceful degradation
 

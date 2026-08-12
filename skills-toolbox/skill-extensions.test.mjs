@@ -197,8 +197,8 @@ test('discoverExtensions omits known cross-role siblings when role is supplied',
 
 // BOS-678: the lens binding is declared extension-side, as an optional `lens: <lensMap id>` key
 // on the marker, so `boss-review` Phase 1 can index discovered lens extensions by the lens entry
-// they serve without adding a key to `.boss-skills.json` `lensMap` (which `skill-config.test.mjs`
-// deep-equals against `DEFAULT_CONFIG`, i.e. against the published payload's defaults).
+// they serve without adding a key to `.boss-skills.json` `lensMap` (a repo-local surface that
+// BOS-850 deliberately keeps separate from the published `DEFAULT_CONFIG` catalogue).
 test('discoverExtensions carries a declared lens binding onto the descriptor', () => {
   const root = scratchRoot()
   writeSkill(root, 'bs-review-golang', [
@@ -247,6 +247,82 @@ test('discoverExtensions does not filter a round extension carrying a stray lens
   assert.deepEqual(skipped, [])
 })
 
+// BOS-856: `capability` is the round-side mirror of `lens` — it binds a discovered round to the
+// review capability it covers, so a core running that capability as a DEFAULT round can tell the
+// repo already has it and run one pass instead of two. The byte-identity assertions below are the
+// real contract: an extension that declares nothing must be indistinguishable from one authored
+// before the key existed, or adding the key silently changes every existing repo's descriptors.
+test('discoverExtensions carries a declared capability binding onto the descriptor', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-crossmodel', [
+    'name: bs-review-crossmodel',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: round',
+    '  order: 20',
+    '  capability: second-voice',
+  ])
+  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
+  assert.deepEqual(
+    extensions.map((e) => e.capability),
+    ['second-voice'],
+  )
+})
+
+test('discoverExtensions omits capability for absent, blank, or non-string declarations', () => {
+  // One descriptor is built with no capability key at all — that is "today's" shape — and every
+  // malformed declaration must produce a descriptor whose JSON matches it exactly.
+  const baselineRoot = scratchRoot()
+  writeSkill(baselineRoot, 'bs-review-plain', [
+    'name: bs-review-plain',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: round',
+  ])
+  const baseline = discoverExtensions({ core: 'bs-review', root: baselineRoot, role: 'round' })
+    .extensions[0]
+  assert.equal('capability' in baseline, false)
+  const stripPaths = (d) => JSON.stringify({ ...d, dir: '', skillPath: '', name: '' })
+
+  for (const declared of ['  capability:', '  capability: 42', '  capability: ""']) {
+    const root = scratchRoot()
+    writeSkill(root, 'bs-review-plain', [
+      'name: bs-review-plain',
+      'x-boss-extension:',
+      '  extends: bs-review',
+      '  role: round',
+      declared,
+    ])
+    const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
+    assert.equal(extensions.length, 1, `${declared} should still be discovered`)
+    assert.equal(
+      stripPaths(extensions[0]),
+      stripPaths(baseline),
+      `${declared}: descriptor must be byte-identical to the undeclared one`,
+    )
+  }
+})
+
+test('discoverExtensions does not filter a lens extension carrying a stray capability key', () => {
+  // Same role-generic tolerance `lens` gets: the key is meaningful only for rounds, but a stray
+  // one is inert rather than a discovery failure.
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-straylens', [
+    'name: bs-review-straylens',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  capability: second-voice',
+  ])
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-review-straylens'],
+  )
+  assert.equal(extensions[0].capability, 'second-voice')
+  assert.deepEqual(skipped, [])
+})
+
 test('discoverExtensions recognizes notes extensions and their result schema', () => {
   const root = scratchRoot()
   writeSkill(root, 'boss-build-notes', [
@@ -282,6 +358,63 @@ test('validateResult rejects notes fields that are not non-empty strings', () =>
         items: [item],
       },
       'notes',
+    )
+
+    assert.equal(result.ok, false, field)
+    assert.ok(
+      result.errors.includes(`item 0 "${field}" is not a non-empty string`),
+      `${field}: ${result.errors.join(', ')}`,
+    )
+  }
+})
+
+test('discoverExtensions recognizes knowledge extensions and their result schema', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-build-knowledge', [
+    'name: boss-build-knowledge',
+    'x-boss-extension:',
+    '  extends: boss-build',
+    '  role: knowledge',
+    '  order: 40',
+  ])
+
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-build',
+    root,
+    role: 'knowledge',
+  })
+  assert.deepEqual(
+    extensions.map((extension) => extension.name),
+    ['boss-build-knowledge'],
+  )
+  assert.deepEqual(skipped, [])
+  assert.deepEqual(ROLE_SCHEMAS.knowledge, ['path', 'title', 'kind'])
+})
+
+test('validateResult rejects knowledge fields that are not non-empty strings', () => {
+  // `path` is a knowledge item's proof of persistence, exactly as `noteId` is for notes: an item
+  // carrying `path: ''` passes the presence check while proving no artifact reached the tree.
+  for (const [field, value] of [
+    ['path', ''],
+    ['path', '   '],
+    ['title', null],
+    ['kind', {}],
+  ]) {
+    const item = {
+      path: 'docs/solutions/skills/extension-roles.md',
+      title: 'A new role needs two registry edits',
+      kind: 'solution',
+    }
+    item[field] = value
+
+    const result = validateResult(
+      {
+        ok: true,
+        extension: 'boss-build-knowledge',
+        role: 'knowledge',
+        items: [item],
+      },
+      'knowledge',
     )
 
     assert.equal(result.ok, false, field)
@@ -407,6 +540,15 @@ test('discoverExtensions finds the committed boss-review round extensions repo-l
     extensions.every((e) => e.role === 'round'),
     `every round descriptor should carry role "round": ${JSON.stringify(extensions)}`,
   )
+})
+
+test('the committed boss-review rounds declare the capabilities they cover', () => {
+  // These bindings are what suppress boss-review's default rounds for this repo. Losing one does
+  // not fail loudly — it just makes the repo run the capability twice — so assert them directly.
+  const { extensions } = discoverExtensions({ core: 'boss-review', root: repoRoot, role: 'round' })
+  const bound = Object.fromEntries(extensions.map((e) => [e.name, e.capability]))
+  assert.equal(bound['boss-review-ce'], 'code-review')
+  assert.equal(bound['boss-review-crossmodel'], 'second-voice')
 })
 
 test('discoverExtensions finds the committed boss-review lens extensions with their bindings', () => {
@@ -628,7 +770,11 @@ test('validateResult never throws on a non-object envelope', () => {
 })
 
 test('ROLE_SCHEMAS enumerates the consumer roles', () => {
+  // Name-exact rather than a count: a new role costs TWO edits (KNOWN_EXTENSION_ROLES gates
+  // discovery, ROLE_SCHEMAS gates validation) and the two registries have drifted apart before.
+  // BOS-851 added `knowledge`.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
+    'knowledge',
     'lens',
     'notes',
     'plan-reviewer',

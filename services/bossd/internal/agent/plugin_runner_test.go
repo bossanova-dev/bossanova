@@ -171,6 +171,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 
 	err := pr.PreflightHeadlessCapabilityProfile(
 		context.Background(),
+		"/worktrees/gated-run",
 		"model-for-preflight",
 		map[string]string{"CODEX_HOME": "/projected/home", "ACCOUNT_TOKEN": "secret"},
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
@@ -185,6 +186,11 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 	if got.GetModel() != "model-for-preflight" {
 		t.Fatalf("Model = %q, want model-for-preflight", got.GetModel())
 	}
+	// The gated run's working directory must reach the plugin, or the plugin
+	// profiles a runtime that never loaded the repo's own agent config.
+	if got.GetWorkDir() != "/worktrees/gated-run" {
+		t.Fatalf("WorkDir = %q, want /worktrees/gated-run", got.GetWorkDir())
+	}
 	if got.GetExtraEnv()["CODEX_HOME"] != "/projected/home" || got.GetExtraEnv()["ACCOUNT_TOKEN"] != "secret" {
 		t.Fatalf("ExtraEnv = %v, want managed account env", got.GetExtraEnv())
 	}
@@ -198,7 +204,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testi
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
 
 	err := pr.PreflightHeadlessCapabilityProfile(
-		context.Background(), "model", nil,
+		context.Background(), t.TempDir(), "model", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if !errors.Is(err, fc.preflightErr) {

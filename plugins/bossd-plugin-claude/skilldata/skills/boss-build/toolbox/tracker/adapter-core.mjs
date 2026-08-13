@@ -118,13 +118,28 @@ export const TRACKER_CAPABILITIES = [
 // of an optional capability when present, and ignores it when absent.
 export const OPTIONAL_TRACKER_CAPABILITIES = ['states']
 
-// Plan-storage-aware skills require these native attachment operations. Keeping
-// them optional preserves unrelated adapters that do not implement plan storage.
+// Operations an adapter MAY declare. Two groups live here, for two different reasons:
+//
+//   1. The native plan-attachment operations, which only plan-storage-aware skills use.
+//      Keeping them optional preserves unrelated adapters that implement no plan storage.
+//   2. extractImages and createLabel, which are left to adapter discretion because that
+//      is how every caller already treats them: the single extractImages call site is
+//      documented best-effort, and createLabel has no caller at all. Requiring them at
+//      LOAD time rejected otherwise-usable adapters over capabilities nothing depends on
+//      at CALL time.
+//
+// The invariant for every entry here: an ABSENT optional op conforms, while a DECLARED
+// one is validated exactly as strictly as a required op (non-empty tool and summary) —
+// an adapter that names an op still owes a usable tool. Only the meaning of absence
+// differs from REQUIRED_TRACKER_OPERATIONS. Moving an op here is therefore a widening of
+// what conforms, never a weakening of how a declared op is checked.
 export const OPTIONAL_TRACKER_OPERATIONS = [
   'preparePlanAttachment',
   'finalizePlanAttachment',
   'readPlanAttachment',
   'deletePlanAttachment',
+  'extractImages',
+  'createLabel',
 ]
 
 // The stable, tracker-agnostic state roles the skills consume by name: the state a
@@ -139,6 +154,12 @@ export const TRACKER_STATE_ROLES = ['planned', 'inProgress', 'inReview']
 // tracker's MCP tools — in particular readComments + writeComment +
 // updateComment are the exact three ops the single-comment progress protocol
 // needs, with no raw GraphQL required in any driver.
+//
+// An op earns a place here only when a skill's control flow DEPENDS on it — where an
+// adapter that cannot perform it cannot run the protocol at all. An op every caller
+// already treats as best-effort, or that no caller invokes, belongs in
+// OPTIONAL_TRACKER_OPERATIONS instead: requiring it here rejects an otherwise-usable
+// adapter at load time over a capability nothing depends on at call time.
 export const REQUIRED_TRACKER_OPERATIONS = [
   'selectPlanned',
   'getIssue',
@@ -147,8 +168,6 @@ export const REQUIRED_TRACKER_OPERATIONS = [
   'writeComment',
   'updateComment',
   'readLabels',
-  'extractImages',
-  'createLabel',
   'setPriorityEstimate',
   'appendDependency',
 ]

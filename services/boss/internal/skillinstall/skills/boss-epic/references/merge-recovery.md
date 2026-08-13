@@ -9,13 +9,13 @@ Read the one whose trigger fired; the SKILL.md body carries the decision rule.
 The body's Safety rails state the gate; this is the rationale and the read for
 each condition. A ticket is merge-eligible only when **all five** hold:
 
-| #   | Condition                      | How to read it                                                                      |
-| --- | ------------------------------ | ----------------------------------------------------------------------------------- |
-| 1   | daemon merge gate clear        | `get_session` / the display status reports `gate 1` / `Passing` — **authoritative** |
-| 2   | build chat SETTLED             | `get_chat_statuses` idle, no spinner, stable across two polls, real changed files   |
-| 3   | PR is not a draft              | `gh pr view <n> --json isDraft -q .isDraft` → `false`                               |
-| 4   | ticket in the **review** state | the adapter's `getIssue`, compared against the configured `states.inReview` role    |
-| 5   | no do-not-merge marker         | `gh pr view <n> --json title,body` carries no partial-slice / `do not merge` marker |
+| #   | Condition                      | How to read it                                                                                                    |
+| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | daemon merge gate clear        | `get_session` / the display status reports `gate 1` / `Passing` — **authoritative**                               |
+| 2   | build chat SETTLED             | `get_chat_statuses` idle, no spinner, stable across two polls, real changed files                                 |
+| 3   | PR is not a draft              | `gh pr view <n> --json isDraft -q .isDraft` → `false`                                                             |
+| 4   | ticket in the **review** state | the adapter's `getIssue`, compared against the configured `states.inReview` role                                  |
+| 5   | no do-not-merge marker         | `gh pr view <n> --json title,body` carries no partial-slice / `do not merge` marker (a `PARTIAL` child writes it) |
 
 Why each is load-bearing:
 
@@ -32,10 +32,30 @@ Why each is load-bearing:
   sitting in the in-progress state means the child is mid-work (or ended
   BLOCKED) no matter what CI says. Resolve the state name from the configured
   state **roles** — never compare against a literal state name, which is
-  workspace-specific.
+  workspace-specific. A child that ended `PARTIAL` deliberately leaves its ticket
+  in the in-progress role and never moves it to the review state, so condition
+  (4) already holds a partial slice on its own.
 - **(5) the marker is the author's explicit veto.** A child that deliberately
   shipped a partial slice says so in the PR title/body; honor it and skip the
-  merge with a progress-comment note rather than merging past the author.
+  merge with a progress-comment note rather than merging past the author. Its
+  producer is a child `/boss-build` run that ended `PARTIAL` — see the marker
+  literal below.
+
+**The marker literal.** A `PARTIAL` child writes a `## Partial` section into the
+PR body whose first line is exactly
+
+```
+do not merge — partial: <satisfied>/<total> acceptance criteria
+```
+
+and appends ` (partial <satisfied>/<total>)` to the PR title. Either alone is a
+hold, and both together survive an edit to one — which is why condition (5) reads
+`title,body` rather than one of them. This is the same literal `boss-build`'s
+review-stack reference specifies under §PARTIAL-route publication; the two are
+byte-identical by contract, so never reword one side. (Named without a path on
+purpose: a reference path resolves against the core of the file naming it, and
+this core carries no such file — a bare `references/…` here would install as a
+dangling link.)
 
 Failing any condition is a **hold**, not a failure: note it on the progress
 comment and re-check next cycle. Only the recovery paths below convert a merge

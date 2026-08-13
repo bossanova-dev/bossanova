@@ -100,8 +100,11 @@ names generically everywhere else:
    ```
    A `boss-toolbox-drift:` line names installed helpers that differ from this repo's helper source.
    Re-vendor and reinstall the skills to clear it, then continue — the run is not blocked.
-3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`, and
-   `readPlanAttachment` operations now. If any is absent, stop before drafting or tracker writes.
+3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`,
+   `readPlanAttachment`, and `deletePlanAttachment` operations now. If any is absent, stop before
+   drafting or tracker writes. `deletePlanAttachment` is required here, not at its first use: every
+   upload site reads its artifact back and deletes a confirmed-unreadable orphan
+   (`references/plan-storage.md` step 5), so a missing op must fail with nothing written.
    Native tracker attachments are the only implementation-plan store and never change proof storage.
 4. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
    `trackerConfigFor(config).team`).
@@ -374,9 +377,9 @@ plain JSON**, never a description marker:
 | identity         | `validateSpecIdentity(spec, <ISSUE-ID>)` — `schemaVersion` + `parentId` must match, **not title alone**       |
 
 Upload it with the **same** prepare → PUT → finalize mechanism a plan artifact uses
-(`references/plan-storage.md` steps 1–4, `uploadRequest.headers` scratch-file discipline and its
-immediate deletion after the PUT included), substituting this contract's filename, MIME type and
-title. Never hand-roll a second upload path, and never claim the plan artifact's `text/markdown`
+(`references/plan-storage.md` steps 1–5, `uploadRequest.headers` scratch-file discipline and its
+immediate deletion after the PUT included, and the step-5 read-back), substituting this contract's
+filename, MIME type and title. Never hand-roll a second upload path, and never claim the plan artifact's `text/markdown`
 MIME or its `Implementation plan (…)` title: `bs-epic-lib.mjs`'s `normalizeTicket` recognizes a plan
 by exactly that prefix, so a spec attachment titled that way is mistaken for the parent's plan
 artifact. Title alone is not identity — a human can create an attachment with any name — so the
@@ -462,7 +465,17 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
      than inventing one, and `validateDecomposition` never inspects it — so without this check the
      attachment uploads clean and only turns fatal much later, when a resume cannot bind it. `ok:false`
      ⇒ abort here, while zero children exist. Otherwise prepare → PUT → finalize the
-     `epic-spec.json` attachment per the contract above, then delete that scratch. **Any** failure takes the SAFE branch: abort with
+     `epic-spec.json` attachment per the contract above, then delete that scratch. **Then read the
+     finalized spec back — still inside this stage, BEFORE any child is created** (step 5 of that
+     contract, one retry on a transport error): the read must return non-empty content **and**
+     `validateSpecIdentity(parseEpicSpec(<the returned body>), <ISSUE-ID>)` must be `ok`. The pre-PUT
+     check validates the bytes on disk; only this one proves what the tracker stored, which is what
+     every resume reads. On a **confirmed-unreadable** or unbindable read-back,
+     `deletePlanAttachment` that orphaned row — safe **only** here, with zero children — then take
+     the SAFE branch. **Once children exist, a failed read-back aborts WITHOUT deleting the spec:**
+     that would leave the parent with neither store, the state step 6 warns re-decomposes into
+     DUPLICATE children. Reading back before the first child create is what keeps the delete safe.
+     **Any** failure takes the SAFE branch: abort with
      **zero children created**, the parent still unplanned, so the next unplanned sweep re-picks it.
    - **Stage 3 — the deferred destructive strip.** Its `staleAttachmentIds` come from the same
      prefix-scoped sweep step 7 cites, in its **one-arg** form — no parent-overview attachment
@@ -508,8 +521,12 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    emitter, never a hand-written literal comment) embedded in each child's description — but
    **not** `agent-friendly` yet: deferred exposure, step 6) in
    `topoOrderChildren` order, recording each new id against its `key`. For `tracker-attachment`, now
-   prepare, PUT, and finalize that child's attachment, then move its shell to the planned state. Any
-   attachment failure takes the SAFE branch before that child's planned-state or label exposure. A non-`agent-friendly` child is
+   prepare, PUT, finalize **and read back** that child's attachment (`references/plan-storage.md`
+   step 5), and only then move its shell to the planned state — otherwise an unwritten child plan
+   reaches the planned flip and a consumer selects that child on a row whose bytes do not exist. Any
+   attachment **or read-back** failure takes the SAFE branch before that child's planned-state or
+   label exposure, and **aborts the epic** rather than skipping that child: siblings already created
+   stay unexposed and are adopted on resume. A non-`agent-friendly` child is
    not `boss-build`-selectable, so it cannot be picked up before its blockers exist.
 
 5. **Wire the intra-epic DAG.** Execute `epicWiringPlan(spec, createdIdByKey)`: set each child's
@@ -528,16 +545,20 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    Linear's sub-issue rollup can advance the parent on its own; without this re-assertion,
    parent-repurpose-last crash recovery silently stops working because the unplanned sweep can no
    longer find a partial epic. Then compose the parent overview, run step 7's
-   two gates (secret + image-parity), then attach it natively and save it onto the still-unplanned
-   parent** (description-only; an **attachment-sourced** spec lives outside the description, so this
+   two gates (secret + image-parity), then attach it natively — **reading the finalized parent
+   overview back before the save** (`references/plan-storage.md` step 5; deleting a
+   confirmed-unreadable overview strands no spec store, which lives in its own attachment) — and
+   save it onto the still-unplanned parent** (description-only; an **attachment-sourced** spec lives outside the description, so this
    description-replacing save cannot lose it — the old re-append-the-marker requirement is obsolete
    there, not dropped by accident. **A LEGACY-sourced resume is the exception:** that parent's spec
    _is_ the inline `<!-- boss-plan-epic-spec:… -->` marker, so carry that marker substring
    **verbatim** into the composed overview — this save would otherwise destroy the only store and
    leave the parent with neither, which the next sweep re-decomposes into DUPLICATE children. Carry
    it; never migrate it to an attachment instead — this phase only ever sweeps unplanned tickets, so
-   a self-heal-on-read path would almost never fire and is not worth the second write. The unplanned → planned flip stays last — step 7). On a gate **or** attachment/save failure take the SAFE
-   branch — **no external links, no exposure, no planned flip, abort**. Because the failure-prone
+   a self-heal-on-read path would almost never fire and is not worth the second write. The unplanned → planned flip stays last — step 7). On a gate **or** attachment/read-back/save failure take the SAFE
+   branch — **no external links, no exposure, no planned flip, abort**. All three epic upload sites —
+   the stage-2 spec, each child plan in step 4, and this parent overview — are read back **before**
+   step 7's planned flip, so the flip never exposes an epic standing on bytes never written. Because the failure-prone
    plan-store + Linear parent save happen **here, before any external edge or exposure**, a
    **deterministic** parent-gate failure never leaves a child `agent-friendly`/buildable, nor a non-epic
    backlog ticket blocked behind an unbuildable child, while the parent aborts unplanned; an exposed

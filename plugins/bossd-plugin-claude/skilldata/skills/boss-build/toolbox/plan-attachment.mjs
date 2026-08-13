@@ -1,6 +1,8 @@
 // Shared, dependency-free helpers for tracker-hosted implementation plans.
 import { readFileSync } from 'node:fs'
 
+import { isMainModule } from './main-module.mjs'
+
 function createdAt(attachment) {
   const value = Date.parse(attachment?.createdAt || '')
   return Number.isNaN(value) ? 0 : value
@@ -54,7 +56,11 @@ export async function putPlanAttachment({ file, uploadURL, headers, fetchImpl = 
   return status
 }
 
-if (import.meta.main) {
+// Detect direct CLI entry with isMainModule(), never the runtime's own entry-point flag: that
+// flag reads `undefined` on runtimes older than the 22.x backport, which made this whole block
+// dead code — the CLI exited 0 having uploaded nothing. isMainModule() compares process.argv[1]
+// against this module's path instead, so entry detection is runtime-independent.
+if (isMainModule(import.meta.url)) {
   const [, , command, file, uploadURL, headersFile] = process.argv
   if (command !== 'put' || !file || !uploadURL || !headersFile) {
     process.stderr.write('usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n')

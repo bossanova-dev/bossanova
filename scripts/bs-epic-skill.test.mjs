@@ -158,7 +158,14 @@ test('size ratchet', () => {
   // BLOCKED: <message> naming which of the two opposite fixes applies — replacing a bare
   // "tracker MCP unreachable" that sent the reader to fix a correct declaration. Re-baselined
   // 50362 → 52224.
-  const RATCHET = 52224
+  // BOS-842 gives merge-eligibility condition (5) its first producer (+421 bytes): the
+  // do-not-merge marker had no writer anywhere in the suite, so the condition was prose with
+  // nothing behind it. A child build run that ends in the new `PARTIAL` terminal state now
+  // writes it, and both condition-(5) sites quote the marker literal verbatim so the gate
+  // reads the same bytes boss-build's `references/review-stack.md` specifies — a paraphrase on
+  // either side silently unlatches the hold. Resident because the driver decides the merge at
+  // the rail, not while reading a reference. Re-baselined 52224 → 53248.
+  const RATCHET = 53248
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })

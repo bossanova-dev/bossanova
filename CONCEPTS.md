@@ -109,6 +109,40 @@ The epic-run rule that at most one merge is in flight at any time, in the
 order computed by `nextToMerge` (dependency-clean greens first, then
 priority, then age), even while implementation runs in parallel.
 
+## Tracker seam
+
+### Tracker adapter
+
+The object that adapts one issue tracker to the tracker-agnostic interface the portable planning and
+build skills program against, so a skill can select, read, and update tickets without naming a
+particular tracker. A repo supplies one adapter per tracker it uses; the interface is deliberately
+dependency-free, so another repo can vendor it and write an adapter for its own tracker without
+pulling in the reference implementation.
+
+An adapter is checked for conformance over its **whole declared surface at once**, without reference
+to which members any caller actually invokes — so anything the contract marks required is a
+precondition for the adapter being admitted at all. That check is a declaration gate proven by each
+adapter's own test suite, not a runtime call on the path that resolves an adapter, so a
+non-conforming adapter fails its author's tests rather than a live session.
+The contract separates what an adapter MUST declare from what it MAY: an omitted optional member
+conforms, while a declared one is validated exactly as strictly as a required one. Only the meaning
+of absence differs between the two tiers. A member earns required status only when a skill's control
+flow cannot proceed without it; one that every caller already treats as best-effort, or that no
+caller invokes, belongs in the optional tier — requiring it instead rejects otherwise-usable
+adapters over something nothing depends on at call time.
+
+### Tracker capability
+
+A unit of adapter behavior the skill invokes as ordinary code, where the adapter itself computes the
+answer. Contrast a Tracker operation: a capability is satisfied by supplying an implementation.
+
+### Tracker operation
+
+A unit of adapter behavior the skill performs by having the **agent** call one of the tracker's MCP
+tools. The adapter supplies the tool's name and a one-line summary of its use rather than executing
+anything itself, which is what distinguishes an operation from a Tracker capability — code for a
+capability, a tool name for an operation.
+
 ## Agent runtime gating
 
 ### Agent runner
@@ -212,3 +246,10 @@ Bazel's machine-wide, content-addressed action store (`~/.cache/bazel-bossanova-
 ### Remote cache
 
 The secret-gated BuildBuddy action cache (`grpcs://remote.buildbuddy.io`) that extends caching **across machines** (dev + CI). It activates only when a gitignored, per-worktree `.bazelrc.user` provides `build --config=remote` plus the `BUILDBUDDY_API_KEY`; absent that file the build is disk-cache-only and never errors. `make setup-worktree` propagates the file to new worktrees; the key is never committed. The same file also enables the **Build Event Stream** (`--bes_backend` + `--bes_results_url`, `fully_async`): BES is what uploads each invocation to the BuildBuddy "Builds" dashboard — `--remote_cache` on its own only feeds cache metrics and leaves the dashboard reading "No builds found". BES is a **local-dev** affordance only; CI uses the remote cache without BES, because a BES upload error is fatal (`exit 38`) and CI must not hard-depend on the free-tier BES endpoint (a cache miss, by contrast, is non-fatal).
+
+## Flagged ambiguities
+
+- "Capability" carries two unrelated senses. A **Tracker capability** is an adapter behavior a skill
+  calls as code; the sense in **Capability preflight** and **Headless capability profile** is an
+  operation a coding-agent runtime must support before a gated run may start. Neither gates the
+  other, and a conformant tracker adapter implies nothing about an agent runtime's profile.

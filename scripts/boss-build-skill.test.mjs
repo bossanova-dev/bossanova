@@ -23,6 +23,12 @@ const METHODOLOGY_EXTENSION_DIRS = [
   path.join(rootDir, '.codex/skills/boss-build-ce'),
 ]
 
+// The knowledge extension is dual-mirrored the same way, for the same reason.
+const KNOWLEDGE_EXTENSION_DIRS = [
+  path.join(rootDir, '.claude/skills/boss-build-knowledge'),
+  path.join(rootDir, '.codex/skills/boss-build-knowledge'),
+]
+
 const RESIDENT_BODY_SKILLS = [`${CORE}/SKILL.md`]
 
 // BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must
@@ -308,10 +314,81 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // the reader to discover, while the budget gate that must run BEFORE discovery lived only in the
   // reference — so following the resident text alone created scratch and printed output on exactly
   // the tight runs the gate exists to protect. The router now names the gate first.
-  const RATCHET = 78579 // exact measured resident body
+  // Re-baselined a further +445 (78579 → 79024) for BOS-841: the Decide-vs-ABORT list is split
+  // into the genuinely-unsafe conditions — now declared exhaustive — and a decide-and-record group
+  // carrying `a plan with unresolved decisions`, and both fixed-short-contract enumerations gain
+  // the decisions element. The ABORT list overreached, so ordinary plan ambiguity ended the run
+  // BLOCKED against the section's own opening sentence; and a decision the run is now told to
+  // record had no field in the closed return contract to travel in, so it would have died inside
+  // the dispatch. Resident because Decide-vs-ABORT is consulted on every ambiguity the run meets —
+  // a reader who never opens a reference must still be able to tell the two lists apart — and
+  // because both contract enumerations sit where the dispatch is composed. An open list on both
+  // sides is what let a novel condition read as either, so `exhaustive` is load-bearing text, not
+  // emphasis.
+  // Re-baselined a further +205 (79024 → 79229) for the BOS-841 review round: both contract
+  // enumerations named the decisions element and the Step 7 template carried the section, but
+  // nothing joined them — the overlay describes the contract purely as input to the NEXT dispatch,
+  // so a decision could ride the contract the whole way and still never be written down, leaving
+  // the half of this change that makes "record it" mean anything inert. Step 7 now states that
+  // `## Autonomous decisions` collects every task contract's decisions element as well as the
+  // orchestrator's own. Resident because it is the only sentence that turns a closed return field
+  // into published text, and it belongs where the PR body is composed.
+  // Re-baselined a further +41 (79229 → 79270) for the second BOS-841 review round: splitting the
+  // section left the referring phrase "a Decide-vs-ABORT condition" denoting two lists, one of
+  // which is explicitly never an abort — and that phrase carried the stop-and-report instruction
+  // dispatched verbatim to subagents, whose reported condition is routed straight to BLOCKED. The
+  // renames to `hard-ABORT` are byte-negative; the +41 is the clause that tells a dispatched
+  // subagent what to do with the other list ("ordinary ambiguity is decided and recorded, not
+  // reported"), which has to be resident because the tier-3 brief is read in isolation from the
+  // section that would otherwise explain it.
+  // Re-baselined a further +1200 (79270 → 80470) for BOS-842: the state list gains a fourth
+  // terminal state, `PARTIAL`; the Hard-rules required-deferred bullet gains its scoped carve-out;
+  // Step 6's `capped` verdict arm gains the PARTIAL-eligible branch; and the Step 12 pointer now
+  // enumerates all four. Resident by necessity for the same reason the required-deferred rule
+  // itself is: that rule is consulted on every finalize decision a run takes, and a reader who saw
+  // only `BLOCKED, never REVIEW_READY` would finalize BLOCKED on exactly the certified-slice run
+  // this state exists to hand over — the strand-6-of-8 failure the state was added to end. The
+  // carve-out has to be resident *with* its scope, not just its name: `PARTIAL` stated without
+  // "**exclusively** unsatisfied in-scope acceptance criteria" reads as a general softening of the
+  // rule, and a rule with an unscoped exception is not a rule. The three conjuncts are resident for
+  // the same reason — an agent that knows the state exists but not what earns it will reach for the
+  // one that reads as progress. The publication route, the enumeration format, the marker literal
+  // and the ticket-state rules all went to references/review-stack.md and
+  // references/finalize-and-stop.md, which is why this is a four-figure delta and not several KB.
+  // The T1 conjunct ("≥1 criterion is lens-certified", plus the outright `0/<total>` refusal) is
+  // resident on THREE deciding sites — the Hard-rules bullet, Step 6's `capped` arm, and the Step 12
+  // pointer — because a carve-out without its floor is a universal soft landing: every criterion
+  // deferred still reads as eligible. It is spelled `lens-certified`, never a bare `certified`,
+  // because the failure being refused is an agent accepting its own assertion as the certification.
+  // The Step 9 pointer is deliberately NOT a fourth: it is a one-line summary of a step whose own
+  // file carries the gate, so it carries the pointer at that gate ("the `PARTIAL` gate") rather than
+  // a restatement of T1 — a fourth copy would cost resident bytes to duplicate what the site six
+  // lines below already states in full. Do not "fix" its brevity by restating the conjuncts here.
+  // Budget: this ticket's resident delta is capped at 1200 bytes and it now spends exactly 1200
+  // (80470 - 79270), with the ratchet below exact and at zero headroom. Every further resident edit
+  // must therefore be paid for by a trim in the same body — a reference edit costs nothing and is
+  // almost always the right place instead.
+  // Re-baselined a further +164 (80470 → 80634): `extractImages` moved from
+  // REQUIRED_TRACKER_OPERATIONS to OPTIONAL_TRACKER_OPERATIONS, so an adapter may now conform
+  // without declaring it — and the two resident sites that asserted the old guarantee had to stop
+  // asserting it. The Workspace-facts capability list gains a bare `OPTIONAL` marker (10 B) and the
+  // "View reporter screenshots" step's non-fatal clause now names BOTH branches (154 B): a
+  // not-declared adapter and a declared-but-failed extraction. Resident by necessity on both counts
+  // — the capability list is the contract a reader takes as given without opening anything, and the
+  // step's branch is followed inline, where a clause covering only "extraction failed" reads as
+  // silence on the case that the contract change actually created. Paid down where it cost no
+  // meaning rather than left at the +530 the first cut measured: the Workspace-facts note dropped
+  // its "may be undeclared" gloss (the step below states it) and the two branches were folded into
+  // the existing sentence instead of a bulleted list.
+  const RATCHET = 80634 // exact measured resident body
+  // Headroom to the pre-extraction baseline is now 183 bytes (80817 - 80634) — read that as the
+  // real budget before writing ANY resident prose, because this assertion is the only thing
+  // standing between the extraction's ~11.8 KB and it being quietly re-spent. When it reds, the fix
+  // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
+  // to put the new prose in a reference and leave the resident body a pointer.
   assert.ok(
     RATCHET < PRE_EXTRACTION_BASELINE,
-    'ratchet must stay below the pre-extraction baseline',
+    `ratchet ${RATCHET} must stay below the pre-extraction baseline ${PRE_EXTRACTION_BASELINE} — trim resident prose or move it into a reference`,
   )
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     const bytes = Buffer.byteLength(fs.readFileSync(path.join(rootDir, skillPath)))
@@ -1535,6 +1612,328 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
   }
 })
 
+// BOS-841: the ABORT list overreached. `a plan with unresolved decisions` sat in the same
+// compound bullet as `empty/contradictory acceptance criteria`, so ordinary plan ambiguity —
+// exactly what the section's own opening sentence calls "decide and record" — ended the run
+// BLOCKED. These assertions pin the split, and they are section-sliced rather than whole-file
+// matched because the moved phrase still appears in the file: a whole-file `doesNotMatch` on
+// `unresolved decisions` would be false by construction, and a whole-file `match` would pass
+// while the phrase sat in the wrong list.
+test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    const section = sliceSection(body, '## Decide vs ABORT', '## Mode detection', `${dir}/SKILL.md`)
+
+    // A.1 — slice the ABORT list itself, and assert every bullet over THAT slice rather than over
+    // the section. The section now spans both groups, so a section-wide match cannot tell a bullet
+    // that was DELETED from one that was RELOCATED into the decide-and-record group — and silent
+    // relocation is this file's documented failure mode, the very thing this ticket is performing.
+    // Every assertion below therefore reads `abortList`, never `section`.
+    const abortList = sliceSection(
+      section,
+      'must **ABORT to BLOCKED**',
+      'On any of these:',
+      `${dir}/SKILL.md Decide vs ABORT`,
+    )
+
+    // The five genuinely-unsafe conditions, one assertion each, so a deletion names itself.
+    assert.match(
+      abortList,
+      /destructive or data migrations; schema drops\/rewrites/,
+      `${dir}/SKILL.md: the hard-ABORT list must still name destructive/data migrations and schema drops/rewrites`,
+    )
+    assert.match(
+      abortList,
+      /auth, secrets, credential, or keyring changes/,
+      `${dir}/SKILL.md: the hard-ABORT list must still name auth/secrets/credential/keyring changes`,
+    )
+    assert.match(
+      abortList,
+      /production config or deploy changes/,
+      `${dir}/SKILL.md: the hard-ABORT list must still name production config or deploy changes`,
+    )
+    assert.match(
+      abortList,
+      /dependency upgrades\/additions not already specified by the plan/,
+      `${dir}/SKILL.md: the hard-ABORT list must still name unspecified dependency upgrades/additions`,
+    )
+    assert.match(
+      abortList,
+      /anything the Trust rules name/,
+      `${dir}/SKILL.md: the hard-ABORT list must still defer to the Trust rules`,
+    )
+
+    // A.2 — the acceptance-criteria half stays a hard ABORT; only the decisions half moved.
+    assert.match(
+      abortList,
+      /empty\/contradictory acceptance criteria/,
+      `${dir}/SKILL.md: the hard-ABORT list must still name empty/contradictory acceptance criteria`,
+    )
+
+    // The list is exactly six bullets. Six named conditions all present is not the same claim as
+    // six conditions TOTAL: without a count, a seventh unsafe condition could be appended — or a
+    // moved bullet re-added alongside its replacement — with every assertion above still green.
+    // Match indented bullets too: a nested `  - …` appended under a bullet adds a seventh
+    // condition a top-level-only pattern never counts, so the exactness claim would go green on
+    // precisely the edit it exists to catch.
+    const abortBullets = abortList.match(/^\s*- .+$/gm) ?? []
+    assert.strictEqual(
+      abortBullets.length,
+      6,
+      `${dir}/SKILL.md: the hard-ABORT list must carry exactly six bullets, found ${abortBullets.length}: ${JSON.stringify(abortBullets)}`,
+    )
+
+    // A.3 — the moved condition must be gone from the ABORT list. The section as a whole names
+    // `unresolved decisions` in the decide-and-record group, so this exclusion is only meaningful
+    // over the ABORT bullets.
+    assert.doesNotMatch(
+      abortList,
+      /unresolved decisions/,
+      `${dir}/SKILL.md: a plan with unresolved decisions must not remain in the hard-ABORT list`,
+    )
+
+    // A.4 — two open lists let a run facing a novel condition honestly read either one. The
+    // ABORT list has to declare itself closed for the decide-and-record default to have force.
+    // Match the CLAIM, not the word: a bare /exhaustive/ is satisfied by `not exhaustive` — the
+    // exact inversion of the property being pinned — and by any incidental later use of the word.
+    // The sentence hard-wraps as `— this list\nis exhaustive:`, so span the wrap with \s+.
+    assert.match(
+      abortList,
+      /this list\s+is exhaustive/,
+      `${dir}/SKILL.md: Decide vs ABORT must declare the hard-ABORT list exhaustive`,
+    )
+
+    // A.5 — the decide-and-record group, sliced, must carry the moved condition AND a recording
+    // home. "Decide" without "record where" is the inert half of this change.
+    // Hand-rolled rather than `sliceSection`: this group runs to the END of the section, and there
+    // is no end marker to hand that helper — an invented one would pin a boundary this assertion
+    // does not care about and fail on an ordinary edit after the group.
+    const recordStart = section.indexOf('**Decide and record, never abort**')
+    assert.ok(
+      recordStart !== -1,
+      `${dir}/SKILL.md: Decide vs ABORT must carry a decide-and-record group`,
+    )
+    const recordGroup = section.slice(recordStart)
+    assert.match(
+      recordGroup,
+      /a plan with unresolved decisions/,
+      `${dir}/SKILL.md: the decide-and-record group must name a plan with unresolved decisions`,
+    )
+    assert.match(
+      recordGroup,
+      /rationale/,
+      `${dir}/SKILL.md: the decide-and-record group must require the decision's rationale, not just the decision`,
+    )
+    assert.match(
+      recordGroup,
+      /`## Autonomous decisions`/,
+      `${dir}/SKILL.md: the decide-and-record group must name \`## Autonomous decisions\` as the recording home`,
+    )
+    assert.match(
+      recordGroup,
+      /continue/,
+      `${dir}/SKILL.md: the decide-and-record group must say the run continues`,
+    )
+
+    // A.6 — the anti-relocation pin. This split must NOT take the acceptance-criteria half of
+    // the required-deferred rule with it: until a PARTIAL terminal state exists there are only
+    // two landing states, so an unsatisfied criterion freed from BLOCKED falls through to
+    // REVIEW_READY — strictly worse than aborting. The sibling ticket owns moving this; when it
+    // does, this assertion is the one it must deliberately update.
+    const hardRules = sliceSection(body, '## Hard rules', '## Trust rules', `${dir}/SKILL.md`)
+    assert.match(
+      hardRules,
+      /any in-scope acceptance criterion left unsatisfied/,
+      `${dir}/SKILL.md: the Hard-rules required-deferred bullet must keep the acceptance-criterion clause`,
+    )
+    assert.match(
+      hardRules,
+      /partial implementation is not complete/,
+      `${dir}/SKILL.md: the Hard-rules required-deferred bullet must keep "partial implementation is not complete"`,
+    )
+
+    // A.7 — the referring phrase, everywhere else in the body. `## Decide vs ABORT` now names TWO
+    // lists and one of them is explicitly never an abort, so "a Decide-vs-ABORT condition" stopped
+    // denoting anything determinate the moment the split landed. That phrase carried the
+    // stop-and-report instruction handed verbatim to dispatched subagents — in text they read in
+    // isolation from this section — and a *reported* condition is routed straight to BLOCKED
+    // without re-checking which list it came from. Left alone it reinstates the exact defect this
+    // ticket removes, one dispatch deeper. Every stop-and-report instruction must name the
+    // hard-ABORT list instead. Normalize whitespace before the negative match, exactly as the
+    // reference and extension scans below do: the body hard-wraps and nothing enforces its wrap
+    // width (the skillinstall tree sits outside the `lint:docs` glob, and `.prettierrc` keeps
+    // `proseWrap: "preserve"`), so a raw-text `doesNotMatch` goes quietly green on a re-wrap that
+    // splits `Decide-vs-ABORT` from `condition` — i.e. precisely when the stale phrase is still
+    // being read by the subagent this assertion protects.
+    assert.doesNotMatch(
+      body.replace(/\s+/g, ' '),
+      /Decide-vs-ABORT condition/,
+      `${dir}/SKILL.md: stop-and-report instructions must name a hard-ABORT condition, not the two-list section`,
+    )
+    // The references are read by the same dispatched subagents, and `core-spine.md` restates the
+    // very step whose brief carries the instruction — so a reference is a live route back to the
+    // ambiguous phrase that the body-only exclusion above would never see.
+    const refDir = path.join(rootDir, dir, 'references')
+    for (const ref of fs.readdirSync(refDir).filter((f) => f.endsWith('.md'))) {
+      const flat = fs.readFileSync(path.join(refDir, ref), 'utf8').replace(/\s+/g, ' ')
+      assert.doesNotMatch(
+        flat,
+        /Decide-vs-ABORT condition/,
+        `${dir}/references/${ref}: stop-and-report instructions must name a hard-ABORT condition, not the two-list section`,
+      )
+    }
+    assert.match(
+      sliceSection(
+        body,
+        'Return only the fixed short task-contract:',
+        '## Step 6: Whole-branch review',
+        `${dir}/SKILL.md`,
+      ),
+      /If a hard-ABORT condition appears,\s+stop and report it/,
+      `${dir}/SKILL.md: the tier-3 dispatch brief must tell the subagent to report hard-ABORT conditions`,
+    )
+  }
+})
+
+// BOS-841: the core is not the last reader of either half of this change. Tier 1 dispatches the
+// repo-local methodology extension, and a subagent under it reads its stop-and-report instruction
+// and its return schema from THAT file, in isolation from the core's `## Decide vs ABORT` section.
+// So both halves have to reach it: the ambiguous referring phrase must be gone (the core routes a
+// *reported* condition straight to BLOCKED without re-checking which list it came from, so leaving
+// it reinstates the ticket's headline defect one dispatch deeper), and the closed return object
+// must name the decisions element (a field the schema omits is a field a subagent is told not to
+// return, which makes `## Autonomous decisions` unreachable from the tier that actually runs here).
+// The count is per-file and exact: `boss-build-ce` states the instruction twice (the ce-work
+// boundary bullet and the Contract section), `boss-build-knowledge` once. A bare token match would
+// stay green when one of the two ce instructions is deleted outright, so pin how many there are.
+const DISPATCHED_EXTENSION_DIRS = [
+  ...METHODOLOGY_EXTENSION_DIRS.map((skillDir) => ({ skillDir, instructions: 2 })),
+  ...KNOWLEDGE_EXTENSION_DIRS.map((skillDir) => ({ skillDir, instructions: 1 })),
+]
+
+test('BOS-841: dispatched extensions name the hard-ABORT list, not the two-list section', () => {
+  for (const { skillDir, instructions: expected } of DISPATCHED_EXTENSION_DIRS) {
+    // These files are hand-wrapped, so the phrase can straddle a newline. Normalize BEFORE the
+    // negative match too: a raw-text `doesNotMatch` would go quietly green on a re-wrap that split
+    // `Decide-vs-ABORT` from `condition`, i.e. exactly when the stale phrase is still being read.
+    const flat = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8').replace(/\s+/g, ' ')
+    assert.doesNotMatch(
+      flat,
+      /Decide-vs-ABORT condition/,
+      `${skillDir}/SKILL.md: a dispatched brief must tell the subagent to report a hard-ABORT condition, not the two-list section`,
+    )
+    const instructions = flat.match(/hard-ABORT condition (instead of|rather than) guessing/g) ?? []
+    assert.strictEqual(
+      instructions.length,
+      expected,
+      `${skillDir}/SKILL.md must carry ${expected} stop-and-report instruction(s) naming the hard-ABORT list, found ${instructions.length}`,
+    )
+  }
+})
+
+test('BOS-841: the tier-1 return schema carries the decisions element', () => {
+  for (const skillDir of METHODOLOGY_EXTENSION_DIRS) {
+    const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
+    // Anchor on the sentence that introduces the schema rather than taking the file's FIRST json
+    // fence: an example block added ahead of it would silently move every assertion below onto the
+    // wrong object while staying green.
+    const intro = skill.indexOf('Return only the fixed short task contract expected by the core:')
+    assert.ok(
+      intro !== -1,
+      `${skillDir}/SKILL.md must still introduce the return object as the fixed short task contract`,
+    )
+    const open = skill.indexOf('```json', intro)
+    assert.ok(
+      open !== -1,
+      `${skillDir}/SKILL.md must still state the return object as a JSON block`,
+    )
+    const close = skill.indexOf('```', open + 7)
+    assert.ok(close !== -1, `${skillDir}/SKILL.md return-object JSON block must be closed`)
+    const returnObject = skill.slice(open, close)
+    assert.match(
+      returnObject,
+      /"decisionsRecorded"/,
+      `${skillDir}/SKILL.md return object must carry the decisions element the core collects into ## Autonomous decisions`,
+    )
+    // The field is inert unless the extension says where it goes; a subagent that reads only an
+    // empty array in a schema has no reason to populate it.
+    assert.match(
+      skill.replace(/\s+/g, ' '),
+      /`decisionsRecorded` is every ordinary ambiguity this dispatch decided instead of asking/,
+      `${skillDir}/SKILL.md must say what decisionsRecorded holds`,
+    )
+    assert.match(
+      skill.replace(/\s+/g, ' '),
+      /collects the field from every task contract into the PR body's `## Autonomous decisions` section/,
+      `${skillDir}/SKILL.md must say decisionsRecorded is what reaches the PR body`,
+    )
+  }
+})
+
+// BOS-841: "record the decision" is inert unless a decision made inside a dispatched implementer
+// can reach the orchestrator that writes the PR body. The fixed short task-contract is a CLOSED
+// enumeration stated in two places, and a subagent returning a field the contract does not list
+// is returning something the orchestrator is told not to thread. Both enumerations must name the
+// decisions element, and the Step 7 template must still carry the section it lands in.
+test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirrors)', () => {
+  // The body is hard-wrapped, and the two enumerations wrap this phrase at different points, so
+  // match across the wrap rather than pinning one incidental line break.
+  const decisionsElement = /decisions\s+recorded\s+\(decision\s+\+\s+rationale\)/
+  for (const dir of BUILD_MIRRORS) {
+    const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+
+    // B.1a — the Step 5 overlay statement of the contract.
+    const overlay = sliceSection(
+      body,
+      '**boss-build overlay:**',
+      '**Commit-before-return contract.**',
+      `${dir}/SKILL.md`,
+    )
+    assert.match(
+      overlay,
+      decisionsElement,
+      `${dir}/SKILL.md: the Step 5 contract overlay must name the decisions element`,
+    )
+
+    // B.1b — the tier-3 restatement of the same contract. Two enumerations that disagree are how
+    // a dispatched subagent reads the one that omits the element it was told to record.
+    const restatement = sliceSection(
+      body,
+      'Return only the fixed short task-contract:',
+      '## Step 6: Whole-branch review',
+      `${dir}/SKILL.md`,
+    )
+    assert.match(
+      restatement,
+      decisionsElement,
+      `${dir}/SKILL.md: the tier-3 contract restatement must name the decisions element in the same words`,
+    )
+
+    // B.2 — the destination. The decide-and-record group names this section by title; a template
+    // that lost it would send every recorded decision to a heading that does not exist. Anchor on
+    // the heading AND its placeholder line at the start of a line: Step 7 prose now cites
+    // `## Autonomous decisions` inline (see B.3), so a bare substring match would be satisfied by
+    // the citation and could no longer be falsified by deleting the template heading it names.
+    const step7 = sliceSection(body, '## Step 7: PR gate', '## Steps 8-12:', `${dir}/SKILL.md`)
+    assert.match(
+      step7,
+      /^## Autonomous decisions\n- <decision \+ rationale>$/m,
+      `${dir}/SKILL.md: the Step 7 PR-body template must still carry the ## Autonomous decisions section and its decision + rationale placeholder`,
+    )
+
+    // B.3 — the join. B.1a/B.1b prove the contract carries the element and B.2 proves the section
+    // exists, but neither makes the orchestrator transfer one into the other: the overlay describes
+    // the contract as input to the NEXT dispatch only, so a decision could ride the contract the
+    // whole way and still never be written down. Step 7 must state that the section collects every
+    // task contract's decisions element, not only the orchestrator's own.
+    assert.match(
+      step7,
+      /collects the decisions-recorded element of \*\*every\*\*\s+task\s+contract/,
+      `${dir}/SKILL.md: Step 7 must say ## Autonomous decisions collects every task contract's decisions element`,
+    )
+  }
+})
+
 test('BOS-240: review-stack adds a conditional API-surface required check (both mirrors)', () => {
   for (const mirror of Object.keys(RESIDENT_BODIES)) {
     const reviewStack = readRef(mirror, 'review-stack.md')
@@ -1997,13 +2396,13 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
       `${dir}/SKILL.md Step 5 must withhold the empty-range remedy's deferred required item for a scope you confirmed already satisfied`,
     )
     // (c.ii) the same gate read from the other side: a dispatch that committed PART of its scope and
-    // then stopped on a Decide-vs-ABORT condition satisfies "commits present in the log range", and
+    // then stopped on a hard-ABORT condition satisfies "commits present in the log range", and
     // nothing in the fixed short contract carries a completion field — so landed commits alone would
     // suppress tiers 2 and 3 and leave the remainder for Step 9 to find as a partial implementation.
     // One check settles both edges: the scope's criteria against the branch, never the commit count.
     assert.match(
       tier1,
-      /a result that stops on a Decide-vs-ABORT condition, or that otherwise reports scope it did not finish, is not one however many commits it landed/i,
+      /a result that stops on a hard-ABORT condition, or that otherwise reports scope it did not finish, is not one however many commits it landed/i,
       `${dir}/SKILL.md Tier 1 must refuse an aborted or unfinished result as a valid dispatch result even when commits landed`,
     )
     assert.match(
@@ -2252,16 +2651,26 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
       /commits it made[\s\S]{0,20}\(short SHA \+[\s\S]{0,12}subject/i,
       `${dir}/references/core-spine.md must carry the commits-made field in the fixed short contract`,
     )
+    // BOS-841: `core-spine.md` §2 is the portable shape of the very step SKILL.md cites it for, so
+    // a restatement that stops at six fields is a second, authoritative enumeration telling the
+    // orchestrator the decisions element is not part of the contract.
+    assert.match(
+      spine,
+      /decisions it recorded \(decision \+[\s\S]{0,12}rationale\)/i,
+      `${dir}/references/core-spine.md must carry the decisions-recorded field in the fixed short contract`,
+    )
     // The troubleshooting catalog enumerates the contract's fields; a stale five-field list
-    // there teaches the orchestrator to drop the sixth when threading contracts forward.
+    // there teaches the orchestrator to drop the sixth when threading contracts forward. BOS-841
+    // adds the seventh: the row is imperative and closed ("Pass **only** …"), so a field missing
+    // from it is a field an orchestrator is instructed to trim before Step 7 ever sees it.
     const troubles = fs.readFileSync(
       path.join(rootDir, dir, 'references/troubleshooting.md'),
       'utf8',
     )
     assert.match(
       troubles,
-      /residual risks, commits made/,
-      `${dir}/references/troubleshooting.md fixed-short-contract row must list the commits-made field`,
+      /residual risks, decisions recorded, commits made/,
+      `${dir}/references/troubleshooting.md fixed-short-contract row must list the decisions-recorded and commits-made fields`,
     )
     assert.match(
       troubles,
@@ -5499,6 +5908,56 @@ const runPushBlock = (
     remoteAhead = false,
     unreachableRemote = false,
     blankHeadSha = false,
+    // BOS-860: the pre-push tag injection's own failure shapes. Each one must record an outcome
+    // and leave the push untouched — a tag is never worth withholding the commits over.
+    ghFails = false,
+    noPrForBranch = false,
+    injectorFails = false,
+    noToolbox = false,
+    // An uncommitted change to a TRACKED file — the one shape the injector's rebase refuses to
+    // start on ("cannot rebase: You have unstaged changes"). Untracked dirt is a different case,
+    // below: a rebase runs straight past it, so counting it as dirty would disable the whole
+    // injection over one leftover scratch artifact.
+    dirtyTree = false,
+    untrackedOnly = false,
+    // BOS-860 round 2: the containment guard's own inputs. `git ls-remote` failing and the branch
+    // simply not existing are indistinguishable once stderr is discarded, and an unfetchable
+    // advertised commit makes ancestry undecidable — both must fail CLOSED rather than licensing an
+    // unguarded rewrite, which only an advertised-NOTHING remote does.
+    lsRemoteFails = false,
+    fetchBranchFails = false,
+    // A commit the injector cannot rewrite (the real one fast-forwards over commits whose amend is
+    // rejected, keeping their SHA). This is the shape the feature exists for: origin holds a commit
+    // that stays put, the guard therefore holds, and the run's own commits are tagged and pushed.
+    injectorKeeps = '',
+    // BOS-860 round 3: the injector leaves a DETACHED HEAD carrying the rewrite while the branch ref
+    // — the ref the loop actually pushes — still points at the untagged original. Reading `HEAD` for
+    // the tag outcome would then report `all` for a branch that carries no tag at all.
+    injectorDetaches = false,
+    // BOS-860 review round 1: run the shipped block under `set -euo pipefail`. An orchestrator's
+    // bash block may well be strict, and under errexit a BARE `VAR=$(cmd)` takes the substitution's
+    // status — so a `gh` or `git merge-base` that fails aborts the whole block BEFORE the push,
+    // which is precisely the gate the route forbids. Every non-strict run here is blind to it.
+    errexit = false,
+    // `git merge-base HEAD origin/<base>` fails: the shape the post-loop re-derivation's own
+    // `[ -z "$TAG_RANGE_BASE" ]` arm exists to handle, and the one it never reached under errexit.
+    mergeBaseFails = false,
+    // The containment rollback's own `git reset --hard` fails (an index or ref lock is the real
+    // shape). The arm exists to UNDO an unsafe rewrite, so an abort here leaves the branch
+    // rewritten and unpushed, and a `skipped` report there asserts a rewrite that did happen did
+    // not. Only the block's own reset is failed — the injector's is not, or the rewrite the
+    // rollback exists to undo would never happen and the arm would go unreached.
+    resetFails = false,
+    // BOS-860 extension round 1: `git rev-parse --short HEAD` fails on the RESCUE path. The suffix
+    // is what makes the rescue ref unique, and an empty one builds the invalid ref
+    // `refs/heads/<branch>-blocked-` that no push can create — so the `$$` fallback is the last
+    // thing standing between an unpushable branch and commits that never leave the worktree.
+    shortHeadFails = false,
+    // BOS-860 extension round 2: the reconcile in the retry loop drops EVERY commit this run made,
+    // because the same patch reached the base branch by another path — the case the post-loop
+    // re-derivation exists for. The range it then scans is empty, which satisfies "every commit
+    // carries the tag" vacuously and must not be reported as an observation of a tag.
+    reconcileDropsRange = false,
   } = {},
 ) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-push-'))
@@ -5508,6 +5967,12 @@ const runPushBlock = (
   const other = path.join(tmp, 'other')
   const shim = path.join(tmp, 'shim')
   const gitLogFile = path.join(tmp, 'git-argv.log')
+  // A private HOME, so the `$HOME/.claude/skills` → `$HOME/.codex/skills` resolution the block
+  // performs can only ever find the fixture toolbox below — never a real one installed on the
+  // machine running the gate, which would make `noToolbox` silently untestable.
+  const home = path.join(tmp, 'home')
+  const toolbox = path.join(home, '.claude', 'skills', 'boss-build', 'toolbox')
+  const tagLogFile = path.join(tmp, 'inject.log')
   const author = (dir) => {
     git(dir, 'config', 'user.email', 'gate@example.test')
     git(dir, 'config', 'user.name', 'gate')
@@ -5555,6 +6020,22 @@ const runPushBlock = (
     commit(other, 'extra')
     git(other, 'push', '-q', 'origin', 'feat')
   }
+  // Someone else landed this run's patch on the base branch and moved `feat` onto it. The push is
+  // rejected, the reconcile rebases onto what was fetched, and every local commit — tagged copy
+  // included — is dropped as PATCH-identical, leaving `HEAD` at a commit the base already contains.
+  // The re-derivation's range is then empty. Only `feat` is stale in this clone: the worktree's
+  // view of the base branch is current, which is what makes the merge-base land on `HEAD` itself.
+  if (reconcileDropsRange) {
+    git(tmp, 'clone', '-q', remote, other)
+    author(other)
+    git(other, 'checkout', '-q', 'main')
+    fs.writeFileSync(path.join(other, 'work.txt'), 'work\n')
+    git(other, 'add', '-A')
+    git(other, 'commit', '-q', '-m', 'work (landed by another route)')
+    git(other, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+    git(other, 'push', '-q', '--force', 'origin', 'HEAD:refs/heads/feat')
+    git(wc, 'fetch', '-q', 'origin', 'main')
+  }
   if (unreachableRemote) git(wc, 'remote', 'set-url', 'origin', path.join(tmp, 'gone.git'))
 
   fs.mkdirSync(shim)
@@ -5564,9 +6045,97 @@ const runPushBlock = (
       // Simulates an unresolvable HEAD so the gate can prove an empty advertised SHA is never
       // allowed to compare equal to an empty local SHA on the way to "already pushed".
       `if [ -n "$BOSS_GATE_BLANK_HEAD" ] && [ "$*" = "rev-parse HEAD" ]; then exit 0; fi\n` +
+      // A remote the run cannot ASK (no network, no auth, a hung server). The branch may be fully
+      // published; nothing here says otherwise, which is the point.
+      `case "$*" in\n` +
+      `  ls-remote*) [ -n "$BOSS_GATE_LS_FAIL" ] && exit 128 ;;\n` +
+      // The advertised commit cannot be brought local, so ancestry against it is undecidable.
+      `  'fetch -q origin feat') [ -n "$BOSS_GATE_FETCH_FAIL" ] && exit 128 ;;\n` +
+      // Only the two-arg range form the re-derivation uses — never `merge-base --is-ancestor`,
+      // which the containment guard depends on and which must keep answering honestly.
+      `  'merge-base HEAD origin/'*) [ -n "$BOSS_GATE_MERGE_BASE_FAIL" ] && exit 128 ;;\n` +
+      // The rollback's own reset. The injector strips this flag from the environment it hands its
+      // own git calls, so only the block's reset is failed here.
+      `  'reset --hard'*) [ -n "$BOSS_GATE_RESET_FAIL" ] && exit 128 ;;\n` +
+      // The rescue path's suffix read. Only the `--short` form — the plain `rev-parse HEAD` reads
+      // elsewhere on the route have their own flag and their own guards.
+      `  'rev-parse --short HEAD') [ -n "$BOSS_GATE_SHORT_HEAD_FAIL" ] && exit 128 ;;\n` +
+      `esac\n` +
       `exec ${REAL_GIT} "$@"\n`,
     { mode: 0o755 },
   )
+  // `gh` answers the two reads the injection step makes: which PR this branch maps to, and what
+  // that PR's base branch is. `BOSS_GATE_GH_FAIL` makes both unavailable, which is the shape a
+  // missing token, a rate limit, or a branch with no open PR all present as.
+  fs.writeFileSync(
+    path.join(shim, 'gh'),
+    `#!/bin/sh\nprintf 'gh %s\\n' "$*" >> "$BOSS_GATE_GIT_LOG"\n` +
+      `[ -n "$BOSS_GATE_GH_FAIL" ] && exit 1\n` +
+      `case "$*" in\n` +
+      // A branch with no open PR: the query SUCCEEDS and returns nothing. Distinct from `gh`
+      // failing outright, and the only shape that isolates the empty-PR-number guard.
+      `  'pr list'*) [ -n "$BOSS_GATE_NO_PR" ] || printf '7\\n' ;;\n` +
+      `  'pr view'*) printf 'main\\n' ;;\n` +
+      `  *) exit 1 ;;\n` +
+      `esac\n`,
+    { mode: 0o755 },
+  )
+  if (!noToolbox) {
+    fs.mkdirSync(path.join(toolbox, 'finalize'), { recursive: true })
+    // Stands in for the shipped finalize CLI: it records the argv it was invoked with (so the gate
+    // can prove the PR number is passed POSITIONALLY — a flag form would tag commits with a literal
+    // `[#--pr]`), then does what the real injector does, which is REWRITE every commit since the
+    // base to carry the tag. That rewrite is the hazard the containment check exists to catch.
+    fs.writeFileSync(
+      path.join(toolbox, 'finalize', 'cli.mjs'),
+      [
+        `import { execFileSync } from 'node:child_process'`,
+        `import fs from 'node:fs'`,
+        `const [cmd, pr] = process.argv.slice(2)`,
+        `const base = process.env.BASE_BRANCH`,
+        `fs.appendFileSync(process.env.BOSS_GATE_TAG_LOG, cmd + ' ' + (pr ?? '') + ' base=' + (base ?? '') + '\\n')`,
+        `if (process.env.BOSS_GATE_INJECT_FAIL) process.exit(1)`,
+        // The injector's own git calls never see BOSS_GATE_RESET_FAIL: that flag models a lock the
+        // BLOCK's rollback trips over, and failing the injector's reset too would stop the rewrite
+        // the rollback exists to undo from ever happening.
+        `const git = (...a) =>`,
+        `  execFileSync('git', a, {`,
+        `    encoding: 'utf8',`,
+        `    env: { ...process.env, BOSS_GATE_RESET_FAIL: '' },`,
+        `  }).trim()`,
+        `let baseRef = base`,
+        `try { git('rev-parse', '--verify', 'origin/' + base); baseRef = 'origin/' + base } catch {}`,
+        `const shas = git('rev-list', '--reverse', baseRef + '..HEAD').split('\\n').filter(Boolean)`,
+        // The real injector is a `git rebase <base> --exec`, which FAST-FORWARDS over any commit it
+        // leaves unchanged — that commit keeps its SHA. BOSS_GATE_INJECT_KEEP models exactly that:
+        // rewind only as far as the last commit it must preserve, and rewrite what follows.
+        `const keep = process.env.BOSS_GATE_INJECT_KEEP`,
+        `let resetTo = baseRef`,
+        `let start = 0`,
+        `if (keep) {`,
+        `  for (let i = 0; i < shas.length; i++) {`,
+        `    if (git('log', '-1', '--format=%s', shas[i]).includes(keep)) { resetTo = shas[i]; start = i + 1 }`,
+        `  }`,
+        `}`,
+        // A rewrite that never reaches the branch ref: the real route lands here when the injector
+        // leaves a rebase mid-flight and BOTH the abort and the re-attach fail.
+        `if (process.env.BOSS_GATE_INJECT_DETACH) git('checkout', '--quiet', '--detach', 'HEAD')`,
+        `git('reset', '--hard', resetTo)`,
+        `for (const sha of shas.slice(start)) {`,
+        `  git('cherry-pick', sha)`,
+        `  const subject = git('log', '-1', '--format=%s')`,
+        `  if (!subject.includes('[#' + pr + ']')) git('commit', '--amend', '-q', '-m', subject + ' [#' + pr + ']')`,
+        `}`,
+        ``,
+      ].join('\n'),
+    )
+  }
+  // `work.txt` is committed by `commit(wc, 'work')` above, so this is an unstaged change to a
+  // tracked path — not a new file, which `git status --porcelain --untracked-files=no` ignores.
+  if (dirtyTree) fs.writeFileSync(path.join(wc, 'work.txt'), 'locally modified\n')
+  // Deliberately a name no global gitignore is likely to match: an ignored path never appears in
+  // `git status --porcelain` at all, which would make the untracked case vacuous.
+  if (untrackedOnly) fs.writeFileSync(path.join(wc, 'scratch-artifact.txt'), 'left behind\n')
   fs.writeFileSync(
     path.join(shim, 'sleep'),
     `#!/bin/sh\nprintf 'sleep %s\\n' "$*" >> "$BOSS_GATE_GIT_LOG"\nexit 0\n`,
@@ -5575,21 +6144,78 @@ const runPushBlock = (
     },
   )
 
-  const out = execFileSync(
-    'bash',
-    ['-c', `set +u\nSESSION_BRANCH=feat\n${block}\nprintf 'PUSHED=%s' "\${PUSHED:-<UNSET>}"`],
-    {
-      cwd: wc,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: {
-        ...process.env,
-        PATH: `${shim}${path.delimiter}${process.env.PATH}`,
-        BOSS_GATE_GIT_LOG: gitLogFile,
-        BOSS_GATE_BLANK_HEAD: blankHeadSha ? '1' : '',
+  // TAGGED first, PUSHED last: the parse below slices from the LAST `PUSHED=`. `TAGNOTE` rather
+  // than `TAG_NOTE` so the line-anchored `^TAGGED=` read cannot straddle it.
+  //
+  // Emitted from an EXIT trap, not from a trailing line, so an errexit run that aborts MID-block
+  // still reports the variables as they stood — the alternative loses the whole result to a
+  // non-zero exit and the gate can then only say "something failed", never where or with what.
+  // No single quote anywhere in `emit`: it is embedded inside `trap '…' EXIT`, and single-quoting
+  // the trap body is what defers the `${…}` reads to trap time rather than definition time.
+  const emit =
+    `printf "TAGGED=%s\\nTAGNOTE=%s\\nTAGINJECTNOTE=%s\\nPUSHED=%s" ` +
+    `"\${TAGGED:-<UNSET>}" "\${TAG_NOTE:-<UNSET>}" "\${TAG_INJECT_NOTE:-<UNSET>}" ` +
+    `"\${PUSHED:-<UNSET>}"`
+  let aborted = false
+  const run = () =>
+    execFileSync(
+      'bash',
+      [
+        '-c',
+        // The strict runs use the full `set -euo pipefail` an orchestrator is likeliest to write,
+        // not `-e` alone: `-u` would abort on a variable an arm forgot to assign, and `pipefail`
+        // makes a pipeline take its FIRST failing stage's status — both are ways this block can
+        // gate the push that plain errexit never sees. The non-strict runs stay `+u`, so the two
+        // together still separate "needs a guard" from "aborts under strictness".
+        `set +u\ntrap '${emit}' EXIT\n${errexit ? 'set -euo pipefail\n' : ''}` +
+          // `exit 0` so the block's own trailing status cannot masquerade as an errexit abort.
+          `SESSION_BRANCH=feat\n${block}\nexit 0\n`,
+      ],
+      {
+        cwd: wc,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: {
+          ...process.env,
+          PATH: `${shim}${path.delimiter}${process.env.PATH}`,
+          HOME: home,
+          // Explicitly empty rather than absent: `${BOSS_SKILLS_HOME:-…}` must fall back to the
+          // private HOME above even when the machine running the gate exports a real one.
+          BOSS_SKILLS_HOME: '',
+          BOSS_GATE_GIT_LOG: gitLogFile,
+          BOSS_GATE_TAG_LOG: tagLogFile,
+          BOSS_GATE_BLANK_HEAD: blankHeadSha ? '1' : '',
+          BOSS_GATE_GH_FAIL: ghFails ? '1' : '',
+          BOSS_GATE_NO_PR: noPrForBranch ? '1' : '',
+          BOSS_GATE_INJECT_FAIL: injectorFails ? '1' : '',
+          BOSS_GATE_INJECT_KEEP: injectorKeeps,
+          BOSS_GATE_INJECT_DETACH: injectorDetaches ? '1' : '',
+          BOSS_GATE_LS_FAIL: lsRemoteFails ? '1' : '',
+          BOSS_GATE_FETCH_FAIL: fetchBranchFails ? '1' : '',
+          BOSS_GATE_MERGE_BASE_FAIL: mergeBaseFails ? '1' : '',
+          BOSS_GATE_RESET_FAIL: resetFails ? '1' : '',
+          BOSS_GATE_SHORT_HEAD_FAIL: shortHeadFails ? '1' : '',
+          // `git status` reads the user's global excludes, so a fixture file the machine running the
+          // gate happens to ignore would silently stop being "dirty". Pin the config to this repo.
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_SYSTEM: '/dev/null',
+          // …and git's DEFAULT excludes file is `$XDG_CONFIG_HOME/git/ignore`, which the two pins
+          // above do not cover. Inherited from the machine, it could ignore the untracked fixture
+          // artifact and pass the untracked-only row for the wrong reason. Point it at the private
+          // HOME, where no such file exists.
+          XDG_CONFIG_HOME: path.join(home, '.config'),
+        },
       },
-    },
-  )
+    )
+  let out
+  try {
+    out = run()
+  } catch (err) {
+    // A non-zero exit means the block never reached its own `exit 0` — under errexit, that IS the
+    // abort. Keep the trap's output so the assertion can still name where it stopped.
+    aborted = true
+    out = typeof err.stdout === 'string' ? err.stdout : ''
+  }
   const gitLog = fs.existsSync(gitLogFile)
     ? fs.readFileSync(gitLogFile, 'utf8').split('\n').filter(Boolean)
     : []
@@ -5602,14 +6228,36 @@ const runPushBlock = (
       return null
     }
   })()
+  const tagLog = fs.existsSync(tagLogFile)
+    ? fs.readFileSync(tagLogFile, 'utf8').split('\n').filter(Boolean)
+    : []
   fs.rmSync(tmp, { recursive: true, force: true })
+  // Read every field out of the TRAP's own printf rather than out of the whole stdout: the block
+  // echoes diagnostics of its own before the trap fires, and a line-anchored `^TAGGED=` read over
+  // everything would take the FIRST such line as authoritative while `PUSHED` was already read from
+  // the LAST — two fields sourced from different places the moment any of them collides.
+  const emittedAt = out.lastIndexOf('TAGGED=')
+  const emitted = emittedAt >= 0 ? out.slice(emittedAt) : ''
   return {
-    pushed: out.slice(out.lastIndexOf('PUSHED=') + 'PUSHED='.length),
+    pushed: emitted.slice(emitted.lastIndexOf('PUSHED=') + 'PUSHED='.length),
+    tagged: (emitted.match(/^TAGGED=(.*)$/m) ?? [, '<ABSENT>'])[1],
+    tagNote: (emitted.match(/^TAGNOTE=(.*)$/m) ?? [, '<ABSENT>'])[1],
+    tagInjectNote: (emitted.match(/^TAGINJECTNOTE=(.*)$/m) ?? [, '<ABSENT>'])[1],
+    // The block exited before its own `exit 0` — under errexit, an abort.
+    aborted,
     remoteHas: remoteSubjects !== null,
     remoteSubjects: remoteSubjects ?? [],
     // `git push …` as the block invokes it; the shim logs argv verbatim.
     attemptedPush: gitLog.some((l) => /^push\b/.test(l)),
     fetched: gitLog.some((l) => /^fetch\b/.test(l)),
+    // The rescue ref the block actually asked origin to create, read out of the shim's argv log so
+    // it is observable even when the push itself fails. `null` when no rescue push was attempted;
+    // the empty-suffix defect surfaces here as the trailing-hyphen ref `feat-blocked-`.
+    rescueRef: (gitLog
+      .map((l) => /^push origin HEAD:refs\/heads\/(\S*)$/.exec(l))
+      .find(Boolean) ?? [, null])[1],
+    // Argv the injection step handed the finalize CLI, verbatim.
+    injectArgv: tagLog,
   }
 }
 
@@ -5666,7 +6314,10 @@ test('BOS-758 P2: the push block leaves no route with PUSHED unset (both mirrors
       `${dir}: a remote advertising the branch at a DIVERGENT commit must be pushed to, not accepted as proof the work is stored`,
     )
     assert.ok(
-      diverged.remoteSubjects.includes('work'),
+      // `startsWith`, not equality: origin advertises a DIVERGENT commit, so this run's `work`
+      // commit is unpublished and the tag injection legitimately rewrites its subject to
+      // `work [#7]`. The property under test is that the commit reaches origin, not its subject.
+      diverged.remoteSubjects.some((s) => s.startsWith('work')),
       `${dir}: after a server-side force-push the run must leave the work on origin, not stop with it local (remote had: ${diverged.remoteSubjects.join(', ')})`,
     )
     assert.equal(diverged.pushed, 'yes', `${dir}: recovering from a force-push ends at PUSHED=yes`)
@@ -5788,6 +6439,1007 @@ test('BOS-758 P2: the push block leaves no route with PUSHED unset (both mirrors
       reviewStack,
       /Reconcile\s+with\s+`git\s+rebase\s+--no-fork-point\s+FETCH_HEAD`/i,
       `${dir}: the section must state which reconcile form is required, and why pull --rebase is not it`,
+    )
+  }
+})
+
+// Discriminate by SUBSTITUTION KIND, never by the variable's spelling. `$(` and a backtick both run
+// a command whose status a bare assignment takes; `$((` runs none, so an arithmetic assignment is
+// exempt however loudly it is named — and a lowercase capture is the same hazard as an uppercase
+// one, so both are in.
+//
+// Cover every SPELLING too, not just the kinds — and that is what rules out matching a PREFIX of the
+// right-hand side. `VAR="$(…)"` is the house idiom a few blocks up this same file and
+// `VAR=${X:-$(…)}` runs its default the moment `X` is unset; but so do `VAR="on $(…)"` and
+// `VAR=pre-$(…)`, where the substitution is INTERPOLATED into a larger word. Those take the
+// substitution's status exactly as the bare form does — `RESCUE="$SESSION_BRANCH-blocked-$(git
+// rev-parse --short HEAD)"` aborts the block under errexit precisely where the tailed capture it
+// would replace does not — yet a matcher anchored just after the `=` scores them as no capture at
+// all. A gate that claims a universal and then stops at the first spelling the next editor reaches
+// for teaches that editor the rule is decorative.
+//
+// So scan the assignment's whole RHS WORD rather than pattern-matching its head. Quote- and
+// nesting-aware, because both exemptions then fall out of the scan instead of each needing a special
+// case: nothing substitutes inside `'…'`, and `$((…))` runs no command. Where the word ENDS is the
+// other half of the answer — that is where the `|| VAR=` tail has to start, so a `||` living INSIDE
+// the substitution can no longer be miscounted as one.
+// One scanner answers both questions this gate asks, because both need the same shell-quoting
+// state: inside `'…'` nothing is special, inside `"…"` a `$(` still runs while a `#` starts no
+// comment, and `$(…)`/`${…}`/`$((…))` nest. They differ only in where they stop.
+//   mode 'word'    — stop at the unquoted delimiter ending an assignment's RHS word.
+//   mode 'comment' — stop at the unquoted `#` starting a trailing comment; delimiters are ordinary
+//                    text there, because a comment may follow anything.
+// `${…}` is tracked even though it expands rather than runs: it NESTS, so an unquoted
+// `X=${Y:- $(cmd)}` carries a brace-internal space that must not end the word — and `sh -e` really
+// does abort on that one, so scoring it "no capture" is the same blindness as the anchored matcher.
+const shellScan = (s, start, mode) => {
+  const open = []
+  let runs = false
+  let i = start
+  while (i < s.length) {
+    const top = open[open.length - 1]
+    const c = s[i]
+    if (top === "'") {
+      if (c === "'") open.pop()
+      i += 1
+    } else if (c === '\\') {
+      i += 2
+    } else if (c === '$' && s[i + 1] === '(' && s[i + 2] === '(') {
+      open.push('$((')
+      i += 3
+    } else if (c === ')' && top === '$((' && s[i + 1] === ')') {
+      open.pop()
+      i += 2
+    } else if (c === '$' && s[i + 1] === '(') {
+      open.push('$(')
+      runs = true
+      i += 2
+    } else if (c === ')' && top === '$(') {
+      open.pop()
+      i += 1
+    } else if (c === '$' && s[i + 1] === '{') {
+      open.push('${')
+      i += 2
+    } else if (c === '}' && top === '${') {
+      open.pop()
+      i += 1
+    } else if (c === '`') {
+      if (top === '`') open.pop()
+      else {
+        open.push('`')
+        runs = true
+      }
+      i += 1
+    } else if (c === '"') {
+      if (top === '"') open.pop()
+      else open.push('"')
+      i += 1
+    } else if (c === "'") {
+      // Inside `"…"` a quote is literal; anywhere else it opens a single-quoted string.
+      if (top !== '"') open.push("'")
+      i += 1
+    } else if (
+      mode === 'comment' &&
+      c === '#' &&
+      open.length === 0 &&
+      (i === 0 || /\s/.test(s[i - 1]))
+    ) {
+      break
+    } else if (mode === 'word' && open.length === 0 && /[\s;&|()<>]/.test(c)) {
+      break
+    } else {
+      i += 1
+    }
+  }
+  return { end: i, runs }
+}
+
+const rhsWord = (s, start) => shellScan(s, start, 'word')
+// `runnable` drops whole-line comments only, so a TRAILING one still reaches the gate — and the
+// block's own commentary writes `|| VAR=` as a literal repeatedly, which would read as a tail the
+// capture does not have.
+const stripComment = (s) => s.slice(0, shellScan(s, 0, 'comment').end)
+
+// Match anywhere in the statement rather than only at its start: continuation lines are joined
+// before this runs, so a capture written on the second line of one is mid-statement by the time this
+// reads it. The one exemption is a CONDITION context (`if`/`elif`/`while`/`until`, with or without
+// `!`), because errexit itself exempts those — and a `$(…)` inside `[ … ]` is not an assignment, so
+// it never matches to begin with.
+const CONDITION = /(?:^|[;&|(]|\bthen\b|\bdo\b|\belse\b)\s*(?:if|elif|while|until)\s+(?:!\s+)?$/
+
+const bareCapturesIn = (statements) => {
+  const bare = []
+  // Built per call, never shared: the scan below DRIVES `lastIndex` to skip words it has already
+  // consumed, so a module-level `/g` regex would carry one call's cursor into the next.
+  const ASSIGN = /([A-Za-z_][A-Za-z0-9_]*)=/g
+  for (const raw of statements) {
+    const s = stripComment(raw)
+    const hits = []
+    ASSIGN.lastIndex = 0
+    let m
+    while ((m = ASSIGN.exec(s)) !== null) {
+      const before = s.slice(0, m.index)
+      // An assignment starts a word: `--flag=$(…)` and `"$prefix"=$(…)` are not one.
+      if (/[\w./-]$/.test(before)) continue
+      const { end, runs } = rhsWord(s, m.index + m[0].length)
+      // Never re-enter a word already scanned: `awk -v ref="…"` inside one capture's RHS is not a
+      // second assignment, and reading it as one would search the wrong region for the wrong tail.
+      ASSIGN.lastIndex = Math.max(end, ASSIGN.lastIndex)
+      if (!runs || CONDITION.test(before)) continue
+      hits.push({ name: m[1], start: m.index, end })
+    }
+    for (const [i, hit] of hits.entries()) {
+      // Each capture needs its OWN tail, so the region searched ENDS where the next capture begins —
+      // otherwise one tailed capture silently exempts every bare one sharing its line. Anchor the
+      // match at the word's end too: `||` only guards the command it is ATTACHED to, so in
+      // `X=$(cmd); [ -n "$X" ] || X=fallback` the tail belongs to the `[` and `X=$(cmd)` still
+      // aborts. An unanchored search over the region reads that as tailed, which is the same
+      // false negative as missing the capture outright.
+      const until = i + 1 < hits.length ? hits[i + 1].start : s.length
+      if (/^\s*\|\|\s*[A-Za-z_][A-Za-z0-9_]*=/.test(s.slice(hit.end, until))) continue
+      bare.push(`${hit.name}: ${s.trim()}`)
+    }
+  }
+  return bare
+}
+
+test('BOS-860 ext3: the errexit-capture matcher sees an interpolated substitution', () => {
+  // The gate below asserts a UNIVERSAL over the shipped block, so it is worth exactly what it can
+  // see — and today the block happens to spell every capture as a whole right-hand side, so the
+  // anchored matcher this replaces passed while covering only that one spelling. Nothing in the
+  // suite could tell the two apart: no fixture falsified either, so widening the matcher would have
+  // looked identical to leaving the hole in. These are the mutants that tell them apart. Each is a
+  // statement the block could plausibly acquire, and each must be REPORTED bare and then CLEARED by
+  // its own tail — one direction alone would pass on a matcher that flags everything.
+  const bare = (s) => bareCapturesIn([s])
+  for (const [label, stmt] of [
+    ['the bare house idiom', 'RESCUE_SUFFIX=$(git rev-parse --short HEAD 2>/dev/null)'],
+    ['a quoted whole RHS', 'RESCUE_SUFFIX="$(git rev-parse --short HEAD 2>/dev/null)"'],
+    [
+      'a substitution interpolated into a quoted word',
+      'RESCUE="$SESSION_BRANCH-blocked-$(git rev-parse --short HEAD)"',
+    ],
+    [
+      'a substitution interpolated into an unquoted word',
+      'RESCUE=$SESSION_BRANCH-blocked-$(git rev-parse --short HEAD)',
+    ],
+    ['a backtick interpolated into a quoted word', 'RESCUE="blocked-`git rev-parse --short HEAD`"'],
+    ['a default that runs a command', 'PR_NUMBER="${PR_NUMBER:-$(gh pr list -q .number)}"'],
+    ['an interpolated default that runs a command', 'RESCUE="x-${SUFFIX:-$(git rev-parse HEAD)}"'],
+    // Unquoted, and with a space inside the braces. `${…}` expands rather than runs, but it nests,
+    // so a scanner that does not track it ends the word at that space and reports nothing — while
+    // `sh -e` aborts on it just the same (asserted against the real shell below).
+    ['an unquoted brace default holding a space', 'X=${Y:- $(git rev-parse HEAD)}'],
+  ]) {
+    assert.equal(
+      bare(stmt).length,
+      1,
+      `a capture with no tail must be reported when it is ${label} — under set -e it aborts the block before the push: ${stmt}`,
+    )
+    assert.deepEqual(
+      bare(`${stmt} || RESCUE=`),
+      [],
+      `…and its own \`|| VAR=\` tail must clear it when it is ${label}: ${stmt}`,
+    )
+  }
+  // The other direction: shapes that run no command, or that errexit already exempts. A matcher
+  // that reported these would be widened past the property and the next editor would delete it.
+  for (const [label, stmt] of [
+    ['arithmetic runs no command', 'attempts=$((attempts + 1))'],
+    ['a single-quoted word substitutes nothing', "MSG='cost $(nothing) at all'"],
+    ['errexit exempts a condition context', 'if TAG_BASE=$(gh pr view -q .base); then'],
+    ['a long-flag value is not an assignment', 'git status --untracked-files=no'],
+    ['a plain value runs nothing', 'TAGGED=partial'],
+  ]) {
+    assert.deepEqual(bare(stmt), [], `${label}, so it must not be reported: ${stmt}`)
+  }
+
+  // Knowing where the RHS word ENDS is load-bearing, not incidental: the tail has to sit AFTER the
+  // substitution, so a scan that stopped at the first `||` would read one living INSIDE it as the
+  // tail and clear a capture that has none. This statement's only `|| VAR=` is inside — the shipped
+  // block's `UNPUSHED=$(… || git rev-list --count HEAD) || UNPUSHED=` is the same shape one step
+  // milder, and it is the reason the region is measured from the word's end rather than from `$(`.
+  assert.equal(
+    bare('FOO=$(cmd || BAR=1)').length,
+    1,
+    'a `|| VAR=` inside the substitution is not a tail — the capture it belongs to still has none',
+  )
+  assert.deepEqual(
+    bare('FOO=$(cmd || BAR=1) || FOO='),
+    [],
+    '…and the real tail, outside the substitution, does clear it',
+  )
+
+  // A `||` guards only the command it is ATTACHED to. These two are the shapes that read as tailed
+  // to any search that merely looks for `|| VAR=` somewhere to the right, and both really abort.
+  assert.equal(
+    bare('X=$(cmd); [ -n "$X" ] || X=fallback').length,
+    1,
+    "a `|| VAR=` belonging to a LATER command is not this capture's tail — `X=$(cmd)` still aborts under set -e",
+  )
+  assert.equal(
+    bare('X="$(exit 7)" # note || Y=').length,
+    1,
+    'a `|| VAR=` inside a trailing comment is not a tail — the block writes that literal in its own commentary',
+  )
+  assert.deepEqual(
+    bare('X="$(exit 7)" || X= # note'),
+    [],
+    '…while a real tail followed by a comment still clears',
+  )
+  // The other direction, and the one comment-stripping actually buys: a capture written INSIDE a
+  // trailing comment is prose, not code. `runnable` strips whole-line comments only, and this
+  // block's commentary discusses `VAR=$(cmd)` shapes constantly, so without stripping the gate
+  // manufactures findings against its own explanatory text.
+  assert.deepEqual(
+    bare('echo hi # FOO=$(bar)'),
+    [],
+    'a capture written inside a trailing comment is not code and must not manufacture a finding',
+  )
+
+  // Finally, ground the whole gate in the shell rather than in this file's belief about it. The
+  // rule is only worth enforcing because an interpolated substitution's status really IS the
+  // assignment's, and a reader who doubts that reads a matcher and has to take it on faith. Ask
+  // `sh` instead: the untailed form aborts mid-block, the tailed form runs on.
+  const errexitStatus = (script) => {
+    try {
+      execFileSync('sh', ['-c', script], { stdio: 'pipe' })
+      return 0
+    } catch (e) {
+      return e.status
+    }
+  }
+  assert.equal(
+    errexitStatus('set -e; X="a$(exit 7)b"; echo NOTREACHED'),
+    7,
+    'an interpolated substitution hands its status to the assignment exactly as a bare one does — that is the abort the gate exists to forbid, and why it may not stop at the anchored spelling',
+  )
+  assert.equal(
+    errexitStatus('set -e; X="a$(exit 7)b" || X=; echo REACHED'),
+    0,
+    '…and its own `|| VAR=` tail is what keeps the block running to the push — the gate requires that tail and nothing more',
+  )
+  assert.equal(
+    errexitStatus('set -e; X=$((1 + 1)); echo REACHED'),
+    0,
+    'arithmetic runs no command, so it cannot abort and the gate must keep exempting it',
+  )
+  assert.equal(
+    errexitStatus('set -e; X=${Y:- $(exit 7)}; echo NOTREACHED'),
+    7,
+    'an unquoted brace default runs its substitution and aborts on it, so the scanner must track `${…}` rather than end the word at the space inside',
+  )
+  assert.equal(
+    errexitStatus('set -e; X=$(exit 7); [ -n "$X" ] || X=fallback; echo NOTREACHED'),
+    7,
+    'a `||` on a LATER command does not guard this assignment — which is why the tail must be anchored to the capture',
+  )
+})
+
+test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging never gates the push', () => {
+  // Every route in the BLOCKED-route section stops at Stop cleanly, so the finalize step that
+  // injects `[#<PR>]` never runs — the commits were published untagged and nothing downstream ever
+  // added the tag. The fix injects BEFORE the push (the last moment the tag is free, since a tag
+  // added after publication means rewriting published history), and the property that matters most
+  // is the one a naive fix breaks: a tagging failure must never cost the run its commits.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = reviewStackFor(dir)
+    const block = pushBlockOf(reviewStack)
+    const runnable = block
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n')
+
+    // --- Structure: injection is before the push, and it is the shipped CLI's positional form. ---
+    assert.match(
+      runnable,
+      /inject-pr-tag "\$PR_NUMBER"/,
+      `${dir}: the push block must invoke the finalize CLI's inject-pr-tag capability`,
+    )
+    // Both offsets must be FOUND: `indexOf` returns -1 for a miss, and -1 < n would let a deleted
+    // injection satisfy an ordering rule about it.
+    const injectAt = runnable.indexOf('inject-pr-tag')
+    const pushAt = runnable.indexOf('git push -u origin "$SESSION_BRANCH"')
+    assert.ok(
+      injectAt >= 0 && pushAt >= 0 && injectAt < pushAt,
+      `${dir}: the tag must be injected BEFORE the push — injecting after it means rewriting published history (inject at ${injectAt}, push at ${pushAt})`,
+    )
+    assert.doesNotMatch(
+      runnable,
+      /inject-pr-tag[^\n]*--pr\b/,
+      `${dir}: the PR number is positional; a --pr flag form tags every commit with a literal [#--pr]`,
+    )
+    // The advertised SHA is read once, ABOVE the zero-ahead guard: the injection's containment
+    // check lives on the other arm, which the guard by definition never enters. Both offsets must
+    // be found — `search` returns -1 for a miss, and -1 < n would pass this vacuously for a read
+    // that moved back inside the guard (where it is indented and so no longer line-anchored).
+    const remoteShaAt = runnable.search(/^REMOTE_SHA=\$\(printf/m)
+    const zeroAheadGuardAt = runnable.search(/^if \[ "\$UNPUSHED" = "0" \]/m)
+    assert.ok(
+      remoteShaAt >= 0 && zeroAheadGuardAt >= 0 && remoteShaAt < zeroAheadGuardAt,
+      `${dir}: REMOTE_SHA must be read outside the zero-ahead guard so the injection arm can use it (read at ${remoteShaAt}, guard at ${zeroAheadGuardAt})`,
+    )
+    // The ASK's status must be kept apart from its answer. A pipeline's `$?` is the LAST stage's, so
+    // reading the SHA straight out of `git ls-remote | awk` throws git's status away and makes "the
+    // remote said nothing" and "the remote could not be asked" the same value — and one of those two
+    // licenses a rewrite. Assert the raw read is captured on its own, with its status recorded.
+    const lsReadAt = runnable.search(/^REMOTE_LS=\$\(git ls-remote[^\n]*\|\| REMOTE_LS_OK=no$/m)
+    assert.ok(
+      lsReadAt >= 0 && lsReadAt < remoteShaAt,
+      `${dir}: git ls-remote's own exit status must be captured before the SHA is parsed out of its output (read at ${lsReadAt})`,
+    )
+    assert.match(
+      runnable,
+      /if \[ "\$REMOTE_LS_OK" != yes \]/,
+      `${dir}: a remote the run could not ask must not reach the injector as if it had advertised nothing`,
+    )
+    assert.match(
+      runnable,
+      /git reset --hard "\$PRE_INJECT_SHA"/,
+      `${dir}: an injection that would rewrite a commit origin advertises must be rolled back`,
+    )
+    // The published outcome must be DERIVED after the loop settles, not remembered from before it:
+    // `git rebase` skips commits by patch id, which ignores the message entirely, so the reconcile
+    // inside the loop can drop a tagged copy of a commit origin still holds untagged.
+    const rederiveAt = runnable.indexOf('TAG_RANGE_BASE=')
+    const loopEndAt = runnable.indexOf('if [ "$PUSHED" != yes ]')
+    assert.ok(
+      rederiveAt >= 0 && loopEndAt >= 0 && rederiveAt > pushAt && rederiveAt < loopEndAt,
+      `${dir}: TAGGED must be re-derived from the branch after the retry loop, between the push and the rescue ref (re-derive at ${rederiveAt}, push at ${pushAt}, rescue at ${loopEndAt})`,
+    )
+    // …and it must read the ref the loop PUSHES. A detached HEAD carrying the rewrite while the
+    // branch still holds the untagged original is the shape the re-attach above can fail into.
+    assert.match(
+      runnable,
+      /git rev-parse "refs\/heads\/\$SESSION_BRANCH"/,
+      `${dir}: the re-derivation must confirm HEAD is still the branch before reading a tag state off it`,
+    )
+    // The subject read's STATUS must be kept apart from its answer: piped into `grep -qv`, the
+    // status is grep's, and an unreadable range prints nothing — which reads exactly like a fully
+    // tagged one and resolves to the optimistic `all`. Same defect this block teaches against for
+    // `ls-remote` a few lines above.
+    assert.doesNotMatch(
+      runnable,
+      /git log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"[^\n]*\|[^|]/,
+      `${dir}: a pipeline's status is grep's, so the subject read must be captured before it is parsed`,
+    )
+    assert.match(
+      runnable,
+      /TAG_SUBJECTS=\$\(git log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"/,
+      `${dir}: capture the branch's subjects, then parse them, so an unreadable range is not read as tagged`,
+    )
+    // Nothing between the injection and the retry loop may end the run: an `exit`/`break`/`return`
+    // there turns a benign injector status into stranded commits, which is strictly worse than the
+    // untagged commits this whole change exists to fix.
+    const injection = runnable.slice(
+      runnable.indexOf('TAGGED=skipped\n  TAG_NOTE="tag injection not attempted"'),
+      runnable.indexOf('attempts=0'),
+    )
+    assert.ok(injection.length > 0, `${dir}: the injection step must sit on the push arm`)
+    assert.doesNotMatch(
+      injection,
+      /^\s*(exit|break|return)\b/m,
+      `${dir}: the tag injection must never gate the push — no exit, break or return on any of its arms`,
+    )
+
+    // --- Executable: the four failure shapes each record an outcome and still push. ---
+    // Each shape runs on a branch origin does NOT hold, so the injection would otherwise succeed:
+    // that keeps every expectation below non-vacuous — with the guard removed the outcome changes.
+    const skips = [
+      [
+        'no open PR maps to the branch',
+        { deleteRemoteBranch: true, noPrForBranch: true },
+        'skipped',
+      ],
+      ['the PR lookup itself fails', { deleteRemoteBranch: true, ghFails: true }, 'skipped'],
+      ['the injector exits non-zero', { deleteRemoteBranch: true, injectorFails: true }, 'partial'],
+      ['the finalize toolbox is absent', { deleteRemoteBranch: true, noToolbox: true }, 'skipped'],
+      ['a tracked file is dirty', { deleteRemoteBranch: true, dirtyTree: true }, 'skipped'],
+    ]
+    for (const [label, opts, expected] of skips) {
+      const run = runPushBlock(block, opts)
+      assert.equal(
+        run.attemptedPush,
+        true,
+        `${dir}: the push must still be attempted when ${label}`,
+      )
+      assert.equal(run.pushed, 'yes', `${dir}: the push must still SUCCEED when ${label}`)
+      assert.equal(
+        run.tagged,
+        expected,
+        `${dir}: the run must record TAGGED=${expected} when ${label}`,
+      )
+    }
+
+    // --- Executable: the happy path actually tags, and the tag reaches origin. ---
+    // A branch origin does not hold: every commit is unpublished, so all of them may be rewritten.
+    const fresh = runPushBlock(block, { deleteRemoteBranch: true })
+    // Call shape first, then its effects: a wrong invocation should name itself rather than
+    // surface as a downstream "not tagged".
+    assert.deepEqual(
+      fresh.injectArgv,
+      ['inject-pr-tag 7 base=main'],
+      `${dir}: the finalize CLI must be called once, with the PR number positionally and the PR's base branch in BASE_BRANCH`,
+    )
+    assert.equal(fresh.tagged, 'all', `${dir}: a fully unpublished branch must be tagged`)
+
+    // --- Executable: the dirty guard is scoped to TRACKED paths. ---
+    // A rebase runs straight past an untracked file, and a message-only rewrite of commits already
+    // in this history checks out no path that could clobber one. Treating `??` as dirty would let
+    // one leftover scratch artifact take the whole feature to `skipped` on the route most likely to
+    // have leftovers — and the commits would then publish untagged anyway, which is the defect.
+    // Paired with the `dirtyTree` row above, this is what makes the narrowing load-bearing: the
+    // same guard must still fire on a tracked edit and must NOT fire on this one.
+    const untracked = runPushBlock(block, { deleteRemoteBranch: true, untrackedOnly: true })
+    assert.equal(
+      untracked.tagged,
+      'all',
+      `${dir}: an untracked-only worktree must still be tagged — a rebase does not refuse over one (note: ${untracked.tagNote})`,
+    )
+    assert.ok(
+      untracked.remoteSubjects.includes('work [#7]'),
+      `${dir}: the tag must reach origin with an untracked file present (remote had: ${untracked.remoteSubjects.join(', ')})`,
+    )
+    assert.ok(
+      fresh.remoteSubjects.includes('work [#7]'),
+      `${dir}: the commits pushed by the BLOCKED route must carry the PR tag (remote had: ${fresh.remoteSubjects.join(', ')})`,
+    )
+
+    // --- Executable: the injection must NOT rewrite what origin already advertises. ---
+    // Origin holds `work`; this run added commits on top. Tagging rewrites `work` too, so the
+    // whole injection is rolled back and the commits are published untagged rather than force-fed
+    // over a commit this run may not have authored.
+    const published = runPushBlock(block, { commitsAhead: 2 })
+    assert.equal(
+      published.tagged,
+      'skipped',
+      `${dir}: an injection that would rewrite an already-advertised commit must be skipped`,
+    )
+    // Length first: `some()` over an empty array is vacuously false, so an unread remote would
+    // otherwise satisfy the assertion below without a single commit having been examined.
+    assert.ok(
+      published.remoteSubjects.length > 0,
+      `${dir}: the rollback case must leave commits ON origin for the tag check to mean anything`,
+    )
+    assert.ok(
+      !published.remoteSubjects.some((s) => s.includes('[#')),
+      `${dir}: no already-published commit may be rewritten to add a tag (remote had: ${published.remoteSubjects.join(', ')})`,
+    )
+    assert.equal(published.pushed, 'yes', `${dir}: skipping the tag must not skip the push`)
+    // The injector DID run here and was rolled back — which is what makes the two fail-closed
+    // shapes below non-vacuous: they reach `skipped` by never running it at all.
+    assert.ok(
+      published.injectArgv.length > 0,
+      `${dir}: the rollback case must reach the injector — otherwise it proves nothing about rollback`,
+    )
+
+    // --- Executable: a rollback that FAILS may not be reported as a rollback that happened. ---
+    // Same shape as `published` above, except the rollback's own `git reset --hard` fails (an index
+    // or ref lock is the real one). Two defects live here. Under errexit the bare reset is not a
+    // condition, so its failure exits the arm whose entire purpose is undoing an unsafe rewrite —
+    // before the push, leaving the branch rewritten AND unpushed. And with the status unread, the
+    // arm goes on to report `skipped` with "injection would have rewritten…", a sentence asserting
+    // the rewrite did not happen on a branch that is still carrying it.
+    const rollbackFailed = runPushBlock(block, {
+      commitsAhead: 2,
+      resetFails: true,
+      errexit: true,
+    })
+    assert.equal(
+      rollbackFailed.aborted,
+      false,
+      `${dir}: under set -e a failed rollback must not abort the block before the push (got TAGGED=${rollbackFailed.tagged}, PUSHED=${rollbackFailed.pushed})`,
+    )
+    assert.equal(
+      rollbackFailed.pushed,
+      'yes',
+      `${dir}: a failed rollback must not cost the run its commits`,
+    )
+    assert.notEqual(
+      rollbackFailed.tagged,
+      'skipped',
+      `${dir}: a rollback that failed left the rewrite in place — reporting it as skipped asserts a rewrite that did happen did not (note: ${rollbackFailed.tagNote})`,
+    )
+    assert.match(
+      rollbackFailed.tagInjectNote,
+      /rollback/i,
+      `${dir}: a failed rollback must name itself in the injector-side diagnostic (inject note: ${rollbackFailed.tagInjectNote})`,
+    )
+    // …and it must name the ATTEMPT, never the branch. This note is written BEFORE the retry loop
+    // and never re-derived after it, while the reconcile inside that loop rebases — and a rewritten
+    // copy of a commit origin still holds untagged is dropped there as patch-identical. So a note
+    // claiming the branch "still carries" the rewrite publishes a state the block never observed,
+    // and can be falsified by the very next line of the block that printed it.
+    assert.doesNotMatch(
+      rollbackFailed.tagInjectNote,
+      /still\s+carries|untagged/i,
+      `${dir}: the failed-rollback diagnostic may not assert what the branch carries — the re-derivation owns that, and the reconcile can falsify it (inject note: ${rollbackFailed.tagInjectNote})`,
+    )
+
+    // --- Executable: the containment guard's own inputs fail CLOSED. ---
+    // A remote the run could not ASK. `deleteRemoteBranch` alone reaches TAGGED=all through these
+    // same arms (`fresh` above), so the only difference here is that ancestry became undecidable.
+    const unaskable = runPushBlock(block, { deleteRemoteBranch: true, lsRemoteFails: true })
+    assert.deepEqual(
+      unaskable.injectArgv,
+      [],
+      `${dir}: a remote this run could not ask is not a remote holding nothing — do not rewrite against it`,
+    )
+    assert.equal(unaskable.tagged, 'skipped', `${dir}: an unguardable rewrite records skipped`)
+    assert.equal(unaskable.pushed, 'yes', `${dir}: an unguardable rewrite must not cost the push`)
+    // An advertised commit that cannot be brought local: ancestry against it is undecidable too.
+    const unfetchable = runPushBlock(block, { commitsAhead: 2, fetchBranchFails: true })
+    assert.deepEqual(
+      unfetchable.injectArgv,
+      [],
+      `${dir}: an advertised commit that will not fetch leaves the guard unable to answer — do not rewrite`,
+    )
+    assert.equal(unfetchable.tagged, 'skipped', `${dir}: an undecidable guard records skipped`)
+    assert.equal(unfetchable.pushed, 'yes', `${dir}: an undecidable guard must not cost the push`)
+    // A pre-injection HEAD the run could not read fails closed for the same reason: the rollback
+    // rewinds to it, so an empty answer leaves an unsafe rewrite with nothing able to take it back.
+    // (`git reset --hard ""` is not the hazard — it exits 128 and moves nothing.) Same branch shape
+    // as `fresh` above, which reaches TAGGED=all through these very arms, so the only difference
+    // here is the unreadable HEAD: with the arm gone the injector runs and the outcome changes.
+    const noPreSha = runPushBlock(block, { deleteRemoteBranch: true, blankHeadSha: true })
+    assert.deepEqual(
+      noPreSha.injectArgv,
+      [],
+      `${dir}: a rewrite whose rollback has no target must not be started`,
+    )
+    assert.equal(
+      noPreSha.tagged,
+      'skipped',
+      `${dir}: an unrollbackable rewrite records skipped (note: ${noPreSha.tagNote})`,
+    )
+    assert.match(
+      noPreSha.tagNote,
+      /pre-injection HEAD/i,
+      `${dir}: the skip must name the unreadable pre-injection HEAD (note: ${noPreSha.tagNote})`,
+    )
+    assert.equal(noPreSha.pushed, 'yes', `${dir}: an unrollbackable rewrite must not cost the push`)
+
+    // --- Executable: the shape the change exists for, end to end. ---
+    // Origin holds `work`; the injector fast-forwards over it (the real one does exactly this for a
+    // commit whose amend is rejected, keeping its SHA) and rewrites only what follows. The guard
+    // therefore HOLDS, so this run's own commits reach origin tagged — and the published commit
+    // stays untagged, which the report must say rather than inheriting the injector's exit code.
+    const kept = runPushBlock(block, { commitsAhead: 2, injectorKeeps: 'work' })
+    assert.equal(kept.pushed, 'yes', `${dir}: the fast-forward-over-published shape must push`)
+    assert.ok(
+      kept.remoteSubjects.includes('ahead-0 [#7]') && kept.remoteSubjects.includes('ahead-1 [#7]'),
+      `${dir}: this run's own commits must reach origin carrying the tag (remote had: ${kept.remoteSubjects.join(', ')})`,
+    )
+    assert.ok(
+      kept.remoteSubjects.includes('work'),
+      `${dir}: the already-published commit must reach origin unrewritten (remote had: ${kept.remoteSubjects.join(', ')})`,
+    )
+    // The injector exited 0 here — "all" — yet the branch it left still carries an untagged commit.
+    // Only a re-derivation from the branch can tell those apart, which is the whole point.
+    assert.equal(
+      kept.tagged,
+      'partial',
+      `${dir}: TAGGED must be re-derived from the pushed branch, never remembered from the injector's exit status`,
+    )
+
+    // --- Executable: a rewrite that never reached the branch may not be reported as tagged. ---
+    // The injector exits 0 having tagged a DETACHED HEAD; the branch — what the loop pushes — is
+    // untouched. Reading `HEAD` would answer `all` about commits no reader can see.
+    const detached = runPushBlock(block, { deleteRemoteBranch: true, injectorDetaches: true })
+    assert.equal(detached.pushed, 'yes', `${dir}: a detached rewrite must not cost the push`)
+    assert.ok(
+      detached.remoteSubjects.length > 0 && !detached.remoteSubjects.some((s) => s.includes('[#')),
+      `${dir}: the branch the loop pushed is the untagged one here (remote had: ${detached.remoteSubjects.join(', ')})`,
+    )
+    assert.notEqual(
+      detached.tagged,
+      'all',
+      `${dir}: TAGGED must be read from the branch the loop pushes, never from a detached HEAD`,
+    )
+
+    // --- Executable: under `set -e`, no capture on this route may abort before the push. ---
+    // A bare `VAR=$(cmd)` takes the command substitution's status, so an errexit orchestrator would
+    // lose the whole publication to a `gh` that is offline or a `git merge-base` whose base ref
+    // moved — the exact "tagging gates the push" failure the route forbids, and one every
+    // non-errexit run above is blind to. Each shape below is a capture whose OWN guard exists to
+    // handle it, and which under errexit never reached that guard.
+    for (const [label, opts, expected] of [
+      // The PR lookup: `PR_NUMBER="${PR_NUMBER:-$(gh …)}"` aborted here.
+      ['the PR lookup fails', { deleteRemoteBranch: true, ghFails: true }, 'skipped'],
+      // The post-push re-derivation: `TAG_RANGE_BASE=$(git merge-base …)` aborted before the
+      // `[ -z "$TAG_RANGE_BASE" ]` arm written to catch exactly this.
+      [
+        'the range base will not resolve',
+        { deleteRemoteBranch: true, mergeBaseFails: true },
+        'partial',
+      ],
+      // The healthy path, so a block that merely aborts EARLY everywhere cannot pass the two above.
+      ['everything succeeds', { deleteRemoteBranch: true }, 'all'],
+    ]) {
+      const strict = runPushBlock(block, { ...opts, errexit: true })
+      assert.equal(
+        strict.aborted,
+        false,
+        `${dir}: under set -e the block must run to completion when ${label} (got TAGGED=${strict.tagged}, PUSHED=${strict.pushed}, note: ${strict.tagNote})`,
+      )
+      assert.equal(
+        strict.pushed,
+        'yes',
+        `${dir}: under set -e the push must still succeed when ${label}`,
+      )
+      assert.equal(
+        strict.tagged,
+        expected,
+        `${dir}: under set -e the run must record TAGGED=${expected} when ${label}`,
+      )
+    }
+
+    // --- Structure: EVERY command-substitution capture carries its own `|| VAR=` tail. ---
+    // The block states that as a universal rule, and a universal that the same block violates —
+    // or that its gate only half-covers — is worse than no rule: the next editor reads it and
+    // stops checking. So this enforces the rule as stated, for any variable name and in any
+    // position; the paragraph above the matcher records exactly what "capture" means here and the
+    // one context it exempts. Pinning captures one at a
+    // time with an env-gated fixture flag does not scale and left several with no flag at all, so
+    // assert over the shipped TEXT instead — one gate that covers every capture, including the ones
+    // added after this was written, at zero fixture cost. Join continuation lines first: a capture
+    // may carry its tail on the next line, and the `|| VAR=` would otherwise read as absent.
+    const statements = []
+    for (const line of runnable.split('\n')) {
+      const prev = statements[statements.length - 1]
+      if (prev !== undefined && /(\|\||&&|\||\\)\s*$/.test(prev)) {
+        statements[statements.length - 1] = `${prev.replace(/\\\s*$/, '')} ${line.trim()}`
+      } else {
+        statements.push(line)
+      }
+    }
+    const bareCaptures = bareCapturesIn(statements)
+    assert.deepEqual(
+      bareCaptures,
+      [],
+      `${dir}: every capture on this route must carry its own \`|| VAR=\` tail — a bare VAR=$(cmd) takes the substitution's status, so under set -e it aborts the block before the push (bare: ${bareCaptures.map((s) => s.trim()).join(' // ')})`,
+    )
+
+    // --- Structure: the post-loop re-derivation is the SOLE author of a non-skipped TAGGED. ---
+    // Assigning `all`/`partial` from the injector's exit status as well gave the value two authors,
+    // the second unconditionally overwriting the first — so the injector's own diagnostic was dead
+    // state no reader could ever observe. What crosses the loop instead is the `TAG_INJECTED` gate
+    // and a separate `TAG_INJECT_NOTE`, which the re-derivation appends to rather than clobbers.
+    const preLoop = runnable.slice(0, pushAt)
+    assert.doesNotMatch(
+      preLoop,
+      /TAGGED=(all|partial)\b/,
+      `${dir}: only the post-loop re-derivation may write TAGGED=all/partial — a value written before the reconcile is exactly what the re-derivation exists to replace`,
+    )
+
+    // --- Executable: the injector's diagnostic survives the re-derivation. ---
+    // The injector failed AND the branch is observably untagged. The report owes both: WHAT the
+    // branch carries (only the re-derivation can see that) and WHY the injection stopped (only the
+    // injector can). Clobbering either leaves the next reader to re-derive it.
+    const diagnosed = runPushBlock(block, { deleteRemoteBranch: true, injectorFails: true })
+    assert.equal(
+      diagnosed.tagged,
+      'partial',
+      `${dir}: an injector failure that leaves untagged commits must re-derive to partial`,
+    )
+    assert.match(
+      diagnosed.tagNote,
+      /commits on this branch still carry no \[#7\]/,
+      `${dir}: the note must carry the re-derivation's own observation (note: ${diagnosed.tagNote})`,
+    )
+    assert.match(
+      diagnosed.tagInjectNote,
+      /injector exited non-zero/,
+      `${dir}: the injector's diagnostic must survive the re-derivation, not be overwritten by it (inject note: ${diagnosed.tagInjectNote})`,
+    )
+    // …and it must survive as its OWN field. Joined onto `TAG_NOTE`, neither clause is attributable
+    // any more — the reader cannot tell the observation from the cause — and the injector's text is
+    // free form, so no separator a join might pick is reserved against it.
+    assert.doesNotMatch(
+      diagnosed.tagNote,
+      /injector exited non-zero/,
+      `${dir}: the injector diagnostic is a separate field, never appended onto TAG_NOTE (note: ${diagnosed.tagNote})`,
+    )
+    // …and it carries the CAUSE only. A non-zero injector exit does not imply an untagged commit,
+    // and `TAGGED` is re-derived independently — `kept` above exits 0 and still leaves one — so a
+    // second clause guessing at the branch's state can be printed beside a `TAGGED=all` that
+    // contradicts it. That is the ambiguity the two-field split removed, re-entering as a value.
+    assert.doesNotMatch(
+      diagnosed.tagInjectNote,
+      /still\s+carries|untagged/i,
+      `${dir}: the injector diagnostic states its cause and asserts nothing about what the branch carries (inject note: ${diagnosed.tagInjectNote})`,
+    )
+
+    // Same fail-closed discipline PUSHED gets: every arm assigns the tagging outcome, including
+    // the confirmed arm that never injects. An unset value matches no arm of the report contract.
+    for (const [label, opts] of [
+      ['level with the remote', {}],
+      ['ahead of the remote', { commitsAhead: 2 }],
+      ['unreachable remote', { unreachableRemote: true }],
+    ]) {
+      assert.notEqual(
+        runPushBlock(block, opts).tagged,
+        '<UNSET>',
+        `${dir}: TAGGED must be assigned on every route (${label}) — the report branches on it`,
+      )
+    }
+
+    // --- Prose: the outcome contract, its honesty bound, and the non-goal. ---
+    assert.match(
+      reviewStack,
+      /Report\s+the\s+tagging\s+outcome\s+too/i,
+      `${dir}: the section must require the BLOCKED report to state the tagging outcome`,
+    )
+    assert.match(
+      reviewStack,
+      /Read\s+`TAGGED`\s+\*\*after\*\*\s+`PUSHED`\s+is\s+assigned/i,
+      `${dir}: the tagging outcome must be read after PUSHED — a tag on a commit that never left the worktree is not an outcome`,
+    )
+    for (const value of ['all', 'partial', 'skipped']) {
+      assert.match(
+        reviewStack,
+        new RegExp(`\`TAGGED=${value}\``),
+        `${dir}: the report contract must give TAGGED=${value} its own statement`,
+      )
+    }
+    // The honesty bound. The defect that motivated this change was a run reporting a red CI check
+    // it never observed; the replacement must state the real cost and stay project-agnostic.
+    // Slice the paragraph and assert INSIDE it, rather than over a character-distance window: a
+    // prettier reflow moves the two clauses apart without changing a word, and a gate that reds on
+    // that teaches the next editor to fight the formatter instead of reading the rule.
+    const honestyAt = reviewStack.indexOf('Say what an untagged commit actually costs')
+    const honestyEnd = reviewStack.indexOf('**Not a goal: retro-tagging', honestyAt)
+    assert.ok(
+      honestyAt >= 0 && honestyEnd > honestyAt,
+      `${dir}: the section must carry the untagged-commit honesty bound as its own paragraph`,
+    )
+    const honesty = reviewStack.slice(honestyAt, honestyEnd)
+    assert.match(
+      honesty,
+      /no\s+commit-message\s+check\s+in\s+CI/i,
+      `${dir}: the honesty bound must condition on whether the project runs a commit-message check at all`,
+    )
+    assert.match(
+      honesty,
+      /not\s+a\s+red\s+check/i,
+      `${dir}: without such a check an untagged commit is a traceability gap, not a red check`,
+    )
+    assert.doesNotMatch(
+      reviewStack,
+      /commitlint/i,
+      `${dir}: these skills ship to every project — name the class of check, never one project's tool`,
+    )
+    // The no-force rule's justification used to rest on "nothing here rewrites history", which the
+    // injection makes false. Correct the reasoning rather than dropping the rule: the injection is
+    // bounded to unpublished commits, so a rejected push still means the REMOTE moved.
+    assert.doesNotMatch(
+      reviewStack,
+      /None\s+of\s+these\s+routes\s+rewrote\s+history/i,
+      `${dir}: the no-force justification must not claim this route rewrites nothing — the tag injection does`,
+    )
+    // …and the replacement must be bounded to what the shipped guard actually enforces. "Rewrites
+    // only commits origin has never seen" is itself false on a DIVERGED remote, where the injector
+    // rewrites commits origin also holds — safely, because nothing on this route pushes over them.
+    // A justification that overclaims is the same defect one level up from the one it replaced.
+    // The bound must carry its PREMISE in the same sentence: an unconditional "never rewrites a
+    // commit origin's tip is built on" is false on a force-pushed remote, where the advertised tip
+    // is not contained here and the guard is inert by design.
+    assert.match(
+      reviewStack,
+      /where\s+origin\S*\s+advertised\s+tip\s+is\s+contained[\s\S]{0,120}?never\s+rewrites\s+a\s+commit\s+that\s+tip\s+is\s+built\s+on/i,
+      `${dir}: the no-force justification must bound the rewrite to what the containment guard enforces, premise included`,
+    )
+    assert.match(
+      reviewStack,
+      /diverged\*\*[\s\S]{0,400}?stays\s+\*\*local\*\*/i,
+      `${dir}: the justification must name the diverged case, where origin does hold commits the injection rewrites`,
+    )
+    assert.match(
+      reviewStack,
+      /§PARTIAL-route publication borrows this same push procedure/i,
+      `${dir}: the routes-that-share-this-block walk must include PARTIAL, whose T3 conjunct reads the tagging outcome`,
+    )
+    assert.match(
+      reviewStack,
+      /skips\s+commits\s+by\s+\*\*patch\s+id\*\*/i,
+      `${dir}: the section must say WHY the outcome is re-derived — rebase drops by patch id, which ignores the message`,
+    )
+    // Three of the four `partial` arms observed nothing — they record `tag state unverifiable:`.
+    // A contract that glosses `partial` as "some commit is untagged" makes the reader assert a
+    // defect the block never saw, which is the same class of invention as an unobserved red build.
+    assert.match(
+      reviewStack,
+      /\*\*or\*\*\s+the\s+state\s+could\s+not\s+be\s+verified/i,
+      `${dir}: the partial contract must separate an observed untagged commit from an unverifiable state`,
+    )
+    // …and it must account for the injector diagnostic as a field of its own, including what that
+    // field does NOT license: it says why the injection stopped, never what the branch carries, so
+    // a reader must not upgrade it into an assertion about a specific commit. Assert over the PROSE
+    // only — with the fenced blocks stripped. The shipped shell assigns these strings verbatim, so
+    // a regex over the whole file matches the code whether the contract is written or deleted, and
+    // a contract gate that cannot fail for the reason it names gates nothing.
+    const prose = reviewStack.replace(/```[\s\S]*?```/g, '')
+    assert.match(
+      prose,
+      /`\$TAG_INJECT_NOTE`\s+is\s+a\s+\*\*second,\s+separate\s+field\*\*/i,
+      `${dir}: the report contract must give the injector diagnostic its own field, not a clause appended to TAG_NOTE`,
+    )
+    assert.match(
+      prose,
+      /never\s+merge\s+the\s+two\s+into\s+one\s+string/i,
+      `${dir}: the contract must forbid joining the two notes — merged, neither clause is attributable and the reader cannot tell the observation from the cause`,
+    )
+    assert.match(
+      prose,
+      /state\s+it\s+as\s+the\s+\*\*cause\*\*\s+alongside\s+the\s+observation,\s+never\s+in\s+place\s+of\s+one/i,
+      `${dir}: the contract must bound what the injector diagnostic licenses — a cause, never an observation about a commit`,
+    )
+    // …and what an EMPTY one means. The field was promoted into the report contract without the
+    // ordinary path ever assigning it — the confirmed arm does not even initialise it — so a named
+    // field that is blank on every healthy run reads as a diagnostic the reporter dropped. The
+    // contract closes that, not a new assignment: an absent cause is absent, not an empty one.
+    assert.match(
+      prose,
+      /unset\s+or\s+empty\s+on\s+every\s+ordinary\s+outcome/i,
+      `${dir}: the contract must say the injector diagnostic is normally absent, so an unfilled field is not read as a dropped diagnostic`,
+    )
+    // BOS-860 extension round 1. The `TAGGED=all` bullet closed with a categorical "Nothing further
+    // is owed", while the rule that owes `$TAG_INJECT_NOTE` sits three paragraphs later — so a
+    // reporter reading the bullet list top-down on the `all` path drops the injector diagnostic
+    // entirely. That combination is real, not hypothetical: a failed rollback or a benign non-zero
+    // exit can end with every surviving commit tagged, because the reconcile drops the rewritten
+    // copies as patch-identical. Assert INSIDE the bullet — the whole defect was location, so a
+    // file-wide match would pass on the far-away paragraph that was already there.
+    const allBulletAt = prose.indexOf('- `TAGGED=all`')
+    const partialBulletAt = prose.indexOf('- `TAGGED=partial`', allBulletAt)
+    assert.ok(
+      allBulletAt >= 0 && partialBulletAt > allBulletAt,
+      `${dir}: the report contract must state TAGGED=all before TAGGED=partial`,
+    )
+    assert.match(
+      prose.slice(allBulletAt, partialBulletAt),
+      /Nothing\s+further\s+is\s+owed\s+beyond\s+`\$TAG_INJECT_NOTE`\s+where\s+it\s+is\s+non-empty/i,
+      `${dir}: the TAGGED=all bullet may not close categorically — a non-empty injector diagnostic is still owed on that arm`,
+    )
+    // …and the compounding half: the re-derivation CLEARS `TAG_NOTE` on that arm, so "report it
+    // beside $TAG_NOTE" names no companion there. The contract must say where the line goes.
+    assert.match(
+      prose,
+      /re-derivation\s+clears\s+`TAG_NOTE`\s+there[\s\S]{0,200}?report\s+`\$TAG_INJECT_NOTE`\s+under\s+the\s+`TAGGED=all`\s+statement\s+itself/i,
+      `${dir}: the contract must say where the injector diagnostic goes on the all arm, where TAG_NOTE is empty`,
+    )
+    // The vacuous `all`: an emptied range satisfies the predicate without any commit carrying a
+    // tag. The bullet must send the reporter to `$TAG_NOTE` for it rather than leave the reader to
+    // guess which of the two `all`s they are holding — the block now records the difference there.
+    assert.match(
+      prose.slice(allBulletAt, partialBulletAt),
+      /vacuously\*{0,2},?\s+and\s+the\s+block\s+records[\s\S]{0,120}?`\$TAG_NOTE`[\s\S]{0,200}?never\s+"all\s+commits\s+are\s+tagged"/i,
+      `${dir}: the TAGGED=all bullet must point at $TAG_NOTE for the emptied-range case, and forbid reporting it as an observed tag`,
+    )
+    assert.match(
+      reviewStack,
+      /Not\s+a\s+goal:\s+retro-tagging/i,
+      `${dir}: the section must scope out retro-tagging commits origin already holds`,
+    )
+    assert.match(
+      reviewStack,
+      /Every\s+reader\s+of\s+this\s+block\s+gets\s+the\s+injection/i,
+      `${dir}: the section must walk the routes that share this block, and what survives the retry loop`,
+    )
+    // …and that walk may not overstate what the re-derivation buys. Re-reading the branch after the
+    // loop is what makes `all` an OBSERVATION rather than the injector's pre-loop word — but the
+    // emptied-range arm reaches `all` with nothing left carrying anything, so the token alone is not
+    // the claim that the tag survived. The paragraph must send the reader to `$TAG_NOTE` to tell the
+    // two apart, exactly as the report bullet above already does; asserting the tag from the token
+    // alone is the same invented success the rest of this section exists to forbid.
+    // Windows sized with real headroom, not to the byte: pinned at the distance the prose happened
+    // to have on the day it was written, one added clause reds this with a message alleging a
+    // semantic regression that has not happened, and the next editor learns to widen gates rather
+    // than read them.
+    assert.match(
+      reviewStack,
+      /re-derivation\s+after\s+the\s+loop[\s\S]{0,900}?vacuously[\s\S]{0,700}?`\$TAG_NOTE`\s+empty/i,
+      `${dir}: the re-derivation paragraph must pair TAGGED=all with $TAG_NOTE — an emptied range reaches all without any commit carrying the tag`,
+    )
+    // The banned claim, not one banned sentence. `pushed` and a `that` are the paraphrases the
+    // original wording is one edit away from, so a pin that forbids only the exact prior string
+    // stops at the first spelling — the very failure the sibling commit's own preamble condemns.
+    assert.doesNotMatch(
+      reviewStack,
+      /`all`\s+means\s+(?:that\s+)?the\s+(?:pushed\s+)?branch\s+carries\s+the\s+tag/i,
+      `${dir}: the re-derivation paragraph may not claim TAGGED=all proves the branch carries the tag — the emptied-range arm falsifies it`,
+    )
+  }
+})
+
+test('BOS-860 ext1: the rescue ref stays unique when HEAD will not resolve (both mirrors)', () => {
+  // The rescue ref is the last mechanism guaranteeing these commits leave the worktree, and its
+  // SUFFIX is the whole of what makes it unique — a name origin already advertises is rejected as
+  // non-fast-forward, and an empty suffix builds `refs/heads/<branch>-blocked-`, which git refuses
+  // outright. The block therefore captures the suffix on its own and falls back to `$$`. Nothing
+  // executable covered that fallback: deleting the fallback line changed no result anywhere in this
+  // file, because no fixture ever made the `rev-parse` behind it fail.
+  for (const dir of BUILD_MIRRORS) {
+    const block = pushBlockOf(reviewStackFor(dir))
+    // An unreachable remote is the shape that exhausts the retry loop, so it is the only one that
+    // reaches the rescue path at all. The rescue push fails too — the remote is gone — but the ref
+    // the block ASKED for is what is under test, and the shim logs that argv either way.
+    const healthy = runPushBlock(block, { unreachableRemote: true })
+    assert.equal(
+      healthy.pushed,
+      'no',
+      `${dir}: an unreachable remote must exhaust the loop and reach the rescue path`,
+    )
+    assert.match(
+      healthy.rescueRef ?? '<none>',
+      /^feat-blocked-[0-9a-f]{4,}$/,
+      `${dir}: with HEAD readable the rescue ref carries the short SHA (asked for: ${healthy.rescueRef})`,
+    )
+
+    // …and with that read failing, the ref must still be a NAME: non-empty suffix, and unique, or
+    // the fallback has bought nothing the empty string did not already give.
+    const noShortSha = runPushBlock(block, { unreachableRemote: true, shortHeadFails: true })
+    assert.match(
+      noShortSha.rescueRef ?? '<none>',
+      /^feat-blocked-\S+$/,
+      `${dir}: an unreadable HEAD must not leave the rescue ref with an empty suffix — refs/heads/<branch>-blocked- is not a ref git will create (asked for: ${noShortSha.rescueRef})`,
+    )
+    const secondRun = runPushBlock(block, { unreachableRemote: true, shortHeadFails: true })
+    assert.notEqual(
+      noShortSha.rescueRef,
+      secondRun.rescueRef,
+      `${dir}: the fallback suffix must be UNIQUE per run — a constant one is rejected as non-fast-forward the second time it is needed (both runs asked for: ${noShortSha.rescueRef})`,
+    )
+  }
+})
+
+test('BOS-860 ext2: an emptied range is reported as vacuous, not as an observed tag (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const block = pushBlockOf(reviewStackFor(dir))
+    // The reconcile drops every commit this run made, so the re-derivation scans an EMPTY range.
+    // `grep -qv` finds no untagged subject there, which is how an emptied branch reaches the same
+    // `all` the fully-tagged one does — the two must not be byte-identical afterwards.
+    const dropped = runPushBlock(block, { reconcileDropsRange: true })
+    assert.ok(
+      dropped.injectArgv.length > 0,
+      `${dir}: the fixture must reach the injector, or the re-derivation never runs at all`,
+    )
+    assert.equal(
+      dropped.pushed,
+      'yes',
+      `${dir}: the fixture must reconcile and push, or the emptied range is never re-derived (tagged=${dropped.tagged}, note=${dropped.tagNote})`,
+    )
+    assert.deepEqual(
+      dropped.remoteSubjects.filter((s) => s.includes('[#7]')),
+      [],
+      `${dir}: the fixture is only meaningful while the branch origin ends up holding carries no tag (${dropped.remoteSubjects.join(' | ')})`,
+    )
+    assert.equal(
+      dropped.tagged,
+      'all',
+      `${dir}: an empty range satisfies the all predicate vacuously — that is the value under test (note=${dropped.tagNote})`,
+    )
+    assert.match(
+      dropped.tagNote,
+      /no commits in the range/i,
+      `${dir}: an emptied range must SAY so in TAG_NOTE — otherwise the report asserts a tag on commits that are no longer there (got: ${dropped.tagNote})`,
+    )
+    // The control the note is meant to be distinguishable FROM: commits really rewritten, really
+    // tagged, really pushed. `<UNSET>` is the trap's rendering of an empty `TAG_NOTE`.
+    const genuine = runPushBlock(block, { deleteRemoteBranch: true })
+    assert.equal(
+      genuine.tagged,
+      'all',
+      `${dir}: the control must reach all by observation, not vacuously (note=${genuine.tagNote})`,
+    )
+    assert.ok(
+      genuine.remoteSubjects.some((s) => s.includes('[#7]')),
+      `${dir}: the control must actually publish a tagged commit (${genuine.remoteSubjects.join(' | ')})`,
+    )
+    assert.equal(
+      genuine.tagNote,
+      '<UNSET>',
+      `${dir}: an observed all leaves TAG_NOTE empty, so the emptied-range note cannot be read as ordinary (got: ${genuine.tagNote})`,
     )
   }
 })
@@ -6045,6 +7697,792 @@ test('BOS-758 repair P2e: the degraded reviewer is clamped against the live dead
       section,
       /non-positive clamp[\s\S]{0,200}`bs-review capped:`[\s\S]{0,60}BLOCKED/i,
       `${dir}: a non-positive reviewer clamp must fail closed through capped/BLOCKED`,
+    )
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOS-842: `PARTIAL`, the fourth terminal state.
+//
+// These tests live at the END of the file on purpose: they consume `readReviewStack` /
+// `reviewStackFor` / `sliceSection`, and the first two are `const` arrows declared mid-file, so
+// registering the tests below their declarations is the only placement with no TDZ hazard.
+//
+// They are deliberately ADJACENT to the BOS-240 test rather than folded into it. BOS-240 byte-pins
+// the phrases this ticket must not disturb (`BLOCKED, never REVIEW_READY`,
+// `REVIEW_READY only with no deferred required item`); keeping that test literally untouched is
+// what proves the carve-out was attached, not substituted. BOS-240 also iterates `RESIDENT_BODIES`
+// (canonical only); everything below iterates `BUILD_MIRRORS` so a hand-edit of the plugin mirror,
+// or a skipped `make copy-skills`, trips.
+const EPIC_CORE = 'services/boss/internal/skillinstall/skills/boss-epic'
+const EPIC_MIRRORS = [EPIC_CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-epic']
+const buildBody = (dir) => fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+
+test('BOS-842: the resident state list declares four states and names PARTIAL’s three conjuncts (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const body = buildBody(dir)
+    // Slice the state list rather than whole-file matching. `partial` appears a dozen times
+    // elsewhere in this body (the transport preflight's `partial` capability report, "partial
+    // implementation is not complete", resume classification), so a whole-file `/PARTIAL/` would
+    // stay green with the state itself deleted — the exact defect this ticket's own risk section
+    // calls inertness.
+    const states = sliceSection(
+      body,
+      'Four terminal states, nothing else:',
+      'An existing PR/branch',
+      `${dir}/SKILL.md`,
+    )
+    assert.doesNotMatch(
+      body,
+      /Three terminal states/,
+      `${dir}: the body must not still declare three terminal states`,
+    )
+    for (const state of ['REVIEW_READY', 'BLOCKED', 'PARTIAL', 'NO_CHANGE']) {
+      assert.match(
+        states,
+        new RegExp(`^- \`${state}\``, 'm'),
+        `${dir}: the terminal-state list must carry a \`${state}\` bullet`,
+      )
+    }
+    // The bullet itself, not the list around it: a reader who never opens a reference must learn
+    // what EARNS this state, or an unattended agent picks the state that reads as progress and
+    // `BLOCKED` empties out. All three conjuncts, in the one bullet.
+    const partial = sliceSection(states, '- `PARTIAL`', '- `NO_CHANGE`', `${dir}/SKILL.md states`)
+    assert.match(
+      partial,
+      /certified\s+by\s+the\s+acceptance-criteria\s+lens/,
+      `${dir}: the PARTIAL bullet must name T1 — a criterion certified by the acceptance-criteria lens, not self-asserted`,
+    )
+    assert.match(
+      partial,
+      /branch\s+green/,
+      `${dir}: the PARTIAL bullet must name T2 — the branch is green`,
+    )
+    assert.match(
+      partial,
+      /every\s+deferred\s+required\s+item\s+is\s+an\s+unsatisfied\s+in-scope\s+criterion/,
+      `${dir}: the PARTIAL bullet must name T3 — every deferred required item is an unsatisfied in-scope criterion`,
+    )
+    // …and the two facts that distinguish it from REVIEW_READY at a glance.
+    assert.match(
+      partial,
+      /stays\s+\*\*In Progress\*\*/,
+      `${dir}: the PARTIAL bullet must say the ticket stays In Progress`,
+    )
+    assert.match(
+      partial,
+      /never\s+`please-review`/,
+      `${dir}: the PARTIAL bullet must forbid the please-review label`,
+    )
+  }
+})
+
+test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const body = buildBody(dir)
+    // The whole risk of this ticket is that the carve-out is written as a general softening. Slice
+    // the Hard-rules bullet and assert the SCOPING WORDING, not the presence of the token
+    // `PARTIAL` — a token test passes on prose that says "any deferred required item may route
+    // PARTIAL", which is the widening this assertion exists to red.
+    const rule = sliceSection(
+      body,
+      '- **Required-deferred ⇒ BLOCKED, never REVIEW_READY**',
+      '- Never merge. Terminal success',
+      `${dir}/SKILL.md`,
+    )
+    assert.match(
+      rule,
+      /BLOCKED, never REVIEW_READY/,
+      `${dir}: the required-deferred rule must keep its BOS-240 phrasing verbatim`,
+    )
+    assert.match(
+      rule,
+      /\*\*single\*\*\s+exception\s+is\s*\n?\s*`PARTIAL`/,
+      `${dir}: PARTIAL must be stated as the SINGLE exception, not one of several`,
+    )
+    assert.match(
+      rule,
+      /available\s+\*\*only\*\*\s+when\s+the\s+deferred\s+required\s+items\s+are\s*\n?\s*\*\*exclusively\*\*\s+unsatisfied\s+in-scope\s+acceptance\s+criteria/,
+      `${dir}: the carve-out must be scoped to EXCLUSIVELY unsatisfied in-scope acceptance criteria`,
+    )
+    // The negative half: the three classes that may never route PARTIAL are named on the same
+    // bullet. Deleting this sentence is how the carve-out silently becomes general.
+    assert.match(
+      rule,
+      // Windows are generous on purpose: the assertion is that all four clauses survive IN ORDER
+      // on this bullet, not that nobody may insert a qualifier between them. A tight window here
+      // reds on an innocuous rewording while catching no widening the ordering does not already.
+      /open\s+must-fix[\s\S]{0,240}API-version\s+bump\s+or\s+transform[\s\S]{0,160}red\s+branch[\s\S]{0,160}forces\s*\n?\s*BLOCKED\s+—\s+never\s*\n?\s*`PARTIAL`/,
+      `${dir}: the rule must still force BLOCKED for a must-fix, a missing API-version transform, or a red branch`,
+    )
+    // T1 on the bullet that DEFINES the exception. Without it the carve-out reads as "defer every
+    // criterion and still land PARTIAL" — a 0-of-N universal soft landing that is strictly worse
+    // than BLOCKED, because it publishes a ready PR asserting progress that never happened.
+    assert.match(
+      rule,
+      /≥1\s+criterion\s+is\s+lens-certified/,
+      `${dir}: the carve-out must require at least one CERTIFIED-satisfied criterion (T1)`,
+    )
+    assert.match(
+      rule,
+      /`0\/<total>`\s+is\s+BLOCKED/,
+      `${dir}: the carve-out must say outright that a 0-of-N run is BLOCKED, never PARTIAL`,
+    )
+    // The widening detector proper. This phrase is absent from the bullet today and is exactly the
+    // wording a softening edit reaches for.
+    assert.doesNotMatch(
+      rule,
+      /any\s+deferred\s+required\s+item/i,
+      `${dir}: the carve-out must never be widened to "any deferred required item"`,
+    )
+    // BOS-240's Step 12 pointer phrase is unchanged, and PARTIAL is attached as the else-branch
+    // BELOW it — not substituted for it.
+    const pointers = sliceSection(body, '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
+    assert.match(
+      pointers,
+      /REVIEW_READY only with no deferred required item/,
+      `${dir}: the Steps 8-12 pointer must still forbid REVIEW_READY with any deferred required item`,
+    )
+    assert.match(
+      pointers,
+      /else\s+`PARTIAL`\s+when\s+every\s*\n?\s*deferred\s+required\s+item\s+is\s+an\s+unsatisfied\s+in-scope\s+criterion[\s\S]{0,48}on\s+a\s+green\s+branch/,
+      `${dir}: the Steps 8-12 pointer must route PARTIAL only on the scoped condition`,
+    )
+    // T1 belongs HERE too, not only on the state bullet and the Hard rules. This pointer is the
+    // resident text an agent reads at the moment it picks the terminal state, and T3 + T2 without
+    // T1 reads as "defer every criterion, stay green, ship PARTIAL" — the 0-of-N soft landing.
+    assert.match(
+      pointers,
+      /≥1\s+lens-certified/,
+      `${dir}: the Steps 8-12 pointer must carry T1's floor — at least one lens-certified criterion`,
+    )
+    // The Step 9 pointer in the SAME resident block. Its "assert **no required item was deferred**,
+    // then ready the PR" predates PARTIAL and contradicts it: on the non-`capped` PARTIAL path the
+    // assert fails, the agent skips the ready, and T2 — which neither finalize-and-stop.md nor
+    // review-stack.md can read on a draft — becomes unestablishable, so the run falls to BLOCKED.
+    // That is round 1's inertness defect reappearing on the OTHER route, from the resident summary.
+    assert.match(
+      pointers,
+      /no required item was deferred\*\*[\s\S]{0,60}`PARTIAL`[\s\S]{0,60}ready/,
+      `${dir}: the Step 9 pointer must carve PARTIAL out of its no-deferred-item assert and still ready the PR`,
+    )
+    // ...and it must point at PARTIAL's GATE, not name PARTIAL as the automatic else. A bare
+    // "(else `PARTIAL`)" is the unscoped carve-out — readable as "any deferred required item lands
+    // PARTIAL", which is the universal soft landing the state exists to refuse. The scope itself
+    // lives in Step 12's pointer below and in Step 9 proper; this word is the pointer at it.
+    assert.match(
+      pointers,
+      /`PARTIAL`\s+gate/,
+      `${dir}: the Step 9 pointer must name PARTIAL's GATE — an unscoped "else PARTIAL" reads as a general softening`,
+    )
+  }
+})
+
+test('BOS-842: Step 12’s printed output enumerates all four states (body + reference, both mirrors)', () => {
+  // A run prints exactly one of these. An enumeration that still lists three is how a PARTIAL run
+  // prints BLOCKED — the state would exist everywhere except on the one line a human reads.
+  const allFour = /`REVIEW_READY`\s*\/\s*`PARTIAL`\s*\/\s*`BLOCKED`\s*\/\s*`NO_CHANGE`/
+  for (const dir of BUILD_MIRRORS) {
+    const pointers = sliceSection(
+      buildBody(dir),
+      '## Steps 8-12:',
+      '## Cron gate',
+      `${dir}/SKILL.md`,
+    )
+    assert.match(
+      pointers,
+      allFour,
+      `${dir}: the resident Step 12 pointer must print one of all four terminal states`,
+    )
+    const step12 = finalizeAndStop(dir).slice(finalizeAndStop(dir).indexOf('## Step 12:'))
+    assert.ok(step12.length > 0, `${dir}: finalize-and-stop.md must carry a Step 12`)
+    assert.match(
+      step12,
+      allFour,
+      `${dir}: Step 12's printed output line must enumerate all four terminal states`,
+    )
+  }
+})
+
+test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label and proof (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const ref = finalizeAndStop(dir)
+    // Section-sliced, because each of these sentences is only correct in its own step: a
+    // "never .inReview" clause sitting in Step 12 would leave Step 9 free to ready-and-move the
+    // ticket, and the whole point of PARTIAL is that the ticket stays visibly incomplete.
+    const step9 = sliceSection(ref, '## Step 9:', '## Step 10:', `${dir}/${FINALIZE_REF}`)
+    assert.match(
+      step9,
+      /no required item was deferred/,
+      `${dir}: Step 9 must keep the BOS-240 deferral gate`,
+    )
+    // Anchor each conjunct on its OPERATIVE phrase, the way T3 already is. A window regex ending on
+    // a bare keyword (`green`, `independently certified`) spans a negation and still matches: the
+    // window swallows "the branch **need not** be green" and lands on the `green` after it, so the
+    // one regression these pins exist to catch — a conjunct SOFTENED rather than deleted — is
+    // exactly the one they miss, and a red-branch PARTIAL ships with the suite green.
+    for (const [label, re] of [
+      [
+        'T1 (a certified criterion)',
+        /\*\*T1\*\*\s+—\s+at\s+least\s+one\s+in-scope\s+acceptance\s+criterion\s+is\s+satisfied\s+\*\*and\s+independently\s+certified\*\*/,
+      ],
+      ['T2 (a green branch)', /\*\*T2\*\*\s+—\s+the\s+branch\s+is\s+\*\*green\*\*/],
+      [
+        'T3 (only unsatisfied criteria deferred)',
+        /\*\*T3\*\*[\s\S]{0,200}\*\*only\*\*\s+an\s+unsatisfied\s+in-scope\s+acceptance\s+criterion/,
+      ],
+    ]) {
+      assert.match(step9, re, `${dir}: the Step 9 PARTIAL gate must state ${label}`)
+    }
+    // Belt and braces on the same failure: no conjunct may acquire a softening qualifier anywhere
+    // in the gate. `assert.match` proves the strong phrase is PRESENT; only this proves a weaker
+    // one was not added beside it.
+    assert.doesNotMatch(
+      step9,
+      /\*\*T[123]\*\*[\s\S]{0,300}\b(need\s+not|does\s+not\s+have\s+to|is\s+not\s+required\s+to|regardless\s+of)\b/,
+      `${dir}: no Step 9 PARTIAL conjunct may be softened with a "need not" / "regardless of" qualifier`,
+    )
+    // T1's POSITIVE form, pinned here and not only in review-stack.md. Step 9 is the copy this
+    // skill's own T3 defers to on the required-item list, and the copy SKILL.md's Hard-rules bullet
+    // points at — so an absence-shaped T1 here is the governing wording, whatever review-stack says.
+    // `independently certified` alone does not distinguish the two forms: the pre-remediation text
+    // ("emitted no acceptance-criteria must-fix naming it") matched it too, and that reading
+    // certifies EVERY criterion on a branch no lens ever read — which is exactly a run-generated
+    // `sentinel capped 1`. Each clause below is a separate half of the fix, so pin them separately.
+    for (const [label, re] of [
+      [
+        'certification is a positive record, never an absence',
+        /certification\s+is\s+a\s+[_*]{0,2}positive[_*]{0,2}\s+record[\s\S]{0,16}never\s+an\s+absence/,
+      ],
+      [
+        'the certification RAN over the full supplied criteria list',
+        /certification\s+[_*]{0,2}ran[_*]{0,2}\s+over\s+the\s+full\s+supplied\s+criteria\s+list/,
+      ],
+      [
+        'the verdict was authored by a reviewer',
+        /verdict\s+a\s+[_*]{0,2}reviewer[_*]{0,2}\s+authored/,
+      ],
+      [
+        'a self-generated capped verdict fails T1 outright',
+        /generated\s+for\s+itself\s+fails\s+T1\s+by\s+construction/,
+      ],
+      ['zero satisfied criteria is BLOCKED, never PARTIAL', /is\s+BLOCKED,\s+never\s+`PARTIAL`/],
+    ]) {
+      assert.match(
+        step9,
+        re,
+        `${dir}: Step 9's T1 must require ${label} — an absence test certifies an unreviewed branch`,
+      )
+    }
+    // T2 is defined at a gate the `capped` route never reaches. Saying so here is what stops an
+    // agent inheriting a green it never measured; "unmeasured is not green" is the whole rule.
+    assert.match(
+      step9,
+      /Unmeasured\s+is\s+not\s+green/,
+      `${dir}: Step 9 must say a capped-route PARTIAL takes T2's reading itself, not inherit it`,
+    )
+    assert.match(
+      step9,
+      /\*\*never\*\*\s+move\s+the\s+ticket\s+to\s+`\.inReview`/,
+      `${dir}: Step 9 must forbid moving a PARTIAL ticket to the .inReview role`,
+    )
+    assert.match(
+      step9,
+      /\*\*never\*\*\s+add\s+`please-review`/,
+      `${dir}: Step 9 must forbid the please-review label on a PARTIAL PR`,
+    )
+    assert.match(
+      step9,
+      /leave\s+the\s+ticket\s*\n?\s*in\s+the\s+`\.inProgress`\s+role/,
+      `${dir}: Step 9 must leave a PARTIAL ticket in the .inProgress role`,
+    )
+    // Step 11 is REVIEW_READY-only. Proof captured off a deliberately incomplete slice is evidence
+    // of a finished feature — the single most misleading artifact this pipeline can publish.
+    const step11 = sliceSection(ref, '## Step 11:', '## Step 12:', `${dir}/${FINALIZE_REF}`)
+    assert.match(
+      step11,
+      /Skip\s*\n?\s*entirely\s+for[^.]*`PARTIAL`/,
+      `${dir}: Step 11's skip list must contain PARTIAL`,
+    )
+    // Step 12's pick, not just its printed line.
+    const step12 = ref.slice(ref.indexOf('## Step 12:'))
+    assert.match(
+      step12,
+      /`PARTIAL`\s+is\s+the\s+single\s+scoped\s+exception[\s\S]{0,320}T1\/T2\/T3\s+all\s+held/,
+      `${dir}: Step 12 must pick PARTIAL only when the Step 9 gate's three conjuncts held`,
+    )
+  }
+})
+
+test('BOS-842: review-stack owns the PARTIAL publication route and writes the body itself (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = readReviewStack(dir)
+    assert.ok(
+      reviewStack.indexOf('### PARTIAL-route publication') >= 0,
+      `${dir}: review-stack.md must carry the PARTIAL-route publication section`,
+    )
+    const section = sliceSection(
+      reviewStack,
+      '### PARTIAL-route publication',
+      '### BLOCKED-route publication',
+      `${dir}/references/review-stack.md`,
+    )
+    // The inertness gate, mirroring the BLOCKED route's own `gh pr edit --body-file` assertion
+    // above: `capped` never reaches Step 7, the sole place that writes a PR body, so a PARTIAL
+    // route that does not write the body itself produces a state name with no artifact behind it
+    // while every other gate here goes green.
+    //
+    // Assert against the section's COMMAND FENCES, not its prose. The section also *describes* the
+    // mechanism ("with the same `gh pr edit --body-file` mechanism Step 7 uses"), and a match on
+    // the whole section is satisfied by that sentence alone — so deleting `--body-file "$PR_BODY"`
+    // from the command that actually runs would leave this gate green while the route publishes a
+    // title with no body behind it. Prose is a claim; the fence is the artifact.
+    const fenceList = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
+    const fences = fenceList.join('\n')
+    assert.ok(
+      fences.length > 0,
+      `${dir}: §PARTIAL-route publication must carry runnable bash fences, not prose alone`,
+    )
+    assert.match(
+      fences,
+      /gh pr edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$PR_BODY"/,
+      `${dir}: the PARTIAL route must write the PR body itself, in a real command — it never reaches Step 7`,
+    )
+    assert.match(
+      section,
+      /`Partial: <satisfied>\/<total> acceptance criteria`/,
+      `${dir}: the PARTIAL body must carry the <satisfied>/<total> count line`,
+    )
+    assert.match(
+      section,
+      /\*\*full\*\*\s+criteria\s+checklist[\s\S]{0,320}`- \[x\]`[\s\S]{0,240}`- \[ \]`/,
+      `${dir}: the PARTIAL body must carry the full - [x]/- [ ] checklist, none elided`,
+    )
+    assert.match(
+      section,
+      /One\s+line\s+per\s+`- \[ \]`[\s\S]{0,200}`file:line`\s+precision/,
+      `${dir}: every open criterion needs a file:line reason — a bare unticked box hands the next reader nothing`,
+    )
+    assert.match(
+      section,
+      /`## Cross-model review`\s+and\s+`## Review coverage`\s+sections/,
+      `${dir}: the PARTIAL body must retain both mandatory review sections — an absent one reads as full coverage`,
+    )
+    assert.match(
+      section,
+      /\*\*plus\s+the\s+PR\s+URL\*\*/,
+      `${dir}: the matching ticket comment must carry the PR URL`,
+    )
+    // Step 7 is the sole place that CREATES a PR, READIES it and PUSHES, and Step 9 is the sole
+    // place that measures the branch green. `capped` reaches none of them. A route that only knows
+    // how to `gh pr edit` therefore dead-ends on the common fresh workspace — the same inertness
+    // defect the section's own opening paragraph exists to prevent, one level down — and a route
+    // that never readies leaves T2 unreadable on a draft whose CI is expected to be partial.
+    assert.match(
+      section,
+      /gh pr create --base/,
+      `${dir}: the PARTIAL route must create the PR when none exists — Step 7's create arm never ran`,
+    )
+    assert.match(
+      section,
+      /gh pr ready\s+"?\$PR_NUMBER"?/,
+      `${dir}: the PARTIAL route must ready the PR itself — a draft cannot supply T2's green reading`,
+    )
+    // Ordering, not mere presence. `gh pr create --body-file "$PR_BODY"` with `$PR_BODY` assembled
+    // AFTERWARDS is the same inertness one level further in: on the fresh workspace this arm exists
+    // to serve, the create fails on an unset variable and the route never reaches its `gh pr edit`.
+    // Step 7's own `PR_BODY="$(mktemp)"` cannot cover it — `capped` never reaches Step 7.
+    const bodyInit = section.search(/PR_BODY="?\$\(mktemp\)"?/)
+    const createAt = section.indexOf('gh pr create --base')
+    assert.ok(
+      bodyInit >= 0,
+      `${dir}: §PARTIAL-route publication must assemble $PR_BODY itself — Step 7's mktemp never runs on this route`,
+    )
+    assert.ok(
+      bodyInit < createAt,
+      `${dir}: $PR_BODY must be assembled BEFORE the gh pr create that consumes it, not after`,
+    )
+    // The same identifiers Step 7/Preflight set in EARLIER Bash calls, which do not persist. An
+    // empty $PR_NUMBER here sends a resume run down the create arm and fails it on "already exists".
+    assert.match(
+      section,
+      /PR_NUMBER="\$\{PR_NUMBER:-/,
+      `${dir}: the PARTIAL route must re-derive $PR_NUMBER — shell state does not survive between tool calls`,
+    )
+    assert.match(
+      section,
+      /SESSION_BRANCH="\$\{SESSION_BRANCH:-[\s\S]{0,200}BASE_BRANCH="\$\{BASE_BRANCH:-/,
+      `${dir}: the PARTIAL route must re-derive $SESSION_BRANCH and $BASE_BRANCH before the create arm uses them`,
+    )
+    assert.match(
+      section,
+      /gh pr edit[\s\S]{0,200}--title[\s\S]{0,120}\(partial <satisfied>\/<total>\)/,
+      `${dir}: the title suffix needs a named mechanism — a body-only write halves boss-epic condition (5)`,
+    )
+    assert.match(
+      section,
+      // Both flags and the PR it reads, without pinning argument ORDER: `gh pr checks --watch
+      // --fail-fast "$PR_NUMBER"` is the same command, and reddening on a reorder catches no
+      // regression. What must not drift is that the reading is taken, on THIS PR, and fails fast.
+      /gh pr checks(?=[\s\S]{0,60}\$PR_NUMBER)[\s\S]{0,60}--watch\s+--fail-fast/,
+      `${dir}: T2 must be MEASURED on this route — Step 9's green gate never ran`,
+    )
+    // The gate itself, restated where the route fires. All three conjuncts, plus the explicit
+    // refusal of the 0-of-N soft landing.
+    for (const [label, re] of [
+      ['T1', /\*\*T1[\s\S]{0,240}independently certified/],
+      ['T2', /\*\*T2[\s\S]{0,200}green/],
+      // Emphasis marker is `_only_` here and `**only**` in finalize-and-stop — nested inside an
+      // already-bold T3 lead the marker has to differ, so match either rather than pin the styling.
+      [
+        'T3',
+        /\*\*T3[\s\S]{0,240}[_*]{1,2}only[_*]{1,2}\s+an\s+unsatisfied\s+in-scope\s+acceptance\s+criterion/,
+      ],
+    ]) {
+      assert.match(section, re, `${dir}: §PARTIAL-route publication must re-check ${label} itself`)
+    }
+    assert.match(
+      section,
+      /satisfied\s+\*\*zero\*\*\s*\n?\s*criteria\s+is\s+`BLOCKED`,\s+never\s+`PARTIAL`/,
+      `${dir}: the route must refuse a 0-of-N run outright`,
+    )
+    // The failure edges: an unestablished conjunct, and a push that only reached the rescue path,
+    // both change the TERMINAL STATE, not merely the report.
+    assert.match(
+      section,
+      /§BLOCKED-route publication[\s\S]{0,120}`BLOCKED`\s+as\s+the\s+terminal\s+state/,
+      `${dir}: a failed conjunct must fall back to the BLOCKED route with BLOCKED as the terminal state`,
+    )
+    assert.match(
+      section,
+      /`PUSHED=rescue`\s+or\s+`PUSHED=no`\s+the\s+terminal\s+state\s+becomes\s+`BLOCKED`/,
+      `${dir}: an unpushed slice must become BLOCKED, not a PARTIAL nobody can fetch`,
+    )
+    // T1 must be a POSITIVE record, not an absence test. Two routes write a `sentinel capped 1`
+    // the run generated for ITSELF — the pre-dispatch floor route below and the degraded tier's
+    // did-not-report path — and on both of them no lens ever ran. Under an absence reading
+    // ("emitted no must-fix") every criterion on a wholly unreviewed branch certifies vacuously,
+    // and the capped arm routes EVERY capped verdict but `dispatch-failure` here, so PARTIAL would
+    // be publishable off a review that never happened. The two halves are what closes it.
+    // Match the CLAIM, not its punctuation: emphasis markers and the comma are free to move under a
+    // reword or a prettier reflow, and a gate that reds on a comma→em-dash edit costs a rewrite it
+    // was never meant to police. The windows are generous for the same reason.
+    assert.match(
+      section,
+      /certification\s+is\s+a\s+[_*]{0,2}positive[_*]{0,2}\s+record[\s\S]{0,16}never\s+an\s+absence/,
+      `${dir}: T1 must demand a positive certification record — an absence test certifies an unreviewed branch`,
+    )
+    assert.match(
+      section,
+      /generated[\s\S]{0,800}[_*]{0,2}fails\s+T1\s+by\s+construction/,
+      `${dir}: a self-generated capped verdict must fail T1 outright — no lens ran, so nothing certified`,
+    )
+    // T1's first half must ask for something boss-review actually emits. Its certification reports
+    // only the criteria the branch does NOT evidence, so a demand for a per-criterion "satisfied"
+    // reading names an artifact that does not exist: PARTIAL becomes unreachable, or the agent
+    // improvises the self-certification the same conjunct forbids two sentences later.
+    assert.match(
+      section,
+      /certification\s+[_*]{0,2}ran[_*]{0,2}\s+over\s+the\s+full\s+supplied\s+criteria\s+list/,
+      `${dir}: T1's positive half must be the certification RUN over the supplied list — a verifiable fact`,
+    )
+    assert.match(
+      section,
+      /verdict\s+a\s+[_*]{0,2}reviewer[_*]{0,2}\s+authored/,
+      `${dir}: T1 must require a reviewer-authored verdict — the half a self-generated capped verdict cannot supply`,
+    )
+    // T2 is read only AFTER the ready + both writes (a draft cannot supply it), so the red path
+    // must undo the partial title, body and do-not-merge marker before it reports BLOCKED —
+    // otherwise boss-epic condition (5) keeps holding the PR on a marker that is now false.
+    assert.match(
+      section,
+      /red\s+reading\s+must\s+[_*]{1,2}unwind[_*]{1,2}\s+before\s+it\s+reports/,
+      `${dir}: a red T2 must unwind the partial artifact — publication precedes the reading`,
+    )
+    assert.match(
+      fences,
+      /gh pr edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$BLOCKED_BODY"/,
+      `${dir}: the unwind needs a real command that rewrites title and body, not a described intent`,
+    )
+    // ...and `$BLOCKED_BODY` must be ASSEMBLED, before the write that consumes it. Naming a file in
+    // a `--body-file` that nothing ever creates is the unset-variable defect this section already
+    // names for `$PR_BODY`, three paragraphs up, reappearing on the one path that repairs a false
+    // PARTIAL claim: the unwind fails, the PR keeps the partial title, body and do-not-merge marker,
+    // and boss-epic condition (5) holds it on a marker that is now false.
+    const blockedInit = fences.search(/BLOCKED_BODY="?\$\(mktemp\)"?/)
+    const unwindAt = fences.search(/--body-file\s+"\$BLOCKED_BODY"/)
+    assert.ok(
+      blockedInit >= 0,
+      `${dir}: the unwind must assemble $BLOCKED_BODY itself — no other step composes a blocked body here`,
+    )
+    assert.ok(
+      blockedInit < unwindAt,
+      `${dir}: $BLOCKED_BODY must be assembled BEFORE the gh pr edit that consumes it, not after`,
+    )
+    // The unwind fires from a LATER Bash call than the acquisition block that set $PR_NUMBER — the
+    // red `gh pr checks --watch` reading is what sends you here — and shell state does not survive
+    // between tool calls. An unwind that inherits an empty $PR_NUMBER runs `gh pr edit ""`, fails,
+    // and leaves the false PARTIAL claim standing on title, body and marker alike. Same defect the
+    // acquisition block already names for itself; it has to be named in this fence too.
+    // Scoped to the unwind's OWN fences — plural, and joined in source order. The compose step and
+    // the write that consumes it deliberately sit in separate fences (so a verbatim run of the first
+    // cannot publish an empty body), and `.find` would then see only the first of them and stop
+    // enforcing the ordering below. Filtering keeps the acquisition block — which re-derives
+    // $PR_NUMBER for its own reasons — out of scope, which is what `.find` was for.
+    const unwindFence = fenceList.filter((f) => f.includes('BLOCKED_BODY')).join('\n')
+    assert.match(
+      unwindFence,
+      /PR_NUMBER="\$\{PR_NUMBER:-/,
+      `${dir}: the unwind fence must re-derive $PR_NUMBER itself — it runs in a later call than the acquisition block`,
+    )
+    assert.ok(
+      unwindFence.search(/PR_NUMBER="\$\{PR_NUMBER:-/) <
+        unwindFence.search(/--body-file\s+"\$BLOCKED_BODY"/),
+      `${dir}: the unwind must re-derive $PR_NUMBER BEFORE the gh pr edit that uses it`,
+    )
+    // Composing and consuming $BLOCKED_BODY in ONE runnable block is the defect one level down from
+    // CR1: `mktemp` returns an EMPTY file, so an agent that runs the block verbatim publishes a body
+    // with no `## Cross-model review` and no `## Review coverage` section — and an absent mandatory
+    // section reads as FULL coverage, on the one route that exists because coverage was reduced.
+    // `$PR_BODY` is already split this way three paragraphs down for exactly this reason. If a future
+    // author composes the body inline instead, that is a fine fix — update this pin with it; do not
+    // re-merge the fences and delete the assertion.
+    const consumesBlockedBody =
+      fenceList.find((f) => /--body-file\s+"\$BLOCKED_BODY"/.test(f)) ?? ''
+    assert.doesNotMatch(
+      consumesBlockedBody,
+      /BLOCKED_BODY="?\$\(mktemp\)"?/,
+      `${dir}: the fence that WRITES $BLOCKED_BODY must not also mktemp it — run verbatim, that publishes an empty body`,
+    )
+    // An empty $PR_NUMBER reaching `gh pr edit ""` is a spurious "failed unwind" blocker on the one
+    // path where nothing was ever published (the create arm itself failed), so there is no partial
+    // claim to restore. Guard it, and keep `rm -f` outside the guard so the temp file never leaks.
+    assert.match(
+      unwindFence,
+      /\[\s+-n\s+"\$PR_NUMBER"\s+\]/,
+      `${dir}: the unwind must guard an empty $PR_NUMBER — no PR was created means nothing to unwind, not a blocker`,
+    )
+    // The unwind must also un-ready. Readying is THIS route's own write (T2 is unreadable on a
+    // draft), so a BLOCKED report that only rewrites title and body ships a ready PR — contradicting
+    // Step 9's "do not ready" and leaving boss-epic condition (4) as the sole remaining hold.
+    assert.match(
+      fences,
+      /gh pr ready\s+--undo\s+"?\$PR_NUMBER"?|gh pr ready\s+"?\$PR_NUMBER"?\s+--undo/,
+      `${dir}: the unwind must un-ready the PR — every other BLOCKED path leaves a draft`,
+    )
+    // T3's required set is Step 9's. A locally restated, shorter copy is the weakest of the three
+    // wordings and it is the one governing the live route. The deference is about the MEMBERSHIP of
+    // that list only — read unqualified, "Step 9 governs" also points T1 at Step 9's copy, and an
+    // adversarial reader resolves any strength difference there in favour of the weaker wording.
+    assert.match(
+      section,
+      /\*\*T3[\s\S]{0,1200}[_*]{0,2}Step\s+9\s+governs/,
+      `${dir}: T3 must defer to Step 9's full required list, not restate a shorter one`,
+    )
+    assert.match(
+      section,
+      /Step\s+9\s+governs[\s\S]{0,400}[_*]{0,2}stronger[_*]{0,2}\s+reading\s+governs/,
+      `${dir}: the deference must be scoped to the required-item list — never a licence to adopt a weaker conjunct`,
+    )
+    // The body is Step 7's plus a delta. This route owns the ONLY body write on the capped path, so
+    // a from-scratch re-specification here silently drops the elements every other route guarantees.
+    assert.match(
+      section,
+      /body\s+is\s+Step\s+7's\s+PR\s+body\s+plus\s+a\s+delta[\s\S]{0,1200}`## Autonomous decisions`/,
+      `${dir}: the PARTIAL body must inherit Step 7's body — including the elements only Step 7 lists`,
+    )
+  }
+})
+
+// The one edge that makes PARTIAL REACHABLE at all. Everything else here pins the state's
+// description; this pins the link from the review loop's `capped` verdict to the publication route.
+// Delete that link and PARTIAL is described everywhere and produced nowhere — inertness one level up
+// from where the section defends it — while every other assertion in this file stays green.
+test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publication section (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const routes = sliceSection(
+      buildBody(dir),
+      '**Route on the file verdict.**',
+      'Steps 6b and 6c are',
+      `${dir}/SKILL.md`,
+    )
+    const capped = sliceSection(routes, '- `capped` →', '- `dispatch-failure`', `${dir}/SKILL.md`)
+    assert.match(
+      capped,
+      /§PARTIAL-route publication/,
+      `${dir}: the capped arm must name §PARTIAL-route publication — without it PARTIAL has no producer`,
+    )
+    assert.match(
+      capped,
+      /publishes\s+`PARTIAL`/,
+      `${dir}: the capped arm must say it PUBLISHES PARTIAL, not merely that PARTIAL exists`,
+    )
+    assert.match(
+      capped,
+      // `lens-certified`, not a bare `certified`: this arm is the live route, and an agent that
+      // reads its own assertion as the certification is the exact failure T1 exists to refuse.
+      /≥1\s+lens-certified/,
+      `${dir}: the capped arm must carry T1 and name the LENS as certifier, not leave it self-assertable`,
+    )
+    assert.match(
+      capped,
+      /green\s+branch/,
+      `${dir}: the capped arm must carry T2 — a red branch is BLOCKED, never PARTIAL`,
+    )
+    // …and the default is unchanged: every other capped run is still BLOCKED.
+    assert.match(
+      capped,
+      /\*\*Stop cleanly\*\*\s+`BLOCKED`/,
+      `${dir}: every other capped run must still stop cleanly BLOCKED`,
+    )
+  }
+})
+
+// The reachability criterion. Everything above proves PARTIAL is DESCRIBED; only this proves it is
+// HELD. boss-epic's merge gate condition (5) had no producer before this ticket, and it matches a
+// literal string — so a one-character drift on either side (an em dash reflowed to a hyphen, a
+// reworded count phrase) silently un-holds every PARTIAL PR while both files still read correctly
+// in isolation. The literal is EXTRACTED from boss-build and asserted into boss-epic rather than
+// hard-coded twice: a hard-coded copy in the test is a third place to drift, and it would let both
+// skills be edited together into agreement on a string the gate no longer matches.
+test('BOS-842: the do-not-merge marker is byte-identical across boss-build and boss-epic (all mirrors)', () => {
+  const pairs = BUILD_MIRRORS.map((buildDir, i) => [buildDir, EPIC_MIRRORS[i]])
+  for (const [buildDir, epicDir] of pairs) {
+    const section = sliceSection(
+      readReviewStack(buildDir),
+      '### PARTIAL-route publication',
+      '### BLOCKED-route publication',
+      `${buildDir}/references/review-stack.md`,
+    )
+    // Anchored on "exactly this literal:" plus the fence, not on the full sentence: the sentence's
+    // wording is not the contract, the quoted bytes are. `[a-z]*` tolerates a language tag, and the
+    // fence must be the FIRST one after the phrase so an added example block cannot be picked up.
+    const quoted = section.match(/exactly this literal:\s*\n+```[a-z]*\n([^\n]+)\n```/)
+    assert.ok(
+      quoted,
+      `${buildDir}: §PARTIAL-route publication must quote the do-not-merge marker in a fenced block`,
+    )
+    const marker = quoted[1]
+    assert.match(
+      marker,
+      /^do not merge/,
+      `${buildDir}: the extracted literal must be the do-not-merge marker`,
+    )
+    const mergeRecovery = fs.readFileSync(
+      path.join(rootDir, epicDir, 'references/merge-recovery.md'),
+      'utf8',
+    )
+    assert.ok(
+      mergeRecovery.includes(marker),
+      `${epicDir}/references/merge-recovery.md must match boss-build's marker byte-for-byte: ${JSON.stringify(marker)}`,
+    )
+    // …and the resident boss-epic body, which restates condition (5) twice without opening a
+    // reference. A marker that only agrees in the reference still un-holds a run that read the body.
+    const epicBody = fs.readFileSync(path.join(rootDir, epicDir, 'SKILL.md'), 'utf8')
+    assert.ok(
+      epicBody.includes(marker),
+      `${epicDir}/SKILL.md must quote the same marker byte-for-byte: ${JSON.stringify(marker)}`,
+    )
+    assert.match(
+      mergeRecovery,
+      /a\s+`PARTIAL`\s+child\s+writes\s+it/i,
+      `${epicDir}: condition (5) must name PARTIAL as the marker's producer`,
+    )
+  }
+})
+
+test('BOS-842: core-spine §1 carries four AGENT-NEUTRAL terminal states (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
+    const one = sliceSection(spine, '## 1. Four terminal states', '## 2. ', `${dir}/core-spine.md`)
+    for (const state of ['review-ready', 'blocked', 'partial', 'no-change']) {
+      assert.match(
+        one,
+        new RegExp(`^- \\*\\*${state}\\*\\*`, 'm'),
+        `${dir}: core-spine §1 must carry an agent-neutral **${state}** bullet`,
+      )
+    }
+    // The bolded invariant stays UNCONDITIONAL, and the exception lives in the sentence after it.
+    // core-spine.md is the agent-neutral summary — the one file an implementer of a non-Claude
+    // runner reconstructs the contract from — so a bolded sentence narrowed to "a required item
+    // THAT IS NOT AN ACCEPTANCE CRITERION forces blocked" reads, on its own, as a grant of
+    // review-ready to precisely the run PARTIAL was invented for, with the restriction recoverable
+    // only from unbolded prose that looks subordinate. It also needs no narrowing: partial is not
+    // review-ready, so "never review-ready" is true of it as written. Every other site keeps the
+    // invariant whole and routes the criterion case to partial; this must not be the weak copy.
+    assert.match(
+      one,
+      /\*\*a\s+deferred\s+_required_\s+item\s+forces\s*\n?\s*blocked,\s+never\s*\n?\s*review-ready\.\*\*/,
+      `${dir}: core-spine §1's bolded invariant must stay unconditional — "a deferred required item forces blocked, never review-ready"`,
+    )
+    // The narrowed form is forbidden only where the hazard lives: inside the bolded span an agent
+    // quotes on its own. BOS-842's plan asked for that exact restatement, and it is genuinely the
+    // operative test — it is only unsafe when it is the sentence a reader takes away INSTEAD of the
+    // three conjuncts, which is what emphasis does. So it survives here unbolded and downstream of
+    // the exception, and the assertion below pins that ordering rather than banning the words.
+    assert.doesNotMatch(
+      one,
+      /\*\*[^*]{0,120}item\s+that\s+is\s+not\s+an\s+acceptance\s*\n?\s*criterion\s+forces\s+blocked/,
+      `${dir}: core-spine §1 must not narrow the BOLDED invariant by excluding acceptance criteria from it`,
+    )
+    // ...and the plan's restatement must actually be present, downstream of the conjuncts, so a
+    // reader who reconstructs the contract from this file alone still learns the operative test.
+    const narrowed = one.search(
+      /a\s+deferred\s+required\s+item\s+that\s+is\s+not\s+an\s+acceptance\s*\n?\s*criterion\s*\n?\s*forces\s+blocked/,
+    )
+    const exception = one.search(/\*\*single\*\*\s+exception\s+is\s+partial/)
+    assert.ok(
+      narrowed > 0,
+      `${dir}: core-spine §1 must restate the operative test — "a deferred required item that is not an acceptance criterion forces blocked"`,
+    )
+    assert.ok(
+      exception > 0 && narrowed > exception,
+      `${dir}: core-spine §1's restatement must follow the scoped exception, never precede it`,
+    )
+    // ...and the exception must still be there, scoped, in the sentence that follows it.
+    assert.match(
+      one,
+      /\*\*single\*\*\s+exception\s+is\s+partial[\s\S]{0,400}\*\*every\*\*\s+deferred\s+required\s+item\s+is\s+an\s+unsatisfied\s+acceptance\s+criterion/,
+      `${dir}: core-spine §1 must still name partial as the single, scoped exception`,
+    )
+    // This file is the published, project-agnostic spine. The new prose must not smuggle in the
+    // uppercase state tokens (workspace-specific spellings) or any project name.
+    assert.doesNotMatch(
+      one,
+      /bossanova|linear|BOS-\d+/i,
+      `${dir}: core-spine §1 must stay project-agnostic`,
+    )
+    assert.doesNotMatch(
+      one,
+      /REVIEW_READY|NO_CHANGE|PARTIAL/,
+      `${dir}: core-spine §1 must use agent-neutral state names, not boss-build's literal tokens`,
+    )
+  }
+})
+
+test('BOS-842: all three user-facing docs enumerate PARTIAL alongside the other three', () => {
+  // The docs surfaces are what a human reads before they ever open a skill. An enumeration that
+  // still lists three states tells a reviewer a do-not-merge PR is an anomaly rather than a
+  // documented outcome — and these three pages are the only places the state set is published
+  // outside the skill tree.
+  for (const rel of [
+    'docs/skills/boss-build.md',
+    'docs/skills/README.md',
+    'services/docs/docs/skills/overview.md',
+  ]) {
+    const doc = fs.readFileSync(path.join(rootDir, rel), 'utf8')
+    for (const state of ['REVIEW_READY', 'PARTIAL', 'BLOCKED', 'NO_CHANGE']) {
+      assert.match(doc, new RegExp(`\`${state}\``), `${rel} must enumerate \`${state}\``)
+    }
+    assert.match(
+      doc,
+      /do-not-merge/,
+      `${rel} must say what makes PARTIAL different: the PR is opened but marked do-not-merge`,
+    )
+    assert.doesNotMatch(
+      doc,
+      /three terminal states/i,
+      `${rel} must not still describe three terminal states`,
     )
   }
 })

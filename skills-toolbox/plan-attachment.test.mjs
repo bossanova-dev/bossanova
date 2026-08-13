@@ -1,10 +1,42 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { putPlanAttachment, selectImplementationPlanAttachment } from './plan-attachment.mjs'
+
+const SCRIPT_PATH = fileURLToPath(new URL('./plan-attachment.mjs', import.meta.url))
+const TOOLBOX_ROOT = fileURLToPath(new URL('.', import.meta.url))
+const USAGE = 'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n'
+
+// Built by concatenation so this file is not itself a match for the scan below.
+const FORBIDDEN_GUARD = ['import', 'meta', 'main'].join('.')
+
+function runCli(args) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf8' })
+}
+
+// spawnSync would block this process's event loop, so an in-process HTTP server could never
+// accept the request the child makes. Anything racing a server in this process must spawn async.
+function runCliAsync(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [SCRIPT_PATH, ...args])
+    let stdout = ''
+    let stderr = ''
+    // spawn() has no `encoding` option (that is spawnSync), so decode on the streams themselves
+    // rather than relying on Buffer concatenation, which can split a multi-byte character.
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', (status) => resolve({ status, stdout, stderr }))
+  })
+}
 
 test('selectImplementationPlanAttachment prefers the newest exact canonical title', () => {
   const attachment = selectImplementationPlanAttachment(
@@ -95,4 +127,101 @@ test('putPlanAttachment reports a rejected signed upload', async () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+// The entry point below is the defect BOS-872 fixes: guarded by a property that reads
+// `undefined` on older runtimes, the whole CLI block was dead code that exited 0 having
+// uploaded nothing. These spawn the file for real, so a dead guard cannot pass them.
+
+test('CLI runs the entry point: no arguments prints the usage line and exits 2', () => {
+  const result = runCli([])
+  assert.equal(result.status, 2)
+  assert.equal(result.stderr, USAGE)
+})
+
+test('CLI runs the entry point: put with a missing operand exits 2 with the usage line', () => {
+  const result = runCli(['put', 'plan.md', 'https://uploads.example/signed'])
+  assert.equal(result.status, 2)
+  assert.equal(result.stderr, USAGE)
+})
+
+test('CLI runs the entry point: an unrecognised command exits non-zero, never 0', () => {
+  const result = runCli(['bogus'])
+  assert.notEqual(result.status, 0)
+  assert.equal(result.status, 2)
+  assert.equal(result.stderr, USAGE)
+})
+
+test('CLI writes the HTTP status to stdout, so a caller can tell a real PUT from a skipped one', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-cli-'))
+  const file = join(directory, 'plan.md')
+  const headersFile = join(directory, 'headers.json')
+  writeFileSync(file, '# plan\nbody\n')
+  writeFileSync(headersFile, JSON.stringify({ 'content-type': 'text/markdown' }))
+
+  const received = []
+  const server = createServer((request, response) => {
+    const chunks = []
+    request.on('data', (chunk) => chunks.push(chunk))
+    request.on('end', () => {
+      received.push({ method: request.method, body: Buffer.concat(chunks).toString('utf8') })
+      response.writeHead(200)
+      response.end()
+    })
+  })
+  try {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address()
+    const result = await runCliAsync(['put', file, `http://127.0.0.1:${port}/signed`, headersFile])
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout.trim(), '200')
+    assert.equal(received.length, 1)
+    assert.equal(received[0].method, 'PUT')
+    assert.equal(received[0].body, '# plan\nbody\n')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('plan-attachment.mjs guards its entry point with isMainModule, not the runtime-dependent property', () => {
+  const source = readFileSync(SCRIPT_PATH, 'utf8')
+  assert.match(source, /import \{ isMainModule \} from '\.\/main-module\.mjs'/)
+  assert.match(source, /isMainModule\(import\.meta\.url\)/)
+  assert.equal(source.includes(FORBIDDEN_GUARD), false)
+})
+
+function collectSourceModules(directory) {
+  const found = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+    const absolute = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      found.push(...collectSourceModules(absolute))
+    } else if (entry.name.endsWith('.mjs') && !entry.name.endsWith('.test.mjs')) {
+      found.push(absolute)
+    }
+  }
+  return found
+}
+
+test('no non-test module under skills-toolbox/ guards on the runtime-dependent property', () => {
+  const modules = collectSourceModules(TOOLBOX_ROOT)
+  const relativePaths = modules.map((absolute) =>
+    relative(TOOLBOX_ROOT, absolute).split(sep).join('/'),
+  )
+
+  // Pin the scan as recursive: a non-recursive glob would miss subdirectory entry points.
+  assert.ok(
+    relativePaths.includes('tracker/cli.mjs'),
+    `scan set must reach subdirectory entry points, got: ${relativePaths.join(', ')}`,
+  )
+
+  const offenders = modules.filter((absolute) =>
+    readFileSync(absolute, 'utf8').includes(FORBIDDEN_GUARD),
+  )
+  assert.deepEqual(
+    offenders.map((absolute) => relative(TOOLBOX_ROOT, absolute).split(sep).join('/')),
+    [],
+  )
 })

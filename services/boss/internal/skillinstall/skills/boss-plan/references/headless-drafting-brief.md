@@ -202,8 +202,9 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
      `validateDecomposition` never inspects it, so an unbound attachment would upload clean and only
      turn fatal on a later resume; `ok:false` ⇒ abort while zero children exist. In all other
      respects it is prepare → PUT → finalize through
-     the **same** mechanism `references/plan-storage.md` steps 1–4 define (including the
-     `uploadRequest.headers` scratch file and its immediate deletion after the PUT), substituting
+     the **same** mechanism `references/plan-storage.md` steps 1–5 define (including the
+     `uploadRequest.headers` scratch file and its immediate deletion after the PUT, and the step-5
+     read-back that must verify the stored bytes before any child is created), substituting
      that contract's filename, MIME type and title — never a second hand-rolled upload path. It
      carries the parent overview + every child's full metadata (key, title, goal, keyChanges,
      blockedByKeys, estimate, priority, **`agentFriendly` call and its `agentQuestion` decision** — so
@@ -637,7 +638,7 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 - Contract: v1
 - Complexity: <fib> · Priority: <label> · Agent-friendly: <yes | needs-human (see "Why this needs a human")>
 - Atomic-5: <ONLY when a single ticket is estimated `5` — the explicit reason it is atomic & un-splittable and cannot be an epic. Omit this bullet for `0/1/2/3` tickets.>
-- Plan attachment: `Implementation plan (<ISSUE-ID>)` (finalized native attachment id: <ATTACHMENT-ID>)
+- Plan attachment: `Implementation plan (<ISSUE-ID>)`
 - On implementation: copy the plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in the PR.
 
 ## Original notes

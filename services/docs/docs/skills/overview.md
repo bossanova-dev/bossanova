@@ -29,15 +29,15 @@ Each skill runs on its own, but they also compose: `boss-plan` emits a plan that
 its flow, and `boss-epic` orchestrates many `boss-build` runs and drives
 `boss-repair` on failures.
 
-| Skill           | What it does                                                                                                                                                                                                                |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `boss-plan`     | Plans a backlog ticket: recon, a plan-review pass, finalizes the rendered plan as a native tracker attachment, and writes a summary, labels, estimate, and priority back to the tracker. Moves the ticket Unplanned → Todo. |
-| `boss-build`    | Implements one planned ticket to a review-ready PR via subagent-driven TDD, a bounded review stack, and a clear terminal state (`REVIEW_READY` / `BLOCKED` / `NO_CHANGE`).                                                  |
-| `boss-review`   | Multi-lens, subagent-driven code review of a branch; fixes must-fix findings and emits an Assessment / Evidence / Confidence report. Invoked by `boss-build` or run by hand.                                                |
-| `boss-epic`     | Orchestrates a whole epic of planned tickets to merged PRs: dependency-ordered schedule, parallel implement sessions, serialized merges, and progress reported on the parent ticket.                                        |
-| `boss-proof`    | Captures proof-of-implementation media (screenshots and video) for a PR's changed surfaces and comments it on the PR.                                                                                                       |
-| `boss-repair`   | Automated PR repair — fixes merge conflicts, failing checks, and review feedback.                                                                                                                                           |
-| `boss-finalize` | End-of-session workflow ensuring all work is committed and pushed ("land the plane").                                                                                                                                       |
+| Skill           | What it does                                                                                                                                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `boss-plan`     | Plans a backlog ticket: recon, a plan-review pass, finalizes the rendered plan as a native tracker attachment, and writes a summary, labels, estimate, and priority back to the tracker. Moves the ticket Unplanned → Todo.                           |
+| `boss-build`    | Implements one planned ticket to a review-ready PR via subagent-driven TDD, a bounded review stack, and a clear terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`), where `PARTIAL` opens a do-not-merge PR for a certified slice. |
+| `boss-review`   | Multi-lens, subagent-driven code review of a branch; fixes must-fix findings and emits an Assessment / Evidence / Confidence report. Invoked by `boss-build` or run by hand.                                                                          |
+| `boss-epic`     | Orchestrates a whole epic of planned tickets to merged PRs: dependency-ordered schedule, parallel implement sessions, serialized merges, and progress reported on the parent ticket.                                                                  |
+| `boss-proof`    | Captures proof-of-implementation media (screenshots and video) for a PR's changed surfaces and comments it on the PR.                                                                                                                                 |
+| `boss-repair`   | Automated PR repair — fixes merge conflicts, failing checks, and review feedback.                                                                                                                                                                     |
+| `boss-finalize` | End-of-session workflow ensuring all work is committed and pushed ("land the plane").                                                                                                                                                                 |
 
 ## The adapter model
 

@@ -8,13 +8,31 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    returns, then invoke `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" put "$PLAN_FILE" <uploadRequest.url>
 <headers-json-file>`. Delete that exact scratch file immediately after the PUT returns, whether it
    succeeds or fails; keep its path for terminal cleanup as a defense-in-depth fallback.
+   **A successful PUT writes the HTTP status line to stdout, and that line is the proof of work.**
+   Treat an exit 0 that printed **no** status line on stdout as a **failed PUT**, never a success:
+   a helper whose entry-point guard does not fire exits 0 having uploaded nothing, and finalization
+   would then mint an attachment row over bytes that were never written. Read the status, do not
+   infer it from the exit code alone.
 3. On a non-2xx PUT only, obtain one fresh prepare response and retry once with its URL and headers,
    using and immediately deleting a new scratch file for that response.
 4. Call `finalizePlanAttachment` with the prepare response `assetUrl` and title
    `Implementation plan (<ISSUE-ID>)`; retain the returned attachment **id** and exact title for
    the completion report.
+5. **Read the artifact back before trusting it.** Immediately after finalization, invoke
+   `readPlanAttachment` with the retained attachment **id** and require **non-empty** content. On a
+   transport error, retry the read **once**; a second transport error is an unverified artifact and
+   takes the SAFE branch below without deleting anything, because an unreadable transport does not
+   prove the bytes are missing. A read that **succeeds** and returns empty (or otherwise absent)
+   content is a **confirmed-unreadable** artifact: the row exists but its object was never written,
+   which still satisfies a consumer's "has a plan attachment" check and would strand the next build
+   run. Delete that orphaned row with `deletePlanAttachment` on the retained id, then take the SAFE
+   branch. Delete only on a confirmed-unreadable read — never on a transport error, which would
+   destroy a healthy artifact.
 
-Any prepare, PUT, or finalization failure means **no plan metadata/state write**. If a PUT succeeds
-but finalization fails, report the orphaned upload; do not invent an attachment URL. On success, save
-normal issue metadata without a plan link: the finalized attachment is the canonical artifact.
+Any prepare, PUT, finalization, **or read-back** failure means **no plan metadata/state write**. If a
+PUT succeeds but finalization fails, report the orphaned upload; do not invent an attachment URL. The
+SAFE branch on every failure edge is the same: **no plan metadata/state write**, a one-line stderr
+reason, and a non-zero exit, leaving the ticket in its pre-run state for the next sweep to re-pick.
+On success, save normal issue metadata without a plan link: the finalized **and read-back** attachment
+is the canonical artifact.
 On every terminal failure path, remove any retained attachment-header scratch file before returning.

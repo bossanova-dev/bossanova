@@ -1545,8 +1545,8 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 83145
-  const RATCHET = 83129 // Re-baselined +222 for the BOS-702 safety gates; preserve the 16-byte guard margin.
+  const PRE_SPLIT_BASELINE = 85027
+  const RATCHET = 85011 // Re-baselined +1984 for the BOS-872 attachment read-backs; preserve the 16-byte guard margin.
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

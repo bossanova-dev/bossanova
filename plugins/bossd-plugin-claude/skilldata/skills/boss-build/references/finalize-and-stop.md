@@ -100,6 +100,37 @@ finalize BLOCKED (Step 12) naming it; do not ready. After the PR is ready, add `
 the ticket from in-progress to in-review (`.inProgress → .inReview`) via the adapter's `moveState` capability, and comment the PR URL
 (the adapter's `writeComment` capability).
 
+**The one scoped exception — the `PARTIAL` gate.** Before routing a deferral to BLOCKED, classify the
+deferred required items. Take the `PARTIAL` route instead of BLOCKED when **all three** hold:
+
+- **T1** — at least one in-scope acceptance criterion is satisfied **and independently certified**:
+  certification is a **positive** record, never an absence. Both halves are required — boss-review's
+  always-on acceptance-criteria certification **ran** over the full supplied criteria list and
+  returned a verdict a **reviewer** authored, **and** it emitted no `lens: acceptance-criteria`
+  must-fix naming that criterion. The second half alone certifies vacuously on a branch no lens ever
+  read, so a `capped` verdict a run generated for itself fails T1 by construction. An agent's own
+  assertion that a criterion is done is never certification, and a run that satisfied **zero**
+  criteria is BLOCKED, never `PARTIAL`.
+- **T2** — the branch is **green** at this step's green gate, after boss-repair capped at
+  `policy.repairCap`. A run that arrives at `PARTIAL` from the review loop's `capped` arm never
+  reached this step, so its greenness is not inherited from here: that route takes the same reading
+  itself, against the PR it publishes, per [`review-stack.md`](review-stack.md) §PARTIAL-route
+  publication. Unmeasured is not green.
+- **T3** — every deferred required item is **only** an unsatisfied in-scope acceptance criterion:
+  zero open must-fix findings from any lens other than `acceptance-criteria`; no missing
+  `bossanova.v1` API-version bump or down-convert transform; no unattributed residue or untagged
+  commits; the reviewed-tip confirmation held; no hard-ABORT condition fired.
+
+Anything else is BLOCKED, unchanged. On the `PARTIAL` route do **not** run the **review-move** half of
+the block above: **never** move the ticket to `.inReview`, **never** add `please-review`, and leave
+the ticket in the `.inProgress` role. The **ready** half still runs — the PR **is** made non-draft,
+because a draft PR's CI is expected to be noisy or partial, so leaving it a draft would make T2's
+"branch green" unverifiable on the very artifact it gates — but it carries the do-not-merge marker
+and no `please-review` label. Comment the
+PR URL on the ticket alongside the partial enumeration (the adapter's `writeComment` capability). The
+PR-body and ticket-comment authoring belongs to
+[`review-stack.md`](review-stack.md) §PARTIAL-route publication; do not improvise either here.
+
 ## Step 10: Settle loop (capped)
 
 Late reviews sometimes land minutes after ready. Wait 5 minutes; if new review feedback appears, go
@@ -115,7 +146,8 @@ cleanly** — the repair plugin owns anything later in a fresh session.
      proof-capture.md. -->
 
 Only on the `REVIEW_READY` path — green, ready PR with the ticket already moved to **In Review**. Skip
-entirely for `BLOCKED`, draft, and `NO_CHANGE`. This step may **never** change the terminal state
+entirely for `BLOCKED`, `PARTIAL`, draft, and `NO_CHANGE` — proof of an incomplete slice is
+misleading evidence. This step may **never** change the terminal state
 (BLOCKED is not reachable from here) and every failure is recorded and ignored.
 
 Classify the surface (`node scripts/proof.mjs plan`), then run `node scripts/proof.mjs run`.
@@ -136,8 +168,8 @@ surface/doctor gates, outcome classes, and non-fatal contract. Do not run the fi
 Every terminal state that acquired the worktree lock (Step 1) — including the Step 2.5 `foreign` yield
 — must arrive here. If this run posted a claim comment and it still exists, delete `CLAIM_COMMENT_ID`.
 Decide `OUTCOME` before the following optional post-terminal extension phase; it may not change that
-outcome, the exit code, any tracker or PR write, or the final `REVIEW_READY` / `BLOCKED` / `NO_CHANGE`
-line. Keep the worktree lock until the phase completes.
+outcome, the exit code, any tracker or PR write, or the final
+`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE` line. Keep the worktree lock until the phase completes.
 
 ### Post-terminal notes extensions (repo opt-in)
 
@@ -210,5 +242,12 @@ node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"
 lock.)
 
 Pick the terminal state honestly — **REVIEW_READY only with no deferred required item** (Hard rules);
-else BLOCKED. Output the terminal state (`REVIEW_READY` / `BLOCKED` / `NO_CHANGE`) with the ticket id,
-PR URL, and (for BLOCKED) the blocker summary naming the item.
+else BLOCKED. `PARTIAL` is the single scoped exception to that rule: pick it, never BLOCKED, when the
+Step 9 gate's T1/T2/T3 all held — every deferred required item an unsatisfied in-scope acceptance
+criterion, the branch green, at least one criterion certified. On a run that reached `PARTIAL` from
+the review loop's `capped` arm, Step 9 never executed, so read the same three conjuncts from
+[`review-stack.md`](review-stack.md) §PARTIAL-route publication, which re-checks them on that route:
+unevaluated is not held, and a conjunct you cannot establish is BLOCKED. Any other deferred required
+class is BLOCKED. Output the terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`) with the
+ticket id, PR URL, (for BLOCKED) the blocker summary naming the item, and (for `PARTIAL`) the
+`<satisfied>/<total>` acceptance-criteria count plus every open criterion by name.

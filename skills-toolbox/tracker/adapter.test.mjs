@@ -101,7 +101,15 @@ test('resolveTrackerAdapter treats a blank LINEAR_API_ENDPOINT as unset', async 
   assert.equal(calls[0], 'https://api.linear.app/graphql')
 })
 
-test('assertConforms passes for the Linear adapter', () => {
+test('assertConforms passes for the Linear adapter, with all 15 operations declared', () => {
   const adapter = resolveTrackerAdapter({ env: { LINEAR_API_KEY: 'k' } })
   assert.doesNotThrow(() => assertConforms(adapter))
+  // Moving extractImages/createLabel to the optional list widened what CONFORMS; it did
+  // not shrink what the reference adapter declares. Pinning the count here proves the
+  // reference impl is still validated over its whole surface — 9 required + 6 optional —
+  // rather than quietly dropping an op now that omitting one would still pass.
+  assert.equal(Object.keys(adapter.operationMap).length, 15)
+  for (const key of [...REQUIRED_TRACKER_OPERATIONS, ...OPTIONAL_TRACKER_OPERATIONS]) {
+    assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)
+  }
 })

@@ -8,9 +8,9 @@ carries the reusable shape those wirings instantiate.
 
 Read it once to orient. Six elements make up the spine.
 
-## 1. Three terminal states — and nothing else
+## 1. Four terminal states — and nothing else
 
-Every run ends in exactly one of three honest terminal states. There is no fourth, and success is
+Every run ends in exactly one of four honest terminal states. There is no fifth, and success is
 never "merged" or "done" — terminal success is a review-ready pull request handed to a human.
 
 - **review-ready** — the pull request is open and green, the ticket has moved to its
@@ -19,14 +19,28 @@ never "merged" or "done" — terminal success is a review-ready pull request han
 - **blocked** — the ticket is left in its in-progress state with a comment naming, at
   file-and-line precision, what failed and what was tried; if work was pushed it stays a draft.
   A blocked run self-quarantines so a later run (or a human) can resume it.
+- **partial** — every deferred required item is an unsatisfied acceptance criterion, the branch is
+  green, and at least one criterion was **independently certified** by the review pass rather than
+  asserted by the agent. The pull request is opened and made ready so its checks are trustworthy,
+  but it is marked do-not-merge and both it and the ticket enumerate every unsatisfied criterion at
+  file-and-line precision. A partial run **never** moves the ticket to its awaiting-human-merge
+  state: the ticket stays in its in-progress state, visibly incomplete.
 - **no-change** — there was no eligible candidate, the claim was lost with no runner-up, a foreign
   branch already carried real work that is not this ticket's, a peer already held the workspace
   lock, or nothing committable remained after claiming (restore the ticket to its planned state).
 
 The invariant that keeps the states honest: **a deferred _required_ item forces blocked, never
 review-ready.** Required means a change the project's own gates treat as mandatory (an observable
-API-surface change that needs a version bump, an open must-fix review finding). Optional items
-(minor findings, best-effort proof capture) never flip the terminal state.
+API-surface change that needs a version bump, an open must-fix review finding, an unsatisfied
+in-scope acceptance criterion). The **single** exception is partial — which is not review-ready
+either, so the second half of that invariant holds without qualification — and it is reserved for the
+one case where **every** deferred required item is an unsatisfied acceptance criterion, the branch is
+green, and at least one criterion was independently certified; anything else — an open must-fix, a
+missing version bump or transform, a red branch — is blocked. Read the two together, in that order,
+and the operative test reduces to: a deferred required item that is not an acceptance criterion
+forces blocked, and one that is escapes blocked only when all three conditions above hold at once.
+Optional items (minor findings, best-effort proof
+capture) never flip the terminal state.
 
 ## 2. Subagent-driven, test-first implementation
 
@@ -36,8 +50,9 @@ This keeps each task's reasoning isolated and prevents one task's context from c
 next.
 
 Each task subagent returns a **fixed, short contract** — the task id, the files it touched, the
-tests it added and their pass state, the interface signatures it produced, any residual risk, and the
-commits it made (short SHA + subject, or an explicit _no commit — verification only_ note).
+tests it added and their pass state, the interface signatures it produced, any residual risk, the
+decisions it recorded (decision + rationale), and the commits it made (short SHA + subject, or an
+explicit _no commit — verification only_ note).
 The orchestrator threads only that short contract into the next task's brief; it never pastes a
 prior task's full transcript forward. Larger hand-offs (the task brief, a report file, a review
 package) travel as files, not as inline text.

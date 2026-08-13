@@ -457,7 +457,11 @@ the detection report it would replace.
 
 **Fix leg.** Fix **only** the findings this tier already recorded, at the `file:line` it recorded
 them; commit tagless; run their focused tests. Never broaden the ticket, never defer a required item,
-and never treat the fix as evidence of its own success. State `DEGRADED_REPAIR_FIX_SECONDS` to the
+and never treat the fix as evidence of its own success. The one scoped exception to the
+never-defer-a-required-item rule is the `PARTIAL` terminal state (§PARTIAL-route publication), and it
+covers exactly one required class — an unsatisfied in-scope acceptance criterion on a green branch,
+with at least one criterion lens-certified (`0/<total>` is `BLOCKED`). It is never a licence for this
+leg to leave a must-fix, an API-version transform, or a red branch behind. State `DEGRADED_REPAIR_FIX_SECONDS` to the
 worker as a hard return-by **in the fix brief itself** — _"HARD TIME BUDGET: `<seconds>` seconds —
 return what you have rather than run past it."_ — and hold an inline fix to the identical clock. A
 budget the holder never states bounds nothing, which is how a clamp ships inert.
@@ -499,6 +503,195 @@ exhausted, record every unresolved finding by `file:line` and BLOCK. That is a d
 paying for those findings on this run — a later run repairs them with a real budget — never a
 judgement that they were noise, and never a licence to downgrade one to Minor so the gate can pass.
 
+### PARTIAL-route publication
+
+**Why this section exists.** `capped` never reaches Step 7, the sole place that writes the PR body.
+A `PARTIAL` described in the state list but given no publication route of its own can therefore never
+write a PR body at all: it ships **inert** — a state name with no artifact behind it, every gate
+green. This section is that route. Step 7 is also the only step that **creates** a PR, the only one
+that **readies** it and the only one that **pushes**, and Step 9 is the only one that measures the
+branch green — so this route owns each of those writes and that reading itself. Assuming any of them
+already happened is the same inertness defect one level down.
+
+**The gate first — re-check all three conjuncts here.** Arriving at this section is not itself a
+licence to publish `PARTIAL`. The T1/T2/T3 gate is specified in
+[`finalize-and-stop.md`](finalize-and-stop.md) Step 9, and on the `capped` route **Step 9 never
+ran** — so re-check it here, against this route's own artifact:
+
+- **T1 — at least one in-scope acceptance criterion satisfied _and independently certified_**:
+  certification is a **positive** record, never an absence. Require both halves — the
+  acceptance-criteria certification **ran** over the full supplied criteria list and returned a
+  verdict a **reviewer** authored; **and** its findings name no must-fix against the criterion you
+  are counting. Ask of the first half only what that reviewer actually emits: it reports the
+  criteria the branch does _not_ evidence, so there is no per-criterion "satisfied" line anywhere to
+  point at, and requiring one would make `PARTIAL` unreachable and invite the agent to improvise a
+  self-certification in its place. What the first half buys is the thing the second cannot check on
+  its own — that a reviewer read this branch at all. Reading only the second half makes T1 vacuous
+  exactly where it matters most: on a
+  **generated** `sentinel capped 1` — the pre-dispatch floor route below, and the degraded tier's
+  did-not-report path — **no lens ever ran**, so "emitted no must-fix" is true of every criterion
+  and a branch nobody reviewed would certify all of them. A `capped` verdict this run generated for
+  itself, rather than one a reviewer earned, therefore **fails T1 by construction** and is
+  `BLOCKED`. A run that satisfied **zero** criteria is `BLOCKED`, never `PARTIAL`: `0/<total>` is
+  the universal soft landing this state exists to refuse, and an agent's own assertion that a
+  criterion is done is never certification.
+- **T2 — the branch is green.** Step 9's watch never ran on this route, so take the reading here,
+  **after** the push and the ready below and against the PR this section publishes:
+  `gh pr checks "$PR_NUMBER" --watch --fail-fast`. Red, or a rollup you cannot resolve, is
+  `BLOCKED`. A draft PR cannot supply this reading — its CI is expected to be noisy or partial —
+  which is why the ready step below is mandatory rather than cosmetic.
+- **T3 — every deferred required item is _only_ an unsatisfied in-scope acceptance criterion.** The
+  required set is **Step 9's**, not a shorter one restated here: read
+  [`finalize-and-stop.md`](finalize-and-stop.md) Step 9's list whole and apply every member of it.
+  Any one left undone — an open must-fix from another lens, a missing API-version bump or
+  down-convert transform, a failed reviewed-tip confirmation, uncommitted residue, an untagged
+  commit, a hard ABORT — is `BLOCKED`. Where this route's wording and Step 9's differ **on what that
+  required set contains**, **Step 9 governs**: a locally shortened copy is a weaker gate wearing the
+  same name, and the weakest copy is the one this live route would otherwise be read against. That
+  deference is about the membership of the list and nothing else. Where the two copies differ on how
+  **strong** a conjunct is, the **stronger** reading governs whichever file it appears in — a gate is
+  never weakened by pointing at another copy of itself.
+
+A conjunct that fails, or that you cannot establish from evidence, takes §BLOCKED-route publication
+below with `BLOCKED` as the terminal state. Never publish `PARTIAL` on two of three.
+
+**T2 is read after publication, so a red reading must _unwind_ before it reports.** The ready step
+and both writes below precede that reading — it is unavailable on a draft — so by the time T2 comes
+back red the PR already carries the partial title suffix, the partial body and its do-not-merge
+marker, and it is **ready** rather than the draft every other BLOCKED path leaves behind. Publishing
+`BLOCKED` on top of that and stopping leaves an artifact whose title and body both still claim a
+state this run did not earn, and boss-epic condition (5) goes on holding it on the strength of a
+marker that is now false. So on a red T2 — and on any non-zero exit from the acquisition block
+below, which on a fresh workspace has already created a PR carrying `$PR_BODY` — restore the
+non-partial artifact **first**, then report. Compose the replacement body _before_ the write, for
+the same reason `$PR_BODY` is composed before its writes: a `--body-file` reaching for a variable
+nothing ever assigned fails on exactly the path that needs it, and an unwind that fails is an
+artifact left claiming `PARTIAL`.
+
+```bash
+# ONLY on a red T2 reading, taken AFTER the writes further down — never run in sequence with them.
+# Re-derive: the acquisition block below set $PR_NUMBER in an EARLIER Bash call, and the red T2
+# reading that sends you here is a later one — shell state does not survive between them.
+SESSION_BRANCH="${SESSION_BRANCH:-$(git branch --show-current)}"
+PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
+BLOCKED_BODY="$(mktemp)"   # now compose §BLOCKED-route publication's body into this file
+```
+
+Stop there and **write the body**, exactly as `$PR_BODY` is composed before its own writes. The two
+fences are separate for that reason: run them as one and the `--body-file` below publishes an empty
+file, stripping the very `## Cross-model review` and `## Review coverage` tokens whose absence reads
+as full coverage. Only with `$BLOCKED_BODY` populated:
+
+```bash
+if [ -n "$PR_NUMBER" ]; then
+  gh pr edit "$PR_NUMBER" --title "[<ISSUE-ID>] <issue title>" --body-file "$BLOCKED_BODY"
+  gh pr ready --undo "$PR_NUMBER"   # this route readied it; BLOCKED never ships a ready PR
+else
+  echo "no open PR for $SESSION_BRANCH — nothing to unwind"
+fi
+rm -f "$BLOCKED_BODY"
+```
+
+`$BLOCKED_BODY` carries §BLOCKED-route publication's body — its real `## Cross-model review` and
+`## Review coverage` tokens, no `## Partial` section and no do-not-merge marker — and the title
+sheds the `(partial <satisfied>/<total>)` suffix. The `--undo` is not tidiness: readying was this
+route's own write, [`finalize-and-stop.md`](finalize-and-stop.md) Step 9 says a BLOCKED run does
+**not** ready, and a ready PR left behind drops boss-epic's double cover to condition (4) alone.
+An empty `$PR_NUMBER` here means the create arm itself never landed a PR, so there is no partial
+claim published anywhere and nothing to restore — that is the one case this guard passes over, not a
+licence to skip an unwind whose lookup merely failed. Only once all three have returned take the
+BLOCKED route below. A failed unwind is itself a blocker to name in the blocker comment — never a
+reason to leave a partial claim standing on a branch that did not earn it.
+
+**Push first, and only `PUSHED=yes` may take it.** Run the BLOCKED route's push procedure below (the
+`PUSHED=yes|rescue|no` block) before publishing anything. Only `PUSHED=yes` may then take the
+`PARTIAL` route; on `PUSHED=rescue` or `PUSHED=no` the terminal state becomes `BLOCKED` and the
+reporting is §BLOCKED-route publication's, not this one's, because a slice a reviewer cannot fetch is
+not a reviewable slice.
+
+**Assemble the body first — both writes below consume it.** The create arm and the edit arm each
+take `--body-file "$PR_BODY"`, so compose the whole body (every element listed further down, none
+omitted) into a temp file _before_ either runs, exactly the way Step 7 does. Ordering is the defect,
+not a style preference: a route that acquires the PR first and only then reaches for `$PR_BODY` is
+passing an unset variable on the very fresh-workspace path this section exists to serve, and
+`gh pr create --body-file ""` fails there before anything is published:
+
+```bash
+PR_BODY="$(mktemp)"   # compose the body elements listed below into this file, before either write
+```
+
+Remove it (`rm -f "$PR_BODY"`) once both writes have returned.
+
+**Get a PR to write to, and ready it.** This route fires on fresh workspaces too, where no PR exists
+because Step 7's `gh pr create` was never reached; a section that only knows how to _edit_ a PR
+dead-ends there and ships the same inert state name it was written to prevent. Re-derive the three
+identifiers first: Step 7 and Preflight assigned them in **earlier Bash calls**, and shell state does
+not survive between calls, so an inherited-looking `$PR_NUMBER` may simply be empty here — which
+would send a resume run down the create arm and fail it on "a pull request for branch … already
+exists". Then branch on `PR_NUMBER` before writing anything:
+
+```bash
+SESSION_BRANCH="${SESSION_BRANCH:-$(git branch --show-current)}"
+BASE_BRANCH="${BASE_BRANCH:-$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)}"
+PR_NUMBER="${PR_NUMBER:-$(gh pr list --head "$SESSION_BRANCH" --state open --json number -q '.[0].number // empty')}"
+if [ -z "$PR_NUMBER" ]; then                     # fresh — Step 7's create arm never ran
+  gh pr create --base "$BASE_BRANCH" --head "$SESSION_BRANCH" \
+    --title "[<ISSUE-ID>] <issue title>" --draft --label agent-made --body-file "$PR_BODY"
+  PR_NUMBER="$(gh pr view "$SESSION_BRANCH" --json number -q .number)"
+fi
+# Ready it: T2 is unreadable on a draft, and the state list promises a ready PR.
+if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
+test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
+```
+
+**Write the body and the title yourself**, with the same `gh pr edit --body-file` mechanism Step 7
+uses — never by hand-editing in the browser and never by leaving the bootstrap body in place. Write
+both fields in one call, from the `$PR_BODY` assembled above:
+
+```bash
+gh pr edit "$PR_NUMBER" --add-label agent-made \
+  --title "[<ISSUE-ID>] <issue title> (partial <satisfied>/<total>)" --body-file "$PR_BODY"
+```
+
+**The body is Step 7's PR body plus a delta — never a fresh one.** Re-specifying it from scratch is
+how the one route that owns the only body write silently drops what every other route guarantees. So
+write Step 7's body **verbatim in shape**: the same mandatory first line linking the tracker issue
+(downstream review keys off it), the same `Plan: docs/plans/<file>` line, and the same
+`## Acceptance criteria`, `## Autonomous decisions`, `## Cross-model review` and `## Review coverage`
+sections. On top of that body this route adds the following, and **none** may be omitted:
+
+- A count line: `Partial: <satisfied>/<total> acceptance criteria`.
+- The **full** criteria checklist — every in-scope criterion present, none elided. Tick `- [x]` only
+  when the diff/tests demonstrate it **and** the acceptance-criteria lens did not flag it; every
+  other criterion is `- [ ]`.
+- **One line per `- [ ]`**, naming what is missing and why it was deferred, at `file:line` precision —
+  the same evidentiary standard the BLOCKED blocker comment already carries. A bare unticked box
+  hands the next reader nothing.
+- **Real** tokens in the inherited `## Cross-model review` and `## Review coverage` sections — a
+  `capped` run keeps whatever token its tier earned, never a cleaner one. An absent mandatory
+  section reads as full coverage, which on a deliberately partial slice is the worst possible
+  misreading.
+- A `## Partial` section whose **first line** is exactly this literal:
+
+```
+do not merge — partial: <satisfied>/<total> acceptance criteria
+```
+
+**The PR title** gains a trailing ` (partial <satisfied>/<total>)`, written by the
+`gh pr edit --title` above — never left to a later step, and never a body-only write. The title
+already carries `[<ISSUE-ID>]`; this **appends**, never replaces it. Title and body are boss-epic
+condition (5)'s two independent holds, so a body-only write halves the redundancy that is supposed to
+survive a human editing one of them.
+
+**The ticket comment** carries the same four things — the count line, the full checklist, the
+`file:line` reason per open criterion, and the marker — **plus the PR URL**.
+
+**boss-epic holds a `PARTIAL` PR deliberately, twice.** Its merge gate condition (4) reads the ticket
+against the `.inReview` role, and a `PARTIAL` ticket is still in the `.inProgress` role; condition
+(5) reads `title,body` for the do-not-merge marker above. The hold is therefore double-covered and
+survives a human moving the ticket by hand. That redundancy is the reason the marker literal is
+written out verbatim here rather than paraphrased: boss-epic matches this exact string.
+
 ### BLOCKED-route publication (the orchestrator's job, not the subagent's)
 
 `capped` and `dispatch-failure` both stop at **Stop cleanly** without passing Step 7 — the only place
@@ -530,8 +723,12 @@ stack. Run the same procedure below first. Only `PUSHED=yes` may then write the 
 section's BLOCKED reporting instead. Do not fall through to Step 7 in any case.
 
 ```bash
-# Only commits not already on the remote; with no upstream yet, everything on this branch.
-UNPUSHED=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || git rev-list --count HEAD)
+# Only commits not already on the remote; with no upstream yet, everything on this branch. If BOTH
+# forms fail the substitution is non-zero, so the trailing `|| UNPUSHED=` is what keeps errexit from
+# killing this block on its first line; an empty count then matches no arm of the guard below and
+# falls through to the push, which is the fail-open direction for a count nobody could read.
+UNPUSHED=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || git rev-list --count HEAD) ||
+  UNPUSHED=
 # Nothing to send AND origin's copy of the branch CONTAINS this HEAD: the work is already stored
 # there. Existence is not containment — `@{upstream}` is a remote-TRACKING ref, so it outlives both
 # a server-side delete and a server-side force-push, and after a force-push the branch NAME is still
@@ -540,10 +737,17 @@ UNPUSHED=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || git rev-list 
 # an unreachable remote, a deleted branch, an empty or unparseable SHA, an unresolvable HEAD and a
 # failed fetch all fall through to the push below rather than claiming a push that never happened.
 REMOTE_HAS_HEAD=no
+# Read the advertised SHA ONCE, OUTSIDE the zero-ahead guard: the confirmation below needs it, and so
+# does the tag injection on the other arm, which is only reached when the guard did not fire. Keep
+# the ASK's status apart from its answer. "Origin advertises nothing" licenses the injection below to
+# rewrite freely; "could not ask origin" must not, and `2>/dev/null` renders the two identical. A
+# pipeline's status is awk's, not git's, so capture the raw output first and parse it afterwards.
+REMOTE_LS_OK=yes
+REMOTE_LS=$(git ls-remote origin "refs/heads/$SESSION_BRANCH" 2>/dev/null) || REMOTE_LS_OK=no
+REMOTE_SHA=$(printf '%s\n' "$REMOTE_LS" |
+  awk -v ref="refs/heads/$SESSION_BRANCH" '$2 == ref { print $1; exit }') || REMOTE_SHA=
 if [ "$UNPUSHED" = "0" ]; then
-  HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
-  REMOTE_SHA=$(git ls-remote origin "refs/heads/$SESSION_BRANCH" 2>/dev/null |
-    awk -v ref="refs/heads/$SESSION_BRANCH" '$2 == ref { print $1; exit }')
+  HEAD_SHA=$(git rev-parse HEAD 2>/dev/null) || HEAD_SHA=
   # Both non-empty first: an empty advertised SHA must never compare equal to an empty HEAD.
   if [ -n "$HEAD_SHA" ] && [ -n "$REMOTE_SHA" ]; then
     if [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
@@ -557,8 +761,130 @@ if [ "$UNPUSHED" = "0" ]; then
 fi
 if [ "$REMOTE_HAS_HEAD" = yes ]; then
   PUSHED=yes
+  # Confirmed arms assign the tagging outcome too, for the same reason they assign PUSHED: the
+  # report branches on it. This is the one arm that may not tag — origin already contains HEAD.
+  TAGGED=skipped
+  TAG_NOTE="origin already contains HEAD; tagging now would rewrite published history"
 else
   PUSHED=no
+  # Tag the commits BEFORE they are published. This route never reaches Step 7, so the finalize tag
+  # injection that normally runs there never runs at all, and every commit this run made would leave
+  # the worktree untagged. Here is the last moment the tag is free: once the branch is on origin,
+  # adding one means rewriting published history. Nothing below may gate the push — no `exit`, no
+  # `break`, no `if inject; then push; fi`. The injector reports non-zero for benign cases too, so
+  # its status records an outcome and never a reason to withhold the commits.
+  TAGGED=skipped
+  TAG_NOTE="tag injection not attempted"
+  # ONE author per value. `TAGGED` is written here as the not-attempted default, by whichever skip
+  # arm below fires, and — for every attempted injection — by the re-derivation after the push loop,
+  # never by the injector's own exit status: a value remembered from before the reconcile is exactly
+  # what the re-derivation exists to replace. So the injector's result is recorded in two variables
+  # that the re-derivation reads rather than in `TAGGED` itself: `TAG_INJECTED` gates the
+  # re-derivation, and `TAG_INJECT_NOTE` carries the injector's own diagnostic through to the report.
+  TAG_INJECTED=no
+  TAG_INJECT_NOTE=
+  # A bare `VAR=$(cmd)` takes the SUBSTITUTION's status, so under `set -e` an unauthenticated,
+  # offline or rate-limited `gh` would abort this block BEFORE the push — the very gate the rule
+  # above forbids, and one no non-errexit harness can observe. `2>/dev/null` hides the stderr, never
+  # the status. EVERY capture on this route therefore carries a `|| VAR=` tail — no exceptions and
+  # no per-command reachability argument, because the next editor cannot re-run that argument and a
+  # rule with exceptions stops being read. A gate over this block's text enforces it literally.
+  if [ -z "${PR_NUMBER:-}" ]; then
+    PR_NUMBER=$(gh pr list --head "$SESSION_BRANCH" --state open --json number \
+      -q '.[0].number // empty' 2>/dev/null) || PR_NUMBER=
+  fi
+  BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+  if [ ! -d "$BOSS_SKILLS_HOME/boss-build/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+  if [ -z "$PR_NUMBER" ]; then
+    TAG_NOTE="no open PR maps to $SESSION_BRANCH"
+  # `--untracked-files=no` deliberately. What the injector cannot survive is an uncommitted change
+  # to a TRACKED path: its rebase refuses to start ("cannot rebase: You have unstaged changes"), and
+  # a reset inside it would discard the edit. An untracked file is neither — a rebase runs straight
+  # past it, and a message-only rewrite of commits already in this history checks out no path that
+  # could clobber one. Counting `??` as dirty would let one leftover scratch artifact disable the
+  # whole injection on the route most likely to have leftovers, and publish untagged commits anyway.
+  elif [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    TAG_NOTE="tracked files carry uncommitted changes; the injector's rebase would refuse to start"
+  elif [ ! -f "$BOSS_SKILLS_HOME/boss-build/toolbox/finalize/cli.mjs" ]; then
+    TAG_NOTE="finalize toolbox not resolvable"
+  elif ! TAG_BASE=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName 2>/dev/null) ||
+    [ -z "$TAG_BASE" ] || ! git fetch -q origin "$TAG_BASE" 2>/dev/null; then
+    TAG_NOTE="PR base branch unresolvable"
+  else
+    # The injector REWRITES the commits it tags, which is safe only for commits origin has never
+    # seen. Do NOT gate that on `REMOTE_HAS_HEAD`: it is `no` on this arm by construction, so it
+    # would answer every shape identically. Record the commit origin advertises AND already has in
+    # this history, run the injector, then require that commit to STILL be an ancestor of `HEAD`.
+    # That guard is the whole safety argument for rewriting here, so ESTABLISHING it fails closed
+    # too: a remote this run could not read, and an advertised commit it could not fetch, both leave
+    # ancestry undecidable, and an unguarded rewrite is not a licence this route grants itself.
+    # Only an advertised-NOTHING remote — never pushed, or deleted server-side — rewrites freely.
+    PUBLISHED_TIP=
+    GUARD_READY=yes
+    if [ "$REMOTE_LS_OK" != yes ]; then
+      GUARD_READY=no
+      TAG_NOTE="could not read what origin advertises; a rewrite here would be unguarded"
+    elif [ -n "$REMOTE_SHA" ]; then
+      if git fetch -q origin "$SESSION_BRANCH" 2>/dev/null &&
+        git cat-file -e "$REMOTE_SHA^{commit}" 2>/dev/null; then
+        # Decidable now. NOT an ancestor means origin has DIVERGED from this history, so the commit
+        # it advertises is not in the range the injector walks and there is nothing here to protect;
+        # the rewrite stays local and the reconcile in the loop below owns that shape.
+        if git merge-base --is-ancestor "$REMOTE_SHA" HEAD 2>/dev/null; then
+          PUBLISHED_TIP="$REMOTE_SHA"
+        fi
+      else
+        GUARD_READY=no
+        TAG_NOTE="origin's advertised commit is unfetchable; a rewrite here would be unguarded"
+      fi
+    fi
+    # The rollback below rewinds to this commit, so capture it BEFORE the guard is consulted and
+    # fail closed on an empty answer for the same reason the two arms above do: a rewrite whose
+    # undo has no target is unguarded. `git reset --hard ""` is NOT the hazard — it exits 128 and
+    # moves nothing — so what an empty answer really buys is an unsafe rewrite left standing with
+    # nothing able to take it back, surfacing only as a rollback that did not complete. Refuse it.
+    PRE_INJECT_SHA=$(git rev-parse HEAD 2>/dev/null) || PRE_INJECT_SHA=
+    if [ -z "$PRE_INJECT_SHA" ]; then
+      GUARD_READY=no
+      TAG_NOTE="could not capture the pre-injection HEAD; a rewrite here would be unguarded"
+    fi
+    if [ "$GUARD_READY" = yes ]; then
+      TAG_INJECTED=yes
+      if ! BASE_BRANCH="$TAG_BASE" node "$BOSS_SKILLS_HOME/boss-build/toolbox/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"; then
+        # Keep the injector's own diagnostic — it is the only record of WHY the injection stopped,
+        # and the re-derivation below can observe that a commit is untagged but never why. The
+        # CAUSE and nothing else: a non-zero injector exit does not imply an untagged commit, so a
+        # second clause guessing at one would contradict a re-derived `TAGGED=all` in the same
+        # report — the ambiguity the two-field split exists to remove, re-entering as a value.
+        TAG_INJECT_NOTE="injector exited non-zero"
+        # Never leave a half-finished rebase or a detached HEAD behind for the push loop to trip over.
+        git rebase --abort 2>/dev/null || true
+        git checkout -q "$SESSION_BRANCH" 2>/dev/null || true
+      fi
+      if [ -n "$PUBLISHED_TIP" ] && ! git merge-base --is-ancestor "$PUBLISHED_TIP" HEAD 2>/dev/null; then
+        # Branch on the reset's OWN status. As a bare command it is not a condition, so under
+        # errexit a lock left by the aborted rebase above would exit the arm whose entire purpose is
+        # undoing an unsafe rewrite — before the push, and with the branch left rewritten. And even
+        # without errexit a failed reset is indistinguishable from a successful one, so reporting
+        # `skipped` unconditionally would assert a rewrite did not happen on a branch where it did.
+        if git reset --hard "$PRE_INJECT_SHA"; then
+          # Rolled back to the pre-injection commit, so there is nothing left for the re-derivation
+          # to read and no injector diagnostic left that describes the branch as it now stands.
+          TAG_INJECTED=no
+          TAG_INJECT_NOTE=
+          TAGGED=skipped
+          TAG_NOTE="injection would have rewritten a commit origin already advertises"
+        else
+          # The rollback did not complete, so leave `TAG_INJECTED=yes` and let the re-derivation
+          # below read what the branch stands at afterwards. The note records the ATTEMPT only.
+          # It may NOT say the branch still carries the rewrite: the reconcile in the loop rebases,
+          # and a rewritten copy of a commit origin still holds untagged is dropped there as
+          # patch-identical — so that claim would publish a state this block never observed.
+          TAG_INJECT_NOTE="rollback of an over-published rewrite did not complete"
+        fi
+      fi
+    fi
+  fi
   attempts=0
   delay=5
   # Retry over a real WINDOW, not a token count: a remote outage that clears in two minutes must
@@ -578,11 +904,66 @@ else
     sleep "$delay"
     [ "$delay" -ge 60 ] || delay=$((delay * 2))
   done
+  # Re-derive the tag outcome AFTER the loop, never from the pre-push scan. The reconcile above
+  # rebases, and rebase skips commits by PATCH id, which ignores the message entirely: a tagged copy
+  # of a commit origin still holds untagged is dropped as a duplicate and the tag goes with it. So
+  # read the branch as it now stands, with the predicate the injector itself verifies — a SUBJECT
+  # carrying the tag — over the same range the injector walked. Unverifiable is `partial`, never
+  # `all`: this block may not publish a tag state it did not observe. Read what the push published,
+  # so check FIRST that `HEAD` is still the branch: a failed re-attach above leaves a detached,
+  # partly-tagged `HEAD` while the branch — the ref the loop pushes — still points at the untagged
+  # original, and scanning `HEAD` would then report `all` for a branch carrying no tag at all. Keep
+  # the read's status apart from its answer for the same reason the `ls-remote` above does: a
+  # pipeline's status is `grep`'s, and an unreadable range prints nothing, which `grep -qv` reports
+  # exactly as a fully tagged one.
+  if [ "$TAG_INJECTED" = yes ]; then
+    # `|| TAG_RANGE_BASE=` for the same reason as the PR lookup: a bare capture would abort under
+    # `set -e` before reaching the `[ -z … ]` arm that exists precisely to handle it, turning the
+    # intended `partial`/unverifiable outcome into an aborted publication.
+    TAG_RANGE_BASE=$(git merge-base HEAD "origin/$TAG_BASE" 2>/dev/null) || TAG_RANGE_BASE=
+    if [ "$(git rev-parse HEAD 2>/dev/null)" != "$(git rev-parse "refs/heads/$SESSION_BRANCH" 2>/dev/null)" ]; then
+      TAGGED=partial
+      TAG_NOTE="tag state unverifiable: HEAD is not on $SESSION_BRANCH"
+    elif [ -z "$TAG_RANGE_BASE" ]; then
+      TAGGED=partial
+      TAG_NOTE="tag state unverifiable: the PR base no longer resolves"
+    elif ! TAG_SUBJECTS=$(git log --format=%s "$TAG_RANGE_BASE..HEAD" 2>/dev/null); then
+      TAGGED=partial
+      TAG_NOTE="tag state unverifiable: the branch range would not resolve"
+    elif [ -n "$TAG_SUBJECTS" ] && printf '%s\n' "$TAG_SUBJECTS" | grep -qvF "[#$PR_NUMBER]"; then
+      TAGGED=partial
+      TAG_NOTE="commits on this branch still carry no [#$PR_NUMBER]"
+    elif [ -z "$TAG_SUBJECTS" ]; then
+      # An empty range satisfies "every commit carries the tag" VACUOUSLY, and that is the outcome
+      # the reconcile above produces when it drops this run's tagged copies as patch-identical —
+      # the very case this re-derivation exists for. Left to fall into the arm below it would be
+      # indistinguishable from a genuinely tagged branch, and the report would then assert a tag on
+      # commits that are no longer there. Same rule as everywhere else on this route: say what was
+      # observed, and an empty range is not an observation of a tag.
+      TAGGED=all
+      TAG_NOTE="the reconcile left no commits in the range; nothing carried the tag out"
+    else
+      TAGGED=all
+      TAG_NOTE=
+    fi
+    # Two variables, never one joined string. The re-derivation owns WHAT the branch carries and the
+    # injector owns WHY it stopped, and a report that drops the second sends the next reader to
+    # re-derive it — but joined into one string neither clause is attributable any more: the reader
+    # cannot tell which half was observed from which half is a cause, and the injector's text is
+    # free form, so no separator a join might pick is reserved against it. `TAG_INJECT_NOTE` is
+    # already a variable; report it beside `TAG_NOTE` and there is nothing to split.
+  fi
   if [ "$PUSHED" != yes ]; then
     # The session branch ref is unreachable, or diverged beyond what an autonomous run may
     # reconcile. A UNIQUE rescue ref cannot be rejected as non-fast-forward, so the commits still
     # leave this worktree. Never accept "the SHAs are in the local log" as a terminal outcome.
-    RESCUE="$SESSION_BRANCH-blocked-$(git rev-parse --short HEAD)"
+    # The suffix is what makes the ref unique, so it is captured on its own and never left empty:
+    # bare, a failing `rev-parse` would abort the last mechanism guaranteeing these commits leave
+    # the worktree, and an empty one would build the invalid ref `refs/heads/<branch>-blocked-`.
+    # `$$` is always set and cannot fail, so the fallback is unique enough to survive a push.
+    RESCUE_SUFFIX=$(git rev-parse --short HEAD 2>/dev/null) || RESCUE_SUFFIX=
+    [ -n "$RESCUE_SUFFIX" ] || RESCUE_SUFFIX="$$"
+    RESCUE="$SESSION_BRANCH-blocked-$RESCUE_SUFFIX"
     if git push origin "HEAD:refs/heads/$RESCUE"; then
       PUSHED=rescue
       echo "session branch unpushable after $attempts attempt(s); commits persisted on $RESCUE — name that branch in the BLOCKED comment"
@@ -694,9 +1075,16 @@ blocks later work is strictly worse than a reported, and now very unlikely, loss
 success remains the one outcome that must never happen.
 
 Plain `git push` — never `--force`/`--force-with-lease`, and reconcile with a rebase,
-never a merge (see the linear-history rule these skills share). None of these routes rewrote history,
-so a rejected push means the remote moved under this run: rebasing onto it keeps both sides, while a
-force would overwrite a commit this run did not author.
+never a merge (see the linear-history rule these skills share). The tag injection is the one step on
+this route that rewrites commits, and where origin's advertised tip is contained in this history it
+never rewrites a commit that tip is built on: it rolls itself back the moment that stops being true,
+and it declines to run at all when it cannot read or fetch that tip. Bound the claim there and no
+further — the containment is the premise, not a decoration on it. Where origin has **diverged**
+from this history it advertises a commit this history does not contain, and the injection may then
+rewrite commits origin also holds — but that rewrite stays **local**, because nothing on this route
+may push over them; the reconcile below is what decides that shape. A rejected push therefore still
+means the remote moved under this run: rebasing onto it keeps both sides, while a force would
+overwrite a commit this run did not author.
 
 **Report what `PUSHED` actually says, never a fixed sentence.** The block above has three terminal
 outcomes and the BLOCKED comment owes a different statement for each. Read the variable; do not
@@ -716,6 +1104,92 @@ assume the loop failed just because you reached this paragraph:
   record that the work existed.
 
 A failed push does **not** change the terminal state: it is already `BLOCKED`.
+
+**Report the tagging outcome too — it is an outcome, never a gate on the push.** The step that
+injects the PR-number tag lives in Step 7, and every route in this section stops before it, so these
+commits reach the remote through this block or not at all, and they reach it tagged only because the
+injection above ran first. Read `TAGGED` **after** `PUSHED` is assigned — a tag on a commit that
+never left the worktree is not something a reader can act on, and the block re-derives the value
+there from the branch as it now stands rather than from what the injector said before the loop ran.
+State one of:
+
+- `TAGGED=all` — every commit in the branch's range carries the tag. Read it together with `PUSHED`:
+  on `PUSHED=no` nothing left the worktree, so this describes the local branch only. A range with no
+  commits left in it satisfies this **vacuously**, and the block records exactly that in `$TAG_NOTE`
+  rather than leaving the two cases identical: where that note is non-empty, report that the
+  reconcile dropped the commits — never "all commits are tagged", which asserts a tag on commits
+  that are no longer there. Nothing further is owed beyond `$TAG_INJECT_NOTE` where it is non-empty.
+- `TAGGED=partial` — some commit on that branch does not, **or** the state could not be verified at
+  all. Those are different reports and `$TAG_NOTE` is what tells them apart, so name the branch and
+  then name that reason: only the "still carry no `[#N]`" note licenses asserting an untagged
+  commit, and the three `tag state unverifiable:` notes observed nothing, so asserting one there is
+  an invention the next reader has to go and disprove. Quote the injector's own `these commits were
+left untagged:` list where it printed one: it names each commit and the reason its amend was
+  rejected, which a bare "unverified" throws away and the next reader then has to re-derive. Do
+  **not** report it as a push failure: `PUSHED` owns that, and the two are independent.
+- `TAGGED=skipped` — nothing was injected, for the reason in `$TAG_NOTE`. Name that reason rather
+  than the bare word: "no open PR maps to the branch" and "the finalize toolbox was not resolvable"
+  ask different things of the next run.
+
+`$TAG_INJECT_NOTE` is a **second, separate field**: report it beside `$TAG_NOTE` whenever it is
+non-empty, and never merge the two into one string. They answer different questions — `$TAG_NOTE`
+says what the branch was **observed** to carry, `$TAG_INJECT_NOTE` says **why** the injection stopped
+or which recovery step did not complete — and a merged note is one string in which neither clause is
+attributable: the reader cannot tell the observation from the cause, and the injector's text is free
+form, so no separator a join might pick is reserved against it. Being about the injection and never
+about a commit, it licenses no assertion about the branch at all: state it as the **cause** alongside
+the observation, never in place of one. It is **unset or empty on every ordinary outcome** — the
+confirmed arm never injects, and an injection with nothing to report leaves it as it was — and an
+empty field is **omitted from the report** rather than printed blank: a named field nobody filled in
+is not a diagnostic that went missing. Only the non-empty case is owed a line.
+
+**Where the line goes when `$TAG_NOTE` is empty.** "Beside `$TAG_NOTE`" has nothing to sit beside on
+the `all` arm: the re-derivation clears `TAG_NOTE` there on every arm but the vacuous empty-range
+one, and clears it nowhere else. So on `TAGGED=all` report
+`$TAG_INJECT_NOTE` under the `TAGGED=all` statement itself, as the **cause** it always is. That
+pairing is not a contradiction to be resolved away — a rollback that did not complete, or a benign
+non-zero injector exit, can end with every _surviving_ commit tagged, because the reconcile drops the
+rewritten copies as patch-identical. `all` and a non-empty injector diagnostic are therefore the one
+combination most worth printing, and dropping the diagnostic because its companion field is empty
+loses the only record that the recovery did not finish — exactly the loss the two-field split exists
+to prevent.
+
+Say what an untagged commit actually costs, and no more. The tag is a traceability link from commit
+to PR, so when the project runs no commit-message check in CI, an untagged commit is a gap in that
+link — not a red check. Where the project does run such a check, it is that too. Never assert a red
+build this run has not observed: an invented consequence sends the next reader hunting a failure that
+does not exist, which is the same class of error as an invented success, and it discredits the rest
+of the report.
+
+**Not a goal: retro-tagging commits origin already holds.** Those stay untagged, and the containment
+check above exists to keep them that way. Tagging them means rewriting published history, whose only
+delivery is a force-push over commits this run may not have authored — forbidden here in every form.
+An already-published untagged commit is a closed loss to record, not an open task for this route.
+The rollback that enforces this is **all-or-nothing** by choice: when the injector would rewrite a
+published commit, the whole injection is reset, so this run's own unpublished commits lose their tag
+too. Tagging just the unpublished suffix would keep them, and is the obvious refinement — but it is
+not what this block does, so report `skipped` as the total outcome it is.
+
+**Every reader of this block gets the injection, and the report re-checks what survived.** The
+pre-dispatch floor route, `capped`, and `dispatch-failure` run the same block, so all three publish
+tagged commits — the floor route included, even though it exits to a generated `capped 1` verdict
+rather than to a review report — and §PARTIAL-route publication borrows this same push procedure, so
+it is a fourth reader and its T3 conjunct reads the outcome as a gate. What a reconcile does to the
+tag is exactly why the outcome is re-derived rather than remembered: `git rebase` skips commits by
+**patch id**, which ignores the message entirely, so a tagged copy of a commit origin still holds
+untagged is dropped as a duplicate and the tag goes with it. The re-derivation after the loop reads
+the branch as it now stands, so `all` is an observation of that branch rather than a memory of what
+the injector said it would do. That is not the same as a promise the tag survived: when the drop
+takes **every** commit the range is left empty, and an empty range satisfies "every commit carries
+the tag" vacuously — so the emptied-range arm reaches `all` with nothing carrying anything, and
+records exactly that in `$TAG_NOTE`. Read the pair, never the token alone: `all` alongside that note
+is a branch the reconcile left nothing on, and only `all` with `$TAG_NOTE` empty reports commits
+observed carrying the tag. `PUSHED=rescue` pushes that same `HEAD` to `$RESCUE`, so the rescue ref
+carries whatever the re-derivation found and is no lesser record. The zero-ahead arm is the one that
+skips the injection **by construction**, and it must: it reached `yes` precisely because origin
+already contains `HEAD`, the one state where tagging would rewrite published history. Every other
+`skipped` is conditional and names its reason in `$TAG_NOTE`, so never read the bare word as proof
+that the zero-ahead arm fired.
 
 This binds **all three** routes: the Step 6 budget floor, `capped`, and `dispatch-failure` alike.
 They differ only in which tokens they publish; every one of them is reachable with commits in the
@@ -890,7 +1364,9 @@ then dispatch one fresh independent reviewer over the whole branch. A clean resu
 6b normally. A new Critical finding, a finding outside this eligibility set, an oscillation, an
 unresolved must-fix after the two extra rounds, or insufficient wall-clock budget takes the normal
 `capped` → `BLOCKED` path. Record each extension-round disposition in the finding ledger. Never use
-this extension to defer a required item or to broaden the ticket.
+this extension to defer a required item or to broaden the ticket — the `PARTIAL` carve-out does
+**not** reach this extension: it is a terminal-state choice made after the loop ends, never a licence
+for a round inside the loop to leave a required item behind.
 
 Track findings in buckets (in the PR body / working state, fed to the next round's reviewer): `Fixed`
 (file:line + round), `Deferred` (Minor), `Verified (no change)`, `Rejected-with-reasoning` (a finding

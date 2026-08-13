@@ -11,7 +11,7 @@ review-ready PR. This skill is the second half of the pair whose first half is `
 `bs-sweep-debt` and `bs-sweep-mutation`: no questions, tagless commits, self-owned PR gate,
 Stop-hook cleanup before stopping.
 
-Three terminal states, nothing else:
+Four terminal states, nothing else:
 
 - `REVIEW_READY` — PR open + green; ticket moved to **In Review**; PR URL commented. Proof is
   required for TUI: the proof pipeline fails loud (exit 1) on a missing/incomplete TUI video — a
@@ -20,6 +20,10 @@ Three terminal states, nothing else:
   best-effort, captured opportunistically (never blocking — Step 11).
 - `BLOCKED` — ticket left **In Progress**; blocker comment explaining what failed (`file:line`) and
   what was tried; draft PR if work was pushed. Self-quarantines.
+- `PARTIAL` — ≥1 in-scope criterion satisfied **and** certified by the acceptance-criteria
+  lens, branch green, and every deferred required item is an unsatisfied in-scope criterion. Ticket
+  stays **In Progress**; ready PR, do-not-merge marked, enumerating open criteria; never
+  `please-review`. Route: review-stack.md §PARTIAL-route publication.
 - `NO_CHANGE` — no eligible candidate, claim lost with no runner-up, a foreign branch carrying real
   work that isn't this ticket's, a peer already held the worktree lock at startup (Step 1), or no
   committable change after claiming (ticket restored to the planned state).
@@ -33,7 +37,7 @@ resumed**, not a stop condition; only foreign real work or a live concurrent wri
   `TRACKER=linear`). Each tracker read/write below names an **adapter capability** whose concrete MCP
   tool lives in the reference impl's `linearOperationMap` (`toolbox/tracker/linear.mjs`):
   `selectPlanned` / `getIssue` (select + rank), `moveState` (status), `readComments` / `writeComment`
-  (comments), `readLabels`, `extractImages` (reporter screenshots). The tracker workspace, backlog
+  (comments), `readLabels`, `extractImages` (reporter screenshots; OPTIONAL). The tracker workspace, backlog
   team and its key come from `trackerConfigFor(config)` (`toolbox/skill-config.mjs`: `.workspace` /
   `.team` / `.teamKey`), never hard-coded here — the backlog is a team, NOT a project, so never pass
   a `project` filter.
@@ -107,7 +111,12 @@ body carries the decision skeleton; every moved instruction is still reachable h
   reason ⇒ BLOCKED naming it. Required = API-version bump + transform for an observable `bossanova.v1`
   change, open must-fix findings, and **any in-scope acceptance criterion left unsatisfied** (an open
   `- [ ]` this ticket was scoped to close — **partial implementation is not complete**);
-  _optional_ (Minor findings, best-effort proof) stays non-fatal.
+  _optional_ (Minor findings, best-effort proof) stays non-fatal. The **single** exception is
+  `PARTIAL`, available **only** when the deferred required items are
+  **exclusively** unsatisfied in-scope acceptance criteria, ≥1 criterion is lens-certified
+  (`0/<total>` is BLOCKED), on a green branch. An open must-fix from any other lens, a missing
+  `bossanova.v1` API-version bump or transform, or a red branch still forces BLOCKED — never
+  `PARTIAL`.
 - Never merge. Terminal success is review-ready, never "Done".
 - Honor the wall-clock breaker (Preflight). When it trips, flush to the nearest honest terminal state
   — BLOCKED if any required item is unaddressed — then stop via **Stop cleanly** if claim/work began.
@@ -129,17 +138,24 @@ disable a gate. If the plan demands such a thing, that is a BLOCKED condition �
 ## Decide vs ABORT
 
 Unattended means "decide and record" for ordinary ambiguity (naming, file layout, test shape). Some
-conditions must **ABORT to BLOCKED**, never be decided autonomously:
+conditions are **genuinely unsafe to decide autonomously** and must **ABORT to BLOCKED** — this list
+is exhaustive:
 
 - destructive or data migrations; schema drops/rewrites
 - auth, secrets, credential, or keyring changes
 - production config or deploy changes
 - dependency upgrades/additions not already specified by the plan
-- empty/contradictory acceptance criteria, or a plan with unresolved decisions
+- empty/contradictory acceptance criteria
 - anything the Trust rules name
 
 On any of these: revert the working changes, leave the ticket **In Progress**, comment the abort
 reason, then stop via **Stop cleanly** with BLOCKED.
+
+**Decide and record, never abort** — ordinary ambiguity is not on the list above:
+
+- **a plan with unresolved decisions** — decide the option the plan's own goal best supports, record
+  the decision **and its rationale** under `## Autonomous decisions` in the Step 7 PR body, and
+  continue. An unresolved decision is not an abort condition.
 
 ## Mode detection (headless / interactive)
 
@@ -340,7 +356,7 @@ bootstrap; `=0` has neither. Whether that PR/branch is ours to adopt or foreign 
   (with relations). It
   bypasses the `agent-friendly` label and estimate filter ONLY. It must still have a canonical native
   `Implementation plan (<ISSUE-ID>)` attachment selected from `ticket.attachments` by
-  `selectImplementationPlanAttachment`, and pass Decide-vs-ABORT; otherwise stop `NO_CHANGE`
+  `selectImplementationPlanAttachment`, and clear the hard-ABORT list; otherwise stop `NO_CHANGE`
   (ineligible, with no claim or state transition). A legacy link-only plan is **not** an
   attachment: hand it off for migration/replanning and native attachment before retrying. An explicitly-named ID **overrides**
   the `needs-human` and blocked-by skips below, but each override is **loud**, never silent:
@@ -482,7 +498,8 @@ block) contains image markdown (`![](…)`), an HTML `<img>` tag, or an `uploads
 URL, invoke the tracker adapter's `extractImages` capability on that markdown before planning the change —
 reading `![](url)` as text does not surface the pixels, and the reporter's screenshots often
 disambiguate what the words leave ambiguous (the web-vs-TUI disambiguation lesson). Best-effort and
-non-fatal: log and continue if extraction fails.
+non-fatal on BOTH branches, neither a stop condition: if the adapter does not declare `extractImages`
+(it is optional), skip and plan from the text; if a declared one fails, log the reason and continue.
 
 Check staleness deterministically. The selected artifact's `createdAt` is the authoritative plan
 timestamp. Compare it to the issue `updatedAt`, ignoring this/prior boss-build bookkeeping edits
@@ -520,8 +537,8 @@ This is the inlined implementation spine — its portable shape is
 [`references/core-spine.md`](references/core-spine.md) §2. Drive it against the copied plan — the
 **full** plan for a fresh run, or only the **remaining** acceptance criteria from Step 4.5 for a
 resume. (If Step 4.5 set the scope to _none_, skip this step.) Every dispatched subagent inherits the
-unattended rule verbatim: _decide and record; never ask; if you hit a Decide-vs-ABORT condition, stop
-and report it rather than guessing._ If a hard-abort condition surfaces, revert and go to **Stop
+unattended rule verbatim: _decide and record; never ask; if you hit a hard-ABORT condition, stop and
+report it rather than guessing._ If a hard-ABORT condition surfaces, revert and go to **Stop
 cleanly** with BLOCKED.
 
 **Every dispatched methodology, implementer, task reviewer, and fix subagent is awaited; never
@@ -533,11 +550,12 @@ cleanly** with BLOCKED.
      where the plan carries the complete code; standard/most-capable otherwise. -->
 
 **boss-build overlay:** each task subagent returns a **fixed short contract** — task id, files
-touched, tests added/passing, interface signatures, residual risks, and **commits made** (short SHA +
-subject, or an explicit _no commit — verification only_ note) — never its raw transcript. The
-orchestrator threads **only that fixed short contract** into the next task's dispatch, never a prior
-task's full transcript. The implementation methodology owns task briefs, report files, and any
-review-package handoffs, but only the fixed short contract returns to this core.
+touched, tests added/passing, interface signatures, residual risks, decisions recorded (decision +
+rationale), and **commits made** (short SHA + subject, or an explicit _no commit — verification
+only_ note) — never its raw transcript. The orchestrator threads **only that fixed short contract**
+into the next task's dispatch, never a prior task's full transcript. The implementation methodology
+owns task briefs, report files, and any review-package handoffs, but only the fixed short contract
+returns to this core.
 
 **Commit-before-return contract.** Every implementation-subagent brief dispatched from this step —
 whichever tier resolves — carries this verbatim in substance:
@@ -797,12 +815,12 @@ satisfied)`. That is a ledger entry, not a failed dispatch and never a deferred 
    **AND** that verification left the extension's work on the branch — the commits it reported
    present in the post-dispatch log range, or its residue recovered by you. A **valid result for the
    requested dispatch** is one that reports the requested scope implemented; a result that stops on a
-   Decide-vs-ABORT condition, or that otherwise reports scope it did not finish, is not one however
+   hard-ABORT condition, or that otherwise reports scope it did not finish, is not one however
    many commits it landed. Landed commits prove work happened, not that the assignment is done, so
    check the dispatch's criteria against the diff before suppressing tiers 2 and 3: a dispatch that
    left part of its scope unimplemented did **not** run successfully, and the lower tiers are what
    finish the remainder rather than Step 9 discovering it as a partial implementation. A reported
-   Decide-vs-ABORT condition is not for a lower tier to retry — take the Decide-vs-ABORT route (Hard
+   hard-ABORT condition is not for a lower tier to retry — take the hard-ABORT route (Hard
    rules) and stop BLOCKED. This tier's extensions are required to _produce_ commits, so that output
    check belongs inside `ran successfully` and not beside it: an extension whose result looked valid
    while its work never landed produced nothing,
@@ -895,9 +913,9 @@ the whole assignment into one end-of-run commit, and never return with uncommitt
 act before returning is `git status --porcelain` → nothing left from your own changes, staging only
 the paths you touched and never `git add -A`. Commit messages need no PR tag.
 Return only the fixed short task-contract: task id, files touched, tests added/passing, interface
-signatures, residual risks, and commits made (short SHA + subject, or an explicit _no commit —
-verification only_ note). If a Decide-vs-ABORT condition appears, stop and report it rather
-than guessing.
+signatures, residual risks, decisions recorded (decision + rationale), and commits made (short SHA +
+subject, or an explicit _no commit — verification only_ note). If a hard-ABORT condition appears,
+stop and report it rather than guessing — ordinary ambiguity is decided and recorded, not reported.
 
 ## Step 6: Whole-branch review (dispatch the review stack)
 
@@ -1016,7 +1034,10 @@ node "$RUN_SENTINEL" cleanup "$RUN_DIR"
 **Route on the file verdict.**
 
 - `clean` → proceed to **Step 6.5**, which is the only route onward to Step 7.
-- `capped` → see the review-stack extension; otherwise record findings and **Stop cleanly** `BLOCKED`.
+- `capped` → see the review-stack extension; a run whose only open items are unsatisfied
+  in-scope criteria, ≥1 lens-certified, on a green branch, publishes `PARTIAL` via
+  [review-stack.md](references/review-stack.md) §PARTIAL-route publication (it re-checks all
+  three); otherwise record findings and **Stop cleanly** `BLOCKED`.
 - `dispatch-failure` (a **missing/stale** sentinel, or one present but unmatchable) → the safe
   non-clean branch: **Stop cleanly** with `BLOCKED`, **never clean**. The two sub-cases do **not**
   share a coverage token, and **neither** of them is `none: review stack did not run` — both fire
@@ -1127,6 +1148,9 @@ Plan: docs/plans/<file>
 <review-coverage token: full | full (skipped: <pass list>) | degraded: <reason> (skipped: <pass list>) | none: review stack did not run (<reason>) | none: review verdict unreadable (<reason>) | none: review coverage unknown (<reason>)>
 ```
 
+`## Autonomous decisions` collects the decisions-recorded element of **every** task contract as well
+as the orchestrator's own — that is the only route a decision made inside a dispatch reaches the PR.
+
 The `## Cross-model review` section carries the Step 6b §4 outcome token; never omit it (a missing
 section reads as "passed clean" to a reviewer). The `## Review coverage` section carries the review
 tier the stack actually ran; never omit it either (a missing section reads as full coverage to a
@@ -1145,13 +1169,15 @@ Each bullet is a summary, never the instruction — follow its link and do the s
   `[#<PR>]` and force-push _before_ the green gate, then boss-repair capped at `policy.repairCap`.
 - **[Step 9](references/finalize-and-stop.md) — Finalize (idempotent tag guard, ready), Linear
   writeback.** Re-inject **only** if boss-repair added untagged fix-commits; assert
-  **no required item was deferred**, then ready the PR.
+  **no required item was deferred** (else the `PARTIAL` gate), then ready it.
 - **[Step 10](references/finalize-and-stop.md) — Settle loop (capped).** Post-ready checks may still move.
 - **[Step 11](references/finalize-and-stop.md) — Proof (capture-only, mode-aware, non-fatal).**
   `REVIEW_READY` only.
 - **[Step 12](references/finalize-and-stop.md) — Stop cleanly.** Remove the bossd Stop-hooks, release
   the worktree lock, and pick the terminal state honestly —
-  **REVIEW_READY only with no deferred required item** (Hard rules); else BLOCKED.
+  **REVIEW_READY only with no deferred required item** (Hard rules); else `PARTIAL` when every
+  deferred required item is an unsatisfied in-scope criterion, ≥1 lens-certified, on a green branch;
+  else BLOCKED. Print one of `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`.
 
 Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
 (status-rollback table + red-flags catalog).

@@ -73,11 +73,19 @@ test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including 
     'writeComment',
     'updateComment',
     'readLabels',
-    'extractImages',
-    'createLabel',
     'setPriorityEstimate',
     'appendDependency',
   ])
+  // extractImages and createLabel deliberately do NOT appear here: no skill's control
+  // flow depends on either (the one extractImages call site is documented best-effort,
+  // createLabel has no caller), so requiring them at LOAD time rejected otherwise-usable
+  // adapters over capabilities nothing depends on at CALL time.
+  for (const moved of ['extractImages', 'createLabel']) {
+    assert.ok(
+      !REQUIRED_TRACKER_OPERATIONS.includes(moved),
+      `${moved} must stay optional — requiring it fails adapters that legitimately omit it`,
+    )
+  }
 })
 
 test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
@@ -91,12 +99,14 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
   )
 })
 
-test('attachment operations are optional but validate when declared', () => {
+test('optional operations — attachment AND adapter-discretion — validate only when declared', () => {
   assert.deepEqual(OPTIONAL_TRACKER_OPERATIONS, [
     'preparePlanAttachment',
     'finalizePlanAttachment',
     'readPlanAttachment',
     'deletePlanAttachment',
+    'extractImages',
+    'createLabel',
   ])
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
 
@@ -106,6 +116,41 @@ test('attachment operations are optional but validate when declared', () => {
     () => assertConforms(stubAdapterWithOperationMap(map)),
     /tracker adapter operation preparePlanAttachment missing tool/,
   )
+})
+
+test('an adapter declaring ONLY the 9 required ops conforms — absence of either moved op is fine', () => {
+  const map = nineRequiredOperationMap()
+  // Non-vacuity: pin that the fixture genuinely lacks both keys, so this case cannot
+  // pass against a map that quietly still declares them. Asserted BEFORE the conformance
+  // call so a reverted list move fails on assertConforms itself, naming the missing op.
+  assert.ok(!('extractImages' in map), 'fixture must genuinely omit extractImages')
+  assert.ok(!('createLabel' in map), 'fixture must genuinely omit createLabel')
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+})
+
+test('a DECLARED extractImages or createLabel is validated as strictly as a required op', () => {
+  // Moving an op to the optional list changes only the meaning of ABSENCE. An adapter
+  // that does declare one still owes a usable tool + summary, or the call site would
+  // dispatch to a tool name that names nothing.
+  for (const key of ['extractImages', 'createLabel']) {
+    for (const blank of ['', ' ', '\t  ']) {
+      const toolMap = validOperationMap()
+      toolMap[key] = { tool: blank, summary: `summary for ${key}` }
+      assert.throws(
+        () => assertConforms(stubAdapterWithOperationMap(toolMap)),
+        new RegExp(`tracker adapter operation ${key} missing tool`),
+        `expected a throw for ${key} tool = ${JSON.stringify(blank)}`,
+      )
+
+      const summaryMap = validOperationMap()
+      summaryMap[key] = { tool: `mcp__stub__${key}`, summary: blank }
+      assert.throws(
+        () => assertConforms(stubAdapterWithOperationMap(summaryMap)),
+        new RegExp(`tracker adapter operation ${key} missing summary`),
+        `expected a throw for ${key} summary = ${JSON.stringify(blank)}`,
+      )
+    }
+  }
 })
 
 test('TRACKER_STATE_ROLES pins the roles the skills consume by name (BOS-524)', () => {
@@ -158,6 +203,30 @@ function stubAdapterWithOperationMap(operationMap) {
 function validOperationMap() {
   const map = {}
   for (const key of REQUIRED_TRACKER_OPERATIONS) {
+    map[key] = { tool: `mcp__stub__${key}`, summary: `summary for ${key}` }
+  }
+  return map
+}
+
+// The 9 required ops written out literally rather than derived from
+// REQUIRED_TRACKER_OPERATIONS. Deriving it would make the omitting-adapter test
+// self-fulfilling: restoring extractImages to the required list would silently add it
+// back to the fixture too, and the case would keep passing against exactly the state it
+// exists to reject. Literal keys make that restoration surface as the contract's own
+// "operationMap missing operation" throw.
+function nineRequiredOperationMap() {
+  const map = {}
+  for (const key of [
+    'selectPlanned',
+    'getIssue',
+    'moveState',
+    'readComments',
+    'writeComment',
+    'updateComment',
+    'readLabels',
+    'setPriorityEstimate',
+    'appendDependency',
+  ]) {
     map[key] = { tool: `mcp__stub__${key}`, summary: `summary for ${key}` }
   }
   return map

@@ -551,7 +551,10 @@ IDLE/STOPPED + passing.
   is `IDLE` stale, or `STOPPED` stale/missing) → check the remaining rail
   conditions before queueing: the PR is **not a draft**, the linked ticket sits
   in the tracker's **review** state (`$BOSS_EPIC_REVIEW_STATE`), and the PR title/body
-  carries no partial-slice / `do not merge` marker. All five hold → add to the
+  carries no partial-slice / `do not merge` marker. Its producer is a child build
+  run that ended `PARTIAL`, whose body opens a `## Partial` section with
+  `do not merge — partial: <satisfied>/<total> acceptance criteria`.
+  All five hold → add to the
   **greens** (merge queue). Do not add a ticket to `greens` while that chat is
   WORKING, QUESTION, or LIMITED. The daemon Blocks an empty/no-op
   run (a bootstrap-only branch is **not** surfaced as green), so a green here
@@ -806,6 +809,10 @@ State and honor these explicitly:
   review state — only `planned` is preflight-critical — so this gate is where
   it fails closed);
   (5) the PR title/body carries **no** partial-slice or `do not merge` marker.
+  A child build run that ended `PARTIAL` is that marker's first producer: its body
+  opens a `## Partial` section with
+  `do not merge — partial: <satisfied>/<total> acceptance criteria`, and its title
+  ends ` (partial <satisfied>/<total>)`.
   Green on a _draft_ PR is expected CI noise, not merge-eligibility. Rationale
   and the read for each condition:
   [`references/merge-recovery.md`](references/merge-recovery.md).

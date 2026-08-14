@@ -811,6 +811,116 @@ func LivePastFailureWorld() World {
 	}
 }
 
+// TransientPRFailureSessions returns the BOS-877 dataset: two rows whose
+// draft-PR creation failed for opposite reasons, so a single still shows the
+// contrast the ticket exists to create.
+//
+// Built in the LivePastFailure mould — the mock daemon returns sessions verbatim,
+// so the Display* fields are set here to exactly what displaystatus.Compute
+// produces for the row each session models: one whose chat is live and WORKING.
+// That branch outranks the draft-PR-failure branch, which is why both composites
+// are a plain SUCCESS "working" and the hint is each row's only alarm. Note the
+// failed create not transitioning the session is necessary but NOT sufficient for
+// that: fed these sessions with no chat status the cascade falls through to
+// "? PR failed" / WARNING / no spinner (compute.go branch 5). World.ChatStatuses
+// is left unseeded anyway because the mock daemon never recomputes the composite.
+//
+//   - index 0 (sess-877-transient): a stderr carrying a transient signature — the
+//     2026-08-13 degradation's line, minus the trailing period a lint rule
+//     rejects. Its hint must read the purpose-written
+//     "PR retrying — GitHub was unreachable" rather than the truncated SSH error
+//     that sent operators hunting through ~/.ssh.
+//   - index 1 (sess-877-terminal): a stderr carrying NO transient signature. Its
+//     hint keeps the raw first line, because there the raw text IS the next step.
+//
+// What separates the two rows is the SIGNATURE, not the underlying fault, and
+// naming it that way here is deliberate. gitremote classifies
+// "Permission denied (publickey)" as transient — its own comment concedes a
+// permanently dead key emits it too — so a real key misconfiguration renders in
+// the TRANSIENT form, not this one. Do not relabel index 1 as "the broken key
+// case": it is the case whose text carries no signature, which is exactly what
+// the renderer branches on.
+//
+// Both rows are needed: with only the transient one the scenario would prove the
+// string exists, not that the two cases render differently.
+//
+// Every title deliberately avoids the words "retrying", "unreachable",
+// "Permission denied" and "draft PR creation failed" so each proof evidence token
+// binds to the hint sub-row it is meant to prove, never to a row title.
+//
+// Index 1's title says "Denied", not "Rejected": gitremote's own negative corpus
+// names "rejected push (non-fast-forward, stale info, protected branch)" as a
+// separate terminal class, so a "Rejected …" title would point the reader at a
+// failure this row does not model. Denied matches the stderr it actually carries.
+func TransientPRFailureSessions() []*pb.Session {
+	transient := sessionreason.DraftPRCreationTransientFailure(errors.New(
+		"exit status 128: git@github.com: Permission denied (publickey)",
+	))
+	// Deliberately CLOSE to the transient row's stderr but not identical, because
+	// identical text could not produce a different verdict: gitremote.IsTransient
+	// is a substring test over the message, so the two rows must differ in exactly
+	// the signature that decides them — this one omits the "(publickey)" suffix
+	// gitremote keys on, and carries no other transient signature.
+	//
+	// Deliberately short, too: the raw line has to survive the 48-rune hint cap
+	// for the scenario's "Permission denied" evidence token to be visible beside
+	// the transient row's replacement string. With the 26-rune
+	// "draft PR creation failed: " prefix this lands on exactly 48 runes, so the
+	// hint renders whole rather than with a trailing ellipsis.
+	//
+	// What would actually cost the token is inserting text AHEAD of it, pushing it
+	// past rune 48 — truncateHintReason keeps the first 48 runes, so appending to
+	// the tail only adds an ellipsis and leaves "Permission denied" (runes 31-47)
+	// fully visible.
+	terminal := sessionreason.DraftPRCreationFailure(errors.New(
+		"ssh: Permission denied",
+	))
+	return []*pb.Session{
+		{
+			Id: "sess-877-transient", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Flapping remote run", BranchName: "boss/flapping-remote",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+			BlockedReason:  &transient,
+			CreatedAt:      ts(-25 * time.Minute),
+			WorktreePath:   "/Users/demo/worktrees/my-app/flapping-remote",
+		},
+		{
+			Id: "sess-877-terminal", RepoId: "repo-1", RepoDisplayName: "my-app",
+			Title: "Denied remote run", BranchName: "boss/denied-remote",
+			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			DisplayLabel:   "working",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+			DisplaySpinner: true,
+			BlockedReason:  &terminal,
+			CreatedAt:      ts(-40 * time.Minute),
+			WorktreePath:   "/Users/demo/worktrees/my-app/denied-remote",
+		},
+	}
+}
+
+// TransientPRFailureChats returns one chat per TransientPRFailure session so both
+// chat pickers render populated (not "Loading chats...").
+func TransientPRFailureChats() []*pb.ClaudeChat {
+	return []*pb.ClaudeChat{
+		{Id: "chat-877-t", AgentSessionId: "claude-877-t", SessionId: "sess-877-transient", Title: "Set up the project", CreatedAt: ts(-25 * time.Minute)},
+		{Id: "chat-877-x", AgentSessionId: "claude-877-x", SessionId: "sess-877-terminal", Title: "Implement the change", CreatedAt: ts(-40 * time.Minute)},
+	}
+}
+
+// TransientPRFailureWorld builds the BOS-877 dataset: the demo repos plus the
+// transient/terminal draft-PR failure pair the
+// bos873-transient-draft-pr-hint proof scenario compares.
+func TransientPRFailureWorld() World {
+	return World{
+		Repos:    Repos(),
+		Sessions: TransientPRFailureSessions(),
+		Chats:    TransientPRFailureChats(),
+	}
+}
+
 // HTTPEndpointsSessions returns the BOS-474 dataset: one session running a dev
 // server (:3000) and a Vite server (:5173) on loopback, plus a plain neighbour
 // with no listeners. The pair proves both halves of the change — the endpoint

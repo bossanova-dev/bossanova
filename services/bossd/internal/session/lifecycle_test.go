@@ -4614,7 +4614,7 @@ func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
 	if sess.BlockedReason != nil {
 		t.Errorf("BlockedReason = %q, want nil: DeferPR advertises no pending PR", *sess.BlockedReason)
 	}
-	if lc.backgroundDraftPRIsTracked("sess-1") {
+	if lc.hasBackgroundDraftPR("sess-1") {
 		t.Error("DeferPR session registered a background draft-PR step, want none")
 	}
 }
@@ -4962,6 +4962,112 @@ func TestBackgroundDraftPRFailureDoesNotOverwriteAnotherOwnersState(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// TestDraftPRBlockedReasonClassifiesTransientAndTerminal pins the BOS-877
+// classification at the SINGLE reason-construction site, so both callers of
+// setDraftPRBlockedReason (the background create via failInFlightDraftPR, and
+// EnsurePR) inherit it and cannot drift apart.
+//
+// The two inputs are the ones the incident and the classifier's negative corpus
+// name: an SSH handshake failure — which GitHub emitted for four minutes while
+// nothing was wrong with the key — must persist the transient form, and a
+// missing repository must stay terminal, because retrying it would only hide a
+// real misconfiguration.
+func TestDraftPRBlockedReasonClassifiesTransientAndTerminal(t *testing.T) {
+	inFlight := sessionreason.DraftPRCreationInFlight()
+
+	tests := []struct {
+		name          string
+		err           error
+		wantTransient bool
+	}{
+		{
+			name:          "an SSH handshake failure is transient",
+			err:           errors.New("create draft PR: exit status 128: git@github.com: Permission denied (publickey)"),
+			wantTransient: true,
+		},
+		{
+			name:          "a missing repository is terminal",
+			err:           errors.New("create draft PR: exit status 1: ERROR: Repository not found"),
+			wantTransient: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BlockedReason: &inFlight}
+			lc := newTestLifecycle(
+				sessions, newMockRepoStore(), nil, nil,
+				&mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop(),
+			)
+
+			lc.failInFlightDraftPR(context.Background(), "sess-1", tt.err)
+
+			got := sessions.sessions["sess-1"].BlockedReason
+			if !sessionreason.IsDraftPRCreationFailure(got) {
+				t.Fatalf("BlockedReason = %v, want a draft PR creation failure in both forms", got)
+			}
+			if gotTransient := sessionreason.IsDraftPRCreationTransientFailure(got); gotTransient != tt.wantTransient {
+				t.Fatalf("IsDraftPRCreationTransientFailure(%q) = %t, want %t", *got, gotTransient, tt.wantTransient)
+			}
+			if !strings.Contains(*got, tt.err.Error()) {
+				t.Fatalf("BlockedReason %q dropped the underlying error %q", *got, tt.err)
+			}
+		})
+	}
+}
+
+// TestEnsurePRInheritsTheTransientClassification proves the second caller gets
+// the classification for free. EnsurePR writes its blocked reason through the
+// same setDraftPRBlockedReason helper, so a second decision site would be the
+// only way for the two paths to disagree — and there is none.
+//
+// Driven through the real EnsurePR rather than through the helper, in the mould
+// of TestEnsurePR_CreateDraftPRFailureLogsBranchDiagnostics: calling the helper
+// directly would only re-test what
+// TestDraftPRBlockedReasonClassifiesTransientAndTerminal already covers a layer
+// down, and would keep passing if EnsurePR grew a construction site of its own.
+// The failure is injected at the draft-PR CREATE, because that is the EnsurePR
+// path that persists a reason — its push failure returns an error without
+// writing one.
+func TestEnsurePRInheritsTheTransientClassification(t *testing.T) {
+	const prFailure = "gh pr create: git@github.com: Permission denied (publickey)"
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	vp.createPRErr = errors.New(prFailure)
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Deferred PR",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt",
+		BranchName:   "br-1",
+		BaseBranch:   "main",
+	}
+
+	lc := newTestLifecycle(
+		sessions, repos, nil, nil,
+		&mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop(),
+	)
+
+	if err := lc.EnsurePR(ctx, "sess-1"); err == nil {
+		t.Fatal("EnsurePR returned nil, want the injected draft PR failure")
+	}
+
+	got := sessions.sessions["sess-1"].BlockedReason
+	if !sessionreason.IsDraftPRCreationTransientFailure(got) {
+		t.Fatalf("BlockedReason = %v, want the transient form EnsurePR inherits from draftPRBlockedReason", got)
+	}
+	if !strings.Contains(*got, prFailure) {
+		t.Fatalf("BlockedReason %q dropped the underlying error %q", *got, prFailure)
 	}
 }
 
@@ -5451,7 +5557,7 @@ func TestStartSession_ZeroOutputUsesRepoCheckoutWithoutHookOrSetup(t *testing.T)
 	if fakeAgent.LastConfigureHookReq != nil {
 		t.Fatal("ConfigureFinalizeHook called for zero-output session")
 	}
-	if lc.backgroundDraftPRIsTracked("sess-1") {
+	if lc.hasBackgroundDraftPR("sess-1") {
 		t.Fatal("zero-output session started a draft PR")
 	}
 	sess := sessions.sessions["sess-1"]

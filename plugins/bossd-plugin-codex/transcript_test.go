@@ -148,6 +148,33 @@ func buildSyntheticRolloutCorpus(tb testing.TB, root, workDir string, notBefore 
 	return ids
 }
 
+// buildFutureRolloutShards writes `shardCount` day-shards of `perShard`
+// rollouts each, all dated strictly AFTER notAfter, and returns how many it
+// wrote.
+//
+// These model the corpus a legacy backfill for an OLD chat has to walk past:
+// every rollout recorded between that chat's creation and today. The
+// lower-bound filters cannot reject any of them — their mtimes are the newest
+// in the tree — so they are reachable only by the upper-bound shard prune.
+//
+// Shards start two days past notAfter because a shard dated within
+// shardDateSlack of the ceiling must legitimately survive (codex names shard
+// directories from the LOCAL date while rollout timestamps are UTC).
+func buildFutureRolloutShards(tb testing.TB, root, workDir string, notAfter time.Time, shardCount, perShard int) int {
+	tb.Helper()
+	written := 0
+	for shard := 1; shard <= shardCount; shard++ {
+		day := notAfter.UTC().AddDate(0, 0, shard+1)
+		for i := 0; i < perShard; i++ {
+			ts := time.Date(day.Year(), day.Month(), day.Day(), 9, 0, i%60, 0, time.UTC)
+			id := fmt.Sprintf("future-%d-%d", shard, i)
+			writeRolloutAt(tb, shardRolloutPathAt(root, ts, id), id, workDir, ts, ts)
+			written++
+		}
+	}
+	return written
+}
+
 // countingSessionMetaReader wraps readSessionMeta and records how many
 // rollouts the scan actually opened. The counter is per-call state, never a
 // package-level var, so parallel tests cannot share it.
@@ -400,6 +427,146 @@ func TestShardDirEndsBefore(t *testing.T) {
 					root, dir, floor.Format(time.RFC3339), got, tc.want)
 			}
 		})
+	}
+}
+
+// TestShardDirStartsAfter is the upper-bound mirror of TestShardDirEndsBefore,
+// pinning the same three comparison levels, the same year/month rollovers, and
+// the same fail-open guards in the opposite direction.
+func TestShardDirStartsAfter(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "sessions")
+	defaultCeiling := time.Date(2026, 5, 8, 13, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		rel     string    // shard path relative to root, always slash-separated
+		ceiling time.Time // zero means defaultCeiling
+		want    bool
+	}{
+		{name: "the root itself is never pruned", rel: ".", want: false},
+
+		{name: "year after the ceiling year", rel: "2027", want: true},
+		{name: "the ceiling's own year", rel: "2026", want: false},
+		{name: "year before the ceiling year", rel: "2025", want: false},
+
+		{name: "month after the ceiling month in the ceiling year", rel: "2026/06", want: true},
+		{name: "the ceiling's own month", rel: "2026/05", want: false},
+		{name: "month before the ceiling month in the ceiling year", rel: "2026/04", want: false},
+
+		// Year rollover: the month comparison is only valid within the
+		// ceiling's own year, so both signs are pinned.
+		{name: "January of the year after a December ceiling", rel: "2026/01",
+			ceiling: time.Date(2025, 12, 15, 0, 0, 0, 0, time.UTC), want: true},
+		{name: "December of the year before a January ceiling", rel: "2025/12",
+			ceiling: time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC), want: false},
+
+		{name: "day strictly after the ceiling date", rel: "2026/05/09", want: true},
+		// Same-day equality: the ceiling's own date still holds rollouts inside
+		// the window, so it must survive the prune.
+		{name: "the ceiling's own date", rel: "2026/05/08", want: false},
+		{name: "day before the ceiling date", rel: "2026/05/07", want: false},
+		{name: "first day of the next month against an end-of-month ceiling", rel: "2026/06/01",
+			ceiling: time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC), want: true},
+
+		// Everything below is malformed and must fail OPEN (false).
+		{name: "month out of range fails open", rel: "2026/13", want: false},
+		{name: "day out of range fails open", rel: "2026/05/32", want: false},
+		{name: "day zero fails open", rel: "2026/05/00", want: false},
+		{name: "three-digit year fails open", rel: "202/05", want: false},
+		{name: "non-digit in the year fails open", rel: "20a6/05/08", want: false},
+		{name: "signed year fails open", rel: "+2026/05/08", want: false},
+		{name: "negative-looking year fails open", rel: "-026/05/08", want: false},
+		{name: "whitespace in a segment fails open", rel: "20 6/05", want: false},
+		{name: "a level deeper than YYYY/MM/DD fails open", rel: "2026/05/08/extra", want: false},
+
+		// Guard-falsifying siblings. Each is pruned (true), wrongly, if the
+		// guard it is named after is deleted.
+		{name: "a deeper level whose truncation would prune fails open", rel: "2026/05/09/extra", want: false},
+		{name: "month out of range normalizing past the ceiling fails open", rel: "2026/13/05",
+			ceiling: time.Date(2026, 12, 10, 0, 0, 0, 0, time.UTC), want: false},
+		// time.Date normalizes February 31 forward to March 3. Unlike the
+		// ends-before direction — where forward motion moves a date AWAY from
+		// the pruning verdict and the malformed shard fails open by arithmetic
+		// — here forward motion moves it TOWARD the verdict, so only the
+		// explicit round-trip check keeps it from being pruned.
+		{name: "February 31 normalizes forward and fails open", rel: "2026/02/31",
+			ceiling: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ceiling := tc.ceiling
+			if ceiling.IsZero() {
+				ceiling = defaultCeiling
+			}
+			dir := filepath.Join(append([]string{root}, strings.Split(tc.rel, "/")...)...)
+			if got := shardDirStartsAfter(root, dir, ceiling); got != tc.want {
+				t.Errorf("shardDirStartsAfter(%q, %q, %s) = %v, want %v",
+					root, dir, ceiling.Format(time.RFC3339), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanInteractiveSessionCandidatesInWindowSkipsReadsAfterWindow is the
+// upper-bound counterpart of the BOS-843 lower-bound gate.
+//
+// The legacy backfill's window is [chatCreatedAt-5m, chatCreatedAt+2m], and the
+// chats it exists to serve are precisely the OLD ones that predate provider-id
+// recording. For those, the lower-bound filters prune almost nothing: every
+// rollout recorded between the chat's creation and today sits ABOVE the floor,
+// so the scan degrades back toward reading the whole corpus. Only the
+// upper-bound shard prune bounds it.
+func TestScanInteractiveSessionCandidatesInWindowSkipsReadsAfterWindow(t *testing.T) {
+	const (
+		olderShards  = 10
+		perShard     = 3
+		inWindow     = 2
+		futureShards = 10
+	)
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	notAfter := notBefore.Add(10 * time.Minute)
+
+	root := t.TempDir()
+	workDir := t.TempDir()
+	ids := buildSyntheticRolloutCorpus(t, root, workDir, notBefore, olderShards, perShard, inWindow)
+	future := buildFutureRolloutShards(t, root, workDir, notAfter, futureShards, perShard)
+
+	reads := 0
+	got := scanInteractiveSessionCandidatesInWindowWith(root, workDir, notBefore, notAfter, countingSessionMetaReader(&reads))
+
+	if len(got) != inWindow {
+		t.Fatalf("candidates = %d, want %d", len(got), inWindow)
+	}
+	if got[0].ID != ids[len(ids)-1] {
+		t.Errorf("candidates[0].ID = %q, want %q (newest in-window rollout first)", got[0].ID, ids[len(ids)-1])
+	}
+	if reads != inWindow {
+		t.Errorf("readSessionMeta called %d times with %d rollouts dated after the window, want %d — "+
+			"a legacy backfill for an old chat must not read every rollout recorded since",
+			reads, future, inWindow)
+	}
+}
+
+// TestScanInteractiveSessionCandidatesInWindowZeroNotAfterKeepsUpperBoundOpen
+// is the anti-regression guard for the fresh-discovery path, which passes a
+// ZERO notAfter meaning "no upper bound". Pruning on a zero ceiling would
+// reject every rollout newer than the zero time — i.e. all of them — and
+// silently break the discovery this whole mechanism exists for.
+func TestScanInteractiveSessionCandidatesInWindowZeroNotAfterKeepsUpperBoundOpen(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	notBefore := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+
+	// Dated a month past notBefore: far outside any ceiling the legacy path
+	// would use, and reachable only because no upper bound was requested.
+	ts := notBefore.AddDate(0, 0, 30)
+	writeRolloutAt(t, shardRolloutPathAt(root, ts, "far-future"), "far-future", workDir, ts, ts)
+
+	got := scanInteractiveSessionCandidatesInWindow(root, workDir, notBefore, time.Time{})
+
+	if len(got) != 1 || got[0].ID != "far-future" {
+		t.Fatalf("candidates = %+v, want exactly the far-future rollout — a zero notAfter means no upper bound", got)
 	}
 }
 

@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "title": "BOS-877 session list — a transient draft-PR failure reads as a retrying network condition, while a terminal one still shows its raw error",
+  "fixture": { "preset": "transient-pr-failure" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the fix — a draft-PR create that failed against a flapping remote renders as 'PR retrying — GitHub was unreachable' instead of a truncated SSH error",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Flapping remote run",
+            "match": "normalized",
+            "label": "home session list loaded (transient-pr-failure preset)"
+          },
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded: the session whose background draft-PR create hit a flapping GitHub"
+        },
+        {
+          "expect": {
+            "text": "working",
+            "match": "normalized",
+            "label": "the row's STATUS column reads 'working' — the failed create never transitions the session and the live chat outranks the draft-PR branch, so the hint sub-row is its only alarm"
+          },
+          "caption": "The composite is a plain 'working', so the hint below it is the row's only report of the failure"
+        },
+        {
+          "expect": {
+            "text": "PR retrying",
+            "match": "normalized",
+            "label": "the hint sub-row names the retry rather than truncating the transport error (no row title contains these words)"
+          },
+          "caption": "The transient hint states the condition — a retry is under way — instead of pasting a raw SSH failure onto the row"
+        },
+        {
+          "expect": {
+            "text": "GitHub was unreachable",
+            "match": "normalized",
+            "label": "the hint names the real cause: GitHub, not the operator's SSH key"
+          },
+          "caption": "This is the sentence that stops an operator hunting through ~/.ssh for a key bug that does not exist"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the contrast — the terminal row directly beneath still shows its raw 'Permission denied' error, so the two cases are distinguishable in one frame",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Denied remote run",
+            "match": "normalized",
+            "label": "the terminal-failure row is listed in the same table"
+          },
+          "timeoutMs": 10000,
+          "caption": "The terminal-failure row sits in the same list, one line from the transient one"
+        },
+        {
+          "expect": {
+            "text": "Permission denied",
+            "match": "normalized",
+            "label": "the terminal row keeps the raw first line — there the raw text IS the operator's next step"
+          },
+          "caption": "Both rows failed on an SSH permission error, but only the row above carried a transient signature; the terminal one still shows its stderr verbatim"
+        },
+        {
+          "expect": {
+            "text": "PR retrying",
+            "match": "normalized",
+            "label": "the transient hint is still on screen beside it, so one frame carries both renderings"
+          },
+          "caption": "One frame, two renderings: a failure whose stderr carries a transient signature states the condition, while one without it still shows its stderr verbatim"
+        },
+        {
+          "expect": {
+            "text": "draft PR creation failed",
+            "match": "normalized",
+            "label": "the terminal row keeps the existing prefix, proving the transient form was added beside it rather than replacing it"
+          },
+          "caption": "The terminal wording is byte-for-byte what it was — this change adds a case, it does not rewrite the old one"
+        }
+      ]
+    }
+  ]
+}

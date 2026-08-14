@@ -6,9 +6,12 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/git",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gitremote",
         "//lib/bossalib/keyedgate",
         "//lib/bossalib/setupscript",
         "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
     ],
 )
 
@@ -18,10 +21,16 @@ go_test(
         "keepcurrent_test.go",
         "worktree_bazel_test.go",
         "worktree_bootstrap_test.go",
+        "worktree_gitremote_test.go",
         "worktree_perms_test.go",
+        "worktree_sshmultiplex_test.go",
         "worktree_test.go",
     ],
     embed = [":git"],
     shard_count = 4,  # keep: 209s serial under --config=race; these worktree tests each build a scratch repo and are independent
-    deps = ["@com_github_rs_zerolog//:zerolog"],
+    deps = [
+        "//lib/bossalib/gitremote",
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+    ],
 )

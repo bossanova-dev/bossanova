@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"connectrpc.com/connect"
 
@@ -109,22 +108,31 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		var legacyAmbiguousReason string
-		if !forceFresh && chat.AgentName == "codex" && chat.ProviderSessionID == nil && !chat.CreatedAt.IsZero() && deps.Resolver != nil {
-			legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)
-			// Legacy backfill has no live pane pid (it runs before/without a
-			// fresh spawn), so it uses the time-window scan (panePID 0).
-			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, sess.WorktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true, 0)
-			if err != nil {
-				return nil, err
-			}
-			if resolution.SessionID != "" {
-				providerID := resolution.SessionID
-				if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
-					return nil, fmt.Errorf("persist provider session id: %w", err)
-				}
-				chat.ProviderSessionID = &providerID
-			} else if resolution.Ambiguous {
-				legacyAmbiguousReason = resolution.Reason
+		if !forceFresh {
+			// Detached, dedicated budget — the same treatment the record path
+			// gives this scan, and for the same reasons. The legacy backfill is a
+			// codex rollout scan whose cost scales with the corpus, so inheriting
+			// the wake request's deadline is what produced the reported
+			// DeadlineExceeded; WithoutCancel keeps the request-scoped values while
+			// escaping its cancellation. The eligibility guard (codex, no provider
+			// id, non-zero CreatedAt, resolver present) lives inside
+			// backfillCodexProviderSessionID, which also runs the persist on a
+			// context of its own so a late-but-successful scan still records what
+			// it found.
+			backfillCtx, cancelBackfill := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDLegacyBackfillTimeout)
+			_, reason, backfillErr := s.backfillCodexProviderSessionID(backfillCtx, chat, sess.WorktreePath, deps.Resolver)
+			cancelBackfill()
+			// Warn and continue rather than fail the wake: a missed backfill costs
+			// a correct resume id, a returned error costs the whole wake. Mirrors
+			// ensureChatTmuxSession — before this, the two paths disagreed and only
+			// the record one degraded gracefully.
+			if backfillErr != nil {
+				s.logger.Warn().Err(backfillErr).
+					Str("agent_session_id", chat.AgentSessionID).
+					Str("agent", chat.AgentName).
+					Msg("legacy provider session id discovery failed before wake; continuing without it")
+			} else {
+				legacyAmbiguousReason = reason
 			}
 		}
 

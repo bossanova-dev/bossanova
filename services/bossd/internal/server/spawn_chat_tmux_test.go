@@ -644,6 +644,53 @@ func TestSpawnChatTmux_FreshFallbackReasonProviderIDDiscoveryTimeout(t *testing.
 	}
 }
 
+// A resolver ERROR must degrade exactly like a resolver TIMEOUT: foreground
+// provider-id discovery is best-effort, covered by background discovery and by
+// attach-time backfill. Before this, an error was fatal to the spawn — so a
+// transient plugin RPC failure destroyed a perfectly good pane and failed chat
+// creation outright, which is the shape the reported DeadlineExceeded took.
+func TestSpawnChatTmux_ResolverErrorDegradesToFreshFallback(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	resolveErr := errors.New(`agent "codex" ResolveInteractiveSessionID: rpc error: code = DeadlineExceeded`)
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        claudeArgvBuilder(),
+		Resolver:    &fakeInteractiveSessionResolver{resolveErr: resolveErr},
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("resolver error propagated: %v — foreground discovery is best-effort", err)
+	}
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("outcome = %v, want OutcomeFreshFallback", got.Outcome)
+	}
+	if got.FallbackReason != WakeFallbackReasonProviderIDDiscoveryTimeout {
+		t.Fatalf("fallback reason = %q, want %q", got.FallbackReason, WakeFallbackReasonProviderIDDiscoveryTimeout)
+	}
+	// Not ambiguous: the caller arms background discovery only for a
+	// non-ambiguous miss, and a failed resolution is a miss, not a collision.
+	if got.DiscoveryAmbiguous {
+		t.Fatal("DiscoveryAmbiguous = true, want false — background discovery must stay armed after a resolver error")
+	}
+	if got.ProviderSessionID != "" {
+		t.Fatalf("provider session id = %q, want empty", got.ProviderSessionID)
+	}
+	if got.LaunchedAt.IsZero() {
+		t.Fatal("LaunchedAt is zero — the caller keys background discovery off it")
+	}
+	if killed := tmuxer.killedSessions(); len(killed) != 0 {
+		t.Fatalf("KillSession targets = %v, want none — the pane is usable and must survive", killed)
+	}
+	if !tmuxer.hasSession {
+		t.Fatal("tmux session was torn down after a best-effort discovery failure")
+	}
+}
+
 func TestSpawnChatTmux_ClaudeWithoutProviderSessionIDUsesAgentSessionID(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	transcripts := &fakeTranscriptOracle{exists: true}

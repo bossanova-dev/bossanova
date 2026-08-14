@@ -1712,6 +1712,117 @@ func TestDraftPRFailureHint_TruncatesMultilineError(t *testing.T) {
 	}
 }
 
+// transientDraftPRFailureReason builds the BOS-877 transient blocked reason for
+// a test session, mirroring draftPRFailureReason's terminal counterpart.
+func transientDraftPRFailureReason(detail string) *string {
+	r := sessionreason.DraftPRCreationTransientFailure(errors.New(detail))
+	return &r
+}
+
+// TestDraftPRFailureHint_TransientRendersAPurposeWrittenString is the BOS-877
+// fix. The incident's reason was `Permission denied (publickey)`, which the old
+// hint truncated onto the row verbatim and sent the operator hunting through
+// ~/.ssh for a key bug that did not exist. A transient failure gets a fixed
+// sentence naming the real condition instead of a truncated transport error.
+func TestDraftPRFailureHint_TransientRendersAPurposeWrittenString(t *testing.T) {
+	sess := &pb.Session{
+		BlockedReason: transientDraftPRFailureReason("exit status 128: git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository."),
+	}
+	const want = "PR retrying — GitHub was unreachable"
+	if got := draftPRFailureHint(sess); got != want {
+		t.Fatalf("draftPRFailureHint = %q, want %q", got, want)
+	}
+	// The fixed string must stay inside the hint cap. Nothing enforces that at
+	// runtime — draftPRFailureHint returns the constant directly and truncates
+	// only the terminal case — so an over-length reword would render whole and
+	// drag the NAME column toward its width cap. This assertion is the only
+	// guard.
+	if n := len([]rune(want)); n > hintReasonMaxRunes {
+		t.Fatalf("the transient hint is %d runes, over the %d-rune cap", n, hintReasonMaxRunes)
+	}
+	if strings.Contains(draftPRFailureHint(sess), "Permission denied") {
+		t.Fatal("the transient hint still leaks the raw SSH error the fix exists to hide")
+	}
+}
+
+// TestDraftPRFailureHint_TerminalIsUnchanged pins the other half of the branch:
+// a terminal failure keeps today's truncated first line byte-for-byte, because
+// that raw text is genuinely the operator's next step there.
+func TestDraftPRFailureHint_TerminalIsUnchanged(t *testing.T) {
+	sess := &pb.Session{BlockedReason: draftPRFailureReason("ERROR: Repository not found.")}
+	if got, want := draftPRFailureHint(sess), "draft PR creation failed: ERROR: Repository not …"; got != want {
+		t.Fatalf("draftPRFailureHint = %q, want the existing truncated first line %q", got, want)
+	}
+	if got := draftPRFailureHint(&pb.Session{}); got != "" {
+		t.Errorf("draftPRFailureHint with no draft-PR failure = %q, want empty", got)
+	}
+	if got := draftPRFailureHint(nil); got != "" {
+		t.Errorf("draftPRFailureHint(nil) = %q, want empty", got)
+	}
+}
+
+// TestTransientDraftPRFailureHintStaysExempt guards the boundary the plan draws
+// around the recessive treatment: the transient hint is still the row's only
+// alarm (the failure never transitions the session, and a live WORKING chat
+// outranks the draft-PR branch, so the composite stays a plain SUCCESS
+// "working"), so it must not become demotable as a side effect of reading more
+// calmly.
+func TestTransientDraftPRFailureHintStaysExempt(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	sess := &pb.Session{
+		Id:             "sess-draft-pr-transient",
+		State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		DisplayLabel:   "working",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+		DisplaySpinner: true,
+		BlockedReason:  transientDraftPRFailureReason("git@github.com: Permission denied (publickey)."),
+	}
+	hints := sessionWarningHints(sess)
+	if len(hints) != 1 {
+		t.Fatalf("sessionWarningHints = %+v, want exactly one hint", hints)
+	}
+	if hints[0].Text != "PR retrying — GitHub was unreachable" {
+		t.Fatalf("hint = %q, want the transient string", hints[0].Text)
+	}
+	if hints[0].Demotable {
+		t.Fatal("the transient draft-PR hint is demotable; it is still the row's only alarm")
+	}
+}
+
+// TestTransientDraftPRFailureHintDoesNotResurrectTheDuplicate pins the BOS-855
+// de-duplication against the substitution BOS-877 introduced. The dedup above
+// keys off the ATTENTION hint's own prefix, not off equality with the rendered
+// draft-PR hint — which is the only reason it still fires now that the transient
+// branch renders a string bearing no resemblance to the reason. Switch that test
+// to equality and this row would show the replacement string AND the raw reason
+// it exists to suppress, with nothing else failing.
+func TestTransientDraftPRFailureHintDoesNotResurrectTheDuplicate(t *testing.T) {
+	assertFadedStylesDiffer(t)
+	reason := transientDraftPRFailureReason("git@github.com: Permission denied (publickey)")
+	sess := &pb.Session{
+		Id:            "sess-draft-pr-transient-blocked",
+		State:         pb.SessionState_SESSION_STATE_BLOCKED,
+		DisplayLabel:  "blocked",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		BlockedReason: reason,
+		AttentionStatus: &pb.AttentionStatus{
+			// NeedsAttention is load-bearing, not decoration: attentionWarningHint
+			// returns "" without it, so the dedup branch would never be reached and
+			// this test would pass with the de-duplication deleted outright.
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+			Summary:        *reason,
+		},
+	}
+	hints := sessionWarningHints(sess)
+	if len(hints) != 1 {
+		t.Fatalf("sessionWarningHints = %+v, want exactly one hint — the attention copy of the same reason must stay deduplicated", hints)
+	}
+	if hints[0].Text != transientDraftPRHint {
+		t.Fatalf("hint = %q, want the transient string %q", hints[0].Text, transientDraftPRHint)
+	}
+}
+
 // TestAttentionHintDemotable_ClassifiesEveryReason is the exhaustive-enum guard.
 // AttentionReason is actively growing and both recent additions were exemptions,
 // so a new value arriving unclassified must red here rather than silently fade

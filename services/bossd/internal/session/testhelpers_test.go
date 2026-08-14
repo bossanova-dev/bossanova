@@ -11,16 +11,10 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 )
 
-// backgroundDraftPRIsTracked reports whether a background draft-PR step is
-// currently registered for sessionID. Tests use it to assert the NEGATIVE case
-// (DeferPR starts no step at all), which WaitForBackgroundDraftPR cannot
-// distinguish from "the step already finished".
-func (l *Lifecycle) backgroundDraftPRIsTracked(sessionID string) bool {
-	l.backgroundDraftPRMu.Lock()
-	defer l.backgroundDraftPRMu.Unlock()
-	_, ok := l.backgroundDraftPRs[sessionID]
-	return ok
-}
+// The test-only backgroundDraftPRIsTracked helper that used to live here was
+// removed in BOS-875: hasBackgroundDraftPR (background_draft_pr.go) performs the
+// identical lookup for the draft-PR retry sweep's in-flight interlock, so the
+// tests assert against the production reader rather than a copy of it.
 
 // awaitDraftPR blocks until the background draft-PR step StartSession spawned
 // for sessionID has finished (BOS-540). Every StartSession assertion that reads

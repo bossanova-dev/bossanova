@@ -215,16 +215,25 @@ type listSessionsPRAssociationResult struct {
 var (
 	providerSessionIDBackgroundDiscoveryTimeout      = time.Minute
 	providerSessionIDBackgroundDiscoveryPollInterval = time.Second
-	// providerSessionIDLegacyBackfillTimeout bounds the attach-path legacy
-	// backfill in ensureChatTmuxSession. That resolution is a whole-corpus codex
-	// rollout scan (no pane pid, AllowLegacyBackfill true), so the 2s the fast
-	// fd path gets in spawn_chat_tmux.go is the wrong size for it. It is also
-	// not the minute above: that budget bounds a genuinely background poll loop,
-	// whereas this one has a caller waiting on chat creation. 30s clears a
-	// cold-cache scan of a multi-thousand-rollout corpus while staying visibly
+	// providerSessionIDLegacyBackfillTimeout bounds the legacy backfill on both
+	// attach paths — ensureChatTmuxSession (record) and WakeChatInternal (wake).
+	// That resolution is a codex rollout scan (no pane pid, AllowLegacyBackfill
+	// true), so the 2s the fast fd path gets in spawn_chat_tmux.go is the wrong
+	// size for it. It is also not the minute above: that budget bounds a
+	// genuinely background poll loop, whereas this one has a caller waiting on
+	// chat creation.
+	//
+	// It must stay strictly BELOW the daemon→plugin unary RPC ceiling
+	// (plugin.defaultPluginRPCTimeout, 30s), which bounds the same call one layer
+	// down. At equal values the two deadlines race, and which one fires first
+	// decides the error text an operator has to diagnose from. Keeping ours
+	// smaller makes this budget the authoritative one. 20s still clears a
+	// cold-cache scan of the shard window the prefilters leave (see
+	// shardDirStartsAfter in the codex plugin, which bounds that window by the
+	// legacy notAfter rather than by the chat's age) while staying visibly
 	// foreground. Package-level var (not const) so tests can shrink it to
 	// milliseconds.
-	providerSessionIDLegacyBackfillTimeout = 30 * time.Second
+	providerSessionIDLegacyBackfillTimeout = 20 * time.Second
 	// providerSessionIDBackfillPersistTimeout bounds the UpdateProviderSessionID
 	// write that records a backfilled id. Like the persist in
 	// plugin.providerSessionIDForAgentSession it is deliberately NOT the scan's

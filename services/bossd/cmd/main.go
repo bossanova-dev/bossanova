@@ -3664,6 +3664,16 @@ func run(opts runOpts) error {
 				} else if n > 0 {
 					log.Info().Int64("count", n).Msg("periodic reconcile: linked sessions to existing PRs")
 				}
+				// Same tick, deliberately AFTER the reconcile above (BOS-875):
+				// a session that merely LOST its PR association is attached by
+				// the reconcile, so by the time this runs the remaining PR-less
+				// sessions are the ones whose create genuinely failed and should
+				// be re-pushed rather than re-linked.
+				if n, err := lifecycle.RetryFailedDraftPRsPeriodic(pollerCtx); err != nil {
+					log.Warn().Err(err).Msg("periodic draft-PR retry: failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("periodic draft-PR retry: re-attempted PR creation for failed sessions")
+				}
 			}
 		}
 	})

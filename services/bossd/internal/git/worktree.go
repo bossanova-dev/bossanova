@@ -17,14 +17,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/gitremote"
 	"github.com/recurser/bossalib/keyedgate"
 	"github.com/recurser/bossalib/setupscript"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 // RepoCloneGateTimeout is the clone gate's own ceiling: the window it covers is
 // a handful of git invocations, each already capped at GitCommandTimeout, so a
 // wait beyond this is a wedged holder rather than a queue that will drain.
+//
+// One caveat since BOS-876: the remote-touching invocations inside that window
+// (Manager.Create's FetchBase, and availableNewBranchName's branch probes) go
+// through runGitRemote, so each is capped at 3 x GitCommandTimeout rather than
+// one. Attempts that fail fast add ~4s apiece and change nothing here, but a
+// holder whose attempts HANG can legitimately outlast this ceiling — so read a
+// timeout during a known remote outage as a retrying holder, not a wedged one.
 //
 // It is deliberately the LOOSER of the two bounds a queued create is subject to.
 // keyedgate derives its wait from the caller's context, and every create on the
@@ -539,6 +549,10 @@ type Manager struct {
 
 // NewManager creates a new git WorktreeManager.
 func NewManager(logger zerolog.Logger) *Manager {
+	// Best-effort tidy-up of ssh control sockets left behind by a previous
+	// daemon (BOS-878). Errors are logged inside, never returned: failing to
+	// sweep debris is not a reason to refuse to manage worktrees.
+	sweepStaleSSHControlSockets(logger, time.Now())
 	return &Manager{
 		logger:            logger,
 		removeAll:         os.RemoveAll,
@@ -845,10 +859,386 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // --detach`) daemonizes onto /dev/null before returning, so it never holds these
 // pipes. A lingering writer here means something is genuinely stuck.
 //
+// BOS-878 adds exactly ONE known daemonizing grandchild to that picture, and it
+// is safe for the same reason: the `ControlPersist=60s` ssh master outlives its
+// git parent by up to a minute, but OpenSSH reopens the master's stdio on
+// /dev/null before backgrounding it, so it never writes to these pipes. Were
+// that not so, every COLD connection to a host would block here for the full
+// delay and then surface exec.ErrWaitDelay below — a SUCCESSFUL fetch or push
+// reported as a hard failure. Measured while adding this: a first multiplexed
+// ls-remote returns in ~3s with a nil error while its master survives, so the
+// pipe is closed at git's exit as this comment requires. Anything that changes
+// the ssh options gitCommandEnv authors must preserve that property.
+//
 // Generous, because it starts counting only AFTER the process has been killed:
 // it is drain time for output already written, not a second command budget. A
 // var so a test can exercise the expiry without sleeping for it.
 var gitWaitDelay = 10 * time.Second
+
+// --- git SSH connection multiplexing (BOS-878) ------------------------------
+//
+// A single session start pays three separate SSH handshakes — the branch probe,
+// the base fetch, and the push. OpenSSH connection multiplexing collapses them
+// into one: the first invocation opens a master, the rest ride it, and the
+// master expires ControlPersist seconds after the last one. That is a latency
+// win on every create, and a smaller exposure window during a remote
+// degradation like the one BOS-873 was opened for.
+//
+// It is also the riskiest change in that epic, because a master that is alive
+// but WEDGED degrades every git op for that host rather than one. Three
+// non-negotiable mitigations bound that: ConnectTimeout caps the connection
+// attempt, the startup sweep below removes provably-dead sockets, and
+// BOSSD_GIT_SSH_MULTIPLEXING=0 turns the whole thing off without a rebuild or a
+// settings edit — an operator hitting this needs out NOW, not after restarting
+// into a possibly-broken config.
+
+// gitSSHMultiplexingEnv is that escape hatch. "0" disables multiplexing and the
+// git environment is left exactly as bossd inherited it; anything else (including
+// unset) leaves it on.
+const gitSSHMultiplexingEnv = "BOSSD_GIT_SSH_MULTIPLEXING"
+
+// sshControlPathLimit is the usable length of a Unix domain socket path.
+// sun_path is 104 bytes on macOS/BSD and 108 on Linux, in both cases INCLUDING
+// the terminating NUL — so 103 is the conservative floor across both. Taking the
+// smaller means a path that would be refused on macOS is refused on Linux too:
+// a few bytes of forgone multiplexing, never an unusable socket.
+//
+// This matters more than it sounds. "~/Library/Application Support/bossanova"
+// already eats a third of the budget before the ssh dir and the socket name.
+const sshControlPathLimit = 103
+
+// sshControlNameBudget is the number of bytes reserved for the socket name once
+// ssh has expanded its tokens. The name is a template (see
+// sshControlSocketTemplate), so its final length is not knowable here — bossd
+// therefore measures the fixed directory prefix plus this reservation rather
+// than the template's own much shorter length.
+//
+// 40 is generous against the identity that actually occurs: "git@github.com-22"
+// is 17 bytes. The budget is deliberately far above that realistic worst case
+// rather than tuned close to it.
+//
+// It is a RESERVATION, not an enforced bound, and nothing here can make it one:
+// ssh substitutes the tokens at connect time, long after this process has
+// handed over the string, so the expanded length is unknowable from inside
+// bossd. A remote whose identity exceeds 40 bytes — a long internal GHE
+// hostname, say — therefore passes this guard and then exceeds sun_path inside
+// ssh, which exits 255 with git reporting a failed connection. That failure mode
+// and its workaround (BOSSD_GIT_SSH_MULTIPLEXING=0) are documented in
+// docs/automation-troubleshooting.md, since bossd cannot detect it here.
+const sshControlNameBudget = 40
+
+// sshControlDirName is the app-data subdirectory the control sockets live in.
+const sshControlDirName = "ssh"
+
+// sshControlSocketStaleAfter is the age at which the startup sweep treats a
+// socket file as debris.
+//
+// An hour against a 60s ControlPersist is a wide margin, not a proof: a socket's
+// mtime is set when it is bound and is not refreshed by the connections that
+// ride it, so a continuously reused master can own a socket far older than this.
+// Removing a live master's socket does not break the git command in flight — it
+// unlinks a name, and ControlMaster=auto simply opens a fresh connection the
+// next time — so the cost of being wrong is one forgone reuse. The margin is
+// what keeps that rare rather than routine.
+const sshControlSocketStaleAfter = time.Hour
+
+// gitSSHControlDir resolves the directory control sockets live in. A var so a
+// test can point it at a temporary path — gitCommandEnv is reached from
+// runGitWithTimeout, which has no manager and no configuration to thread one
+// through, so there is nowhere to inject it as a parameter.
+var gitSSHControlDir = defaultSSHControlDir
+
+// defaultSSHControlDir resolves the control socket directory under the DEFAULT
+// app data dir. It deliberately does not consult config.ConfiguredAppDataDir the
+// way db and credmaterialize do: reaching the settings would mean threading them
+// through runGitWithTimeout, which has neither a manager nor a config. The
+// consequence an operator sees is that `app_data_dir` does not move these
+// sockets, and that the length guard below therefore measures the default path
+// even on an install that moved everything else — documented in
+// docs/automation-troubleshooting.md so a short `app_data_dir` is not mistaken
+// for a way around the platform's socket path limit.
+func defaultSSHControlDir() (string, error) {
+	base, err := config.DefaultAppDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, sshControlDirName), nil
+}
+
+// These once-guards keep each multiplexing-disabled reason to a single log line
+// for the daemon's lifetime. Every git invocation rebuilds this environment, so
+// an unguarded warning would bury the log in a fact that never changes.
+//
+// There is one guard PER REASON rather than one per code path. Sharing a guard
+// across two reasons would let whichever fired first permanently silence the
+// other, so an operator debugging a missing socket would be told the wrong
+// cause — or nothing at all.
+var (
+	gitSSHControlPathWarnOnce  sync.Once
+	gitSSHControlQuoteWarnOnce sync.Once
+	gitSSHControlDirWarnOnce   sync.Once
+	gitSSHControlMkdirWarnOnce sync.Once
+)
+
+// sshControlSocketName renders the control socket's file name for one remote
+// identity: <user>@<host>-<port>.
+//
+// The socket MUST be keyed on the full identity. ssh does not verify that the
+// master answering a ControlPath is connected to the host the client asked for,
+// so a name shared across identities would silently route one host's git
+// commands over another host's authenticated connection.
+//
+// `host` is the hostname AS WRITTEN in the remote URL, not the one ssh_config
+// resolves it to. That distinction is the whole point: a multi-account setup
+// gives each account an ssh_config alias with its own IdentityFile and a shared
+// HostName, so keying on the resolved host would collapse them onto one master
+// and let a push for one account ride the other account's authenticated
+// connection. See sshControlSocketTemplate for the token that preserves it.
+//
+// Production never learns that identity: GIT_SSH_COMMAND is built once per git
+// invocation, before git has resolved a remote, and sniffing the remote URL to
+// find out would mean an extra git call on every command (and a special case
+// for https origins that this change deliberately does not have). So production
+// passes OpenSSH's OWN tokens through this same function and lets ssh do the
+// substitution at connect time — see sshControlSocketTemplate. Feeding it a
+// concrete identity, as the tests do, renders exactly the name ssh will
+// materialize.
+func sshControlSocketName(user, host, port string) string {
+	return user + "@" + host + "-" + port
+}
+
+// sshControlSocketTemplate is the name bossd actually hands to ssh: the same
+// layout with OpenSSH's remote-user (%r), original-host (%n) and port (%p)
+// tokens in place of a concrete identity.
+//
+// %n, NOT %h. %h is the hostname after ssh_config resolution, so two aliases
+// that differ only by IdentityFile — the standard multi-GitHub-account setup —
+// both expand to the same name and share one master. ssh does not re-verify
+// identity against an existing master, so that sharing is how a push authorized
+// as one account travels over the other's connection. %n is the host as given,
+// which is exactly the key that selected the ssh_config block in the first
+// place, so distinct aliases get distinct sockets. Two spellings of the same
+// host now get two masters instead of one: a forgone connection reuse, which is
+// the safe direction to err.
+//
+// Note what is NOT used here. %C is OpenSSH's own hash of the identity and would
+// give an exactly knowable length — but it is 64 hex characters, which on macOS
+// leaves 103 - 64 = 39 bytes for "~/Library/Application Support/bossanova/ssh".
+// That never fits, so %C would disable multiplexing on the platform bossd
+// primarily runs on. The token form is ~17 bytes for a real git remote and fits
+// with room to spare.
+func sshControlSocketTemplate() string {
+	return sshControlSocketName("%r", "%n", "%p")
+}
+
+// shellSingleQuote wraps s so a POSIX shell reproduces it verbatim, including
+// any embedded single quote (a home directory such as /Users/o'brien is why this
+// is not a bare "'" + s + "'").
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// sshControlPathOption renders the `-o ControlPath=...` fragment of the authored
+// GIT_SSH_COMMAND, quoted for BOTH parsers that read it, and reports whether the
+// path can be expressed safely at all.
+//
+// Getting this wrong breaks every ssh git operation on macOS, where the control
+// directory is "~/Library/Application Support/bossanova/ssh" — it contains a
+// space. TWO layers split the value, and quoting for only one is still broken:
+//
+//  1. git executes GIT_SSH_COMMAND through a shell, so an unquoted path is word
+//     split; ssh then reads the tail ("Support/bossanova/ssh/%r@%n-%p") as its
+//     destination and dies with "Could not resolve hostname".
+//  2. ssh's own -o parser re-splits the value it receives, so shell quoting
+//     alone yields "keyword controlpath extra arguments at end of line" and
+//     exit 255.
+//
+// So the value is wrapped in double quotes for ssh's parser and the whole
+// argument is single quoted for the shell. ssh consumes the double quotes before
+// binding the socket — verified with `ssh -G`, which reports the path with the
+// space intact and the quotes gone — so they cost nothing against
+// sshControlPathLimit and the length accounting above is unchanged.
+//
+// A path containing a double quote or a backslash cannot be expressed through
+// ssh's parser this way. Rather than emit a value that would fail at connect
+// time, report it as unusable and let the caller disable multiplexing.
+func sshControlPathOption(controlPath string) (string, bool) {
+	if strings.ContainsAny(controlPath, "\"\\") {
+		return "", false
+	}
+	return "-o " + shellSingleQuote(`ControlPath="`+controlPath+`"`), true
+}
+
+// sshEscapePercent doubles every percent in s so ssh's token expander emits it
+// literally.
+//
+// ssh expands %-tokens anywhere in a ControlPath, not just in the name, so a
+// control directory such as /Users/50%off would make ssh exit 255 with
+// "vdollar_percent_expand: unknown key %o" on every git operation — the same
+// total breakage as an unquoted path, and just as invisible from inside bossd.
+// %% is ssh's own escape for a literal percent, verified with `ssh -G`, which
+// reports the path with the single percent restored. Escaping rather than
+// refusing keeps multiplexing working for those operators instead of silently
+// switching it off for them.
+//
+// Only the directory goes through here. The template's %r/%n/%p are appended
+// afterwards and must stay live.
+//
+// The doubling costs nothing against sshControlPathLimit: that limit applies to
+// the path ssh binds, which is post-expansion, and expansion undoes it — which
+// is why sshControlPath measures the raw directory and escapes only the value it
+// hands on.
+func sshEscapePercent(s string) string {
+	return strings.ReplaceAll(s, "%", "%%")
+}
+
+// sshControlPath assembles the ControlPath under baseDir and reports whether it
+// fits within sshControlPathLimit.
+//
+// Pure — it measures and never touches the filesystem — which is what lets a
+// test assert the fallback by handing it a deep directory rather than by
+// building one. Measuring at all is the point: ssh refuses an over-long
+// ControlPath, which would turn this optimization into an outage.
+func sshControlPath(baseDir string) (string, bool) {
+	// The template expands at connect time, so the fixed prefix plus the
+	// reserved expansion budget is what has to fit, not the template's own
+	// length. +1 for the separator filepath.Join will insert.
+	if len(baseDir)+1+sshControlNameBudget > sshControlPathLimit {
+		return "", false
+	}
+	return filepath.Join(sshEscapePercent(baseDir), sshControlSocketTemplate()), true
+}
+
+// gitCommandEnv returns the environment for one git invocation: os.Environ()
+// plus bossd's multiplexing GIT_SSH_COMMAND, or os.Environ() unchanged when
+// multiplexing is off or cannot be configured safely.
+//
+// It is the single place cmd.Env is built, so every git command bossd runs is
+// covered by construction rather than by remembering. Setting it unconditionally
+// is safe for an https origin: git only consults GIT_SSH_COMMAND for the ssh
+// transport, so there is no remote-URL sniffing here and no https special case.
+//
+// # Why bossd's entry goes FIRST
+//
+// Exporting GIT_SSH_COMMAND is a supported thing for an operator to do — a jump
+// host, a pinned identity file, a wrapper — and bossd must not quietly replace
+// it. os/exec deduplicates cmd.Env with the LAST assignment of a duplicate key
+// winning, so bossd's value is prepended and the operator's copy, which arrives
+// with os.Environ(), is the effective one. Their value is never filtered out;
+// bossd's is simply outranked when they have one.
+func gitCommandEnv(logger zerolog.Logger) []string {
+	env := os.Environ()
+	if config.EnvOr(gitSSHMultiplexingEnv, "1") == "0" {
+		return env
+	}
+
+	dir, err := gitSSHControlDir()
+	if err != nil {
+		gitSSHControlDirWarnOnce.Do(func() {
+			logger.Warn().Err(err).Msg("git ssh multiplexing disabled: cannot resolve the control socket directory")
+		})
+		return env
+	}
+
+	// Both checks run BEFORE the directory is created, so a path that cannot
+	// work leaves nothing behind.
+	controlPath, ok := sshControlPath(dir)
+	if !ok {
+		gitSSHControlPathWarnOnce.Do(func() {
+			logger.Warn().
+				Str("control_dir", dir).
+				Int("limit", sshControlPathLimit).
+				Int("name_budget", sshControlNameBudget).
+				Msg("git ssh multiplexing disabled: the control socket path would exceed the platform limit")
+		})
+		return env
+	}
+
+	controlPathOption, ok := sshControlPathOption(controlPath)
+	if !ok {
+		gitSSHControlQuoteWarnOnce.Do(func() {
+			logger.Warn().
+				Str("control_dir", dir).
+				Msg("git ssh multiplexing disabled: the control socket path cannot be quoted for ssh")
+		})
+		return env
+	}
+
+	// 0o700: the socket is a live channel into an already-authenticated
+	// connection, so a group- or world-traversable parent would widen who can
+	// ride it. MkdirAll leaves an EXISTING directory's mode alone, so this
+	// establishes 0700 on the directory bossd creates and does not repair one an
+	// operator has since widened.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		gitSSHControlMkdirWarnOnce.Do(func() {
+			logger.Warn().Err(err).Str("control_dir", dir).
+				Msg("git ssh multiplexing disabled: cannot create the control socket directory")
+		})
+		return env
+	}
+
+	// ConnectTimeout bounds the COLD path only — the TCP/handshake phase of
+	// opening a new master. A client that attaches to an existing socket never
+	// enters that phase, so this cannot bound an alive-but-wedged master; the
+	// per-invocation GitCommandTimeout in runGitWithTimeout is the only thing
+	// that does. It is still worth setting: a cold connect to an unreachable
+	// host is the failure that would otherwise sit until that outer timeout.
+	multiplexed := "GIT_SSH_COMMAND=ssh" +
+		" -o ControlMaster=auto" +
+		" -o ControlPersist=60s" +
+		" " + controlPathOption +
+		" -o ConnectTimeout=10"
+	return append([]string{multiplexed}, env...)
+}
+
+// sweepStaleSSHControlSockets removes control socket files older than
+// sshControlSocketStaleAfter from the control directory.
+//
+// ControlMaster=auto already copes with an ORPHANED socket — it opens a fresh
+// connection when the socket does not answer — so this is not about those. It is
+// about keeping the directory from accumulating debris across daemon restarts,
+// and about a master that is alive but wedged. See sshControlSocketStaleAfter
+// for why the age test is a margin rather than a proof of death, and why being
+// wrong costs a reuse rather than a command.
+//
+// Best-effort by construction. It runs on the daemon's startup path, where a
+// failure to tidy up is never a reason not to start, so every error is logged
+// and none is returned. A missing directory is the ordinary first-run case and
+// is not logged at all.
+func sweepStaleSSHControlSockets(logger zerolog.Logger, now time.Time) {
+	dir, err := gitSSHControlDir()
+	if err != nil {
+		logger.Debug().Err(err).Msg("skipping stale ssh control socket sweep: cannot resolve the control socket directory")
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn().Err(err).Str("control_dir", dir).Msg("stale ssh control socket sweep failed to read the control directory")
+		}
+		return
+	}
+	for _, entry := range entries {
+		// Directories are not sockets, and os.Remove cannot remove a non-empty
+		// one anyway — leave anything that is not a plain file alone.
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) <= sshControlSocketStaleAfter {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn().Err(err).Str("socket", path).Msg("failed to remove a stale ssh control socket")
+			continue
+		}
+		logger.Debug().Str("socket", path).Msg("removed a stale ssh control socket")
+	}
+}
 
 // runGitWithTimeout is runGit with an explicit per-invocation budget, for the
 // handful of commands whose honest worst case exceeds the default (a cold clone
@@ -858,6 +1248,10 @@ func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	// Every git command bossd runs gets its environment from the one helper
+	// (BOS-878), so ssh multiplexing is covered by construction. This is a free
+	// function with no manager, so it logs through the package logger.
+	cmd.Env = gitCommandEnv(log.Logger)
 	cmd.WaitDelay = gitWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -892,6 +1286,133 @@ func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// gitRemoteRetryPolicy bounds the retry ladder every remote-touching git
+// invocation runs under. A var in the same spirit as gitWaitDelay above: a test
+// swaps in a zero-sleep policy so the suite exercises the ladder without
+// waiting on it.
+var gitRemoteRetryPolicy = gitremote.DefaultPolicy()
+
+// runGitRemoteFn is the single git invocation runGitRemote retries. A var so a
+// test can script a failure sequence without a real remote — replacing it
+// exercises the whole wrapper, and through it every converted call site, with no
+// network at all.
+var runGitRemoteFn = runGit
+
+// runGitRemote is runGit for the invocations that touch origin, retried through
+// the shared gitremote classifier and its bounded backoff (BOS-876).
+//
+// # Only remote-touching invocations belong here
+//
+// Local plumbing — rev-parse, branch --show-current, merge-base, reflog show,
+// rev-list, worktree add — keeps calling runGit. Those cannot fail for a reason
+// a second attempt fixes, so retrying one can only spend a caller's budget
+// hiding a real repository problem (a broken ref, a held index.lock) behind a
+// delay. The classifier is narrow for the same reason: see the gitremote package
+// doc for the safety argument each signature owes, and note that widening it to
+// anything that can fire AFTER ref negotiation would make retrying push unsafe.
+//
+// # Retries compose UNDER the caller's deadline, never over it
+//
+// runGit already caps each invocation at GitCommandTimeout, and gitremote.Do
+// takes the caller's context as authoritative: it refuses to start once that
+// context is done and abandons the ladder if it ends during a backoff wait. So a
+// bootstrap carrying session.BootstrapTimeout still fails on that deadline, at
+// that deadline — the ladder can only make the effective budget SHORTER by
+// spending part of it waiting, never longer. That is the load-bearing invariant:
+// whatever ceiling the caller brought still holds.
+//
+// The ladder's OWN ceiling depends on how attempts fail, and the two cases are
+// three orders of magnitude apart:
+//
+//   - Attempts that fail fast — the incident shape, ssh refusing in under a
+//     second — cost the backoff waits and nothing else: ~4s per operation under
+//     DefaultPolicy's 3 attempts.
+//   - Attempts that HANG cost GitCommandTimeout each. runGitWithTimeout reports
+//     that as "git <argv>: context deadline exceeded (after 5m0s): <stderr>" with git's
+//     stderr appended verbatim, so a wedge that printed a transient signature
+//     before stalling classifies transient and is retried: 3 x GitCommandTimeout
+//     plus the waits, i.e. ~15m, not ~4s.
+//
+// Deliberately no separate ladder budget is imposed here. A first fetch of a
+// large repository is legitimately slow, and a ceiling tight enough to bound the
+// hang case would truncate it; the caller's own context is the right place to
+// say how long the operation may take. Callers that cannot afford the hang case
+// must carry a deadline — every session-start path already does.
+//
+// The "(after N attempts over D)" suffix AttemptsError appends is what keeps
+// either case reading as a repeated failure rather than a mystery hang.
+func runGitRemote(ctx context.Context, dir string, args ...string) (string, error) {
+	verb := ""
+	if len(args) > 0 {
+		verb = args[0]
+	}
+
+	var out string
+	var lastErr error
+	attempt := 0
+
+	err := gitremote.Do(ctx, gitRemoteRetryPolicy, func(ctx context.Context) error {
+		attempt++
+		if attempt > 1 {
+			// Reached only because gitremote.Do classified the previous failure
+			// as transient and had an attempt left, so this logs exactly once
+			// per RETRY — never on the success-first-try path. Warn rather than
+			// Info: the next GitHub degradation should read as retries in
+			// bossd.stderr.log rather than as silence.
+			//
+			// Read the fields as a pair: "attempt" names the try ABOUT TO START,
+			// while "error" is the PREVIOUS try's failure — the one that earned
+			// the retry. Full argv is carried because verb alone cannot answer
+			// which branch or refspec was in flight.
+			log.Warn().
+				Err(lastErr).
+				Str("git", verb).
+				Str("args", strings.Join(args, " ")).
+				Str("dir", dir).
+				Int("attempt", attempt).
+				Msg("retrying git remote operation after a transient failure")
+		}
+		out, lastErr = runGitRemoteFn(ctx, dir, args...)
+		return lastErr
+	})
+	if err != nil {
+		if lastErr != nil && !errors.Is(err, lastErr) {
+			// gitremote.Do returns a BARE ctx.Err() when the context ends during
+			// a backoff wait — git's own error is not reachable through it (see
+			// the Do doc). Without this the incident that motivated BOS-876
+			// would surface as "context deadline exceeded" alone, losing the
+			// "Permission denied (publickey)" that says what actually broke.
+			// The retry Warn above cannot cover it: on this path there is no
+			// next attempt to log at the start of.
+			log.Warn().
+				Err(lastErr).
+				Str("git", verb).
+				Str("dir", dir).
+				Int("attempts", attempt).
+				Msg("git remote ladder abandoned before its last error could be returned")
+			// Log alone is not enough: the caller keeps the returned error, and
+			// on this path it is exactly the caller most likely to be facing a
+			// broken remote. Re-attach git's message so the text consumers the
+			// gitremote package doc names — a wrapped error's message, and the
+			// session blocked reason a later child of BOS-873 will classify with
+			// IsTransientMessage over its text — can still see the signature.
+			// (No such classifier exists in the tree yet; this keeps the text it
+			// will read intact rather than answering a present-day caller.)
+			//
+			// Only ctx.Err() is wrapped with %w, so errors.Is(err,
+			// context.Canceled) and its DeadlineExceeded twin keep answering as
+			// they did before. lastErr goes in with %v deliberately: it is not a
+			// cause of the context ending, it is a separate failure that
+			// happened first, and putting it in the cause chain would let
+			// errors.Is find it through an error that did not come from it. Both
+			// designed consumers read text, so text is all it owes them.
+			return "", fmt.Errorf("%w (last git error: %v)", err, lastErr)
+		}
+		return "", err
+	}
+	return out, nil
+}
+
 // branchExists checks whether a local branch ref exists. It is a thin alias
 // over refExists on the refs/heads/ namespace, so both local-ref probes share
 // one implementation.
@@ -900,7 +1421,7 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 }
 
 func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
-	_, err := runGit(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
+	_, err := runGitRemote(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
 	return err == nil
 }
 
@@ -919,7 +1440,7 @@ func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
 // query. Callers rely on that to fail open (see availableNewBranchName) —
 // only a returned error means the remote could not be consulted.
 func remoteBranchesWithPrefix(ctx context.Context, repoPath, prefix string) (map[string]struct{}, error) {
-	out, err := runGit(ctx, repoPath, "ls-remote", "--heads", "origin", "refs/heads/"+prefix+"*")
+	out, err := runGitRemote(ctx, repoPath, "ls-remote", "--heads", "origin", "refs/heads/"+prefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("list remote branches for %q: %w", prefix, err)
 	}
@@ -2149,12 +2670,62 @@ func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("verify branch before push: %w", err)
 	}
 
-	if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", "HEAD:refs/heads/"+branch); err != nil {
+	if _, err := runGitRemote(ctx, worktreePath, "push", "-u", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
 }
 
+// PushWithLease force-pushes branch, refusing if origin has moved off
+// expectedRemoteSHA. It returns the pushed HEAD SHA.
+//
+// # The retried push re-sends an IDENTICAL lease, which can report a false failure
+//
+// This push runs through runGitRemote, so a transient failure is retried
+// (BOS-876) — and the lease is NOT re-derived between attempts. That is right
+// for the classifier's fail-before-negotiation signatures (a refused ssh
+// handshake changes nothing on the remote), and it is what keeps the lease
+// meaningful: re-reading origin between attempts would launder away the very
+// concurrent update the lease exists to catch. It is deliberately pinned by
+// TestPushWithLeaseRetriesTransientFailureAndStillRejectsStaleLease.
+//
+// The cost is on the other side. The classifier also accepts signatures that can
+// fire AFTER receive-pack applied the update ("remote end hung up", "RPC
+// failed", "early EOF" — see the gitremote package doc, which names
+// --force-with-lease as the case to watch). If one of those lands on a push that
+// really did take effect, attempt 2 sends the same lease against a remote now at
+// headSHA, git answers "stale info", and this returns an error for a push that
+// SUCCEEDED with exactly the intended content. Plain Push has no such hazard: it
+// converges on "Everything up-to-date".
+//
+// Know what that costs on the live path before deciding it is cheap. The
+// production caller is RebaseOntoBaseAndPush, reached from the keep-current
+// sweep, and it treats a failed push as a failed rebase: it calls
+// forceRestoreTip to put the local branch back on res.PriorHead. If the push had
+// in fact landed, origin now holds the rebased tip while the local branch holds
+// the old one, and every later sweep is refused by this function's own
+// verifyBranchMatchesOrigin precondition — the session drops out of keep-current
+// silently. No work is lost (a rebase only replays commits), but nothing
+// self-heals either.
+//
+// Left as-is anyway, because the retry does not CREATE that hazard: a one-shot
+// limb-2 failure on a landed push already returns an error today and unwinds
+// identically, so all a retry changes is the second attempt's rejection text.
+// The honest fixes — a limb-1-only classification seam in gitremote, or an
+// ls-remote reconciliation that treats "remote is already at headSHA" as success
+// on a late stale-info rejection — are a change to the shared classifier or to
+// this function's contract, and belong to whoever takes on that divergence
+// properly. Name the divergence plainly, because a reader of gitremote alone
+// will assume the opposite: that package's doc says a retried lease "must be
+// re-derived between attempts by whatever wires the retry, never assumed to
+// survive a first try that may have partly landed". This function is the
+// wiring, and it deliberately does not re-derive — for the reason two
+// paragraphs up. The package doc states the safe default; this states the
+// exception and what it costs.
+//
+// A false "push failed" is still the safe direction to leave open;
+// silently clobbering a concurrent update would not be. Do not let it surprise
+// you, and do not widen the classifier without revisiting this.
 func (m *Manager) PushWithLease(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error) {
 	m.logger.Info().
 		Str("path", worktreePath).
@@ -2181,7 +2752,7 @@ func (m *Manager) PushWithLease(ctx context.Context, worktreePath, branch, expec
 	}
 
 	lease := "refs/heads/" + branch + ":" + expectedRemoteSHA
-	if _, err := runGit(ctx, worktreePath, "push", "--force-with-lease="+lease, "origin", headSHA+":refs/heads/"+branch); err != nil {
+	if _, err := runGitRemote(ctx, worktreePath, "push", "--force-with-lease="+lease, "origin", headSHA+":refs/heads/"+branch); err != nil {
 		return "", fmt.Errorf("push with lease: %w", err)
 	}
 	return headSHA, nil
@@ -2481,7 +3052,7 @@ func (m *Manager) FetchBase(ctx context.Context, localPath, base string) error {
 		return fmt.Errorf("local path is required")
 	}
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
-	if _, err := runGit(ctx, localPath, "fetch", "origin", refspec); err != nil {
+	if _, err := runGitRemote(ctx, localPath, "fetch", "origin", refspec); err != nil {
 		return fmt.Errorf("fetch origin/%s: %w", base, err)
 	}
 	return nil
@@ -2511,7 +3082,7 @@ func (m *Manager) CountMergeCommits(ctx context.Context, localPath, base, head s
 
 	headRef := "refs/remotes/origin/" + head
 	headRefspec := "+refs/heads/" + head + ":" + headRef
-	if _, err := runGit(ctx, localPath, "fetch", "origin", headRefspec); err != nil {
+	if _, err := runGitRemote(ctx, localPath, "fetch", "origin", headRefspec); err != nil {
 		if !branchExists(ctx, localPath, head) {
 			return 0, fmt.Errorf("head branch %q not found locally or on origin: %w", head, err)
 		}
@@ -2544,6 +3115,10 @@ func (m *Manager) IsAncestor(ctx context.Context, localPath, ref, target string)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ref, target)
 	cmd.Dir = localPath
+	// The same shared environment runGitWithTimeout uses (BOS-878). This call
+	// site builds its own exec.Cmd only to read the exit code, so it has to opt
+	// in explicitly — and it is the one place a future git command could miss.
+	cmd.Env = gitCommandEnv(m.logger)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// And bounded the same way runGitWithTimeout is, for the same reason: stderr

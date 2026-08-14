@@ -250,6 +250,34 @@ func attentionHintDemotable(reason pb.AttentionReason) bool {
 	}
 }
 
+// transientDraftPRHint is what a transient draft-PR failure renders instead of
+// its raw transport error (BOS-877).
+//
+// During the 2026-08-13 GitHub degradation draftPRFailureHint's truncation put
+// `Permission denied (publickey)` on the row, and operators went hunting through
+// ~/.ssh for a key bug that did not exist. Nothing in the raw error was worth
+// showing there, so the transient branch does not truncate one — it states the
+// condition. Keep any rewording under hintReasonMaxRunes (48) — but note NOTHING
+// truncates this branch: draftPRFailureHint returns this constant directly and
+// applies truncateHintReason only to the terminal case, so an over-length reword
+// renders in full and drags the NAME column toward its width cap instead of
+// being cut. The rune assertion in
+// TestDraftPRFailureHint_TransientRendersAPurposeWrittenString is what catches
+// that.
+//
+// Two accepted limitations, recorded so neither is discovered as a surprise.
+// The retry claim is a snapshot rather than an invariant: bossd's sweep
+// (services/bossd/internal/session/retry_draft_pr.go) bounds one session at
+// draftPRRetryMaxAttempts attempts spaced draftPRRetryCooldown apart and then
+// leaves the reason in place, so a row that keeps failing eventually reads
+// "PR retrying" while nothing is. And because gitremote classifies
+// `Permission denied (publickey)` as transient — its own comment concedes a
+// permanently dead key emits it too — a genuinely broken key now shows this
+// string here, with the raw text reachable only from the web surface. The fix
+// for both is for the sweep to rewrite the reason to the terminal form once the
+// budget is spent, not to reword this constant.
+const transientDraftPRHint = "PR retrying — GitHub was unreachable"
+
 // draftPRFailureHint surfaces a failed background draft-PR creation as a warning
 // sub-row (BOS-855).
 //
@@ -265,10 +293,17 @@ func attentionHintDemotable(reason pb.AttentionReason) bool {
 // The reason embeds a raw `gh pr create` / push error, which is routinely long
 // and multi-line, so it gets the same firstLine + rune truncation the other
 // daemon-error hints use: an untruncated one would put a newline inside a table
-// cell and drag the NAME column to its width cap through nameWidthLabels.
+// cell and drag the NAME column to its width cap through nameWidthLabels. That
+// truncation applies to the terminal case only — see transientDraftPRHint above
+// for why a transient failure renders a fixed string instead.
 func draftPRFailureHint(sess *pb.Session) string {
 	if sess == nil || !sessionreason.IsDraftPRCreationFailure(sess.BlockedReason) {
 		return ""
+	}
+	// Narrower predicate first: every transient reason also satisfies
+	// IsDraftPRCreationFailure above, by design.
+	if sessionreason.IsDraftPRCreationTransientFailure(sess.BlockedReason) {
+		return transientDraftPRHint
 	}
 	return truncateHintReason(firstLine(sess.GetBlockedReason()))
 }

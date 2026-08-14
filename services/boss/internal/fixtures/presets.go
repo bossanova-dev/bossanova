@@ -191,6 +191,26 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// transient-pr-failure: two rows for the BOS-877 proof scenario, built in
+		// the live-past-failure mould. Both sessions failed their background
+		// draft-PR create on an SSH permission error while their chats kept
+		// working — so both composites are the WORKING branch's plain SUCCESS
+		// "working" (the failure is never transitioned onto the session, and the
+		// live chat outranks the draft-PR branch below it) and each row's hint
+		// sub-row is its only alarm. Only the first row's stderr carries a
+		// transient signature (`Permission denied (publickey)`), so only its reason
+		// carries the transient marker and its hint must read
+		// "PR retrying — GitHub was unreachable"; the second's stderr
+		// (`ssh: Permission denied`) does not, so its hint keeps the raw first
+		// line, sized to render whole inside the 48-rune cap. Seeding both
+		// is the point: one row alone would prove the string exists rather than
+		// that the two cases render differently. Carries the same cloud-access e2e
+		// pin as demo so boss lands on the home session list.
+		"transient-pr-failure": {
+			World:      TransientPRFailureWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		// http-endpoints: one session with two machine-local HTTP listeners
 		// (:3000, :5173) plus an endpoint-free neighbour, for the BOS-474 /
 		// BOS-460 proof scenario. Home must show the clickable ":port" links on

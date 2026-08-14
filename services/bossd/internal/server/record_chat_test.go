@@ -235,10 +235,19 @@ func TestEnsureChatTmuxSession_ChatRowWriteFailureKillsPane(t *testing.T) {
 	}
 }
 
-// TestEnsureChatTmuxSession_ResolverErrorKillsPane covers the path that produced
-// the reported leak: the pane is created, then the interactive-session resolver
-// fails (in production, a DeadlineExceeded from the codex runner).
-func TestEnsureChatTmuxSession_ResolverErrorKillsPane(t *testing.T) {
+// TestEnsureChatTmuxSession_ResolverErrorKeepsPaneAndRecordsChat covers the path
+// that produced the originally reported failure: the pane is created, then the
+// interactive-session resolver fails (in production, a DeadlineExceeded from the
+// codex runner).
+//
+// This used to be TestEnsureChatTmuxSession_ResolverErrorKillsPane, asserting
+// that the pane was torn down. Killing it was the right repair for a spawn that
+// FAILED, but the spawn no longer fails here: foreground provider-id discovery
+// is an optimization covered by background discovery and attach-time backfill,
+// so losing it must not cost the user a working chat. The BOS-845 invariant
+// itself — no live chat pane without a recorded name — is unchanged and stays
+// pinned by the three row-write cases around this one, which are still reachable.
+func TestEnsureChatTmuxSession_ResolverErrorKeepsPaneAndRecordsChat(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
 	chat := &models.AgentChat{ID: "c1", SessionID: sess.ID, AgentSessionID: "agent-resolver-fail", AgentName: "codex"}
 	chats := &chatStoreFake{chat: chat}
@@ -246,19 +255,20 @@ func TestEnsureChatTmuxSession_ResolverErrorKillsPane(t *testing.T) {
 	resolveErr := errors.New(`agent "codex" ResolveInteractiveSessionID: rpc error: code = DeadlineExceeded`)
 	srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, &fakeInteractiveSessionResolver{resolveErr: resolveErr})
 
-	err := srv.ensureChatTmuxSession(context.Background(), chat, false)
-	if !errors.Is(err, resolveErr) {
-		t.Fatalf("error = %v, want the resolver error to propagate unchanged", err)
+	if err := srv.ensureChatTmuxSession(context.Background(), chat, false); err != nil {
+		t.Fatalf("error = %v, want nil — a failed discovery must not fail chat creation", err)
 	}
-	wantName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
-	if got := tmuxer.killedSessions(); len(got) != 1 || got[0] != wantName {
-		t.Fatalf("KillSession targets = %v, want exactly [%q]", got, wantName)
+	if got := tmuxer.killedSessions(); len(got) != 0 {
+		t.Fatalf("KillSession targets = %v, want none — the pane is usable and must survive", got)
 	}
-	if tmuxer.hasSession {
-		t.Fatalf("tmux session still live after a resolver failure — the pane leaked")
+	if !tmuxer.hasSession {
+		t.Fatalf("tmux session torn down after a best-effort discovery failure")
 	}
-	if chats.updateNameCall != 0 {
-		t.Fatalf("tmux_session_name write calls = %d, want 0 — the spawn never succeeded", chats.updateNameCall)
+	if chats.updateNameCall != 1 {
+		t.Fatalf("tmux_session_name write calls = %d, want 1 — the row must name the live pane", chats.updateNameCall)
+	}
+	if chats.updateProviderCall != 0 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 0 — no id was discovered", chats.updateProviderCall)
 	}
 }
 

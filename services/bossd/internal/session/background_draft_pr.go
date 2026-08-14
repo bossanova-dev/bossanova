@@ -436,6 +436,27 @@ func (l *Lifecycle) trackBackgroundDraftPR(sessionID string, cancel context.Canc
 	}
 }
 
+// hasBackgroundDraftPR reports whether a background draft-PR create is
+// registered for sessionID right now.
+//
+// It answers a question WaitForBackgroundDraftPR cannot: that call returns
+// immediately both when a create has finished AND when none was ever started,
+// so a caller that must not act while one is live gets the same "go ahead" in
+// either case. The draft-PR retry sweep needs the distinction — pushing the same
+// branch from two places is the failure its interlocks exist to prevent — and
+// tests need it to assert the negative case (a DeferPR session starts no step at
+// all).
+//
+// Deliberately on the existing backgroundDraftPRMu rather than a second lock
+// over the same map: two mutexes guarding one map is a data race waiting to be
+// written, not extra safety.
+func (l *Lifecycle) hasBackgroundDraftPR(sessionID string) bool {
+	l.backgroundDraftPRMu.Lock()
+	defer l.backgroundDraftPRMu.Unlock()
+	_, ok := l.backgroundDraftPRs[sessionID]
+	return ok
+}
+
 // CancelBackgroundDraftPR aborts the in-flight background draft-PR create for
 // sessionID, if any. It does NOT wait — pair it with WaitForBackgroundDraftPR
 // when the caller needs the step to have stopped touching the branch.

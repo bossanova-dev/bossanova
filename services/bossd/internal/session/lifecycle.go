@@ -25,6 +25,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gitremote"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
@@ -357,6 +358,22 @@ type Lifecycle struct {
 	// first use, so the zero Lifecycle is usable.
 	backgroundDraftPRMu sync.Mutex
 	backgroundDraftPRs  map[string]*backgroundDraftPRHandle
+
+	// draftPRRetries rate-limits RetryFailedDraftPRsPeriodic (BOS-875), keyed
+	// by session id. Deliberately in memory and NOT a column: this is a rate
+	// limiter, not a fact about the session, and it must not outlive the
+	// process — a daemon restart legitimately re-arms every retry, which is
+	// exactly when a fresh attempt is most likely to succeed. Lazily created on
+	// first use, so the zero Lifecycle is usable.
+	draftPRRetryMu sync.Mutex
+	draftPRRetries map[string]draftPRRetryState
+
+	// draftPREnsurer is the PR-open entry the draft-PR retry sweep calls, held
+	// as a seam for the same reason as reapFinalizer above: nil means the real
+	// EnsurePR, and tests inject a recorder so the sweep's selection, cooldown
+	// and log-and-continue behaviour can be driven without a git remote or a
+	// GitHub provider. EnsurePR itself is untouched by this indirection.
+	draftPREnsurer func(ctx context.Context, sessionID string) error
 }
 
 // proofEnvResolver resolves the allowlisted proof environment overlay. The
@@ -2298,7 +2315,22 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 
 // draftPRBlockedReason renders the blocked_reason recorded when a draft PR
 // create fails.
+//
+// This is the SINGLE place the transient/terminal form is chosen (BOS-877). Both
+// writers reach it through setDraftPRBlockedReason — the background create via
+// failInFlightDraftPR, and EnsurePR — so putting the decision here is what stops
+// the two paths from ever disagreeing about the same error.
+//
+// gitremote.IsTransient reads err.Error(), so it sees wrapped causes: an
+// exhausted retry ladder returns an *AttemptsError wrapping the transient error
+// and still classifies transient. That is deliberate. The ladder having run does
+// not turn GitHub's outage into the operator's key problem; the reason then
+// carries both the transient marker and the "after N attempts" suffix, which is
+// exactly the pair a reader needs.
 func draftPRBlockedReason(err error) string {
+	if gitremote.IsTransient(err) {
+		return sessionreason.DraftPRCreationTransientFailure(err)
+	}
 	return sessionreason.DraftPRCreationFailure(err)
 }
 

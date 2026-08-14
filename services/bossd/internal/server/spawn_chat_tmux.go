@@ -258,11 +258,12 @@ const chatPaneRollbackTimeout = 5 * time.Second
 //
 // The rollback context is deliberately detached from the caller's with
 // context.WithoutCancel: the failure being rolled back is frequently a context
-// failure itself (the observed production case is a DeadlineExceeded out of
-// ResolveInteractiveSessionID), and issuing the kill on an already-dead context
-// would fail immediately — leaking exactly the pane this exists to reclaim.
-// This is the one deliberate deviation from the shape of the sibling helper
-// Lifecycle.killTmuxChatBestEffort, which is only reached on live contexts.
+// failure itself (the original production case was a DeadlineExceeded out of
+// ResolveInteractiveSessionID; the row writes below can fail the same way), and
+// issuing the kill on an already-dead context would fail immediately — leaking
+// exactly the pane this exists to reclaim. This is the one deliberate deviation
+// from the shape of the sibling helper Lifecycle.killTmuxChatBestEffort, which
+// is only reached on live contexts.
 //
 // # Audited return paths between pane creation and the name write (BOS-845)
 //
@@ -270,13 +271,23 @@ const chatPaneRollbackTimeout = 5 * time.Second
 // claim completes when UpdateTmuxSessionName has stored TmuxName. Every return
 // in between is covered as follows.
 //
-// In spawnChatTmux, after NewSessionWithCmd succeeds:
-//   - the resolver error return inside the discovery loop — covered by
-//     spawnChatTmux's own deferred rollback. This is the path that produced the
-//     reported leak (`agent "codex" ResolveInteractiveSessionID: ... DeadlineExceeded`).
+// In spawnChatTmux, after NewSessionWithCmd succeeds, there is currently NO
+// error return at all, so its deferred rollback is unreachable by construction:
+//   - the resolver failure inside the discovery loop — once the path that
+//     produced the reported leak (`agent "codex" ResolveInteractiveSessionID:
+//     ... DeadlineExceeded`), now degraded to a fresh-fallback success, because
+//     foreground provider-id discovery is an optimization and losing it must not
+//     cost the pane. Killing a usable pane was the strictly worse of the two
+//     ways to handle it; not erroring at all is the better one.
 //   - every success return (resumed, resolved id, ambiguous, ctx done, discovery
-//     timeout, no resolver) — not rolled back here: the pane is handed to the
-//     caller, which arms its own rollback for the row-write window.
+//     timeout, discovery failure, no resolver) — not rolled back here: the pane
+//     is handed to the caller, which arms its own rollback for the row-write
+//     window.
+//
+// The deferred rollback is kept regardless. It costs nothing while no error
+// return exists, and it means a future error added between the pane going live
+// and the caller taking ownership is covered the moment it is written, rather
+// than silently reopening a leak that persists for the host's lifetime.
 //
 // Before NewSessionWithCmd (tmux unavailable, session already live, stat
 // worktree, nil argv builder, BuildInteractive error, empty argv, and
@@ -390,6 +401,10 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 	// than handing the caller a pane whose name no cleanup path can learn: this
 	// is registered after the create so the failures above — where no pane of
 	// ours exists — stay untouched (BOS-845).
+	//
+	// No error return currently reaches this: every path below returns a
+	// success, the resolver failure included. It stays armed so that adding one
+	// later cannot silently reopen the leak — see killSpawnedChatPaneBestEffort.
 	defer func() {
 		if err != nil {
 			killSpawnedChatPaneBestEffort(ctx, deps.Tmux, deps.Logger, in.Chat.AgentSessionID, in.TmuxName)
@@ -414,9 +429,26 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 		}
 		deadline := time.Now().Add(interactiveProviderIDForegroundDiscoveryTimeout)
 		for time.Now().Before(deadline) {
-			resolution, err := deps.Resolver.ResolveInteractiveSessionID(ctx, in.Chat.AgentName, in.WorktreePath, in.Chat.AgentSessionID, launchedAt, time.Time{}, false, panePID)
-			if err != nil {
-				return spawnResult{}, err
+			resolution, resolveErr := deps.Resolver.ResolveInteractiveSessionID(ctx, in.Chat.AgentName, in.WorktreePath, in.Chat.AgentSessionID, launchedAt, time.Time{}, false, panePID)
+			if resolveErr != nil {
+				// Best-effort, exactly like the discovery timeout below: the pane is
+				// live and usable, and an unbound provider id is recovered by the
+				// daemon's background discovery or by attach-time legacy backfill.
+				// Failing here instead would destroy a working chat over an
+				// optimization — and, since the pane is already live, force a
+				// rollback of it (BOS-845).
+				//
+				// The reason reported to callers is deliberately the same
+				// discovery-timeout value a slow resolution produces: both mean "no
+				// id yet, one is still being discovered", which is what the two UI
+				// surfaces render from this field. The distinction that matters is
+				// an operator's, so it lives in the log line rather than in a new
+				// user-facing reason string.
+				deps.Logger.Warn().Err(resolveErr).
+					Str("agent_session_id", in.Chat.AgentSessionID).
+					Str("agent", in.Chat.AgentName).
+					Msg("foreground provider session id discovery failed; leaving the pane live for background discovery")
+				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, FallbackReason: WakeFallbackReasonProviderIDDiscoveryTimeout}, nil
 			}
 			if resolution.SessionID != "" {
 				return spawnResult{Outcome: OutcomeFreshFallback, LaunchedAt: launchedAt, ProviderSessionID: resolution.SessionID, FallbackReason: fallbackReason}, nil

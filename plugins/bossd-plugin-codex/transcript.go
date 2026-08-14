@@ -184,8 +184,13 @@ func scanInteractiveSessionCandidates(root, workDir string, launchedAfter time.T
 // mtime.After(notAfter) prune would reject exactly the long-running or
 // recently-touched session the legacy resolver is looking for.
 // TestResolveLegacyInteractiveSessionIDAtUsesSessionMetaTimestamp is the
-// committed guard against that mistake. Only the notBefore side is prefiltered;
-// notAfter is still evaluated on sessionTime after readSessionMeta.
+// committed guard against that mistake. On MTIME, therefore, only the notBefore
+// side is prefiltered.
+//
+// That restriction is specific to mtime and does not extend to shard DIRECTORY
+// dates, which carry no such drift: see shardDirStartsAfter, which does prune
+// the upper bound on shard dates. After both prefilters, notAfter is still
+// evaluated on sessionTime after readSessionMeta.
 const mtimePrefilterSlack = 24 * time.Hour
 
 // shardDateSlack widens the day-shard directory prune by a further day in the
@@ -209,6 +214,13 @@ const mtimePrefilterSlack = 24 * time.Hour
 // floorDate a full day below date(notBefore). The second day is defence against
 // a future shrink of mtimePrefilterSlack or a dating skew larger than one day,
 // not against anything today's corpus can produce.
+//
+// The same constant is the slack on the UPPER shard bound (shardDirStartsAfter),
+// where it is load-bearing rather than margin: nothing else absorbs the
+// local-vs-UTC offset on that side, so a shard dated one day past the ceiling
+// must survive the prune. Zeroing it there would drop a rollout whose shard
+// directory is dated a day ahead of its own UTC start timestamp — the 22.7%
+// case measured above.
 const shardDateSlack = 24 * time.Hour
 
 // sessionMetaReader reads the leading session_meta payload of a rollout file.
@@ -225,25 +237,32 @@ func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, n
 // scanInteractiveSessionCandidatesInWindow with the metadata read injected.
 //
 // The walk applies the cheap filters before the expensive one: whole day-shard
-// directories older than the window are skipped with filepath.SkipDir, and a
-// file whose mtime is below the window floor is rejected before it is opened.
-// Both are disabled entirely when notBefore is zero ("no lower bound"). See
-// mtimePrefilterSlack and shardDateSlack.
+// directories outside the window are skipped with filepath.SkipDir, and a file
+// whose mtime is below the window floor is rejected before it is opened. The
+// two lower-bound filters are disabled entirely when notBefore is zero ("no
+// lower bound"); the upper-bound directory prune is disabled when notAfter is
+// zero ("no upper bound"), which is what the fresh-discovery path passes. See
+// mtimePrefilterSlack, shardDateSlack and shardDirStartsAfter.
 //
-// The two prefilters are conservative supersets of the authoritative post-read
-// window check to DIFFERENT degrees, and the difference is load-bearing:
+// The three prefilters are conservative supersets of the authoritative
+// post-read window check to DIFFERENT degrees, and the difference is
+// load-bearing:
 //
 //   - The mtime prefilter is a conservative superset unconditionally. A file
 //     whose mtime is at or above fileFloor always survives it, and when
 //     meta.Timestamp is missing or unparseable sessionTime falls back to that
 //     same mtime — so the post-read check can only agree with it or be stricter.
-//   - The directory prune is a conservative superset only WHILE meta.Timestamp
-//     parses as RFC3339Nano — the regime shardDateSlack's 340-sample
-//     measurement covers. It is not a superset otherwise: with no parseable
-//     timestamp, sessionTime falls back to info.ModTime(), which for a
+//   - The LOWER directory prune is a conservative superset only WHILE
+//     meta.Timestamp parses as RFC3339Nano — the regime shardDateSlack's
+//     340-sample measurement covers. It is not a superset otherwise: with no
+//     parseable timestamp, sessionTime falls back to info.ModTime(), which for a
 //     long-running or recently-appended session can exceed its shard's date by
 //     far more than shardDateSlack. Such a rollout is skipped before it is ever
 //     stat'd, so it degrades to a silently MISSED rollout, not to a slow scan.
+//   - The UPPER directory prune is a conservative superset unconditionally, in
+//     both timestamp regimes — the mtime fallback runs AHEAD of session start,
+//     which is the same direction the prune rejects. It therefore has no
+//     missed-rollout regime at all; see shardDirStartsAfter.
 //
 // That is the one place shardDirEndsBefore's fail-open does not reach: it fails
 // open on an unrecognised LAYOUT, which it can see, and not on a
@@ -256,6 +275,18 @@ func scanInteractiveSessionCandidatesInWindowWith(root, workDir string, notBefor
 	prefilter := !notBefore.IsZero()
 	fileFloor := notBefore.Add(-mtimePrefilterSlack)
 	dirFloor := fileFloor.Add(-shardDateSlack)
+	// The upper-bound shard prune is what bounds the LEGACY backfill, whose
+	// window is [chatCreatedAt-5m, chatCreatedAt+2m]. The lower bounds above are
+	// derived from that window's floor, so for an old chat they prune almost
+	// nothing — every rollout written between the chat's creation and today sits
+	// above the floor. Since the chats needing legacy backfill are precisely the
+	// old ones (they predate provider-id recording), the lower bounds alone leave
+	// the scan proportional to the chat's AGE. See shardDirStartsAfter for why
+	// pruning the ceiling on shard dates is sound where pruning it on mtime is
+	// not. Disabled on a zero notAfter, which means "no upper bound" and is what
+	// the fresh-discovery path passes.
+	ceilingFilter := !notAfter.IsZero()
+	dirCeiling := notAfter.Add(shardDateSlack)
 
 	var candidates []interactiveSessionCandidate
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -264,6 +295,9 @@ func scanInteractiveSessionCandidatesInWindowWith(root, workDir string, notBefor
 		}
 		if d.IsDir() {
 			if prefilter && shardDirEndsBefore(root, path, dirFloor) {
+				return filepath.SkipDir
+			}
+			if ceilingFilter && shardDirStartsAfter(root, path, dirCeiling) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -368,6 +402,81 @@ func shardDirEndsBefore(root, dir string, floor time.Time) bool {
 	shardDate := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
 	floorDate := time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, time.UTC)
 	return shardDate.Before(floorDate)
+}
+
+// shardDirStartsAfter reports whether dir is a codex date-shard directory
+// (<root>/YYYY, <root>/YYYY/MM or <root>/YYYY/MM/DD) whose entire date range is
+// strictly newer than ceiling, and which may therefore be skipped wholesale.
+// It is the upper-bound mirror of shardDirEndsBefore and fails open the same
+// way, for the same reason: an unrecognised tree must degrade to a slow scan,
+// never to a silently missing rollout.
+//
+// # Why an upper bound is safe HERE but not on mtime
+//
+// The refusal to prefilter the upper bound on mtime (see mtimePrefilterSlack)
+// is about mtime specifically: mtime is a LAST-WRITE time that runs ahead of a
+// session's start by up to about a week, so an mtime-based upper prune would
+// reject exactly the long-running session the caller is looking for. A shard
+// DIRECTORY name carries no such drift — codex names it once, from the local
+// date at session start, and a rollout never moves between shards no matter how
+// long it is appended to. So the two bounds are not symmetric, and pruning the
+// upper one here does not contradict that comment.
+//
+// # Why this prune is a conservative superset unconditionally
+//
+// shardDirEndsBefore is a conservative superset of the authoritative post-read
+// check only while meta.Timestamp parses (see
+// scanInteractiveSessionCandidatesInWindowWith). This one is a conservative
+// superset in BOTH regimes:
+//
+//   - meta.Timestamp parses: sessionTime is the session-start time, which is
+//     within a day of this shard's date, hence past notAfter — the post-read
+//     sessionTime.After(notAfter) check rejects it anyway.
+//   - meta.Timestamp missing or unparseable: sessionTime falls back to
+//     info.ModTime(), which runs AHEAD of the session start and so is even
+//     further past notAfter — rejected just the same.
+//
+// Either way the prune can only skip reads whose result would be discarded, so
+// unlike the lower-bound pair it has no missed-rollout regime at all.
+func shardDirStartsAfter(root, dir string, ceiling time.Time) bool {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || rel == "" {
+		return false
+	}
+	segments := strings.Split(rel, string(filepath.Separator))
+	if len(segments) > 3 {
+		return false
+	}
+	year, ok := parseShardSegment(segments[0], 4)
+	if !ok {
+		return false
+	}
+	c := ceiling.UTC()
+	if len(segments) == 1 {
+		return year > c.Year()
+	}
+	month, ok := parseShardSegment(segments[1], 2)
+	if !ok || month < 1 || month > 12 {
+		return false
+	}
+	if len(segments) == 2 {
+		return year > c.Year() || (year == c.Year() && month > int(c.Month()))
+	}
+	day, ok := parseShardSegment(segments[2], 2)
+	if !ok || day < 1 || day > 31 {
+		return false
+	}
+	shardDate := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	// Reject a triple that time.Date normalized forward (February 31 → March 3).
+	// shardDirEndsBefore gets this for free: normalization only ever moves a date
+	// forward, which moves it AWAY from "before the floor", so a malformed shard
+	// fails open by arithmetic. Here forward motion moves it TOWARD "after the
+	// ceiling", so the guard has to be explicit.
+	if shardDate.Year() != year || shardDate.Month() != time.Month(month) || shardDate.Day() != day {
+		return false
+	}
+	ceilingDate := time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
+	return shardDate.After(ceilingDate)
 }
 
 // parseShardSegment parses a zero-padded, all-digit shard path segment of

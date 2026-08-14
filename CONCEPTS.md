@@ -72,6 +72,31 @@ A chat whose coding agent (Claude or Codex) has hit its subscription usage cap a
 
 `usage-limited` is a display/attention state, not a lifecycle state: it rides the existing `display_label`/`display_intent` transport (no new proto field) and is **orthogonal to the PR-lifecycle session state machine**. In the session badge it outranks `working`/`idle` but loses to `question`. Each limit transition emits exactly one session event (`limit-entered` on enter, `limit-recovered` on leave) from the tracker's change-detection hook — never spamming on repeated polls. It is the read-only detection foundation that Epic 4's automatic account rotation reacts to.
 
+### Blocked reason
+
+The single human-readable field on a session that says why it is not progressing — the text an
+operator reads first when a session stalls, and the only durable record of the cause. It has many
+producers (draft-PR creation failures, agent auth failures, stalls) but no history: each producer
+overwrites whatever the last one wrote.
+
+That last property is a design constraint, not an implementation detail. A writer that replaces a
+_specific_ reason with a _generic_ one destroys the diagnosis, so any automated actor that both
+**selects** sessions on the blocked reason and **triggers** a code path that rewrites it must verify
+the operation's precondition itself and skip when it does not hold — an attempt that is certain to
+fail is not free, because failing is itself a write. Reason text is also structured enough to be
+recognised by its producer (a draft-PR failure is identifiable as such), which is what lets a sweep
+select on it — and what makes an overwrite keep matching the same selector.
+
+That recognition is a **prefix** test, not a tag field, and that shapes how a producer may refine
+its own reason. A narrower kind — a draft-PR failure that is a passing remote outage rather than a
+real misconfiguration — nests inside the producer's recognisable opening rather than taking a
+parallel one, so every selector written for the broad kind keeps matching the narrow one and the two
+predicates form a strict hierarchy. A genuinely different state (a draft PR that is still being
+created, say) does take its own form, because it must _stop_ matching. The discriminator also leads
+the text rather than trailing it, so a surface that clips a reason to one line keeps the framing and
+loses only the raw cause; surfaces are then free to render the same reason differently, which is a
+deliberate divergence rather than a parity defect.
+
 ## Epic runs (boss-epic)
 
 ### Epic run

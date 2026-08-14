@@ -699,6 +699,124 @@ func TestWakeChat_ForceFreshSkipsLegacyCodexBackfill(t *testing.T) {
 	}
 }
 
+// newWakeLegacyBackfillFixture builds the chat shape the wake-path legacy
+// backfill acts on: a codex chat with no provider_session_id and a non-zero
+// CreatedAt. existsFor programs the transcript oracle, which decides whether the
+// spawn resumes (no fresh discovery) or falls back fresh.
+func newWakeLegacyBackfillFixture(t *testing.T, resolver *fakeInteractiveSessionResolver, existsFor map[string]bool) (*Server, *chatStoreFake, *fakeTmuxClient) {
+	t.Helper()
+	chat := &models.AgentChat{
+		ID:             "c1",
+		AgentSessionID: "agent-1",
+		SessionID:      "s1",
+		AgentName:      "codex",
+		CreatedAt:      time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC),
+	}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	store := &chatStoreFake{chat: chat}
+	srv := &Server{
+		agentChats: store,
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			spawner:     tmuxer,
+			transcripts: &fakeTranscriptOracle{existsFor: existsFor},
+			argv: &fakeArgvBuilder{
+				fresh:  map[string][]string{"codex": {"codex"}},
+				resume: map[string][]string{"codex": {"codex", "resume"}},
+			},
+			resolver: resolver,
+		},
+	}
+	return srv, store, tmuxer
+}
+
+// A failed legacy backfill must cost a resume id, never the whole wake. This is
+// the wake-path sibling of the record path's warn-and-continue: before the fix
+// the scan's error was returned straight out of WakeChatInternal, surfacing as
+// `ResolveInteractiveSessionID: ... DeadlineExceeded` on a host whose codex
+// corpus is large enough to blow the budget.
+func TestWakeChat_LegacyBackfillFailureDoesNotFailTheWake(t *testing.T) {
+	legacyErr := errors.New(`agent "codex" ResolveInteractiveSessionID: rpc error: code = DeadlineExceeded`)
+	resolver := &fakeInteractiveSessionResolver{
+		legacyResolveErr: legacyErr,
+		sessionID:        "codex-fresh-1",
+	}
+	srv, store, tmuxer := newWakeLegacyBackfillFixture(t, resolver, nil)
+
+	resp, err := srv.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	}))
+	if err != nil {
+		t.Fatalf("wake failed on a legacy backfill error: %v — the scan is best-effort", err)
+	}
+	if !resolver.legacyCtxSeen {
+		t.Fatal("legacy backfill never ran — the assertion would be vacuous")
+	}
+	if resp.Msg.Outcome != pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK {
+		t.Fatalf("outcome = %v, want OUTCOME_FRESH_FALLBACK", resp.Msg.Outcome)
+	}
+	if got := tmuxer.killedSessions(); len(got) != 0 {
+		t.Fatalf("KillSession targets = %v, want none — a best-effort backfill failure must not tear down the pane", got)
+	}
+	if store.updateNameCall != 1 {
+		t.Fatalf("tmux_session_name write calls = %d, want 1 — the wake must run to completion", store.updateNameCall)
+	}
+}
+
+// The backfill context must survive the wake request's cancellation, exactly as
+// it does on the record path (BOS-844).
+func TestWakeChat_LegacyBackfillDoesNotInheritRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	resolver := &fakeInteractiveSessionResolver{
+		legacySessionID: "codex-legacy-1",
+		// Cancelling the request mid-backfill is what makes this assertion
+		// non-vacuous: an inherited context would read Canceled here.
+		cancelOnLegacyCall: cancel,
+	}
+	srv, store, _ := newWakeLegacyBackfillFixture(t, resolver, map[string]bool{"codex-legacy-1": true})
+
+	if _, err := srv.WakeChat(ctx, connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !resolver.legacyCtxSeen {
+		t.Fatal("legacy backfill never ran — the cancellation assertion would be vacuous")
+	}
+	if resolver.legacyCtxErr != nil {
+		t.Fatalf("backfill context error = %v, want nil — it must not inherit the request's cancellation", resolver.legacyCtxErr)
+	}
+	if store.updateProviderCall != 1 {
+		t.Fatalf("UpdateProviderSessionID calls = %d, want 1", store.updateProviderCall)
+	}
+}
+
+// The wake backfill is bounded by the same package-level budget the record path
+// uses, not by the caller's deadline.
+func TestWakeChat_LegacyBackfillUsesItsOwnBudget(t *testing.T) {
+	old := providerSessionIDLegacyBackfillTimeout
+	providerSessionIDLegacyBackfillTimeout = time.Nanosecond
+	defer func() { providerSessionIDLegacyBackfillTimeout = old }()
+
+	resolver := &fakeInteractiveSessionResolver{legacySessionID: "codex-legacy-1"}
+	srv, _, _ := newWakeLegacyBackfillFixture(t, resolver, map[string]bool{"codex-legacy-1": true})
+
+	if _, err := srv.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !resolver.legacyCtxSeen {
+		t.Fatal("legacy backfill never ran")
+	}
+	if !errors.Is(resolver.legacyCtxErr, context.DeadlineExceeded) {
+		t.Fatalf("backfill context error = %v, want DeadlineExceeded from the shrunk budget", resolver.legacyCtxErr)
+	}
+}
+
 func TestWakeChat_LegacyCodexAmbiguousBackfillDoesNotGuess(t *testing.T) {
 	chat := &models.AgentChat{
 		ID:             "c1",

@@ -267,7 +267,11 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		models.CronJobOutcomeCleanupFailed,
 		models.CronJobOutcomeFailedRecovered,
 		models.CronJobOutcomeFireFailed,
-		models.CronJobOutcomeGated:
+		models.CronJobOutcomeGated,
+		// gate_failed, like gated, is recorded by the scheduler before any
+		// session exists, so it never reaches this switch. Listed to keep it
+		// exhaustive against models.CronJobOutcome.
+		models.CronJobOutcomeGateFailed:
 		outcome = "error"
 	}
 	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventSessionFinalized, map[string]any{
@@ -1327,6 +1331,10 @@ func needsAttention(o models.CronJobOutcome) bool {
 		models.CronJobOutcomeFailedRecovered,
 		models.CronJobOutcomeFireFailed,
 		models.CronJobOutcomeGated,
+		// gate_failed: like gated, the scheduler records it before any session
+		// exists, so there is no session to mark attention-needed. Listed to
+		// keep this switch exhaustive.
+		models.CronJobOutcomeGateFailed,
 		// worktree_gone: finalize ran against an already-removed worktree
 		// (archived/deleted session). A benign no-op, not a housekeeping
 		// failure — so the session must NOT be routed to Blocked.

@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
+	"github.com/rs/zerolog"
 )
 
 const defaultAgentCommandPrefix = "/"
@@ -468,7 +469,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
-	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName)
+	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, ResolveSubagentGrantForSpawn(l.logger))
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          providerSessionID,
 		Resume:             resuming,
@@ -1237,6 +1238,78 @@ const unattendedSubagentDirective = "Launching this boss-managed unattended sess
 	"not report a clean result, state it verbatim as SUBAGENT-DISPATCH-UNAVAILABLE, name the " +
 	"mandated work left undone, and route the run to its non-clean terminal state."
 
+// attendedSubagentDirective is the attended-chat sibling of the constant above,
+// appended to a boss-managed chat that has a human in it unless the operator set
+// `subagent_dispatch_grant` to "unattended" (BOS-882).
+//
+// It exists for the same reason and at the same layer. Read the block comment on
+// unattendedSubagentDirective first: the instruction-layer-not-permission-layer
+// reasoning, and the escalation keying on UNDONE WORK rather than on a failed
+// dispatch call, apply here word for word and are not restated. What follows is
+// only what is different about the attended case.
+//
+// WHY ATTENDED CHATS NEEDED THEIR OWN CONSTANT. The unattended directive rests
+// its authority on the act of launching: an operator who starts an unattended
+// run is not present to be asked, so the launch itself is the standing request.
+// That claim is simply false in a chat with a human in it, and re-using the
+// wording would put a false sentence in a system prompt. So the attended grant
+// rests on the two things that are actually true: bossanova ships this grant on
+// by default, and no opt-out is in effect for this chat through the named,
+// persisted, reversible setting that exists to withdraw it.
+//
+// The wording is "no opt-out is IN EFFECT", never "the operator has not opted
+// out", and the difference is load bearing rather than stylistic. The resolver
+// fails open (config.ResolveSubagentDispatchGrant), so an operator who mistypes
+// the opt-out — or whose settings.json cannot be read — reaches this branch
+// having tried to withdraw the grant. "They have not opted out" is then a
+// sentence the daemon cannot back, and asserting an operator's configuration
+// back to the model on the one path where bossanova got it wrong is the exact
+// dishonesty this constant is otherwise careful to avoid. "No opt-out is in
+// effect" is true on every path that reaches here, because it describes
+// bossanova's resolved state rather than the operator's intent.
+// ResolveSubagentGrantForSpawn warns whenever the two diverge.
+//
+// The directive says so explicitly, and says
+// explicitly that this is NOT the user speaking in this chat — it must never be
+// re-worded to narrate a bossanova default as the user's own standing
+// instruction. That honesty is a tested property, not a stylistic preference.
+//
+// WHY THE DEFAULT FLIPPED. Attended chats were previously excluded on a
+// no-surprise-fan-out rationale, which turned out to buy nothing: nearly every
+// boss skill's protocol mandates awaited dispatch (boss-plan's drafting and
+// extension reviewers, boss-review's lenses and round extensions, boss-repair
+// Phase 2, boss-epic's child fan-out), so the exclusion did not prevent fan-out
+// — it silently collapsed protocol-mandated work into the parent context while
+// the skill could still report a clean run. Where a skill promotes confidence on
+// multi-reviewer agreement, that collapse also makes the agreement signal untrue.
+// The bound, not the exclusion, is what prevents surprise, so the bound is
+// carried over verbatim in substance: only what the protocol mandates, every
+// dispatch awaited and never backgrounded, documented inline fallbacks still a
+// clean result, escalation reserved for mandated work that actually goes undone.
+//
+// The one clause with no unattended counterpart is the reminder that a human IS
+// present, so anything beyond the mandated dispatches remains theirs to ask for.
+// That is the sentence keeping this a narrow grant rather than a licence to
+// delegate for convenience, and it is the first thing a widening edit would
+// drop. The operator's escape hatch is `subagent_dispatch_grant: "unattended"`,
+// which withdraws this directive and restores the previous attended behaviour.
+const attendedSubagentDirective = "Bossanova ships the subagent-dispatch grant enabled for attended " +
+	"boss-managed chats by default, and no operator opt-out is in effect for this chat (the " +
+	"`subagent_dispatch_grant` key in bossanova's settings.json, set to \"unattended\" to withdraw the " +
+	"grant). That shipped default " +
+	"and that operator setting are what authorise the subagent dispatches your running skill's protocol " +
+	"mandates — not anything the user has asked for in this chat. You are authorised to dispatch them without " +
+	"asking, and skipping them is not the conservative choice — it silently downgrades the work the skill was " +
+	"invoked to do. Bound that grant to the protocol: dispatch only what it mandates, and always await every " +
+	"dispatch — never background one (if your dispatch tool backgrounds by default, pass " +
+	"run_in_background: false) — rather than open-ended fan-out or convenience delegation. A human is present " +
+	"in this chat, so anything beyond the protocol's mandated dispatches is still theirs to ask for. If a " +
+	"dispatch you cannot make has a documented inline fallback, take that fallback: it is the protocol's own " +
+	"recovery, and completing the mandated work inline is a clean result, not a downgrade. Escalate only when " +
+	"the mandated work itself goes undone — the protocol documents no fallback, or the fallback also failed: " +
+	"then do not report a clean result, state it verbatim as SUBAGENT-DISPATCH-UNAVAILABLE, name the mandated " +
+	"work left undone, and tell the operator what is missing before continuing."
+
 // isCronSession reports whether the session was spawned by the cron scheduler.
 func isCronSession(sess *models.Session) bool {
 	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
@@ -1260,7 +1333,7 @@ func isUnattendedSession(sess *models.Session) bool {
 // future agent runner — including Codex, which never sees the system prompt)
 // discover its boss context. Unattended sessions (cron OR tmux_unattended)
 // additionally get BOSS_CRON=true so shell-mode detection stays consistent with
-// the autonomy directive that AppendSystemPromptFor appends; only real cron jobs
+// the autonomy directive that BuildAppendSystemPrompt appends; only real cron jobs
 // also get BOSS_CRON_JOB_ID/BOSS_CRON_NAME. Binary paths are omitted when not
 // resolved.
 //
@@ -1484,18 +1557,38 @@ func installedSkillDriftWarning(f SessionFacts) string {
 	return "Warning: the boss skill files installed at " + dir + " do not match this repository's skill sources at " + filepath.Join(srcRoot, "skills") + " — the installed skill bodies may be out of date. Prefer the repo copies under services/boss/internal/skillinstall/skills/ when a skill body and the repo disagree, and report the drift."
 }
 
-// AppendSystemPromptFor builds the per-chat system-prompt suffix bossd injects
-// into every agent launch: the boss session context for every chat, plus the
-// autonomy directive for unattended sessions (cron OR tmux_unattended).
-// Resolution of facts is shared with ManagedSessionEnv via ResolveSessionFacts.
+// ResolveSubagentGrantForSpawn resolves the operator's subagent-dispatch mode
+// for one chat spawn and reports, at Warn, any configured value bossd had to
+// DISCARD — a settings file it could not read, or a value that is not a
+// recognised mode (in practice, a typo of the "unattended" opt-out).
 //
-// agentName is the running agent for this chat (see ResolveSessionFacts).
-func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName string) string {
-	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName)
-	return text
+// The resolver fails open on both (config.ResolveSubagentDispatchGrant), which
+// is the right default: a typo must not silently degrade every attended chat,
+// and it must not fail daemon startup. But failing open silently means the one
+// operator who tried to withdraw the grant is the one operator who is told
+// nothing — and the attended directive then states that they have not opted
+// out, which their own settings.json contradicts. This is the signal that makes
+// the fail-open recoverable.
+//
+// It is the single place that warning is shaped, for the same reason
+// LogUndeliveredInstructions is: every spawn site should report identically.
+// The logging lives here rather than in config because config is linked into
+// the boss TUI, where zerolog's default stderr writer corrupts the Bubble Tea
+// display; bossd's logger is file-backed.
+func ResolveSubagentGrantForSpawn(logger zerolog.Logger) config.SubagentDispatchGrant {
+	grant, discarded := config.LoadSubagentDispatchGrant()
+	if discarded != "" {
+		logger.Warn().
+			Str("resolved", string(grant)).
+			Str("reason", discarded).
+			Msg("discarded the configured subagent dispatch grant")
+	}
+	return grant
 }
 
-// BuildAppendSystemPrompt returns the same suffix as AppendSystemPromptFor plus
+// BuildAppendSystemPrompt returns the per-chat system-prompt suffix bossd injects
+// into every agent launch — the boss session context for every chat, plus the
+// autonomy directive for unattended sessions (cron OR tmux_unattended) — plus
 // the names of the instruction classes it carries, so a spawn site can say what
 // was dropped when the runner declares it never carried the suffix into argv
 // (see LogUndeliveredInstructions). The classes are derived in the same branches
@@ -1505,7 +1598,24 @@ func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName strin
 // The class names are deliberately coarse — they name what kind of instruction
 // was lost, never its contents, so the report can be logged without leaking the
 // prompt body.
-func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName string) (string, []string) {
+//
+// grant is the operator's ALREADY-RESOLVED subagent-dispatch mode
+// (config.ResolveSubagentDispatchGrant). It is passed in rather than loaded
+// here so the grant matrix is testable without a settings file on disk, and so
+// the discard warning has exactly one emitter per spawn
+// (ResolveSubagentGrantForSpawn) rather than firing from inside composition.
+//
+// That is NOT a purity claim, and it should not be restated as one:
+// ResolveSessionFacts below reads settings itself for the socket path, so a
+// spawn already performs two independent settings reads that are not
+// snapshotted together. That predates this parameter and is unrelated to the
+// grant — but do not add a third read here on the strength of a purity this
+// function does not have.
+//
+// Callers that have no settings to consult can pass the zero value: it never
+// reaches config.ResolveSubagentDispatchGrant, it simply is not the opt-out, so
+// the branch below keeps the shipped default.
+func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName string, grant config.SubagentDispatchGrant) (string, []string) {
 	if sess == nil {
 		return "", nil
 	}
@@ -1519,9 +1629,19 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName str
 			prompt += "\n\n" + cronAutonomyDirective
 		}
 		// Both unattended shapes (worktree and zero-output) get the subagent
-		// grant; attended chats keep the no-surprise-fan-out default.
+		// grant, in every configuration: the operator opt-out below is scoped
+		// to attended chats and never withdraws an unattended run's authority.
+		// The grant is reported under the autonomy class rather than as its own
+		// so this branch's class list stays exactly what it has always been.
 		prompt += "\n\n" + unattendedSubagentDirective
 		classes = append(classes, InstructionClassAutonomyDirective)
+	} else if grant != config.SubagentDispatchGrantUnattended {
+		// Attended chats get the grant by default (BOS-882). The comparison is
+		// against the opt-out, not for the default, so every other value —
+		// including the zero value from a caller with no settings to consult —
+		// keeps the shipped grant rather than silently withdrawing it.
+		prompt += "\n\n" + attendedSubagentDirective
+		classes = append(classes, InstructionClassSubagentGrant)
 	}
 	return prompt, classes
 }

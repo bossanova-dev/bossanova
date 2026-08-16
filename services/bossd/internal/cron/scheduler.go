@@ -110,6 +110,11 @@ type Scheduler struct {
 	// this in addition to cron.Stop()'s own context.
 	wg sync.WaitGroup
 
+	// gateTimeout overrides the gate command timeout. Zero — the production
+	// value — means gatecmd.DefaultTimeout (60s). Tests shorten it so the
+	// timeout classification path is exercisable in milliseconds.
+	gateTimeout time.Duration
+
 	nowFunc   func() time.Time
 	telemetry libtelemetry.Client
 }
@@ -257,8 +262,9 @@ func (s *Scheduler) UpdateJob(job *models.CronJob) error {
 // skipped (job disabled, previous run still active, or blocked by the gate
 // command), or an error if the fire failed outright. Honors the concurrency
 // cap. A configured gate command is evaluated exactly as it is on a scheduled
-// fire — a manual run that fails the gate is reported as the "gated" skip
-// reason and spawns no session.
+// fire — a manual run that fails the gate spawns no session and is reported as
+// the "gated" skip reason when the gate ran and said no, or "gate_failed" when
+// the gate could not be evaluated at all.
 //
 // The caller's ctx is intentionally NOT propagated into the spawn pipeline:
 // claude.Start binds the spawned process to its ctx via cmd.Cancel, so a
@@ -373,15 +379,34 @@ func (s *Scheduler) fireJob(jobID string) {
 	}
 }
 
+// Skip reasons returned by fire and RunNow as the non-error skippedReason.
+// They are a wire contract: RunCronJobNow echoes them to clients, and the TUI
+// maps them to human phrasing in views.runNowSkipLabel.
+const (
+	// SkipReasonDisabled: the job is not enabled.
+	SkipReasonDisabled = "disabled"
+	// SkipReasonDBFetchError: the job row could not be re-read before firing.
+	SkipReasonDBFetchError = "db_fetch_error"
+	// SkipReasonOverlapPrevActive: the previous run is still in flight.
+	SkipReasonOverlapPrevActive = "overlap_prev_active"
+	// SkipReasonGated: the gate command RAN and exited non-zero — a real gate
+	// decision that there is no work.
+	SkipReasonGated = "gated"
+	// SkipReasonGateFailed: the gate command could not be evaluated at all
+	// (timeout, launch failure, shell 126/127). The fire is still blocked, but
+	// the gate condition is unknown rather than false (BOS-881).
+	SkipReasonGateFailed = "gate_failed"
+)
+
 // fire acquires a concurrency slot, performs the freshness + overlap checks,
 // and asks the session creator to spawn a cron-scoped session. Returns the
 // created session, a non-empty skippedReason, or an error.
 //
-// A configured gate command runs before the fire on every path — scheduled
-// and manual (RunNow) alike; a non-zero exit blocks the fire with outcome=gated.
+// A configured gate command runs before the fire on every path — scheduled and
+// manual (RunNow) alike. A non-zero exit blocks the fire with outcome=gated; a
+// gate that could not run at all blocks it with outcome=gate_failed.
 //
-// Skip reasons (non-error skips): "disabled", "db_fetch_error",
-// "overlap_prev_active", "gated".
+// Skip reasons (non-error skips) are the SkipReason* constants above.
 func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Session, skippedReason string, fireErr error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
@@ -413,11 +438,11 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 	job, err := s.store.Get(ctx, jobID)
 	if err != nil {
 		logger.Warn().Err(err).Msg("fire: could not fetch cron job; skipping")
-		return nil, "db_fetch_error", nil
+		return nil, SkipReasonDBFetchError, nil
 	}
 	if !job.IsEnabled {
 		logger.Info().Msg("fire: job disabled between tick and fire; skipping")
-		return nil, "disabled", nil
+		return nil, SkipReasonDisabled, nil
 	}
 	zeroOutput = job.IsZeroOutput
 	if reason, active := s.previousRunActive(ctx, job); active {
@@ -449,16 +474,22 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		return nil, "", fmt.Errorf("load repo for cron job %s: %w", job.ID, err)
 	}
 
-	// Gate command: run the configured command before firing. A non-zero exit,
-	// timeout, or launch failure blocks the fire with outcome=gated. This runs
-	// on both scheduled and manual (RunNow) fires.
+	// Gate command: run the configured command before firing. Anything other
+	// than exit 0 blocks the fire — the gate contract fails closed — but the
+	// two ways of blocking are recorded DIFFERENTLY (BOS-881). A gate that ran
+	// and exited non-zero is a healthy decision (outcome=gated). A gate that
+	// could not be evaluated at all — timeout, launch failure, shell 126/127 —
+	// leaves the condition unknown and records outcome=gate_failed, which
+	// derives cron STATUS FAILED so a broken gate is red rather than a quiet,
+	// healthy-looking skip. This runs on both scheduled and manual (RunNow)
+	// fires.
 	if strings.TrimSpace(job.GateCommand) != "" {
 		var buf bytes.Buffer
 		// Run inside a closure so the gating marker is cleared via defer —
 		// always before CreateSession on a pass, and even if gatecmd.Run
 		// panics (the cron.Recover chain would otherwise leave the job stuck
 		// in the gating set forever).
-		passed, gateErr := func() (bool, error) {
+		gate := func() gatecmd.Result {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
 			proofKey := ""
@@ -484,12 +515,21 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 				SentryOrg:            repo.SentryOrg,
 				ProofAnthropicAPIKey: proofKey,
 				UnsetEnv:             unsetEnv,
-				// Timeout left zero → gatecmd.DefaultTimeout (60s)
-				Output: &buf,
+				// Zero in production → gatecmd.DefaultTimeout (60s); tests
+				// shorten it via the gateTimeout seam.
+				Timeout: s.gateTimeout,
+				Output:  &buf,
 			})
 		}()
-		if !passed {
-			// Block the fire. Advance next_run_at; record outcome=gated; no session.
+		if !gate.Passed {
+			// Block the fire. Advance next_run_at; no session either way. Only
+			// the recorded outcome and the log level differ.
+			outcome := models.CronJobOutcomeGated
+			skipReason := SkipReasonGated
+			if gate.CouldNotRun() {
+				outcome = models.CronJobOutcomeGateFailed
+				skipReason = SkipReasonGateFailed
+			}
 			firedAt := s.nowFunc()
 			nextAt := s.peekNextFire(job.ID, firedAt)
 			var nextArg *time.Time
@@ -498,17 +538,30 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 			}
 			if upErr := s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
 				RanAt:     firedAt,
-				Outcome:   models.CronJobOutcomeGated,
+				Outcome:   outcome,
 				NextRunAt: nextArg,
 				// SessionID nil: this was not a fired run.
 			}); upErr != nil {
-				logger.Warn().Err(upErr).Msg("fire: failed to record gated outcome")
+				logger.Warn().Err(upErr).Str("cron_outcome", string(outcome)).Msg("fire: failed to record gate-blocked outcome")
 			}
-			logger.Info().Str("gate_output", buf.String()).Msg("fire: gate command blocked run")
-			if gateErr != nil {
-				logger.Debug().Err(gateErr).Msg("fire: gate command error")
+			if gate.CouldNotRun() {
+				// WARN, not debug: this is the one line that names the real
+				// problem (e.g. "node: command not found"). Logging it at debug
+				// is why the BOS-880 incident needed a human reading the
+				// daemon's PATH by hand.
+				logger.Warn().
+					Err(gate.Err).
+					Str("gate_output", buf.String()).
+					Str("gate_failure", gate.Failure.String()).
+					Int("gate_exit_code", gate.ExitCode).
+					Msg("fire: gate command could not be evaluated; blocking the fire and recording gate_failed")
+			} else {
+				logger.Info().
+					Str("gate_output", buf.String()).
+					Int("gate_exit_code", gate.ExitCode).
+					Msg("fire: gate command blocked run")
 			}
-			return nil, "gated", nil
+			return nil, skipReason, nil
 		}
 		logger.Debug().Str("gate_output", buf.String()).Msg("fire: gate command passed")
 	}
@@ -630,7 +683,7 @@ func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) 
 	if s.activity != nil && !s.activity.RunActive(sess) {
 		return "", false
 	}
-	return "overlap_prev_active", true
+	return SkipReasonOverlapPrevActive, true
 }
 
 // markFireFailed records last_run_outcome = fire_failed when CreateSession

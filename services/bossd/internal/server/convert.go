@@ -540,9 +540,17 @@ func cronStatusInactiveState(st machine.State) bool {
 // produce a PR; "no PR" is not a failure.
 //
 //   - fire_failed: the cron fire never reached a session (CreateSession
-//     errored) - the agent never ran. This is the only genuine cron failure.
+//     errored) - the agent never ran.
+//   - gate_failed: the gate command could not be evaluated at all (timeout,
+//     launch failure, shell 126/127), so the fire was blocked with the gate
+//     condition UNKNOWN and the agent never ran (BOS-881). Deliberately
+//     distinct from `gated`, which is a healthy skip the gate actually decided
+//     and which keeps its own CRON_JOB_STATUS_GATED branch in cronJobStatus.
+//     Collapsing the two is what let a repo-wide broken PATH read as a quiet,
+//     healthy backlog sweep.
 //
-// Every other outcome means the agent RAN. Housekeeping problems among them
+// Those two are the genuine cron failures. Every other outcome means the agent
+// RAN (or, for `gated`, that the gate ran and said no). Housekeeping problems
 // surface as a Blocked session (attention-needed) in the sessions list via
 // FinalizeSession's needsAttention path - NOT as a red cron:
 //   - pr_created, deleted_no_changes, pr_skipped_no_github - successful runs
@@ -558,7 +566,7 @@ func cronStatusInactiveState(st machine.State) bool {
 //   - worktree_gone - finalize ran against an already-removed worktree
 //     (archived/deleted session); a benign no-op, not a run failure
 func isCronFailureOutcome(o models.CronJobOutcome) bool {
-	return o == models.CronJobOutcomeFireFailed
+	return o == models.CronJobOutcomeFireFailed || o == models.CronJobOutcomeGateFailed
 }
 
 // constructPRURL is a package-local alias for vcs.ConstructPRURL.

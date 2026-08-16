@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -26,8 +27,8 @@ const (
 	// DefaultMcpPort is the loopback port the MCP HTTP daemon listens on.
 	DefaultMcpPort = 8765
 
-	// mcpPlistTemplate runs `mcp --http 127.0.0.1:<port>`. Unlike the bossd
-	// plist, its PATH includes ~/.nodenv/shims and ~/.local/bin so the MCP
+	// mcpPlistTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH comes from
+	// serviceEnvPath, the same helper the bossd plist renders from, so the MCP
 	// server (and any agent CLI it shells out to) can find node/agent binaries.
 	mcpPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -91,7 +92,7 @@ const (
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+		<string>{{.Path}}</string>
 		<key>LC_CTYPE</key>
 		<string>UTF-8</string>
 	</dict>
@@ -186,6 +187,7 @@ type plistData struct {
 	Label     string
 	BossdPath string
 	LogDir    string
+	Path      string
 }
 
 type mcpPlistData struct {
@@ -196,18 +198,24 @@ type mcpPlistData struct {
 	Path    string
 }
 
-// mcpPath builds the PATH for the MCP LaunchAgent. It mirrors the bossd plist
-// PATH but additionally includes the agent-runner shim directories
-// (~/.nodenv/shims and ~/.local/bin), which the Homebrew launchd PATH omits.
-func mcpPath() string {
+// serviceEnvPath builds the PATH for BOTH LaunchAgents — bossd and the MCP
+// server. One helper, because the two diverging was the bug: launchd never
+// sources an interactive shell config, so a nodenv/nvm/asdf toolchain or a
+// native `claude` in ~/.local/bin was invisible to bossd while the MCP agent
+// could see it, and every `node`-based cron gate exited 127 (BOS-880).
+//
+// The baseline includes the agent-runner shim directories (~/.nodenv/shims and
+// ~/.local/bin), which the Homebrew launchd PATH omits. daemon_path_extra
+// prepends to it; it can never remove a baseline entry.
+func serviceEnvPath() string {
 	entries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := userHomeDir(); err == nil {
 		entries = append([]string{
 			filepath.Join(home, ".nodenv", "shims"),
 			filepath.Join(home, ".local", "bin"),
 		}, entries...)
 	}
-	return strings.Join(entries, ":")
+	return joinServicePath(pathExtras(serviceEnvSettings()), entries)
 }
 
 // platformServicePath returns the path to the LaunchAgent plist file.
@@ -245,6 +253,7 @@ func generatePlist(bossdPath string) (string, error) {
 		Label:     Label,
 		BossdPath: bossdPath,
 		LogDir:    ld,
+		Path:      serviceEnvPath(),
 	}); err != nil {
 		return "", fmt.Errorf("render plist: %w", err)
 	}
@@ -279,7 +288,7 @@ func generateMcpPlist(mcpBinPath string, port int) (string, error) {
 		McpPath: mcpBinPath,
 		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		LogDir:  ld,
-		Path:    mcpPath(),
+		Path:    serviceEnvPath(),
 	}); err != nil {
 		return "", fmt.Errorf("render mcp plist: %w", err)
 	}
@@ -799,4 +808,131 @@ func platformEnsureRunning(socketPath string) error {
 	}
 
 	return nil
+}
+
+// InstalledServiceEnvPath returns the PATH recorded in the LaunchAgent plist
+// that is on disk right now — which is what the RUNNING daemon has, and which
+// differs from serviceEnvPath() until the next restart rewrites the file.
+//
+// Reporting only the computed value would reproduce the BOS-880 failure inside
+// the diagnostic itself: on the affected machine `boss daemon doctor` would
+// have said node was visible while the live daemon still could not see it.
+//
+// ok is false when the plist is absent or carries no PATH, so a caller can
+// never mistake "could not read it" for "it matches".
+func InstalledServiceEnvPath() (string, bool) {
+	plistPath, err := platformServicePath()
+	if err != nil {
+		return "", false
+	}
+	// #nosec G304 -- platformServicePath returns the fixed per-user LaunchAgents plist; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-880
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", false
+	}
+	return plistEnvironmentPath(data)
+}
+
+// plistEnvironmentPath extracts EnvironmentVariables > PATH from plist XML.
+//
+// The PATH key is looked up ONLY inside the EnvironmentVariables dict, which is
+// why the scan is scoped to that dict rather than run over the whole document:
+// a plist that sets no environment PATH but carries an unrelated <key>PATH</key>
+// elsewhere must report "not found", not that unrelated value.
+func plistEnvironmentPath(data []byte) (string, bool) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "key" {
+			continue
+		}
+		var key string
+		if err := decoder.DecodeElement(&key, &start); err != nil {
+			return "", false
+		}
+		if key == "EnvironmentVariables" {
+			return plistDictStringValue(decoder, "PATH")
+		}
+	}
+}
+
+// plistDictStringValue reads the <dict> that follows the current position and
+// returns the string value for want. It stops at that dict's own closing tag,
+// so the search can never run on into the rest of the document.
+func plistDictStringValue(decoder *xml.Decoder, want string) (string, bool) {
+	// Advance to the dict this key introduces.
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		if start, ok := token.(xml.StartElement); ok {
+			if start.Name.Local != "dict" {
+				return "", false
+			}
+			break
+		}
+	}
+
+	depth := 0
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			switch {
+			case element.Name.Local == "dict" || element.Name.Local == "array":
+				depth++
+				if err := decoder.Skip(); err != nil {
+					return "", false
+				}
+				depth--
+			case depth == 0 && element.Name.Local == "key":
+				var key string
+				if err := decoder.DecodeElement(&key, &element); err != nil {
+					return "", false
+				}
+				if key != want {
+					continue
+				}
+				return plistNextString(decoder)
+			}
+		case xml.EndElement:
+			if element.Name.Local == "dict" {
+				// Closed the EnvironmentVariables dict without finding want.
+				return "", false
+			}
+		}
+	}
+}
+
+// plistNextString returns the next <string> element's text.
+func plistNextString(decoder *xml.Decoder) (string, bool) {
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			if element.Name.Local != "string" {
+				return "", false
+			}
+			var value string
+			if err := decoder.DecodeElement(&value, &element); err != nil {
+				return "", false
+			}
+			return value, value != ""
+		case xml.EndElement:
+			// The key had no value element.
+			return "", false
+		}
+	}
 }

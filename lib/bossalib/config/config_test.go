@@ -2378,3 +2378,167 @@ func TestLoadFromIgnoresRetiredManagedMcpKeys(t *testing.T) {
 		t.Fatalf("DefaultAgent = %q, want claude", s.DefaultAgent)
 	}
 }
+
+// The grant resolver is the single place a settings string becomes a mode, and
+// every unmapped shape must land on the shipped default. The load-bearing case
+// is the typo: an operator who misspells the opt-out must keep the default
+// grant rather than silently lose it, and bossd must not fail to start over it.
+func TestResolveSubagentDispatchGrant(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want SubagentDispatchGrant
+	}{
+		{name: "absent key is the shipped default", in: "", want: SubagentDispatchGrantAlways},
+		{name: "explicit always", in: "always", want: SubagentDispatchGrantAlways},
+		{name: "explicit opt-out", in: "unattended", want: SubagentDispatchGrantUnattended},
+		{name: "opt-out tolerates case", in: "Unattended", want: SubagentDispatchGrantUnattended},
+		{name: "opt-out tolerates padding", in: "  unattended\n", want: SubagentDispatchGrantUnattended},
+		{name: "unrecognised value keeps the default", in: "sometimes", want: SubagentDispatchGrantAlways},
+		{name: "future never is not yet honoured", in: "never", want: SubagentDispatchGrantAlways},
+		{name: "whitespace only keeps the default", in: "   ", want: SubagentDispatchGrantAlways},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Settings{SubagentDispatchGrant: tc.in}
+			if got := ResolveSubagentDispatchGrant(&s); got != tc.want {
+				t.Fatalf("ResolveSubagentDispatchGrant(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// A missing settings load degrades to the default rather than panicking:
+	// callers pass whatever Load handed them, including nothing at all.
+	if got := ResolveSubagentDispatchGrant(nil); got != SubagentDispatchGrantAlways {
+		t.Fatalf("nil settings = %q, want %q", got, SubagentDispatchGrantAlways)
+	}
+}
+
+// The key must stay absent from a fresh settings.json (so a default install
+// carries no opinion on disk) while still resolving as "always", and an
+// operator's persisted opt-out must survive a load round-trip.
+func TestSubagentDispatchGrantSettingsRoundTrip(t *testing.T) {
+	if got := DefaultSettings().SubagentDispatchGrant; got != "" {
+		t.Fatalf("DefaultSettings carries %q, want the key absent", got)
+	}
+	fresh := DefaultSettings()
+	encoded, err := json.Marshal(fresh)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "subagent_dispatch_grant") {
+		t.Fatalf("fresh settings emitted the key: %s", encoded)
+	}
+	if got := ResolveSubagentDispatchGrant(&fresh); got != SubagentDispatchGrantAlways {
+		t.Fatalf("fresh settings resolve to %q, want %q", got, SubagentDispatchGrantAlways)
+	}
+
+	p := writeSettingsFile(t, `{"default_agent":"claude","subagent_dispatch_grant":"unattended"}`)
+	loaded, err := LoadFrom(p)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got := ResolveSubagentDispatchGrant(&loaded); got != SubagentDispatchGrantUnattended {
+		t.Fatalf("persisted opt-out resolved to %q, want %q", got, SubagentDispatchGrantUnattended)
+	}
+
+	// A garbage value must load cleanly — no error, no startup failure — and
+	// resolve back to the default.
+	bad := writeSettingsFile(t, `{"subagent_dispatch_grant":"unatended"}`)
+	loadedBad, err := LoadFrom(bad)
+	if err != nil {
+		t.Fatalf("LoadFrom with an unrecognised grant must not error: %v", err)
+	}
+	if got := ResolveSubagentDispatchGrant(&loadedBad); got != SubagentDispatchGrantAlways {
+		t.Fatalf("typo resolved to %q, want %q", got, SubagentDispatchGrantAlways)
+	}
+}
+
+// Failing open is deliberate; failing open SILENTLY is the defect. The operator
+// who mistypes the opt-out is the one operator whose intent bossd discards, and
+// therefore the one who most needs telling — so every value the resolver
+// declines to honour must produce a reason, and every value it honours must
+// produce none (or the warning is noise on the happy path and gets ignored).
+func TestParseSubagentDispatchGrant(t *testing.T) {
+	quiet := []string{"", "   ", "always", "unattended", "Unattended", "  unattended\n", "ALWAYS"}
+	for _, raw := range quiet {
+		t.Run("honoured/"+raw, func(t *testing.T) {
+			if _, got := parseSubagentDispatchGrant(raw); got != "" {
+				t.Fatalf("parseSubagentDispatchGrant(%q) reason = %q, want none", raw, got)
+			}
+		})
+	}
+
+	// The load-bearing case: a typo of the opt-out. The reason must name the
+	// offending value AND say the opt-out is not in effect, because that is the
+	// half an operator reading the log needs in order to act.
+	for _, raw := range []string{"unatended", "sometimes", "never", "Unattend"} {
+		t.Run("discarded/"+raw, func(t *testing.T) {
+			resolved, got := parseSubagentDispatchGrant(raw)
+			if got == "" {
+				t.Fatalf("parseSubagentDispatchGrant(%q) reason = \"\", want one", raw)
+			}
+			if !strings.Contains(got, raw) {
+				t.Errorf("reason %q does not name the offending value %q", got, raw)
+			}
+			if !strings.Contains(got, "NOT in effect") {
+				t.Errorf("reason %q does not say the opt-out is not in effect", got)
+			}
+			// The value is still resolved permissively — the reason is a
+			// signal, never a behaviour change. One switch produces both, so
+			// they cannot disagree about which values are recognised.
+			if resolved != SubagentDispatchGrantAlways {
+				t.Errorf("resolved %q, want the fail-open default %q", resolved, SubagentDispatchGrantAlways)
+			}
+			if viaSettings := ResolveSubagentDispatchGrant(&Settings{SubagentDispatchGrant: raw}); viaSettings != resolved {
+				t.Errorf("ResolveSubagentDispatchGrant disagreed with the parse: %q vs %q", viaSettings, resolved)
+			}
+		})
+	}
+
+	if got := ResolveSubagentDispatchGrant(nil); got != SubagentDispatchGrantAlways {
+		t.Fatalf("nil settings = %q, want %q", got, SubagentDispatchGrantAlways)
+	}
+}
+
+// LoadSubagentDispatchGrant pairs the resolved mode with that reason, so a
+// spawn site gets both in one call.
+func TestLoadSubagentDispatchGrantReportsDiscards(t *testing.T) {
+	t.Setenv(settingsPathEnv, writeSettingsFile(t, `{"subagent_dispatch_grant":"unattended"}`))
+	grant, discarded := LoadSubagentDispatchGrant()
+	if grant != SubagentDispatchGrantUnattended {
+		t.Errorf("honoured opt-out resolved to %q, want %q", grant, SubagentDispatchGrantUnattended)
+	}
+	if discarded != "" {
+		t.Errorf("an honoured opt-out must report no discard, got %q", discarded)
+	}
+
+	t.Setenv(settingsPathEnv, writeSettingsFile(t, `{"subagent_dispatch_grant":"unatended"}`))
+	grant, discarded = LoadSubagentDispatchGrant()
+	if grant != SubagentDispatchGrantAlways {
+		t.Errorf("typo resolved to %q, want the fail-open default %q", grant, SubagentDispatchGrantAlways)
+	}
+	if discarded == "" {
+		t.Fatal("a typo'd opt-out must report a discard reason; silence here is the defect this closes")
+	}
+
+	// The OTHER discard path: settings that cannot be parsed at all. It is the
+	// half of the fail-open-but-not-silent contract that no other test reaches,
+	// and it is the worse half in practice — an operator whose settings.json is
+	// malformed has every configured value dropped, an opt-out among them, so
+	// the grant is restored against their wishes with no other signal anywhere.
+	t.Setenv(settingsPathEnv, writeSettingsFile(t, `{"subagent_dispatch_grant": `))
+	grant, discarded = LoadSubagentDispatchGrant()
+	if grant != SubagentDispatchGrantAlways {
+		t.Errorf("unloadable settings resolved to %q, want the fail-open default %q", grant, SubagentDispatchGrantAlways)
+	}
+	if discarded == "" {
+		t.Fatal("unloadable settings must report a discard reason; a dropped opt-out cannot be silent")
+	}
+	if !strings.Contains(discarded, "settings could not be loaded") {
+		t.Errorf("reason %q must say the settings failed to load, not merely name a bad value", discarded)
+	}
+	if !strings.Contains(discarded, "NOT in effect") {
+		t.Errorf("reason %q must say the configured opt-out is not in effect", discarded)
+	}
+}

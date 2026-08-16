@@ -197,6 +197,14 @@ func CronJobs() []*pb.CronJob {
 		// the demo world, so TUI proofs could never show them (BOS-251).
 		{Id: "cron-6", RepoId: "repo-4", Name: "Paused release gate", Prompt: "Cut a release when the gate opens", Schedule: "@daily", Timezone: "UTC", IsEnabled: false, AgentName: "claude", GateCommand: "test -f RELEASE_READY", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
 		{Id: "cron-7", RepoId: "repo-5", Name: "Paused visual regression", Prompt: "Run the visual regression suite", Schedule: "@weekly", Timezone: "UTC", IsEnabled: false, AgentName: "claude", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "failed"},
+		// cron-9 (BOS-881): the gate could not be evaluated at all — the demo
+		// gate's interpreter is missing, the `sh -c` shape that exits 127. It is
+		// enabled, like the gated cron-5, so one cron-list capture shows a
+		// healthy gated job and a broken one together: gate_failed derives
+		// CRON_JOB_STATUS_FAILED (red) while gated stays warning-styled.
+		// Deliberately NOT last: bos384-cron-worktree-gone-benign asserts on
+		// 'Stale branch cleanup' being the final row.
+		{Id: "cron-9", RepoId: "repo-3", Name: "Backlog sweep", Prompt: "Pick up the next planned ticket and implement it", Schedule: "*/30 * * * *", Timezone: "UTC", IsEnabled: true, AgentName: "claude", GateCommand: "node scripts/backlog-gate.mjs", ShouldRunSetupCommand: true, LastRunAt: ts(-30 * time.Minute), LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "gate_failed"},
 		// cron-8 (BOS-384): a benign worktree_gone outcome — finalize ran against
 		// an already-removed worktree (archived/deleted session). It renders with
 		// a plain IDLE status, never a red FAILED framing.

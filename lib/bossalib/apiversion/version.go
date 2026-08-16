@@ -121,8 +121,8 @@ const V20260803 Version = "2026-08-03"
 // waiting_reason.
 const V20260804 Version = "2026-08-04"
 
-// V20260812 is the current production API version. It ships the
-// DraftPRFailureLabelChange transform: at V20260812 the OrchestratorService
+// V20260812 ships the DraftPRFailureLabelChange transform (it was current until
+// V20260816 superseded it). At V20260812 the OrchestratorService
 // stopped letting a session-level draft-PR-creation failure claim the session's
 // primary display composite while a chat is live (BOS-855). The "? PR failed"
 // cascade branch moved from directly below the QUESTION/LIMITED chat branches to
@@ -136,6 +136,23 @@ const V20260804 Version = "2026-08-04"
 // not lost for a current client: it is carried by a warning hint that is
 // deliberately exempt from the accompanying recessive treatment.
 const V20260812 Version = "2026-08-12"
+
+// V20260816 is the current production API version. It ships the
+// GateFailedOutcomeChange transform: at V20260816 the OrchestratorService began
+// distinguishing a cron gate that could NOT be evaluated from one that ran and
+// decided there was no work (BOS-881). A gate that timed out, could not be
+// launched, or was reported missing/unrunnable by the shell (exit 127 / 126)
+// now records last_run_outcome "gate_failed" and derives
+// CRON_JOB_STATUS_FAILED on CronJob.last_run_status, where it previously
+// recorded "gated" and derived CRON_JOB_STATUS_GATED — a warning-styled
+// "waiting, healthy" value that made a repo-wide broken PATH read as a quiet
+// backlog sweep. RunCronJobNow likewise returns the new "gate_failed" skip
+// reason on that path. No CronJobStatus enum member was added: the new outcome
+// reuses the existing FAILED value via isCronFailureOutcome. Clients pinned to
+// an older version were built against the prior values, so they are
+// down-converted back to outcome "gated", CRON_JOB_STATUS_GATED, and the
+// "gated" skip reason.
+const V20260816 Version = "2026-08-16"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -238,11 +255,11 @@ func (r *Registry) Newer(a, b Version) bool {
 
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
-// V20260711, V20260718, V20260723, V20260803, V20260804 and V20260812. Current
-// is V20260812 (the newest released behavior) while Default stays Baseline (the
-// oldest supported version), so a header-less caller is pinned to Baseline and
-// is down-converted by ProductionChanges, and a client that negotiates
-// V20260812 runs zero transforms.
+// V20260711, V20260718, V20260723, V20260803, V20260804, V20260812 and
+// V20260816. Current is V20260816 (the newest released behavior) while Default
+// stays Baseline (the oldest supported version), so a header-less caller is
+// pinned to Baseline and is down-converted by ProductionChanges, and a client
+// that negotiates V20260816 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -253,8 +270,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812},
-		V20260812,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816},
+		V20260816,
 		Baseline,
 	)
 	if err != nil {

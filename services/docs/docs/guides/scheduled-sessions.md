@@ -31,8 +31,9 @@ one row per job, sorted by next fire time. The columns are:
 
 The `gating` and `gated` statuses come from the optional **gate command**
 (see [Gate command](#gate-command) below): `gating` shows while the gate is
-running, and `gated` is remembered when the last tick was blocked by a
-non-zero gate exit.
+running, and `gated` is remembered when the last tick was blocked because the
+gate **ran and said no**. A gate that could not run at all reads `failed`
+instead — see [Outcome](#outcome).
 
 The action bar shows the available keys: `[n]ew`, `[e/enter]dit`,
 `[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to Settings.
@@ -111,17 +112,50 @@ The command is interpreted one of two ways:
 
 ### Outcome
 
-| Gate result                           | What happens                                                                                            |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Exit `0`                              | The job fires normally (worktree, setup, agent session).                                                |
-| Non-zero exit                         | The job is **gated**: no session, `next_run_at` advances.                                               |
-| Timeout (default **60s**)             | Treated as a failure → **gated**. The scheduler slot is released so a hung gate can't wedge the runner. |
-| Launch error (binary not found, etc.) | Treated as a failure → **gated**.                                                                       |
+Anything other than exit `0` blocks the fire — the gate contract deliberately
+fails closed, because an unverifiable condition should skip the run rather than
+burn tokens. But **blocking is not one thing**, and the two ways of blocking are
+recorded differently:
 
-The `STATUS` column shows `gating` (with a spinner) while the gate runs
-and `gated` once a tick is blocked. `gated` is **remembered** — it is
-written to `last_run_outcome`, so it survives a daemon restart and stays
-visible in the list until a later successful fire supersedes it.
+| Gate result                               | Outcome       | `STATUS` | Meaning                                                                              |
+| ----------------------------------------- | ------------- | -------- | ------------------------------------------------------------------------------------ |
+| Exit `0`                                  | —             | —        | The job fires normally (worktree, setup, agent session).                             |
+| Exit `1` (or any other non-zero code)     | `gated`       | `gated`  | The gate **ran and decided** there is no work. Healthy.                              |
+| Exit `127` — command not found            | `gate_failed` | `failed` | The gate could not be found. Nothing was evaluated.                                  |
+| Exit `126` — found but not executable     | `gate_failed` | `failed` | The gate could not be executed. Nothing was evaluated.                               |
+| Timeout (default **60s**)                 | `gate_failed` | `failed` | The gate never finished. The slot is released so a hung gate can't wedge the runner. |
+| Launch error (binary missing, bad cwd, …) | `gate_failed` | `failed` | The gate process never started.                                                      |
+| Killed by a signal (OOM, `kill`, crash)   | `gate_failed` | `failed` | The gate died before it exited, so it never chose anything.                          |
+| Empty gate command reaching the runner    | `gate_failed` | `failed` | Misconfiguration; nothing to evaluate.                                               |
+
+Both outcomes block the fire, create no session, and still advance
+`next_run_at`. What differs is what an operator sees. `gated` is a warning-styled
+"waiting, healthy" row: the gate is doing its job. `gate_failed` is a red
+`failed` row: **the gate is broken and nothing is being checked**.
+
+That split exists because collapsing the two hid a real outage. When a daemon
+host lost its `node` from `PATH`, every `node …/gate.mjs` gate exited `127`,
+every tick recorded `gated`, and the cron list looked like a quiet, healthy
+backlog sweep while eighteen pull requests piled up behind it. A `failed` row and
+a `warn`-level daemon log line — carrying the gate's own output, its classified
+failure, and its exit code — now name the problem instead.
+
+:::tip Signal "no work" with exit 1
+
+Exit `126` and `127` are the shell's own convention for "could not run what you
+asked", so a gate that exits with either is reported as broken rather than as a
+skip. If your gate wants to say _"there is nothing to do right now"_, **exit
+`1`** — which is also what a bare `grep`, `test`, or `[ … ]` already does, and
+what the shipped example gates below use. Any non-zero code other than `126` and
+`127` is treated the same way.
+
+:::
+
+Both are **remembered** — the outcome is written to `last_run_outcome`, so it
+survives a daemon restart and stays visible in the list until a later fire
+supersedes it. A manual [Run now](#run-a-job-ad-hoc) reports them distinctly too:
+`blocked by gate command` for a real gate decision, and
+`gate command could not run — check the daemon log` when the gate never ran.
 
 The gate runs inside the shared cron concurrency slot (see [Overlap and
 concurrency](#overlap-and-concurrency)), so keep gate commands fast: a gate
@@ -226,11 +260,13 @@ runs `fire()`:
    until a slot frees up.
 4. **Gate command.** If a [gate command](#gate-command) is set, it runs
    now — _before_ any worktree exists. A zero exit lets the fire
-   proceed; a non-zero exit, timeout, or launch error blocks it
-   (`STATUS` becomes `gated`, `next_run_at` still advances, no session
-   is created). The gate runs on **every** fire — scheduled and manual
-   [Run now](#run-a-job-ad-hoc) alike — so a manual run is also blocked
-   when the gate fails.
+   proceed; anything else blocks it, with `next_run_at` still advancing
+   and no session created. A non-zero exit records `gated` (`STATUS`
+   `gated`); a gate that could not run at all — timeout, launch error,
+   shell exit `126`/`127` — records `gate_failed` (`STATUS` `failed`).
+   See [Outcome](#outcome). The gate runs on **every** fire — scheduled
+   and manual [Run now](#run-a-job-ad-hoc) alike — so a manual run is
+   also blocked when the gate fails.
 5. **Spawn.** A worktree is created on a fresh branch; your repo's
    [setup script](setup-scripts.md) runs **unless [Run setup
    command](#run-setup-command) is off**; and the agent plugin starts
@@ -290,9 +326,12 @@ Specifically:
   not a snapshot from when you last edited the row.
 - **`STATUS`** reflects the spawned session's state: `Running` while
   the agent is active, `gating` while a [gate command](#gate-command) is
-  running, `gated` if the last tick was blocked by the gate, `failed` if
-  the last fire's session ended in failure, `idle` otherwise. `gated` is
-  remembered across restarts; a later successful fire supersedes it.
+  running, `gated` if the last tick was blocked because the gate ran and
+  said no, `failed` if the last fire's session ended in failure **or the
+  gate could not run at all** (outcome `gate_failed`), `idle` otherwise.
+  Both gate outcomes are remembered across restarts; a later successful
+  fire supersedes them. A `failed` row on a job that has a gate command is
+  worth checking first — see [Outcome](#outcome).
 
 There is no separate "history view". Every fire produces a normal
 session, so to drill into a specific run, find its session in the
@@ -322,6 +361,11 @@ worktree dir not writable), the job's `last_run_outcome` is set to
 `fire_failed` and `next_run_at` is cleared. The cron runner still
 ticks on its own schedule for the next fire. A single failed spawn
 does not disable the job.
+
+A gate that could not be evaluated records `gate_failed` and also shows
+`failed` (see [Outcome](#outcome)); the daemon log carries the gate's captured
+output, the classified failure, and the exit code at `warn` level, which is
+where to look first.
 
 If the spawned session itself fails (the agent crashes, the prompt
 errors out), the cron job row's `STATUS` cell shows `failed` until

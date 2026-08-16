@@ -351,7 +351,39 @@ func parseUsage(body []byte) (*bossanovav1.RateLimitStatus, error) {
 		status.Reset_5H = parseTimestamp(payload.FiveHour.ResetsAt)
 		seen = payload.FiveHour.hasRecognizedFields()
 	}
-	if weekly := mostConstrainedUsageWindow(payload.SevenDay, payload.SevenDayOpus, payload.SevenDaySonnet); weekly != nil {
+	// The weekly fold is presence-aware, and BOTH branches are live — do not
+	// collapse them. When the account-wide seven_day window is reported it is the
+	// account's weekly verdict outright, even if a per-model window is higher: a
+	// spent Opus week must not bench the account for Sonnet and Haiku traffic
+	// too (that is left to the reactive 429 path). But split-weekly plans report
+	// no seven_day at all and expose the weekly quota only per model, so there
+	// the most-constrained per-model window is the only weekly signal there is —
+	// dropping that fallback would report util_7d = 0 for a fully exhausted
+	// account and keep rotation binding sessions to it. See the
+	// split_weekly_exhausted.json fixture and its regression test.
+	//
+	// What makes seven_day the verdict is a utilization, not a non-nil pointer
+	// and not any recognized field: the branch's load-bearing output is
+	// normalizeUtil(weekly.Utilization), and that is 0 for a window carrying
+	// only resets_at. Letting such a window win would report util_7d = 0 for an
+	// account whose only real weekly reading is a spent per-model window — the
+	// same exhausted-reads-as-idle failure this fold exists to avoid, reached
+	// through a partly-populated window instead of an absent one. A window with
+	// an explicit utilization of 0 is a real reading and still wins.
+	//
+	// A seven_day carrying only resets_at is still a recognized field, so when
+	// no per-model window is recognized either it stays the chosen window: it
+	// contributes the reset and the `seen` that keep the response out of the
+	// unrecognized-schema error. Between two windows that both report a reset
+	// and no utilization the fallback wins and Util_7D is 0 either way, so only
+	// which reset is echoed differs.
+	weekly := payload.SevenDay
+	if !weekly.hasUtilization() {
+		if fallback := mostConstrainedUsageWindow(payload.SevenDayOpus, payload.SevenDaySonnet); fallback != nil {
+			weekly = fallback
+		}
+	}
+	if weekly != nil {
 		status.Util_7D = normalizeUtil(weekly.Utilization)
 		status.Reset_7D = parseTimestamp(weekly.ResetsAt)
 		seen = seen || weekly.hasRecognizedFields()
@@ -425,11 +457,22 @@ func (w *usageWindow) hasRecognizedFields() bool {
 	return w != nil && (w.Utilization != nil || strings.TrimSpace(w.ResetsAt) != "")
 }
 
+// hasUtilization reports whether the window carries the one field that can
+// decide a utilization verdict. Nil-safe, so callers need no separate nil check.
+func (w *usageWindow) hasUtilization() bool {
+	return w != nil && w.Utilization != nil
+}
+
+// mostConstrainedUsageWindow returns the window reporting the highest
+// utilization. Presence here means "carries a recognized field", the same test
+// the weekly fold in parseUsage applies — skipping only nil would let an empty
+// {} window outrank, on a zero-utilization tie, a real one that carries a reset,
+// and silently drop that reset from the verdict.
 func mostConstrainedUsageWindow(windows ...*usageWindow) *usageWindow {
 	var best *usageWindow
 	var bestUtil float64
 	for _, window := range windows {
-		if window == nil {
+		if !window.hasRecognizedFields() {
 			continue
 		}
 		util := normalizeUtil(window.Utilization)

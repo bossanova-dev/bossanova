@@ -1136,6 +1136,7 @@ Plan: docs/plans/<file>
 
 ## Acceptance criteria
 - [x] <criterion the diff already satisfies>
+- [x] (verify-only) <criterion no diff can show> — checked: `<command>` → <result>
 - [ ] <criterion still open>
 
 ## Autonomous decisions

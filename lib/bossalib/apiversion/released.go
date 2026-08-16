@@ -34,6 +34,7 @@ var ReleasedVersions = []Version{
 	"2026-08-03", // V20260803 — AgentStalledChange (ATTENTION_REASON_AGENT_STALLED).
 	"2026-08-04", // V20260804 — WaitingChatStatusChange (CHAT_STATUS_WAITING + waiting_reason).
 	"2026-08-12", // V20260812 — DraftPRFailureLabelChange (BOS-855 "? PR failed" ranks below live activity).
+	"2026-08-16", // V20260816 — GateFailedOutcomeChange (BOS-881 gate_failed / CRON_JOB_STATUS_FAILED for a gate that could not run).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

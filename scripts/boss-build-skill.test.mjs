@@ -380,8 +380,15 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // meaning rather than left at the +530 the first cut measured: the Workspace-facts note dropped
   // its "may be undeclared" gloss (the step below states it) and the two branches were folded into
   // the existing sentence instead of a bulleted list.
-  const RATCHET = 80634 // exact measured resident body
-  // Headroom to the pre-extraction baseline is now 183 bytes (80817 - 80634) — read that as the
+  // BOS-861 re-baselines 80634 → 80721 (+87 B) for ONE line of the Step 7 PR-body template: the
+  // discharge form of a `(verify-only)` acceptance criterion. Resident because the template IS the
+  // contract a run copies without opening anything, and the whole point of the marker is that a
+  // criterion no diff can demonstrate must carry a recorded command and result instead of a silent
+  // tick — a template showing only diff-demonstrated rows teaches exactly the tick this ticket
+  // exists to stop. Everything else the change needed (the Step 9 gate, its falsifiability note and
+  // the reclassification route, ~2 KB) went into the unratcheted references/finalize-and-stop.md.
+  const RATCHET = 80721 // exact measured resident body
+  // Headroom to the pre-extraction baseline is now 96 bytes (80817 - 80721) — read that as the
   // real budget before writing ANY resident prose, because this assertion is the only thing
   // standing between the extraction's ~11.8 KB and it being quietly re-spent. When it reds, the fix
   // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is

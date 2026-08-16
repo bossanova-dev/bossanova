@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-08-12**. The engineering procedure for adding a new
+The current version is **2026-08-16**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -126,7 +126,7 @@ status). Before this version such a chat reported `CHAT_STATUS_WORKING`, so
 clients pinned to an older version are down-converted back to
 `CHAT_STATUS_WORKING` with an empty `waiting_reason`.
 
-### 2026-08-12 — Draft-PR failure ranks below live activity (Current)
+### 2026-08-12 — Draft-PR failure ranks below live activity
 
 The OrchestratorService stopped letting a session-level draft-PR-creation failure
 claim the session's primary display composite while a chat is live. The
@@ -143,6 +143,27 @@ down-converted back to `? PR failed`.
 The failure itself is not hidden from a current client: it is surfaced as a
 session warning hint, and that hint is deliberately exempt from the accompanying
 recessive treatment because it is the row's only carrier of the failure.
+
+### 2026-08-16 — A cron gate that could not run is no longer reported as `gated` (Current)
+
+The OrchestratorService began distinguishing a cron gate that **could not be
+evaluated** from one that **ran and decided there was no work**. Previously every
+blocked fire — a gate that timed out, could not be launched, or that the shell
+reported missing (exit `127`) or not executable (exit `126`) — was recorded as
+`gated` and derived `CRON_JOB_STATUS_GATED`, a warning-styled "waiting, healthy"
+value. A broken deployment therefore looked exactly like a quiet backlog.
+
+A gate that could not run now serves `CronJob.last_run_outcome` `gate_failed` and
+derives `CronJob.last_run_status` `CRON_JOB_STATUS_FAILED`, and `RunCronJobNow`
+returns the matching `gate_failed` skip reason. A gate that ran and exited
+non-zero for any other code keeps `gated` / `CRON_JOB_STATUS_GATED`, and still
+blocks the fire. **No new `CronJobStatus` enum value was added** — the new outcome
+reuses the existing `CRON_JOB_STATUS_FAILED`, so this is a change in the value
+served rather than in the schema.
+
+Clients pinned to an older version were built against the previous values, so they
+are down-converted back to outcome `gated`, status `CRON_JOB_STATUS_GATED`, and
+skip reason `gated`.
 
 ## See also
 

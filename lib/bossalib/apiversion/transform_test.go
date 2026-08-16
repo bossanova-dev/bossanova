@@ -1263,8 +1263,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260812 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260812)
+	if got := reg.Current(); got != apiversion.V20260816 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260816)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -3010,5 +3010,208 @@ func TestLimitedChatStatusChange_ChainDoesNotMutateCallerSessionForDraftPRFailur
 	}
 	if msg.GetSession() == shared {
 		t.Error("response holds the caller's Session pointer, want a clone")
+	}
+}
+
+// --- GateFailedOutcomeChange (V20260816, BOS-881) -------------------------
+
+// gateFailedJob builds a CronJob in the CURRENT (V20260816+) shape for a gate
+// that could not be evaluated: outcome "gate_failed" with the derived FAILED
+// status.
+func gateFailedJob() *pb.CronJob {
+	return &pb.CronJob{
+		Id:             "cron-broken",
+		Name:           "Backlog sweep",
+		GateCommand:    "node scripts/backlog-gate.mjs",
+		LastRunOutcome: "gate_failed",
+		LastRunStatus:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+	}
+}
+
+// gateFailedResponseCases enumerates every OrchestratorService response that can
+// carry a CronJob, so a new carrier added later without a transform arm is a
+// visible omission rather than a silent leak of the new value to old clients.
+func gateFailedResponseCases() []struct {
+	name   string
+	method string
+	build  func(*pb.CronJob) any
+	job    func(any) *pb.CronJob
+} {
+	return []struct {
+		name   string
+		method string
+		build  func(*pb.CronJob) any
+		job    func(any) *pb.CronJob
+	}{
+		{
+			name:   "ProxyListCronJobs",
+			method: bossanovav1connect.OrchestratorServiceProxyListCronJobsProcedure,
+			build: func(j *pb.CronJob) any {
+				return &pb.ProxyListCronJobsResponse{Jobs: []*pb.CronJobWithDaemon{{Job: j, DaemonId: "d1", DaemonHostname: "host"}}}
+			},
+			job: func(m any) *pb.CronJob {
+				return m.(*pb.ProxyListCronJobsResponse).GetJobs()[0].GetJob()
+			},
+		},
+		{
+			name:   "ProxyCreateCronJob",
+			method: bossanovav1connect.OrchestratorServiceProxyCreateCronJobProcedure,
+			build:  func(j *pb.CronJob) any { return &pb.ProxyCreateCronJobResponse{Job: j} },
+			job:    func(m any) *pb.CronJob { return m.(*pb.ProxyCreateCronJobResponse).GetJob() },
+		},
+		{
+			name:   "ProxyUpdateCronJob",
+			method: bossanovav1connect.OrchestratorServiceProxyUpdateCronJobProcedure,
+			build:  func(j *pb.CronJob) any { return &pb.ProxyUpdateCronJobResponse{Job: j} },
+			job:    func(m any) *pb.CronJob { return m.(*pb.ProxyUpdateCronJobResponse).GetJob() },
+		},
+		{
+			name:   "ProxyGetCronJob",
+			method: bossanovav1connect.OrchestratorServiceProxyGetCronJobProcedure,
+			build:  func(j *pb.CronJob) any { return &pb.ProxyGetCronJobResponse{CronJob: j} },
+			job:    func(m any) *pb.CronJob { return m.(*pb.ProxyGetCronJobResponse).GetCronJob() },
+		},
+	}
+}
+
+func TestGateFailedOutcomeChange_Version(t *testing.T) {
+	if got := (apiversion.GateFailedOutcomeChange{}).Version(); got != apiversion.V20260816 {
+		t.Errorf("GateFailedOutcomeChange.Version() = %q, want %q", got, apiversion.V20260816)
+	}
+}
+
+// TestGateFailedOutcomeChange_DownConvertsForOlderClients is the contract: a
+// client pinned below V20260816 sees exactly what the pre-BOS-881 server served
+// for a broken gate — outcome "gated" and CRON_JOB_STATUS_GATED.
+func TestGateFailedOutcomeChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260718, apiversion.V20260812} {
+		for _, tc := range gateFailedResponseCases() {
+			t.Run(string(older)+"/"+tc.name, func(t *testing.T) {
+				msg := tc.build(gateFailedJob())
+				changes.Apply(tc.method, msg, older)
+				got := tc.job(msg)
+				if got.GetLastRunOutcome() != "gated" {
+					t.Errorf("last_run_outcome = %q, want %q", got.GetLastRunOutcome(), "gated")
+				}
+				if got.GetLastRunStatus() != pb.CronJobStatus_CRON_JOB_STATUS_GATED {
+					t.Errorf("last_run_status = %v, want CRON_JOB_STATUS_GATED", got.GetLastRunStatus())
+				}
+			})
+		}
+	}
+}
+
+func TestGateFailedOutcomeChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes := apiversion.ProductionChanges()
+	for _, tc := range gateFailedResponseCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.build(gateFailedJob())
+			changes.Apply(tc.method, msg, reg.Current())
+			got := tc.job(msg)
+			if got.GetLastRunOutcome() != "gate_failed" {
+				t.Errorf("last_run_outcome = %q, want gate_failed (unchanged at Current)", got.GetLastRunOutcome())
+			}
+			if got.GetLastRunStatus() != pb.CronJobStatus_CRON_JOB_STATUS_FAILED {
+				t.Errorf("last_run_status = %v, want CRON_JOB_STATUS_FAILED (unchanged at Current)", got.GetLastRunStatus())
+			}
+		})
+	}
+}
+
+// TestGateFailedOutcomeChange_LeavesHealthyGatedUntouched guards the half of the
+// split that must NOT move: a gate that ran and said no was already "gated" /
+// GATED before BOS-881, so the transform has nothing to restore there.
+func TestGateFailedOutcomeChange_LeavesOtherOutcomesUntouched(t *testing.T) {
+	gc := apiversion.GateFailedOutcomeChange{}
+	for _, outcome := range []string{"gated", "fire_failed", "pr_created", "worktree_gone", ""} {
+		job := &pb.CronJob{Id: "cron-x", LastRunOutcome: outcome, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED}
+		msg := &pb.ProxyGetCronJobResponse{CronJob: job}
+		gc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetCronJobProcedure, msg)
+		if got := msg.GetCronJob().GetLastRunOutcome(); got != outcome {
+			t.Errorf("outcome %q was rewritten to %q", outcome, got)
+		}
+		if got := msg.GetCronJob().GetLastRunStatus(); got != pb.CronJobStatus_CRON_JOB_STATUS_FAILED {
+			t.Errorf("outcome %q: status rewritten to %v, want FAILED", outcome, got)
+		}
+	}
+}
+
+// TestGateFailedOutcomeChange_PreservesNonFailedStatus pins the narrow status
+// rewrite. A gate_failed job whose PRIOR run's session is still live derives
+// RUNNING from the liveness branch, and an older server derived RUNNING there
+// too — clamping every gate_failed job to GATED would invent a shape no server
+// ever served.
+func TestGateFailedOutcomeChange_PreservesNonFailedStatus(t *testing.T) {
+	gc := apiversion.GateFailedOutcomeChange{}
+	job := gateFailedJob()
+	job.LastRunStatus = pb.CronJobStatus_CRON_JOB_STATUS_RUNNING
+	msg := &pb.ProxyGetCronJobResponse{CronJob: job}
+	gc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetCronJobProcedure, msg)
+	if got := msg.GetCronJob().GetLastRunStatus(); got != pb.CronJobStatus_CRON_JOB_STATUS_RUNNING {
+		t.Errorf("last_run_status = %v, want RUNNING (only FAILED is rewritten)", got)
+	}
+	if got := msg.GetCronJob().GetLastRunOutcome(); got != "gated" {
+		t.Errorf("last_run_outcome = %q, want gated (the outcome is always restored)", got)
+	}
+}
+
+// TestGateFailedOutcomeChange_DownConvertsRunNowSkipReason covers the manual-run
+// path: RunCronJobNow returns the new "gate_failed" skip reason, which an older
+// client would render verbatim as an unknown string.
+func TestGateFailedOutcomeChange_DownConvertsRunNowSkipReason(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+
+	msg := &pb.ProxyRunCronJobNowResponse{SkippedReason: "gate_failed"}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure, msg, apiversion.Baseline)
+	if got := msg.GetSkippedReason(); got != "gated" {
+		t.Errorf("skipped_reason = %q, want %q for a Baseline client", got, "gated")
+	}
+
+	current := &pb.ProxyRunCronJobNowResponse{SkippedReason: "gate_failed"}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure, current, apiversion.DefaultRegistry().Current())
+	if got := current.GetSkippedReason(); got != "gate_failed" {
+		t.Errorf("skipped_reason = %q, want gate_failed (unchanged at Current)", got)
+	}
+
+	other := &pb.ProxyRunCronJobNowResponse{SkippedReason: "overlap_prev_active"}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure, other, apiversion.Baseline)
+	if got := other.GetSkippedReason(); got != "overlap_prev_active" {
+		t.Errorf("unrelated skip reason rewritten to %q", got)
+	}
+}
+
+// TestGateFailedOutcomeChange_DoesNotMutateSharedCronJob pins that the
+// down-convert clones rather than mutating a pointer the caller may also hold.
+func TestGateFailedOutcomeChange_DoesNotMutateSharedCronJob(t *testing.T) {
+	gc := apiversion.GateFailedOutcomeChange{}
+
+	shared := gateFailedJob()
+	listMsg := &pb.ProxyListCronJobsResponse{Jobs: []*pb.CronJobWithDaemon{{Job: shared, DaemonId: "d1"}}}
+	gc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListCronJobsProcedure, listMsg)
+	if shared.GetLastRunOutcome() != "gate_failed" {
+		t.Fatalf("shared cron job mutated in place: outcome = %q", shared.GetLastRunOutcome())
+	}
+	if shared.GetLastRunStatus() != pb.CronJobStatus_CRON_JOB_STATUS_FAILED {
+		t.Fatalf("shared cron job mutated in place: status = %v", shared.GetLastRunStatus())
+	}
+	if listMsg.GetJobs()[0].GetJob() == shared {
+		t.Error("response holds the caller's CronJob pointer, want a clone")
+	}
+	if listMsg.GetJobs()[0].GetDaemonId() != "d1" {
+		t.Error("daemon routing fields lost in the clone")
+	}
+}
+
+// TestGateFailedOutcomeChange_NoOpForUnrelatedMethods keeps the transform
+// scoped: it must not touch a response type it does not own.
+func TestGateFailedOutcomeChange_NoOpForUnrelatedMethods(t *testing.T) {
+	gc := apiversion.GateFailedOutcomeChange{}
+	job := gateFailedJob()
+	msg := &pb.ProxyGetCronJobResponse{CronJob: job}
+	gc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg)
+	if msg.GetCronJob().GetLastRunOutcome() != "gate_failed" {
+		t.Error("transform fired on an unrelated procedure path")
 	}
 }

@@ -249,6 +249,53 @@ func TestCronListRebuildTable_GatingAndGatedStatuses(t *testing.T) {
 	}
 }
 
+// TestCronListRebuildTable_GateFailedRendersAsFailedBesideGated is the BOS-881
+// TUI half: a job whose gate could not run derives CRON_JOB_STATUS_FAILED, so
+// the cron list must show it as a red `failed` row while a genuinely gated job
+// on the same screen keeps its warning-styled `gated`. The two must be
+// distinguishable at a glance — that is the whole point of the ticket.
+func TestCronListRebuildTable_GateFailedRendersAsFailedBesideGated(t *testing.T) {
+	jobs := []*pb.CronJob{
+		{Id: "a", Name: "Healthy gate", Schedule: "@daily", IsEnabled: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED, LastRunOutcome: "gated"},
+		{Id: "b", Name: "Broken gate", Schedule: "@daily", IsEnabled: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_FAILED, LastRunOutcome: "gate_failed"},
+	}
+	m := newCronListForUpdate(jobs)
+	m.width = 120
+	m.height = 40
+
+	view := m.View().Content
+	if !strings.Contains(view, styleStatusWarning.Render("gated")) {
+		t.Errorf("the healthy gated job lost its warning-styled 'gated' label:\n%s", view)
+	}
+	if !strings.Contains(view, styleStatusDanger.Render("failed")) {
+		t.Errorf("the gate_failed job did not render as a danger-styled 'failed' row:\n%s", view)
+	}
+}
+
+// TestRunNowSkipLabel covers the run-now status line, where the two gate
+// outcomes must also read differently rather than the new reason falling
+// through the default branch verbatim.
+func TestRunNowSkipLabel(t *testing.T) {
+	tests := []struct {
+		reason string
+		want   string
+	}{
+		{"gated", "blocked by gate command"},
+		{"gate_failed", "gate command could not run — check the daemon log"},
+		{"overlap_prev_active", "previous run still active"},
+		{"disabled", "job is disabled"},
+		{"something_new", "something_new"},
+	}
+	for _, tt := range tests {
+		if got := runNowSkipLabel(tt.reason); got != tt.want {
+			t.Errorf("runNowSkipLabel(%q) = %q, want %q", tt.reason, got, tt.want)
+		}
+	}
+	if runNowSkipLabel("gate_failed") == runNowSkipLabel("gated") {
+		t.Error("gate_failed and gated must not share a run-now label")
+	}
+}
+
 // TestCronListRebuildTable_DisabledStatusLabelsAreMuted guards the BOS-313 fix:
 // a disabled job's terminal STATUS label (gated/failed) must render in the muted
 // grey of the rest of the row, not its status color. rebuildTable pre-colors the

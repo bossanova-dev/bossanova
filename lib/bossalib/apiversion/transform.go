@@ -99,7 +99,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships ten live transforms in non-decreasing version
+// DefaultRegistry. It ships eleven live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -123,9 +123,12 @@ type RefMsg struct {
 // display_spinner; and DraftPRFailureLabelChange (introduced at V20260812),
 // which restores the pre-BOS-855 "? PR failed" composite on
 // Session.display_label / display_intent / display_spinner for a session whose
-// draft-PR creation failed while a chat is live.
+// draft-PR creation failed while a chat is live; and GateFailedOutcomeChange
+// (introduced at V20260816), which restores the pre-BOS-881 "gated" outcome,
+// CRON_JOB_STATUS_GATED status, and "gated" RunCronJobNow skip reason for a
+// cron job whose gate command could not be evaluated at all.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260812 (Current) runs zero transforms.
+// request resolved to V20260816 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -134,7 +137,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -1149,6 +1152,129 @@ func (DraftPRFailureLabelChange) TransformResponse(method string, msg any) {
 	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
 		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
 			m.Session = downconvertDraftPRFailureSession(m.GetSession())
+		}
+	}
+}
+
+// GateFailedOutcomeChange is the production VersionChange introduced at
+// V20260816.
+//
+// At V20260816 the OrchestratorService began distinguishing a cron gate that
+// could NOT be evaluated from one that ran and decided there was no work
+// (BOS-881). A gate that timed out, could not be launched, or was reported
+// missing/unrunnable by the shell (exit 127 / 126) now serves
+// CronJob.last_run_outcome "gate_failed" and the derived
+// CronJob.last_run_status CRON_JOB_STATUS_FAILED, and RunCronJobNow returns the
+// matching "gate_failed" skip reason. Before this change all four of those
+// blocked-fire causes were flattened into "gated" / CRON_JOB_STATUS_GATED — a
+// warning-styled "waiting, healthy" value, which is why a repo-wide broken PATH
+// read as a quiet backlog sweep for hours.
+//
+// No CronJobStatus enum member was added; "gate_failed" reuses the existing
+// CRON_JOB_STATUS_FAILED value. The behavior change is therefore in the VALUE
+// served, not the schema — exactly the case this versioning mechanism exists
+// for. A client pinned to an older version was built against the prior values,
+// so for any request resolved older than V20260816 this change restores them:
+// outcome "gated", status CRON_JOB_STATUS_GATED, skip reason "gated".
+//
+// It targets every OrchestratorService procedure that can carry a CronJob
+// (ProxyListCronJobs, ProxyCreateCronJob, ProxyUpdateCronJob, ProxyGetCronJob)
+// plus ProxyRunCronJobNow for the skip reason. All are unary. All other methods
+// and message types are no-ops.
+type GateFailedOutcomeChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260816, so
+// it is applied to any request resolved to a strictly older version.
+func (GateFailedOutcomeChange) Version() Version { return V20260816 }
+
+// Wire values involved in GateFailedOutcomeChange (V20260816). They are raw
+// literals rather than an import of lib/bossalib/models because this package
+// pins the exact wire strings both sides emit; models.CronJobOutcome is the
+// producer's vocabulary, and coupling the transform to it would let a later
+// rename silently change what older clients receive.
+const (
+	// cronOutcomeGateFailed is the CURRENT (V20260816+) outcome for a gate that
+	// could not be evaluated. It mirrors models.CronJobOutcomeGateFailed.
+	cronOutcomeGateFailed = "gate_failed"
+	// cronOutcomeGated is the PRIOR value older clients were built to see for
+	// that case; the transform restores it. It mirrors models.CronJobOutcomeGated.
+	cronOutcomeGated = "gated"
+)
+
+// downconvertGateFailedCronJob returns the CronJob to place in the response for
+// a pre-V20260816 client. Jobs whose outcome is not "gate_failed" are returned
+// unchanged, keeping the common path clone-free. Cloning matters for the same
+// reason it does on the Session transforms: a response may hold pointers that
+// are also cached or shared, so the down-convert must never mutate in place.
+//
+// last_run_status is rewritten only when it is FAILED. A gate_failed job whose
+// PRIOR run's session is still live derives RUNNING from the liveness branch in
+// cronJobStatus, and an older server would have derived RUNNING there too — so
+// clamping every gate_failed job to GATED would invent a shape no server ever
+// served.
+func downconvertGateFailedCronJob(j *pb.CronJob) *pb.CronJob {
+	if j == nil || j.GetLastRunOutcome() != cronOutcomeGateFailed {
+		return j
+	}
+	clone, ok := proto.Clone(j).(*pb.CronJob)
+	if !ok {
+		return j
+	}
+	clone.LastRunOutcome = cronOutcomeGated
+	if clone.GetLastRunStatus() == pb.CronJobStatus_CRON_JOB_STATUS_FAILED {
+		clone.LastRunStatus = pb.CronJobStatus_CRON_JOB_STATUS_GATED
+	}
+	return clone
+}
+
+// downconvertGateFailedCronJobWithDaemon rewrites only the wrapped job, leaving
+// the daemon routing fields untouched. It clones the wrapper because the nested
+// job pointer is replaced.
+func downconvertGateFailedCronJobWithDaemon(e *pb.CronJobWithDaemon) *pb.CronJobWithDaemon {
+	if e == nil {
+		return e
+	}
+	job := downconvertGateFailedCronJob(e.GetJob())
+	if job == e.GetJob() {
+		return e
+	}
+	clone, ok := proto.Clone(e).(*pb.CronJobWithDaemon)
+	if !ok {
+		return e
+	}
+	clone.Job = job
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-881
+// "gated" outcome, GATED status, and "gated" skip reason on every
+// OrchestratorService response that can carry them. It is a no-op for any other
+// method or payload type.
+func (GateFailedOutcomeChange) TransformResponse(method string, msg any) {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListCronJobsProcedure:
+		if m, ok := msg.(*pb.ProxyListCronJobsResponse); ok {
+			for i := range m.Jobs {
+				m.Jobs[i] = downconvertGateFailedCronJobWithDaemon(m.Jobs[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCreateCronJobProcedure:
+		if m, ok := msg.(*pb.ProxyCreateCronJobResponse); ok {
+			m.Job = downconvertGateFailedCronJob(m.GetJob())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateCronJobProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateCronJobResponse); ok {
+			m.Job = downconvertGateFailedCronJob(m.GetJob())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetCronJobProcedure:
+		if m, ok := msg.(*pb.ProxyGetCronJobResponse); ok {
+			m.CronJob = downconvertGateFailedCronJob(m.GetCronJob())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			if m.GetSkippedReason() == cronOutcomeGateFailed {
+				m.SkippedReason = cronOutcomeGated
+			}
 		}
 	}
 }

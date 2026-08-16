@@ -58,9 +58,14 @@ func chatStatusString(s pb.ChatStatus) string {
 }
 
 // waitingHintLine composes the one line the TUI renders for a chat parked on an
-// external event: the canonical label plus the daemon-supplied reason, e.g.
+// external event: the daemon-supplied reason alone, e.g.
 //
-//	waiting · awaiting checks_passed_ready on acme/widget#123
+//	awaiting checks_passed_ready on acme/widget#123
+//
+// It carries no "waiting" label of its own (BOS-863) — every surface that
+// renders this line already shows the waiting STATUS badge and its spinner
+// nearby, so a label here only repeats what is on screen and pushes the
+// informative half of the line to the right.
 //
 // The reason itself is stamped daemon-side by
 // displaystatus.CallbackWaitingReason and arrives on the wire
@@ -70,14 +75,18 @@ func chatStatusString(s pb.ChatStatus) string {
 // services/web/src/sessionStatus.ts (waitingHintLine); BOS-668 requires the two
 // surfaces to read the same, so change them together.
 //
-// Returns "" for an empty reason so every caller can skip the line entirely —
-// no empty row, no layout shift, and (on Home) no unselectable sub-row for the
-// cursor to strand on.
+// Returns "" for an empty reason. With the label gone this is the identity
+// function, so that branch changes no output — it is kept as the explicit
+// contract point the two mirrors share, and as the place a future prefix would
+// have to re-declare its empty case. What actually keeps an empty reason off
+// the screen is that every caller gates on the empty result: no empty row, no
+// layout shift, and (on Home) no unselectable sub-row for the cursor to strand
+// on.
 func waitingHintLine(reason string) string {
 	if reason == "" {
 		return ""
 	}
-	return displaystatus.WaitingLabel + " · " + reason
+	return reason
 }
 
 // renderArchivingStatus renders the optimistic "archiving" status with an

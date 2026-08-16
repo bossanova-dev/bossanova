@@ -63,16 +63,74 @@ are configured via environment variables. See
 
 ## Top-level fields
 
-| Field                   | Type   | Default                     | Description                                                                                                                       |
-| ----------------------- | ------ | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `worktree_base_dir`     | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                      |
-| `app_data_dir`          | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.       |
-| `socket_path`           | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`. |
-| `default_agent`         | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                           |
-| `skills_declined`       | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                           |
-| `poll_interval_seconds` | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                          |
-| `plugins`               | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                  |
-| `repair`                | object | defaults below              | Repair plugin configuration.                                                                                                      |
+| Field                     | Type   | Default                     | Description                                                                                                                                      |
+| ------------------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `worktree_base_dir`       | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                                     |
+| `app_data_dir`            | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.                      |
+| `socket_path`             | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`.                |
+| `default_agent`           | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                                          |
+| `skills_declined`         | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                                          |
+| `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                         |
+| `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                 |
+| `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                     |
+| `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                          |
+| `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below. |
+
+## Daemon PATH
+
+A service manager never sources your interactive shell config, so the daemon
+does not inherit the PATH your terminal has. A toolchain installed by **nodenv,
+nvm, asdf or volta** — or a `claude` from the native installer in
+`~/.local/bin` — is therefore invisible to `bossd` unless its directory is on
+the service PATH.
+
+The generated service file sets this PATH by default:
+
+```
+~/.nodenv/shims:~/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
+```
+
+on macOS (the LaunchAgent plist), and the same two shim directories prepended
+to the installing shell's PATH on Linux (the systemd unit). The `bossd` service
+and the MCP service render this from the same helper, so they can never
+disagree about where `node` lives.
+
+### `daemon_path_extra`
+
+Set `daemon_path_extra` to put your own directories at the **front** of that
+PATH:
+
+```json
+{
+  "daemon_path_extra": ["~/.asdf/shims", "/opt/custom/bin"]
+}
+```
+
+Entries must be **absolute** or `~/`-rooted. Anything else is dropped when the
+service file is rendered: a relative path, an empty entry, an entry containing a
+`:` (the PATH separator itself), a `\`, or one containing a newline or an
+XML-special character (`<`, `>`, `&`, `"`), which would otherwise corrupt the
+generated plist or inject a directive into the systemd unit. Duplicates are
+removed, keeping the first occurrence, so listing a baseline directory moves it
+to the front rather than repeating it.
+
+A directory containing a **space** is fine — the systemd unit quotes its `PATH`
+value, and the plist stores it as XML text.
+
+The key is **prepend-only by design** — there is deliberately no
+full-replacement override. The baseline entries can never be removed, so a typo
+here costs you one tool rather than a daemon that cannot run `git`.
+
+:::note Takes effect on the next daemon restart
+Settings are read when the service file is rendered, so an edit is inert until
+you run `boss daemon restart`.
+
+`boss daemon doctor` reports both PATHs and tells them apart: the one in the
+**installed** service file, which is what the running daemon actually has, and
+the one the **next restart** will write. When they differ it says so and points
+at the restart. It resolves `node` and `claude` under the installed PATH — not
+your shell's, which is exactly the check that passes while the daemon is broken.
+:::
 
 ## `plugins[]` entries
 
@@ -98,6 +156,56 @@ are configured via environment variables. See
 | `cooldown_minutes`       | int    | `1`           | Minimum gap between repair attempts on the same session. |
 | `poll_interval_seconds`  | int    | `5`           | Poll interval for repair status checks.                  |
 | `sweep_interval_minutes` | int    | `1`           | How often the plugin sweeps for sessions needing repair. |
+
+## `subagent_dispatch_grant`
+
+Most boss skills mandate subagent dispatch as part of their protocol —
+`boss-review` runs its lenses and round extensions as subagents, `boss-plan`
+dispatches its drafting and reviewer extensions, `boss-repair` and `boss-epic`
+fan out the same way. Coding-agent harnesses ship a standing system-prompt line
+that tells the agent not to dispatch subagents unless the user asked for it.
+That restriction comes from the **harness**, not from bossanova, and it has no
+off switch — so without a counter-instruction those skills quietly collapse
+their dispatched work into a single context and can still report a clean run.
+
+Bossanova therefore appends a **bounded** dispatch grant to the system prompt it
+builds for each chat. The grant authorises only the dispatches the running
+skill's protocol already mandates, requires every dispatch to be awaited rather
+than backgrounded, and treats a skill's documented inline fallback as a clean
+result. It is not a general widening of tool access.
+
+`subagent_dispatch_grant` selects which chats receive it:
+
+| Value        | Effect                                                                                                   |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
+| `always`     | **Default.** Unattended sessions and attended chats both receive the grant.                              |
+| `unattended` | Opt out for attended chats. Only unattended sessions (cron, `boss-epic` children, detached runs) get it. |
+
+```json
+{
+  "subagent_dispatch_grant": "unattended"
+}
+```
+
+The key is absent from a fresh `settings.json` and behaves as `always`. An
+unrecognised value also resolves to `always` — a typo must not withdraw the
+shipped default, and it never fails daemon startup. Because that fallback would
+otherwise discard an intended opt-out in silence, `bossd` logs a warning naming
+the offending value each time it spawns or wakes a chat; check `bossd`'s log
+if an opt-out does not seem to be taking effect.
+
+Edit this key in `settings.json` directly — it is not yet exposed in the boss
+settings form or the `update_settings` API, so the TUI neither shows nor
+overwrites it. Unrelated settings changes made through the TUI preserve it.
+
+Unattended sessions receive their grant in every configuration — `unattended` is
+an opt-out for attended chats only, and cannot be used to withdraw authority
+from an autonomous run.
+
+The setting is read when a chat is **spawned**, so a change takes effect for
+chats started afterwards. Chats already running keep the grant they were
+launched with; start a new chat — or wake a sleeping one, which re-spawns it —
+to pick up the change.
 
 ## Development profile
 

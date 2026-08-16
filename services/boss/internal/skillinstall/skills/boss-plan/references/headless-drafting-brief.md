@@ -518,7 +518,18 @@ Include, in the plan body, all of the following (scaled to triage):
 
 - A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in
   the implementation PR."**
-- A **## Acceptance criteria** section: concrete, testable pass/fail conditions.
+- A **## Acceptance criteria** section: concrete, testable pass/fail conditions. **Prefer an
+  assertion**: a claim worth verifying once is usually worth pinning, so write each criterion so a
+  test or a gate demonstrates it. Only where the invariant genuinely cannot be pinned that way —
+  where its correct outcome is "this file needed no change", so it leaves no diff for any
+  changed-path gate to see — write it as a **verify-only** criterion, in this literal form:
+  `` - [ ] (verify-only) <the invariant claimed> — check: `<command a reviewer can re-run>` ``. The
+  `(verify-only)` prefix and the `— check: ` clause are parsed literally by the implementing run,
+  which must record the command it ran and that command's result before it may tick the box. A
+  verify-only criterion whose `— check: ` names no command is not dischargeable — name a command a
+  reviewer could paste, not an intention. **Wrap the command in backticks**: the run's discharge
+  form is parsed with the backticks as delimiters, so that an arrow inside the command is never
+  mistaken for the `→` that introduces the result.
 - A **## Required proof** section: a checklist of artifacts the implementer must produce to pass
   review, each paired with what it must demonstrate. Proof is captured with the existing `boss-proof`
   skill (`node scripts/proof.mjs run`), which uploads **stills and video** to the configured public publish store and
@@ -625,6 +636,7 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 ## Acceptance criteria
 
 - [ ] <testable pass/fail condition>
+- [ ] (verify-only) <invariant no diff can demonstrate; use ONLY where no test or gate can pin it> — check: `<command a reviewer can re-run>`
 
 ## Required proof
 

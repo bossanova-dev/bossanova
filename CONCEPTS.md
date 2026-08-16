@@ -99,6 +99,59 @@ the text rather than trailing it, so a surface that clips a reason to one line k
 loses only the raw cause; surfaces are then free to render the same reason differently, which is a
 deliberate divergence rather than a parity defect.
 
+### Waiting reason
+
+The human-readable text saying why a chat is parked on an armed external event — it names the
+trigger being awaited and the pull request it is armed on. Distinct from a Blocked reason: a waiting
+chat is healthy and progressing toward a known event, not stalled on a fault, so it is styled as
+information rather than as a warning.
+
+Unlike a Blocked reason, it has exactly one producer. The daemon derives the canonical wording and
+every surface renders that text verbatim rather than re-spelling it; the surfaces are required to
+read identically, so changing the wording changes all of them at once — here parity is the contract,
+not the divergence. The reason carries no status label of its own, because every surface that shows
+one already displays the waiting badge and its spinner alongside it, and a label in the text would
+only repeat what is on screen while pushing the informative half of the line rightward. A reason that
+is absent or missing any of its parts is rendered as nothing at all rather than as an empty row:
+callers skip the line entirely, so the layout does not shift and no unselectable row is left for a
+cursor to strand on.
+
+## Scheduled sessions (cron)
+
+### Cron gate
+
+The optional command a scheduled job runs immediately before it would fire, to decide whether there
+is actually work to do. Exit zero means fire; anything else blocks the fire, creates no session, and
+still advances the job's next run time. The gate is a decision procedure, not a health check — it is
+the job's own answer to "is there anything to do right now".
+
+The contract is deliberately **fail-closed**: when the gate's condition cannot be established, the
+fire is blocked rather than attempted, because an unverifiable condition should skip the run rather
+than spend agent tokens on a state nobody confirmed. Failing closed is therefore correct by design,
+and is separate from — never a substitute for — recording _why_ the fire was blocked. Gate authors
+signal "no work" with a plain non-zero exit; the shell's own "could not run what you asked" codes are
+reserved, and a gate that borrows one is reported as broken rather than as a skip.
+
+### Gate outcome
+
+The recorded verdict of a cron gate run, and the durable half of the fail-closed contract. It
+separates two states that both block the fire but carry opposite operator instructions: the gate
+**ran and said no**, which is a healthy skip, and the gate **could not be evaluated at all** — never
+launched, not executable, timed out, killed by a signal, or never configured — which means the gate
+condition is unknown and nothing is being checked.
+
+Only the second is a failure. It derives a failed, red cron row so a broken gate is escalatable,
+while a healthy skip stays a warning-styled "waiting" row. The distinction is load-bearing precisely
+because it is invisible when collapsed: a broken gate that records the healthy verdict renders as
+positive evidence that the system is working, so no alert, dashboard, or human scan of cron history
+can catch it. Compare **Capability preflight**, which carries the same
+distinguish-your-causes principle scoped to an agent runtime's readiness rather than to a scheduled
+job's recorded history.
+
+A gate outcome is served to API clients, not merely logged, so moving a case from one verdict to the
+other changes an existing client's observable answer even when no schema field changes — a
+behavioural API change that must be versioned and down-converted for older clients.
+
 ## Epic runs (boss-epic)
 
 ### Epic run
@@ -235,7 +288,13 @@ The status of an account (or a whole session, when every account for its provide
 
 ### Usage probe
 
-The daemon's periodic read-only check of how much of an account's provider quota remains, which keeps rotation's eligibility decisions current. Where the provider exposes a dedicated usage endpoint the probe is free; where it does not, or where the credential lacks the scope to read it, the fallback path issues a real metered call — so a probe that silently takes the fallback is an ongoing cost, not a cosmetic defect.
+The daemon's periodic read-only check of how much of an account's provider quota remains, reported as one Utilization window per quota period, which keeps rotation's eligibility decisions current. Where the provider exposes a dedicated usage endpoint the probe is free; where it does not, or where the credential lacks the scope to read it, the fallback path issues a real metered call — so a probe that silently takes the fallback is an ongoing cost, not a cosmetic defect.
+
+### Utilization window
+
+A rolling quota period an account is measured against, together with the fraction of it consumed — one short (intra-day) window and one weekly window, both produced by the Usage probe and thresholded by Rotation: at or above full the account counts as Limited, and a lower band triggers a proactive look for somewhere better to put the session. Each window also carries the instant it resets, which is what times a Cooldown.
+
+By contract each window is a single fraction, but a provider does not always report it that way: the weekly quota may arrive as an account-wide reading, as separate per-model readings, or — on plans that split the week by model — only per model. The account-wide reading is the account's verdict even when a per-model reading is higher, because one model's spent week does not bench the account for traffic to other models; the per-model readings decide only when no account-wide reading was reported. Reducing several readings to the one fraction Rotation consumes is a decision, not an aggregation, and an absent reading is not a reading of zero.
 
 ### Probe throttle
 
@@ -322,12 +381,44 @@ Drift is reported as a warning at skill preflight rather than enforced as a gate
 that a stale helper degrades rather than fails — which holds only for helpers that do not hard-reject
 what they do not recognise.
 
+## Review and verification
+
+### Vacuous gate
+
+A check that passes on the very values it exists to reject, so its verdict carries no information
+while still reading as assurance. It is worse than an absent gate rather than equivalent to one: an
+absent gate leaves a risk everyone downstream still treats as unchecked, while a vacuous one converts
+that risk into a false assurance every consumer spends.
+
+A gate can become vacuous at any of three layers, and each has been observed independently: its
+parser, when it splits on a delimiter the operand may legally contain; its classifier, when the
+written form of a marker is not the form the test recognises, so the item silently leaves the
+contract with no detector anywhere; and its own regression test, when that test normalises the very
+bytes it exists to pin. The failure is silent by construction, because a gate's job is to be quiet
+when nothing is wrong.
+
+### Falsification
+
+A test written to prove that a specific guard is load-bearing: it constructs the exact value the
+guard exists to reject, asserts the guard refuses that value for the stated reason rather than merely
+failing, and is confirmed by mutating the guarded branch away and watching the test die.
+Falsifications are named and numbered alongside the guard they defend, and stand as the durable
+evidence that a gate is not vacuous.
+
+Asserting only that a good input still passes is not a falsification — the refusing direction is the
+whole record. A falsification that would stay green with its guard deleted is itself vacuous, one
+level up, which is why the mutation step is part of the definition rather than an optional check.
+
 ## Flagged ambiguities
 
 - "Capability" carries two unrelated senses. A **Tracker capability** is an adapter behavior a skill
   calls as code; the sense in **Capability preflight** and **Headless capability profile** is an
   operation a coding-agent runtime must support before a gated run may start. Neither gates the
   other, and a conformant tracker adapter implies nothing about an agent runtime's profile.
+- "Gate" carries several unrelated senses and should never appear unqualified. A **Cron gate** is a
+  command a scheduled job runs to decide whether it has work; a **Repo automation flag** gates what
+  the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a
+  **Stamp** gates a build step on an input hash. Only the cron sense has a recorded **Gate outcome**.
 - "Rate limited" had been used for both a **Limited** account, which has exhausted its own usage
   cap, and a **Probe throttle**, which is the usage endpoint refusing our polling rate — these are
   distinct, and only the former justifies a **Cooldown**.

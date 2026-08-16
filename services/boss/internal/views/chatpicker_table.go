@@ -413,9 +413,10 @@ func (m ChatPickerModel) limitedLineHeight() int {
 
 // waitingReasonLine returns the session-detail hint naming why a chat in this
 // session is parked on an external event, e.g.
-// "waiting · awaiting checks_passed_ready on acme/widget#123" (BOS-668). It
-// returns "" when nothing in the session is waiting, so callers can skip the
-// line entirely and the layout does not shift.
+// "awaiting checks_passed_ready on acme/widget#123" (BOS-668, BOS-863 — the
+// reason alone, since the chat table below already badges the parked chat
+// "waiting"). It returns "" when nothing in the session is waiting, so callers
+// can skip the line entirely and the layout does not shift.
 //
 // Only the FIRST waiting chat's reason is shown. Sessions park on at most one
 // callback in practice, and a multi-line block here would eat chat rows on a

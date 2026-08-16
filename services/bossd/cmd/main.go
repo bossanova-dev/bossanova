@@ -3297,6 +3297,14 @@ func run(opts runOpts) error {
 		cmdHandlerStream.Waker = srv
 		cmdHandlerStream.Commands = srv
 	}
+	// The web terminal attach needs the same waker (BOS-885): a chat whose
+	// tmux_session_name was cleared is revived on attach instead of rejected,
+	// exactly as the TUI attach already does. Post-hoc for the same reason as
+	// above — terminalStreamClient is constructed before srv — and safely so,
+	// because its Run loop is not started until further below.
+	if terminalStreamClient != nil {
+		terminalStreamClient.SetWaker(srv)
+	}
 	// Wire the creator adapter's server now that srv exists (it was passed
 	// into the StreamClient config above as a pointer). *server.Server
 	// satisfies upstream.StreamCreateSessioner via StreamCreateSession.
@@ -3700,11 +3708,29 @@ func run(opts runOpts) error {
 	tmuxStatusPoller.Run(pollerCtx)
 	trackDone(tmuxStatusPoller.Done())
 
-	// Start the orphaned-tmux reaper (BOS-846): reconciles live panes against
-	// the DB and kills the ones no row can account for. It ships disabled and
-	// dry-run, so with no tmux_reaper settings block Run returns immediately.
+	// Start the tmux reaper. It carries two independently-knobbed paths:
+	//
+	//   - the orphan path (BOS-846), which reconciles live panes against the DB
+	//     and kills the ones no row can account for. It ships disabled and
+	//     dry-run, because an orphan reap is unrecoverable;
+	//   - the idle path (BOS-886), which kills the pane of a chat nobody has
+	//     touched for hours and clears that chat's pane pointer. It ships
+	//     ENABLED, because the chat row survives and attaching wakes it.
+	//
+	// With neither enabled Run returns immediately. The idle path's three
+	// dependencies all fail closed if they are ever left nil here: no tracker
+	// means no evidence, no oracle means no provable transcript, and no kill
+	// seam means candidates are logged and left alive.
 	tmuxReaper := status.NewTmuxReaper(agentChats, sessions, repos, tmuxClient,
-		tmuxDaemonID, settings.TmuxReaper, log.Logger)
+		tmuxDaemonID, settings.TmuxReaper, status.IdleReapDeps{
+			Config:      settings.TmuxIdleReap,
+			Tracker:     chatStatusTracker,
+			Transcripts: status.NewAgentTranscriptOracle(agentClients),
+			// The canonical clear-then-kill teardown, reached through a
+			// function value rather than an import: session already imports
+			// status, so importing it back would be a cycle.
+			KillChat: lifecycle.ReapIdleChatTmuxSession,
+		}, log.Logger)
 	tmuxReaper.Run(pollerCtx)
 	trackDone(tmuxReaper.Done())
 

@@ -143,11 +143,19 @@ func (m *mockSessionStarter) cleanupRecords() []string {
 }
 
 type mockDuplicateLiveness struct {
-	alive map[string]bool
+	alive  map[string]bool
+	parked map[string]bool
 }
 
-func (m *mockDuplicateLiveness) IsSessionAlive(_ context.Context, sessionID string) bool {
-	return m.alive[sessionID]
+func (m *mockDuplicateLiveness) SessionLiveness(_ context.Context, sessionID string) session.Liveness {
+	switch {
+	case m.alive[sessionID]:
+		return session.LivenessAlive
+	case m.parked[sessionID]:
+		return session.LivenessParked
+	default:
+		return session.LivenessDead
+	}
 }
 
 // fakeAccountResolver implements DefaultAccountResolver for the Fix #2

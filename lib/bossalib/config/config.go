@@ -254,6 +254,59 @@ func (c TmuxReaperConfig) GracePeriod() time.Duration {
 	return 10 * time.Minute
 }
 
+// TmuxIdleReapConfig holds the policy knobs for bossd's IDLE-pane reaper
+// (BOS-886), which kills the tmux pane of a chat nobody has touched for hours
+// and clears that chat's pane pointer. The chat row, its session and every
+// other piece of DB state survive; the chat stays listed and re-attachable.
+//
+// It is deliberately NOT governed by TmuxReaperConfig, whose defaults are the
+// opt-in-twice posture appropriate to an ORPHAN reap. The two differ in what a
+// mistake costs (BOS-886 D6):
+//
+//   - An orphan reap is unrecoverable — the pane is the only trace of that
+//     work, so it ships off and dry-run.
+//   - An idle reap is recoverable — the chat row survives and attaching wakes
+//     it — so it ships ENABLED and armed, and reclaims memory without an
+//     operator having to discover a knob.
+//
+// Enabled is a *bool rather than a bool for the reason the block above spells
+// out: the bool zero value cannot distinguish "unset" from "explicitly off"
+// for a knob whose default is ON, and only the pointer form lets an operator
+// turn the feature off. DryRun is a *bool for symmetry with its sibling block.
+type TmuxIdleReapConfig struct {
+	Enabled              *bool `json:"enabled,omitempty"`
+	DryRun               *bool `json:"dry_run,omitempty"`
+	IdleThresholdSeconds int   `json:"idle_threshold_seconds,omitempty"`
+}
+
+// IsEnabled reports whether idle panes are reaped at all. Unset means ON — the
+// inverse of TmuxReaperConfig.IsEnabled, see the type comment for why.
+func (c TmuxIdleReapConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// IsDryRun reports whether an eligible candidate is only logged. Unset means
+// live: a feature that ships enabled but dry-run would reclaim nothing while
+// reading as armed.
+func (c TmuxIdleReapConfig) IsDryRun() bool {
+	return c.DryRun != nil && *c.DryRun
+}
+
+// IdleThreshold returns how long a chat must have been reported IDLE with no
+// visible pane output before its pane may be reaped; the default is 8 hours
+// (28800 seconds). A non-positive value (unset, or a hand-edited negative)
+// falls back rather than making every idle chat instantly eligible.
+//
+// This is a FLOOR, not a timer. A candidate is confirmed on a later sweep, so
+// the pane dies at least this long after its last output — up to two sweep
+// intervals later, never earlier.
+func (c TmuxIdleReapConfig) IdleThreshold() time.Duration {
+	if c.IdleThresholdSeconds > 0 {
+		return time.Duration(c.IdleThresholdSeconds) * time.Second
+	}
+	return 8 * time.Hour
+}
+
 // ManagedAccountsConfig holds account-rotation policy knobs.
 type ManagedAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
@@ -872,6 +925,7 @@ type Settings struct {
 	StallDetection                 StallDetectionConfig  `json:"stall_detection,omitzero"`
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
 	TmuxReaper                     TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
+	TmuxIdleReap                   TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this

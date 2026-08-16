@@ -25,6 +25,10 @@ const (
 	registerStateProvider registerState = iota
 	// registerStateProgress: the flow is running and only surfacing Say lines.
 	registerStateProgress
+	// registerStateHandoff: the terminal has been handed to the walkthrough
+	// child via tea.Exec. Bubble Tea is NOT rendering or reading input for the
+	// duration — the child owns the terminal, which is the whole point (BOS-848).
+	registerStateHandoff
 	// registerStateAwaitText / Secret / Confirm: a blocking prompt is showing
 	// its input widget and waiting for the operator's answer.
 	registerStateAwaitText
@@ -64,8 +68,11 @@ type AccountRegisterModel struct {
 	ctx       context.Context
 	telemetry telemetry.Client
 
-	// exec is the subprocess seam. Defaults to the DevNull-stdin variant (Bubble
-	// Tea owns os.Stdin); tests inject a fake.
+	// exec is the subprocess seam. Left nil in production, where startFlow picks
+	// per provider: codex keeps the DevNull-stdin variant, claude goes through
+	// the tea.Exec terminal handoff (BOS-848). Tests inject a fake, and a
+	// non-nil value is always honoured verbatim — same nil-means-default idiom
+	// as scratchDir/homeDir below.
 	exec accountflow.Exec
 
 	// scratchDir / homeDir override the flows' temp-dir factories in tests; nil
@@ -98,6 +105,11 @@ type AccountRegisterModel struct {
 	// flowDone closes when the flow goroutine exits (leak guard / tests).
 	flowDone <-chan struct{}
 
+	// execBridge routes the walkthrough child's launch onto the render loop so
+	// it can be wrapped in tea.Exec's release/restore bracket. Non-nil only
+	// while a claude flow that owns its subprocess is running.
+	execBridge *tuiExec
+
 	// pending is the in-flight blocking prompt awaiting an answer.
 	pending promptRequest
 	input   textinput.Model
@@ -125,7 +137,6 @@ func NewAccountRegisterModel(c accountflow.AccountClient, ctx context.Context) A
 	return AccountRegisterModel{
 		client:     c,
 		ctx:        ctx,
-		exec:       accountflow.NewDevNullStdinExec(),
 		state:      registerStateProvider,
 		input:      ti,
 		remoteHost: destination,
@@ -150,7 +161,7 @@ func (m AccountRegisterModel) Cancelled() bool { return m.cancelled }
 // handleGlobalKey).
 func (m AccountRegisterModel) flowRunning() bool {
 	switch m.state {
-	case registerStateProgress, registerStateAwaitText, registerStateAwaitSecret, registerStateAwaitConfirm:
+	case registerStateProgress, registerStateHandoff, registerStateAwaitText, registerStateAwaitSecret, registerStateAwaitConfirm:
 		return true
 	case registerStateProvider, registerStateDone, registerStateError:
 		return false
@@ -189,6 +200,17 @@ func (m AccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case promptRequestMsg:
 		return m.handlePromptRequest(msg.req)
+
+	case execRequestMsg:
+		return m.handleExecRequest(msg.req)
+
+	case execDoneMsg:
+		// The child has exited AND tea.Exec has restored the terminal to Bubble
+		// Tea, so the reader is live again. The flow goroutine is still running
+		// (it now parses the token and prompts for a label); flowDoneMsg lands
+		// later.
+		m.state = registerStateProgress
+		return m, nil
 
 	case flowDoneMsg:
 		return m.handleFlowDone(msg.err)
@@ -284,11 +306,33 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 	// Capture the values the goroutine needs so it does not read the model copy.
 	prov := provider
 	prompter := m.prompter
-	exec := m.exec
 	client := m.client
 	scratch := m.scratchDir
 	home := m.homeDir
 	remote := m.remoteHost
+
+	// Pick the subprocess seam. An injected exec (tests) always wins verbatim.
+	//
+	// In production the two providers diverge deliberately. Codex keeps the
+	// DevNull-stdin exec: its device flow only prints a URL and polls, and
+	// codexCapture depends on LIVE line streaming for disabled-device-auth
+	// detection and its timeout kill, so it must not be wrapped in a handoff
+	// that blocks the render loop. Claude goes through the tea.Exec bridge,
+	// because `claude setup-token` was observed opening the operator's
+	// controlling terminal for reading and contending with Bubble Tea's reader
+	// (BOS-848 — see account_register_exec.go).
+	//
+	// The bridge is only wired for the path that actually spawns: under --host
+	// the claude flow runs in PasteMode and starts no child at all.
+	exec := m.exec
+	if exec == nil {
+		if prov == "claude" && remote == "" {
+			m.execBridge = newTUIExec(flowCtx)
+			exec = m.execBridge
+		} else {
+			exec = accountflow.NewDevNullStdinExec()
+		}
+	}
 
 	m.flowDone = safego.Go(zerolog.Nop(), func() {
 		var err error
@@ -332,6 +376,7 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		readProgressCmd(m.prompter),
 		readRequestCmd(m.prompter),
+		readExecRequestCmd(m.execBridge),
 		readDoneCmd(m.donec),
 	)
 }
@@ -557,6 +602,14 @@ func (m AccountRegisterModel) View() tea.View {
 			{label: "No"},
 		}, m.confirmCursor)))
 		b.WriteString("\n")
+	case registerStateHandoff:
+		// Mostly unseen: the terminal is released to the child for the duration,
+		// so this frame is what remains on screen at the boundaries. It has to
+		// say WHY input is going somewhere else, or a paste that lands in the
+		// child looks like the TUI ignoring the operator.
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+			"The claude CLI has the terminal — follow its prompts below."))
+		b.WriteString("\n")
 	case registerStateDone:
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusSuccess.Render("Account registered.")))
 		b.WriteString("\n")
@@ -571,6 +624,11 @@ func (m AccountRegisterModel) View() tea.View {
 		b.WriteString(actionBarWidth(m.width, []string{"[←/→] select", "[enter] confirm"}, []string{"[esc] cancel"}))
 	case registerStateAwaitText, registerStateAwaitSecret:
 		b.WriteString(actionBarWidth(m.width, []string{"[enter] submit"}, []string{"[esc] cancel"}))
+	case registerStateHandoff:
+		// Deliberately offers no [esc]: Bubble Tea is not reading the terminal,
+		// so esc reaches the CHILD, not this model. Cancelling mid-handoff is
+		// the child's own interrupt.
+		b.WriteString(actionBarWidth(m.width, []string{"claude has the terminal"}, []string{"[ctrl+c] interrupt claude"}))
 	case registerStateError:
 		b.WriteString(actionBarWidth(m.width, []string{"[esc] back"}))
 	case registerStateDone:

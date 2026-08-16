@@ -36,8 +36,11 @@ func agentLogIdleFor(agentLogsDir, agentSessionID string, now time.Time) (time.D
 // sessionLiveness reports whether a boss session is still running. It includes
 // both headless agent subprocesses and tmux-hosted chats, so cron overlap
 // suppression still works when the tmux log pipe failed before writing a log.
+// A parked session (its tmux pane deliberately reaped, chat row kept) is
+// neither alive nor dead — see Liveness — so every consumer below has to say
+// what it does with that third answer rather than folding it into a boolean.
 type sessionLiveness interface {
-	IsSessionAlive(context.Context, string) bool
+	SessionLiveness(context.Context, string) Liveness
 }
 
 // CronActivityChecker reports whether a cron session's agent is still actively
@@ -78,7 +81,12 @@ func (c *CronActivityChecker) RunActive(sess *models.Session) bool {
 		// Nil liveness keeps the conservative fail-open default (don't block the
 		// next fire).
 		if c.liveness != nil {
-			return c.liveness.IsSessionAlive(context.Background(), sess.ID)
+			// A parked session's pane was reaped because it had gone idle, so
+			// it is not producing output and must not suppress the next cron
+			// fire. Unlike the reap/finalize consumers, treating parked like
+			// dead here is safe: RunActive only gates overlap, it never
+			// finalizes a session or fails a task.
+			return c.liveness.SessionLiveness(context.Background(), sess.ID) == LivenessAlive
 		}
 		return false
 	}
@@ -200,7 +208,11 @@ func (l *Lifecycle) strandedRunCompletionEvidence(sess *models.Session) (bool, s
 		// created. Thus in a pre-agent state, a dead liveness result at startup
 		// reaps a row the restart froze before it could create a live pane. Once
 		// an agent ID exists, false liveness is never enough for tmux completion.
-		if isPreAgentState(sess.State) && l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID) {
+		// Only a DEAD verdict reaps. A parked session was torn down on purpose
+		// and reaping it here would finalize a session the reaper meant to
+		// keep — the exact failure BOS-884 prevents.
+		if isPreAgentState(sess.State) && l.liveness != nil &&
+			l.liveness.SessionLiveness(context.Background(), sess.ID) == LivenessDead {
 			return true, "pre_agent_liveness_dead"
 		}
 		return false, "pre_agent_liveness_unknown_or_alive"
@@ -401,7 +413,9 @@ func (l *Lifecycle) cronRunCompletionEvidence(sess *models.Session) (bool, strin
 		}
 		return true, "tmux_log_idle"
 	}
-	if l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID) {
+	// Only a DEAD verdict is completion evidence; a parked session's pane was
+	// reaped on purpose and finalizing it would end a run nobody stopped.
+	if l.liveness != nil && l.liveness.SessionLiveness(context.Background(), sess.ID) == LivenessDead {
 		return true, "liveness_dead"
 	}
 	if !logKnown {

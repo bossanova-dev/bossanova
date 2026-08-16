@@ -3,6 +3,7 @@ package accountflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -596,5 +597,200 @@ func TestLiveSmokeUnavailableDetailContract(t *testing.T) {
 	const want = "provider verification unavailable"
 	if liveSmokeUnavailableDetail != want {
 		t.Fatalf("liveSmokeUnavailableDetail = %q, want %q (must match the bossd sentinel)", liveSmokeUnavailableDetail, want)
+	}
+}
+
+// --- BOS-848: token preservation across post-mint failures -----------------
+
+// TestClaudeTokenPreservedAcrossPostMintFailure covers the three failure points
+// the acceptance criteria name. Before BOS-848 each of them returned a bare
+// error, so a LIVE credential had been created in the operator's Anthropic
+// account and nothing on screen said so — the token was simply dropped.
+//
+// Each case asserts three things: the underlying cause still reaches the
+// caller (errors.Is), the recovery advice is present and names the masked
+// token, and the RAW token appears nowhere in the rendered error.
+func TestClaudeTokenPreservedAcrossPostMintFailure(t *testing.T) {
+	tok := claudeToken()
+	masked := agentcred.MaskToken(tok)
+
+	listBoom := errors.New("list accounts boom")
+	addBoom := errors.New("add account boom")
+
+	cases := []struct {
+		name string
+		// client is the scripted daemon for this failure point.
+		client *fakeAccountClient
+		// confirms drives the walkthrough confirm plus, where reached, the
+		// keep-or-remove confirm.
+		confirms []bool
+		// cause is the error that must still be reachable through the wrap.
+		cause error
+		// wantRemoved asserts the verification path removed the account, which
+		// is what makes that path a "nothing stored" case too.
+		wantRemoved bool
+	}{
+		{
+			// The reported window: the label prompt itself fails.
+			name:     "identity_step_failure",
+			client:   &fakeAccountClient{listErr: listBoom},
+			confirms: []bool{true},
+			cause:    listBoom,
+		},
+		{
+			// The daemon refused the credential, so nothing is stored.
+			name:     "add_account_failure",
+			client:   &fakeAccountClient{addErr: addBoom},
+			confirms: []bool{true},
+			cause:    addBoom,
+		},
+		{
+			// Verification failed AND the operator declined to keep it, so the
+			// account is removed again and the credential is unreachable.
+			name: "verification_failure_declined",
+			client: &fakeAccountClient{
+				testResult: &pb.TestAccountResponse{
+					LiveSmokeRan: true,
+					Account:      &pb.Account{Id: "acc-new", LastTestError: "credential rejected"},
+				},
+			},
+			confirms:    []bool{true, false},
+			wantRemoved: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := &fakeExec{proc: newScriptedProc([]string{tok}, nil)}
+			pr := &fakePrompter{confirms: tc.confirms, answers: []string{"", ""}}
+
+			err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: tc.client})
+			if err == nil {
+				t.Fatal("RunClaudeAdd: want error, got nil")
+			}
+
+			// The cause must survive the wrap, or callers lose the ability to
+			// classify what actually went wrong.
+			if tc.cause != nil && !errors.Is(err, tc.cause) {
+				t.Fatalf("errors.Is(err, cause) = false; err = %v", err)
+			}
+
+			got := err.Error()
+
+			// The recovery path itself: say a token exists, and how to deal
+			// with it. These are the operator's only route back.
+			for _, want := range []string{
+				"was already created before this failed",
+				"boss did not store it",
+				"revoke it at https://console.anthropic.com/settings/keys",
+				"boss account add claude",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("error missing recovery advice %q\nerror: %s", want, got)
+				}
+			}
+
+			// It must name WHICH token, in masked form, so the operator can
+			// find it in the console's list.
+			if !strings.Contains(got, masked) {
+				t.Errorf("error does not name the masked token %q\nerror: %s", masked, got)
+			}
+
+			// ...and never the raw one.
+			if strings.Contains(got, tok) {
+				t.Fatalf("RAW TOKEN LEAKED into the error text: %s", got)
+			}
+			// Nor anywhere the operator can see it.
+			if strings.Contains(pr.transcript(), tok) {
+				t.Fatalf("RAW TOKEN LEAKED into the prompter transcript: %s", pr.transcript())
+			}
+
+			if tc.wantRemoved && len(tc.client.removedIDs) == 0 {
+				t.Error("verification-declined path did not remove the account")
+			}
+		})
+	}
+}
+
+// TestClaudeVerificationKeptDoesNotClaimTokenLost is the negative case: when
+// the operator keeps an unverified account the credential IS stored, so
+// telling them to re-mint would be actively wrong.
+func TestClaudeVerificationKeptDoesNotClaimTokenLost(t *testing.T) {
+	tok := claudeToken()
+	ex := &fakeExec{proc: newScriptedProc([]string{tok}, nil)}
+	// walkthrough=yes, then keep-the-account=yes.
+	pr := &fakePrompter{confirms: []bool{true, true}, answers: []string{"", ""}}
+	cl := &fakeAccountClient{
+		testResult: &pb.TestAccountResponse{
+			LiveSmokeRan: true,
+			Account:      &pb.Account{Id: "acc-new", LastTestError: "transient"},
+		},
+	}
+
+	if err := RunClaudeAdd(context.Background(), ClaudeOptions{Exec: ex, Prompter: pr, Client: cl}); err != nil {
+		t.Fatalf("keeping an unverified account should succeed, got: %v", err)
+	}
+	if len(cl.removedIDs) != 0 {
+		t.Fatalf("account was removed despite keep=yes: %v", cl.removedIDs)
+	}
+	if strings.Contains(pr.transcript(), "revoke it at") {
+		t.Fatalf("recovery advice shown for a credential that WAS stored:\n%s", pr.transcript())
+	}
+}
+
+// TestPreservedTokenMasksUnderEveryVerb is the guard behind the whole design.
+// preservedToken implements fmt.Formatter precisely so that no verb — not %v,
+// not %s, and importantly not %q or %#v, which would defeat a plain
+// fmt.Stringer — can render the raw secret. If this test fails, every error
+// path in the flow is a potential credential leak.
+func TestPreservedTokenMasksUnderEveryVerb(t *testing.T) {
+	tok := claudeToken()
+	pt := preservedToken(tok)
+	masked := agentcred.MaskToken(tok)
+
+	for _, verb := range []string{"%v", "%s", "%q", "%#v", "%+v", "%x", "%d"} {
+		got := fmt.Sprintf(verb, pt)
+		if strings.Contains(got, tok) {
+			t.Errorf("fmt.Sprintf(%q, preservedToken) LEAKED the raw token: %s", verb, got)
+		}
+		if got != masked {
+			t.Errorf("fmt.Sprintf(%q, preservedToken) = %q, want the masked form %q", verb, got, masked)
+		}
+	}
+
+	// Wrapped in an error chain, which is how it actually travels.
+	wrapped := fmt.Errorf("outer: %w", pt.recoveryError(errors.New("inner"), "while testing"))
+	if strings.Contains(wrapped.Error(), tok) {
+		t.Fatalf("raw token leaked through an error chain: %s", wrapped.Error())
+	}
+
+	// reveal() is the one sanctioned unmasking and must still work, or the
+	// credential never reaches the daemon.
+	if pt.reveal() != tok {
+		t.Fatalf("reveal() = %q, want the raw token back", pt.reveal())
+	}
+}
+
+// TestCredentialNotStoredDelegatesItsMessage pins the property that makes the
+// marker safe to add to a function the codex flow shares: it changes no
+// message and stays transparent to errors.Is/As.
+func TestCredentialNotStoredDelegatesItsMessage(t *testing.T) {
+	inner := errors.New("keyring is locked")
+	marked := markCredentialNotStored(inner)
+
+	if marked.Error() != inner.Error() {
+		t.Fatalf("marker changed the message: %q vs %q", marked.Error(), inner.Error())
+	}
+	if !errors.Is(marked, inner) {
+		t.Fatal("marker broke errors.Is to the cause")
+	}
+	if !isCredentialNotStored(marked) {
+		t.Fatal("isCredentialNotStored did not recognise its own marker")
+	}
+	if isCredentialNotStored(inner) {
+		t.Fatal("isCredentialNotStored matched an unmarked error")
+	}
+	if markCredentialNotStored(nil) != nil {
+		t.Fatal("markCredentialNotStored(nil) should stay nil")
 	}
 }

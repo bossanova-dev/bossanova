@@ -818,9 +818,10 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 			continue
 		}
 		// Fail toward NOT orphaning: only sweep when liveness definitively reports
-		// the session dead. Unwired liveness, or a session still alive (an
-		// interactive tmux pane that survived the restart), leaves the row alone.
-		if l.liveness == nil || l.liveness.IsSessionAlive(ctx, sess.ID) {
+		// the session dead. Unwired liveness, a session still alive (an
+		// interactive tmux pane that survived the restart), or a parked session
+		// (its pane deliberately reaped, chat row kept) leaves the row alone.
+		if l.liveness == nil || l.liveness.SessionLiveness(ctx, sess.ID) != LivenessDead {
 			continue
 		}
 		advanced, err := orphanStore.OrphanHeadlessRun(ctx, sess.ID, OrphanedHeadlessRunReason)
@@ -999,6 +1000,36 @@ func (l *Lifecycle) armTmuxCompletionForHooklessRun(sessionID, agentSessionID, r
 	l.armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, tmux.ChatSessionName(repoID, agentSessionID))
 }
 
+// chatPanePointerCleared reports whether the chat identified by agentSessionID
+// currently has no persisted tmux pane pointer — the durable signal that its
+// pane was torn down on purpose rather than dying with its agent.
+//
+// A non-nil error means the answer is UNKNOWN and the caller must defer rather
+// than pick a default. The error is returned rather than folded into a second
+// bool so the caller can report WHY it deferred: this poller is the only reader,
+// it re-checks every tick, and a row that stays unreadable defers forever — a
+// state nobody can diagnose from a bare "unknown".
+//
+// A chat row that is genuinely gone (ErrAgentChatNotFound) is known-not-parked:
+// there is no row left to park, so the historical "pane gone means run over"
+// inference is all that remains. The same applies when no chat store is wired.
+func (l *Lifecycle) chatPanePointerCleared(ctx context.Context, agentSessionID string) (bool, error) {
+	if l.agentChats == nil || agentSessionID == "" {
+		return false, nil
+	}
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if errors.Is(err, db.ErrAgentChatNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read chat for agent session %s: %w", agentSessionID, err)
+	}
+	if chat == nil {
+		return false, nil
+	}
+	return chat.TmuxSessionName == nil || *chat.TmuxSessionName == "", nil
+}
+
 func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, tmuxName string) {
 	if l.tmux == nil || (l.pollCompleter == nil && l.cronCompletionNotifier == nil) {
 		return
@@ -1025,8 +1056,37 @@ func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, 
 					Str("tmux_session", tmuxName).
 					Msg("hookless unattended tmux completion poll failed")
 			} else if !alive {
-				l.SignalSessionRunComplete(sessionID, agentSessionID, "")
-				return
+				// A missing pane only means "the agent exited" while the chat
+				// still carries its pane pointer. Every deliberate teardown
+				// (KillChatTmuxSession) kills the pane and then clears
+				// agent_chats.tmux_session_name, so a cleared pointer is a
+				// reap, not a death, and must not finalize the run. tmuxName
+				// was captured when this poll was armed and cannot observe a
+				// later clear, so re-read the row before concluding (BOS-884).
+				// The read costs nothing per tick: it happens once, only at the
+				// moment the poller would otherwise signal.
+				cleared, readErr := l.chatPanePointerCleared(ctx, agentSessionID)
+				switch {
+				case readErr != nil:
+					// Unreadable row: ambiguous, so defer to the next tick
+					// rather than guess, matching loglessTmuxCompletionEvidence
+					// where a probe error also defers finalization.
+					l.logger.Warn().Err(readErr).
+						Str("session", sessionID).
+						Str("agent_session", agentSessionID).
+						Str("tmux_session", tmuxName).
+						Msg("hookless unattended tmux completion poll: pane gone but chat row unreadable; deferring")
+				case cleared:
+					l.logger.Info().
+						Str("session", sessionID).
+						Str("agent_session", agentSessionID).
+						Str("tmux_session", tmuxName).
+						Msg("hookless unattended tmux completion poll: pane deliberately reaped (pointer cleared); not signalling run complete")
+					return
+				default:
+					l.SignalSessionRunComplete(sessionID, agentSessionID, "")
+					return
+				}
 			}
 
 			select {

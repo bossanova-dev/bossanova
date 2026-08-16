@@ -292,14 +292,14 @@ func (m *mockProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([
 
 // mockLivenessChecker implements SessionLivenessChecker for tests.
 type mockLivenessChecker struct {
-	aliveFn func(ctx context.Context, sessionID string) bool
+	livenessFn func(ctx context.Context, sessionID string) session.Liveness
 }
 
-func (m *mockLivenessChecker) IsSessionAlive(ctx context.Context, sessionID string) bool {
-	if m.aliveFn != nil {
-		return m.aliveFn(ctx, sessionID)
+func (m *mockLivenessChecker) SessionLiveness(ctx context.Context, sessionID string) session.Liveness {
+	if m.livenessFn != nil {
+		return m.livenessFn(ctx, sessionID)
 	}
-	return true
+	return session.LivenessAlive
 }
 
 // helper to create an orchestrator with defaults
@@ -2812,9 +2812,9 @@ func TestRecoverStaleTasks_DeadSession_UnblocksQueue(t *testing.T) {
 	}
 
 	checker := &mockLivenessChecker{
-		aliveFn: func(_ context.Context, sid string) bool {
+		livenessFn: func(_ context.Context, sid string) session.Liveness {
 			completedSessionID = sid
-			return false // session is dead
+			return session.LivenessDead
 		},
 	}
 
@@ -2864,8 +2864,8 @@ func TestRecoverStaleTasks_AliveSession_NoOp(t *testing.T) {
 	}
 
 	checker := &mockLivenessChecker{
-		aliveFn: func(_ context.Context, _ string) bool {
-			return true // session is alive
+		livenessFn: func(_ context.Context, _ string) session.Liveness {
+			return session.LivenessAlive
 		},
 	}
 

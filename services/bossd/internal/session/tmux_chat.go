@@ -1108,6 +1108,163 @@ func (l *Lifecycle) KillChatTmuxSession(ctx context.Context, sessionID, agentSes
 	return nil
 }
 
+// idleReapPointerRestoreTimeout bounds the compensating pointer write that
+// follows a failed idle kill. It runs on a detached context, so it needs a
+// deadline of its own.
+const idleReapPointerRestoreTimeout = 5 * time.Second
+
+// ReapIdleChatTmuxSession tears down the pane of a chat that has gone idle
+// (BOS-886), CLEARING the chat row's tmux pointer before killing the pane —
+// the opposite order to KillChatTmuxSession, deliberately.
+//
+// The two orders answer different questions. KillChatTmuxSession is a teardown
+// whose caller is waiting on the pane actually being gone, so it clears only
+// once that is true. This one is an unattended sweep, and the state it must
+// never leave behind is a POINTED chat row whose pane is dead: the session
+// guard reads exactly that pair as "the agent exited" and finalizes the
+// session. Killing first and failing to clear produces that pair; clearing
+// first and failing to kill produces a cleared pointer with a live pane.
+//
+// Nothing else collects that stray pane, so this routine must not leave one
+// behind. The orphan path still whitelists the name — accountedFor recomputes
+// ChatSessionName for every routable chat, and clearing the pointer does not
+// make a chat unroutable — and the idle path cannot re-fire either, because
+// the poller only polls POINTED chats: with the pointer gone the tracker entry
+// ages out, and an absent entry means unknown, never idle (D2). So a failed
+// kill RESTORES the pointer before returning, putting the row back in the
+// state the next sweep can retry from.
+//
+// paneName is the pane the sweep classified, passed in rather than re-read
+// here so the destructive call is bound to the identity that was proven:
+// resolveChatOwners claims both a chat's recorded pointer and its recomputed
+// name, so a row whose two legs disagree could otherwise be judged on one name
+// and torn down on another. A pointer that is absent or names a different pane
+// is a mismatch, and a mismatch is an error — never the silent success that
+// would let the sweep count and log a reap that never happened.
+//
+// Every failure returns an error, and the caller must treat an error as a reap
+// that did not happen and retry on its next sweep rather than logging and
+// forgetting it.
+func (l *Lifecycle) ReapIdleChatTmuxSession(ctx context.Context, sessionID, agentSessionID, paneName string) error {
+	if l.agentChats == nil {
+		return fmt.Errorf("agent chat store not configured")
+	}
+	if paneName == "" {
+		return fmt.Errorf("no pane name given for idle reap of agent chat %s", agentSessionID)
+	}
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		return fmt.Errorf("get agent chat %s: %w", agentSessionID, err)
+	}
+	if chat == nil {
+		return fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
+	}
+	if chat.SessionID != sessionID {
+		return fmt.Errorf("agent chat %s belongs to session %s, want %s", agentSessionID, chat.SessionID, sessionID)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+		return fmt.Errorf("agent chat %s has no tmux pane pointer, want %q", agentSessionID, paneName)
+	}
+	tmuxName := *chat.TmuxSessionName
+	if tmuxName != paneName {
+		return fmt.Errorf("agent chat %s points at tmux session %q, want %q", agentSessionID, tmuxName, paneName)
+	}
+	// Checked before the clear so an unavailable tmux does not orphan the
+	// pointer: with no way to kill the pane there is nothing to clear for.
+	if l.tmux == nil || !l.tmux.Available(ctx) {
+		return fmt.Errorf("tmux unavailable: cannot reap idle chat tmux session %s", tmuxName)
+	}
+	if err := l.agentChats.UpdateTmuxSessionName(ctx, agentSessionID, nil); err != nil {
+		return fmt.Errorf("clear chat tmux session name for %s: %w", agentSessionID, err)
+	}
+	if err := l.tmux.KillSession(ctx, tmuxName); err != nil {
+		// Put the pointer back: the pane is probably still up, and a cleared
+		// pointer would strand it beyond the reach of either reaper path.
+		//
+		// On a context detached from the caller's, mirroring
+		// killSpawnedChatPaneBestEffort. The likeliest way to reach this branch
+		// is the sweep context being cancelled at daemon shutdown: KillSession
+		// only reports failure once it has failed to prove the pane gone, and a
+		// dead context fails both the kill and the liveness probe. Restoring on
+		// that same context would fail immediately too, leaving precisely the
+		// cleared-pointer-live-pane pair this compensation exists to prevent.
+		restoreCtx, cancelRestore := context.WithTimeout(context.WithoutCancel(ctx), idleReapPointerRestoreTimeout)
+		defer cancelRestore()
+
+		// "Probably" is the whole reason for this probe. A failed kill is not
+		// the same fact as a live pane: KillSession also reports failure when
+		// the kill LANDED and only its confirming has-session lost the race
+		// with the dying context. Restoring blind in that case points a live
+		// row at a dead pane, and the guard child reads exactly that pair as
+		// the agent having exited and finalizes the session — the opposite
+		// mistake to stranding, and the more visible one.
+		//
+		// The probe runs on the detached context precisely because the
+		// caller's is the one that just failed. Only a definite "gone" cancels
+		// the restore; an error or a live pane both restore, because the harm
+		// this compensation exists to prevent is the one we cannot see.
+		if alive, statusErr := l.tmux.HasSessionStatus(restoreCtx, tmuxName); statusErr == nil && !alive {
+			l.logger.Info().
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("idle kill reported failure but the pane is gone; leaving the chat tmux pointer cleared")
+			return fmt.Errorf("kill idle chat tmux session %s: %w", tmuxName, err)
+		}
+		if restoreErr := l.agentChats.UpdateTmuxSessionName(restoreCtx, agentSessionID, &tmuxName); restoreErr != nil {
+			l.logger.Error().Err(restoreErr).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("could not restore the chat tmux pointer after a failed idle kill; the pane is stranded")
+		}
+		return fmt.Errorf("kill idle chat tmux session %s: %w", tmuxName, err)
+	}
+	// Clear-then-kill is two writes, and a wake landing between them re-points
+	// the row at a pane this call is about to destroy. WakeChat finds the
+	// pointer nil, spawnChatTmux sees the pane still live and returns
+	// OutcomeAlreadyLive without spawning anything, and the caller re-persists
+	// the name because the row no longer carries it. The kill then lands and
+	// leaves a POINTED row over a dead pane — the pair the guard child reads as
+	// the agent having exited, which finalizes the session.
+	//
+	// So reconcile against reality once the pane is actually gone. A name
+	// comparison alone cannot do it: the pane name is derived from the repo and
+	// chat ids, so a wake that respawned the pane restores the SAME name, and
+	// clearing on the name would strand that new, legitimate pane. tmux is the
+	// arbiter — clear only a pointer whose pane no longer exists.
+	//
+	// Best effort by construction: the reap itself succeeded, the pane is down,
+	// and the row survives either way. A failure here is logged rather than
+	// returned, because reporting the reap as failed would retry a teardown
+	// that has already happened.
+	if chatNow, getErr := l.agentChats.GetByAgentSessionID(ctx, agentSessionID); getErr != nil {
+		l.logger.Warn().Err(getErr).
+			Str("agentSessionID", agentSessionID).
+			Msg("could not re-read the chat after an idle reap; a concurrent wake may have left a stale pane pointer")
+	} else if chatNow != nil && chatNow.TmuxSessionName != nil && *chatNow.TmuxSessionName == tmuxName &&
+		!l.tmux.HasSession(ctx, tmuxName) {
+		if clearErr := l.agentChats.UpdateTmuxSessionName(ctx, agentSessionID, nil); clearErr != nil {
+			l.logger.Error().Err(clearErr).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("chat was re-pointed at the reaped pane and the pointer could not be re-cleared")
+		} else {
+			l.logger.Info().
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("a concurrent wake re-pointed the chat at the reaped pane; pointer cleared again")
+		}
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("agentSessionID", agentSessionID).
+		Str("tmuxSession", tmuxName).
+		Msg("reaped idle chat tmux session; chat row preserved and re-attachable")
+	return nil
+}
+
 // agentLogPathFor returns the bossd-owned log path for an agent session
 // inside agentLogsDir. Mirrors the per-session naming used elsewhere
 // (PluginRunner.logPathFor) so a single tail can follow either a headless

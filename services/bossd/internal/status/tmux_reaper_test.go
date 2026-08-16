@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/config"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
@@ -28,6 +29,11 @@ const (
 	// The pane a chat with agent session id reaperChatID would be given.
 	reaperChatPane = "boss-aaaaaaaa-bbbbbbbb"
 	reaperDaemonID = "daemon-under-test"
+
+	// The chat the idle-reap tests target. Its recorded pointer and its
+	// recomputed name agree, so it resolves to exactly one owner.
+	reaperIdleChatID   = "dddddddd44444444"
+	reaperIdleChatPane = "boss-aaaaaaaa-dddddddd"
 )
 
 // reaperRepoStore is the minimum db.RepoStore the reaper needs: List, plus
@@ -104,6 +110,28 @@ type reaperFixture struct {
 
 	now    time.Time
 	killed []string
+
+	// tracker is the same status tracker production wires in. Tests seed it
+	// with Update to give the idle path its evidence; leaving it empty is what
+	// keeps every pre-BOS-886 test's panes alive, since no entry means unknown.
+	tracker *Tracker
+
+	// killedChats records the (sessionID, agentSessionID, paneName) triples the
+	// idle path tore down, and killChatErr makes that seam fail so the retry
+	// contract can be asserted.
+	killedChats []string
+	killChatErr error
+
+	// wantsChatTeardown opts a test out of the fixture's default assertion that
+	// NOTHING reached the idle teardown seam. Only a test whose subject is a
+	// successful idle reap should set it.
+	wantsChatTeardown bool
+
+	// transcriptExists is the oracle's answer, and transcriptProbes counts how
+	// many times it was consulted — the idle predicate must reach it only for
+	// candidates every cheaper gate has already passed.
+	transcriptExists bool
+	transcriptProbes int
 }
 
 // reaperConfig builds a TmuxReaperConfig with every tri-state boolean set
@@ -118,6 +146,30 @@ func reaperConfig(enabled, dryRun, reapUnstamped bool, sweep time.Duration) conf
 	}
 }
 
+// reaperIdleConfig builds a TmuxIdleReapConfig with both tri-states set
+// explicitly, for the same reason reaperConfig does.
+func reaperIdleConfig(enabled, dryRun bool) config.TmuxIdleReapConfig {
+	return config.TmuxIdleReapConfig{
+		Enabled:              &enabled,
+		DryRun:               &dryRun,
+		IdleThresholdSeconds: int(reaperTestIdleThreshold / time.Second),
+	}
+}
+
+// reaperTestIdleThreshold is the idle window every fixture uses. It is far
+// longer than any orphan window in this file so the two paths' clocks can never
+// be confused for one another.
+const reaperTestIdleThreshold = 8 * time.Hour
+
+// fixtureTranscriptOracle routes the oracle back to the fixture so a test can
+// both control the answer and count the calls.
+type fixtureTranscriptOracle struct{ fx *reaperFixture }
+
+func (o fixtureTranscriptOracle) TranscriptExists(_ context.Context, _, _, _ string) bool {
+	o.fx.transcriptProbes++
+	return o.fx.transcriptExists
+}
+
 // newReaperFixture wires a reaper whose tmux client is a fake command factory
 // AND whose destructive seam records instead of executing.
 //
@@ -126,7 +178,18 @@ func reaperConfig(enabled, dryRun, reapUnstamped bool, sweep time.Duration) conf
 // The registered cleanup is the explicit assertion that no test path reached a
 // real `tmux kill-session`: the seam bypasses the tmux client entirely, so the
 // fake's kill ledger must stay empty in every single reaper test.
+//
+// The idle path (BOS-886) is wired ENABLED here, matching production, so every
+// pre-existing test in this file doubles as a fence for it: those panes are
+// accounted for and now fall THROUGH to the idle gate, and they stay alive only
+// because the fixture's tracker is empty and an absent entry means unknown.
+// Turning the idle path off in the fixture would make that fence vacuous.
 func newReaperFixture(t *testing.T, cfg config.TmuxReaperConfig) *reaperFixture {
+	t.Helper()
+	return newReaperFixtureWithIdle(t, cfg, reaperIdleConfig(true, false))
+}
+
+func newReaperFixtureWithIdle(t *testing.T, cfg config.TmuxReaperConfig, idleCfg config.TmuxIdleReapConfig) *reaperFixture {
 	t.Helper()
 
 	fx := &reaperFixture{
@@ -144,11 +207,26 @@ func newReaperFixture(t *testing.T, cfg config.TmuxReaperConfig) *reaperFixture 
 		repos:    &reaperRepoStore{repos: []*models.Repo{{ID: reaperRepoID}}},
 		logs:     &bytes.Buffer{},
 		now:      time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+		tracker:  NewTracker(),
+		// The permissive answer, so a test that means to prove D5 has to opt
+		// into the missing-transcript case explicitly rather than inheriting it.
+		transcriptExists: true,
 	}
 
 	logger := zerolog.New(fx.logs).Level(zerolog.TraceLevel)
 	client := tmux.NewClient(tmux.WithCommandFactory(fx.tmuxFake.factory))
-	fx.reaper = NewTmuxReaper(fx.chats, fx.sessions, fx.repos, client, reaperDaemonID, cfg, logger)
+	fx.reaper = NewTmuxReaper(fx.chats, fx.sessions, fx.repos, client, reaperDaemonID, cfg, IdleReapDeps{
+		Config:      idleCfg,
+		Tracker:     fx.tracker,
+		Transcripts: fixtureTranscriptOracle{fx: fx},
+		KillChat: func(_ context.Context, sessionID, agentSessionID, paneName string) error {
+			if fx.killChatErr != nil {
+				return fx.killChatErr
+			}
+			fx.killedChats = append(fx.killedChats, sessionID+"/"+agentSessionID+"/"+paneName)
+			return nil
+		},
+	}, logger)
 	fx.reaper.setClock(func() time.Time { return fx.now })
 	fx.reaper.setKillSeam(func(_ context.Context, name string) error {
 		fx.killed = append(fx.killed, name)
@@ -163,6 +241,14 @@ func newReaperFixture(t *testing.T, cfg config.TmuxReaperConfig) *reaperFixture 
 		defer fx.tmuxFake.mu.Unlock()
 		if len(fx.tmuxFake.killed) != 0 {
 			t.Fatalf("kill seam was not stubbed: the reaper reached tmux kill-session for %v", fx.tmuxFake.killed)
+		}
+		// An idle reap does NOT go through fx.killed — it goes through the chat
+		// teardown seam — so a test that only watches the orphan ledger would
+		// pass through an idle-path regression. Every test is a fence for both
+		// paths unless it opts in by setting wantsChatTeardown (BOS-886, the
+		// other half of narrowing TestTmuxReaper_KeepsAccountedForPanes).
+		if !fx.wantsChatTeardown && len(fx.killedChats) != 0 {
+			t.Fatalf("idle chat teardown ran for %v; this test did not opt into a chat teardown", fx.killedChats)
 		}
 	})
 
@@ -201,6 +287,29 @@ func (fx *reaperFixture) addChat(agentSessionID string, recordedPane *string) {
 		ID: "chat-" + agentSessionID, SessionID: reaperSessionID,
 		AgentSessionID: agentSessionID, TmuxSessionName: recordedPane,
 	})
+}
+
+// addResumableChat registers reaperIdleChatID as a chat that could still be
+// woken with its history intact: it carries a provider session id, D5's first
+// requirement for ever reaping a chat's pane.
+func (fx *reaperFixture) addResumableChat(recordedPane *string) {
+	fx.chats.all = append(fx.chats.all, &models.AgentChat{
+		ID: "chat-" + reaperIdleChatID, SessionID: reaperSessionID,
+		AgentSessionID:    reaperIdleChatID,
+		TmuxSessionName:   recordedPane,
+		ProviderSessionID: ptr("provider-" + reaperIdleChatID),
+	})
+}
+
+// markIdle gives the tracker the two signals the idle predicate reads: a
+// reported IDLE status and a RAW output clock that last moved idleFor ago.
+//
+// ReceivedAt is stamped with the real wall clock by Update, not the fixture's,
+// because Tracker.Get's staleness gate is real-time. That is why every idle
+// test seeds inline rather than pre-seeding and then advancing fx.now: the
+// fixture clock may jump hours, but the entry must stay fresh.
+func (fx *reaperFixture) markIdle(idleFor time.Duration) {
+	fx.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_IDLE, fx.now.Add(-idleFor))
 }
 
 func ptr(s string) *string { return &s }
@@ -313,11 +422,22 @@ func TestTmuxReaper_Whitelist(t *testing.T) {
 // whitelist is a test-side accessor for the assembled accounted-for set.
 func (fx *reaperFixture) whitelist() map[string]struct{} {
 	fx.t.Helper()
-	wl, err := fx.reaper.accountedFor(context.Background())
+	wl, _, err := fx.reaper.accountedFor(context.Background())
 	if err != nil {
 		fx.t.Fatalf("accountedFor: %v", err)
 	}
 	return wl
+}
+
+// owners is a test-side accessor for the identification map assembled beside
+// the whitelist (BOS-886 D1).
+func (fx *reaperFixture) owners() map[string]*chatOwner {
+	fx.t.Helper()
+	_, owners, err := fx.reaper.accountedFor(context.Background())
+	if err != nil {
+		fx.t.Fatalf("accountedFor: %v", err)
+	}
+	return owners
 }
 
 // --- classifier -------------------------------------------------------------
@@ -355,6 +475,13 @@ func TestTmuxReaper_ReapsConfirmedOrphan(t *testing.T) {
 	}
 }
 
+// TestTmuxReaper_KeepsAccountedForPanes is BOS-846's regression fence for the
+// identification rule, NARROWED by BOS-886 rather than deleted. Its claim used
+// to be "accounted for ⇒ always kept"; it is now "accounted for ⇒ kept unless
+// idle-eligible", and the final subtest is what stops the other three from
+// re-reading as the old unconditional claim. The fixture arms the idle path, so
+// those three hold because their panes fail an idle gate, not because the gate
+// is absent: they have no tracker entry at all, which means unknown, not idle.
 func TestTmuxReaper_KeepsAccountedForPanes(t *testing.T) {
 	t.Run("whitelisted by the recorded leg", func(t *testing.T) {
 		fx := armedFixture(t, false)
@@ -390,6 +517,29 @@ func TestTmuxReaper_KeepsAccountedForPanes(t *testing.T) {
 		fx.sweep()
 		if len(fx.killed) != 0 {
 			t.Fatalf("killed %v, want nothing: the pane is inside its grace window", fx.killed)
+		}
+	})
+
+	// The narrowing itself: being accounted for is no longer sufficient.
+	t.Run("but not one that is idle past the window", func(t *testing.T) {
+		fx := armedFixture(t, false)
+		fx.wantsChatTeardown = true
+		fx.addResumableChat(ptr(reaperIdleChatPane))
+		fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+		fx.markIdle(reaperTestIdleThreshold + time.Hour)
+
+		fx.sweep()
+		fx.now = fx.now.Add(2 * reaperTestGrace)
+		if n := fx.sweep(); n != 1 {
+			t.Fatalf("reaped %d, want 1: the pane is accounted for but idle past the window", n)
+		}
+		if len(fx.killedChats) != 1 {
+			t.Fatalf("killedChats = %v, want one idle teardown", fx.killedChats)
+		}
+		// The orphan kill seam must NOT have been used: an idle reap goes
+		// through the chat teardown so the pane pointer is cleared with it.
+		if len(fx.killed) != 0 {
+			t.Fatalf("orphan kill seam ran for %v; an idle reap must use the chat teardown", fx.killed)
 		}
 	})
 }
@@ -504,13 +654,13 @@ func TestTmuxReaper_GraceBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := armedFixture(t, false)
 			fx.addLivePane(pane, tc.paneAge, ptr(reaperDaemonID))
-			fx.reaper.strikes[pane] = fx.now.Add(-tc.strikeAge)
+			fx.reaper.strikes[strikeKey{name: pane, reason: reasonUnaccountedForTwice}] = fx.now.Add(-tc.strikeAge)
 
 			live := tmux.LiveSession{Name: pane, Created: fx.now.Add(-tc.paneAge)}
-			bucket, reason := fx.reaper.classify(
-				context.Background(), live, fx.whitelist(), fx.now, grace)
-			if bucket != tc.wantBucket || reason != tc.wantReason {
-				t.Fatalf("classify = (%q, %q), want (%q, %q)", bucket, reason, tc.wantBucket, tc.wantReason)
+			dec := fx.reaper.classify(
+				context.Background(), live, fx.whitelist(), fx.owners(), fx.now, grace)
+			if dec.bucket != tc.wantBucket || dec.reason != tc.wantReason {
+				t.Fatalf("classify = (%q, %q), want (%q, %q)", dec.bucket, dec.reason, tc.wantBucket, tc.wantReason)
 			}
 		})
 	}
@@ -558,7 +708,7 @@ func TestTmuxReaper_FailsClosed(t *testing.T) {
 			// A pane that would otherwise be reaped outright, so a partial
 			// sweep would be visible as a kill.
 			fx.addLivePane("boss-aaaaaaaa-22222222", time.Hour, ptr(reaperDaemonID))
-			fx.reaper.strikes["boss-aaaaaaaa-22222222"] = fx.now.Add(-time.Hour)
+			fx.reaper.strikes[strikeKey{name: "boss-aaaaaaaa-22222222", reason: reasonUnaccountedForTwice}] = fx.now.Add(-time.Hour)
 			tc.arm(fx)
 
 			n, err := fx.reaper.SweepOnce(context.Background())
@@ -707,8 +857,13 @@ func TestTmuxReaper_KillSeamIsStubbedInTests(t *testing.T) {
 
 // --- lifecycle --------------------------------------------------------------
 
+// TestTmuxReaper_DisabledNeverSweeps turns BOTH knobs off: since BOS-886 the
+// loop starts if either path is armed, so leaving the idle knob on here would
+// prove nothing about the orphan knob.
 func TestTmuxReaper_DisabledNeverSweeps(t *testing.T) {
-	fx := newReaperFixture(t, reaperConfig(false, true, false, time.Minute))
+	fx := newReaperFixtureWithIdle(t,
+		reaperConfig(false, true, false, time.Minute),
+		reaperIdleConfig(false, false))
 	fx.addLivePane("boss-aaaaaaaa-deadbeef", time.Hour, ptr(reaperDaemonID))
 
 	fx.reaper.Run(context.Background())

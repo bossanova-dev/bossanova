@@ -24,6 +24,8 @@ An Attach owns its PTY: tearing one down must close the PTY _before_ the stream'
 
 Delivery is not queued, at either end. Terminal input sent while an Attach is not connected is discarded rather than held, and input for an attach id the daemon no longer knows is dropped too — so the browser can never assume a send landed. Terminal size is the deliberate exception, and the repair lives in the browser rather than in the connection: a new Attach starts at a default size, and the browser resends the latest size it remembers once the Attach is up. A one-shot action carrying text the user authored has no such repair, so it cannot be dispatched optimistically — it must be refused, visibly, while the Attach is not deliverable.
 
+Attaching to a chat whose stored pane pointer has been cleared is a revival, not an error: a cleared pointer means the chat was torn down, not that it is dead, so the attach wakes the chat and the wake re-persists the pointer. Both the TUI and web terminal take that path, so "attach to a torn-down chat" means the same thing on either surface. A wake may succeed while still losing the prior conversation — a fresh-fallback resume — and that degradation is told to the user in the terminal's own output stream, since an empty pane with no explanation is indistinguishable from a bug.
+
 ## Repo automation flags
 
 Per-repo booleans on the `Repo` model that gate what the daemon does
@@ -115,6 +117,45 @@ only repeat what is on screen while pushing the informative half of the line rig
 is absent or missing any of its parts is rendered as nothing at all rather than as an empty row:
 callers skip the line entirely, so the layout does not shift and no unselectable row is left for a
 cursor to strand on.
+
+## Chat panes and reaping
+
+### Chat pane
+
+The terminal pane that hosts one chat's interactive coding-agent process, on the machine running the
+daemon. A chat has at most one pane, and the pane is the only place the agent's live output exists —
+it is a runtime resource, not a record, so losing it loses nothing durable.
+
+### Pane pointer
+
+The chat's stored reference to its pane. Set means "this chat has a pane"; cleared means "this chat
+was deliberately torn down". The pointer is the project's only durable signal of intent about a
+pane's absence, which is why it is load-bearing well outside the code that writes it: a cleared
+pointer marks a chat as parked and attaching to it revives the chat, whereas a chat that still
+points at a pane which is no longer alive is read as the agent having exited, and finalizes its
+session. Those two readings are opposite, so any operation that both destroys a pane and clears its
+pointer must be ordered so that its reachable partial-failure state is the harmless one.
+
+### Reaping
+
+The daemon's periodic sweep that kills panes it judges no longer worth keeping. It acts on two
+independent reasons and never confuses them: an **orphan reap** kills a pane that no live row claims
+at all, and an **idle reap** kills the pane of a chat that is genuinely still in use but has been
+reported idle, with no visible output, for longer than a configured window.
+
+The two reasons differ in reversibility, and everything else follows from that. An orphan reap
+destroys the only trace of whatever was running, so it is opt-in and conservative. An idle reap is
+recoverable — the chat row survives, the chat stays listed, and attaching wakes it — so it ships on
+by default. Both require a candidate to be seen eligible on more than one consecutive sweep before
+acting, and each reason carries its own confirmation marker so a sighting for one reason can never
+confirm the other.
+
+Because reaping is the daemon's only destructive sweep, its rule on evidence is inverted from the
+rest of the system: it must **under**-reap when unsure. A pane whose identity is ambiguous keeps, a
+chat with no current telemetry keeps (absence of evidence is unknown, never idle), and a chat that
+could not be resumed with its history intact keeps regardless of age — reaping that one would
+destroy context rather than reclaim memory. The idle clock is in-memory, so a daemon restart resets
+it; on a host restarted more often than the window, idle reaping simply never fires.
 
 ## Scheduled sessions (cron)
 
@@ -381,6 +422,34 @@ Drift is reported as a warning at skill preflight rather than enforced as a gate
 that a stale helper degrades rather than fails — which holds only for helpers that do not hard-reject
 what they do not recognise.
 
+## Local attach paste path
+
+### Paste claim
+
+The decision, made as a bracketed paste arrives at a local terminal attach, whether boss consumes
+the pasted body and substitutes something of its own or re-emits it to the agent verbatim. A paste
+is claimed or passed through; there is no partial handling, and an unclaimed body must reach the
+agent byte-for-byte with its original framing intact.
+
+Claiming is installed only where boss is positioned to act on the content, so an attach with nothing
+to do never inspects a paste at all. "Not claimed" is therefore the answer to two different
+questions — the content was not claimable, or no claimer was ever installed — and separating them is
+the first diagnostic step for any paste that reaches the agent unchanged.
+
+### Status-line overlay
+
+A transient one-row message painted onto the last row of the outer terminal while a full-screen
+agent owns the screen: the cursor is saved, the row erased and written, and the cursor restored. It
+is a flash rather than a widget — the agent redraws over it on its next frame — and it is the only
+feedback channel available once the terminal has been handed to the agent.
+
+An overlay must fit one row measured in display cells, because a write that reaches the right edge
+of the last row wraps, scrolls the agent's whole frame up a line, and leaves the cursor restore
+addressing different content — a notice that moves the pane it exists to explain. Where an overlay
+mixes fixed guidance with a variable fragment, the fragment is the half that gives way: the fragment
+is bounded in every unit that any cap on the render path measures, so no blunt truncation can reach
+the guidance.
+
 ## Review and verification
 
 ### Vacuous gate
@@ -393,8 +462,10 @@ that risk into a false assurance every consumer spends.
 A gate can become vacuous at any of three layers, and each has been observed independently: its
 parser, when it splits on a delimiter the operand may legally contain; its classifier, when the
 written form of a marker is not the form the test recognises, so the item silently leaves the
-contract with no detector anywhere; and its own regression test, when that test normalises the very
-bytes it exists to pin. The failure is silent by construction, because a gate's job is to be quiet
+contract with no detector anywhere; and its own regression test, when that test borrows the
+definition it was supposed to check independently — normalising the very bytes it exists to pin, or
+measuring a bound in the same unit the guarded code counts in, so it can only ever confirm that the
+code agrees with itself. The failure is silent by construction, because a gate's job is to be quiet
 when nothing is wrong.
 
 ### Falsification

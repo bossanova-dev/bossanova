@@ -320,7 +320,12 @@ func newHarness(t *testing.T, opts Options) *Harness {
 
 	// Start server on a temp Unix socket.
 	// Use /tmp directly — t.TempDir() paths can exceed the 104-char Unix socket limit on macOS.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("bossd-t%d.sock", socketCounter.Add(1)))
+	// The PID is part of the name because socketCounter is per-PROCESS: bazel
+	// shards a test binary across several processes, so the counter restarts at
+	// 1 in each one and two concurrent shards would otherwise bind the very same
+	// path — the second bind replaces the first, and the first shard's live
+	// client fails mid-test with "write ... broken pipe".
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("bossd-t%d-%d.sock", os.Getpid(), socketCounter.Add(1)))
 	_ = os.Remove(socketPath) // remove stale socket from previous run
 
 	ln, err := net.Listen("unix", socketPath)

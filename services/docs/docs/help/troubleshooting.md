@@ -624,6 +624,103 @@ still shows a few seconds of spam between pressing Enter and boss appearing.
 remote round trip: run them from a shell that's already connected, or run the
 `printf` locally.
 
+### Add-account prompt ignores everything you type
+
+Running boss over SSH, the **Add an account** flow can reach
+`Label for this account:` — cursor visible, `[enter] submit · [esc] cancel` on
+the action bar — and then ignore every keystroke. Nothing appears as you type
+and the form can't be submitted, even though the sign-in already succeeded and
+the screen above says the token was created.
+
+The cause is the agent CLI that boss just ran. It shares your terminal, and it
+reads from it directly — even though boss deliberately hands it an empty input.
+While the sign-in runs there are briefly **two programs reading your keyboard**:
+the CLI and boss itself. They compete for each keystroke, which is why pasting
+the sign-in code often takes several attempts, and why the prompt afterwards can
+stop responding.
+
+Boss now hands the terminal to the sign-in CLI for the duration and takes it back
+cleanly when the CLI exits, so only one program is ever reading your keyboard.
+While the CLI has it, the action bar reads **`claude has the terminal`** and
+`esc` goes to the CLI rather than to boss — use `ctrl+c` to interrupt it.
+
+If you hit a prompt that still ignores input:
+
+1. Press `esc` to leave the flow. Boss re-asserts terminal state as it redraws,
+   which clears most cases on its own.
+2. If the terminal is still misbehaving, run the escape hatch on the machine
+   whose terminal is stuck:
+
+<CommandTabs
+cli="boss fix-terminal"
+/>
+
+Over SSH, run it from the stuck session so it reaches the right terminal:
+
+```bash
+ssh <host> boss fix-terminal
+```
+
+That clears stranded **input-reporting** modes — focus reporting, bracketed
+paste, `modifyOtherKeys` and the Kitty keyboard protocol.
+
+**Your sign-in token is not silently lost.** If the flow fails at or after the
+label step, boss now tells you that a token was already created, shows it in
+masked `sk-ant-…` form so you can identify it, and points you at
+[the Anthropic console](https://console.anthropic.com/settings/keys) to revoke
+the orphaned one before registering a replacement. If you still hold a valid
+token, answer **No** at the walkthrough prompt to paste it instead of minting a
+new one.
+
+### Pasted screenshot arrives as a literal `/tmp/...png` path
+
+Pasting a screenshot into an attached chat inserts text into the composer instead
+of attaching the image:
+
+```text
+/tmp/cmux-drop-383cd973-4bab-42c5-a2f5-20497d580fa2.png
+```
+
+The agent then reports it cannot open that file.
+
+Your terminal never pastes an image. It writes the screenshot to a temporary file
+on **the machine you are sitting at** and pastes that file's path as text. Boss
+can rewrite that path only when it is running on the same machine as the file.
+
+- If you SSH to a box and run `boss` there, the TUI is on the **remote** machine
+  and the screenshot is on your laptop. There is no reverse channel back to your
+  local filesystem, so boss passes the path through untouched — which is what you
+  are seeing.
+- If you attach with `boss --host <destination>` from your own machine, the TUI is
+  local, boss copies the file to the agent's machine and inserts the remote path.
+
+So the fix is to attach from your own machine instead of from inside an SSH
+session:
+
+```bash
+boss --host <destination>
+```
+
+Boss flashes `[boss] no such image on this machine: …` on the bottom row when it
+sees this, and records it in `boss.log` — the flash is transient because the agent
+redraws over it, so check the log if you missed it:
+
+```bash
+grep 'image path not claimed' "${XDG_STATE_HOME:-$HOME/.local/state}/bossanova/logs/boss.log"
+```
+
+The same message appears if you paste a path that simply does not exist on this
+machine, which is the other thing it can mean. Full detail, including what
+`--host` cleans up afterwards, is in
+[Remote Daemons](../guides/remote-daemons.md).
+
+If you need to stay inside the SSH session, copy the file across yourself and
+paste the **remote** path:
+
+```bash
+scp ~/Desktop/shot.png <destination>:/tmp/
+```
+
 ## Reporting bugs
 
 Press `ctrl+g` from anywhere in the TUI to open the bug report form. `ctrl+b`

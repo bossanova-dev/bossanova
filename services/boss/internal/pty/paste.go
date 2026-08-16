@@ -2,6 +2,8 @@ package pty
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -108,9 +110,25 @@ func newPasteScanner(claim func(body []byte) bool) *pasteScanner {
 
 // feed returns the bytes that must be forwarded to the agent for this chunk.
 func (s *pasteScanner) feed(data []byte) []byte {
-	// No interceptor, no machinery. This is what makes "local (non --host)
-	// mode is byte-for-byte unchanged" true by construction rather than by
+	// No interceptor, no machinery: with a nil claim nothing below runs, no
+	// state is kept, and this function is the identity. That is the strongest
+	// form of "unchanged" available — it holds by construction rather than by
 	// every branch below happening to agree.
+	//
+	// It is no longer what a non---host attach gets, though. Since BOS-849
+	// such an attach installs a NON-CLAIMING observation hook (see
+	// SetImagePasteNotice), so it arrives here with a real claim closure and
+	// runs the machinery below. The bytes are still conserved exactly, because
+	// that closure always returns false and scanPaste re-emits introducer,
+	// body and terminator verbatim for every declined body — but the guarantee
+	// on that path is a property of the closure, not the absence of code, and
+	// it is pinned by test rather than by construction. A nil claim now means
+	// neither an uploader nor the notice was installed.
+	//
+	// The cost that moves with it is one `out` slice per stdin read below,
+	// where a local attach previously allocated none. At human typing rates
+	// that is noise against the read syscall it follows; it is called out so
+	// the next reader profiling this path does not have to re-derive it.
 	if s.claim == nil {
 		return data
 	}
@@ -286,12 +304,85 @@ func partialSuffixLen(buf, pat []byte) int {
 	return 0
 }
 
+// pasteRejectReason names WHY a pasted body was not claimed as an image.
+//
+// The reason exists because "not claimed" is the answer to two very different
+// questions. "This was prose" is the overwhelmingly common case and is
+// uninteresting. "This was an absolute image path that does not resolve on this
+// machine" is the plain-ssh symptom BOS-849 was filed for: the file is on the
+// user's laptop and boss is on the far side of the login, so the agent receives
+// a path it cannot open and nothing anywhere says why. Naming the reason is what
+// lets the observation hook in paste_upload.go tell those two apart without a
+// second walk of the gates and — crucially — without a second os.Stat.
+//
+// The values are stable strings rather than an int enum because their only
+// consumer is a log field; a reader tailing boss.log should see the reason, not
+// an ordinal they have to map back to source.
+type pasteRejectReason string
+
+const (
+	// pasteRejectNone is the zero value, reported when the body WAS claimable.
+	pasteRejectNone pasteRejectReason = ""
+	// pasteRejectNotAPath covers everything that is not a single absolute
+	// decodable path: prose, multiple tokens, an embedded newline, a quoting
+	// form we deliberately do not guess at, a relative path.
+	pasteRejectNotAPath pasteRejectReason = "not-a-path"
+	// pasteRejectNotImage is an absolute path whose extension is not one we
+	// treat as an image.
+	pasteRejectNotImage pasteRejectReason = "not-an-image-extension"
+	// pasteRejectMissing is the interesting one: an absolute image path that
+	// does NOT EXIST here — os.Stat returned fs.ErrNotExist. Under a plain-ssh
+	// login that is the laptop's file seen from the remote box.
+	pasteRejectMissing pasteRejectReason = "no-such-file-on-this-machine"
+	// pasteRejectUnreadable is any OTHER os.Stat failure on an absolute image
+	// path: EACCES on a parent directory, ENOTDIR, a symlink loop, a stale NFS
+	// handle. It is kept apart from pasteRejectMissing because the file may be
+	// sitting right there and merely unreadable, and "no such image on this
+	// machine · use boss --host" would then be both a false diagnosis and
+	// useless advice. Logged, never shown.
+	pasteRejectUnreadable pasteRejectReason = "unreadable-on-this-machine"
+	// pasteRejectNotRegular is an absolute image path that resolves to a
+	// directory, device, or socket.
+	pasteRejectNotRegular pasteRejectReason = "not-a-regular-file"
+	// pasteRejectTooLarge is a real local image above maxPasteImageBytes.
+	pasteRejectTooLarge pasteRejectReason = "over-the-size-cap"
+)
+
 // imagePastePath returns the local filesystem path a pasted body names, and
 // whether the body is a paste boss should intercept.
 //
+// It is a thin wrapper over classifyImagePaste, which carries the same five
+// gates plus the reason each one rejects for. This signature is the one the
+// claim path wants — the reason is noise to a caller that only decides
+// claim-or-passthrough — and keeping it means every existing caller and its
+// table-driven tests are untouched by the classifier's arrival.
+//
+// The "" on the false path is deliberate and is NOT the same as
+// classifyImagePaste's: that function hands a decoded path back even when it
+// rejected the body, so the observation hook can name the file. A caller that
+// only knows about claim-or-passthrough must never see a path it did not claim.
+func imagePastePath(body []byte) (string, bool) {
+	path, _, ok := classifyImagePaste(body)
+	if !ok {
+		return "", false
+	}
+	return path, true
+}
+
+// classifyImagePaste walks the five gates in order and reports the local
+// filesystem path a pasted body names, why it was rejected, and whether it is a
+// paste boss should intercept.
+//
 // Every branch defaults to "not intercepted": anything unrecognised, ambiguous,
-// or unverifiable returns ("", false) and therefore passes through to the agent
-// as the plain text the user pasted.
+// or unverifiable returns ok=false and therefore passes through to the agent as
+// the plain text the user pasted.
+//
+// The returned path is meaningful on exactly three outcomes: a claimable paste
+// (ok=true), and the two post-stat rejections pasteRejectMissing and
+// pasteRejectUnreadable, where the decoded absolute path is handed back DESPITE
+// ok=false so a caller can name the file in a message or a log record. Every
+// other rejection returns "" — the body was never resolved to a path worth
+// naming.
 //
 // The os.Stat below runs SYNCHRONOUSLY on the stdin read-loop goroutine, and
 // that is a considered trade rather than an oversight. The decision it makes is
@@ -305,37 +396,55 @@ func partialSuffixLen(buf, pat []byte) int {
 // goroutine and a deadline inside the most safety-critical predicate here. Do
 // not "fix" this by claiming first and statting later — that trades a rare stall
 // for a routine swallowed paste.
-func imagePastePath(body []byte) (string, bool) {
+//
+// That trade also fixes the shape of this function: there is exactly ONE stat
+// per classified body, and the reason is derived from that single call's result.
+// A caller that wants both the claim decision and the reason must take them from
+// one classifyImagePaste call rather than asking twice — two calls would be two
+// syscalls on the keystroke path for one paste.
+func classifyImagePaste(body []byte) (string, pasteRejectReason, bool) {
 	// Leading/trailing whitespace is what a drag adds around the path; a
 	// newline or carriage return anywhere inside means this is prose or a
 	// multi-line paste, not a dropped file.
 	text := strings.Trim(string(body), asciiWhitespace)
 	if text == "" || strings.ContainsAny(text, "\n\r") {
-		return "", false
+		return "", pasteRejectNotAPath, false
 	}
 
 	path, ok := decodePastedPath(text)
 	if !ok {
-		return "", false
+		return "", pasteRejectNotAPath, false
 	}
 	path, ok = absolutePastedPath(path)
 	if !ok {
-		return "", false
+		return "", pasteRejectNotAPath, false
 	}
 	if !imagePasteExtensions[strings.ToLower(filepath.Ext(path))] {
-		return "", false
+		return "", pasteRejectNotImage, false
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", false
+		// The one rejection that carries its path onward. Everything above
+		// this line failed to establish that the user even named a file; from
+		// here down they demonstrably did, and the only question left is which
+		// machine it is on.
+		//
+		// Only a genuine "does not exist" answers that question. Any other
+		// stat failure means the path may well name a file on THIS machine
+		// that we simply could not look at, so it is reported under its own
+		// reason and the caller keeps it off the screen.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return path, pasteRejectUnreadable, false
+		}
+		return path, pasteRejectMissing, false
 	}
 	if !info.Mode().IsRegular() {
-		return "", false
+		return "", pasteRejectNotRegular, false
 	}
 	if info.Size() > maxPasteImageBytes {
-		return "", false
+		return "", pasteRejectTooLarge, false
 	}
-	return path, true
+	return path, pasteRejectNone, true
 }
 
 const asciiWhitespace = " \t\n\r\v\f"

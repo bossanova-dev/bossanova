@@ -36,6 +36,7 @@ const (
 	reasonFirstStrike         = "firstStrike"
 	reasonAwaitingConfirm     = "awaitingConfirmation"
 	reasonUnaccountedForTwice = "unaccountedForTwice"
+	reasonOrphanReapDisabled  = "orphanReapDisabled"
 )
 
 // bossNamePattern is the strict form every name minted by tmux.SessionName and
@@ -90,6 +91,12 @@ type TmuxReaper struct {
 
 	cfg config.TmuxReaperConfig
 
+	// idle carries the second, independently-knobbed reaping path (BOS-886).
+	// It is a separate struct rather than more fields on cfg because its
+	// defaults are deliberately the inverse of the orphan path's: an idle reap
+	// keeps the chat row and is therefore recoverable, so it ships on.
+	idle IdleReapDeps
+
 	// daemonID is this bossd instance's identity, compared against the
 	// tmux.DaemonIDEnvKey stamp baked into every pane this daemon creates. An
 	// empty daemonID can never match a stamp, so a daemon that cannot identify
@@ -106,15 +113,59 @@ type TmuxReaper struct {
 	kill killSessionFunc
 
 	mu sync.Mutex
-	// strikes maps a tmux session name to the instant it was FIRST observed
-	// unaccounted-for. A candidate is only reaped once that observation is
-	// itself at least the grace window old (BOS-846 D5, following BOS-87), and
-	// any accounted-for observation clears the marker. Pruned every sweep for
-	// names no longer live — per the BOS-477 finding, a per-session map that is
-	// never pruned leaks for the daemon's lifetime.
-	strikes map[string]time.Time
+	// strikes maps a (session name, reason) pair to the instant that pane was
+	// FIRST observed eligible for THAT reason. A candidate is only reaped once
+	// the observation is itself at least the grace window old (BOS-846 D5,
+	// following BOS-87), and an observation that clears the reason clears the
+	// marker. Pruned every sweep for names no longer live — per the BOS-477
+	// finding, a per-session map that is never pruned leaks for the daemon's
+	// lifetime.
+	//
+	// The reason is part of the key (BOS-886 D7). Keying by name alone would
+	// let a pane's orphan sighting and its idle sighting confirm each other,
+	// and the orphan path clears its marker on precisely the branch every
+	// accounted-for pane takes — so an idle strike sharing that key could never
+	// accumulate at all.
+	strikes map[strikeKey]time.Time
 
 	done chan struct{} // closed when Run's goroutine exits
+}
+
+// strikeKey identifies one confirmation marker: which pane, and what it was
+// seen doing.
+type strikeKey struct {
+	name   string
+	reason string
+}
+
+// IdleReapDeps bundles everything the idle-reap path (BOS-886) needs. It is a
+// named struct rather than four more positional constructor arguments so the
+// wiring site has to say which is which — this path kills panes, and a silently
+// transposed argument is the kind of mistake that reaches every install.
+//
+// Every dependency fails closed when absent: no tracker means no evidence and
+// therefore no reap; no oracle means no provable transcript and therefore no
+// reap; no kill seam means candidates are logged and left alive.
+type IdleReapDeps struct {
+	Config      config.TmuxIdleReapConfig
+	Tracker     *Tracker
+	Transcripts TranscriptOracle
+	KillChat    killChatFunc
+}
+
+// sweepDecision is one pane's classification, carrying enough context for the
+// sweep to route the kill and for an operator to read the log line.
+type sweepDecision struct {
+	bucket string
+	reason string
+
+	// idle marks a decision produced by the idle gate rather than the orphan
+	// one. On a reap it selects the chat teardown seam (clear the pane pointer,
+	// then kill) over the raw orphan kill; on a keep it is what tells the log
+	// which path's dry-run flag and clock actually governed the outcome.
+	idle    bool
+	owner   *chatOwner
+	idleFor time.Duration
 }
 
 // NewTmuxReaper builds a reaper wired to the production kill seam. Callers that
@@ -127,6 +178,7 @@ func NewTmuxReaper(
 	tmuxClient *tmux.Client,
 	daemonID string,
 	cfg config.TmuxReaperConfig,
+	idle IdleReapDeps,
 	logger zerolog.Logger,
 ) *TmuxReaper {
 	r := &TmuxReaper{
@@ -136,9 +188,10 @@ func NewTmuxReaper(
 		tmux:     tmuxClient,
 		logger:   logger,
 		cfg:      cfg,
+		idle:     idle,
 		daemonID: daemonID,
 		now:      time.Now,
-		strikes:  make(map[string]time.Time),
+		strikes:  make(map[strikeKey]time.Time),
 		done:     make(chan struct{}),
 	}
 	r.kill = func(ctx context.Context, name string) error {
@@ -157,12 +210,25 @@ func (r *TmuxReaper) setClock(fn func() time.Time) { r.now = fn }
 
 // Run starts the sweep goroutine. It stops when ctx is cancelled.
 //
-// A disabled reaper closes done immediately and never sweeps: the feature is
-// off by default, and a disabled sweep that still listed sessions every five
-// minutes would be pure cost.
+// It sweeps when EITHER path is enabled. The two knobs are independent by
+// design (BOS-886 D6), and gating the goroutine on the orphan enable alone
+// would have made the on-by-default idle path silently inert on every install
+// that never opted into orphan reaping — which is all of them. With both off,
+// done closes immediately and nothing is listed: a disabled sweep that still
+// asked tmux for its sessions every five minutes would be pure cost.
+//
+// What D6's independence does NOT cover: the sweep CADENCE. One goroutine
+// serving both paths necessarily has one ticker, and it reads
+// settings.tmux_reaper.sweep_interval_seconds even on a host where orphan
+// reaping is off. That is the one timing an idle-only operator cannot set from
+// their own block, and it only ever shifts WHEN a reap is noticed, never
+// WHETHER a pane qualifies — every gate that decides that reads the idle block
+// or the pane's own clock. Splitting it would mean a second goroutine listing
+// the same tmux sessions twice, which is a worse trade than this note.
 func (r *TmuxReaper) Run(ctx context.Context) {
-	if !r.cfg.IsEnabled() {
-		r.logger.Info().Msg("tmux reaper: disabled (settings.tmux_reaper.enabled is not true)")
+	orphanOn, idleOn := r.cfg.IsEnabled(), r.idle.Config.IsEnabled()
+	if !orphanOn && !idleOn {
+		r.logger.Info().Msg("tmux reaper: disabled (neither settings.tmux_reaper.enabled nor settings.tmux_idle_reap.enabled is on)")
 		close(r.done)
 		return
 	}
@@ -170,8 +236,12 @@ func (r *TmuxReaper) Run(ctx context.Context) {
 	r.logger.Info().
 		Dur("sweepInterval", interval).
 		Dur("gracePeriod", r.cfg.GracePeriod()).
+		Bool("orphanReap", orphanOn).
 		Bool("dryRun", r.cfg.IsDryRun()).
 		Bool("reapUnstamped", r.cfg.ReapsUnstamped()).
+		Bool("idleReap", idleOn).
+		Bool("idleDryRun", r.idle.Config.IsDryRun()).
+		Dur("idleThreshold", r.idle.Config.IdleThreshold()).
 		Msg("tmux reaper: starting")
 	safego.Go(r.logger, func() {
 		defer close(r.done)
@@ -213,7 +283,7 @@ func (r *TmuxReaper) SweepOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	whitelist, err := r.accountedFor(ctx)
+	whitelist, owners, err := r.accountedFor(ctx)
 	if err != nil {
 		r.logger.Warn().Err(err).Msg("tmux reaper: store read failed; sweep aborted with zero kills")
 		return 0, err
@@ -222,8 +292,9 @@ func (r *TmuxReaper) SweepOnce(ctx context.Context) (int, error) {
 	now := r.now()
 	grace := r.cfg.GracePeriod()
 	dryRun := r.cfg.IsDryRun()
+	idleDryRun := r.idle.Config.IsDryRun()
 
-	var bossShaped, keep, unattributable, candidates, reaped int
+	var bossShaped, keep, unattributable, candidates, reaped, idleCandidates, idleReaped int
 	liveNames := make(map[string]struct{}, len(live))
 
 	for _, s := range live {
@@ -237,37 +308,35 @@ func (r *TmuxReaper) SweepOnce(ctx context.Context) (int, error) {
 				Str("bucket", bucketKeep).
 				Str("reason", reasonNotBossOwned).
 				Msg("tmux reaper: session is not boss-owned")
-			r.clearStrike(s.Name)
+			r.clearStrikes(s.Name)
 			continue
 		}
 		bossShaped++
 
-		bucket, reason := r.classify(ctx, s, whitelist, now, grace)
-		switch bucket {
+		dec := r.classify(ctx, s, whitelist, owners, now, grace)
+		switch dec.bucket {
 		case bucketKeep:
 			keep++
-			r.logger.Debug().
-				Str("tmuxSession", s.Name).
-				Str("bucket", bucket).
-				Str("reason", reason).
-				Time("sessionCreated", s.Created).
-				Bool("dryRun", dryRun).
+			r.decisionLog(r.logger.Debug(), s, dec, dryRun, idleDryRun).
 				Msg("tmux reaper: keeping session")
 		case bucketUnattributable:
 			unattributable++
-			r.logger.Info().
-				Str("tmuxSession", s.Name).
-				Str("bucket", bucket).
-				Str("reason", reason).
-				Time("sessionCreated", s.Created).
-				Bool("dryRun", dryRun).
+			r.decisionLog(r.logger.Info(), s, dec, dryRun, idleDryRun).
 				Msg("tmux reaper: session is unattributable; leaving it alive")
 		case bucketReap:
+			if dec.idle {
+				idleCandidates++
+				if r.reapIdle(ctx, s, dec, idleDryRun) {
+					idleReaped++
+					reaped++
+				}
+				continue
+			}
 			candidates++
 			evt := r.logger.Info().
 				Str("tmuxSession", s.Name).
-				Str("bucket", bucket).
-				Str("reason", reason).
+				Str("bucket", dec.bucket).
+				Str("reason", dec.reason).
 				Time("sessionCreated", s.Created).
 				Bool("dryRun", dryRun)
 			if dryRun {
@@ -278,7 +347,7 @@ func (r *TmuxReaper) SweepOnce(ctx context.Context) (int, error) {
 				evt.Err(err).Msg("tmux reaper: failed to reap orphaned session")
 				continue
 			}
-			r.clearStrike(s.Name)
+			r.clearStrike(s.Name, reasonUnaccountedForTwice)
 			reaped++
 			evt.Msg("tmux reaper: reaped orphaned session")
 		}
@@ -296,10 +365,83 @@ func (r *TmuxReaper) SweepOnce(ctx context.Context) (int, error) {
 		Int("unattributable", unattributable).
 		Int("candidates", candidates).
 		Int("reaped", reaped).
+		Int("idleCandidates", idleCandidates).
+		Int("idleReaped", idleReaped).
 		Bool("dryRun", dryRun).
+		Bool("idleDryRun", idleDryRun).
 		Msg("tmux reaper: sweep complete")
 
 	return reaped, nil
+}
+
+// reapIdle performs the destructive half of an idle reap and reports whether
+// the pane is actually gone. Every non-kill exit returns false so the candidate
+// keeps its confirmation marker and is retried on the next sweep rather than
+// being counted as reaped (BOS-886 D8): the guard child reads a pointed chat
+// with a dead pane as "the agent exited" and finalizes the session, so a reap
+// that half-lands must not be recorded as a success.
+func (r *TmuxReaper) reapIdle(ctx context.Context, s tmux.LiveSession, dec sweepDecision, dryRun bool) bool {
+	evt := r.logger.Info().
+		Str("tmuxSession", s.Name).
+		Str("bucket", dec.bucket).
+		Str("reason", dec.reason).
+		Str("chatId", dec.owner.chat.ID).
+		Str("agentSessionId", dec.owner.chat.AgentSessionID).
+		Str("sessionId", dec.owner.session.ID).
+		Dur("idleFor", dec.idleFor).
+		Time("sessionCreated", s.Created).
+		Bool("dryRun", dryRun)
+	if dryRun {
+		evt.Msg("tmux reaper: would reap idle chat pane (dry run)")
+		return false
+	}
+	if r.idle.KillChat == nil {
+		evt.Msg("tmux reaper: idle chat pane left alive; no chat teardown seam is wired")
+		return false
+	}
+	// Clear-then-kill lives inside the seam's canonical routine (D9), which
+	// restores the pointer if the kill fails, so a failure here means the pane
+	// is still up AND still pointed at — the consistent state the next sweep
+	// can simply retry. s.Name is passed so the teardown kills the pane THIS
+	// sweep resolved rather than one it re-derives from the row.
+	if err := r.idle.KillChat(ctx, dec.owner.session.ID, dec.owner.chat.AgentSessionID, s.Name); err != nil {
+		evt.Err(err).Msg("tmux reaper: failed to reap idle chat pane; retrying on the next sweep")
+		return false
+	}
+	r.clearStrike(s.Name, reasonIdleTooLong)
+	evt.Msg("tmux reaper: reaped idle chat pane")
+	return true
+}
+
+// decisionLog stamps the fields common to every non-destructive sweep log line
+// onto ev.
+//
+// It exists so the two arms cannot disagree about which path's dry-run flag they
+// are reporting. Both buckets now carry decisions from EITHER gate, and a keep
+// reading `reason=idleFirstStrike dryRun=false` while
+// settings.tmux_idle_reap.dry_run is true states the opposite of the truth to
+// the one operator who went looking. The flag follows the gate that produced the
+// decision, and idleFor — the observed idle age D10 exists to surface — rides
+// along on the lines that have one, so an operator watching a pane age toward a
+// reap can see the clock instead of guessing at it.
+func (r *TmuxReaper) decisionLog(
+	ev *zerolog.Event,
+	s tmux.LiveSession,
+	dec sweepDecision,
+	dryRun, idleDryRun bool,
+) *zerolog.Event {
+	ev = ev.
+		Str("tmuxSession", s.Name).
+		Str("bucket", dec.bucket).
+		Str("reason", dec.reason).
+		Time("sessionCreated", s.Created).
+		Bool("idlePath", dec.idle)
+	if dec.idle {
+		ev = ev.Bool("dryRun", idleDryRun).Dur("idleFor", dec.idleFor)
+	} else {
+		ev = ev.Bool("dryRun", dryRun)
+	}
+	return ev
 }
 
 // classify places one boss-shaped live session into a bucket. The order of the
@@ -309,19 +451,47 @@ func (r *TmuxReaper) classify(
 	ctx context.Context,
 	s tmux.LiveSession,
 	whitelist map[string]struct{},
+	owners map[string]*chatOwner,
 	now time.Time,
 	grace time.Duration,
-) (bucket, reason string) {
+) sweepDecision {
 	if _, ok := whitelist[s.Name]; ok {
-		r.clearStrike(s.Name)
-		return bucketKeep, reasonAccountedFor
+		// A row accounts for this pane, so the ORPHAN question is settled and
+		// its orphan marker is dropped. Before BOS-886 that was the end of it —
+		// this branch returned keep unconditionally, and it short-circuited on
+		// exactly the set idle-reap targets. It now falls through to the idle
+		// gate, which is where the "kept" answer has to be re-earned.
+		//
+		// Note what this fall-through skips: the tmux.DaemonIDEnvKey stamp
+		// check below, which the orphan path calls non-negotiable. That is
+		// deliberate, and the asymmetry is in the evidence, not in the rigour.
+		// The orphan path kills panes NO row accounts for, a set that by
+		// construction contains every pane belonging to every OTHER bossd on
+		// the host, so it has nothing but the stamp to tell them apart. The
+		// idle path only ever kills a pane THIS daemon's own database
+		// positively claims — resolveChatOwners demands exactly one owning chat
+		// row — so the claim is the ownership proof, and it is a stronger one
+		// than the stamp: a pane that outlived the daemon that stamped it is
+		// still ours if our row still points at it, and requiring a stamp match
+		// would make idle reaping inert across a daemon restart while adding no
+		// protection the row claim does not already give.
+		r.clearStrike(s.Name, reasonUnaccountedForTwice)
+		return r.classifyIdle(ctx, s, owners, now)
+	}
+
+	// Nothing below this line may run with orphan reaping off: Run now also
+	// starts for the idle path alone, so an unaccounted-for pane on a host that
+	// never opted into orphan reaping must still be kept.
+	if !r.cfg.IsEnabled() {
+		r.clearStrike(s.Name, reasonUnaccountedForTwice)
+		return sweepDecision{bucket: bucketKeep, reason: reasonOrphanReapDisabled}
 	}
 
 	// Degenerate case, called out explicitly by D6: a whitelist that came back
 	// empty while boss-shaped panes are live is far more likely to be a broken
 	// read than a host on which every single pane is an orphan.
 	if len(whitelist) == 0 {
-		return bucketUnattributable, reasonEmptyWhitelist
+		return sweepDecision{bucket: bucketUnattributable, reason: reasonEmptyWhitelist}
 	}
 
 	// tmux's own session_created clock (D4). The two alternatives are refuted
@@ -329,7 +499,7 @@ func (r *TmuxReaper) classify(
 	// agent_chats.created_at is blinded by the create race this reaper exists
 	// to cover. A pane is reapable at exactly grace, not a tick later.
 	if now.Sub(s.Created) < grace {
-		return bucketKeep, reasonWithinGrace
+		return sweepDecision{bucket: bucketKeep, reason: reasonWithinGrace}
 	}
 
 	// Ownership must be proven, not assumed (D7). Two bossd instances on one
@@ -339,46 +509,121 @@ func (r *TmuxReaper) classify(
 	switch {
 	case !stamped:
 		if !r.cfg.ReapsUnstamped() {
-			return bucketUnattributable, reasonUnstamped
+			return sweepDecision{bucket: bucketUnattributable, reason: reasonUnstamped}
 		}
 	case stamp == "" || stamp != r.daemonID:
-		return bucketUnattributable, reasonForeignDaemon
+		return sweepDecision{bucket: bucketUnattributable, reason: reasonForeignDaemon}
 	}
 
 	// Confirmation strike (D5). Age answers "was the pane young?"; it does not
 	// answer "was the DB momentarily unable to account for it?" — the shape of
 	// BOS-426, where a periodic sweep finalized sessions still being created.
-	first, seen := r.recordStrike(s.Name, now)
+	first, seen := r.recordStrike(s.Name, reasonUnaccountedForTwice, now)
 	if !seen {
-		return bucketKeep, reasonFirstStrike
+		return sweepDecision{bucket: bucketKeep, reason: reasonFirstStrike}
 	}
 	if now.Sub(first) < grace {
-		return bucketKeep, reasonAwaitingConfirm
+		return sweepDecision{bucket: bucketKeep, reason: reasonAwaitingConfirm}
 	}
 
-	return bucketReap, reasonUnaccountedForTwice
+	return sweepDecision{bucket: bucketReap, reason: reasonUnaccountedForTwice}
 }
 
-// recordStrike returns the instant name was first observed unaccounted-for and
-// whether such an observation already existed. The first call for a name stores
-// now and reports seen=false.
-func (r *TmuxReaper) recordStrike(name string, now time.Time) (first time.Time, seen bool) {
+// classifyIdle decides what to do with a pane the database DOES account for
+// (BOS-886). Every gate can only spare it relative to the one before, and the
+// pane is kept outright unless the idle path is enabled, resolves the name to
+// exactly one chat, and finds positive tracker evidence that the chat has been
+// sitting idle for the whole window.
+func (r *TmuxReaper) classifyIdle(
+	ctx context.Context,
+	s tmux.LiveSession,
+	owners map[string]*chatOwner,
+	now time.Time,
+) sweepDecision {
+	if !r.idle.Config.IsEnabled() {
+		// Pre-BOS-886 behaviour, reason string included: accounted for, kept.
+		r.clearStrike(s.Name, reasonIdleTooLong)
+		return sweepDecision{bucket: bucketKeep, reason: reasonAccountedFor}
+	}
+
+	owner := owners[s.Name]
+	ev := idleReapEvidence{owner: owner}
+	if owner != nil && owner.chat != nil && r.idle.Tracker != nil {
+		ev.entry = r.idle.Tracker.Get(owner.chat.AgentSessionID)
+	}
+	if owner != nil && owner.chat != nil && owner.session != nil && r.idle.Transcripts != nil {
+		// Lazy: the predicate only calls this once every cheaper gate has
+		// passed, so an idle-reap sweep costs one plugin RPC per genuinely
+		// stale chat rather than one per live pane.
+		resumeID := owner.chat.AgentSessionID
+		if owner.chat.ProviderSessionID != nil && *owner.chat.ProviderSessionID != "" {
+			resumeID = *owner.chat.ProviderSessionID
+		}
+		ev.transcriptPresent = func() bool {
+			return r.idle.Transcripts.TranscriptExists(ctx, owner.chat.AgentName, owner.session.WorktreePath, resumeID)
+		}
+	}
+
+	eligible, reason, idleFor := evaluateIdleReap(ev, now, r.idle.Config.IdleThreshold())
+	if !eligible {
+		r.clearStrike(s.Name, reasonIdleTooLong)
+		return sweepDecision{bucket: bucketKeep, reason: reason, idle: true, idleFor: idleFor}
+	}
+
+	// Confirmation strike on the idle path's OWN key (D7). Against an 8-hour
+	// window the extra sweep costs nothing, and it is what protects a chat
+	// whose tracker entry was momentarily missing or misreported.
+	//
+	// ONE confirming sighting is the whole gate: a second independent sweep
+	// agreeing that the chat is idle is what the strike buys, and the reap
+	// lands on that sweep. Do not add an elapsed-time condition here. Aging the
+	// strike against the ORPHAN block's grace period — the obvious-looking way
+	// to write this — is wrong twice over: it pushes the reap to a third sweep,
+	// and it makes an idle-only host's reaping depend on a knob whose
+	// documented purpose is the orphan create-race window and whose feature may
+	// be switched off entirely (D6: the idle path is knobbed on its own).
+	if _, seen := r.recordStrike(s.Name, reasonIdleTooLong, now); !seen {
+		return sweepDecision{bucket: bucketKeep, reason: reasonIdleFirstStrike, idle: true, owner: owner, idleFor: idleFor}
+	}
+
+	return sweepDecision{bucket: bucketReap, reason: reason, idle: true, owner: owner, idleFor: idleFor}
+}
+
+// recordStrike returns the instant name was first observed eligible for reason
+// and whether such an observation already existed. The first call for a
+// (name, reason) pair stores now and reports seen=false.
+func (r *TmuxReaper) recordStrike(name, reason string, now time.Time) (first time.Time, seen bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if first, ok := r.strikes[name]; ok {
+	key := strikeKey{name: name, reason: reason}
+	if first, ok := r.strikes[key]; ok {
 		return first, true
 	}
-	r.strikes[name] = now
+	r.strikes[key] = now
 	return now, false
 }
 
-// clearStrike drops any confirmation marker for name. Called whenever a session
-// is accounted for again, so a candidate that recovers a DB claim starts from
-// zero rather than inheriting a stale strike.
-func (r *TmuxReaper) clearStrike(name string) {
+// clearStrike drops the confirmation marker for one reason. Called whenever a
+// pane stops qualifying for that reason, so a candidate that recovers — a DB
+// claim reappears, or the chat produces output — starts from zero rather than
+// inheriting a stale strike. Clearing is per-reason so a pane that stops
+// looking orphaned keeps whatever idle history it has earned, and vice versa.
+func (r *TmuxReaper) clearStrike(name, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.strikes, name)
+	delete(r.strikes, strikeKey{name: name, reason: reason})
+}
+
+// clearStrikes drops every marker for name, whatever the reason. Used on the
+// not-boss-owned path, where the pane is out of scope for all of them.
+func (r *TmuxReaper) clearStrikes(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.strikes {
+		if key.name == name {
+			delete(r.strikes, key)
+		}
+	}
 }
 
 // pruneStrikes drops markers for names tmux no longer reports. Without this the
@@ -386,9 +631,9 @@ func (r *TmuxReaper) clearStrike(name string) {
 func (r *TmuxReaper) pruneStrikes(liveNames map[string]struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for name := range r.strikes {
-		if _, ok := liveNames[name]; !ok {
-			delete(r.strikes, name)
+	for key := range r.strikes {
+		if _, ok := liveNames[key.name]; !ok {
+			delete(r.strikes, key)
 		}
 	}
 }
@@ -424,6 +669,13 @@ func (r *TmuxReaper) repoPrefixes(ctx context.Context) (map[string]struct{}, err
 // where an 8-character truncation collision would mislead, whereas a collision
 // in a protective set can only spare an orphan, never kill a live pane.
 //
+// It returns the owner map alongside it (BOS-886), built from the SAME store
+// reads so the sweep pays for them once. That map is where the collision
+// licence above does not apply and is explicitly withdrawn — see
+// resolveChatOwners. Keeping the two side by side is deliberate: the whitelist
+// is a protective union, the owner map is an identification map, and every
+// future edit has to decide which of the two it is touching.
+//
 // The three legs are:
 //
 //   - recorded sessions.tmux_session_name (near-dead by design, kept so a legacy
@@ -435,12 +687,12 @@ func (r *TmuxReaper) repoPrefixes(ctx context.Context) (map[string]struct{}, err
 // pane ~70 lines and one agent launch before it persists the name, so a pane is
 // genuinely live with no DB claim for that whole window. Deleting it makes this
 // reaper kill panes out from under chats that are still being created.
-func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, error) {
+func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, map[string]*chatOwner, error) {
 	out := map[string]struct{}{}
 
 	recordedSessionNames, err := r.sessions.ListTmuxSessionNames(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, name := range recordedSessionNames {
 		if name != "" {
@@ -452,7 +704,7 @@ func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, err
 	// SessionStore list is repo-scoped.
 	sessions, err := r.sessions.List(ctx, "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// sessionRepo lets the chat leg recompute a name: a chat row carries its
 	// session id, not its repo id.
@@ -472,7 +724,7 @@ func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, err
 
 	chats, err := r.chats.ListRoutableChats(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, c := range chats {
 		if c == nil {
@@ -487,5 +739,5 @@ func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, err
 		}
 	}
 
-	return out, nil
+	return out, resolveChatOwners(sessions, chats), nil
 }

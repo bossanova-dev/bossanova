@@ -8,6 +8,7 @@ go_library(
         "account_health.go",
         "account_labels.go",
         "account_register.go",
+        "account_register_exec.go",
         "account_register_prompter.go",
         "accounts_list.go",
         "app.go",
@@ -133,6 +134,7 @@ go_test(
         "account_actions_test.go",
         "account_edit_test.go",
         "account_health_test.go",
+        "account_register_exec_test.go",
         "account_register_prompter_test.go",
         "account_register_test.go",
         "accounts_list_test.go",
@@ -214,6 +216,7 @@ go_test(
     ),  # keep: form_nav_hints_test parses the package's own sources for newBossForm calls
     embed = [":views"],
     deps = [
+        "//lib/bossalib/agentcred",
         "//lib/bossalib/buildinfo",
         "//lib/bossalib/config",
         "//lib/bossalib/displaystatus",

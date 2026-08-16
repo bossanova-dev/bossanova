@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -923,6 +924,119 @@ func TestAccountRegisterHostNoticeWrapsIntoTheFrame(t *testing.T) {
 	for _, line := range strings.Split(frame, "\n") {
 		if got := lipgloss.Width(line); got > width {
 			t.Fatalf("rendered line is %d columns wide, over the %d-column terminal: %q", got, width, line)
+		}
+	}
+}
+
+// --- BOS-848: operator-visible transitions ---------------------------------
+
+// TestAccountRegisterSubprocessPhaseTransitions pins what is actually on screen
+// around the subprocess phase. The acceptance criteria ask for these three
+// transitions to be specified and verified rather than left implicit, because
+// the whole defect is about a phase the operator cannot otherwise reason about:
+// entering it, returning from it, and cancelling inside it.
+//
+// It asserts on the rendered View, not on the state enum, so it fails if the
+// screen stops saying these things even when the state machine is unchanged.
+func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
+	renderOf := func(m AccountRegisterModel) string {
+		// A width is required or lipgloss leaves the action bar unconstrained.
+		upd, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+		return fmt.Sprint(upd.(AccountRegisterModel).View())
+	}
+
+	t.Run("entering_the_subprocess_phase", func(t *testing.T) {
+		client := &regAcctClient{}
+		// A proc that never finishes, so the model stays in the phase.
+		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in..."})}
+		m := newRegisterModel(t, client, ex)
+		m = selectProvider(t, m, "claude")
+
+		got := renderOf(m)
+		// The operator must know which flow is running...
+		if !strings.Contains(got, "Add claude account") {
+			t.Errorf("subprocess phase does not name the flow:\n%s", got)
+		}
+		// ...that it is working rather than hung...
+		if !strings.Contains(got, "working…") {
+			t.Errorf("subprocess phase does not show a working indicator:\n%s", got)
+		}
+		// ...and that there is a way out.
+		if !strings.Contains(got, "[esc] cancel") {
+			t.Errorf("subprocess phase offers no cancel affordance:\n%s", got)
+		}
+	})
+
+	t.Run("returning_from_the_subprocess_phase", func(t *testing.T) {
+		client := &regAcctClient{}
+		ex := &regExec{proc: newRegScriptedProc([]string{claudeFakeToken}, nil)}
+		m := newRegisterModel(t, client, ex)
+		m = selectProvider(t, m, "claude")
+
+		// Answer the walkthrough confirm, then stop at the label prompt so the
+		// screen we assert on is the one the operator lands on when the child
+		// has exited -- the exact screen that swallowed input over ssh.
+		m = pumpToTextPrompt(t, m)
+
+		got := renderOf(m)
+		if !strings.Contains(got, "Label for this account") {
+			t.Errorf("returning from the subprocess phase does not show the label prompt:\n%s", got)
+		}
+		// The action bar the bug report quoted verbatim.
+		if !strings.Contains(got, "[enter] submit") || !strings.Contains(got, "[esc] cancel") {
+			t.Errorf("label prompt is missing the submit/cancel action bar:\n%s", got)
+		}
+	})
+
+	t.Run("cancelling_mid_phase", func(t *testing.T) {
+		client := &regAcctClient{}
+		ex := &regExec{proc: newRegBlockingProc([]string{"Starting Claude sign-in..."})}
+		m := newRegisterModel(t, client, ex)
+		m = selectProvider(t, m, "claude")
+
+		upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		m = upd.(AccountRegisterModel)
+
+		if !m.Cancelled() {
+			t.Fatal("esc during the subprocess phase did not cancel the flow")
+		}
+		if m.Done() {
+			t.Fatal("a cancelled flow must not report Done")
+		}
+	})
+}
+
+// pumpToTextPrompt drives the model until it is waiting on a free-text prompt,
+// answering the walkthrough confirm on the way, then stops. Bounded so a
+// misbehaving flow fails the test instead of hanging it.
+func pumpToTextPrompt(t *testing.T, m AccountRegisterModel) AccountRegisterModel {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		if m.state == registerStateAwaitText {
+			return m
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("never reached a text prompt; state=%d err=%v", m.state, m.err)
+		default:
+		}
+
+		select {
+		case line := <-m.prompter.progress:
+			m.appendProgress(line)
+		case req := <-m.prompter.requests:
+			upd, _ := m.Update(promptRequestMsg{req: req})
+			m = upd.(AccountRegisterModel)
+			if m.state == registerStateAwaitConfirm {
+				upd, _ := m.Update(tea.KeyPressMsg{Code: 'y'})
+				m = upd.(AccountRegisterModel)
+			}
+		case err := <-m.donec:
+			upd, _ := m.Update(flowDoneMsg{err: err})
+			m = upd.(AccountRegisterModel)
+			t.Fatalf("flow finished before reaching a text prompt: %v", m.err)
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }

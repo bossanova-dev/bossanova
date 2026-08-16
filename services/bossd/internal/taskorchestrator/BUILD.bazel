@@ -30,6 +30,7 @@ go_test(
     name = "taskorchestrator_test",
     srcs = [
         "backoff_test.go",
+        "liveness_parked_test.go",
         "liveness_test.go",
         "orchestrator_test.go",
         "session_creator_test.go",
@@ -45,6 +46,7 @@ go_test(
         "//services/bossd/internal/git",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/session",
+        "//services/bossd/internal/tmux",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

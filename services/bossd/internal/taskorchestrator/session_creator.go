@@ -366,9 +366,17 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 	return &id
 }
 
+// isDuplicateSessionAlive backs the duplicate-PR/branch guard: true keeps the
+// guard held (the existing session still owns this PR/branch), false releases
+// it so a replacement session may be created.
+//
+// A PARKED session keeps the guard. Its pane was reaped on purpose but the boss
+// session and its chat rows are untouched, so it still owns the PR and branch —
+// releasing the guard would let a second session start work on the same branch
+// (BOS-884). Only a definitively dead session releases it.
 func (c *lifecycleSessionCreator) isDuplicateSessionAlive(ctx context.Context, sessionID string) bool {
 	if c.duplicateLiveness == nil {
 		return true
 	}
-	return c.duplicateLiveness.IsSessionAlive(ctx, sessionID)
+	return c.duplicateLiveness.SessionLiveness(ctx, sessionID) != session.LivenessDead
 }

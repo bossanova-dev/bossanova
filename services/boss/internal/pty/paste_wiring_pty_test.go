@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,9 +21,11 @@ import (
 // are real-OS-PTY + select(2) integration tests whose timing starves under the
 // race runner on loaded CI boxes. The interception logic, the injected byte
 // shapes, the hygiene helper, and the teardown cancel/drain are all covered
-// deterministically (and under -race) by paste_wiring_test.go; these two tests
+// deterministically (and under -race) by paste_wiring_test.go; the tests here
 // exist only to prove the Run() plumbing — that the scanner really sits in the
-// stdin path, in the right order.
+// stdin path, in the right order — once per paste wiring a command can carry:
+// none at all, the uploader (--host), and the image-paste notice (every other
+// attach, since BOS-849).
 
 // ptyPasteHarness drives PTYCommand.Run against a real PTY pair, with a child
 // that echoes its stdin back byte for byte so the test can assert exactly what
@@ -43,7 +46,13 @@ type ptyPasteHarness struct {
 // line discipline out of the picture (no canonical buffering, no ^[ echo
 // mangling), so `cat` reflects the exact bytes PTYCommand wrote to the PTY, and
 // READY marks the point after which that is true.
-func startPTYPaste(t *testing.T, id string, upload PasteUpload) *ptyPasteHarness {
+//
+// configure runs against the PTYCommand after the stdio wiring and BEFORE Run,
+// which is the only window in which paste wiring may be installed. It is
+// variadic so the uploader call sites read exactly as they did before the
+// image-paste notice existed; pass withPTYImagePasteNotice to get the wiring a
+// real non---host attach ships.
+func startPTYPaste(t *testing.T, id string, upload PasteUpload, configure ...func(*PTYCommand)) *ptyPasteHarness {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
@@ -90,6 +99,9 @@ func startPTYPaste(t *testing.T, id string, upload PasteUpload) *ptyPasteHarness
 	pcmd.SetStderr(slave)
 	if upload != nil {
 		pcmd.SetPasteUploader(upload)
+	}
+	for _, apply := range configure {
+		apply(pcmd)
 	}
 
 	runDone := make(chan struct{})
@@ -191,22 +203,37 @@ func (h *ptyPasteHarness) send(b []byte) {
 	}
 }
 
-// TestPTYCommandForwardsPasteUnchangedWithoutUploader is the load-bearing
-// local-mode test. With no uploader installed, a bracketed paste of a path that
-// WOULD match imagePastePath must reach the agent byte for byte, no status
-// overlay may appear, and no uploader may be installed at all.
+// withPTYImagePasteNotice installs the non-claiming observation hook, which is
+// what internal/views wires on every attach that is NOT --host. Use it for any
+// Run()-level test that means to exercise the local configuration users
+// actually get.
+func withPTYImagePasteNotice(c *PTYCommand) { c.SetImagePasteNotice() }
+
+// TestPTYCommandForwardsPasteUnchangedWithoutUploader pins the UNWIRED command:
+// neither an uploader nor the image-paste notice, so pasteClaim is a literal
+// nil, the scanner keeps no state and feed is the identity function.
+//
+// That is a real configuration to protect — it is what a PTYCommand does before
+// anything installs paste wiring — but since BOS-849 it is NOT the shape a
+// local attach ships: internal/views installs the notice on the else branch, so
+// the local wiring runs the scanner and may paint an overlay. The Run()-level
+// test for that shape is
+// TestPTYCommandForwardsPasteUnchangedWithTheImagePasteNotice below; the two are
+// only a complete picture together.
 func TestPTYCommandForwardsPasteUnchangedWithoutUploader(t *testing.T) {
 	img := writeTempImage(t, "shot.png", 32)
 
 	h := startPTYPaste(t, "test-paste-local", nil)
 
-	// The absence of an uploader is the whole local guarantee, so assert it
-	// against the running command rather than against a counter on a closure
-	// that was never installed — a counter nothing can increment reads like
-	// coverage while being unfalsifiable. This one goes red the moment a
-	// refactor installs an uploader unconditionally.
+	// Assert the absences against the running command rather than against a
+	// counter on a closure that was never installed — a counter nothing can
+	// increment reads like coverage while being unfalsifiable. These go red the
+	// moment a refactor installs either hook unconditionally.
 	if h.pcmd.HasPasteUploader() {
-		t.Fatal("a local attach installed a paste uploader; local mode must install none at all")
+		t.Fatal("an unwired command installed a paste uploader")
+	}
+	if h.pcmd.HasImagePasteNotice() {
+		t.Fatal("an unwired command installed the image-paste notice; this test pins the nil-claim path")
 	}
 
 	paste := BracketedPaste(img)
@@ -218,13 +245,65 @@ func TestPTYCommandForwardsPasteUnchangedWithoutUploader(t *testing.T) {
 	if got := h.childOutput(); !bytes.Equal(got, want) {
 		t.Fatalf("agent received %q, want byte-identical passthrough %q", got, want)
 	}
-	// No status overlay may appear on the outer terminal in local mode. Wait
+	// No status overlay may appear on the outer terminal with no paste wiring
+	// installed at all — deliberately NOT the same claim as "in local mode",
+	// which since BOS-849 installs the notice and may paint one. Wait
 	// until the echoed paste has actually reached the terminal capture first,
 	// so this negative is asserted against a capture that has caught up rather
 	// than one that is merely empty.
 	h.waitForTerminal(paste)
 	if got := h.terminalOutput(); bytes.Contains(got, []byte(ptyMoveLastRow)) {
-		t.Fatalf("terminal got a status overlay in local mode: %q", got)
+		t.Fatalf("terminal got a status overlay with no paste wiring at all: %q", got)
+	}
+}
+
+// TestPTYCommandForwardsPasteUnchangedWithTheImagePasteNotice is the Run()-level
+// test for the configuration a real non---host attach ships (BOS-849).
+//
+// The unit tests prove the pieces — imagePasteNoticeClaim always returns false,
+// the scanner conserves the stream at every split offset, internal/views
+// installs the notice and no uploader — but nothing above this line proved the
+// COMPOSITION: the claim closure firing from inside Run's stdin read loop, with
+// writeStatus painting the outer terminal while proc.Attach writes the agent's
+// own output to the same file. That is the arrangement users run, so it gets an
+// end-to-end assertion.
+//
+// Byte equality comes first and outranks the overlay: the notice may explain a
+// paste it cannot help with, and it may never alter one.
+func TestPTYCommandForwardsPasteUnchangedWithTheImagePasteNotice(t *testing.T) {
+	// Absolute, well-formed, image-extensioned, and guaranteed absent — the
+	// same shape as the reported /tmp/cmux-drop-<uuid>.png, which is exactly
+	// the body the hook reacts to.
+	missing := filepath.Join(t.TempDir(), "cmux-drop-383cd973.png")
+
+	h := startPTYPaste(t, "test-paste-notice", nil, withPTYImagePasteNotice)
+
+	if !h.pcmd.HasImagePasteNotice() {
+		t.Fatal("the harness did not install the image-paste notice")
+	}
+	// The notice must never bring an uploader with it: with none installed
+	// there is nothing a claimed paste could be handed to.
+	if h.pcmd.HasPasteUploader() {
+		t.Fatal("the notice branch installed a paste uploader")
+	}
+
+	paste := BracketedPaste(missing)
+	h.send(paste)
+
+	want := append([]byte("READY"), paste...)
+	h.waitForChild(want)
+
+	if got := h.childOutput(); !bytes.Equal(got, want) {
+		t.Fatalf("agent received %q, want byte-identical passthrough %q", got, want)
+	}
+
+	// And the explanation did reach the outer terminal. Asserted on the message
+	// text rather than only on ptyMoveLastRow so a stray overlay from some
+	// other source could not satisfy it.
+	h.waitForTerminal([]byte("boss --host"))
+	term := h.terminalOutput()
+	if !bytes.Contains(term, []byte("no such image on this machine")) {
+		t.Fatalf("terminal never explained the unreachable paste: %q", term)
 	}
 }
 
@@ -317,5 +396,29 @@ func TestPTYCommandDetachFiresFromInsideAnUnterminatedPaste(t *testing.T) {
 	}
 	if !h.pcmd.Detached {
 		t.Fatal("expected Detached=true after a Ctrl+X delivered inside a paste")
+	}
+}
+
+// TestPTYCommandAttachesASerializedTerminalWriter pins the Run() half of the
+// mutual-exclusion fix. TestTerminalWritesAreMutuallyExclusive proves the lock
+// works when both writers go through terminalWriter; nothing there proves Run
+// actually HANDS that writer to the Process. It did not, before BOS-849: Attach
+// received c.stdout itself, so the agent-output pump wrote around the lock and
+// every overlay could splice into a sequence it was emitting.
+//
+// Asserted on the writer the Process is holding rather than on rendered bytes,
+// because a splice is a scheduling accident: a test that watched the terminal
+// would pass on almost every run of the broken tree. Revert Attach to c.stdout
+// and this fails immediately and always.
+func TestPTYCommandAttachesASerializedTerminalWriter(t *testing.T) {
+	h := startPTYPaste(t, "test-serialized-terminal-writer", nil)
+
+	h.proc.mu.Lock()
+	w := h.proc.writer
+	h.proc.mu.Unlock()
+
+	if _, ok := w.(lockedWriter); !ok {
+		t.Fatalf("Process.Attach holds a %T, want lockedWriter: agent output must share the "+
+			"terminal lock with the overlay writes, or the two can splice mid-sequence", w)
 	}
 }

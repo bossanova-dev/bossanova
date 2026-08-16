@@ -80,10 +80,16 @@ func withFakeUploaderFactory(t *testing.T, calls *uploaderCalls) {
 // remote-only wiring, and it deliberately asserts absences rather than "nothing
 // crashed": an unconditionally-installed uploader crashes nothing at all on a
 // local attach — it just quietly puts an ssh copy in the path of every pasted
-// image on a machine the agent is already running on. The un-installed nil is
-// also what makes internal/pty's stdin path byte-identical in local mode (see
-// SetPasteUploader), so its absence IS the local guarantee, not an optimisation
-// of it.
+// image on a machine the agent is already running on.
+//
+// What the un-installed nil guarantees is the half only an uploader could
+// break: with no uploader there is nothing a claimed paste could be handed to,
+// so a local paste cannot be swallowed. It is NOT by itself what keeps the
+// local stdin path byte-identical any more — since BOS-849 that attach installs
+// the non-claiming notice and internal/pty does run its scanner, with
+// conservation resting on imagePasteNoticeClaim's constant false (see
+// SetPasteUploader and HasPasteUploader, both rewritten for this). Read this
+// test together with its sibling below, which asserts the notice's presence.
 func TestAttach_LocalAttachInstallsNoPasteUploader(t *testing.T) {
 	withHostDestination(t, "")
 	var calls uploaderCalls
@@ -102,7 +108,7 @@ func TestAttach_LocalAttachInstallsNoPasteUploader(t *testing.T) {
 		t.Fatal("pendingExec.ptycmd = nil, want the staged PTY command")
 	}
 	if got.pendingExec.ptycmd.HasPasteUploader() {
-		t.Fatal("a local attach installed a paste uploader; the un-installed nil is what keeps the local stdin path byte-identical")
+		t.Fatal("a local attach installed a paste uploader; with no uploader there is nothing a claimed paste could be handed to, so a local paste cannot be swallowed")
 	}
 	if got.pasteUploader != nil {
 		t.Fatal("model kept a paste uploader on a local attach")
@@ -118,6 +124,51 @@ func TestAttach_LocalAttachInstallsNoPasteUploader(t *testing.T) {
 	// would mean an ssh on every local detach.
 	if cmd := got.cleanupRemoteUploads(); cmd != nil {
 		t.Fatal("local attach produced a remote-cleanup command")
+	}
+}
+
+// TestAttach_LocalAttachInstallsTheImagePasteNotice is the twin of the test
+// above, and the two are only meaningful together.
+//
+// A local attach installs no uploader — that is what the sibling asserts, and it
+// is ALSO the no-claim property: swallowing a paste requires an uploader to hand
+// it to, and internal/pty's claim path returns false for every body without one
+// (TestImagePasteNoticeNeverClaimsAnything pins that constant directly, against
+// the closure). So the pair "notice installed, uploader absent" is exactly
+// "inspects pastes, cannot consume one".
+//
+// Asserting the notice's PRESENCE here is what stops the else branch from
+// silently becoming a no-op. Without it, deleting the branch would leave every
+// test in this file green while restoring the original bug: a boss on the far
+// side of a plain ssh login inspecting nothing and explaining nothing while a
+// pasted screenshot reaches the agent as a path on the wrong machine.
+func TestAttach_LocalAttachInstallsTheImagePasteNotice(t *testing.T) {
+	withHostDestination(t, "")
+	var calls uploaderCalls
+	withFakeUploaderFactory(t, &calls)
+
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	// Two-step launch, for the same reason the sibling documents: the wiring
+	// lives in the chatRecordedMsg handler, so driving only attachReadyMsg
+	// would make the assertion below vacuous.
+	got, _ := driveAttachReady(t, m, attachReadyMsg{
+		session: &pb.Session{Id: "session-1", WorktreePath: "/Users/dev/worktrees/feature"},
+	})
+
+	if got.pendingExec == nil || got.pendingExec.ptycmd == nil {
+		t.Fatal("pendingExec.ptycmd = nil, want the staged PTY command")
+	}
+	if !got.pendingExec.ptycmd.HasImagePasteNotice() {
+		t.Fatal("a local attach installed no image-paste notice: a screenshot pasted from another machine would reach the agent as an unopenable path with nothing to say so")
+	}
+	// The other half of "cannot claim". Duplicated from the sibling test on
+	// purpose: the no-claim property is the CONJUNCTION of these two, and a
+	// reader of this test should not have to take the second half on trust.
+	if got.pendingExec.ptycmd.HasPasteUploader() {
+		t.Fatal("the notice branch also installed an uploader; the notice must never be able to swallow a paste")
+	}
+	if calls.constructed != 0 {
+		t.Fatalf("uploader constructed %d times locally, want 0", calls.constructed)
 	}
 }
 
@@ -140,6 +191,13 @@ func TestAttach_RemoteAttachInstallsThePasteUploader(t *testing.T) {
 	}
 	if !got.pendingExec.ptycmd.HasPasteUploader() {
 		t.Fatal("no paste uploader installed on a --host attach: a dragged-in image would name a local file the remote agent cannot open")
+	}
+	// And NOT the notice. Under --host the file is reachable and the transfer
+	// runs, so "no such image on this machine · use boss --host" would be both
+	// wrong and addressed to someone already following its advice; a genuine
+	// failure there is reported by the uploader's own injected message.
+	if got.pendingExec.ptycmd.HasImagePasteNotice() {
+		t.Fatal("a --host attach installed the image-paste notice as well as the uploader")
 	}
 	if got.pasteUploader == nil {
 		t.Fatal("model did not keep the uploader, so detach has nothing to clean up with")

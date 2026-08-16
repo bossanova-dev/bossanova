@@ -10,6 +10,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // --- mock session store for liveness tests ---
@@ -117,8 +118,8 @@ func TestLivenessChecker_SessionNotFound(t *testing.T) {
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 	}
 
-	if checker.IsSessionAlive(context.Background(), "nonexistent") {
-		t.Error("expected false when session not found")
+	if got := checker.SessionLiveness(context.Background(), "nonexistent"); got != session.LivenessDead {
+		t.Errorf("session not found: got %s, want dead", got)
 	}
 }
 
@@ -152,8 +153,8 @@ func TestLivenessChecker_SessionPastImplementingPlan(t *testing.T) {
 				agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 			}
 
-			if !checker.IsSessionAlive(context.Background(), "sess-1") {
-				t.Errorf("expected true when session is in %s state", tt.name)
+			if got := checker.SessionLiveness(context.Background(), "sess-1"); got != session.LivenessAlive {
+				t.Errorf("%s state: got %s, want alive", tt.name, got)
 			}
 		})
 	}
@@ -171,8 +172,8 @@ func TestLivenessChecker_NoProcessIdentifiers(t *testing.T) {
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 	}
 
-	if !checker.IsSessionAlive(context.Background(), "sess-2") {
-		t.Error("expected true when session has no process identifiers (still initializing)")
+	if got := checker.SessionLiveness(context.Background(), "sess-2"); got != session.LivenessAlive {
+		t.Errorf("no process identifiers (still initializing): got %s, want alive", got)
 	}
 }
 
@@ -191,8 +192,10 @@ func TestLivenessChecker_UnattendedSessionWithoutProcessIdentifiersIsDead(t *tes
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 	}
 
-	if checker.IsSessionAlive(context.Background(), "cron-session") {
-		t.Error("expected unattended session without process identifiers to be dead")
+	// Still DEAD, not parked: the carve-out is scoped to sessions with no chat
+	// row at all, so the BOS-884 parked verdict cannot swallow it.
+	if got := checker.SessionLiveness(context.Background(), "cron-session"); got != session.LivenessDead {
+		t.Errorf("unattended session without process identifiers: got %s, want dead", got)
 	}
 }
 
@@ -215,8 +218,8 @@ func TestLivenessChecker_DetachSessionWithoutProcessIdentifiersIsDead(t *testing
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 	}
 
-	if checker.IsSessionAlive(context.Background(), "detach-session") {
-		t.Error("expected detach session without process identifiers to be dead (raw pre-agent reap)")
+	if got := checker.SessionLiveness(context.Background(), "detach-session"); got != session.LivenessDead {
+		t.Errorf("detach session without process identifiers (raw pre-agent reap): got %s, want dead", got)
 	}
 }
 
@@ -231,8 +234,8 @@ func TestLivenessChecker_ClaudeDead(t *testing.T) {
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{"claude-123": false}}),
 	}
 
-	if checker.IsSessionAlive(context.Background(), "sess-3") {
-		t.Error("expected false when Claude process is dead")
+	if got := checker.SessionLiveness(context.Background(), "sess-3"); got != session.LivenessDead {
+		t.Errorf("Claude process dead: got %s, want dead", got)
 	}
 }
 
@@ -247,8 +250,8 @@ func TestLivenessChecker_ClaudeRunning(t *testing.T) {
 		agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{"claude-456": true}}),
 	}
 
-	if !checker.IsSessionAlive(context.Background(), "sess-4") {
-		t.Error("expected true when Claude process is running")
+	if got := checker.SessionLiveness(context.Background(), "sess-4"); got != session.LivenessAlive {
+		t.Errorf("Claude process running: got %s, want alive", got)
 	}
 }
 
@@ -268,7 +271,7 @@ func TestLivenessChecker_AgentForSessionNil(t *testing.T) {
 		agentForSession: func(*models.Session) agent.AgentRunner { return nil },
 	}
 
-	if checker.IsSessionAlive(context.Background(), "sess-5") {
-		t.Error("expected false when agentForSession returns nil and no other liveness signal exists")
+	if got := checker.SessionLiveness(context.Background(), "sess-5"); got != session.LivenessDead {
+		t.Errorf("agentForSession nil and no other liveness signal: got %s, want dead", got)
 	}
 }

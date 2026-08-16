@@ -66,6 +66,61 @@ const (
 	terminalStreamHealthyDuration = terminalStreamMaxBackoff
 )
 
+// terminalAttachWakeTimeout bounds the BOS-885 wake performed when an attach
+// arrives for a chat whose tmux pane pointer was cleared. Attach is a hot path
+// reached by every web terminal open, so the wake must never be able to hang
+// the stream.
+//
+// The value is set against the liveness watchdog, not against the wake's own
+// cost. handleAttach runs inline on the single recv loop (runReader ->
+// handleClientMessage), and that same loop is what observes bosso's
+// TerminalPing frames and resets runHeartbeat. So a wake being waited on
+// stalls every other terminal on this stream — input, resizes, closes,
+// uploads — and, critically, the heartbeat: after terminalMissedBeatsBudget
+// (3) silent terminalPingInterval (15s) windows the watchdog cancels the
+// stream and marks the daemon unhealthy, killing every attach on it.
+//
+// Holding the wait under one ping interval keeps a single wake to at most one
+// missed beat. This is a ceiling on the WAIT rather than on the wake, which
+// is what makes it trustworthy — see wakeChatForAttach for why bounding the
+// wake itself is not something this caller's context can do.
+//
+// It bounds the coupling rather than removing it. Only the wake moved off the
+// recv loop; the wait did not, so N serialized cleared-chat attaches still
+// cost up to N of these, and enough of them inside one ping window still
+// exhaust the beat budget. Removing that entirely would mean completing the
+// attach on the wake goroutine so the recv loop never blocks at all, which is
+// a larger change to the attach lifecycle than this fix.
+const terminalAttachWakeTimeout = 10 * time.Second
+
+// terminalAttachWakeBudget is the detached wake goroutine's own deadline. It
+// is deliberately far larger than terminalAttachWakeTimeout: the attach stops
+// waiting early, but the wake is left to finish and persist its pane pointer
+// so the browser's reconnect lands on a live chat.
+//
+// It bounds the wake's CONTEXT, not the goroutine. For the same reasons the
+// attach cannot bound the wake with its own deadline — singleflight.Do
+// ignores a joiner's context, and the legacy backfill runs on
+// context.WithoutCancel — a wake parked behind a wedged singleflight leader
+// can outlive this budget. What the budget does guarantee is that no wake
+// holds a live context, and so keeps doing cancellable work, for the life of
+// the daemon.
+const terminalAttachWakeBudget = 2 * time.Minute
+
+// maxWakeReasonRunes caps the wake text that reaches the browser, so a future
+// reason that interpolates something unbounded cannot flood the terminal or
+// the exited frame.
+const maxWakeReasonRunes = 200
+
+var (
+	// errTmuxSessionNotReady is returned when a cleared pane pointer cannot be
+	// revived because no waker is wired — the pre-BOS-885 behaviour.
+	errTmuxSessionNotReady = errors.New("tmux session not ready")
+	// errWakeNoSessionName is returned when a wake reports success but names
+	// no pane, which is not something an attach can act on.
+	errWakeNoSessionName = errors.New("wake returned no tmux session name")
+)
+
 // The BOS-376 terminal-liveness machinery (readiness/heartbeat signalling,
 // tunable defaults, errTerminalNotConfirmed, runHeartbeat, escalateWedged,
 // and the not-co-located matcher) lives in the sibling terminal_liveness.go.
@@ -266,6 +321,15 @@ type TerminalStreamClient struct {
 	logger        zerolog.Logger
 	clock         Clock
 
+	// waker revives a chat whose tmux pane pointer was cleared (BOS-885). It
+	// is late-bound via SetWaker because the daemon server that satisfies it
+	// is constructed after this client, and it has its own mutex rather than
+	// sharing mu: mu guards the per-attach multiplex map on the hot path, and
+	// the waker must be readable without contending with it. Nil is a
+	// supported state — the attach then keeps the pre-BOS-885 rejection.
+	wakerMu sync.Mutex
+	waker   ChatWaker
+
 	// attaches is the per-stream multiplex map. Reset on every reconnect —
 	// attach_ids are bosso-scoped and not portable across stream incarnations.
 	mu            sync.Mutex
@@ -303,6 +367,11 @@ type TerminalStreamClient struct {
 	missedBeatsBudget  int
 	readyTimeoutBudget int
 	readyTimeoutStreak int
+
+	// wakeTimeout is how long an attach waits on a BOS-885 wake before giving
+	// up on it. Defaults to terminalAttachWakeTimeout; injectable so tests can
+	// exercise the give-up path without a real ten-second wait.
+	wakeTimeout time.Duration
 }
 
 // activeAttach is the per-attach bookkeeping the client maintains while a
@@ -357,6 +426,13 @@ type TerminalStreamClientConfig struct {
 	// stored tmux_session_name on the chat row, not recompute one.
 	Chats chatLookup
 
+	// Waker, when set, lets an attach revive a chat whose stored
+	// tmux_session_name was cleared (BOS-885) instead of rejecting it. It is
+	// usually installed after construction with SetWaker, because the daemon
+	// server that satisfies it is built after this client; the field exists so
+	// tests can supply a fake in one step. Nil keeps the pre-BOS-885 rejection.
+	Waker ChatWaker
+
 	// AttachFactory, when set, replaces the default tmux.NewTerminalAttach
 	// constructor. Used by tests to drop in a fake-attach implementation.
 	AttachFactory terminalAttachFactory
@@ -388,6 +464,10 @@ type TerminalStreamClientConfig struct {
 	PingInterval       time.Duration
 	MissedBeatsBudget  int
 	ReadyTimeoutBudget int
+
+	// WakeTimeout bounds how long an attach waits on a BOS-885 wake before
+	// reporting a timeout. Zero falls back to terminalAttachWakeTimeout.
+	WakeTimeout time.Duration
 
 	Logger zerolog.Logger
 	Clock  Clock // nil → realClock
@@ -428,6 +508,10 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 	if readyTimeout <= 0 {
 		readyTimeout = terminalReadyTimeout
 	}
+	wakeTimeout := cfg.WakeTimeout
+	if wakeTimeout <= 0 {
+		wakeTimeout = terminalAttachWakeTimeout
+	}
 	pingInterval := cfg.PingInterval
 	if pingInterval <= 0 {
 		pingInterval = terminalPingInterval
@@ -445,6 +529,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 		authState:          cfg.AuthState,
 		tmuxClient:         cfg.TmuxClient,
 		chats:              cfg.Chats,
+		waker:              cfg.Waker,
 		attachFactory:      factory,
 		uploads:            cfg.Uploads,
 		logger:             cfg.Logger.With().Str("component", "terminal-stream-client").Logger(),
@@ -455,6 +540,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 		closeIdle:          cfg.CloseIdle,
 		readyTimeout:       readyTimeout,
 		pingInterval:       pingInterval,
+		wakeTimeout:        wakeTimeout,
 		missedBeatsBudget:  missedBeatsBudget,
 		readyTimeoutBudget: readyTimeoutBudget,
 	}
@@ -900,13 +986,28 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		c.sendExited(ctx, outbound, attachID, reason)
 		return
 	}
-	if row.TmuxSessionName == nil || *row.TmuxSessionName == "" {
-		// Plan Codex catch #3: empty/nil tmux_session_name → clean error
-		// rather than silently using ChatSessionName(repoID, agentSessionID).
-		c.sendExited(ctx, outbound, attachID, "tmux session not ready")
-		return
+	sessionName := ""
+	if row.TmuxSessionName != nil {
+		sessionName = *row.TmuxSessionName
 	}
-	sessionName := *row.TmuxSessionName
+	wakeNotice := ""
+	if sessionName == "" {
+		// BOS-885: a cleared pane pointer means the chat was torn down, not
+		// that it is dead — the TUI recreates the pane on attach, and the web
+		// terminal now takes the same wake path instead of rejecting outright.
+		// The wake re-persists the pointer, so the next attach reads a name
+		// here and takes the already-live path. Note this still never
+		// recomputes the name locally (plan Codex catch #3/#5): the only
+		// authoritative name is the one the wake itself persisted and returned.
+		var wakeErr error
+		sessionName, wakeNotice, wakeErr = c.wakeChatForAttach(ctx, chatID)
+		if wakeErr != nil {
+			c.logger.Warn().Err(wakeErr).Str("chat_id", chatID).Str("attach_id", attachID).
+				Msg("terminal stream: wake for attach failed")
+			c.sendExited(ctx, outbound, attachID, wakeFailureReason(wakeErr))
+			return
+		}
+	}
 
 	attachCtx, cancel := context.WithCancel(ctx)
 	attach, err := c.attachFactory(attachCtx, tmux.AttachConfig{
@@ -965,7 +1066,166 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	c.attaches[attachID] = state
 	c.mu.Unlock()
+	// BOS-885 D2: a wake that degraded to a fresh pane cost the user their
+	// conversation context, so say why rather than letting them read the empty
+	// pane as a bug. Emitted before the pump is released so the notice can
+	// never be interleaved into the middle of the PTY's own output.
+	if wakeNotice != "" {
+		c.sendWakeNotice(ctx, outbound, attachID, wakeNotice)
+	}
 	close(pumpStart)
+}
+
+// wakeChatForAttach revives a chat whose tmux pane pointer was cleared and
+// returns the pane name the wake persisted, plus a machine-readable reason
+// when the wake degraded to a fresh pane (empty otherwise).
+//
+// The wake is deliberately routed through the daemon's own WakeChat path
+// rather than re-implemented here: that path is idempotent (an already-live
+// pane is reported as such instead of being duplicated), it re-persists
+// agent_chats.tmux_session_name, and it is the same machinery the TUI attach
+// uses — so both clients agree on what "attach to a torn-down chat" means.
+func (c *TerminalStreamClient) wakeChatForAttach(ctx context.Context, chatID string) (string, string, error) {
+	waker := c.currentWaker()
+	if waker == nil {
+		// No waker wired (legacy tests, or a daemon built without the server
+		// half): keep the pre-BOS-885 behaviour rather than inventing a name.
+		return "", "", errTmuxSessionNotReady
+	}
+	// Bound the WAIT, not the work. Attach is a hot path reached by every web
+	// terminal open, and a wake that blocked indefinitely would turn a
+	// dead-chat bug into a hung-UI bug, which is worse (plan risk #1).
+	//
+	// Handing the wake this caller's deadline does not achieve that, because
+	// the wake contains stages that provably cannot be interrupted by it:
+	// server.wakeChat runs the legacy codex provider-id backfill
+	// synchronously on a context.WithoutCancel budget of its own, and it
+	// joins s.chatWakeGroup, whose singleflight.Do ignores a joiner's context
+	// entirely — so an attach can be pinned to the duration of a wake some
+	// other caller started. Passing a short deadline in would also have made
+	// things worse rather than safer: the backfill would still burn its full
+	// budget, and the spawn that follows it would then inherit an
+	// already-expired context and fail, breaking exactly the legacy chats
+	// this feature exists to revive.
+	//
+	// So the wake runs on a detached goroutine with a budget of its own, and
+	// the recv loop waits only wakeTimeout for it. That makes wakeTimeout a
+	// real ceiling on how long this stream can stall, whatever the wake does.
+	// An overrunning wake is not wasted work: it keeps going and re-persists
+	// agent_chats.tmux_session_name, so the browser's reconnect finds a live
+	// pointer and attaches without waking at all. terminalAttachWakeBudget
+	// caps how long that goroutine holds a live context; see that constant
+	// for why nothing here can cap the goroutine itself.
+	type wakeOutcome struct {
+		outcome     pb.WakeChatResult_Outcome
+		sessionName string
+		reason      string
+		err         error
+	}
+	// Buffered: the goroutine must never block on a receiver that has already
+	// given up and returned.
+	result := make(chan wakeOutcome, 1)
+	wakeCtx, cancelWake := context.WithTimeout(context.WithoutCancel(ctx), terminalAttachWakeBudget)
+	_ = safego.Go(c.logger, func() {
+		defer cancelWake()
+		outcome, sessionName, reason, _, err := waker.WakeChatStream(wakeCtx, chatID, false)
+		result <- wakeOutcome{outcome: outcome, sessionName: sessionName, reason: reason, err: err}
+	})
+
+	select {
+	case <-ctx.Done():
+		// The stream itself is going away; let the wake finish in the
+		// background so its pane pointer still lands.
+		return "", "", ctx.Err()
+	case <-c.clock.After(c.wakeTimeout):
+		return "", "", context.DeadlineExceeded
+	case res := <-result:
+		if res.err != nil {
+			return "", "", res.err
+		}
+		if res.sessionName == "" {
+			// A wake that reports success without naming a pane cannot be
+			// attached to; failing here keeps the "clear error, no half-open
+			// attach" contract rather than spawning a PTY against the empty
+			// string.
+			return "", "", errWakeNoSessionName
+		}
+		if res.outcome == pb.WakeChatResult_OUTCOME_FRESH_FALLBACK {
+			return res.sessionName, res.reason, nil
+		}
+		return res.sessionName, "", nil
+	}
+}
+
+// currentWaker reads the late-bound waker under its own mutex. It is set once
+// during daemon wiring (SetWaker) and read from the stream goroutine.
+func (c *TerminalStreamClient) currentWaker() ChatWaker {
+	c.wakerMu.Lock()
+	defer c.wakerMu.Unlock()
+	return c.waker
+}
+
+// SetWaker installs the chat waker used to revive a chat whose tmux pane
+// pointer was cleared (BOS-885). It exists as a setter rather than a config
+// field because the daemon server that satisfies ChatWaker is constructed
+// after this client; call it during wiring, before Run.
+func (c *TerminalStreamClient) SetWaker(w ChatWaker) {
+	c.wakerMu.Lock()
+	defer c.wakerMu.Unlock()
+	c.waker = w
+}
+
+// wakeFailureReason maps a wake failure to the string the browser sees.
+// Everything the wake path returns is authored to be rendered verbatim on
+// every attach surface (see server.headlessRunActiveMessage), so unlike the
+// chat-lookup reasons above it is safe — and useful — to pass through. The
+// two locally-generated sentinels keep their own fixed text.
+func wakeFailureReason(err error) string {
+	switch {
+	case errors.Is(err, errTmuxSessionNotReady):
+		return "tmux session not ready"
+	case errors.Is(err, errWakeNoSessionName):
+		return "wake chat: no tmux session name"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "wake chat: timed out"
+	default:
+		return "wake chat: " + sanitizeWakeReason(err.Error())
+	}
+}
+
+// sendWakeNotice writes a one-line degraded-resume notice into the attach's
+// own data stream. TerminalDataChunk is forwarded verbatim by bosso to the
+// browser socket, so this reaches the user through the terminal view that is
+// already open — no new proto arm, no new UI surface (BOS-885 D3).
+func (c *TerminalStreamClient) sendWakeNotice(ctx context.Context, outbound chan<- *pb.TerminalServerMessage, attachID, reason string) {
+	c.logger.Info().Str("attach_id", attachID).Str("reason", reason).
+		Msg("terminal stream: attach woke chat with a fresh pane")
+	line := fmt.Sprintf("\r\n[boss] previous conversation could not be resumed (%s); starting a fresh agent.\r\n", sanitizeWakeReason(reason))
+	c.sendServerMessage(ctx, outbound, &pb.TerminalServerMessage{
+		Msg: &pb.TerminalServerMessage_Data{
+			Data: &pb.TerminalDataChunk{AttachId: attachID, Data: []byte(line)},
+		},
+	})
+}
+
+// sanitizeWakeReason strips anything that could steer the browser's terminal
+// emulator and bounds the length. Wake reasons are enumerated snake_case
+// tokens today and wake errors are short authored sentences, so this is
+// belt-and-braces against a future one that interpolates a path or a driver
+// error into text the browser renders.
+func sanitizeWakeReason(reason string) string {
+	clean := []rune(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, reason))
+	// Truncate on runes, not bytes: a byte slice would be free to cut a
+	// multi-byte rune in half and hand the browser invalid UTF-8.
+	if len(clean) > maxWakeReasonRunes {
+		return string(clean[:maxWakeReasonRunes]) + "…"
+	}
+	return string(clean)
 }
 
 // runAttachPump fans Output() and Exited() onto the per-stream outbound

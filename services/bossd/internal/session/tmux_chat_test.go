@@ -541,6 +541,341 @@ func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) 
 	}
 }
 
+// --- idle reap teardown (BOS-886) --------------------------------------------
+//
+// ReapIdleChatTmuxSession is deliberately the mirror image of
+// KillChatTmuxSession above: kill-then-clear there, clear-then-kill here. The
+// two tests that follow pin that ordering from both sides, because it is the
+// whole reason a second routine exists.
+//
+// The stake is BOS-2047's teardown signal. A chat row whose tmux_session_name
+// is cleared reads as PARKED; a row still POINTING at a pane that has died
+// reads as "the agent exited, finalize the session". Killing first would leave
+// exactly that second shape for as long as the clear took, and a sweep landing
+// in that window would finalize a session the user only ever put down.
+
+func reapIdleChatHarness(t *testing.T, tmuxName *string) *startTmuxChatHarness {
+	t.Helper()
+	h := newStartTmuxChatHarness(t)
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {
+			{
+				SessionID:       "sess-1",
+				AgentSessionID:  "agent-idle",
+				TmuxSessionName: tmuxName,
+			},
+		},
+	}
+	return h
+}
+
+func TestReapIdleChatTmuxSession_ClearsPointerThenKillsPane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", "boss-aaaaaaaa-dddddddd"); err != nil {
+		t.Fatalf("ReapIdleChatTmuxSession: %v", err)
+	}
+
+	call := h.findCall("kill-session")
+	if call == nil {
+		t.Fatal("expected tmux kill-session")
+	}
+	if got, want := strings.Join(call.args, " "), "-t "+tmuxName; got != want {
+		t.Fatalf("kill-session args = %q, want %q", got, want)
+	}
+	if len(h.chats.tmuxNameUpdates) != 1 {
+		t.Fatalf("tmux name updates = %d, want 1", len(h.chats.tmuxNameUpdates))
+	}
+	if h.chats.tmuxNameUpdates[0].name != nil {
+		t.Fatalf("cleared tmux name = %q, want nil", *h.chats.tmuxNameUpdates[0].name)
+	}
+	if got := h.chats.tmuxNameUpdates[0].agentSessionID; got != "agent-idle" {
+		t.Fatalf("cleared agentSessionID = %q, want agent-idle", got)
+	}
+}
+
+// TestReapIdleChatTmuxSession_ClearFailureLeavesThePaneAlive is the first half
+// of the ordering proof and the D8 error contract: a failed clear must abort
+// before the kill, leaving pane and pointer consistent so the next sweep can
+// simply retry.
+func TestReapIdleChatTmuxSession_ClearFailureLeavesThePaneAlive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+	h.chats.updateTmuxNameErr = errors.New("clear failed")
+
+	err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", "boss-aaaaaaaa-dddddddd")
+	if err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want the clear failure surfaced")
+	}
+	if call := h.findCall("kill-session"); call != nil {
+		t.Fatal("tmux kill-session ran after the pointer clear failed")
+	}
+}
+
+// TestReapIdleChatTmuxSession_KillFailureRestoresThePointer is the other half:
+// the clear lands, the kill does not, and the pointer must go BACK. Nothing
+// else collects a pane whose row has been unpointed — the poller stops polling
+// it, so its tracker entry ages out and D2 keeps it forever — so leaving the
+// pointer cleared would strand the pane rather than retry it.
+func TestReapIdleChatTmuxSession_KillFailureRestoresThePointer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+	h.tmuxFake.failSubcommand["kill-session"] = true
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", tmuxName); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want the kill failure surfaced")
+	}
+	if len(h.chats.tmuxNameUpdates) != 2 {
+		t.Fatalf("tmux name updates = %d, want 2: a clear before the kill and a restore after it fails",
+			len(h.chats.tmuxNameUpdates))
+	}
+	if h.chats.tmuxNameUpdates[0].name != nil {
+		t.Fatalf("first update = %q, want nil: the clear precedes the kill", *h.chats.tmuxNameUpdates[0].name)
+	}
+	restored := h.chats.tmuxNameUpdates[1].name
+	if restored == nil || *restored != tmuxName {
+		t.Fatalf("second update = %v, want the pointer restored to %q", restored, tmuxName)
+	}
+}
+
+// TestReapIdleChatTmuxSession_KillFailureRestoresThePointerOnACancelledContext
+// is the same restore under the condition that most plausibly triggers it.
+//
+// The sweep runs on the daemon's poller context, so the realistic way to reach
+// a failed kill is shutdown cancelling that context mid-teardown: KillSession
+// only reports failure once it has failed to PROVE the pane gone, and a dead
+// context fails the kill and the has-session probe alike. If the compensating
+// write inherited that cancellation it would fail immediately too, leaving the
+// cleared-pointer-live-pane pair the restore exists to prevent — and leaving it
+// permanently, because an unpointed chat is never polled again.
+//
+// The cancellation is fired from inside the clear so it lands after the tmux
+// availability probe, exactly where a real shutdown would.
+func TestReapIdleChatTmuxSession_KillFailureRestoresThePointerOnACancelledContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h.chats.onUpdateTmuxName = func(name *string) {
+		if name == nil {
+			cancel() // the clear landed; now the daemon goes down
+		}
+	}
+
+	if err := h.lc.ReapIdleChatTmuxSession(ctx, "sess-1", "agent-idle", tmuxName); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want the kill failure surfaced")
+	}
+	if len(h.chats.tmuxNameUpdates) != 2 {
+		t.Fatalf("tmux name updates = %d, want 2: the restore must run on a context detached from the cancelled sweep",
+			len(h.chats.tmuxNameUpdates))
+	}
+	restored := h.chats.tmuxNameUpdates[1].name
+	if restored == nil || *restored != tmuxName {
+		t.Fatalf("second update = %v, want the pointer restored to %q", restored, tmuxName)
+	}
+}
+
+// TestReapIdleChatTmuxSession_KillFailureLeavesThePointerClearedWhenThePaneIsGone
+// pins the other half of the restore decision.
+//
+// A failed kill is not the same fact as a live pane. KillSession also reports
+// failure when the kill LANDED and only its confirming has-session lost the
+// race with the dying context — and restoring then points a live row at a dead
+// pane, which the guard child reads as the agent having exited. So the restore
+// is conditioned on a liveness probe issued on the detached context, and a
+// definite "gone" cancels it.
+//
+// The fixture reproduces exactly that: the sweep context dies inside the clear,
+// so the probe inside KillSession cannot run at all (the cancelled context
+// fails it before tmux is consulted, with empty stderr — an error, not a
+// verdict), while the same probe on the detached restore context reaches the
+// fake and is told the session does not exist.
+func TestReapIdleChatTmuxSession_KillFailureLeavesThePointerClearedWhenThePaneIsGone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session: " + tmuxName
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h.chats.onUpdateTmuxName = func(name *string) {
+		if name == nil {
+			cancel()
+		}
+	}
+
+	if err := h.lc.ReapIdleChatTmuxSession(ctx, "sess-1", "agent-idle", tmuxName); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want the kill failure surfaced")
+	}
+	if len(h.chats.tmuxNameUpdates) != 1 {
+		t.Fatalf("tmux name updates = %d, want 1: a pane proven gone must not have its pointer restored",
+			len(h.chats.tmuxNameUpdates))
+	}
+	if h.chats.tmuxNameUpdates[0].name != nil {
+		t.Fatalf("only update = %q, want the clear", *h.chats.tmuxNameUpdates[0].name)
+	}
+}
+
+// TestReapIdleChatTmuxSession_ReclearsAPointerAWakeRestoredMidTeardown covers
+// the gap between the clear and the kill.
+//
+// A wake landing in that window finds the pointer nil, spawnChatTmux reports
+// OutcomeAlreadyLive because the pane is still up, and the caller re-persists
+// the name. The kill then lands and the row is left pointing at a dead pane,
+// which the guard child reads as the agent having exited — so the teardown
+// reconciles against tmux once the pane is gone.
+//
+// The hook stands in for that wake: it re-points the row from inside the clear,
+// which is the tightest possible version of the race.
+func TestReapIdleChatTmuxSession_ReclearsAPointerAWakeRestoredMidTeardown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+	// The pane is gone once the kill lands, which is what makes the restored
+	// pointer stale rather than a legitimate respawn.
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session: " + tmuxName
+
+	chat := h.chats.chatsBySession["sess-1"][0]
+	woke := false
+	h.chats.onUpdateTmuxName = func(name *string) {
+		if name == nil && !woke {
+			woke = true
+			chat.TmuxSessionName = &tmuxName // a concurrent WakeChat re-points the row
+		}
+	}
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", tmuxName); err != nil {
+		t.Fatalf("ReapIdleChatTmuxSession: %v", err)
+	}
+	if len(h.chats.tmuxNameUpdates) != 2 {
+		t.Fatalf("tmux name updates = %d, want 2: the clear and the post-kill re-clear", len(h.chats.tmuxNameUpdates))
+	}
+	if got := h.chats.tmuxNameUpdates[1].name; got != nil {
+		t.Fatalf("second update = %q, want nil: a pointer at a reaped pane must not survive the teardown", *got)
+	}
+	if chat.TmuxSessionName != nil {
+		t.Fatalf("chat still points at %q; the row must not name a dead pane", *chat.TmuxSessionName)
+	}
+}
+
+// TestReapIdleChatTmuxSession_KeepsAPointerAtARespawnedPane is the other side
+// of that reconciliation. The pane name is derived from the repo and chat ids,
+// so a wake that actually respawned the pane restores the SAME name — and
+// clearing on the name alone would strand that new, legitimate pane. tmux
+// reporting the session live is what distinguishes the two cases.
+func TestReapIdleChatTmuxSession_KeepsAPointerAtARespawnedPane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+	// has-session succeeds by default: the pane is live again.
+
+	chat := h.chats.chatsBySession["sess-1"][0]
+	woke := false
+	h.chats.onUpdateTmuxName = func(name *string) {
+		if name == nil && !woke {
+			woke = true
+			chat.TmuxSessionName = &tmuxName
+		}
+	}
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", tmuxName); err != nil {
+		t.Fatalf("ReapIdleChatTmuxSession: %v", err)
+	}
+	if len(h.chats.tmuxNameUpdates) != 1 {
+		t.Fatalf("tmux name updates = %d, want 1: a live pane's pointer must be left alone", len(h.chats.tmuxNameUpdates))
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("chat pointer = %v, want %q preserved for the respawned pane", chat.TmuxSessionName, tmuxName)
+	}
+}
+
+// TestReapIdleChatTmuxSession_UnpointedChatIsRefused pins the mismatch
+// contract. A silent success here would be worse than an error: the sweep
+// counts it as a reap, logs one, and clears the confirmation strike — while the
+// pane the sweep resolved is still up.
+func TestReapIdleChatTmuxSession_UnpointedChatIsRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := reapIdleChatHarness(t, nil)
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", "boss-aaaaaaaa-dddddddd"); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want an unpointed chat refused")
+	}
+	if call := h.findCall("kill-session"); call != nil {
+		t.Fatal("tmux kill-session ran for a chat with no pane")
+	}
+	if len(h.chats.tmuxNameUpdates) != 0 {
+		t.Fatalf("tmux name updates = %d, want 0: nothing to clear", len(h.chats.tmuxNameUpdates))
+	}
+}
+
+// TestReapIdleChatTmuxSession_RefusesAPaneTheRowDoesNotPointAt is the identity
+// binding itself: resolveChatOwners resolves a chat by EITHER of its two name
+// legs, so the teardown must refuse to kill a pane other than the one the sweep
+// proved, rather than re-deriving its target from the row.
+func TestReapIdleChatTmuxSession_RefusesAPaneTheRowDoesNotPointAt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-1", "agent-idle", "boss-aaaaaaaa-eeeeeeee"); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want a pane-name mismatch refused")
+	}
+	if call := h.findCall("kill-session"); call != nil {
+		t.Fatal("tmux kill-session ran for a pane the chat row does not point at")
+	}
+	if len(h.chats.tmuxNameUpdates) != 0 {
+		t.Fatalf("tmux name updates = %d, want 0", len(h.chats.tmuxNameUpdates))
+	}
+}
+
+// TestReapIdleChatTmuxSession_RejectsAChatFromAnotherSession is the last line
+// of defence behind the reaper's name-resolution rule: even if a truncation
+// collision got past it, the teardown refuses a chat that does not belong to
+// the session the caller named.
+func TestReapIdleChatTmuxSession_RejectsAChatFromAnotherSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	tmuxName := "boss-aaaaaaaa-dddddddd"
+	h := reapIdleChatHarness(t, &tmuxName)
+
+	if err := h.lc.ReapIdleChatTmuxSession(t.Context(), "sess-other", "agent-idle", tmuxName); err == nil {
+		t.Fatal("ReapIdleChatTmuxSession error = nil, want a session mismatch refused")
+	}
+	if call := h.findCall("kill-session"); call != nil {
+		t.Fatal("tmux kill-session ran for a chat owned by another session")
+	}
+	if len(h.chats.tmuxNameUpdates) != 0 {
+		t.Fatalf("tmux name updates = %d, want 0", len(h.chats.tmuxNameUpdates))
+	}
+}
+
 // TestStartTmuxChat_HappyPath exercises the full extracted path: idempotency
 // check finds nothing → BuildInteractiveCommand → tmux NewSession → row
 // Create with the supplied title → UpdateTmuxSessionName → SendPlan

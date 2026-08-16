@@ -126,7 +126,41 @@ func TestPasteScannerPassthrough(t *testing.T) {
 			if rec.claimed != 0 {
 				t.Errorf("claimed %d pastes, want 0", rec.claimed)
 			}
+
+			// The same input under the NON-CLAIMING observation hook every
+			// non---host attach installs (BOS-849). It is the wiring most users
+			// run, it inspects bodies the uploader path never sees, and it must
+			// not move a byte — paste_of_missing_image is the case where it
+			// actually fires, and even there conservation is the contract.
+			n := newPasteScanner(noticeClaim(t))
+			if got := n.feed(tc.input); !bytes.Equal(got, tc.input) {
+				t.Errorf("with the image-paste notice: feed(%q) = %q, want unchanged", tc.input, got)
+			}
 		})
+	}
+}
+
+// TestPasteScannerSplitAtEveryOffsetWithImagePasteNotice is the chunk-boundary
+// half of the safety proof for the observation hook.
+//
+// A terminal chunks reads wherever it likes, so the introducer and terminator
+// arrive split as readily as whole, and the scanner carries state across feeds
+// to cope. Under the hook that state exists on a path where NOTHING may ever be
+// removed, so every split point has to conserve the stream exactly — including
+// the ones that land inside \x1b[200~ and \x1b[201~, and the ones that cut a
+// multi-byte rune in half.
+//
+// The stream deliberately contains the reported symptom (an absolute image path
+// that does not resolve here), which is the one body the hook reacts to.
+func TestPasteScannerSplitAtEveryOffsetWithImagePasteNotice(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "cmux-drop-383cd973.png")
+	stream := []byte("ab\x1b[200~" + missing + "\x1b[201~héllo → ✓\x1b[A")
+
+	for i := 0; i <= len(stream); i++ {
+		s := newPasteScanner(noticeClaim(t))
+		if got := feedSplit(s, stream, i); !bytes.Equal(got, stream) {
+			t.Fatalf("split at %d: forwarded %q, want the stream conserved %q", i, got, stream)
+		}
 	}
 }
 
@@ -528,5 +562,31 @@ func TestPasteScannerStreamConservation(t *testing.T) {
 	}
 	if rec.claimed != 2 {
 		t.Errorf("claimed %d pastes, want 2", rec.claimed)
+	}
+
+	// The same session under the observation hook, where the subtrahend is
+	// empty: nothing is ever claimed, so the invariant tightens from "everything
+	// except the claimed pastes" to "everything". The chunk list deliberately
+	// carries a body that reaches the hook's reacting branch, so the path under
+	// test is not the inert one.
+	//
+	// This test asserts only the bytes — that the record and the overlay
+	// actually happen for such a body is asserted where it can be observed, by
+	// TestImagePasteNoticeExplainsAMissingImageWithoutClaimingIt.
+	missing := filepath.Join(t.TempDir(), "cmux-drop-383cd973.png")
+	noticeChunks := append([]string{}, chunks...)
+	noticeChunks = append(noticeChunks,
+		"\x1b[200~"+missing+"\x1b[201~",
+		"héllo → ✓ 日本語",
+	)
+
+	n := newPasteScanner(noticeClaim(t))
+	var noticeIn, noticeOut []byte
+	for _, c := range noticeChunks {
+		noticeIn = append(noticeIn, c...)
+		noticeOut = append(noticeOut, n.feed([]byte(c))...)
+	}
+	if !bytes.Equal(noticeOut, noticeIn) {
+		t.Errorf("with the image-paste notice: forwarded %q, want the whole stream %q", noticeOut, noticeIn)
 	}
 }

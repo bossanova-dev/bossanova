@@ -6,8 +6,17 @@ package views
 // ssh-shaped concern reads as one thing and the view stays a view.
 //
 // The whole file is dead weight in local mode by design: nothing here is
-// constructed, and internal/pty's uploader hook is never installed, so the stdin
-// path a local attach runs is the one it ran before this existed.
+// constructed, and internal/pty's uploader hook is never installed.
+//
+// That is no longer the same statement as "the local stdin path is untouched".
+// Since BOS-849 a local attach installs the non-claiming image-paste notice
+// instead (attach.go's else branch), so internal/pty does run its paste scanner
+// there; byte-for-byte conservation on that path rests on
+// pty.imagePasteNoticeClaim always returning false, which is the single place
+// that guarantee is now written down. What this file's absence still buys is
+// the half only an uploader could break: with nothing constructed here there is
+// nothing a claimed paste could be handed to, so a local paste cannot be
+// swallowed and no ssh is put in the path of a file the agent can already open.
 
 import (
 	"context"

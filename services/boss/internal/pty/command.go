@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	creackpty "github.com/creack/pty/v2"
+	"github.com/rs/zerolog"
 	"golang.org/x/term"
 
 	"github.com/recurser/boss/internal/termreset"
@@ -55,6 +56,23 @@ type PTYCommand struct {
 	stdout io.Writer
 	stderr io.Writer
 
+	// stdoutMu serializes every write to stdout. Two goroutines write to the
+	// outer terminal for as long as a pane is attached: the Process read loop,
+	// which pumps agent output through the writer handed to Attach, and this
+	// command's own overlay writes, which happen on the stdin read loop (a paste
+	// claim) and on an upload goroutine (the in-flight indicator and its clear).
+	// Unserialized, an overlay could land in the middle of a CSI the agent was
+	// emitting, and the terminal would act on the splice rather than on either
+	// sequence.
+	//
+	// The lock is held around the write itself rather than handed out, so every
+	// writer participates by construction: route terminal writes through
+	// terminalWriter and there is no second path to forget. stdout itself stays
+	// unwrapped because Run type-asserts it to *os.File for Getsize on the
+	// initial size and on every SIGWINCH — those READ the descriptor and write
+	// nothing, so they neither need the lock nor may be denied the concrete type.
+	stdoutMu sync.Mutex
+
 	// Set after Run() returns.
 	Detached      bool
 	ProcessExited bool
@@ -62,6 +80,17 @@ type PTYCommand struct {
 	// pasteUpload, when non-nil, copies a pasted local image to the machine the
 	// agent runs on (see SetPasteUploader). Nil is local mode.
 	pasteUpload PasteUpload
+
+	// imagePasteNotice installs the non-claiming observation hook used when
+	// there is no uploader — every attach that is not `boss --host`. It only
+	// ever explains a paste it lets through; see SetImagePasteNotice.
+	imagePasteNotice bool
+
+	// pasteLog supplies the logger the paste path records through. Nil means
+	// pasteUploadLogger (the process-global, file-only logger); it is a field
+	// so a test can capture records into a buffer WITHOUT mutating the package
+	// global, which would race every other test under -race.
+	pasteLog func() zerolog.Logger
 
 	// uploadMu guards uploadDone, which holds the safego.Go done channels of
 	// every upload goroutine launched during this attach so teardown can join
@@ -96,6 +125,42 @@ func (c *PTYCommand) SetStdout(w io.Writer) { c.stdout = w }
 // SetStderr is called by bubbletea before Run().
 func (c *PTYCommand) SetStderr(w io.Writer) { c.stderr = w }
 
+// terminalWriter returns the writer every terminal write must go through: a
+// view of stdout that takes stdoutMu for the duration of each Write.
+//
+// It is a value, not a stored field, so it cannot go stale when SetStdout is
+// called after one was handed out, and so there is no initialization order to
+// get wrong. The mutex is shared by POINTER — copying the PTYCommand would copy
+// the lock, but nothing does, and every writer resolves the same address here.
+//
+// A nil stdout writes nothing and reports success, matching writeStatus's
+// long-standing best-effort contract: a command constructed without a terminal
+// (every non-PTY unit test) must not have to special-case the absence.
+func (c *PTYCommand) terminalWriter() lockedWriter {
+	return lockedWriter{mu: &c.stdoutMu, w: c.stdout}
+}
+
+// lockedWriter serializes writes to an underlying writer.
+//
+// Deliberately not io.Writer-returning-a-pointer: the zero value is useless and
+// the only constructor is terminalWriter, so there is no way to obtain one that
+// is not already bound to the command's mutex.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+// Write takes the lock for exactly the underlying write, so a caller can never
+// interleave part of a sequence with another goroutine's.
+func (l lockedWriter) Write(p []byte) (int, error) {
+	if l.w == nil {
+		return len(p), nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
 // stdinFile returns the *os.File backing stdin — c.stdin if SetStdin was
 // called with one (the production path: bubbletea passes os.Stdin), and
 // os.Stdin as a fallback. Reading the global os.Stdin from inside Run()
@@ -129,7 +194,7 @@ func (c *PTYCommand) Run() error {
 	// inputDone, early errors). See BOS-499.
 	defer func() {
 		if c.stdout != nil {
-			writeTerminalModeReset(c.stdout)
+			writeTerminalModeReset(c.terminalWriter())
 			// Record that we just turned mouse reporting off on this terminal
 			// while the child kept running, so the next attach knows to undo it.
 			// The child is REUSED, not respawned, so it will not re-send the
@@ -150,8 +215,11 @@ func (c *PTYCommand) Run() error {
 		return err
 	}
 
-	// Connect output.
-	proc.Attach(c.stdout)
+	// Connect output. The Process read loop writes agent output from its own
+	// goroutine, so it gets the serialized view rather than stdout itself —
+	// that is what keeps an overlay written on the stdin loop from splicing
+	// into the middle of a sequence this pump is emitting.
+	proc.Attach(c.terminalWriter())
 	defer proc.Detach()
 
 	// Set initial PTY size from the real terminal.
@@ -176,7 +244,7 @@ func (c *PTYCommand) Run() error {
 	}()
 
 	// Replay any buffered output from a previous attach.
-	proc.ReplayBuffer(c.stdout)
+	proc.ReplayBuffer(c.terminalWriter())
 
 	// Undo a previous teardown's mouse-mode reset, AFTER the replay so it is the
 	// last word on the terminal's mode: the replayed buffer is raw historical
@@ -189,7 +257,7 @@ func (c *PTYCommand) Run() error {
 	// the bug is intermittent rather than constant — on a busy pane the enable is
 	// evicted and scrolling dies until the client is respawned.
 	if proc.TakeModesClobbered() {
-		termreset.WriteMouseEnable(c.stdout)
+		termreset.WriteMouseEnable(c.terminalWriter())
 	}
 
 	// Create a cancel pipe for interrupting the stdin read goroutine.
@@ -213,8 +281,13 @@ func (c *PTYCommand) Run() error {
 		c.awaitPasteUploads()
 	}()
 
-	// In local mode pasteClaim returns nil, newPasteScanner keeps no state, and
-	// feed below is the identity function.
+	// pasteClaim returns a literal nil only when NEITHER an uploader nor the
+	// image-paste notice is installed; there newPasteScanner keeps no state and
+	// feed below is the identity function. A --host attach installs the
+	// uploader and every other attach installs the notice (BOS-849), so in
+	// practice an attached pane runs the scanner either way. On the notice path
+	// nothing is ever claimed — see imagePasteNoticeClaim, whose constant false
+	// is what conserves the stream there.
 	pasteScan := newPasteScanner(c.pasteClaim(uploadCtx, proc))
 
 	inputDone := make(chan error, 1)
@@ -282,8 +355,13 @@ func (c *PTYCommand) Run() error {
 					// sees exactly the bytes the PTY would have seen, and
 					// BEFORE the detach scan so detach keeps firing on
 					// everything still forwarded — a claimed paste is gone by
-					// then and can never be mistaken for a keypress. In local
-					// mode this is the identity function (nil claim above).
+					// then and can never be mistaken for a keypress. This is the
+					// identity function only when the claim above is nil —
+					// neither an uploader nor the image-paste notice installed.
+					// On the notice path (every non---host attach since
+					// BOS-849) the scanner really runs, and it still cannot
+					// remove a byte: that closure always returns false and
+					// scanPaste re-emits a declined body verbatim.
 					//
 					// Detach latency is unchanged in host mode too: a detach
 					// key arriving INSIDE an in-flight paste makes the scanner

@@ -50,8 +50,17 @@ func newReapE2EReaper(h *testharness.Harness, logs *bytes.Buffer, dryRun bool) *
 		SweepIntervalSeconds: 1,
 		GracePeriodSeconds:   int(reapE2EGrace / time.Second),
 	}
+	// The idle path (BOS-886) is armed, matching production, so the live chat's
+	// pane has to survive a sweep that genuinely evaluates it rather than one
+	// that short-circuits on "accounted for". It cannot reap here: the tracker
+	// is empty, which means unknown rather than idle, and no teardown seam is
+	// wired because this test is about the orphan path.
+	idle := status.IdleReapDeps{
+		Config:  config.TmuxIdleReapConfig{},
+		Tracker: status.NewTracker(),
+	}
 	return status.NewTmuxReaper(h.AgentChats, h.Sessions, h.Repos, h.Tmux,
-		reapE2EDaemonID, cfg, zerolog.New(logs).Level(zerolog.TraceLevel))
+		reapE2EDaemonID, cfg, idle, zerolog.New(logs).Level(zerolog.TraceLevel))
 }
 
 func TestOrphanedTmuxPaneIsReapedAndLiveChatPaneIsNot(t *testing.T) {

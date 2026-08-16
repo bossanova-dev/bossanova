@@ -461,14 +461,32 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// let a mid-attach change wire an uploader for a host the pane is not
 		// attached to.
 		//
-		// In local mode SetPasteUploader is not called AT ALL — not with nil, not
-		// with a no-op. That un-installed nil is the whole local guarantee: with
-		// it, internal/pty keeps no paste state and its stdin path is the identity
-		// function, so local attach behaviour is byte-identical by construction
-		// rather than by every branch happening to agree.
+		// In local mode SetPasteUploader is still not called AT ALL — not with
+		// nil, not with a no-op. No uploader means no paste is ever swallowed
+		// here and no ssh is ever put in the path of a file the agent can
+		// already open, and that remains the local guarantee.
+		//
+		// What the else branch installs is NOT a second uploader. It is an
+		// observation hook that can only ever decline (BOS-849). Without one,
+		// a boss running on the far side of a plain ssh login inspected pasted
+		// text not at all, so a screenshot pasted from the user's laptop
+		// reached the agent as a path to a file on the wrong machine with
+		// nothing anywhere to say so — silence that was indistinguishable from
+		// boss eating the paste. Boss cannot fetch that file (there is no
+		// reverse channel back to the client), so the hook forwards the bytes
+		// unchanged and explains, naming `boss --host` as the route that does
+		// work.
+		//
+		// The local guarantee is therefore now "never claims" rather than "no
+		// machinery": internal/pty does keep paste state on this branch, and
+		// byte-for-byte conservation rests on that hook's claim closure always
+		// returning false. HasPasteUploader and HasImagePasteNotice make both
+		// halves assertable from here.
 		if m.attachDestination != "" {
 			m.pasteUploader = newPasteUploader(m.attachDestination, m.agentSessionID)
 			ptycmd.SetPasteUploader(m.pasteUploader.upload)
+		} else {
+			ptycmd.SetImagePasteNotice()
 		}
 
 		// Stash everything needed for the deferred exec and stay in the

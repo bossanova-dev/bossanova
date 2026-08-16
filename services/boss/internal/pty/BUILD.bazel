@@ -21,6 +21,7 @@ go_library(
         "//lib/bossalib/safego",
         "//lib/bossalib/statusdetect",
         "//services/boss/internal/termreset",
+        "@com_github_charmbracelet_x_ansi//:ansi",
         "@com_github_creack_pty_v2//:pty",
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_rs_zerolog//log",
@@ -54,7 +55,9 @@ go_test(
     embed = [":pty"],
     deps = [
         "//services/boss/internal/termreset",
+        "@com_github_charmbracelet_x_ansi//:ansi",
         "@com_github_creack_pty_v2//:pty",
+        "@com_github_rs_zerolog//:zerolog",
         "@org_golang_x_term//:term",
     ],
 )

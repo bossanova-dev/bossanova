@@ -88,11 +88,22 @@ func TestCronActivityChecker_RunActive(t *testing.T) {
 	}
 }
 
-// fakeSessionLiveness reports the session running iff the boss session id is in `running`.
-type fakeSessionLiveness struct{ running map[string]bool }
+// fakeSessionLiveness reports the session alive iff the boss session id is in
+// `running`, parked iff it is in `parked`, and dead otherwise.
+type fakeSessionLiveness struct {
+	running map[string]bool
+	parked  map[string]bool
+}
 
-func (f fakeSessionLiveness) IsSessionAlive(_ context.Context, sessionID string) bool {
-	return f.running[sessionID]
+func (f fakeSessionLiveness) SessionLiveness(_ context.Context, sessionID string) Liveness {
+	switch {
+	case f.running[sessionID]:
+		return LivenessAlive
+	case f.parked[sessionID]:
+		return LivenessParked
+	default:
+		return LivenessDead
+	}
 }
 
 func TestCronActivityChecker_RunActive_MissingLogFallsBackToSessionLiveness(t *testing.T) {

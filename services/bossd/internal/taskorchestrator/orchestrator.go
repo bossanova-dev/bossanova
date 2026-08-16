@@ -107,7 +107,7 @@ type Orchestrator struct {
 	sessionCreator  SessionCreator
 	provider        vcs.Provider
 	baseSyncer      BaseBranchSyncer       // optional; nil-safe
-	livenessChecker SessionLivenessChecker // optional; nil-safe
+	livenessChecker SessionLivenessChecker // optional; nil-safe — see sessionLiveness
 	archiver        SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
 	autoMergeSem    chan struct{}
 	interval        time.Duration
@@ -494,6 +494,17 @@ func (o *Orchestrator) enqueueMappedCreateSession(ctx context.Context, task *bos
 	o.handleCreateSession(ctx, task, repo, mapping, true)
 }
 
+// sessionLiveness is the nil-safe wrapper around the optional liveness
+// checker. An unwired checker reports Alive so recovery never acts on a signal
+// it does not actually have — the same fail-toward-doing-nothing default the
+// boolean call site had before the verdict was widened.
+func (o *Orchestrator) sessionLiveness(ctx context.Context, sessionID string) session.Liveness {
+	if o.livenessChecker == nil {
+		return session.LivenessAlive
+	}
+	return o.livenessChecker.SessionLiveness(ctx, sessionID)
+}
+
 // dequeueNext processes the next queued task for a repo, if any.
 // Called after a task completes (either immediately or via callback).
 func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
@@ -732,7 +743,13 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 		case models.TaskMappingStatusInProgress:
 			if mapping.SessionID != nil {
 				// Has a session — check if it's still alive.
-				if o.livenessChecker != nil && !o.livenessChecker.IsSessionAlive(ctx, *mapping.SessionID) {
+				// Only a DEAD session recovers the task. A parked session
+				// (its pane deliberately reaped, chat row kept) is not a
+				// failure — failing it here would be exactly the wrong
+				// inference BOS-884 exists to prevent — so the mapping is
+				// left in place for a later sweep to re-evaluate.
+				switch o.sessionLiveness(ctx, *mapping.SessionID) {
+				case session.LivenessDead:
 					o.logger.Warn().
 						Str("repo", repoID).
 						Str("mapping", mappingID).
@@ -740,6 +757,14 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 						Msg("session dead, recovering stuck task")
 					// Reuse the existing idempotent completion flow.
 					o.HandleSessionCompleted(ctx, *mapping.SessionID, models.TaskMappingStatusFailed)
+				case session.LivenessParked:
+					o.logger.Info().
+						Str("repo", repoID).
+						Str("mapping", mappingID).
+						Str("session", *mapping.SessionID).
+						Msg("session parked (tmux pane deliberately reaped), leaving task in progress")
+				case session.LivenessAlive:
+					// Still working; the sweep has nothing to recover.
 				}
 			} else {
 				// InProgress with no session — orphaned. Mark failed and advance.

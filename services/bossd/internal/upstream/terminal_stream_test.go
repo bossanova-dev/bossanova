@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/tmux"
@@ -262,6 +263,20 @@ func (f *fakeAttachFactory) lastConfig() tmux.AttachConfig {
 	return f.configs[len(f.configs)-1]
 }
 
+// sessionNameFor returns the tmux session name the factory was asked to attach
+// to for one attach id. The concurrent-attach test needs the per-attach config
+// rather than just the last one.
+func (f *fakeAttachFactory) sessionNameFor(attachID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, cfg := range f.configs {
+		if cfg.AttachID == attachID {
+			return cfg.SessionName
+		}
+	}
+	return ""
+}
+
 func (f *fakeAttachFactory) configCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -328,6 +343,15 @@ const testTmuxClientName = "/dev/ttys100"
 
 func newTestHarness(t *testing.T) *testHarness {
 	t.Helper()
+	// Zero keeps the production terminalAttachWakeTimeout.
+	return newTestHarnessWithWakeTimeout(t, 0)
+}
+
+// newTestHarnessWithWakeTimeout builds the harness with an explicit
+// attach-wake wait budget, so a test can reach the give-up path without
+// spending the production ten seconds on it.
+func newTestHarnessWithWakeTimeout(t *testing.T, wakeTimeout time.Duration) *testHarness {
+	t.Helper()
 	opener := &fakeTerminalOpener{}
 	tmuxName := "boss-rep-chat-1"
 	chats := &fakeChatLookup{
@@ -344,6 +368,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		TmuxClient:    tmuxClient,
 		AttachFactory: factory.build,
 		Logger:        zerolog.Nop(),
+		WakeTimeout:   wakeTimeout,
 	})
 	return &testHarness{
 		opener:  opener,
@@ -506,6 +531,12 @@ func TestTerminalStreamClient_PersistedSessionName(t *testing.T) {
 // for a chat without a persisted tmux_session_name is rejected with a
 // clean TerminalAttachExited (rather than silently falling back to
 // ChatSessionName). Plan Codex catch #3.
+//
+// Since BOS-885 this is specifically the *no-waker* case: a client with no
+// waker wired keeps the original rejection. The wired behaviour — waking the
+// chat and attaching to the pane the wake persisted — is covered by
+// TestTerminalStreamClient_ClearedTmuxSessionNameWakes below. Neither path
+// ever recomputes the name locally.
 func TestTerminalStreamClient_MissingTmuxSessionName(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness(t)
@@ -532,6 +563,339 @@ func TestTerminalStreamClient_MissingTmuxSessionName(t *testing.T) {
 	}
 	if exited.GetReason() == "" {
 		t.Errorf("expected non-empty reason on exited frame")
+	}
+	if h.factory.configCount() != 0 {
+		t.Errorf("expected no attach factory invocations, got %d", h.factory.configCount())
+	}
+}
+
+// TestTerminalStreamClient_ClearedTmuxSessionNameWakes is the BOS-885 core:
+// a chat whose pane pointer was cleared is torn down, not dead. The attach
+// wakes it and then attaches to the pane name the wake reports — the same
+// recovery the TUI attach has always had. The name still comes from the wake
+// (which re-persists it on the chat row) rather than being recomputed here.
+func TestTerminalStreamClient_ClearedTmuxSessionNameWakes(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-cleared"] = chatRow{TmuxSessionName: nil}
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-woken",
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-cleared", ChatId: "claude-cleared",
+		}},
+	}
+
+	waitFor(t, "attach after wake", func() bool { return h.factory.configCount() == 1 })
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-woken" {
+		t.Errorf("attach SessionName = %q, want the woken pane boss-rep-chat-woken", got)
+	}
+	if got := waker.calls.Load(); got != 1 {
+		t.Errorf("waker calls = %d, want exactly 1", got)
+	}
+
+	// A clean resume must not narrate anything: the very first frame the
+	// browser sees is the pane's own output, not a boss notice.
+	attach := h.factory.get("att-cleared")
+	if attach == nil {
+		t.Fatal("no attach registered for att-cleared")
+	}
+	attach.output <- &pb.TerminalDataChunk{AttachId: "att-cleared", Data: []byte("hello")}
+	msg := waitForServerMessage(t, stream)
+	data := msg.GetData()
+	if data == nil {
+		t.Fatalf("expected a data frame, got %+v", msg)
+	}
+	if string(data.GetData()) != "hello" {
+		t.Errorf("first data frame = %q, want the pane output %q", data.GetData(), "hello")
+	}
+}
+
+// TestTerminalStreamClient_ConcurrentAttachesWakeOnce pins the plan's Risk #2:
+// two browser tabs opening the same cleared chat must not race into two wakes
+// (and so two panes). The plan requires this be pinned rather than assumed.
+//
+// The safety does not come from the singleflight in server.wakeChat — this
+// path never reaches it concurrently. Both tabs' attach frames arrive on one
+// TerminalStream, and handleAttach runs inline on the single recv loop, so the
+// daemon processes them strictly in order. The first wakes and the wake
+// re-persists the pane pointer onto the chat row; the second re-reads that row
+// and finds a live pointer, so it attaches straight to the same pane.
+//
+// That makes the ordering load-bearing, which is exactly why it needs a test:
+// moving the wake off the recv loop (the fix for the head-of-line blocking
+// noted on terminalAttachWakeTimeout) would make these two genuinely
+// concurrent and put real weight on the singleflight. This test is what would
+// catch that change regressing into a second pane.
+//
+// The re-persist modelled here is also the only in-repo evidence for it on
+// this path: the write itself lives in server.wakeChat, which this branch
+// does not touch.
+func TestTerminalStreamClient_ConcurrentAttachesWakeOnce(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-raced"] = chatRow{TmuxSessionName: nil}
+	woken := "boss-rep-chat-raced"
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    woken,
+	}
+	// Model the wake's write-back. This runs on the detached wake goroutine,
+	// not the recv loop, so the synchronisation that makes it safe is the
+	// buffered result channel: the write happens before the send, and the
+	// recv loop's receive happens before it re-reads the row for the next
+	// attach. That edge is the property to preserve — a future change that
+	// let the recv loop read the row without receiving from the wake first
+	// would make this a real race.
+	waker.onWake = func() {
+		h.chats.rows["claude-raced"] = chatRow{TmuxSessionName: &woken}
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	for _, attachID := range []string{"att-tab-a", "att-tab-b"} {
+		stream.recv <- &pb.TerminalClientMessage{
+			Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+				AttachId: attachID, ChatId: "claude-raced",
+			}},
+		}
+	}
+
+	waitFor(t, "both attaches", func() bool { return h.factory.configCount() == 2 })
+
+	if got := waker.calls.Load(); got != 1 {
+		t.Errorf("waker calls = %d, want exactly 1: the second attach must read the re-persisted pane pointer, not spawn a second pane", got)
+	}
+	for _, attachID := range []string{"att-tab-a", "att-tab-b"} {
+		if got := h.factory.sessionNameFor(attachID); got != woken {
+			t.Errorf("attach %s SessionName = %q, want both tabs on the one woken pane %q", attachID, got, woken)
+		}
+	}
+}
+
+// TestTerminalStreamClient_WakeTimeoutDoesNotHangStream pins the plan's Risk
+// #1 — "a wake must not hang the stream" — which is the whole reason
+// terminalAttachWakeTimeout exists and was previously asserted by nothing.
+//
+// It pins the guarantee that matters, which is about the RECV LOOP rather
+// than about the wake: handleAttach runs inline on the single reader
+// goroutine, so a wake it waited on indefinitely would stall every other
+// terminal on the stream and starve the heartbeat until the watchdog tore the
+// whole thing down. The wake here never returns at all, which is the case no
+// deadline handed *into* the wake can cover (server.wakeChat's legacy backfill
+// detaches from the caller's context, and singleflight.Do ignores a joiner's
+// context outright).
+//
+// So: the attach gives up with a clean timeout, and — the real assertion — a
+// subsequent attach on the same stream is still served while the first wake is
+// still stuck.
+func TestTerminalStreamClient_WakeTimeoutDoesNotHangStream(t *testing.T) {
+	t.Parallel()
+	h := newTestHarnessWithWakeTimeout(t, 50*time.Millisecond)
+	h.chats.rows["claude-slow"] = chatRow{TmuxSessionName: nil}
+
+	// Never released until the test is done: this wake models one wedged
+	// behind a stage the attach's context cannot interrupt.
+	release := make(chan struct{})
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-slow",
+		onWake:  func() { <-release },
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	// LIFO: stop() runs first, then close(release) unwinds the wake goroutine.
+	// That order is fine because Run's teardown joins the attach pumps, not
+	// the detached wake — but it is the order a goroutine-leak check would
+	// have to account for.
+	defer close(release)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-slow", ChatId: "claude-slow",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if got := exited.GetReason(); got != "wake chat: timed out" {
+		t.Errorf("exited.reason = %q, want %q", got, "wake chat: timed out")
+	}
+	if h.factory.configCount() != 0 {
+		t.Errorf("expected no attach to be built for a timed-out wake, got %d", h.factory.configCount())
+	}
+
+	// The stream is still live while the first wake remains stuck. This is
+	// the assertion that would fail if the wake were ever waited on inline.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-live", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "a later attach served while the wake is still stuck", func() bool {
+		return h.factory.sessionNameFor("att-live") == "boss-rep-chat-1"
+	})
+}
+
+// TestSanitizeWakeReason covers the guard on the one BOS-885 path that puts
+// non-fixed text on the wire. The reason reaches the browser's terminal, so
+// control bytes (which would steer the emulator) and length (which would let a
+// future unbounded reason flood the pane) both have to be contained.
+func TestSanitizeWakeReason(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("é", maxWakeReasonRunes+50)
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text is untouched", "could not resume", "could not resume"},
+		{"escape sequences are stripped", "clear\x1b[2Jscreen", "clear[2Jscreen"},
+		{"carriage returns and newlines go", "a\r\nb", "ab"},
+		{"del is stripped", "a\x7fb", "ab"},
+		{"multi-byte text survives", "café ☕", "café ☕"},
+		{"over-long input is truncated by runes", long, strings.Repeat("é", maxWakeReasonRunes) + "…"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeWakeReason(tc.in); got != tc.want {
+				t.Errorf("sanitizeWakeReason(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// Truncation must not split a multi-byte rune: the result has to stay
+	// valid UTF-8, which a byte-wise cut would not guarantee.
+	if got := sanitizeWakeReason(long); !utf8.ValidString(got) {
+		t.Errorf("truncated reason is not valid UTF-8: %q", got)
+	}
+}
+
+// TestTerminalStreamClient_LivePaneDoesNotWake pins the other half of
+// BOS-885: waking is reserved for a cleared pointer. A chat whose pane is
+// already live attaches straight to the persisted name, so the wake — and
+// therefore any chance of a second pane — never happens.
+func TestTerminalStreamClient_LivePaneDoesNotWake(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	// A waker that would hand back a *different* pane, so a spurious wake
+	// shows up as a wrong SessionName rather than passing by coincidence.
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-second-pane",
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-live", ChatId: "claude-1",
+		}},
+	}
+
+	waitFor(t, "attach to live pane", func() bool { return h.factory.configCount() == 1 })
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-1" {
+		t.Errorf("attach SessionName = %q, want the persisted boss-rep-chat-1", got)
+	}
+	if got := waker.calls.Load(); got != 0 {
+		t.Errorf("waker calls = %d, want 0 — a live pane must never be re-spawned", got)
+	}
+}
+
+// TestTerminalStreamClient_FreshFallbackWakeReportsReason covers BOS-885 D2:
+// when the wake could not resume the transcript it spawns a fresh agent, and
+// the user has just silently lost their conversation. Say why, in the
+// terminal they already have open, before any pane output can bury it.
+func TestTerminalStreamClient_FreshFallbackWakeReportsReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-fresh"] = chatRow{TmuxSessionName: nil}
+	h.client.SetWaker(&fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_FRESH_FALLBACK,
+		tmux:    "boss-rep-chat-fresh",
+		reason:  "transcript_missing",
+	})
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-fresh", ChatId: "claude-fresh",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	data := msg.GetData()
+	if data == nil {
+		t.Fatalf("expected the notice as a data frame, got %+v", msg)
+	}
+	if data.GetAttachId() != "att-fresh" {
+		t.Errorf("notice attach_id = %q, want att-fresh", data.GetAttachId())
+	}
+	if !strings.Contains(string(data.GetData()), "transcript_missing") {
+		t.Errorf("notice = %q, want it to carry the fallback reason", data.GetData())
+	}
+	// The attach itself still proceeds — a degraded resume is usable.
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-fresh" {
+		t.Errorf("attach SessionName = %q, want boss-rep-chat-fresh", got)
+	}
+}
+
+// TestTerminalStreamClient_UnwakeableChatReason covers the failure end of
+// BOS-885: a chat that genuinely cannot be woken must fail the attach loudly
+// and leave nothing half-open, rather than hanging the stream on a wake that
+// will never succeed.
+func TestTerminalStreamClient_UnwakeableChatReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-dead"] = chatRow{TmuxSessionName: nil}
+	h.client.SetWaker(&fakeChatWaker{err: errors.New("worktree missing")})
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-dead", ChatId: "claude-dead",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if exited.GetAttachId() != "att-dead" {
+		t.Errorf("exited.attach_id = %q, want att-dead", exited.GetAttachId())
+	}
+	if !strings.Contains(exited.GetReason(), "worktree missing") {
+		t.Errorf("exited.reason = %q, want it to explain the wake failure", exited.GetReason())
 	}
 	if h.factory.configCount() != 0 {
 		t.Errorf("expected no attach factory invocations, got %d", h.factory.configCount())

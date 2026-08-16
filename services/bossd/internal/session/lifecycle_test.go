@@ -602,6 +602,8 @@ type mockAgentChatStore struct {
 	deleteErr                error
 	listBySessionErr         error // when non-nil, ListBySession returns it
 	listWithTmuxErr          error // when non-nil, ListWithTmuxSession returns it
+	// onUpdateTmuxName, when set, runs after each recorded pointer write.
+	onUpdateTmuxName func(name *string)
 }
 
 type markStartFailedCall struct {
@@ -716,7 +718,14 @@ func (m *mockAgentChatStore) UpdateAgentSessionID(_ context.Context, id, oldAgen
 	return nil
 }
 
-func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessionID string, name *string) error {
+func (m *mockAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
+	// Honour cancellation the way the real SQLite store does: a write issued on
+	// a dead context fails without touching the row. Checked before the call is
+	// recorded so a refused write leaves no trace, which is what lets a test
+	// tell a write that landed from one that never ran.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{agentSessionID: agentSessionID, name: name})
@@ -731,6 +740,12 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 		if chat.AgentSessionID == agentSessionID {
 			chat.TmuxSessionName = name
 		}
+	}
+	// Runs while the mock's lock is held, so a hook must not call back into the
+	// store. It exists to let a test cancel the caller's context at a precise
+	// point mid-teardown.
+	if m.onUpdateTmuxName != nil {
+		m.onUpdateTmuxName(name)
 	}
 	return m.updateTmuxNameErr
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,16 +318,30 @@ func (f *fakeCmdSessionReader) GetSession(_ context.Context, _ string) (*pb.Sess
 }
 
 // fakeChatWaker returns a scripted WakeChatStream result for the WakeChat
-// delegation path.
+// delegation path. calls counts invocations so the terminal-attach tests can
+// assert that a chat with a live pane is never woken (BOS-885); it is atomic
+// because the attach path runs the wake on a detached goroutine, so the count
+// is written off the recv loop and read from it.
+// onWake, when set, runs inside the wake before it returns. A real wake
+// re-persists the pane pointer onto the chat row (server.wakeChat ->
+// UpdateTmuxSessionName) before answering, so the hook lets a test model that
+// write-back — which is what makes a second attach for the same chat a plain
+// attach rather than a second wake.
 type fakeChatWaker struct {
 	outcome pb.WakeChatResult_Outcome
 	tmux    string
 	reason  string
 	code    pb.CommandResult_ErrorCode
 	err     error
+	calls   atomic.Int64
+	onWake  func()
 }
 
 func (f *fakeChatWaker) WakeChatStream(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error) {
+	f.calls.Add(1)
+	if f.onWake != nil {
+		f.onWake()
+	}
 	return f.outcome, f.tmux, f.reason, f.code, f.err
 }
 

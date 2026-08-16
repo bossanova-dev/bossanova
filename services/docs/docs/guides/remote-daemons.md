@@ -189,6 +189,57 @@ the entry with:
 infocmp -x $TERM | ssh <destination> tic -x -
 ```
 
+## Pasting screenshots into a remote chat
+
+**Pasting screenshots works under `boss --host`, and cannot work over plain ssh.**
+The difference is which machine the TUI runs on, and it decides whether boss can
+reach the file at all.
+
+Your terminal never pastes an image. When you press `cmd`/`ctrl+V` with a
+screenshot on the clipboard, the emulator writes the image to a temporary file on
+**the machine you are sitting at** and pastes that file's **path** as text —
+something like `/tmp/cmux-drop-383cd973-4bab-42c5-a2f5-20497d580fa2.png`. All boss
+ever sees is that path.
+
+- **Under `boss --host <destination>`** the TUI runs on your local machine, which
+  is the machine the file is on. Boss recognises the pasted path, copies the file
+  to a per-chat temporary directory on the host the agent runs on, and inserts
+  **that** path into the composer instead. The agent opens a file it can actually
+  read, and the temporary directory is removed when you detach.
+
+- **Under a plain `ssh` login** — you SSH to the box and run `boss` there — the
+  TUI runs on the **remote** machine and the screenshot is on your laptop. There
+  is no reverse channel from the remote process back to your local filesystem, so
+  boss cannot fetch the file. The path is passed through to the agent exactly as
+  you pasted it, and the agent reports it cannot open it.
+
+Boss says so rather than failing silently: a paste of an absolute image path that
+does not exist on the machine running the TUI is recorded in `boss.log`, and
+briefly flashes a one-line
+`[boss] no such image on this machine: … · use boss --host` on the bottom row
+(the file name is shortened so the line always fits one row). The log is the
+durable record and the flash is
+easy to miss — boss forwards the paste to the agent immediately afterwards, and
+the agent's next frame redraws over that row — so check the log if you did not
+catch it:
+
+```bash
+grep 'image path not claimed' "${XDG_STATE_HOME:-$HOME/.local/state}/bossanova/logs/boss.log"
+```
+
+Your keystrokes are never altered — the text still reaches the agent exactly as
+typed.
+
+To paste screenshots into a remote chat, attach with `boss --host` from your own
+machine rather than running `boss` inside an SSH session:
+
+```bash
+boss --host <destination>
+```
+
+If you must work inside an SSH session, copy the file over yourself and paste the
+**remote** path — for example with `scp ~/Desktop/shot.png <destination>:/tmp/`.
+
 ## Commands that stay local
 
 A few commands act on the machine `boss` runs on, so they are refused or hidden

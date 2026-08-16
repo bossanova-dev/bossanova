@@ -703,6 +703,14 @@ description stamps `- Contract: v<N>` under `## Planning` (v1 today):
 `## Acceptance criteria` · `## Required proof` · `## Why this needs a human` · `## Open Questions` ·
 `## Planning` · `## Original notes`
 
+`## Proof harness analysis` is additionally registered `optional` — recognised, never required — so
+the Step 7 template may emit it. Any other heading is off-contract: drop it, or register it in
+`planContract.sections`. The programmatic check is
+**`validatePlanDescription(config, description)`** (`$BOSS_PLAN_TOOLBOX/skill-config.mjs`) — note the
+**config-first** order; the natural-reading `(description, config)` call throws a named
+argument-order error. It returns `{ ok, version, missing, unknown, unsupportedVersion }`; `ok` covers
+only `missing`/`unsupportedVersion`, and `unknown` is enforced by the Phase 4 contract gate.
+
 **Headless open questions → `agent-question`.** The subagent records only genuinely **controversial**
 forks (high bar — could-have-gone-either-way calls, never routine ones) as `openQuestions`; a
 non-empty list drives the `agent-question` label (Phase 4) and the plan's `## Open Questions`
@@ -797,6 +805,38 @@ subagent → validate its envelope → fold or skip), against
 > write**, a one-line stderr reason carrying the guard's own message (it prints each), discard the
 > scratch (Phase 5 cleanup), and exit non-zero. The guard reuses the in-hand original description and
 > returned `descriptionSummary`, so it adds no new Linear read.
+
+> **STOP — plan-contract gate (mandatory, mechanical, do not skip).** "Exactly these `##` sections,
+> in order" was until now enforced only by the **consumer**, days after a malformed artifact had
+> already been published: descriptions missing most required sections, a whole-field self-describing
+> placeholder, an unsubstituted `<ATTACHMENT-ID>`-style token, an off-contract heading, and a plan
+> file ending in literal tool-call scaffolding all passed every earlier gate. Verify
+> **mechanically**, reusing the in-hand `descriptionSummary` and `PLAN_FILE` — **zero** extra tracker
+> reads. Re-derive the toolbox dir here; blocks inherit nothing:
+>
+> ```bash
+> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+> ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
+> PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
+> if ! node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE"; then
+>   echo "plan-contract gate failed (guard message above) — no Linear write, aborting" >&2
+>   rm -f "$ORIG" "$SAFE_ORIG" "$NEW" "$PLAN_FILE" || echo "warning: contract gate scratch cleanup failed" >&2
+>   exit 1
+> fi
+> ```
+>
+> This is a **fifth** failed-gate exit, so it owes the same cleanup as the four above and removes all
+> four scratch paths — `$ORIG` included, the raw Phase 1 source that may carry sensitive content.
+> "Discard the scratch (Phase 5 cleanup)" describes the SUCCESS path only: `exit 1` means Phase 5
+> never runs, which is exactly why each failing gate deletes the scratch itself.
+>
+> One stderr line per violation, each tagged `missing-sections`, `unknown-section`, `section-order`,
+> `placeholder-residue`, `not-a-description`, `plan-file-residue`, or `unreadable-input`; a missing
+> or unreadable file is itself a violation, never a pass, and an `unknown-section` message names both
+> the heading and its remedy. On non-zero exit take the **SAFE branch**: **no Linear write**, no
+> attachment finalize, a one-line stderr reason carrying the guard's own message, discard the scratch
+> as above, exit non-zero.
 
 1. Finalize the native tracker attachment before tracker writeback (failure: no plan metadata/state write). Follow
    [`references/plan-storage.md`](references/plan-storage.md). Set

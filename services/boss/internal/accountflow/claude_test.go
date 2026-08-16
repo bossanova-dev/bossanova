@@ -273,7 +273,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true, Label: "piped",
+			Prompter: pr, Client: cl, PasteMode: true, StdinUnavailable: true, Label: "piped",
 		}); err != nil {
 			t.Fatalf("headless token-stdin registration failed: %v", err)
 		}
@@ -293,7 +293,7 @@ func TestRunClaudeAdd(t *testing.T) {
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
 		cl := &fakeAccountClient{}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true,
+			Prompter: pr, Client: cl, PasteMode: true, StdinUnavailable: true,
 		}); err != nil {
 			t.Fatalf("bare headless token-stdin registration failed: %v", err)
 		}
@@ -312,7 +312,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			{Id: "a1", Provider: "claude", Label: "claude-1"},
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true,
+			Prompter: pr, Client: cl, PasteMode: true, StdinUnavailable: true,
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
@@ -331,7 +331,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			{Id: "a1", Provider: "claude", Label: "claude-2"},
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
-			Prompter: pr, Client: cl, PasteMode: true,
+			Prompter: pr, Client: cl, PasteMode: true, StdinUnavailable: true,
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
@@ -417,6 +417,94 @@ func TestRunClaudeAdd(t *testing.T) {
 		}
 		if !strings.Contains(pr.transcript(), "Account verification failed") {
 			t.Fatalf("keep/remove prompt must be shown for a validation failure:\n%s", pr.transcript())
+		}
+	})
+}
+
+// TestClaudePasteModeDoesNotSuppressTheLabelPrompt pins the split between the
+// two things --token-stdin used to mean at once (BOS-847).
+//
+// PasteMode says only "obtain the token by pasting instead of by running the
+// CLI". StdinUnavailable says "there is no interactive input left to read".
+// They coincide for `boss account add claude --token-stdin` and for nothing
+// else: the TUI pastes a token from a prompter that is perfectly able to answer
+// one more question, and the --host TUI flow pastes because it cannot spawn a
+// local claude at all. Feeding PasteMode to the identity prompt made those
+// callers silently skip the label question based on a fact about a different
+// process's stdin.
+func TestClaudePasteModeDoesNotSuppressTheLabelPrompt(t *testing.T) {
+	const labelPrompt = "Label for this account"
+
+	asked := func(pr *fakePrompter) bool {
+		for _, q := range pr.asked {
+			if q == labelPrompt {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("paste_mode_alone_still_asks_and_uses_the_answer", func(t *testing.T) {
+		tok := claudeToken()
+		pr := &fakePrompter{answers: []string{tok, "chosen-by-operator"}}
+		cl := &fakeAccountClient{}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
+			Prompter: pr, Client: cl, PasteMode: true,
+		}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
+		}
+		if !asked(pr) {
+			t.Fatalf("PasteMode alone must not suppress %q; asked: %v", labelPrompt, pr.asked)
+		}
+		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "chosen-by-operator" {
+			t.Fatalf("label = %+v, want the operator's answer", cl.addReqs)
+		}
+	})
+
+	t.Run("stdin_unavailable_takes_the_default_without_asking", func(t *testing.T) {
+		tok := claudeToken()
+		// A non-empty second answer that must NOT be consumed: if the label were
+		// still prompted, the account would be labelled "never-read".
+		pr := &fakePrompter{answers: []string{tok, "never-read"}}
+		cl := &fakeAccountClient{}
+		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
+			Prompter: pr, Client: cl, PasteMode: true, StdinUnavailable: true,
+		}); err != nil {
+			t.Fatalf("RunClaudeAdd: %v", err)
+		}
+		if asked(pr) {
+			t.Fatalf("StdinUnavailable must suppress %q; asked: %v", labelPrompt, pr.asked)
+		}
+		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-1" {
+			t.Fatalf("label = %+v, want the computed default claude-1", cl.addReqs)
+		}
+	})
+
+	t.Run("explicit_label_wins_under_either_flag", func(t *testing.T) {
+		for _, tc := range []struct {
+			name             string
+			stdinUnavailable bool
+		}{
+			{"stdin available", false},
+			{"stdin unavailable", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tok := claudeToken()
+				pr := &fakePrompter{answers: []string{tok}}
+				cl := &fakeAccountClient{}
+				if err := RunClaudeAdd(context.Background(), ClaudeOptions{
+					Prompter: pr, Client: cl, PasteMode: true,
+					StdinUnavailable: tc.stdinUnavailable, Label: "explicit",
+				}); err != nil {
+					t.Fatalf("RunClaudeAdd: %v", err)
+				}
+				if asked(pr) {
+					t.Fatalf("--label must not be re-asked; asked: %v", pr.asked)
+				}
+				if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "explicit" {
+					t.Fatalf("label = %+v, want explicit", cl.addReqs)
+				}
+			})
 		}
 	})
 }

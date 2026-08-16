@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -973,3 +975,117 @@ func TestRegistryAdapter_MapAndTouch(t *testing.T) {
 }
 
 func strptr(s string) *string { return &s }
+
+// throttleErr builds the exact error shape the claude plugin returns for a
+// throttled usage endpoint, so these tests pin the real plugin→daemon contract
+// rather than a convenient stand-in.
+func throttleErr(t *testing.T, retryAfter time.Duration) error {
+	t.Helper()
+	st := grpcstatus.New(codes.ResourceExhausted, "usage_probe_throttled")
+	if retryAfter <= 0 {
+		return st.Err()
+	}
+	withDetails, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(retryAfter)})
+	if err != nil {
+		t.Fatalf("attach RetryInfo: %v", err)
+	}
+	return withDetails.Err()
+}
+
+// TestIsProbeThrottledAndRetryAfter pins the read-only throttle classifiers.
+// Note there is deliberately NO store-writing MarkThrottled... counterpart to
+// MarkSuspendedIfConfirmed: a polling throttle says nothing about the account's
+// quota, so keeping this surface read-only is what stops a future caller
+// reaching for a cooldown and re-creating BOS-584.
+func TestIsProbeThrottledAndRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		err           error
+		wantThrottled bool
+		wantDelay     time.Duration
+		wantOK        bool
+	}{
+		{
+			name:          "throttle with retry info",
+			err:           throttleErr(t, 2*time.Minute),
+			wantThrottled: true,
+			wantDelay:     2 * time.Minute,
+			wantOK:        true,
+		},
+		{
+			name:          "throttle without retry info",
+			err:           throttleErr(t, 0),
+			wantThrottled: true,
+		},
+		{
+			name: "suspension is not a throttle",
+			err:  grpcstatus.Error(codes.PermissionDenied, "account suspended"),
+		},
+		{
+			name: "auth invalidation is not a throttle",
+			err:  grpcstatus.Error(codes.Unauthenticated, "auth_invalidated"),
+		},
+		{
+			name: "plain non-grpc error",
+			err:  errors.New("dial tcp: connection refused"),
+		},
+		{
+			name: "nil",
+			err:  nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsProbeThrottled(tc.err); got != tc.wantThrottled {
+				t.Fatalf("IsProbeThrottled = %v, want %v", got, tc.wantThrottled)
+			}
+			delay, ok := ProbeRetryAfter(tc.err)
+			if ok != tc.wantOK {
+				t.Fatalf("ProbeRetryAfter ok = %v, want %v", ok, tc.wantOK)
+			}
+			if delay != tc.wantDelay {
+				t.Fatalf("ProbeRetryAfter delay = %v, want %v", delay, tc.wantDelay)
+			}
+		})
+	}
+}
+
+// TestProbeThrottleAndSuspensionAreDisjoint pins that the two classifiers can
+// never both fire. They drive opposite reactions — a throttle is transient and
+// must leave health untouched, a suspension is permanent and fails health — so
+// an overlap would let a polling throttle bench a healthy account.
+func TestProbeThrottleAndSuspensionAreDisjoint(t *testing.T) {
+	throttle := throttleErr(t, time.Minute)
+	if !IsProbeThrottled(throttle) || IsSuspension(throttle) {
+		t.Fatalf("throttle: IsProbeThrottled=%v IsSuspension=%v, want true/false",
+			IsProbeThrottled(throttle), IsSuspension(throttle))
+	}
+	suspension := grpcstatus.Error(codes.PermissionDenied, "account suspended")
+	if IsProbeThrottled(suspension) || !IsSuspension(suspension) {
+		t.Fatalf("suspension: IsProbeThrottled=%v IsSuspension=%v, want false/true",
+			IsProbeThrottled(suspension), IsSuspension(suspension))
+	}
+}
+
+// TestMarkSuspendedIfConfirmedIgnoresThrottle is the BOS-584 guard from the
+// other direction: the one store-writing reaction point must not fire on a
+// throttle, so a rate-limited poller can never fail a healthy account's health.
+func TestMarkSuspendedIfConfirmedIgnoresThrottle(t *testing.T) {
+	store := &spySuspender{}
+	handled, _, err := MarkSuspendedIfConfirmed(context.Background(), store, "acct", throttleErr(t, time.Minute))
+	if err != nil {
+		t.Fatalf("MarkSuspendedIfConfirmed err = %v, want nil", err)
+	}
+	if handled {
+		t.Fatal("handled = true, want false: a throttle is not a suspension")
+	}
+	if store.calls != 0 {
+		t.Fatalf("MarkAccountSuspended calls = %d, want 0", store.calls)
+	}
+}
+
+type spySuspender struct{ calls int }
+
+func (s *spySuspender) MarkAccountSuspended(context.Context, string, string) error {
+	s.calls++
+	return nil
+}

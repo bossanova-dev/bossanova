@@ -3,6 +3,7 @@ package upstream
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -49,6 +50,40 @@ func TestBuildUpstreamHTTPClient_HTTPSKeepalive(t *testing.T) {
 	}
 	if h2tr.PingTimeout != HTTP2PingTimeout {
 		t.Errorf("PingTimeout = %s, want %s", h2tr.PingTimeout, HTTP2PingTimeout)
+	}
+}
+
+// TestWorkOSRefreshHTTPClientHasHalfOpenDetection guards the client used for
+// the one exchange whose failure cannot be retried. It previously used
+// http.DefaultTransport, which has no HTTP/2 keepalive: a pooled connection to
+// api.workos.com that had gone half-open (laptop sleep, Wi-Fi or VPN path
+// change) was handed straight back out, the request was written into a dead
+// connection, and the resulting timeout was classified as a dispatched
+// exchange with an unknown outcome — the state that forces a manual re-login.
+func TestWorkOSRefreshHTTPClientHasHalfOpenDetection(t *testing.T) {
+	c := newWorkOSRefreshHTTPClient()
+
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("refresh client transport = %T, want *http.Transport", c.Transport)
+	}
+	if tr == http.DefaultTransport {
+		t.Fatal("refresh client uses http.DefaultTransport, which has no HTTP/2 keepalive")
+	}
+	// ConfigureTransports registers the h2 upgrade under "h2"; its absence
+	// means the keepalive knobs were never wired in.
+	if _, registered := tr.TLSNextProto["h2"]; !registered {
+		t.Fatal("refresh client transport has no HTTP/2 upgrade registered")
+	}
+	if c.Timeout != workOSRefreshTimeout {
+		t.Errorf("Timeout = %s, want %s", c.Timeout, workOSRefreshTimeout)
+	}
+	// The budget must cover a cold DNS lookup, TCP connect, TLS handshake and
+	// the round trip on a machine whose network has just woken up. The old 10s
+	// could not, and overrunning it produces an unrecoverable sign-out.
+	if workOSRefreshTimeout <= 10*time.Second {
+		t.Errorf("workOSRefreshTimeout = %s, want more than the 10s budget that caused overnight sign-outs",
+			workOSRefreshTimeout)
 	}
 }
 

@@ -123,7 +123,7 @@ func (f *fakeDecisionUsageCache) MarkAccountSuspended(_ context.Context, id stri
 }
 
 func probedResetForTest(cache *fakeDecisionUsageCache) *time.Time {
-	snap, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "acct-1")
+	snap, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "acct-1", nil)
 	if !ok || !rotation.UsageSnapshotConfirmsLimited(snap) {
 		return nil
 	}

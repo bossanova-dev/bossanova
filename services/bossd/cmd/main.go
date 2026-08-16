@@ -220,12 +220,54 @@ func undeliveredReason(msg *bossanovav1.SendChatMessageResponse) string {
 	return reason
 }
 
+// probeThrottleFloor is the minimum time the periodic usage refresh waits
+// before probing an account again after its usage endpoint returned a throttle.
+//
+// It is a floor, not a guess to be overridden downwards. The endpoint enforces
+// roughly 28-30 requests per identity per rolling 60-MINUTE TRAILING window, so
+// a saturated identity does not regain headroom gradually — and a stated
+// Retry-After frequently under-reports when the block actually clears. Six
+// minutes caps a single account at ~10 polls/hour, comfortably inside that
+// budget even with several accounts and the other on-demand probe callers
+// sharing it. A longer server-stated horizon always wins over this value, up to
+// probeThrottleCeiling.
+const probeThrottleFloor = 6 * time.Minute
+
+// probeThrottleCeiling caps how long a server-stated Retry-After may park an
+// account's periodic usage refresh.
+//
+// Retry-After is upstream input this daemon does not control, and before
+// BOS-828 nothing read it at all — so honouring it verbatim is a new trust
+// relationship that needs a bound. A bogus or buggy `Retry-After: 86400` would
+// otherwise stop refreshing that account for a day, and rotation's
+// selectDefault only trusts a snapshot inside the staleness window: every
+// decision for that account would silently degrade to a stale snapshot, with a
+// single WARN at the moment of throttle and nothing afterwards. Overlong values
+// are a much cheaper failure to absorb than a starved rotation, because the
+// worst case of re-probing early is one more 429.
+//
+// This BOUNDS that overshoot rather than eliminating it, and the difference
+// matters to anyone tuning these values. At default config the staleness window
+// is 30m and the refresh tick 15m, so a throttle at T leaves the newest good
+// snapshot dated T-15m, the T+15m tick skips, and the next probe lands at T+30m
+// — a 45-minute-old snapshot, still outside the window. Eliminating the
+// overshoot means deriving this constant from
+// settings.ManagedAccounts.UsageStalenessWindow() and threading it in, which is
+// the same config-threading change probeThrottleFloor deliberately does not
+// make; both belong to one follow-up, not here.
+//
+// Thirty minutes is comfortably above any horizon this endpoint states in
+// practice while still bounded by the 60-minute trailing window the budget is
+// measured over, so the clamp only ever engages on an implausible value.
+const probeThrottleCeiling = 30 * time.Minute
+
 func probeUsageSnapshotForRotation(
 	ctx context.Context,
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
 	accountID string,
+	throttleUntil map[string]time.Time,
 ) (models.UsageSnapshot, bool) {
 	if accountID == "" || recorder == nil {
 		return models.UsageSnapshot{}, false
@@ -236,6 +278,31 @@ func probeUsageSnapshotForRotation(
 	}
 	snap, err := usageProbe.ProbeUsageSnapshot(ctx, accountID)
 	if err != nil {
+		// The usage endpoint throttled our POLLING (BOS-828) — distinct from the
+		// suspension below and disjoint from it by gRPC code. It is emphatically
+		// not evidence about the account's quota, so nothing is written to the
+		// account: no cooldown, no health change. The only reaction is that the
+		// caller-owned backoff map, when the caller keeps one, stops the periodic
+		// loop re-probing this account until the deadline. throttleUntil is nil
+		// for the on-demand rotation/failover callers, which need a fresh answer
+		// every time and deliberately do not honour the backoff.
+		if accountwiring.IsProbeThrottled(err) {
+			retryAfter, stated := accountwiring.ProbeRetryAfter(err)
+			backoff := min(max(retryAfter, probeThrottleFloor), probeThrottleCeiling)
+			if throttleUntil != nil {
+				throttleUntil[accountID] = time.Now().Add(backoff)
+			}
+			// Deliberately its own message, not the generic "usage probe failed"
+			// below, so an operator can grep the two apart: this one is our
+			// poller running hot, that one is the account or the network.
+			logger.Warn().Str("account_id", accountID).
+				Dur("retry_after", retryAfter).
+				Bool("retry_after_stated", stated).
+				Dur("backoff", backoff).
+				Bool("backoff_honored", throttleUntil != nil).
+				Msg("auto-rotate: usage endpoint throttled the poll; backing off")
+			return models.UsageSnapshot{}, false
+		}
 		// A confirmed suspension (org/billing block) is a permanent condition,
 		// unlike a transient probe failure: proactively fail the account's health
 		// so rotation excludes it before any session binds to it. Scoped narrowly
@@ -299,6 +366,7 @@ func refreshActiveAccountUsage(
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
+	throttleUntil map[string]time.Time,
 ) int {
 	store, ok := recorder.(accountListStore)
 	if !ok {
@@ -315,7 +383,20 @@ func refreshActiveAccountUsage(
 		if acct == nil || acct.Status != models.AccountStatusActive {
 			continue
 		}
-		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID)
+		// Skip BEFORE the RPC — the whole point of the backoff is to stop
+		// spending requests from a budget we already exhausted, so a guard
+		// placed after the probe would be no guard at all. Reads and deletes on
+		// a nil map are both no-ops, so an on-demand caller passing nil simply
+		// never skips.
+		if until, backingOff := throttleUntil[acct.ID]; backingOff {
+			if until.After(now) {
+				continue
+			}
+			// The window closed; drop the entry so the map cannot grow without
+			// bound across a long-lived daemon.
+			delete(throttleUntil, acct.ID)
+		}
+		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID, throttleUntil)
 		if !ok {
 			continue
 		}
@@ -489,7 +570,7 @@ func probeCandidateUtilizationForRotationSignal(
 			continue
 		}
 		sawCandidate = true
-		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID)
+		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID, nil)
 		if !ok {
 			continue
 		}
@@ -1980,7 +2061,7 @@ func run(opts runOpts) error {
 	// fail-safe — any error leaves the chat LIMITED. Config is re-read live so the
 	// opt-out applies without a daemon restart.
 	rateLimitProbe := func(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
-		snap, ok := probeUsageSnapshotForRotation(ctx, log.Logger, accountMaterializer, accounts, accountID)
+		snap, ok := probeUsageSnapshotForRotation(ctx, log.Logger, accountMaterializer, accounts, accountID, nil)
 		if !ok {
 			return models.UsageSnapshot{}, nil
 		}
@@ -3780,7 +3861,17 @@ func run(opts runOpts) error {
 	// e.g. after a daemon restart).
 	if settings.ManagedAccounts.ManagedAccountsEnabled() {
 		trackedGo(func() {
-			if n := refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts); n > 0 {
+			// Owned by this goroutine alone, so the boot pass and every ticker
+			// pass share one view of which accounts are backing off with no
+			// mutex: single writer, single reader, never escaping this closure.
+			// Deliberately in-memory — a daemon restart forgets the backoff,
+			// which is acceptable against the endpoint's hour-long trailing
+			// window (a restart partly ages out of it anyway) and is far
+			// cheaper than persisting polling state. Only this periodic loop
+			// honours it; on-demand rotation/lifecycle/failover probes pass nil
+			// because they need a fresh answer to decide correctly.
+			throttleUntil := map[string]time.Time{}
+			if n := refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts, throttleUntil); n > 0 {
 				log.Info().Int("count", n).Msg("usage-refresh: seeded account usage at boot")
 			}
 			ticker := time.NewTicker(settings.ManagedAccounts.UsageRefreshInterval())
@@ -3790,7 +3881,7 @@ func run(opts runOpts) error {
 				case <-pollerCtx.Done():
 					return
 				case <-ticker.C:
-					refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts)
+					refreshActiveAccountUsage(pollerCtx, log.Logger, accountMaterializer, accounts, throttleUntil)
 				}
 			}
 		})

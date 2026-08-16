@@ -22,6 +22,8 @@ A single live binding between one browser terminal and one daemon-side PTY, carr
 
 An Attach owns its PTY: tearing one down must close the PTY _before_ the stream's context is cancelled, or the PTY leaks on the daemon. Attaches do not survive a stream reconnect — the browser must re-attach to recover its terminal.
 
+Delivery is not queued, at either end. Terminal input sent while an Attach is not connected is discarded rather than held, and input for an attach id the daemon no longer knows is dropped too — so the browser can never assume a send landed. Terminal size is the deliberate exception, and the repair lives in the browser rather than in the connection: a new Attach starts at a default size, and the browser resends the latest size it remembers once the Attach is up. A one-shot action carrying text the user authored has no such repair, so it cannot be dispatched optimistically — it must be refused, visibly, while the Attach is not deliverable.
+
 ## Repo automation flags
 
 Per-repo booleans on the `Repo` model that gate what the daemon does
@@ -168,6 +170,19 @@ tools. The adapter supplies the tool's name and a one-line summary of its use ra
 anything itself, which is what distinguishes an operation from a Tracker capability — code for a
 capability, a tool name for an operation.
 
+### Plan contract
+
+The versioned agreement fixing which top-level sections a ticket's plan description carries and how
+each one is classified — always emitted, emitted only in a named circumstance, or merely recognised
+and never required. The planning skill is its sole producer; the build and sweep skills are its
+consumers.
+
+The contract version is stamped inside the plan description itself rather than tracked out of band,
+so a consumer reading a plan it did not write can tell which version it is holding, and a plan
+written before stamping existed is read as the first version. Adding or renaming a section changes
+the contract; registering a section as recognised-but-never-required does not newly require it of
+plans already stamped against an earlier version.
+
 ## Agent runtime gating
 
 ### Agent runner
@@ -217,6 +232,14 @@ The per-account "do not select until T" window applied when an account hits its 
 ### Limited
 
 The status of an account (or a whole session, when every account for its provider is cooling) that has hit a usage cap. An all-accounts-limited session parks with an "all accounts limited until ~T" badge — T being the earliest cooldown expiry — and resumes automatically at that reset, emitting a single notification per episode.
+
+### Usage probe
+
+The daemon's periodic read-only check of how much of an account's provider quota remains, which keeps rotation's eligibility decisions current. Where the provider exposes a dedicated usage endpoint the probe is free; where it does not, or where the credential lacks the scope to read it, the fallback path issues a real metered call — so a probe that silently takes the fallback is an ongoing cost, not a cosmetic defect.
+
+### Probe throttle
+
+The provider's usage endpoint refusing the daemon's own polling rate. It is evidence about our request volume, not about the account's quota, so it is deliberately not a Cooldown and does not make an account Limited: nothing is written to the account's stored state and its real capacity is untouched. The only correct reaction is caller-side backoff before the next poll, applied in memory by the refresh loop and forgotten on restart. A retry horizon stated by the provider is treated as an unvalidated hint and bounded at both ends before use, since neither an absent value nor an implausibly long one may be honoured literally.
 
 ## Multi-instance owner routing
 
@@ -272,9 +295,39 @@ Bazel's machine-wide, content-addressed action store (`~/.cache/bazel-bossanova-
 
 The secret-gated BuildBuddy action cache (`grpcs://remote.buildbuddy.io`) that extends caching **across machines** (dev + CI). It activates only when a gitignored, per-worktree `.bazelrc.user` provides `build --config=remote` plus the `BUILDBUDDY_API_KEY`; absent that file the build is disk-cache-only and never errors. `make setup-worktree` propagates the file to new worktrees; the key is never committed. The same file also enables the **Build Event Stream** (`--bes_backend` + `--bes_results_url`, `fully_async`): BES is what uploads each invocation to the BuildBuddy "Builds" dashboard — `--remote_cache` on its own only feeds cache metrics and leaves the dashboard reading "No builds found". BES is a **local-dev** affordance only; CI uses the remote cache without BES, because a BES upload error is fatal (`exit 38`) and CI must not hard-depend on the free-tier BES endpoint (a cache miss, by contrast, is non-fatal).
 
+## Skill distribution
+
+### Published skill core
+
+A skill whose payload Bossanova installs into the user's **global** agent skill directories, where it
+appears in every repository on the machine rather than only in this one. That reach is what makes a
+core's project-agnostic phrasing a hard requirement: repository-specific behavior reaches a core only
+through repo-local configuration and repo-local extensions, never by naming this project inside the
+core.
+
+### Toolbox
+
+The set of shared helper modules a skill carries alongside its instructions. A toolbox is distributed
+by **copy**, not by reference: each skill's payload holds its own copy of every helper it uses, and
+the install writes another copy into the global skill directory.
+
+Because the copies are independent, they age independently. A helper that reads repository-owned
+configuration is therefore always potentially older than the configuration it is reading, and any
+vocabulary the configuration gains reaches some copies long before others.
+
+### Toolbox drift
+
+The condition where an installed copy of a toolbox helper is older than the source that produced it.
+Drift is reported as a warning at skill preflight rather than enforced as a gate, on the reasoning
+that a stale helper degrades rather than fails — which holds only for helpers that do not hard-reject
+what they do not recognise.
+
 ## Flagged ambiguities
 
 - "Capability" carries two unrelated senses. A **Tracker capability** is an adapter behavior a skill
   calls as code; the sense in **Capability preflight** and **Headless capability profile** is an
   operation a coding-agent runtime must support before a gated run may start. Neither gates the
   other, and a conformant tracker adapter implies nothing about an agent runtime's profile.
+- "Rate limited" had been used for both a **Limited** account, which has exhausted its own usage
+  cap, and a **Probe throttle**, which is the usage endpoint refusing our polling rate — these are
+  distinct, and only the former justifies a **Cooldown**.

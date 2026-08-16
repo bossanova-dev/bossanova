@@ -29,6 +29,29 @@ const (
 	streamMaxBackoff     = 30 * time.Second
 )
 
+// Token refresh cadence. The refresher wakes every defaultRefreshInterval and
+// exchanges the token once it is within defaultRefreshThreshold of expiry.
+//
+// The two MUST NOT be equal. They both used to be 60s, which meant a tick
+// seeing 61s remaining skipped, and the next tick — a full interval later —
+// found ~1s left. Production logs show exactly that: refreshes attempted with
+// 1.16s, 0.88s, and on one occasion -0.86s (already expired) of validity. The
+// refresh token itself does not care that the access token is stale, but the
+// zero margin meant a single failed exchange had no time for a second attempt
+// before the stream had to drop, so one transient network stall became a
+// permanent sign-out (see the ErrRefreshOutcomeUnknown path in tokens.go).
+//
+// With a threshold well above the interval the first attempt starts ~2 minutes
+// before expiry and a failure leaves room for several more. The threshold must
+// still stay comfortably below the access-token TTL (300s in production):
+// setting it at or above the TTL would make every tick eligible and refresh the
+// token continuously, rotating the one-shot refresh token far more often than
+// necessary and widening the very window this is meant to narrow.
+const (
+	defaultRefreshInterval  = 15 * time.Second
+	defaultRefreshThreshold = 120 * time.Second
+)
+
 // bidirectionalStream abstracts the subset of *connect.BidiStreamForClient
 // the StreamClient actually touches. The real ConnectRPC type already
 // provides Send / Receive / CloseRequest, so this interface is satisfied
@@ -180,9 +203,12 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 	jwt := o.authToken
 	if o.tokens != nil {
 		// Refresh if the cached token is expired or within 60s of expiry
-		// — the typical reconnect path. The 60s window matches the
-		// refreshThreshold lower bound and gives bosso a comfortable
-		// validity window to complete the register handshake.
+		// — the typical reconnect path. This window is deliberately
+		// tighter than defaultRefreshThreshold: the periodic refresher
+		// owns staying ahead of expiry, and this path only has to
+		// guarantee the token outlives the register handshake. Widening
+		// it to the threshold would make every reconnect force an
+		// exchange the refresher had already scheduled.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
 				// Distinguish terminal from transient. ErrAuthExpired
@@ -816,11 +842,11 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 	}
 	refreshInterval := cfg.RefreshInterval
 	if refreshInterval == 0 {
-		refreshInterval = 60 * time.Second
+		refreshInterval = defaultRefreshInterval
 	}
 	refreshThreshold := cfg.RefreshThreshold
 	if refreshThreshold == 0 {
-		refreshThreshold = 60 * time.Second
+		refreshThreshold = defaultRefreshThreshold
 	}
 	return &StreamClient{
 		opener:           opener,
@@ -1041,6 +1067,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	refresherDone := safego.Go(c.logger, func() {
 		if err := c.runTokenRefresher(streamCtx, outbound); err != nil {
 			refreshErrCh <- err
+			cancel()
 		}
 		close(refreshErrCh)
 	})

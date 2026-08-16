@@ -233,6 +233,61 @@
       ]
     },
     {
+      "id": "web-chat-terminal-paste",
+      "surface": "web",
+      "title": "Web Chat Terminal (paste on mobile)",
+      "description": "Chat terminal paste on a phone-width viewport (BOS-879). At 390x844 the touch-only icon-only 'Paste' control is visible in the top bar immediately before 'Upload file'; activating it falls back to the paste sheet (headless Chromium's clipboard read yields nothing), whose textarea opens focused. Typing 'hello from the clipboard' and pressing Send dispatches it through Terminal.paste(), and the staged attach socket echoes it so the text appears in the terminal canvas — proving a paste reaches the PTY rather than only the sheet. The final wait matches a single token rather than the whole phrase: per BOS-658 (scripts/proof-playwright-runner.mjs:57-60) xterm splits a rendered row into one span per style run and pads it with cell spaces, so an exact multi-word substring is the brittle form. The full literal stays in the step caption and in the video.",
+      "privacy": "fixture",
+      "capture": "video",
+      "route": "/sessions/sess-e2e-1/chats/claude-1",
+      "viewport": { "width": 390, "height": 844 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/sessions/sess-e2e-1/chats/claude-1",
+          "label": "Open chat terminal",
+          "caption": "Chat terminal at phone width"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='chat-paste-button']",
+          "label": "Paste control",
+          "caption": "A touch-only Paste control sits immediately before Upload file"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='chat-paste-button']",
+          "label": "Tap Paste",
+          "caption": "Tapping Paste opens the sheet when the clipboard cannot be read"
+        },
+        {
+          "action": "wait",
+          "selector": "[data-testid='chat-paste-textarea']",
+          "label": "Paste sheet",
+          "caption": "The sheet opens with its textarea focused, ready for a long-press paste"
+        },
+        {
+          "action": "type",
+          "selector": "[data-testid='chat-paste-textarea']",
+          "value": "hello from the clipboard",
+          "label": "Enter text",
+          "caption": "Entering hello from the clipboard"
+        },
+        {
+          "action": "click",
+          "selector": "[data-testid='chat-paste-send']",
+          "label": "Send",
+          "caption": "Send dispatches the text through Terminal.paste()"
+        },
+        {
+          "action": "wait",
+          "selector": ".xterm-rows:has-text(\"clipboard\")",
+          "label": "Text in the terminal",
+          "caption": "hello from the clipboard lands in the terminal canvas"
+        }
+      ]
+    },
+    {
       "id": "web-session-detail",
       "surface": "web",
       "title": "Web Session Detail (passing PR)",
@@ -1560,6 +1615,7 @@
         "web-chat-terminal-reconnecting",
         "web-chat-terminal-stop-icon",
         "web-chat-terminal-upload",
+        "web-chat-terminal-paste",
         "web-new-session-flow",
         "web-new-chat",
         "web-new-chat-back",

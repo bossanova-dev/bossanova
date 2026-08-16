@@ -124,6 +124,64 @@ func TestStreamClientOpenStreamStopsWhenAuthNeedsLogin(t *testing.T) {
 	}
 }
 
+func TestStreamClientOpenStreamStopsWhenRefreshErrorNeedsReconnect(t *testing.T) {
+	clock := newFakeClock()
+	refreshErr := errors.New("workos down")
+	tp := &fakeTokenProvider{
+		token:     "old",
+		expiresAt: clock.Now().Add(time.Minute),
+		refreshFn: func(_ context.Context) (string, error) { return "", refreshErr },
+	}
+	stream := newBlockingDaemonStream()
+	opener := &blockingDaemonOpener{stream: stream}
+	stores := emptySnapshotStores{}
+	client := NewStreamClient(StreamClientConfig{
+		Opener: opener,
+		Stores: StreamStores{
+			Sessions: stores,
+			Chats:    stores,
+			Repos:    stores,
+			Statuses: stores,
+		},
+		Events:           NoopEventSource{},
+		TokenProvider:    tp,
+		Clock:            clock,
+		RefreshInterval:  50 * time.Millisecond,
+		RefreshThreshold: 10 * time.Minute,
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.openStream(context.Background())
+	}()
+
+	select {
+	case event := <-stream.sent:
+		if event.GetSnapshot() == nil {
+			t.Fatalf("first event = %T, want snapshot", event.GetEvent())
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for initial snapshot")
+	}
+	select {
+	case <-stream.done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for command reader to start")
+	}
+
+	waitForTimer(clock, 200*time.Millisecond)
+	clock.Advance(2 * time.Minute)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, refreshErr) {
+			t.Fatalf("openStream error = %v, want wrapped %v", err, refreshErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("openStream did not return after refresh error while Receive was blocked")
+	}
+}
+
 // countingStreamMetrics records IncStreamError / IncReconnect calls so a
 // test can assert that an intentional logout pause does NOT look like a
 // stream failure.

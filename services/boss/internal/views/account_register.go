@@ -2,6 +2,8 @@ package views
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -71,6 +73,15 @@ type AccountRegisterModel struct {
 	scratchDir func() (string, error)
 	homeDir    func() (string, error)
 
+	// remoteHost is the --host ssh destination this session is driving, or "" for
+	// the ordinary local daemon. It is snapshotted at construction rather than
+	// read mid-flow: hostDestination is a mutable package global, so re-reading it
+	// between the provider chooser and the flow goroutine would make the decision
+	// sensitive to a concurrent mutation and make unrelated tests that construct
+	// this model order-dependent. Same shape as chatpicker.go's newTabSupported,
+	// and overridable in tests the same way exec/scratchDir/homeDir are.
+	remoteHost string
+
 	provider string
 	state    registerState
 
@@ -107,12 +118,17 @@ type AccountRegisterModel struct {
 func NewAccountRegisterModel(c accountflow.AccountClient, ctx context.Context) AccountRegisterModel {
 	ti := textinput.New()
 	ti.SetWidth(60)
+	destination := ""
+	if isRemoteHost() {
+		destination = remoteHostDestination()
+	}
 	return AccountRegisterModel{
-		client: c,
-		ctx:    ctx,
-		exec:   accountflow.NewDevNullStdinExec(),
-		state:  registerStateProvider,
-		input:  ti,
+		client:     c,
+		ctx:        ctx,
+		exec:       accountflow.NewDevNullStdinExec(),
+		state:      registerStateProvider,
+		input:      ti,
+		remoteHost: destination,
 	}
 }
 
@@ -272,11 +288,21 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 	client := m.client
 	scratch := m.scratchDir
 	home := m.homeDir
+	remote := m.remoteHost
 
 	m.flowDone = safego.Go(zerolog.Nop(), func() {
 		var err error
 		switch prov {
 		case "codex":
+			// The --host decision is taken HERE, before Exec.Start, rather than at the
+			// chooser: the refusal then rides donec into handleFlowDone, which owns
+			// the terminal transition and drains buffered Say lines before cancelling
+			// (the BOS-267 ordering). A chooser-level short-circuit would run before
+			// m.prompter exists and would bypass that drain entirely.
+			if remote != "" {
+				donec <- codexRemoteRefusal(remote)
+				return
+			}
 			err = accountflow.RunCodexAdd(flowCtx, accountflow.CodexOptions{
 				Exec:     exec,
 				Prompter: prompter,
@@ -284,12 +310,21 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 				HomeDir:  home,
 			})
 		default: // claude
-			err = accountflow.RunClaudeAdd(flowCtx, accountflow.ClaudeOptions{
+			opts := accountflow.ClaudeOptions{
 				Exec:       exec,
 				Prompter:   prompter,
 				Client:     client,
 				ScratchDir: scratch,
-			})
+			}
+			if remote != "" {
+				// PasteMode only — StdinUnavailable stays unset, so the operator is
+				// still asked to label the account exactly as the local paste path
+				// does. The flow spawns nothing and stores through the tunnelled
+				// client, so the credential lands on the remote daemon.
+				opts.PasteMode = true
+				prompter.Say("%s", claudeRemotePasteNotice(remote))
+			}
+			err = accountflow.RunClaudeAdd(flowCtx, opts)
 		}
 		donec <- err
 	})
@@ -299,6 +334,53 @@ func (m AccountRegisterModel) startFlow(provider string) (tea.Model, tea.Cmd) {
 		readRequestCmd(m.prompter),
 		readDoneCmd(m.donec),
 	)
+}
+
+// registrationRefusedError is a policy refusal raised by the TUI itself rather
+// than a failure reported by a registration flow. It renders on the error screen
+// like any other error, but it is NOT a failed account-add: nothing was
+// attempted, so recording it as one would inflate the add-failure rate with
+// screens that never touched a credential.
+type registrationRefusedError struct{ msg string }
+
+func (e *registrationRefusedError) Error() string { return e.msg }
+
+// isRegistrationRefusal reports whether err is this view's own policy refusal.
+func isRegistrationRefusal(err error) bool {
+	var refusal *registrationRefusedError
+	return errors.As(err, &refusal)
+}
+
+// codexRemoteRefusal is what the codex flow returns instead of spawning a codex
+// that is not installed here. It names the destination (the shape
+// requireLocalDaemonTarget uses, rather than requireLocalRegistration's
+// destination-less one) and carries the exact command that does work, because
+// esc from this screen pops back to the accounts list and the operator has to
+// carry the remedy away with them.
+//
+// Codex is refused rather than routed to a paste the way claude is because
+// RunCodexAdd always spawns the child and then reads back the auth.json that
+// child wrote into a LOCAL scratch HOME. A codex paste route is buildable — the
+// daemon takes an opaque blob and agentcred.ValidateCodexAuthJSON already
+// exists — but it is not built today.
+func codexRemoteRefusal(destination string) error {
+	return &registrationRefusedError{msg: fmt.Sprintf(
+		"codex registration runs `codex login` on this machine, not on %s, and this machine need not have the codex CLI at all. "+
+			"Run `boss account add codex` in a shell on %s instead.",
+		destination, destination)}
+}
+
+// claudeRemotePasteNotice is the line shown before the token prompt in a --host
+// session. It has to answer two questions, not one: why the walkthrough the
+// operator expected is missing, and — for an operator who has no token yet —
+// where a token comes from. Explaining only the first leaves them at a prompt
+// they cannot answer.
+func claudeRemotePasteNotice(destination string) string {
+	return fmt.Sprintf(
+		"The claude setup-token walkthrough runs the claude CLI on this machine, not on %s, so it is unavailable in a --host session. "+
+			"Run `claude setup-token` in a shell on %s (or anywhere the claude CLI is signed in) and paste the token below; "+
+			"it will be stored on %s.",
+		destination, destination, destination)
 }
 
 // readDoneCmd blocks for the flow's result and yields it as a flowDoneMsg.
@@ -392,7 +474,11 @@ func (m AccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
 	// An operator teardown (esc/ctrl+c) cancels the flow context, so the flow
 	// can return an error that is really a cancellation, not a failed add.
 	// A cancelled flow emits nothing.
-	if !m.cancelled {
+	//
+	// A policy refusal is likewise not a failed add: the flow never ran, never
+	// dialled, and never touched a credential, so counting it would report a
+	// failure rate for an operation that was declined before it started.
+	if !m.cancelled && !isRegistrationRefusal(err) {
 		captureTUIAction(m.ctx, m.telemetry, tuiFeatureAccounts, tuiActionAccountAdded, tuiActionStatus(err))
 	}
 	if err != nil {
@@ -518,6 +604,28 @@ func (m AccountRegisterModel) providerView() string {
 	return b.String()
 }
 
+// renderProgressLine renders one Say line wrapped to the terminal width, the
+// same way renderError already wraps the error screen.
+//
+// A Say line is not guaranteed to be short: claudeRemotePasteNotice is a single
+// ~326-character line whose SECOND half carries the remedy (`claude
+// setup-token`, the destination, "paste the token below"). Rendered without a
+// Width, bubbletea clips the frame at the terminal edge and the operator sees
+// only the first clause — "the walkthrough is unavailable" — at a prompt they
+// then cannot answer.
+//
+// As in renderError, lipgloss .Width() sets the TOTAL block width with padding
+// included, so the terminal width is passed through as-is, and a width at or
+// below the horizontal padding leaves no columns to wrap into and is left
+// unconstrained (which is also the width==0 "no WindowSizeMsg yet" case).
+func renderProgressLine(line string, width int) string {
+	s := lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted)
+	if width > s.GetHorizontalPadding() {
+		s = s.Width(width)
+	}
+	return s.Render(line)
+}
+
 // progressView renders the bounded tail of Say lines.
 func (m AccountRegisterModel) progressView() string {
 	if len(m.progress) == 0 {
@@ -528,9 +636,8 @@ func (m AccountRegisterModel) progressView() string {
 		tail = tail[len(tail)-progressTailMax:]
 	}
 	var b strings.Builder
-	muted := lipgloss.NewStyle().Foreground(colorMuted)
 	for _, line := range tail {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(muted.Render(line)))
+		b.WriteString(renderProgressLine(line, m.width))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")

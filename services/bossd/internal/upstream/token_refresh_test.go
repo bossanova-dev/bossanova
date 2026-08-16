@@ -186,11 +186,38 @@ func TestTokenRefresh_BeforeExpiry_EmitsRefreshEvent(t *testing.T) {
 	<-errCh
 }
 
-func TestTokenRefresh_DefaultThresholdDoesNotRefreshWithMoreThanSixtySecondsRemaining(t *testing.T) {
+// TestTokenRefresh_DefaultCadenceLeavesRoomForRetries pins the invariant that
+// makes the refresh threshold a usable retry budget: the threshold must be
+// meaningfully LARGER than the tick interval. When the two were equal (both
+// 60s) a tick that saw 61s remaining skipped, and the next tick found ~1s of
+// validity left — production logs recorded attempts at 1.16s, 0.88s and even
+// -0.86s remaining, leaving no room for a second attempt before the stream had
+// to drop. It must also stay below the production access-token TTL (300s), or
+// every tick becomes eligible and the token rotates continuously.
+func TestTokenRefresh_DefaultCadenceLeavesRoomForRetries(t *testing.T) {
+	client := NewStreamClient(StreamClientConfig{
+		TokenProvider: &fakeTokenProvider{},
+		Logger:        zerolog.Nop(),
+	})
+	if client.refreshInterval >= client.refreshThreshold {
+		t.Fatalf("refreshInterval (%v) >= refreshThreshold (%v): a failed refresh gets no retry before expiry",
+			client.refreshInterval, client.refreshThreshold)
+	}
+	if attempts := int(client.refreshThreshold / client.refreshInterval); attempts < 4 {
+		t.Fatalf("threshold/interval allows only %d attempts before expiry, want >= 4", attempts)
+	}
+	const productionAccessTokenTTL = 300 * time.Second
+	if client.refreshThreshold >= productionAccessTokenTTL {
+		t.Fatalf("refreshThreshold (%v) >= access-token TTL (%v): every tick would refresh",
+			client.refreshThreshold, productionAccessTokenTTL)
+	}
+}
+
+func TestTokenRefresh_DefaultThresholdDoesNotRefreshWellBeforeExpiry(t *testing.T) {
 	clock := newFakeClock()
 	tp := &fakeTokenProvider{
 		token:     "old",
-		expiresAt: clock.Now().Add(2 * time.Minute),
+		expiresAt: clock.Now().Add(30 * time.Minute),
 		refreshFn: func(_ context.Context) (string, error) { return "new", nil },
 	}
 	client := NewStreamClient(StreamClientConfig{
@@ -199,8 +226,8 @@ func TestTokenRefresh_DefaultThresholdDoesNotRefreshWithMoreThanSixtySecondsRema
 		Clock:           clock,
 		RefreshInterval: 50 * time.Millisecond,
 	})
-	if client.refreshThreshold != 60*time.Second {
-		t.Fatalf("default refreshThreshold = %v, want 60s", client.refreshThreshold)
+	if client.refreshThreshold != defaultRefreshThreshold {
+		t.Fatalf("default refreshThreshold = %v, want %v", client.refreshThreshold, defaultRefreshThreshold)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -227,7 +254,14 @@ func TestTokenRefresh_DefaultThresholdDoesNotRefreshWithMoreThanSixtySecondsRema
 	<-errCh
 }
 
-func TestTokenRefresh_FailureClosesStream(t *testing.T) {
+// TestTokenRefresh_TransientFailureRetriesWhileTokenValid proves the retry
+// budget. A transient failure is one where WorkOS provably never saw the
+// exchange, so the held token is still live and trying again is safe. Tearing
+// the stream down on the first such failure (the old behaviour) forced every
+// retry through a full reconnect and, with the old ~1s of remaining validity,
+// left room for a single attempt. The refresher must now stay on the stream
+// and try again on the next tick.
+func TestTokenRefresh_TransientFailureRetriesWhileTokenValid(t *testing.T) {
 	clock := newFakeClock()
 	refreshErr := errors.New("workos down")
 	tp := &fakeTokenProvider{
@@ -244,8 +278,50 @@ func TestTokenRefresh_FailureClosesStream(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- client.runTokenRefresher(ctx, outbound) }()
 
+	// Three ticks, each well inside the token's validity.
+	for range 3 {
+		waitForTimer(clock, 200*time.Millisecond)
+		clock.Advance(100 * time.Millisecond)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("refresher closed the stream on a transient failure while the token was still valid: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	tp.mu.Lock()
+	calls := tp.refreshCalls
+	tp.mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("Refresh calls = %d, want >= 2 (the transient failure must be retried)", calls)
+	}
+}
+
+// TestTokenRefresh_TransientFailureClosesStreamOnceExpired is the other half:
+// retrying is only worth doing while the token can still authenticate. Once it
+// has expired there is nothing left to protect — bosso will reject it — so the
+// refresher hands the error back and lets the outer loop reconnect.
+func TestTokenRefresh_TransientFailureClosesStreamOnceExpired(t *testing.T) {
+	clock := newFakeClock()
+	refreshErr := errors.New("workos down")
+	tp := &fakeTokenProvider{
+		token:     "old",
+		expiresAt: clock.Now().Add(1 * time.Minute),
+		refreshFn: func(_ context.Context) (string, error) { return "", refreshErr },
+	}
+	client := newRefresherClient(clock, tp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbound := make(chan *pb.DaemonEvent, 4)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.runTokenRefresher(ctx, outbound) }()
+
+	// Push virtual time past the token's expiry on the first tick.
 	waitForTimer(clock, 200*time.Millisecond)
-	clock.Advance(100 * time.Millisecond)
+	clock.Advance(2 * time.Minute)
 
 	select {
 	case err := <-errCh:
@@ -256,7 +332,7 @@ func TestTokenRefresh_FailureClosesStream(t *testing.T) {
 			t.Fatalf("expected wrapped refreshErr, got %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("refresher did not return after failed refresh")
+		t.Fatal("refresher did not return after the token expired")
 	}
 }
 
@@ -326,7 +402,9 @@ func TestTokenRefresh_TerminalReloginErrorMarksAuthStateBeforeReturning(t *testi
 }
 
 // TestTokenRefresh_TransientFailureDoesNotMarkAuthState pins the other half:
-// an ordinary refresh failure still closes the stream for a normal reconnect.
+// an ordinary refresh failure must never pause the daemon for re-login, either
+// while it is being retried or once the token has expired and the stream
+// closes for a normal reconnect.
 func TestTokenRefresh_TransientFailureDoesNotMarkAuthState(t *testing.T) {
 	clock := newFakeClock()
 	tp := &fakeTokenProvider{
@@ -349,8 +427,14 @@ func TestTokenRefresh_TransientFailureDoesNotMarkAuthState(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- client.runTokenRefresher(ctx, make(chan *pb.DaemonEvent, 4)) }()
 
+	// One retried tick, then push past expiry so the refresher returns.
 	waitForTimer(clock, 200*time.Millisecond)
 	clock.Advance(100 * time.Millisecond)
+	if authState.NeedsLogin() {
+		t.Fatal("a retried transient failure must not pause the stream for re-login")
+	}
+	waitForTimer(clock, 200*time.Millisecond)
+	clock.Advance(2 * time.Minute)
 
 	select {
 	case err := <-errCh:
@@ -358,7 +442,7 @@ func TestTokenRefresh_TransientFailureDoesNotMarkAuthState(t *testing.T) {
 			t.Fatal("expected an error from runTokenRefresher")
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("refresher did not return after failed refresh")
+		t.Fatal("refresher did not return after the token expired")
 	}
 	if authState.NeedsLogin() {
 		t.Fatal("a transient refresh failure must not pause the stream for re-login")
@@ -414,5 +498,83 @@ func TestLogReloginPauseDoesNotClaimRemovedCredentialsWereRetained(t *testing.T)
 	}
 	if strings.Contains(got, "relogin_reason") {
 		t.Fatalf("a removal is not one of the enumerated persisted reasons: %q", got)
+	}
+}
+
+// TestLogReloginPauseCarriesFailureClass proves the diagnostics survive all
+// the way to the one line the daemon emits when it pauses. That line
+// deliberately drops the wrapped error, so before this the operator learned a
+// sign-in was needed but nothing about why — a 10s network stall and an
+// unreadable WorkOS response produced byte-identical output.
+func TestLogReloginPauseCarriesFailureClass(t *testing.T) {
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	err := withRefreshFailure(refreshFailureTimeout, true,
+		fmt.Errorf("%w: context deadline exceeded", ErrRefreshOutcomeUnknown))
+	logReloginPause(&logger, "", err)
+
+	got := buf.String()
+	if !strings.Contains(got, `"refresh_failure_class":"timeout"`) {
+		t.Errorf("pause line does not carry the failure class: %q", got)
+	}
+	if !strings.Contains(got, `"conn_reused":true`) {
+		t.Errorf("pause line does not carry connection reuse: %q", got)
+	}
+	// The enumerated reason must still be there, and the raw error must not.
+	if !strings.Contains(got, `"relogin_reason":"refresh_outcome_unknown"`) {
+		t.Errorf("pause line lost the persisted reason: %q", got)
+	}
+	if strings.Contains(got, "context deadline exceeded") {
+		t.Errorf("pause line leaked the wrapped transport error: %q", got)
+	}
+}
+
+// TestLogReloginPauseOmitsFailureClassWhenAbsent keeps the fields honest: a
+// pause that did not come from a classified exchange (a marker reloaded at
+// daemon startup, say) must not imply one.
+func TestLogReloginPauseOmitsFailureClassWhenAbsent(t *testing.T) {
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	logReloginPause(&logger, "", ErrRefreshTokenRejected)
+
+	if got := buf.String(); strings.Contains(got, "refresh_failure_class") {
+		t.Fatalf("unclassified pause invented a failure class: %q", got)
+	}
+}
+
+// TestTokenRefresh_RotatedTokenWithErrorClosesStream covers the one transient
+// error that must NOT be retried in place. KeychainTokenProvider.Refresh
+// returns a rotated access token alongside an error when the WorkOS exchange
+// succeeded but persisting the result failed. Retrying would strand that
+// token: the refresh event that tells bosso about it is only emitted on the
+// success path. Closing the stream re-registers with the new token instead.
+func TestTokenRefresh_RotatedTokenWithErrorClosesStream(t *testing.T) {
+	clock := newFakeClock()
+	saveErr := errors.New("save refreshed tokens: keychain locked")
+	tp := &fakeTokenProvider{
+		token:     "old",
+		expiresAt: clock.Now().Add(1 * time.Minute),
+		refreshFn: func(_ context.Context) (string, error) { return "rotated", saveErr },
+	}
+	client := newRefresherClient(clock, tp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.runTokenRefresher(ctx, make(chan *pb.DaemonEvent, 4)) }()
+
+	// Still a minute of validity: the retry path would keep the stream open.
+	waitForTimer(clock, 200*time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, saveErr) {
+			t.Fatalf("refresher error = %v, want wrapped %v", err, saveErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("refresher retried in place and stranded the rotated token")
 	}
 }

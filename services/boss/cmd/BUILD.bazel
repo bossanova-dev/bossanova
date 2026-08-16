@@ -134,7 +134,10 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":cmd_lib"],
-    embedsrcs = ["session_mcp.go"],
+    embedsrcs = [
+        "handlers.go",
+        "session_mcp.go",
+    ],
     # keep: skill/upgrade tests go-build the boss binary and install plugins via a
     # runtime.Caller workspace root — genuinely escapes the sandbox. Covered by `make test-boss`.
     tags = [

@@ -115,6 +115,7 @@
       { "heading": "## Risks / unknowns", "required": "always" },
       { "heading": "## Acceptance criteria", "required": "always" },
       { "heading": "## Required proof", "required": "always" },
+      { "heading": "## Proof harness analysis", "required": "optional" },
       { "heading": "## Why this needs a human", "required": "needs-human" },
       { "heading": "## Open Questions", "required": "open-questions" },
       { "heading": "## Planning", "required": "always" },

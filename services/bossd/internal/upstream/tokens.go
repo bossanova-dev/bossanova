@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -61,6 +62,79 @@ var ErrRefreshTokenAlreadyExchanged = fmt.Errorf("refresh token already exchange
 // refresh token, so replaying it is unsafe — the provider fails closed,
 // persists the reason, and waits for a new login instead. See BOS-659.
 var ErrRefreshOutcomeUnknown = fmt.Errorf("refresh outcome could not be confirmed: %w", ErrAuthExpired)
+
+// refreshFailureClass is the enumerated, non-secret shape of a failed refresh
+// exchange. The sanitized pause warning deliberately drops the wrapped error
+// (it carries transport detail and can echo response bytes), which left the
+// logs unable to distinguish "the laptop's network stalled" from "WorkOS
+// answered something we could not read" — the two have completely different
+// fixes, and the sign-out they produce looks identical. These values carry the
+// distinction without carrying any of the detail that made the error unsafe to
+// log: they are a closed set of constants chosen here, never upstream strings.
+type refreshFailureClass string
+
+const (
+	// refreshFailureDial: no connection was ever established, so WorkOS
+	// provably never saw the exchange. Safe, retryable.
+	refreshFailureDial refreshFailureClass = "dial"
+	// refreshFailureTimeout: a connection was in hand and the deadline expired
+	// before a response arrived. Ambiguous.
+	refreshFailureTimeout refreshFailureClass = "timeout"
+	// refreshFailureTransport: a connection was in hand and the transport
+	// failed for a non-timeout reason. Ambiguous.
+	refreshFailureTransport refreshFailureClass = "transport"
+	// refreshFailureResponseRead: WorkOS answered and the body could not be
+	// read. Ambiguous.
+	refreshFailureResponseRead refreshFailureClass = "response_read"
+	// refreshFailureResponseDecode: HTTP 200 that would not decode. Ambiguous,
+	// and the token was certainly rotated.
+	refreshFailureResponseDecode refreshFailureClass = "response_decode"
+	// refreshFailureNoAccessToken: HTTP 200, well-formed, no usable token.
+	refreshFailureNoAccessToken refreshFailureClass = "no_access_token"
+)
+
+// refreshFailure annotates a refresh error with its non-secret class and
+// whether the underlying connection came from the pool. connReused is the
+// single most useful field when triaging an overnight sign-out: a reused
+// connection that then timed out is the half-open-pool signature, whereas a
+// fresh connection that timed out points at genuine upstream latency.
+type refreshFailure struct {
+	class      refreshFailureClass
+	connReused bool
+	err        error
+}
+
+func (f *refreshFailure) Error() string { return f.err.Error() }
+func (f *refreshFailure) Unwrap() error { return f.err }
+
+// withRefreshFailure tags err with its class. connReused is meaningless for
+// classes that never held a connection; callers pass false there.
+func withRefreshFailure(class refreshFailureClass, connReused bool, err error) error {
+	return &refreshFailure{class: class, connReused: connReused, err: err}
+}
+
+// refreshFailureOf recovers the annotation from anywhere in err's chain.
+func refreshFailureOf(err error) (*refreshFailure, bool) {
+	var f *refreshFailure
+	if errors.As(err, &f) {
+		return f, true
+	}
+	return nil, false
+}
+
+// classifyDoError separates a transport failure that timed out from one that
+// did not. Both are ambiguous once a connection existed; the distinction is
+// purely diagnostic.
+func classifyDoError(err error) refreshFailureClass {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return refreshFailureTimeout
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return refreshFailureTimeout
+	}
+	return refreshFailureTransport
+}
 
 // Enumerated, non-secret re-login reasons persisted on the shared
 // "workos-tokens" keychain record. These strings are part of the on-disk
@@ -188,6 +262,14 @@ func logReloginPause(logger *zerolog.Logger, prefix string, err error) {
 	if reason != "" {
 		event = event.Str("relogin_reason", reason)
 	}
+	// Enumerated diagnostics only — see refreshFailureClass. Without these the
+	// pause line says a sign-in is needed but nothing about which failure
+	// produced it, which is the difference between a five-minute diagnosis and
+	// a log archaeology session.
+	if failure, ok := refreshFailureOf(err); ok {
+		event = event.Str("refresh_failure_class", string(failure.class)).
+			Bool("conn_reused", failure.connReused)
+	}
 	if errors.Is(err, errReloginMarkerNotPersisted) {
 		// The pause is correct, but it is not durable: a restart reloads an
 		// unflagged record and would replay the token.
@@ -231,12 +313,46 @@ func noCredentialsPauseMessage(tp TokenProvider) string {
 // the box. Override for staging / self-host.
 const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
 
-// openKeyring opens the shared bossanova keyring. bossd runs as a daemon
-// with no flag plumbing, so allowInsecure is hard-wired to false here — a
-// broken environment should surface a real error rather than silently
-// reverting to the hardcoded passphrase.
+// workOSRefreshTimeout bounds one WorkOS refresh exchange end to end (dial,
+// TLS handshake, request, response).
+//
+// It is deliberately generous. This is the ONE exchange in the daemon whose
+// failure is unrecoverable without human action: a post-dispatch failure is
+// ambiguous by construction (ErrRefreshOutcomeUnknown), which fails closed and
+// waits for `boss login`. The previous 10s budget had to cover a cold DNS
+// lookup, a TCP connect, a TLS handshake AND the round trip, so a laptop that
+// had just gone idle — where the first packet after a Wi-Fi power-save or VPN
+// re-handshake routinely costs several seconds — could burn most of the budget
+// before the request was even written and then time out waiting for the
+// response, converting a transient stall into a permanent sign-out. Spending
+// 30s here costs nothing when the network is healthy (the exchange takes
+// milliseconds) and is the difference between riding out a hiccup and logging
+// the user out.
+const workOSRefreshTimeout = 30 * time.Second
+
+// newWorkOSRefreshHTTPClient builds the client used for the refresh exchange.
+//
+// It shares the daemon's HTTP/2 keepalive settings (BuildUpstreamHTTPClient's
+// transport) rather than using http.DefaultTransport. Without the keepalive
+// PINGs, a pooled HTTP/2 connection to api.workos.com that has gone half-open
+// — no FIN/RST, exactly what a sleep/wake or network-path change produces — is
+// handed straight back out of the pool. httptrace's GotConn then fires, the
+// request is written into a dead connection, and the failure is classified as
+// a dispatched-but-unconfirmed exchange: the unrecoverable case. With
+// ReadIdleTimeout/PingTimeout the dead connection is detected and evicted in
+// the background, so the next refresh dials a fresh one instead.
+func newWorkOSRefreshHTTPClient() *http.Client {
+	tr, _ := buildHTTPSUpstreamTransport()
+	return &http.Client{Transport: tr, Timeout: workOSRefreshTimeout}
+}
+
+// Package-level seams the tests swap out. openKeyring opens the shared
+// bossanova keyring: bossd runs as a daemon with no flag plumbing, so
+// allowInsecure is hard-wired to false here — a broken environment should
+// surface a real error rather than silently reverting to the hardcoded
+// passphrase.
 var (
-	workOSRefreshHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	workOSRefreshHTTPClient = newWorkOSRefreshHTTPClient()
 	workOSAuthenticateURL   = "https://api.workos.com/user_management/authenticate"
 	openKeyring             = func() (keyring.Keyring, error) {
 		return keyring.Open(keyring.Config{
@@ -414,10 +530,13 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 	// carries no Idempotency-Key, so Request.isReplayable is false, leaving
 	// nothing-written-on-a-reused-conn and no-cached-h2-conn as the only retry
 	// classes net/http can take — both of which guarantee nothing was sent.
-	var gotConn atomic.Bool
+	var gotConn, connReused atomic.Bool
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-		GetConn: func(string) { gotConn.Store(false) },
-		GotConn: func(httptrace.GotConnInfo) { gotConn.Store(true) },
+		GetConn: func(string) { gotConn.Store(false); connReused.Store(false) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			gotConn.Store(true)
+			connReused.Store(info.Reused)
+		},
 	}))
 
 	// From the moment a connection is in hand, a failure leaves the refresh
@@ -426,9 +545,11 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 	resp, err := workOSRefreshHTTPClient.Do(req)
 	if err != nil {
 		if !gotConn.Load() {
-			return nil, fmt.Errorf("refresh request never dispatched: %w", err)
+			return nil, withRefreshFailure(refreshFailureDial, false,
+				fmt.Errorf("refresh request never dispatched: %w", err))
 		}
-		return nil, fmt.Errorf("%w: %w", ErrRefreshOutcomeUnknown, err)
+		return nil, withRefreshFailure(classifyDoError(err), connReused.Load(),
+			fmt.Errorf("%w: %w", ErrRefreshOutcomeUnknown, err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -460,7 +581,8 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 		return nil, fmt.Errorf("refresh failed (HTTP %d)", resp.StatusCode)
 	}
 	if readErr != nil {
-		return nil, fmt.Errorf("%w: %w", ErrRefreshOutcomeUnknown, readErr)
+		return nil, withRefreshFailure(refreshFailureResponseRead, connReused.Load(),
+			fmt.Errorf("%w: %w", ErrRefreshOutcomeUnknown, readErr))
 	}
 
 	var result struct {
@@ -479,7 +601,8 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 		// old token here is exactly the replay this ticket forbids. The
 		// unmarshal error is not wrapped, because it embeds the response
 		// bytes it choked on and those can echo token material.
-		return nil, fmt.Errorf("%w: refresh response could not be decoded", ErrRefreshOutcomeUnknown)
+		return nil, withRefreshFailure(refreshFailureResponseDecode, connReused.Load(),
+			fmt.Errorf("%w: refresh response could not be decoded", ErrRefreshOutcomeUnknown))
 	}
 	if result.AccessToken == "" {
 		// Same hazard, well-formed JSON: a 200 rotated the token, but the
@@ -487,7 +610,8 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 		// would happily save a token-less record over the good one (and
 		// AccessTokenExpiry would stamp it with a default TTL), destroying
 		// the credentials this ticket exists to retain.
-		return nil, fmt.Errorf("%w: refresh response carried no access token", ErrRefreshOutcomeUnknown)
+		return nil, withRefreshFailure(refreshFailureNoAccessToken, connReused.Load(),
+			fmt.Errorf("%w: refresh response carried no access token", ErrRefreshOutcomeUnknown))
 	}
 
 	return &keychainTokens{
@@ -672,7 +796,7 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 	}
 
 	for attempts := 0; attempts < 2; attempts++ {
-		requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+		requestCtx, requestCancel := context.WithTimeout(ctx, workOSRefreshTimeout)
 		refreshed, err := refreshWorkOSTokenFn(requestCtx, clientID, refreshTok)
 		requestCancel()
 		if err != nil {

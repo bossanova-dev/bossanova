@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -656,5 +658,225 @@ func TestProbeRateLimitReportsUnsupportedWhenEndpointAndHeadersUnavailable(t *te
 	}
 	if resp.GetStatus().GetStatus() != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_UNSUPPORTED {
 		t.Fatalf("status = %v, want UNSUPPORTED fail-safe", resp.GetStatus().GetStatus())
+	}
+}
+
+// TestProbeRateLimitHTTP429DoesNotEscalateToMessages is the load-bearing BOS-828
+// regression: a throttled usage endpoint must NOT fall through to
+// probeMessagesRateLimit, which issues a real, billable POST /v1/messages. That
+// call returns unified rate-limit headers, so before this fix the probe
+// "succeeded" and the throttle was invisible — silently converting every
+// subsequent refresh into a live API call. The test server fails the test if
+// /v1/messages is touched at all.
+func TestProbeRateLimitHTTP429DoesNotEscalateToMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/oauth/usage":
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"too many requests"}`))
+		case "/v1/messages":
+			t.Error("billable /v1/messages was called for a throttled usage probe")
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL + "/api/oauth/usage", messagesURL: srv.URL + "/v1/messages"}
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "throttled-token"},
+	})
+	if err == nil {
+		t.Fatal("ProbeRateLimit err = nil, want throttle error")
+	}
+	if resp != nil {
+		t.Fatalf("ProbeRateLimit resp = %#v, want nil on throttle", resp)
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("status.Code = %v, want ResourceExhausted", status.Code(err))
+	}
+	if !errors.Is(err, errClaudeUsageThrottled) {
+		t.Fatalf("err does not wrap throttled sentinel: %v", err)
+	}
+	if got := retryInfoDelay(t, err); got != 120*time.Second {
+		t.Fatalf("RetryInfo delay = %v, want 120s", got)
+	}
+	// The message must never re-derive as an agent rate limit: agenterr
+	// deliberately classifies "429"-bearing text as KindRateLimited, which would
+	// route a polling throttle into the usage-limit rotation intercept and bench
+	// a perfectly healthy account (the BOS-584 bug class, from the other side).
+	if agenterr.Classify(err.Error(), time.Now()).Kind == agenterr.KindRateLimited {
+		t.Fatalf("throttle message re-derives as KindRateLimited: %q", err.Error())
+	}
+}
+
+// TestProbeRateLimitHTTP429RetryAfterParsing pins the Retry-After contract:
+// the seconds form is honoured, and an absent or malformed value yields a zero
+// duration (and therefore no RetryInfo detail) without ever becoming an error.
+// The HTTP-date form is deliberately unsupported — it is rare in practice, and
+// the caller-side floor covers it.
+func TestProbeRateLimitHTTP429RetryAfterParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "seconds", header: "120", want: 120 * time.Second},
+		{name: "absent", header: "", want: 0},
+		{name: "malformed word", header: "soon", want: 0},
+		{name: "negative", header: "-30", want: 0},
+		{name: "zero", header: "0", want: 0},
+		{name: "http date form", header: "Wed, 21 Oct 2026 07:28:00 GMT", want: 0},
+		{name: "float", header: "12.5", want: 0},
+		{name: "padded seconds", header: "  90  ", want: 90 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			t.Cleanup(srv.Close)
+
+			s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL}
+			_, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+				CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "throttled-token"},
+			})
+			if err == nil {
+				t.Fatal("ProbeRateLimit err = nil, want throttle error")
+			}
+			if !errors.Is(err, errClaudeUsageThrottled) {
+				t.Fatalf("err does not wrap throttled sentinel: %v", err)
+			}
+			if status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("status.Code = %v, want ResourceExhausted", status.Code(err))
+			}
+			if got := retryInfoDelay(t, err); got != tc.want {
+				t.Fatalf("RetryInfo delay = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProbeRateLimitHTTP429WithSuspensionBodyStaysSuspension pins the ordering
+// inside the 429 arm: a real org/billing block outranks a polling throttle. A
+// suspension is permanent and must still fail the account's health, so it must
+// not be masked by the (transient, recoverable) throttle classification.
+func TestProbeRateLimitHTTP429WithSuspensionBodyStaysSuspension(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"oauth_org_not_allowed","request_id":"req_x"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL}
+	_, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "suspended-token"},
+	})
+	if err == nil {
+		t.Fatal("ProbeRateLimit err = nil, want suspension error")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("status.Code = %v, want PermissionDenied (suspension outranks throttle)", status.Code(err))
+	}
+	if !errors.Is(err, errClaudeAccountSuspended) {
+		t.Fatalf("err does not wrap suspended sentinel: %v", err)
+	}
+	if errors.Is(err, errClaudeUsageThrottled) {
+		t.Fatal("suspension was misclassified as a throttle")
+	}
+}
+
+// TestProbeRateLimit403ScopeRefusalStillReachesMessages pins that the new 429
+// arm did not widen. A 403 scope refusal is the EXPECTED path for `claude
+// setup-token` credentials that lack the user:profile scope, and it must still
+// escalate to the messages probe — that is the only way such a token yields any
+// usage signal at all.
+func TestProbeRateLimit403ScopeRefusalStillReachesMessages(t *testing.T) {
+	var messagesProbed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/oauth/usage":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}}`))
+		case "/v1/messages":
+			messagesProbed = true
+			w.Header().Set("anthropic-ratelimit-unified-5h-utilization", "0.10")
+			w.Header().Set("anthropic-ratelimit-unified-status", "allowed")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	s := &Server{logger: zerolog.Nop(), httpClient: srv.Client(), usageURL: srv.URL + "/api/oauth/usage", messagesURL: srv.URL + "/v1/messages"}
+	resp, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "setup-token"},
+	})
+	if err != nil {
+		t.Fatalf("ProbeRateLimit err = %v, want the setup-token messages fallback", err)
+	}
+	if !messagesProbed {
+		t.Fatal("403 scope refusal no longer reaches probeMessagesRateLimit; the setup-token path is broken")
+	}
+	if got := resp.GetStatus().GetUtil_5H(); got != 0.10 {
+		t.Fatalf("util_5h = %v, want 0.10 from the messages headers", got)
+	}
+}
+
+// retryInfoDelay extracts the RetryInfo retry delay attached to err's gRPC
+// status, or 0 when no such detail is present.
+func retryInfoDelay(t *testing.T, err error) time.Duration {
+	t.Helper()
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("err is not a gRPC status error: %v", err)
+	}
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.RetryInfo); ok {
+			return info.GetRetryDelay().AsDuration()
+		}
+	}
+	return 0
+}
+
+// TestProbeRateLimitHTTP429LogsWarnWithoutCredentials pins the operator-facing
+// half of the fix. The throttle must be legible in the log — before this it was
+// completely silent, indistinguishable from a healthy probe — and the line must
+// carry no token or credential material, matching the package contract that
+// nothing here ever logs a credential blob.
+func TestProbeRateLimitHTTP429LogsWarnWithoutCredentials(t *testing.T) {
+	const token = "super-secret-oauth-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+
+	var buf bytes.Buffer
+	s := &Server{logger: zerolog.New(&buf), httpClient: srv.Client(), usageURL: srv.URL}
+	if _, err := s.ProbeRateLimit(context.Background(), &bossanovav1.ProbeRateLimitRequest{
+		CredentialEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": token},
+	}); err == nil {
+		t.Fatal("ProbeRateLimit err = nil, want throttle error")
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, `"level":"warn"`) {
+		t.Fatalf("throttle did not log at WARN: %s", logged)
+	}
+	if !strings.Contains(logged, "throttled the poll") {
+		t.Fatalf("throttle log is not distinguishable from a healthy probe: %s", logged)
+	}
+	if strings.Contains(logged, token) {
+		t.Fatalf("throttle log leaked the credential: %s", logged)
+	}
+	if !strings.Contains(logged, "retry_after") {
+		t.Fatalf("throttle log does not carry the parsed retry-after: %s", logged)
 	}
 }

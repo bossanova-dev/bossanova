@@ -194,9 +194,27 @@ infocmp -x $TERM | ssh <destination> tic -x -
 A few commands act on the machine `boss` runs on, so they are refused or hidden
 under `--host` rather than silently doing the wrong thing:
 
-- **`boss account add` is refused.** Registration mints credentials by running a
-  **local** subprocess, so the credential would never belong to the remote
-  machine. Run it in a shell on that host instead.
+- **`boss account add` is refused, except for a pasted claude token.**
+  Registration normally mints a credential by running the agent's own CLI as a
+  **local** subprocess, which resolves against this machine's `PATH` and this
+  machine's browser rather than the remote host's. The one shape with no local
+  subprocess in it is allowed through:
+  `boss --host <dest> account add claude --token-stdin` reads a token you already
+  hold (mint one with `claude setup-token`) and stores it on the daemon you asked
+  for, so the credential lands on the remote machine. Keep `--host` on that
+  command — without it the token is registered on your local daemon instead.
+  Every other shape — codex in any form, and claude's interactive walkthrough —
+  is refused with the command that does work; run it in a shell on that host
+  instead. Under `--host`, the TUI's add-account flow makes the same split:
+  choosing codex is refused up front, and choosing claude skips the walkthrough
+  and asks you to paste a token.
+
+  **Known gap:** this split is `--host` only. Under `--remote <url>` the TUI is
+  not gated at all, so Settings → Accounts → `[a]` still spawns a local
+  `claude setup-token` / `codex login` on the machine you are sitting at while
+  the credential goes to the remote daemon. Use `boss account add` in a shell on
+  the remote host until that is closed.
+
 - **The `boss daemon` subcommands are refused.** They install, start, stop, and
   uninstall **this** machine's `bossd` through local subprocesses, so they would
   manage the wrong daemon. Run `ssh <destination> boss daemon ...` instead.

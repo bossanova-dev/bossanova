@@ -189,13 +189,83 @@ func daemonDoctorTimestamp(when time.Time) string {
 	return when.Format(time.RFC3339)
 }
 
+// daemonDoctorToolLine renders one "does the daemon see this tool" line and
+// reports whether it resolved. A missing tool is deliberately NOT counted as an
+// unhealthy daemon: not every machine installs both, and doctor's exit status
+// is reserved for states the remediation block can actually fix.
+func daemonDoctorToolLine(servicePath, tool string) (string, bool) {
+	resolved, ok := daemon.LookPathIn(servicePath, tool)
+	if !ok {
+		return fmt.Sprintf("  %s: not found on the service PATH", tool), false
+	}
+	return fmt.Sprintf("  %s: %s", tool, resolved), true
+}
+
+// reportDaemonServicePath prints the PATH the SERVICE uses and resolves the
+// agent-runner tools under THAT path. Resolving node/claude under the caller's
+// interactive shell is exactly the check that passed on the machine whose
+// daemon could not run a single `node` cron gate (BOS-880).
+//
+// It distinguishes two PATHs that are easy to conflate and were the whole bug:
+// the one recorded in the INSTALLED service file, which is what the running
+// daemon actually has, and the one the NEXT restart will write. Tools resolve
+// against the installed value whenever it is readable, so this diagnostic
+// cannot report a tool as visible while the live daemon still cannot see it.
+//
+// It runs on EVERY platform, ahead of the macOS-only checks below: the Linux
+// systemd unit now carries an explicit PATH too, so a Linux operator needs this
+// answer just as much as a macOS one.
+//
+// Returns true when a restart is required to pick up a changed PATH.
+func reportDaemonServicePath(out io.Writer) bool {
+	nextPath := daemon.ServiceEnvPath()
+	installedPath, installedOK := daemon.InstalledServiceEnvPath()
+
+	resolveAgainst := nextPath
+	switch {
+	case !installedOK:
+		_, _ = fmt.Fprintf(out, "service PATH (next restart): %s\n", nextPath)
+		_, _ = fmt.Fprintln(out, "service PATH (installed): unknown (no service file, or it sets no PATH)")
+	case installedPath == nextPath:
+		_, _ = fmt.Fprintf(out, "service PATH: %s\n", installedPath)
+		resolveAgainst = installedPath
+	default:
+		_, _ = fmt.Fprintf(out, "service PATH (installed): %s\n", installedPath)
+		_, _ = fmt.Fprintf(out, "service PATH (next restart): %s\n", nextPath)
+		resolveAgainst = installedPath
+	}
+
+	for _, tool := range []string{"node", "claude"} {
+		line, _ := daemonDoctorToolLine(resolveAgainst, tool)
+		_, _ = fmt.Fprintln(out, line)
+	}
+
+	return installedOK && installedPath != nextPath
+}
+
 func runDaemonDoctor(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
+	// A stale service PATH is a real unhealthy state with an actionable remedy
+	// (restart), and it is precisely the state BOS-880 left every existing
+	// install in until its first restart after the upgrade.
+	servicePathStale := reportDaemonServicePath(out)
+	if servicePathStale {
+		_, _ = fmt.Fprintln(out, "service PATH: stale — the running daemon still uses the installed PATH; run 'boss daemon restart'")
+	}
 	if daemonDoctorGOOS != "darwin" {
 		_, _ = fmt.Fprintf(out, "macOS daemon install and protected-folder checks: not applicable on %s\n", daemonDoctorGOOS)
+		// The service-PATH check is NOT macOS-specific — the systemd unit carries
+		// an explicit PATH too — so its verdict has to survive this early return.
+		// Returning nil here regardless would make stale detection a no-op on
+		// exactly the platform the PATH line is new on.
+		if servicePathStale {
+			_, _ = fmt.Fprintln(out, "\nRemediation:")
+			_, _ = fmt.Fprintln(out, "  run 'boss daemon restart'")
+			return errDaemonDoctorUnhealthy
+		}
 		return nil
 	}
-	unhealthy := false
+	unhealthy := servicePathStale
 	permissionRemediation := false
 	installRemediation := false
 	startRemediation := false

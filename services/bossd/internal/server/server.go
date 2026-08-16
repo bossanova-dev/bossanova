@@ -3661,7 +3661,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, recordAccountUse),
 		)
 	}
-	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
+	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:                      chat,
 		WorktreePath:              sess.WorktreePath,

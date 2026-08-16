@@ -1066,3 +1066,230 @@ export function validatePlanDescription(config, description) {
     unsupportedVersion,
   }
 }
+
+// --- Verify-only acceptance criteria ---------------------------------------
+//
+// A criterion whose correct outcome is "this file needed no change" produces no diff, so every gate
+// that reasons over changed paths is blind to it. Marking such a criterion with a LITERAL token
+// makes classification exact — a bullet either carries the marker or it does not, so there are no
+// heuristics and no false positives — and lets the consumer require named, re-runnable evidence
+// instead of a silent tick. The four literals below are exported so producer prose, consumer prose
+// and this parser all read one definition; a hand-typed copy in three places is how a contract
+// drifts, and a sync test asserts the prose carries these exact bytes.
+
+/** Literal prefix that classifies an acceptance-criterion bullet as verify-only. */
+export const VERIFY_ONLY_MARKER = '(verify-only)'
+
+/** Plan-time clause naming the command a reviewer can re-run. */
+export const VERIFY_ONLY_CHECK = ' — check: '
+
+/** Discharge-time clause naming the command the run actually executed. */
+export const VERIFY_ONLY_CHECKED = ' — checked: '
+
+/** Separator between a discharged command and the result it produced. */
+export const VERIFY_ONLY_RESULT = ' → '
+
+/** The `## Acceptance criteria` contract heading these helpers parse. */
+const ACCEPTANCE_HEADING = '## Acceptance criteria'
+
+/** A markdown checkbox list item: `- [ ] text` / `- [x] text` (either box case, any list marker). */
+const CRITERION_RE = /^[-*+]\s+\[([ xX])\]\s*(.*)$/
+
+/** Any other list item — it ends the previous criterion rather than continuing it. */
+const LIST_ITEM_RE = /^[-*+]\s|^\d+[.)]\s/
+
+/**
+ * The result separator, matched tolerantly on surrounding whitespace.
+ *
+ * `VERIFY_ONLY_RESULT` is the canonical written form and stays exactly ` → `, but it is the one
+ * clause that can legitimately sit at END OF LINE — precisely when the result is EMPTY, which is
+ * the mutation this gate exists to catch. Every markdown formatter strips trailing whitespace, so
+ * a strict `indexOf(' → ')` would fail to find the separator in exactly that case, silently
+ * reclassifying "empty result" as "no result clause at all". The two happen to route to the same
+ * verdict today; relying on that coincidence would make the gate's reason wrong even when its
+ * answer is right, and it would break the moment either branch is reported separately.
+ */
+const RESULT_SEPARATOR_RE = new RegExp(`\\s*${VERIFY_ONLY_RESULT.trim()}\\s*`)
+
+/**
+ * Both new exports are **config-first**, exactly like `validatePlanDescription`. Diagnose the
+ * natural-reading swapped call by name instead of letting it surface as a TypeError from deep
+ * inside `planSections()`.
+ */
+function assertConfigFirst(config, fn) {
+  if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
+    throw new Error(
+      `skill-config: ${fn}(config, description) — arguments look swapped; pass the config first`,
+    )
+  }
+}
+
+/** Strip one wrapping pair of backticks, if present, then trim. */
+function unwrapCode(value) {
+  const trimmed = value.trim()
+  const fenced = /^`+(.*?)`+$/s.exec(trimmed)
+  return (fenced ? fenced[1] : trimmed).trim()
+}
+
+/** A string that carries actual content — "present" must never be confused with "non-empty". */
+function nonEmpty(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+/**
+ * Strip a leading run of markdown emphasis so `**(verify-only)**` classifies like `(verify-only)`.
+ *
+ * The marker is a literal PREFIX by design, and that stays true — this normalises only where the
+ * prefix may start, never what counts as the marker, so it adds no heuristic and no false positive.
+ * What it removes is a silent FALSE NEGATIVE: the drafting brief bolds the token in its own prose a
+ * line above the template it tells planners to copy, so a bolded marker is the likeliest drafting
+ * slip, and an unrecognised marker hands the criterion the diff-demonstrated route — the very
+ * silence this contract exists to end — with nothing anywhere to detect it.
+ */
+function stripEmphasis(value) {
+  return value.replace(/^[*_]+/, '')
+}
+
+/**
+ * Parse the `## Acceptance criteria` section of a plan description (or a PR body written from the
+ * same template) into structured criteria.
+ *
+ * Scope is the `## Acceptance criteria` section **only**, obtained from the existing
+ * `planDescriptionSections()` splitter rather than a second scan of the whole string. That splitter
+ * already stops at the terminal `## Original notes` heading, so a criterion echoed inside the
+ * preserved original notes cannot spoof this parse — a property already documented and tested for
+ * `validatePlanDescription`, inherited here rather than re-derived. Lines inside fenced code blocks
+ * are skipped for the same reason `planDescriptionSections()` skips them: a plan legitimately quotes
+ * the criterion TEMPLATE, and reading a sample bullet as a real criterion invents one nobody wrote.
+ *
+ * A criterion wrapped across several lines is joined into one `text` before matching, because the
+ * ` — check: ` / ` — checked: ` clause routinely lands on a continuation line.
+ *
+ * Returns DATA and never throws for a malformed criterion — a bullet with no clause is simply one
+ * whose `check` is `null`, which is the caller's decision to make, not this parser's.
+ *
+ * @param {object} config skill config (config-first, like `validatePlanDescription`)
+ * @param {string} description plan description or PR body
+ * @returns {{ text: string, checked: boolean, verifyOnly: boolean, check: string | null, result: string | null }[]}
+ *   `text` is the whole bullet body after the checkbox, marker and clause included, so a report can
+ *   name the criterion verbatim. `checked` is the box state. `verifyOnly` is the literal-marker
+ *   classification. `check` is the command named by either clause (backticks stripped) or `null`
+ *   when neither clause is present. A `— checked: ` clause MUST delimit its command in backticks:
+ *   an undelimited one is undecidable (an arrow inside the command is indistinguishable from the
+ *   result separator), so it yields `check: null` and the evidence gate blocks rather than guess.
+ *   `result` is the observed result from the discharge clause only, or `null` when the criterion is
+ *   not yet discharged. An empty clause yields `''`, never `null` — the difference between "absent"
+ *   and "empty" is what the evidence gate turns on.
+ */
+export function parseAcceptanceCriteria(config, description) {
+  assertConfigFirst(config, 'parseAcceptanceCriteria')
+  const section = planDescriptionSections(config, description).find(
+    (s) => s.heading === ACCEPTANCE_HEADING,
+  )
+  if (!section) return []
+
+  const body = section.bodyLines.join('\n')
+  const outside = new Set(scanFences(body).lines.map(({ index }) => index))
+  const lines = body.split('\n')
+  const raw = []
+  let current = null
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!outside.has(index)) continue // fenced sample, not a criterion
+    const trimmed = lines[index].trim()
+    const indented = /^[ \t]/.test(lines[index])
+    const match = CRITERION_RE.exec(trimmed)
+    // A criterion is a TOP-LEVEL bullet. Testing `CRITERION_RE` before the indent test let an
+    // indented `- [x]` sub-bullet — ordinary markdown habit when the evidence gets its own line —
+    // steal the evidence into a phantom criterion of its own, leaving the real one with no clause.
+    if (match && !(current && indented)) {
+      current = { box: match[1], parts: [match[2].trim()] }
+      raw.push(current)
+      continue
+    }
+    if (!current) continue
+    // A blank line, a SIBLING (unindented) list item, or a heading ends the criterion; an INDENTED
+    // sub-bullet belongs to it. Ending on ANY list item drops a discharge clause written as a
+    // nested bullet — the natural shape when the command is long — so evidence that is genuinely
+    // present is reported as missing, and the gate BLOCKS a run that did everything right. A
+    // false negative here is as expensive as the false positive above, in the opposite direction.
+    if (trimmed === '' || /^#{1,6}\s/.test(trimmed) || (LIST_ITEM_RE.test(trimmed) && !indented)) {
+      current = null
+      continue
+    }
+    // Drop a continuation sub-bullet's own marker so the joined text reads as one criterion.
+    current.parts.push(trimmed.replace(LIST_ITEM_RE, ''))
+  }
+
+  return raw.map(({ box, parts }) => {
+    const text = parts.filter(Boolean).join(' ').trim()
+    let check = null
+    let result = null
+    const dischargeAt = text.indexOf(VERIFY_ONLY_CHECKED)
+    if (dischargeAt !== -1) {
+      const tail = text.slice(dischargeAt + VERIFY_ONLY_CHECKED.length)
+      // A BACKTICKED command is a DELIMITED span, so close it BEFORE looking for the result
+      // separator. Searching for the separator first lets an arrow INSIDE the command act as one:
+      // `— checked: \`echo a→b\`` carries no result clause at all, yet splitting at that arrow
+      // yields a non-empty command AND a non-empty result, so the criterion PASSES — the exact
+      // "present but no result" case this gate exists to reject, and a bypass any command
+      // containing an arrow (`rg "a→b"`) triggers by accident. Matching the backtick RUN also
+      // retires the greedy `unwrapCode` strip, which turned a command carrying a second code span
+      // into a garbled `check` no reviewer could paste while the gate still reported green.
+      // The delimiter is REQUIRED on the discharge path, and the requirement is what makes the
+      // parse decidable at all. Without it there is no way to tell `rg "a→b" src/` (one command,
+      // no result) from `make check → identical` (command, then result): both are one arrow in
+      // undelimited text, so ANY split rule gets one of them wrong. Guessing picked the bypass —
+      // the first row split into a non-empty command and a non-empty result and PASSED carrying no
+      // result at all, and the pasteable command was garbled to `rg "a` either way. So an
+      // undelimited discharge is `check = null`: the gate BLOCKS and names the requirement, which
+      // is the fail-closed direction and a one-keystroke fix for the builder. Both shipped
+      // templates already backtick the command, so this rejects nothing they teach.
+      const fenced = /^\s*(`+)([\s\S]*?)\1/.exec(tail)
+      if (fenced) {
+        check = fenced[2].trim()
+        const rest = tail.slice(fenced[0].length)
+        const separator = RESULT_SEPARATOR_RE.exec(rest)
+        if (separator) result = rest.slice(separator.index + separator[0].length).trim()
+      }
+    } else {
+      const plannedAt = text.indexOf(VERIFY_ONLY_CHECK)
+      if (plannedAt !== -1) check = unwrapCode(text.slice(plannedAt + VERIFY_ONLY_CHECK.length))
+    }
+    return {
+      text,
+      checked: box.toLowerCase() === 'x',
+      verifyOnly: stripEmphasis(text).startsWith(VERIFY_ONLY_MARKER),
+      check,
+      result,
+    }
+  })
+}
+
+/**
+ * Validate that every DISCHARGED verify-only criterion carries the evidence its marker promises.
+ *
+ * The gate checks **structure and non-emptiness**, never truth: it cannot tell whether the recorded
+ * command was really run, and does not pretend to. What it buys is that the check becomes named and
+ * re-runnable by a human reviewer, so a verify-only criterion can no longer be discharged in silence.
+ *
+ * Only a criterion that is BOTH `verifyOnly` and `checked` can fail. An unticked verify-only
+ * criterion is reported in `verifyOnly` but is never a `missingEvidence` failure — an open criterion
+ * is already caught by the consumer's existing required-deferred rule, and double-reporting it would
+ * make this gate cry wolf on a condition another gate already owns.
+ *
+ * A description carrying no marker at all yields `verifyOnly: []` and `ok: true`, so every plan
+ * written before this contract keeps validating unchanged.
+ *
+ * @param {object} config skill config (config-first)
+ * @param {string} body plan description or PR body carrying an `## Acceptance criteria` section
+ * @returns {{ ok: boolean, verifyOnly: object[], missingEvidence: object[] }} criteria as returned
+ *   by `parseAcceptanceCriteria`. `ok` is true iff `missingEvidence` is empty.
+ */
+export function validateVerifyOnlyEvidence(config, body) {
+  assertConfigFirst(config, 'validateVerifyOnlyEvidence')
+  const verifyOnly = parseAcceptanceCriteria(config, body).filter((c) => c.verifyOnly)
+  const missingEvidence = verifyOnly.filter(
+    (c) => c.checked && !(nonEmpty(c.check) && nonEmpty(c.result)),
+  )
+  return { ok: missingEvidence.length === 0, verifyOnly, missingEvidence }
+}

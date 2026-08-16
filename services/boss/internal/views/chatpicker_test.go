@@ -3108,7 +3108,7 @@ func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
 	// hint grows with the number of distinct agent names in the session.
 	//
 	// The limited hint (159 columns) overhangs at all four widths below; the
-	// waiting reason (104) overhangs at 40, 61 and 80 but fits at 120, which is
+	// waiting reason (94) overhangs at 40, 61 and 80 but fits at 120, which is
 	// the control — the guard must leave a line that already fits alone.
 	const longReason = "checks_passed_ready on some-very-long-organisation-name/an-equally-long-repository-name#123456"
 	longAgents := []string{

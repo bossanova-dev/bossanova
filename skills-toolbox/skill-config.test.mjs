@@ -35,6 +35,12 @@ import {
   planDescriptionSections,
   requiredPlanSections,
   validatePlanDescription,
+  parseAcceptanceCriteria,
+  validateVerifyOnlyEvidence,
+  VERIFY_ONLY_MARKER,
+  VERIFY_ONLY_CHECK,
+  VERIFY_ONLY_CHECKED,
+  VERIFY_ONLY_RESULT,
 } from './skill-config.mjs'
 
 // --- Task 2: glob matcher + default config --------------------------------
@@ -1676,4 +1682,297 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   assert.ok(pc.bucket.length > 0)
   assert.match(pc.baseUrl, /^https:\/\//)
   assert.deepEqual(planStorageFor(cfg), { kind: 'tracker-attachment' })
+})
+
+// --- Verify-only acceptance criteria (BOS-861) -----------------------------
+//
+// A criterion whose correct outcome is "this file needed no change" is invisible to every
+// diff-shaped gate, so it either ships on a silent tick or blocks the run as required-deferred.
+// The literal `(verify-only)` marker plus a named, re-runnable check replaces both outcomes with
+// evidence. Each falsification below isolates ONE branch of the gate: a test that only exercises
+// the green path is exactly the vacuous gate this contract exists to prevent.
+
+/** A complete, contract-valid v1 description whose `## Acceptance criteria` body is `criteria`. */
+const planBody = (criteria) =>
+  requiredPlanSections(DEFAULT_CONFIG)
+    .map((heading) => {
+      if (heading === '## Acceptance criteria') return `${heading}\n\n${criteria}`
+      if (heading === '## Planning') return `${heading}\n\n- Contract: v1`
+      return `${heading}\n\nbody`
+    })
+    .join('\n\n')
+
+test('the marker/clause literals are the exact bytes the plan and PR forms are written in', () => {
+  // Producer prose, consumer prose and this parser must read ONE definition — a hand-typed copy in
+  // three places is how the contract drifts. `plan-contract.test.mjs` asserts the prose carries
+  // these same bytes; this pins the bytes themselves (em dash U+2014, arrow U+2192).
+  assert.equal(VERIFY_ONLY_MARKER, '(verify-only)')
+  assert.equal(VERIFY_ONLY_CHECK, ' — check: ')
+  assert.equal(VERIFY_ONLY_CHECKED, ' — checked: ')
+  assert.equal(VERIFY_ONLY_RESULT, ' → ')
+  // ` — check: ` must never be a substring of ` — checked: `, or clause detection would be
+  // order-dependent and a discharged criterion could parse as a merely-planned one.
+  assert.ok(!VERIFY_ONLY_CHECKED.includes(VERIFY_ONLY_CHECK))
+})
+
+test('parseAcceptanceCriteria reads box state, marker, clause and wrapped lines', () => {
+  const body = planBody(
+    [
+      '- [x] plain criterion the diff satisfies',
+      `- [ ] ${VERIFY_ONLY_MARKER} the mirror still agrees${VERIFY_ONLY_CHECK}\`make vendor-toolbox-check\``,
+      // A criterion whose clause lands on a CONTINUATION line — the common plan shape, and the one
+      // a line-at-a-time parser silently drops.
+      `- [x] ${VERIFY_ONLY_MARKER} no other call site needs the new argument`,
+      `      ${VERIFY_ONLY_CHECKED.trimStart()}\`rg -n oldName\`${VERIFY_ONLY_RESULT}no matches outside tests`,
+      // The marker classifies only as a PREFIX. A criterion that merely mentions the token in
+      // prose is an ordinary diff-demonstrated criterion, and classifying it verify-only would
+      // hand it the evidence route instead of requiring the change it actually asks for.
+      `- [x] document why ${VERIFY_ONLY_MARKER} exists in the drafting brief`,
+    ].join('\n'),
+  )
+  const criteria = parseAcceptanceCriteria(DEFAULT_CONFIG, body)
+  assert.equal(criteria.length, 4)
+  assert.equal(criteria[3].verifyOnly, false, 'the marker classifies as a prefix, not a substring')
+
+  assert.deepEqual(criteria[0], {
+    text: 'plain criterion the diff satisfies',
+    checked: true,
+    verifyOnly: false,
+    check: null,
+    result: null,
+  })
+
+  assert.equal(criteria[1].verifyOnly, true)
+  assert.equal(criteria[1].checked, false)
+  assert.equal(criteria[1].check, 'make vendor-toolbox-check')
+  assert.equal(criteria[1].result, null, 'a planned criterion names no result yet')
+
+  assert.equal(criteria[2].verifyOnly, true)
+  assert.equal(criteria[2].checked, true)
+  assert.equal(criteria[2].check, 'rg -n oldName')
+  assert.equal(criteria[2].result, 'no matches outside tests')
+})
+
+test('parseAcceptanceCriteria ignores fenced samples and `## Original notes` echoes', () => {
+  // The plan template itself is quoted in a fence, and the terminal `## Original notes` section
+  // echoes the ticket verbatim. Reading either as a real criterion invents one nobody wrote —
+  // the property `planDescriptionSections()` already owns, inherited rather than re-derived.
+  const body = planBody(
+    [
+      '- [x] the one real criterion',
+      '',
+      '```markdown',
+      `- [x] ${VERIFY_ONLY_MARKER} template sample with no evidence at all`,
+      '```',
+    ].join('\n'),
+  ).concat(
+    `\n\n## Original notes\n\n## Acceptance criteria\n\n- [x] ${VERIFY_ONLY_MARKER} echoed from the ticket\n`,
+  )
+  const criteria = parseAcceptanceCriteria(DEFAULT_CONFIG, body)
+  assert.deepEqual(
+    criteria.map((c) => c.text),
+    ['the one real criterion'],
+  )
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, body).ok, true)
+})
+
+test('falsification 1: a ticked verify-only criterion with NO evidence clause fails', () => {
+  const body = planBody(`- [x] ${VERIFY_ONLY_MARKER} the mirror still agrees`)
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, false)
+  assert.deepEqual(
+    result.missingEvidence.map((c) => c.text),
+    [`${VERIFY_ONLY_MARKER} the mirror still agrees`],
+  )
+  assert.equal(result.verifyOnly.length, 1)
+})
+
+test('falsification 2a: a present-but-EMPTY command fails (present is not non-empty)', () => {
+  // Isolates the command half of the conjunction: the result is non-empty, so deleting the
+  // command check from the implementation turns this test green — which is the point.
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} the mirror still agrees${VERIFY_ONLY_CHECKED}\`\`${VERIFY_ONLY_RESULT}identical`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, false)
+  assert.equal(result.missingEvidence.length, 1)
+  assert.equal(result.missingEvidence[0].check, '')
+  assert.equal(result.missingEvidence[0].result, 'identical')
+})
+
+test('falsification 2b: a present-but-EMPTY result fails', () => {
+  // Isolates the result half: the command is non-empty, so deleting the result check turns this
+  // test green. 2a and 2b together mean neither conjunct can be dropped unnoticed.
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} the mirror still agrees${VERIFY_ONLY_CHECKED}\`make vendor-toolbox-check\`${VERIFY_ONLY_RESULT}`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, false)
+  assert.equal(result.missingEvidence.length, 1)
+  assert.equal(result.missingEvidence[0].check, 'make vendor-toolbox-check')
+  assert.equal(result.missingEvidence[0].result, '')
+})
+
+test('falsification 3: an UNTICKED verify-only criterion is reported, never a failure', () => {
+  // An open criterion is already a required-deferred item under the consumer's existing rule.
+  // Double-reporting it here would make this gate cry wolf on a condition another gate owns.
+  const body = planBody(
+    `- [ ] ${VERIFY_ONLY_MARKER} the mirror still agrees${VERIFY_ONLY_CHECK}\`make vendor-toolbox-check\``,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.missingEvidence, [])
+  assert.equal(result.verifyOnly.length, 1)
+  assert.equal(result.verifyOnly[0].checked, false)
+})
+
+test('falsification 4: a pre-existing v1 description with no marker is unaffected', () => {
+  // Back-compat for every already-planned ticket: no marker means nothing to gate, and the
+  // existing plan-description contract must be untouched by the addition.
+  const body = planBody(
+    ['- [ ] add the parser', '- [x] wire the consumer', '- [ ] update the mirrors'].join('\n'),
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.deepEqual(result.verifyOnly, [])
+  assert.equal(result.ok, true)
+  assert.equal(validatePlanDescription(DEFAULT_CONFIG, body).ok, true)
+  assert.equal(planContractVersion(DEFAULT_CONFIG), 1, 'the addition must not bump the contract')
+})
+
+test('a fully discharged verify-only criterion passes, and a missing section is not a failure', () => {
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} no other call site needs the new argument${VERIFY_ONLY_CHECKED}\`rg -n oldName\`${VERIFY_ONLY_RESULT}0 hits outside tests`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.missingEvidence, [])
+  assert.equal(result.verifyOnly[0].check, 'rg -n oldName')
+  assert.equal(result.verifyOnly[0].result, '0 hits outside tests')
+  // A body with no `## Acceptance criteria` section at all returns data, never throws — the
+  // "reject rather than degrade" habit applies to the CONFIG, not to a caller's arbitrary body.
+  assert.deepEqual(parseAcceptanceCriteria(DEFAULT_CONFIG, '## Summary\n\nnothing here'), [])
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, '').ok, true)
+})
+
+test('falsification 5: an arrow INSIDE the command is not the result separator', () => {
+  // The bypass this gate could not survive: `— checked: `echo a→b`` names a command and NO result
+  // clause, but splitting at the first arrow yields a non-empty command AND a non-empty result, so
+  // the criterion passed — the exact "missing result" case falsification 1/2b reject, reintroduced
+  // by the separator search. Any real command carrying an arrow (`rg "a→b"`) triggers it by
+  // accident. The control below is the SAME shape without an arrow, and it must fail identically.
+  const bypass = planBody(`- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`echo a→b\``)
+  const control = planBody(`- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`echo ab\``)
+  for (const [label, body] of [
+    ['arrow inside the command', bypass],
+    ['no arrow at all', control],
+  ]) {
+    const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+    assert.equal(result.ok, false, `${label}: a missing result clause must fail`)
+    assert.equal(result.missingEvidence.length, 1, label)
+    assert.equal(result.missingEvidence[0].result, null, `${label}: no result clause was written`)
+  }
+  // The command itself survives intact — the gate's whole product is a command a human can paste.
+  assert.equal(parseAcceptanceCriteria(DEFAULT_CONFIG, bypass)[0].check, 'echo a→b')
+  // And a genuine result after an arrow-bearing command still parses on both sides.
+  const discharged = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`rg "a→b" src/\`${VERIFY_ONLY_RESULT}0 hits`,
+  )
+  const parsed = parseAcceptanceCriteria(DEFAULT_CONFIG, discharged)[0]
+  assert.equal(parsed.check, 'rg "a→b" src/')
+  assert.equal(parsed.result, '0 hits')
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, discharged).ok, true)
+})
+
+test('falsification 5b: an UNDELIMITED discharge command is refused, not guessed at', () => {
+  // The other half of falsification 5, and the half a backtick-only fix leaves live. Undelimited,
+  // `rg "a→b" src/` (one command, NO result) and `make check → identical` (command THEN result) are
+  // the same shape — one arrow in undelimited text — so any split rule gets one of them wrong.
+  // Guessing chose the bypass: the first row passed carrying no result, and `check` came out as
+  // `rg "a` either way, which is not a command a reviewer can paste. Refusing is fail-closed.
+  const bypass = planBody(`- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}rg "a→b" src/`)
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, bypass)
+  assert.equal(result.ok, false, 'an undelimited command must never pass as evidence')
+  assert.equal(result.missingEvidence.length, 1)
+  assert.equal(
+    result.missingEvidence[0].check,
+    null,
+    'an undecidable command is reported absent, never guessed at',
+  )
+  // Even with a real result written, the undelimited form is refused rather than half-parsed.
+  const undelimited = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}make check${VERIFY_ONLY_RESULT}identical`,
+  )
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, undelimited).ok, false)
+  // ...and the delimited form of that same evidence passes, so the fix is one keystroke.
+  const delimited = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`make check\`${VERIFY_ONLY_RESULT}identical`,
+  )
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, delimited).ok, true)
+  assert.equal(parseAcceptanceCriteria(DEFAULT_CONFIG, delimited)[0].check, 'make check')
+})
+
+test('falsification 6: evidence written as a nested sub-bullet is not dropped', () => {
+  // The mirror-image failure: evidence that IS present, reported missing, blocking a run that did
+  // everything right. A long command naturally lands on its own indented bullet, and ending the
+  // criterion at ANY list item silently discarded it. An UNINDENTED sibling still ends it.
+  const nested = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv\n  - ${VERIFY_ONLY_CHECKED.trimStart()}\`make vendor-toolbox-check\`${VERIFY_ONLY_RESULT}identical`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, nested)
+  assert.equal(result.ok, true, 'evidence on a nested bullet is still evidence')
+  assert.equal(result.verifyOnly[0].check, 'make vendor-toolbox-check')
+  assert.equal(result.verifyOnly[0].result, 'identical')
+  // An unindented sibling bullet remains a separate criterion, not a continuation.
+  const siblings = parseAcceptanceCriteria(DEFAULT_CONFIG, planBody(`- [x] first\n- [ ] second`))
+  assert.deepEqual(
+    siblings.map((c) => c.text),
+    ['first', 'second'],
+  )
+  // An INDENTED CHECKBOX sub-bullet is the same continuation, not a criterion of its own. Testing
+  // the checkbox pattern before the indent let it steal the evidence into a phantom criterion and
+  // leave the real one clauseless — finding 2's false negative wearing a checkbox.
+  const nestedBox = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv\n  - [x] ${VERIFY_ONLY_CHECKED.trimStart()}\`make x\`${VERIFY_ONLY_RESULT}ok`,
+  )
+  assert.equal(
+    parseAcceptanceCriteria(DEFAULT_CONFIG, nestedBox).length,
+    1,
+    'an indented checkbox is a continuation, not a new criterion',
+  )
+  assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, nestedBox).ok, true)
+})
+
+test('falsification 7: an emphasised marker is still a verify-only marker', () => {
+  // `**(verify-only)**` is the likeliest drafting slip — the brief bolds the token in its own prose
+  // — and an unrecognised marker silently routes the criterion back to the diff-demonstrated rule,
+  // which is the silence this whole contract exists to end, with no detector anywhere.
+  for (const marker of [
+    `**${VERIFY_ONLY_MARKER}**`,
+    `*${VERIFY_ONLY_MARKER}*`,
+    `__${VERIFY_ONLY_MARKER}__`,
+  ]) {
+    const body = planBody(`- [x] ${marker} inv`)
+    const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+    assert.equal(result.verifyOnly.length, 1, `${marker} must classify as verify-only`)
+    assert.equal(result.ok, false, `${marker} is ticked with no evidence, so it must fail`)
+  }
+  // Still a PREFIX rule: the marker merely mentioned mid-prose is not a verify-only criterion.
+  assert.equal(
+    parseAcceptanceCriteria(
+      DEFAULT_CONFIG,
+      planBody(`- [x] document why ${VERIFY_ONLY_MARKER} exists`),
+    )[0].verifyOnly,
+    false,
+  )
+})
+
+test('both new exports reject a swapped (description, config) call by name', () => {
+  assert.throws(
+    () => parseAcceptanceCriteria('## Acceptance criteria', DEFAULT_CONFIG),
+    /parseAcceptanceCriteria\(config, description\)/,
+  )
+  assert.throws(
+    () => validateVerifyOnlyEvidence('## Acceptance criteria', DEFAULT_CONFIG),
+    /validateVerifyOnlyEvidence\(config, description\)/,
+  )
 })

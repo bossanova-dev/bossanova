@@ -18,8 +18,20 @@ const (
 	// from the later-pipeline failure outcomes (PRFailed, ChatSpawnFailed).
 	CronJobOutcomeFireFailed CronJobOutcome = "fire_failed"
 	// CronJobOutcomeGated records a fire that was skipped because the job's
-	// gate_command exited non-zero, indicating the gate condition was not met.
+	// gate_command RAN and exited non-zero, indicating the gate condition was
+	// not met. This is a healthy skip: the gate was consulted and said no.
 	CronJobOutcomeGated CronJobOutcome = "gated"
+	// CronJobOutcomeGateFailed records a fire that was skipped because the
+	// job's gate_command could NOT be evaluated at all — it timed out, could
+	// not be launched, was not executable, was never configured, or the shell
+	// reported it missing (exit 127) or unrunnable (exit 126). The fire is
+	// still blocked (the gate contract fails closed), but the gate condition is
+	// UNKNOWN rather than false, so this must never be reported as the healthy
+	// `gated` skip. That conflation is what kept the BOS-880 PATH incident
+	// invisible: eighteen PRs backed up behind a cron history that looked like
+	// a quiet, healthy backlog sweep (BOS-881). It derives cron STATUS FAILED
+	// via isCronFailureOutcome so a broken gate is red and escalatable.
+	CronJobOutcomeGateFailed CronJobOutcome = "gate_failed"
 	// CronJobOutcomePRNoChanges records a run that produced no real work — the
 	// branch carries only the empty draft-PR bootstrap commit (or otherwise has
 	// an empty diff against its base), so any attached PR is a no-op. Two paths

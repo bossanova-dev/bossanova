@@ -52,12 +52,13 @@ func TestRenderClaudeStatus_Waiting(t *testing.T) {
 	}
 }
 
-// TestWaitingHintLine pins the shared wording both surfaces render. The web UI
+// TestWaitingHintLine pins the shared wording both surfaces render: the
+// daemon-supplied reason alone, with no label prefix (BOS-863). The web UI
 // composes the identical string in services/web/src/sessionStatus.ts; if this
 // changes, that must change with it.
 func TestWaitingHintLine(t *testing.T) {
 	got := waitingHintLine(testWaitingReason)
-	want := displaystatus.WaitingLabel + " · " + testWaitingReason
+	want := testWaitingReason
 	if got != want {
 		t.Fatalf("waitingHintLine = %q, want %q", got, want)
 	}
@@ -116,7 +117,8 @@ func TestHome_WaitingReasonSubRow(t *testing.T) {
 }
 
 // TestChatPicker_WaitingReasonLine unit-tests the session-detail hint: only a
-// waiting chat contributes, and the line carries the canonical wording.
+// waiting chat contributes, and the line carries the daemon-supplied reason
+// alone — no label prefix (BOS-863).
 func TestChatPicker_WaitingReasonLine(t *testing.T) {
 	m := ChatPickerModel{
 		chats: []*pb.ClaudeChat{
@@ -127,7 +129,7 @@ func TestChatPicker_WaitingReasonLine(t *testing.T) {
 		daemonWaitingReasons: map[string]string{"b": testWaitingReason},
 	}
 	got := m.waitingReasonLine()
-	want := displaystatus.WaitingLabel + " · " + testWaitingReason
+	want := testWaitingReason
 	if got != want {
 		t.Fatalf("waitingReasonLine = %q, want %q", got, want)
 	}

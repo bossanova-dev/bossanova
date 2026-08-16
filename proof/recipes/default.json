@@ -330,7 +330,7 @@
       "id": "web-session-waiting",
       "surface": "web",
       "title": "Web Session Detail (parked on an external event)",
-      "description": "BOS-668/BOS-710: a session whose first chat is parked on an armed GitHub callback. The sub-header carries the info-styled reason notice 'waiting · awaiting checks_passed_ready on acme/my-app#668' — naming the trigger and the PR — and the chat table below shows that chat's status badge reading 'waiting' with a spinner beside a genuinely working chat that still spins. The parked chat must NOT read 'stopped': the wording matches the TUI's waiting-callback proof scenario byte for byte.",
+      "description": "BOS-668/BOS-710/BOS-863: a session whose first chat is parked on an armed GitHub callback. The sub-header carries the info-styled reason notice 'awaiting checks_passed_ready on acme/my-app#668' — the reason alone, naming the trigger and the PR, with no 'waiting' label repeated from the badge below — and the chat table below shows that chat's status badge reading 'waiting' with a spinner beside a genuinely working chat that still spins. The parked chat must NOT read 'stopped': the wording matches the TUI's waiting-callback proof scenario byte for byte.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/sessions/sess-e2e-waiting",
@@ -1514,6 +1514,26 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
+      "id": "docs-settings",
+      "surface": "docs",
+      "title": "Docs — Settings Reference",
+      "description": "Rendered Settings File reference page (services/docs/docs/reference/settings.md), including the Daemon PATH section and the `daemon_path_extra` key.",
+      "privacy": "fixture",
+      "route": "/reference/settings",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-scheduled-sessions",
+      "surface": "docs",
+      "title": "Docs — Scheduled Sessions Guide",
+      "description": "Rendered Scheduled Sessions guide page (services/docs/docs/guides/scheduled-sessions.md), including the gate-command Outcome table that separates a `gated` skip from a `gate_failed` gate that could not run.",
+      "privacy": "fixture",
+      "route": "/guides/scheduled-sessions",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1600 }
+    },
+    {
       "id": "docs-logging-guide",
       "surface": "docs",
       "title": "Docs — Logging Guide",
@@ -1723,9 +1743,19 @@
       "recipeIds": ["docs-cli-reference"]
     },
     {
+      "name": "Docs Settings reference",
+      "patterns": ["services/docs/docs/reference/settings"],
+      "recipeIds": ["docs-settings"]
+    },
+    {
       "name": "Docs Logging guide",
       "patterns": ["services/docs/docs/guides/logging"],
       "recipeIds": ["docs-logging-guide"]
+    },
+    {
+      "name": "Docs Scheduled Sessions guide",
+      "patterns": ["services/docs/docs/guides/scheduled-sessions"],
+      "recipeIds": ["docs-scheduled-sessions"]
     }
   ]
 }

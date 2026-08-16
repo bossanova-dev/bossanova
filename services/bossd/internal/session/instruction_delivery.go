@@ -21,6 +21,23 @@ const (
 	// run that no human is watching. Dropping it is the incident shape this
 	// report exists for, so it escalates the log level.
 	InstructionClassAutonomyDirective = "autonomy-directive"
+	// InstructionClassSubagentGrant is the bounded subagent-dispatch grant an
+	// ATTENDED chat carries (BOS-882). An unattended run's grant travels inside
+	// InstructionClassAutonomyDirective instead, so the two never both appear.
+	//
+	// Its absence is deliberately NOT Critical, and the asymmetry with the
+	// autonomy directive is the whole point of the distinction. Critical means
+	// "nobody will notice this in time": an unattended run that loses its
+	// autonomy directive strands with no human to see it. This class is defined
+	// by the opposite condition — a human is in the chat. Dropping it degrades
+	// the session to the behaviour bossanova shipped before BOS-882, which the
+	// operator can see and re-authorise by hand in the moment. Reporting it at
+	// Warn is what fixes the silence; escalating it to Error would also make
+	// every attended spawn against a not-yet-rebuilt agent-runner plugin read as
+	// an incident, which is the noise ReportUndeliveredInstructions already
+	// takes care to avoid. If that trade ever changes, change it here — adding
+	// this class to the Critical predicate is a one-line edit.
+	InstructionClassSubagentGrant = "subagent-grant"
 )
 
 // InstructionDeliveryReport describes instruction classes bossd built that the

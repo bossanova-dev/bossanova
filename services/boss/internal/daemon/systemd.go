@@ -47,6 +47,16 @@ const (
 	// DefaultMcpPort is the loopback port the MCP HTTP daemon listens on.
 	DefaultMcpPort = 8765
 
+	// unitTemplate runs bossd. BOS-880 gave it an explicit Environment=PATH=:
+	// it previously inherited the systemd user manager's PATH, which is not the
+	// interactive shell's, so a nodenv/nvm/asdf toolchain was invisible and
+	// every `node`-based cron gate exited 127. It renders from serviceEnvPath,
+	// the same helper mcpUnitTemplate uses.
+	//
+	// The PATH value is QUOTED. systemd splits an unquoted Environment= line on
+	// whitespace into separate assignments, so a perfectly legal directory such
+	// as `/opt/my tools/bin` would silently truncate the daemon's PATH — the
+	// same class of failure this change exists to fix.
 	unitTemplate = `[Unit]
 Description=Bossanova Daemon
 After=network.target
@@ -56,14 +66,15 @@ ExecStart={{.BossdPath}}
 LimitNOFILE=65536
 Restart=always
 RestartSec=5
+Environment="PATH={{.Path}}"
 Environment=LC_CTYPE=C.UTF-8
 
 [Install]
 WantedBy=default.target
 `
 
-	// mcpUnitTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH includes the
-	// agent-runner shim directories (~/.nodenv/shims, ~/.local/bin) so the MCP
+	// mcpUnitTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH comes from
+	// serviceEnvPath, the same helper the bossd unit renders from, so the MCP
 	// server (and any agent CLI it shells out to) can find node/agent binaries.
 	mcpUnitTemplate = `[Unit]
 Description=Bossanova MCP Server
@@ -73,7 +84,7 @@ After=network.target
 ExecStart={{.McpPath}} --http {{.Addr}}
 Restart=always
 RestartSec=5
-Environment=PATH={{.Path}}
+Environment="PATH={{.Path}}"
 Environment=LC_CTYPE=C.UTF-8
 
 [Install]
@@ -83,6 +94,7 @@ WantedBy=default.target
 
 type unitData struct {
 	BossdPath string
+	Path      string
 }
 
 type mcpUnitData struct {
@@ -91,22 +103,32 @@ type mcpUnitData struct {
 	Path    string
 }
 
-// mcpPath builds the PATH for the MCP service, prepending the agent-runner shim
-// directories (~/.nodenv/shims and ~/.local/bin) to the inherited PATH.
-func mcpPath() string {
+// serviceEnvPath builds the PATH for BOTH systemd units — bossd and the MCP
+// server. One helper, because the two diverging was the bug (BOS-880): the
+// bossd unit set no PATH at all and inherited the systemd user manager's,
+// while the MCP unit prepended the agent-runner shim directories.
+//
+// The baseline prepends ~/.nodenv/shims and ~/.local/bin to the PATH this
+// process inherited, so the unit stays as wide as the environment that
+// installed it. daemon_path_extra prepends to that; it can never remove a
+// baseline entry.
+func serviceEnvPath() string {
 	entries := []string{}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := userHomeDir(); err == nil {
 		entries = append(entries,
 			filepath.Join(home, ".nodenv", "shims"),
 			filepath.Join(home, ".local", "bin"),
 		)
 	}
 	if p := os.Getenv("PATH"); p != "" {
-		entries = append(entries, p)
+		// The inherited PATH is already colon-joined; split it so the dedupe in
+		// joinServicePath sees individual directories rather than one opaque
+		// entry that could never match a configured extra.
+		entries = append(entries, strings.Split(p, ":")...)
 	} else {
 		entries = append(entries, "/usr/local/bin", "/usr/bin", "/bin")
 	}
-	return strings.Join(entries, ":")
+	return joinServicePath(pathExtras(serviceEnvSettings()), entries)
 }
 
 // platformServicePath returns the path to the systemd user unit file.
@@ -126,7 +148,7 @@ func generateUnit(bossdPath string) (string, error) {
 	}
 
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, unitData{BossdPath: bossdPath}); err != nil {
+	if err := tmpl.Execute(&buf, unitData{BossdPath: bossdPath, Path: serviceEnvPath()}); err != nil {
 		return "", fmt.Errorf("render unit: %w", err)
 	}
 
@@ -321,7 +343,7 @@ func generateMcpUnit(mcpBinPath string, port int) (string, error) {
 	if err := tmpl.Execute(&buf, mcpUnitData{
 		McpPath: mcpBinPath,
 		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
-		Path:    mcpPath(),
+		Path:    serviceEnvPath(),
 	}); err != nil {
 		return "", fmt.Errorf("render mcp unit: %w", err)
 	}
@@ -569,4 +591,77 @@ func platformEnsureRunning(socketPath string) error {
 	}
 
 	return nil
+}
+
+// InstalledServiceEnvPath returns the PATH recorded in the systemd unit file
+// on disk right now — what the RUNNING daemon has, which differs from
+// serviceEnvPath() until the next restart rewrites the unit.
+//
+// ok is false when the unit is absent or sets no PATH, so a caller can never
+// mistake "could not read it" for "it matches".
+func InstalledServiceEnvPath() (string, bool) {
+	unitPath, err := platformServicePath()
+	if err != nil {
+		return "", false
+	}
+	// #nosec G304 -- platformServicePath returns the fixed per-user systemd unit path; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-880
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return "", false
+	}
+	return unitEnvironmentPath(string(data))
+}
+
+// unitEnvironmentPath extracts the PATH from a unit's Environment= line,
+// accepting both the quoted form this package writes and the bare form an
+// older install (or a hand edit) may carry.
+//
+// A single Environment= line may hold SEVERAL assignments, quoted or not
+// (`Environment="PATH=/a b:/bin" LC_CTYPE=C.UTF-8`), so the value is split into
+// assignments before PATH is picked out. Trimming outer quotes and taking
+// everything after `PATH=` would swallow the following assignments into the
+// path and report a spurious mismatch.
+func unitEnvironmentPath(unit string) (string, bool) {
+	for _, line := range strings.Split(unit, "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "Environment=")
+		if !ok {
+			continue
+		}
+		for _, assignment := range splitUnitAssignments(value) {
+			if path, ok := strings.CutPrefix(assignment, "PATH="); ok {
+				return path, path != ""
+			}
+		}
+	}
+	return "", false
+}
+
+// splitUnitAssignments splits a systemd Environment= value into its individual
+// assignments, treating a double-quoted run as one token so a directory
+// containing a space stays intact.
+func splitUnitAssignments(value string) []string {
+	var (
+		assignments []string
+		current     strings.Builder
+		quoted      bool
+	)
+	flush := func() {
+		if current.Len() > 0 {
+			assignments = append(assignments, current.String())
+			current.Reset()
+		}
+	}
+	for _, r := range value {
+		switch {
+		case r == '"':
+			quoted = !quoted
+		case !quoted && (r == ' ' || r == '\t'):
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return assignments
 }

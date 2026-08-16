@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -2461,20 +2464,20 @@ func (a *emptyArgvAgent) BuildInteractiveCommand(_ context.Context, _ *bossanova
 // — guards against the embedded fakeAgentForLifecycle's signature drifting.
 var _ agent.AgentRunnerClient = (*emptyArgvAgent)(nil)
 
-func TestAppendSystemPromptForFacts(t *testing.T) {
+func TestBuildAppendSystemPromptFacts(t *testing.T) {
 	job := "cron-42"
 	cronSess := &models.Session{ID: "s1", Title: "Nightly triage", CronJobID: &job}
 	plainSess := &models.Session{ID: "s2", Title: "Manual"}
 	const agentSessionID = "agent-123"
 
-	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude")
+	cronPrompt := appendSystemPromptText(cronSess, agentSessionID, "claude")
 	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, unattendedSubagentDirective, "rename"} {
 		if !strings.Contains(cronPrompt, want) {
 			t.Fatalf("cron prompt missing %q: %q", want, cronPrompt)
 		}
 	}
 
-	zeroOutputPrompt := AppendSystemPromptFor(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude")
+	zeroOutputPrompt := appendSystemPromptText(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude")
 	if !strings.Contains(zeroOutputPrompt, zeroOutputCronAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
 		t.Fatalf("zero-output prompt = %q, want dedicated no-commit directive", zeroOutputPrompt)
 	}
@@ -2484,19 +2487,27 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 		t.Fatalf("zero-output prompt missing the subagent directive: %q", zeroOutputPrompt)
 	}
 
-	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude")
+	plainPrompt := appendSystemPromptText(plainSess, agentSessionID, "claude")
 	if !strings.Contains(plainPrompt, "s2") {
 		t.Fatalf("plain prompt missing session id: %q", plainPrompt)
 	}
 	if strings.Contains(plainPrompt, cronAutonomyDirective) {
 		t.Fatalf("plain prompt should not contain the cron directive: %q", plainPrompt)
 	}
-	// Permissive direction: an attended chat keeps the no-surprise-fan-out
-	// default, so the grant must not leak outside the IsUnattended branch.
+	// An attended chat gets its own grant (BOS-882), never the unattended one:
+	// the unattended wording rests on the act of launching an unattended run,
+	// a claim that is false in a chat with a human in it.
 	if strings.Contains(plainPrompt, unattendedSubagentDirective) {
-		t.Fatalf("attended prompt must not contain the subagent directive: %q", plainPrompt)
+		t.Fatalf("attended prompt must not contain the unattended subagent directive: %q", plainPrompt)
 	}
-	if AppendSystemPromptFor(nil, agentSessionID, "") != "" {
+	if !strings.Contains(plainPrompt, attendedSubagentDirective) {
+		t.Fatalf("attended prompt must carry the attended subagent grant by default: %q", plainPrompt)
+	}
+	// …and the unattended prompt is never given the attended wording either.
+	if strings.Contains(cronPrompt, attendedSubagentDirective) {
+		t.Fatalf("unattended prompt must not contain the attended subagent grant: %q", cronPrompt)
+	}
+	if appendSystemPromptText(nil, agentSessionID, "") != "" {
 		t.Fatalf("nil session should yield empty prompt")
 	}
 
@@ -2564,7 +2575,7 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 // TestBossSessionContext_AdvertisesExactlyExportedIdentifiers).
 func TestBuildAppendSystemPrompt_NeverAdvertisesBossMcpTools(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: t.TempDir()}
-	text, classes := BuildAppendSystemPrompt(sess, "chat-1", "claude")
+	text, classes := BuildAppendSystemPrompt(sess, "chat-1", "claude", config.SubagentDispatchGrantAlways)
 	if strings.Contains(text, "mcp__boss__") {
 		t.Fatalf("prompt must not advertise mcp__boss__*:\n%s", text)
 	}
@@ -2581,7 +2592,7 @@ func TestBuildAppendSystemPrompt_NeverAdvertisesBossMcpTools(t *testing.T) {
 // it is the authoritative, self-describing entry point the prompt points at.
 // This only asserts the stale hand-listed subset never returns.
 func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
-	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude")
+	prompt := appendSystemPromptText(&models.Session{ID: "s1"}, "agent-1", "claude")
 	for _, banned := range []string{
 		"list_sessions", "get_session", "create_session", "record_chat",
 		"wake_chat", "update_session",
@@ -2880,11 +2891,11 @@ func TestManagedSessionEnv_IsTmuxUnattended(t *testing.T) {
 	}
 }
 
-// TestAppendSystemPromptFor_IsTmuxUnattended proves the autonomy directive is
+// TestBuildAppendSystemPrompt_IsTmuxUnattended proves the autonomy directive is
 // appended for a tmux_unattended session (no CronJobID), just as for cron.
-func TestAppendSystemPromptFor_IsTmuxUnattended(t *testing.T) {
+func TestBuildAppendSystemPrompt_IsTmuxUnattended(t *testing.T) {
 	sess := &models.Session{ID: "s9", Title: "Epic child", IsTmuxUnattended: true}
-	prompt := AppendSystemPromptFor(sess, "agent-9", "claude")
+	prompt := appendSystemPromptText(sess, "agent-9", "claude")
 	if !strings.Contains(prompt, cronAutonomyDirective) {
 		t.Fatal("tmux_unattended session must get the autonomy directive")
 	}
@@ -3035,16 +3046,27 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 	cases := []struct {
 		name        string
 		sess        *models.Session
+		grant       config.SubagentDispatchGrant
 		wantClasses []string
 	}{
 		{
-			name:        "attended session carries session context only",
+			// The opt-out is the configuration in which an attended chat still
+			// carries nothing but its session context (the pre-BOS-882 shape).
+			name:        "attended session under the opt-out carries session context only",
 			sess:        &models.Session{ID: "s1", Title: "Manual"},
+			grant:       config.SubagentDispatchGrantUnattended,
 			wantClasses: []string{InstructionClassSessionContext},
+		},
+		{
+			name:        "attended session under the default adds the subagent grant",
+			sess:        &models.Session{ID: "s1b", Title: "Manual"},
+			grant:       config.SubagentDispatchGrantAlways,
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassSubagentGrant},
 		},
 		{
 			name:        "cron session adds the autonomy directive",
 			sess:        &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job},
+			grant:       config.SubagentDispatchGrantAlways,
 			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
 		},
 		{
@@ -3052,30 +3074,36 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 			// it is still the unattended autonomy instruction.
 			name:        "zero-output cron session still reports the directive",
 			sess:        &models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true},
+			grant:       config.SubagentDispatchGrantAlways,
 			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
 		},
 		{
 			name:        "tmux_unattended session adds the autonomy directive",
 			sess:        &models.Session{ID: "s4", Title: "Epic child", IsTmuxUnattended: true},
+			grant:       config.SubagentDispatchGrantAlways,
 			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
 		},
 		{
 			name:        "detached session adds the autonomy directive",
 			sess:        &models.Session{ID: "s5", Title: "Headless", Detach: true},
+			grant:       config.SubagentDispatchGrantAlways,
+			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			// An unattended session never loses its grant to the attended
+			// opt-out, and never reports the attended class for it.
+			name:        "unattended session under the opt-out keeps the autonomy directive",
+			sess:        &models.Session{ID: "s6", Title: "Nightly", CronJobID: &job},
+			grant:       config.SubagentDispatchGrantUnattended,
 			wantClasses: []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude")
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-1", "claude", tc.grant)
 			if strings.Join(classes, ",") != strings.Join(tc.wantClasses, ",") {
 				t.Fatalf("classes = %v, want %v", classes, tc.wantClasses)
-			}
-			// The exported wrapper must stay byte-identical to the text the
-			// class-bearing builder produces: argv is unchanged by this feature.
-			if got := AppendSystemPromptFor(tc.sess, "agent-1", "claude"); got != text {
-				t.Fatalf("AppendSystemPromptFor diverged from BuildAppendSystemPrompt:\n got %q\nwant %q", got, text)
 			}
 			// text-iff-class: the directive class is claimed exactly when some
 			// directive prose is actually in the suffix.
@@ -3084,6 +3112,13 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 			claimsDirective := slices.Contains(classes, InstructionClassAutonomyDirective)
 			if hasDirective != claimsDirective {
 				t.Fatalf("directive text present = %v but class claimed = %v: %q", hasDirective, claimsDirective, text)
+			}
+			// Same invariant for the attended grant: the class must be claimed
+			// exactly when its prose is in the suffix, or the drop report lies.
+			hasGrant := strings.Contains(text, attendedSubagentDirective)
+			claimsGrant := slices.Contains(classes, InstructionClassSubagentGrant)
+			if hasGrant != claimsGrant {
+				t.Fatalf("attended grant text present = %v but class claimed = %v: %q", hasGrant, claimsGrant, text)
 			}
 		})
 	}
@@ -3096,13 +3131,315 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 // empty suffix would still report a class, and bossd would log a drop for an
 // instruction it never built.
 func TestBuildAppendSystemPromptNilSession(t *testing.T) {
-	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude")
+	text, classes := BuildAppendSystemPrompt(nil, "agent-1", "claude", config.SubagentDispatchGrantAlways)
 	if text != "" || classes != nil {
 		t.Fatalf("nil session = (%q, %v), want empty text and nil classes", text, classes)
 	}
 
-	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude")
+	text, classes = BuildAppendSystemPrompt(&models.Session{ID: "s1"}, "agent-1", "claude", config.SubagentDispatchGrantAlways)
 	if text == "" || len(classes) == 0 {
 		t.Fatalf("plain session = (%q, %v), want a non-empty suffix and its class", text, classes)
 	}
+}
+
+// BOS-882: attended boss chats get the bounded subagent-dispatch grant by
+// default. The matrix is the whole contract — which sessions get which grant
+// under which resolved setting — so it is asserted in one place rather than
+// spread across the prompt tests above.
+func TestBuildAppendSystemPrompt_SubagentGrantMatrix(t *testing.T) {
+	job := "cron-882"
+	attended := func() *models.Session { return &models.Session{ID: "s-attended", Title: "Manual"} }
+	cron := func() *models.Session { return &models.Session{ID: "s-cron", Title: "Nightly", CronJobID: &job} }
+	tmuxUnattended := func() *models.Session {
+		return &models.Session{ID: "s-epic", Title: "Epic child", IsTmuxUnattended: true}
+	}
+
+	cases := []struct {
+		name              string
+		sess              *models.Session
+		grant             config.SubagentDispatchGrant
+		wantAttendedGrant bool
+		wantUnattended    bool
+		wantClasses       []string
+	}{
+		{
+			// The key is absent from a fresh settings.json, which resolves to
+			// the shipped default before it ever reaches this function.
+			name:              "attended with the key unset gets the grant",
+			sess:              attended(),
+			grant:             config.ResolveSubagentDispatchGrant(&config.Settings{}),
+			wantAttendedGrant: true,
+			wantClasses:       []string{InstructionClassSessionContext, InstructionClassSubagentGrant},
+		},
+		{
+			name:              "attended with always gets the grant",
+			sess:              attended(),
+			grant:             config.SubagentDispatchGrantAlways,
+			wantAttendedGrant: true,
+			wantClasses:       []string{InstructionClassSessionContext, InstructionClassSubagentGrant},
+		},
+		{
+			name:        "attended with the opt-out gets no grant",
+			sess:        attended(),
+			grant:       config.SubagentDispatchGrantUnattended,
+			wantClasses: []string{InstructionClassSessionContext},
+		},
+		{
+			// An unrecognised value never reaches here as itself: the resolver
+			// maps it to the default, so the operator keeps the shipped grant.
+			name:              "attended with an unrecognised value keeps the default grant",
+			sess:              attended(),
+			grant:             config.ResolveSubagentDispatchGrant(&config.Settings{SubagentDispatchGrant: "sometimes"}),
+			wantAttendedGrant: true,
+			wantClasses:       []string{InstructionClassSessionContext, InstructionClassSubagentGrant},
+		},
+		{
+			// The zero value is what a caller with nothing to consult passes;
+			// it must degrade to the default rather than to the opt-out.
+			name:              "attended with the zero value keeps the default grant",
+			sess:              attended(),
+			grant:             "",
+			wantAttendedGrant: true,
+			wantClasses:       []string{InstructionClassSessionContext, InstructionClassSubagentGrant},
+		},
+		{
+			name:           "cron keeps the unattended directive under always",
+			sess:           cron(),
+			grant:          config.SubagentDispatchGrantAlways,
+			wantUnattended: true,
+			wantClasses:    []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			// The opt-out is scoped to attended chats: an unattended run is
+			// still authorised in every configuration (BOS-646 regression).
+			name:           "cron keeps the unattended directive under the opt-out",
+			sess:           cron(),
+			grant:          config.SubagentDispatchGrantUnattended,
+			wantUnattended: true,
+			wantClasses:    []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+		{
+			name:           "tmux_unattended keeps the unattended directive under the opt-out",
+			sess:           tmuxUnattended(),
+			grant:          config.SubagentDispatchGrantUnattended,
+			wantUnattended: true,
+			wantClasses:    []string{InstructionClassSessionContext, InstructionClassAutonomyDirective},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, classes := BuildAppendSystemPrompt(tc.sess, "agent-882", "claude", tc.grant)
+
+			hasAttended := strings.Contains(text, attendedSubagentDirective)
+			hasUnattended := strings.Contains(text, unattendedSubagentDirective)
+			if hasAttended != tc.wantAttendedGrant {
+				t.Errorf("attended grant present = %v, want %v:\n%s", hasAttended, tc.wantAttendedGrant, text)
+			}
+			if hasUnattended != tc.wantUnattended {
+				t.Errorf("unattended directive present = %v, want %v:\n%s", hasUnattended, tc.wantUnattended, text)
+			}
+			// Never both, asserted against the PRODUCED PROMPT rather than
+			// against this table's own expectations — a check on the fixture
+			// declarations would pass however the branch actually behaved. The
+			// two directives make different claims about where the authority
+			// comes from, so a suffix carrying both would be telling the agent
+			// two stories at once.
+			if hasAttended && hasUnattended {
+				t.Fatalf("prompt carried BOTH grants; they are mutually exclusive:\n%s", text)
+			}
+			if strings.Join(classes, ",") != strings.Join(tc.wantClasses, ",") {
+				t.Errorf("classes = %v, want %v", classes, tc.wantClasses)
+			}
+		})
+	}
+}
+
+// The unattended directive is load-bearing prose that BOS-646 tuned word by
+// word, and BOS-882 adds a sibling next to it. Pin the whole constant so an
+// edit intended for the attended wording cannot drift the unattended one.
+func TestUnattendedSubagentDirectiveIsByteIdentical(t *testing.T) {
+	const want = "Launching this boss-managed unattended session IS the operator's " +
+		"standing request for the subagent dispatches your running skill's protocol mandates. You are " +
+		"authorised to dispatch them without asking, and skipping them is not the conservative choice — " +
+		"it silently downgrades the work you were launched to do. Bound that grant to the protocol: " +
+		"dispatch only what it mandates, and always await every dispatch — never background one " +
+		"(if your dispatch tool backgrounds by default, pass run_in_background: false) — rather than " +
+		"open-ended fan-out or convenience delegation. If a dispatch you cannot make has a documented " +
+		"inline fallback, take that fallback: it is the protocol's own recovery, and completing the " +
+		"mandated work inline is a clean result, not a downgrade. Escalate only when the mandated work " +
+		"itself goes undone — the protocol documents no fallback, or the fallback also failed: then do " +
+		"not report a clean result, state it verbatim as SUBAGENT-DISPATCH-UNAVAILABLE, name the " +
+		"mandated work left undone, and route the run to its non-clean terminal state."
+	if unattendedSubagentDirective != want {
+		t.Fatalf("unattendedSubagentDirective changed (BOS-646 regression):\n got %q\nwant %q", unattendedSubagentDirective, want)
+	}
+}
+
+// The attended grant is only defensible because of where it says its authority
+// comes from. It rests on bossanova's shipped default plus the operator's
+// persisted setting; the unattended directive rests on the act of launching an
+// unattended run, which is a claim an attended chat cannot support. A future
+// edit that copied the unattended wording across would be dishonest prose in a
+// system prompt, so pin both halves: what the attended text must say, and what
+// it must never say.
+func TestAttendedSubagentDirectiveGroundsItsAuthorityHonestly(t *testing.T) {
+	for _, want := range []string{
+		// Authority is bossanova's shipped default…
+		"Bossanova ships",
+		"by default",
+		// …plus the operator's persisted, named, reversible setting.
+		"subagent_dispatch_grant",
+		"no operator opt-out is in effect",
+		// And it is explicit that this is NOT the user speaking in this chat.
+		"not anything the user has asked for in this chat",
+	} {
+		if !strings.Contains(attendedSubagentDirective, want) {
+			t.Errorf("attended directive lost its authority grounding %q: %q", want, attendedSubagentDirective)
+		}
+	}
+
+	for _, banned := range []string{
+		// The launch-based claim the attended case cannot support.
+		"Launching this",
+		"IS the operator's standing request",
+		"you were launched to do",
+		// The resolver fails open, so an operator who MISTYPED the opt-out
+		// reaches this branch having tried to withdraw the grant. A directive
+		// that asserts what the operator did — rather than what bossanova
+		// resolved — is then stating something their settings.json
+		// contradicts. Only the resolved-state phrasing is true on every path
+		// that can reach here.
+		"the operator has not opted out",
+		"they have not opted out",
+	} {
+		if strings.Contains(attendedSubagentDirective, banned) {
+			t.Errorf("attended directive borrowed an unsupportable claim %q: %q", banned, attendedSubagentDirective)
+		}
+	}
+}
+
+// Mirrors the bounding assertions on the unattended directive. The attended
+// grant reaches far more sessions, so losing a bound here is strictly worse: it
+// would read as an unbounded fan-out licence in every interactive chat.
+func TestAttendedSubagentDirectiveIsBounded(t *testing.T) {
+	t.Run("bounded to the protocol", func(t *testing.T) {
+		for _, want := range []string{
+			// Scoped to what the running skill already mandates…
+			"protocol mandates",
+			// …awaited, never backgrounded…
+			"await every dispatch",
+			"run_in_background",
+			// …never widened into general delegation…
+			"open-ended fan-out or convenience delegation",
+			// …and non-delivery is greppable, not a silent clean report.
+			"SUBAGENT-DISPATCH-UNAVAILABLE",
+		} {
+			if !strings.Contains(attendedSubagentDirective, want) {
+				t.Errorf("attended directive lost its bounding clause %q: %q", want, attendedSubagentDirective)
+			}
+		}
+	})
+
+	t.Run("preserves the documented inline fallback", func(t *testing.T) {
+		for _, want := range []string{
+			"inline fallback",
+			"clean result, not a downgrade",
+			"Escalate only when the mandated work",
+		} {
+			if !strings.Contains(attendedSubagentDirective, want) {
+				t.Errorf("attended directive lost its inline-fallback carve-out %q: %q", want, attendedSubagentDirective)
+			}
+		}
+	})
+}
+
+// The fail-open resolver silently discards a mistyped opt-out. That is the
+// right behaviour and the wrong silence, so the spawn-site helper is where the
+// operator finally hears about it. Pin both directions: a discard warns, an
+// honoured setting does not (a warning on the happy path is noise, and noise on
+// every spawn is how a real signal gets filtered out).
+func TestResolveSubagentGrantForSpawn(t *testing.T) {
+	capture := func(t *testing.T, body string) (config.SubagentDispatchGrant, map[string]any) {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("write settings: %v", err)
+		}
+		t.Setenv("BOSS_SETTINGS_PATH", p)
+
+		var buf bytes.Buffer
+		grant := ResolveSubagentGrantForSpawn(zerolog.New(&buf))
+		line := strings.TrimSpace(buf.String())
+		if line == "" {
+			return grant, nil
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("log line is not JSON (%v): %q", err, line)
+		}
+		return grant, got
+	}
+
+	t.Run("a mistyped opt-out warns and names the discarded value", func(t *testing.T) {
+		grant, record := capture(t, `{"subagent_dispatch_grant":"unatended"}`)
+		if grant != config.SubagentDispatchGrantAlways {
+			t.Errorf("grant = %q, want the fail-open default %q", grant, config.SubagentDispatchGrantAlways)
+		}
+		if record == nil {
+			t.Fatal("a discarded opt-out must emit a record; silence is the defect this closes")
+		}
+		if record["level"] != "warn" {
+			t.Errorf("level = %v, want warn", record["level"])
+		}
+		// The offending value rides in a structured field, not the message, so
+		// an operator can grep `reason` across spawns rather than parsing prose.
+		reason, _ := record["reason"].(string)
+		if !strings.Contains(reason, "unatended") {
+			t.Errorf("reason %q must name the offending value so the operator can find it", reason)
+		}
+		if record["resolved"] != string(config.SubagentDispatchGrantAlways) {
+			t.Errorf("resolved = %v, want %q", record["resolved"], config.SubagentDispatchGrantAlways)
+		}
+		// The prompt body must never ride along with the diagnostic.
+		if strings.Contains(reason, attendedSubagentDirective) {
+			t.Error("the discard warning leaked the directive body")
+		}
+	})
+
+	for _, body := range []string{
+		`{"subagent_dispatch_grant":"unattended"}`,
+		`{"subagent_dispatch_grant":"always"}`,
+		`{"default_agent":"claude"}`,
+	} {
+		t.Run("honoured settings stay quiet: "+body, func(t *testing.T) {
+			if _, record := capture(t, body); record != nil {
+				t.Errorf("honoured settings must not warn, got %v", record)
+			}
+		})
+	}
+
+	t.Run("an honoured opt-out is still applied", func(t *testing.T) {
+		grant, _ := capture(t, `{"subagent_dispatch_grant":"unattended"}`)
+		if grant != config.SubagentDispatchGrantUnattended {
+			t.Fatalf("grant = %q, want %q", grant, config.SubagentDispatchGrantUnattended)
+		}
+	})
+}
+
+// appendSystemPromptText is the text-only view of BuildAppendSystemPrompt that
+// these prompt-content tests want. It replaces the former exported
+// AppendSystemPromptFor wrapper, which had no production caller at any point on
+// this branch: an exported identity wrapper that only tests call is API surface
+// the daemon does not use, and widening it for this feature would have meant
+// threading a fourth parameter through it for nobody.
+// The grant is fixed at the shipped default rather than being a parameter:
+// every caller is a prompt-CONTENT test that wants the default configuration,
+// and the grant matrix itself is asserted by
+// TestBuildAppendSystemPrompt_SubagentGrantMatrix, which calls
+// BuildAppendSystemPrompt directly with each mode. A parameter only one value
+// is ever passed to is not a knob, it is noise (and `unparam` says so).
+func appendSystemPromptText(sess *models.Session, agentSessionID, agentName string) string {
+	text, _ := BuildAppendSystemPrompt(sess, agentSessionID, agentName, config.SubagentDispatchGrantAlways)
+	return text
 }

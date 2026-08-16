@@ -975,6 +975,63 @@ func TestCronJobStatusGated(t *testing.T) {
 	}
 }
 
+// TestCronJobStatusGateFailedVsGated is the BOS-881 status split: a gate that
+// could not run derives FAILED (red, escalatable) while a gate that ran and
+// said no keeps the healthy GATED status. No new CronJobStatus enum member is
+// involved — gate_failed reuses CRON_JOB_STATUS_FAILED via isCronFailureOutcome.
+func TestCronJobStatusGateFailedVsGated(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome models.CronJobOutcome
+		want    pb.CronJobStatus
+	}{
+		{"gate could not run", models.CronJobOutcomeGateFailed, pb.CronJobStatus_CRON_JOB_STATUS_FAILED},
+		{"gate ran and said no", models.CronJobOutcomeGated, pb.CronJobStatus_CRON_JOB_STATUS_GATED},
+		{"fire never reached a session", models.CronJobOutcomeFireFailed, pb.CronJobStatus_CRON_JOB_STATUS_FAILED},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outcome := tt.outcome
+			job := &models.CronJob{LastRunOutcome: &outcome}
+			if got := cronJobStatus(context.Background(), job, newFakeSessionStore(), nil); got != tt.want {
+				t.Fatalf("cronJobStatus(%q) = %v, want %v", tt.outcome, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsCronFailureOutcome pins the exact failure set so a later outcome
+// addition has to make a deliberate choice rather than inherit one.
+func TestIsCronFailureOutcome(t *testing.T) {
+	failures := []models.CronJobOutcome{
+		models.CronJobOutcomeFireFailed,
+		models.CronJobOutcomeGateFailed,
+	}
+	notFailures := []models.CronJobOutcome{
+		models.CronJobOutcomeGated,
+		models.CronJobOutcomePRCreated,
+		models.CronJobOutcomePRFailed,
+		models.CronJobOutcomePRNoChanges,
+		models.CronJobOutcomePRSkippedNoGitHub,
+		models.CronJobOutcomeChatSpawnFailed,
+		models.CronJobOutcomeCleanupFailed,
+		models.CronJobOutcomeDeletedNoChanges,
+		models.CronJobOutcomeFailedRecovered,
+		models.CronJobOutcomeWorktreeGone,
+		models.CronJobOutcomeZeroOutput,
+	}
+	for _, o := range failures {
+		if !isCronFailureOutcome(o) {
+			t.Errorf("isCronFailureOutcome(%q) = false, want true", o)
+		}
+	}
+	for _, o := range notFailures {
+		if isCronFailureOutcome(o) {
+			t.Errorf("isCronFailureOutcome(%q) = true, want false", o)
+		}
+	}
+}
+
 func TestCronJobToProtoGatingOverride(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	job := &models.CronJob{

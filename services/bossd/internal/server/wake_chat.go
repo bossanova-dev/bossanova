@@ -137,7 +137,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		defaultAccountID := ""
-		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName)
+		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
 			WorktreePath:              sess.WorktreePath,

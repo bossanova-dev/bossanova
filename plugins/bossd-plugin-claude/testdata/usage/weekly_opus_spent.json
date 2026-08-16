@@ -1,0 +1,19 @@
+{
+  "five_hour": {
+    "utilization": 8.0,
+    "resets_at": "2026-04-11T07:00:00.528743+00:00"
+  },
+  "seven_day": {
+    "utilization": 20.0,
+    "resets_at": "2026-04-17T00:59:59.951713+00:00"
+  },
+  "seven_day_opus": {
+    "utilization": 100.0,
+    "resets_at": "2026-04-14T09:30:00.123456+00:00"
+  },
+  "seven_day_sonnet": {
+    "utilization": 3.0,
+    "resets_at": "2026-04-16T03:00:00.951719+00:00"
+  },
+  "subscriptionType": "max_5x"
+}

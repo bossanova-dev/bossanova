@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "title": "BOS-881 a gate that could not run reads as failed, beside a healthy gated job",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home settles, then open Settings",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        { "key": "s", "caption": "Press [s] to open Settings" },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the cron list shows a gated job and a gate_failed job side by side",
+      "steps": [
+        { "key": "c", "caption": "Press [c] to open the Scheduled Jobs (cron) list" },
+        {
+          "waitFor": "Backlog sweep",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded; 'Backlog sweep' is the job whose gate could not run"
+        },
+        {
+          "expect": [
+            {
+              "text": "CRON NAME REPO",
+              "match": "normalized",
+              "label": "cron list column headers (CRON NAME REPO AGENT ENABLED LAST RUN NEXT RUN STATUS)"
+            },
+            {
+              "text": "Morning PR triage",
+              "match": "normalized",
+              "label": "the healthy gated job is on screen"
+            },
+            {
+              "text": "Backlog sweep",
+              "match": "normalized",
+              "label": "the gate_failed job is on screen"
+            },
+            {
+              "text": "Morning PR triage.*gated",
+              "match": "regex",
+              "label": "'Morning PR triage' (gate ran and said no) keeps the warning-styled 'gated' STATUS"
+            },
+            {
+              "text": "Backlog sweep.*failed",
+              "match": "regex",
+              "label": "'Backlog sweep' (gate could not run, outcome gate_failed) shows a red 'failed' STATUS — this is the whole ticket: the two are visually distinguishable"
+            }
+          ],
+          "caption": "Both jobs are enabled and both had their fire blocked, but they no longer look alike: the gate that RAN and said no reads 'gated', while the gate that could not run at all (exit 127 — its interpreter is missing) reads 'failed'. Before BOS-881 both rendered 'gated' and a broken deployment looked like a quiet backlog."
+        }
+      ]
+    }
+  ]
+}

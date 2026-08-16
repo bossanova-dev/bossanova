@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/config"
 )
 
 func TestGenerateUnit(t *testing.T) {
@@ -321,5 +323,279 @@ func TestPlatformMcpStopSkipLaunchctl(t *testing.T) {
 	}
 	if called {
 		t.Error("platformMcpStop() invoked systemctl despite BOSS_DAEMON_SKIP_LAUNCHCTL being set")
+	}
+}
+
+// TestGenerateUnitSetsExplicitPath is the Linux half of the BOS-880 parity
+// invariant: the bossd unit previously had no Environment=PATH= at all and
+// inherited the systemd user manager's PATH.
+func TestGenerateUnitSetsExplicitPath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	if !strings.Contains(unit, `Environment="PATH=`) {
+		t.Fatalf("bossd unit has no Environment=PATH= line:\n%s", unit)
+	}
+	for _, want := range []string{"/stub/home/.nodenv/shims", "/stub/home/.local/bin"} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("bossd unit PATH missing %q:\n%s", want, unit)
+		}
+	}
+}
+
+// TestGenerateUnitAndMcpUnitShareOnePath fails the moment the two units render
+// their PATH from different helpers again.
+func TestGenerateUnitAndMcpUnitShareOnePath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"~/.asdf/shims"}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+	mcpUnit, err := generateMcpUnit("/usr/local/bin/mcp", 8765)
+	if err != nil {
+		t.Fatalf("generateMcpUnit: %v", err)
+	}
+
+	want := `Environment="PATH=` + serviceEnvPath() + `"`
+	for name, rendered := range map[string]string{"bossd": unit, "mcp": mcpUnit} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("%s unit does not render the shared service PATH:\n%s", name, rendered)
+		}
+	}
+}
+
+func TestGenerateUnitPlacesConfiguredExtraFirst(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"~/.asdf/shims"}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	if !strings.Contains(unit, `Environment="PATH=/stub/home/.asdf/shims:`) {
+		t.Errorf("configured extra is not at the front of the unit PATH:\n%s", unit)
+	}
+}
+
+// TestGenerateUnitRejectsNewlineInjection is the sharper half of why sanitizing
+// is load-bearing: text/template does not escape, so a newline in an entry
+// would otherwise inject an arbitrary directive into the unit file.
+func TestGenerateUnitRejectsNewlineInjection(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{
+		"/opt/evil\nExecStartPre=/bin/rm -rf /",
+		"/opt/other\rEnvironment=INJECTED=1",
+	}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	for _, injected := range []string{"ExecStartPre", "INJECTED", "/opt/evil", "/opt/other"} {
+		if strings.Contains(unit, injected) {
+			t.Errorf("unit contains injected content %q:\n%s", injected, unit)
+		}
+	}
+
+	// Every line must still be a directive or a section header — no orphaned
+	// fragment left behind by a partially-filtered entry.
+	for _, line := range strings.Split(unit, "\n") {
+		if line == "" || strings.HasPrefix(line, "[") {
+			continue
+		}
+		if !strings.Contains(line, "=") {
+			t.Errorf("unit contains a non-directive line %q:\n%s", line, unit)
+		}
+	}
+}
+
+// TestServiceEnvPathSplitsInheritedPath guards the Linux baseline: the
+// inherited PATH is colon-joined, so it must be split into entries or the
+// dedupe would compare one opaque string against individual directories.
+func TestServiceEnvPathSplitsInheritedPath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"/usr/bin"}})
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+
+	got := serviceEnvPath()
+
+	// /usr/bin was configured as an extra, so it moves to the front and must
+	// appear exactly once.
+	if !strings.HasPrefix(got, "/usr/bin:") {
+		t.Errorf("serviceEnvPath() = %q, want it to start with the configured extra", got)
+	}
+	if count := strings.Count(got, "/usr/bin:") + strings.Count(got, ":/usr/bin"); count != 1 {
+		t.Errorf("serviceEnvPath() = %q, want /usr/bin exactly once (count %d)", got, count)
+	}
+}
+
+// TestServiceEnvPathDropsHostileInheritedEntries covers the entry class the
+// bossd unit newly interpolates: a baseline entry from $PATH is not a
+// compile-time literal.
+func TestServiceEnvPathDropsHostileInheritedEntries(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+	t.Setenv("PATH", "/usr/bin:/opt/bad\nExecStartPre=/bin/false:/bin")
+
+	got := serviceEnvPath()
+
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("serviceEnvPath() = %q, want no newline from the inherited PATH", got)
+	}
+	if strings.Contains(got, "ExecStartPre") {
+		t.Errorf("serviceEnvPath() = %q, want the injected directive dropped", got)
+	}
+}
+
+// TestGenerateUnitQuotesPathSoSpacesSurvive: a space is legal in a Unix
+// directory name but systemd splits an UNQUOTED Environment= line on
+// whitespace into separate assignments, which would silently truncate the
+// daemon's PATH — the same failure mode this ticket fixes. The value is quoted
+// rather than the entry dropped, so such a directory keeps working.
+func TestGenerateUnitQuotesPathSoSpacesSurvive(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"/opt/my tools/bin"}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	if !strings.Contains(unit, `Environment="PATH=/opt/my tools/bin:`) {
+		t.Fatalf("space-bearing entry did not survive as a quoted value:\n%s", unit)
+	}
+
+	// The PATH assignment must be exactly one quoted line, closed on that line.
+	var pathLine string
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, `Environment="PATH=`) {
+			pathLine = line
+			break
+		}
+	}
+	if pathLine == "" {
+		t.Fatalf("no quoted PATH line:\n%s", unit)
+	}
+	if !strings.HasSuffix(pathLine, `"`) {
+		t.Errorf("quoted PATH line is not closed on its own line: %q", pathLine)
+	}
+	if strings.Count(pathLine, `"`) != 2 {
+		t.Errorf("quoted PATH line has unbalanced quotes: %q", pathLine)
+	}
+}
+
+// TestGenerateUnitRejectsBackslash: the quoted systemd value undergoes C-style
+// unescaping, so a literal backslash cannot survive the round trip and is
+// dropped rather than silently mangled.
+func TestGenerateUnitRejectsBackslash(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{`/opt/back\slash`}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	if strings.Contains(unit, `back\slash`) {
+		t.Errorf("backslash-bearing entry reached the unit:\n%s", unit)
+	}
+}
+
+func TestUnitEnvironmentPath(t *testing.T) {
+	cases := []struct {
+		name string
+		unit string
+		want string
+		ok   bool
+	}{
+		{
+			name: "quoted form this package writes",
+			unit: "[Service]\nEnvironment=\"PATH=/a:/b\"\nEnvironment=LC_CTYPE=C.UTF-8\n",
+			want: "/a:/b",
+			ok:   true,
+		},
+		{
+			name: "bare form an older install carries",
+			unit: "[Service]\nEnvironment=PATH=/a:/b\n",
+			want: "/a:/b",
+			ok:   true,
+		},
+		{
+			// A single Environment= line may hold several assignments; taking
+			// everything after PATH= would swallow the ones that follow.
+			name: "several assignments on one line",
+			unit: "[Service]\nEnvironment=\"PATH=/a b:/bin\" LC_CTYPE=C.UTF-8\n",
+			want: "/a b:/bin",
+			ok:   true,
+		},
+		{
+			name: "PATH is not the first assignment on the line",
+			unit: "[Service]\nEnvironment=LC_CTYPE=C.UTF-8 \"PATH=/a:/b\"\n",
+			want: "/a:/b",
+			ok:   true,
+		},
+		{
+			name: "a space-bearing directory survives the quotes",
+			unit: "[Service]\nEnvironment=\"PATH=/opt/my tools/bin:/usr/bin\"\n",
+			want: "/opt/my tools/bin:/usr/bin",
+			ok:   true,
+		},
+		{
+			name: "no PATH assignment",
+			unit: "[Service]\nEnvironment=LC_CTYPE=C.UTF-8\nExecStart=/bin/bossd\n",
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "no Environment line at all",
+			unit: "[Service]\nExecStart=/bin/bossd\n",
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "empty PATH is not a usable value",
+			unit: "[Service]\nEnvironment=\"PATH=\"\n",
+			want: "",
+			ok:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := unitEnvironmentPath(tc.unit)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("unitEnvironmentPath() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestUnitEnvironmentPathRoundTripsGeneratedUnit keeps reader and writer honest
+// about each other, so a template change cannot silently break the stale-PATH
+// comparison in `boss daemon doctor`.
+func TestUnitEnvironmentPathRoundTripsGeneratedUnit(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"/opt/my tools/bin"}})
+
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	got, ok := unitEnvironmentPath(unit)
+	if !ok {
+		t.Fatalf("unitEnvironmentPath could not read the unit this package renders:\n%s", unit)
+	}
+	if want := serviceEnvPath(); got != want {
+		t.Errorf("round trip = %q, want %q", got, want)
 	}
 }

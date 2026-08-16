@@ -123,6 +123,138 @@ func TestParseUsageUsesMostConstrainedWeeklyModelWindow(t *testing.T) {
 	}
 }
 
+// TestParseUsagePrefersAccountWideWeeklyWindow pins the presence-aware weekly
+// fold: when the account-wide seven_day window is present it decides the weekly
+// verdict outright, even though a per-model window reports higher utilization.
+// A spent Opus week must not bench an account whose account-wide week has room.
+func TestParseUsagePrefersAccountWideWeeklyWindow(t *testing.T) {
+	data, err := os.ReadFile("testdata/usage/weekly_opus_spent.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	got, err := parseUsage(data)
+	if err != nil {
+		t.Fatalf("parseUsage: %v", err)
+	}
+	if got.GetUtil_7D() != 0.2 {
+		t.Errorf("util_7d = %v, want 0.2 from seven_day", got.GetUtil_7D())
+	}
+	if got.GetLimited() {
+		t.Error("limited = true, want false while the account-wide week has room")
+	}
+	if got.GetStatus() != bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE {
+		t.Errorf("status = %v, want ACTIVE", got.GetStatus())
+	}
+	wantReset := time.Date(2026, 4, 17, 0, 59, 59, 951713000, time.UTC)
+	if got.GetReset_7D() == nil {
+		t.Fatal("reset_7d = nil, want the seven_day window reset")
+	}
+	if reset := got.GetReset_7D().AsTime(); !reset.Equal(wantReset) {
+		t.Errorf("reset_7d = %v, want %v from seven_day (not the opus window)", reset, wantReset)
+	}
+}
+
+// TestParseUsageRecognizesModelOnlyWeeklyWindow guards the `seen` bookkeeping on
+// the per-model fallback branch: a response whose only recognized field is a
+// per-model weekly window must still parse rather than degrade to the
+// header/messages fallback via the unrecognized-schema error.
+func TestParseUsageRecognizesModelOnlyWeeklyWindow(t *testing.T) {
+	got, err := parseUsage([]byte(`{"seven_day_opus":{"utilization":42.0,"resets_at":"2026-04-14T09:30:00.123456+00:00"}}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v, want a recognized response", err)
+	}
+	if got.GetUtil_7D() != 0.42 {
+		t.Errorf("util_7d = %v, want 0.42 from seven_day_opus", got.GetUtil_7D())
+	}
+	if got.GetReset_7D() == nil {
+		t.Error("reset_7d = nil, want the seven_day_opus window reset")
+	}
+}
+
+// TestParseUsageIgnoresEmptyAccountWideWeeklyWindow pins the presence test on
+// recognized fields rather than a bare nil check. A seven_day object carrying no
+// recognized field is no weekly signal at all, so the per-model fallback must
+// still decide the verdict — otherwise an exhausted account reads as util_7d = 0
+// and rotation keeps binding sessions to it, and the empty window suppresses the
+// `seen` the per-model window would have set, degrading the probe to the
+// header/messages fallback with the unrecognized-schema error.
+func TestParseUsageIgnoresEmptyAccountWideWeeklyWindow(t *testing.T) {
+	got, err := parseUsage([]byte(`{"seven_day":{},"seven_day_opus":{"utilization":100.0,"resets_at":"2026-04-14T09:30:00.123456+00:00"}}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v, want a recognized response", err)
+	}
+	if got.GetUtil_7D() != 1 {
+		t.Errorf("util_7d = %v, want 1 from seven_day_opus", got.GetUtil_7D())
+	}
+	if !got.GetLimited() {
+		t.Error("limited = false, want true while the only weekly signal is exhausted")
+	}
+	if got.GetReset_7D() == nil {
+		t.Error("reset_7d = nil, want the seven_day_opus window reset")
+	}
+}
+
+// TestParseUsageIgnoresAccountWideWeeklyWindowWithoutUtilization pins the
+// weekly verdict on a utilization rather than on any recognized field. A
+// seven_day carrying only resets_at yields normalizeUtil(nil) = 0, so letting it
+// win would report an exhausted account as idle — the same failure mode as the
+// empty-object case, reached through a partly-populated window.
+func TestParseUsageIgnoresAccountWideWeeklyWindowWithoutUtilization(t *testing.T) {
+	got, err := parseUsage([]byte(`{"seven_day":{"resets_at":"2026-04-17T00:59:59.951713+00:00"},"seven_day_opus":{"utilization":100.0,"resets_at":"2026-04-14T09:30:00.123456+00:00"}}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v, want a recognized response", err)
+	}
+	if got.GetUtil_7D() != 1 {
+		t.Errorf("util_7d = %v, want 1 from seven_day_opus", got.GetUtil_7D())
+	}
+	if !got.GetLimited() {
+		t.Error("limited = false, want true while the only weekly reading is exhausted")
+	}
+	wantReset := time.Date(2026, 4, 14, 9, 30, 0, 123456000, time.UTC)
+	if got.GetReset_7D() == nil {
+		t.Fatal("reset_7d = nil, want the seven_day_opus window reset")
+	}
+	if reset := got.GetReset_7D().AsTime(); !reset.Equal(wantReset) {
+		t.Errorf("reset_7d = %v, want %v from the window that produced the verdict", reset, wantReset)
+	}
+}
+
+// TestParseUsageKeepsAccountWideResetWhenItIsTheOnlyWeeklySignal guards the
+// `seen` bookkeeping for the shape above with no per-model window to fall back
+// to: seven_day stays the chosen window so its reset and its `seen` still keep
+// the response out of the unrecognized-schema error.
+func TestParseUsageKeepsAccountWideResetWhenItIsTheOnlyWeeklySignal(t *testing.T) {
+	got, err := parseUsage([]byte(`{"seven_day":{"resets_at":"2026-04-17T00:59:59.951713+00:00"}}`))
+	if err != nil {
+		t.Fatalf("parseUsage: %v, want a recognized response", err)
+	}
+	wantReset := time.Date(2026, 4, 17, 0, 59, 59, 951713000, time.UTC)
+	if got.GetReset_7D() == nil {
+		t.Fatal("reset_7d = nil, want the seven_day window reset")
+	}
+	if reset := got.GetReset_7D().AsTime(); !reset.Equal(wantReset) {
+		t.Errorf("reset_7d = %v, want %v from seven_day", reset, wantReset)
+	}
+	if got.GetUtil_7D() != 0 {
+		t.Errorf("util_7d = %v, want 0 with no weekly utilization reported", got.GetUtil_7D())
+	}
+}
+
+// TestMostConstrainedUsageWindowSkipsUnrecognizedWindows pins one definition of
+// presence across the whole weekly fold. Skipping only nil would let an empty {}
+// window win the zero-utilization tie against a real window carrying a reset,
+// dropping that reset from the verdict.
+func TestMostConstrainedUsageWindowSkipsUnrecognizedWindows(t *testing.T) {
+	empty := &usageWindow{}
+	withReset := &usageWindow{ResetsAt: "2026-04-16T03:00:00.951719+00:00"}
+	if got := mostConstrainedUsageWindow(empty, withReset); got != withReset {
+		t.Errorf("mostConstrainedUsageWindow = %+v, want the window carrying a reset", got)
+	}
+	if got := mostConstrainedUsageWindow(empty, nil); got != nil {
+		t.Errorf("mostConstrainedUsageWindow = %+v, want nil when no window is recognized", got)
+	}
+}
+
 func TestParseUsageRejectsUnrecognizedSchema(t *testing.T) {
 	if _, err := parseUsage([]byte(`{"usage":{"fiveHour":{"utilization":100}}}`)); err == nil {
 		t.Fatal("parseUsage err = nil, want error for unrecognized schema")

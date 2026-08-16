@@ -94,11 +94,61 @@ Before readying, confirm **no required item was deferred** (Hard rules) — this
 in-scope acceptance criterion being satisfied**: each `- [ ]` this ticket was scoped to close must be
 ticked `- [x]` and demonstrated by the diff/tests (a criterion whose evidence is a captured-proof
 artifact counts as satisfied once the diff/tests demonstrate it — proof _capture_ is the non-fatal
-Step 11, not a ready gate). **Partial implementation is not complete.** If any required item — an
+Step 11, not a ready gate), **with one exception**: a `(verify-only)` criterion is demonstrated by
+recorded evidence rather than by a diff, under the gate immediately below. **Partial implementation
+is not complete.** If any required item — an
 unsatisfied in-scope criterion, an open must-fix, or a missing API-version transform — was deferred,
 finalize BLOCKED (Step 12) naming it; do not ready. After the PR is ready, add `please-review` if missing. Then move
 the ticket from in-progress to in-review (`.inProgress → .inReview`) via the adapter's `moveState` capability, and comment the PR URL
 (the adapter's `writeComment` capability).
+
+### The verify-only evidence gate
+
+A criterion whose correct outcome is _"this file needed no change"_ produces no diff, so the rule
+above cannot be applied to it at all: the honest builder is left with ticking it on faith (silence)
+or leaving it open, and leaving it open is itself a required-deferred ⇒ BLOCKED. Both failure modes
+come out of the same sentence. A plan marks such a criterion with the literal `(verify-only)` prefix
+and a `— check:` command; the run discharges it by **recording the check it actually ran**:
+
+```
+- [x] (verify-only) <the invariant claimed> — checked: `<command>` → <result>
+```
+
+**Backtick the command.** The `— checked:` clause must wrap its command in backticks, exactly as the
+template above shows. This is not style: without a delimiter an arrow _inside_ the command
+(`rg "a→b"`) is indistinguishable from the `→` that introduces the result, so the parser cannot
+tell a command-with-no-result from a command-and-result. It refuses to guess — an undelimited
+command reads as **no command at all** and the gate blocks naming the criterion.
+
+Before readying, run `validateVerifyOnlyEvidence(config, body)` from `toolbox/skill-config.mjs` over
+the **PR body** — an executed check, not prose faith, the same shape as the `validatePlanDescription`
+call at Step 4. It returns `{ ok, verifyOnly, missingEvidence }`, and `ok` is true only when every
+criterion that is both marked and ticked carries a **non-empty** command **and** a **non-empty**
+result. An `ok:false` result makes each criterion it names a **deferred required item**: finalize
+BLOCKED (Step 12) naming each one, and do not ready. An **unticked** marked criterion is not a
+failure of this gate — it is already an open in-scope criterion under the rule above, and this gate
+does not double-report what that rule owns.
+
+The gate checks **structure and non-emptiness, never truth**. It cannot tell whether the recorded
+command was really run. What it buys is that the check becomes named and re-runnable by a human
+reviewer, so a verify-only criterion can no longer be discharged in silence.
+
+It is also **not** a completeness check, and must not be read as one: it inspects only the criteria
+the body actually carries, so a criterion **omitted** from the body entirely is invisible to it and
+would pass. That case is owned by the rule above — every in-scope criterion must be present and
+ticked — and the two compose: the completeness rule establishes that each criterion is _there_, and
+this gate establishes that each marked-and-ticked one is _evidenced_. Run both; neither substitutes
+for the other.
+
+**Reclassification — the route out of an automatic BLOCK.** A plan written before this contract, or
+one whose drafter missed a verify-only criterion, still lands an in-scope criterion the diff cannot
+demonstrate. When the correct outcome of such a criterion genuinely is "no change was needed", you
+may discharge it as verify-only **by writing the discharge form yourself**: run a real check, record
+its command — **in backticks**, per the rule above — and its result in the PR body's
+`## Acceptance criteria` block, and note the reclassification under `## Autonomous decisions`. It is then subject to this same gate. This is
+deliberately **not** a way to skip work: it demands more than a silent tick (a named command, a
+recorded result, and a recorded decision), and it does nothing for a criterion that genuinely needs
+a code change — an unmarked criterion with no evidence line stays required-deferred exactly as today.
 
 **The one scoped exception — the `PARTIAL` gate.** Before routing a deferral to BLOCKED, classify the
 deferred required items. Take the `PARTIAL` route instead of BLOCKED when **all three** hold:

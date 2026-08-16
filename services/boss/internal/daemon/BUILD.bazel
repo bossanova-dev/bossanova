@@ -6,19 +6,20 @@ go_library(
         "daemon.go",
         "launchd.go",
         "mcpprocess.go",
+        "servicepath.go",
         "stage_darwin.go",
         "stage_other.go",
         "systemd.go",
     ],
     importpath = "github.com/recurser/boss/internal/daemon",
     visibility = ["//services/boss:__subpackages__"],
-    deps = select({
+    deps = [
+        "//lib/bossalib/config",
+    ] + select({
         "@rules_go//go/platform:darwin": [
-            "//lib/bossalib/config",
             "//lib/bossalib/daemonbin",
         ],
         "@rules_go//go/platform:ios": [
-            "//lib/bossalib/config",
             "//lib/bossalib/daemonbin",
         ],
         "//conditions:default": [],
@@ -31,16 +32,17 @@ go_test(
         "daemon_test.go",
         "launchd_test.go",
         "mcpprocess_test.go",
+        "servicepath_test.go",
         "systemd_test.go",
     ],
     embed = [":daemon"],
-    deps = select({
+    deps = [
+        "//lib/bossalib/config",
+    ] + select({
         "@rules_go//go/platform:darwin": [
-            "//lib/bossalib/config",
             "//lib/bossalib/daemonbin",
         ],
         "@rules_go//go/platform:ios": [
-            "//lib/bossalib/config",
             "//lib/bossalib/daemonbin",
         ],
         "//conditions:default": [],

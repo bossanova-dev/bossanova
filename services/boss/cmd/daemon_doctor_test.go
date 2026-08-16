@@ -935,3 +935,204 @@ func stubDaemonDoctorProcess(t *testing.T, signalErr error) {
 	}
 	t.Cleanup(func() { findDaemonProcess = previous })
 }
+
+// TestRunDaemonDoctorReportsServicePath covers BOS-880: doctor must report the
+// PATH the SERVICE will use, and resolve node/claude under that PATH rather
+// than under the caller's own — resolving under an interactive shell is
+// exactly the check that passes while the daemon is broken.
+func TestRunDaemonDoctorReportsServicePath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("staged LaunchAgent diagnostics are macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	_ = runDaemonDoctor(cmd)
+
+	for _, want := range []string{"service PATH", "node:", "claude:"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, output.String())
+		}
+	}
+	if !strings.Contains(output.String(), daemon.ServiceEnvPath()) {
+		t.Errorf("output does not report the effective service PATH:\n%s", output.String())
+	}
+}
+
+func TestDaemonDoctorToolLineFound(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "node")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+
+	line, ok := daemonDoctorToolLine(dir, "node")
+	if !ok {
+		t.Error("daemonDoctorToolLine ok = false, want true")
+	}
+	if !strings.Contains(line, binary) {
+		t.Errorf("line = %q, want it to name %q", line, binary)
+	}
+}
+
+func TestDaemonDoctorToolLineMissing(t *testing.T) {
+	line, ok := daemonDoctorToolLine(t.TempDir(), "node")
+	if ok {
+		t.Error("daemonDoctorToolLine ok = true, want false")
+	}
+	if !strings.Contains(line, "not found") {
+		t.Errorf("line = %q, want it to say the tool was not found", line)
+	}
+}
+
+// TestRunDaemonDoctorServicePathMissingToolIsNotFatal keeps the new report
+// diagnostic: a machine without `claude` installed is not an unhealthy daemon,
+// so the missing tool must not flip doctor's exit status on its own.
+func TestRunDaemonDoctorServicePathMissingToolIsNotFatal(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("staged LaunchAgent diagnostics are macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlist(t, home, stagedPath)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+
+	// The fixture is otherwise healthy; only tool resolution may be missing.
+	if err != nil && strings.Contains(err.Error(), "node") {
+		t.Errorf("a missing tool made doctor fail: %v", err)
+	}
+}
+
+// TestRunDaemonDoctorReportsServicePathOnNonDarwin: the Linux systemd unit now
+// carries an explicit PATH too, so the report must precede the macOS-only early
+// return rather than sit behind it.
+func TestRunDaemonDoctorReportsServicePathOnNonDarwin(t *testing.T) {
+	previous := daemonDoctorGOOS
+	daemonDoctorGOOS = "linux"
+	t.Cleanup(func() { daemonDoctorGOOS = previous })
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+
+	for _, want := range []string{"service PATH", "node:", "claude:", "not applicable on linux"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+// writeDaemonDoctorPlistWithPath writes a plist carrying an EnvironmentVariables
+// PATH, so doctor can be exercised against a pre-change install.
+func writeDaemonDoctorPlistWithPath(t *testing.T, home, programArgument, servicePath string) {
+	t.Helper()
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.bossanova.bossd.plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		t.Fatalf("mkdir LaunchAgents: %v", err)
+	}
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>ProgramArguments</key><array><string>` + programArgument + `</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>` + servicePath + `</string><key>LC_CTYPE</key><string>UTF-8</string></dict>
+</dict></plist>`
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+}
+
+// TestRunDaemonDoctorFlagsStaleServicePath is the state BOS-880 leaves every
+// existing install in until its first restart after the upgrade: the plist on
+// disk still carries the old hardcoded PATH while the next render would write
+// the repaired one. Doctor must say so rather than report the computed PATH as
+// though the daemon already had it.
+func TestRunDaemonDoctorFlagsStaleServicePath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("staged LaunchAgent diagnostics are macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	const preChangePath = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+	writeDaemonDoctorPlistWithPath(t, home, stagedPath, preChangePath)
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+
+	got := output.String()
+	if !strings.Contains(got, "service PATH (installed): "+preChangePath) {
+		t.Errorf("output does not report the INSTALLED pre-change PATH:\n%s", got)
+	}
+	if !strings.Contains(got, "service PATH (next restart): ") {
+		t.Errorf("output does not report the next-restart PATH:\n%s", got)
+	}
+	if !strings.Contains(got, "run 'boss daemon restart'") {
+		t.Errorf("output does not point at the restart remedy:\n%s", got)
+	}
+	if err == nil {
+		t.Error("a stale service PATH must make doctor report unhealthy")
+	}
+}
+
+// TestRunDaemonDoctorMatchingServicePathIsNotStale: once the install has been
+// restarted the two PATHs agree, and doctor must go quiet rather than nag.
+func TestRunDaemonDoctorMatchingServicePathIsNotStale(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("staged LaunchAgent diagnostics are macOS-specific")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlistWithPath(t, home, stagedPath, daemon.ServiceEnvPath())
+	writeDaemonDoctorState(t, stagedPath, true, nil)
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	_ = runDaemonDoctor(cmd)
+
+	got := output.String()
+	if strings.Contains(got, "next restart") {
+		t.Errorf("a matching PATH must not be reported as stale:\n%s", got)
+	}
+	if strings.Contains(got, "service PATH: stale") {
+		t.Errorf("a matching PATH must not be reported as stale:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorStaleServicePathIsUnhealthyOnNonDarwin: the service-PATH
+// check is not macOS-specific, so its verdict must survive the early return
+// that skips the macOS-only checks. Returning nil there regardless would make
+// stale detection a no-op on exactly the platform the PATH line is new on.
+func TestRunDaemonDoctorStaleServicePathIsUnhealthyOnNonDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the fixture writes a macOS plist to drive the installed-PATH read")
+	}
+	home, _, stagedPath := prepareDaemonDoctorInstall(t)
+	writeDaemonDoctorPlistWithPath(t, home, stagedPath, "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin")
+
+	previous := daemonDoctorGOOS
+	daemonDoctorGOOS = "linux"
+	t.Cleanup(func() { daemonDoctorGOOS = previous })
+
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+
+	if err == nil {
+		t.Errorf("a stale service PATH must be unhealthy on non-darwin too:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "run 'boss daemon restart'") {
+		t.Errorf("output does not offer the restart remedy:\n%s", output.String())
+	}
+}

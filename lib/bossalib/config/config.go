@@ -886,6 +886,132 @@ type Settings struct {
 	// (which runs in that shell) so the launchd daemon — which has no $SHELL —
 	// can launch agents through it for per-project tool resolution.
 	LoginShell string `json:"login_shell,omitempty"`
+	// DaemonPathExtra lists directories PREPENDED to the PATH written into the
+	// generated bossd service file (the macOS LaunchAgent plist and the Linux
+	// systemd unit). It exists because a service manager never sources an
+	// interactive shell config, so a toolchain installed by nodenv, nvm, asdf
+	// or volta is invisible to the daemon and every `node`-based cron gate
+	// exits 127 (BOS-880).
+	//
+	// Prepend-only is deliberate: the baseline entries are never removable, so
+	// a typo here costs one tool rather than the whole daemon. There is
+	// intentionally NO full-replacement override — one omitting /usr/bin would
+	// produce a daemon that cannot run git, failing exactly like the bug this
+	// key fixes.
+	//
+	// Entries must be absolute or `~/`-rooted; anything else (and anything
+	// carrying a `:`, a newline, or a character that would corrupt the plist
+	// XML) is dropped when the service file is rendered. Read at render time,
+	// so a change takes effect on the next `boss daemon restart`.
+	DaemonPathExtra []string `json:"daemon_path_extra,omitempty"`
+	// SubagentDispatchGrant selects which boss-managed chats receive the bounded
+	// subagent-dispatch grant in their appended system prompt. It is a raw
+	// string rather than the typed SubagentDispatchGrant so an unknown value
+	// round-trips through settings.json untouched instead of being rewritten;
+	// parseSubagentDispatchGrant is the only place a value becomes a mode.
+	// Empty (the key absent from a fresh settings.json) means the shipped
+	// default, "always".
+	SubagentDispatchGrant string `json:"subagent_dispatch_grant,omitempty"`
+}
+
+// SubagentDispatchGrant names which boss-managed chats bossd grants the bounded
+// subagent-dispatch authority to in their appended system prompt. It is a named
+// type, not a bare string, so it cannot be silently transposed with the other
+// string arguments at the prompt-building call sites it is threaded through.
+type SubagentDispatchGrant string
+
+const (
+	// SubagentDispatchGrantAlways is the shipped default (BOS-882): unattended
+	// runs and attended chats both receive the grant.
+	SubagentDispatchGrantAlways SubagentDispatchGrant = "always"
+	// SubagentDispatchGrantUnattended is the operator opt-out: only unattended
+	// sessions receive the grant, restoring the earlier attended behaviour in
+	// which an attended chat had to be re-authorised by hand each session.
+	SubagentDispatchGrantUnattended SubagentDispatchGrant = "unattended"
+)
+
+// ResolveSubagentDispatchGrant maps a Settings value to the mode bossd acts on.
+//
+// It never errors and never panics: nil settings, an absent key, whitespace, a
+// differently-cased spelling, and any UNRECOGNISED value all resolve to
+// SubagentDispatchGrantAlways. That direction is deliberate — a typo in
+// settings.json must not silently withdraw the shipped default grant and
+// degrade every attended chat, and it must not fail daemon startup either.
+// Case and surrounding whitespace are normalised before matching so that a
+// plausible spelling of the opt-out ("Unattended", " unattended ") is honoured
+// rather than quietly falling through to the default it was written to remove.
+// It has no production caller — the spawn path goes through
+// LoadSubagentDispatchGrant, which needs the discard reason this signature
+// cannot return — and that is deliberate rather than dead code awaiting
+// removal. It is a library package's mode accessor for callers holding a
+// Settings they already loaded, and it is what lets the prompt tests assert the
+// settings-string-to-mode wiring end to end without a settings file on disk.
+// Delete it only together with those tests, not on a bare no-callers reading.
+func ResolveSubagentDispatchGrant(s *Settings) SubagentDispatchGrant {
+	if s == nil {
+		return SubagentDispatchGrantAlways
+	}
+	grant, _ := parseSubagentDispatchGrant(s.SubagentDispatchGrant)
+	return grant
+}
+
+// parseSubagentDispatchGrant is the ONE place a settings string becomes a mode,
+// returning the resolved mode and — when the operator's configured value was
+// DISCARDED — the reason, or "" when their configuration was honoured.
+//
+// Both halves come out of a single normalisation and a single switch on
+// purpose. They are two views of one decision, and splitting them across two
+// functions couples their correctness with nothing enforcing it: a third mode
+// added to one switch and not the other makes bossd warn about a value it
+// honours, or honour a value it warns about — and the warning is the operator
+// signal this whole path exists to provide. One switch cannot disagree with
+// itself.
+//
+// The discard direction is deliberate. The resolver fails open — a typo must
+// not silently degrade every attended chat, and it must not fail daemon startup
+// — but failing open *silently* is the defect: the discard is exactly the case
+// the operator most needs told about, and the case in which the attended
+// directive's claim about their configuration is least able to back itself.
+//
+// It returns the reason rather than logging it because config is linked into
+// the boss TUI, where zerolog's default stderr writer would corrupt the Bubble
+// Tea display. The caller owns the logger; see session.ResolveSubagentGrantForSpawn.
+func parseSubagentDispatchGrant(raw string) (SubagentDispatchGrant, string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return SubagentDispatchGrantAlways, ""
+	}
+	switch SubagentDispatchGrant(strings.ToLower(trimmed)) {
+	case SubagentDispatchGrantUnattended:
+		return SubagentDispatchGrantUnattended, ""
+	case SubagentDispatchGrantAlways:
+		return SubagentDispatchGrantAlways, ""
+	default:
+		return SubagentDispatchGrantAlways, fmt.Sprintf(
+			"subagent_dispatch_grant %q is not a recognised mode (%q or %q); "+
+				"falling back to %q, so an intended opt-out is NOT in effect",
+			trimmed, SubagentDispatchGrantAlways, SubagentDispatchGrantUnattended, SubagentDispatchGrantAlways)
+	}
+}
+
+// LoadSubagentDispatchGrant loads global settings and resolves the grant mode,
+// degrading to the shipped default when settings cannot be loaded at all.
+//
+// Chat spawn sites call this so the resolved mode is passed into prompt
+// composition as a plain value rather than re-read inside it.
+//
+// The second return is a discard reason ("" when the operator's configuration
+// was honoured): a failed load and an unrecognised value both resolve to the
+// shipped default, and neither may pass unremarked. Failing open is deliberate
+// (AC 7); failing open in silence was the defect.
+func LoadSubagentDispatchGrant() (SubagentDispatchGrant, string) {
+	s, err := Load()
+	if err != nil {
+		return SubagentDispatchGrantAlways, fmt.Sprintf(
+			"settings could not be loaded (%v); falling back to subagent_dispatch_grant %q, "+
+				"so any configured opt-out is NOT in effect", err, SubagentDispatchGrantAlways)
+	}
+	return parseSubagentDispatchGrant(s.SubagentDispatchGrant)
 }
 
 // UnmarshalJSON accepts the managed_accounts block and, for backward

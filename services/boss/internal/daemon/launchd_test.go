@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"net"
@@ -597,7 +598,8 @@ func TestGenerateMcpPlist(t *testing.T) {
 	}
 
 	// Acceptance criterion: the MCP plist PATH must include the agent-runner
-	// shim dirs that the bossd plist omits.
+	// shim dirs. BOS-880 made the bossd plist render from the same helper, so
+	// TestGeneratePlistIncludesShimDirectories asserts the mirror of this.
 	if !strings.Contains(plist, "/.nodenv/shims") {
 		t.Error("MCP plist PATH missing ~/.nodenv/shims")
 	}
@@ -928,4 +930,255 @@ func TestPlatformMcpStopWiring(t *testing.T) {
 		}
 		assertBootoutArgs(t, gotArgs, Label)
 	})
+}
+
+// TestGeneratePlistIncludesShimDirectories is the direct mirror of the MCP
+// assertion in TestGenerateMcpPlist. BOS-880: bossd and the MCP agent must
+// render their PATH from the same helper, so this test and that one fail
+// together the moment the two diverge again.
+func TestGeneratePlistIncludesShimDirectories(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{})
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	for _, want := range []string{"/.nodenv/shims", "/.local/bin"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("bossd plist PATH missing %q", want)
+		}
+	}
+
+	// The baseline must survive: daemon_path_extra prepends, it never replaces.
+	for _, want := range []string{"/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("bossd plist PATH missing baseline entry %q", want)
+		}
+	}
+}
+
+// TestGeneratePlistAndMcpPlistShareOnePath is the parity invariant itself: a
+// change that feeds one template from a different helper fails here.
+func TestGeneratePlistAndMcpPlistShareOnePath(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"~/.asdf/shims"}})
+
+	bossdPlist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+	mcpPlist, err := generateMcpPlist("/usr/local/bin/mcp", 8765)
+	if err != nil {
+		t.Fatalf("generateMcpPlist: %v", err)
+	}
+
+	want := serviceEnvPath()
+	for name, plist := range map[string]string{"bossd": bossdPlist, "mcp": mcpPlist} {
+		if !strings.Contains(plist, "<string>"+want+"</string>") {
+			t.Errorf("%s plist does not render the shared service PATH %q", name, want)
+		}
+	}
+}
+
+func TestGeneratePlistPlacesConfiguredExtraAheadOfBaseline(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"~/.asdf/shims"}})
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	extra := strings.Index(plist, "/stub/home/.asdf/shims")
+	baseline := strings.Index(plist, "/usr/local/bin:")
+	switch {
+	case extra < 0:
+		t.Fatalf("plist missing the configured extra:\n%s", plist)
+	case baseline < 0:
+		t.Fatalf("plist missing the baseline:\n%s", plist)
+	case extra > baseline:
+		t.Errorf("configured extra at %d is behind the baseline at %d; it must be prepended", extra, baseline)
+	}
+}
+
+// TestGeneratePlistRejectsHostileExtras is why sanitizing is load-bearing:
+// text/template does not escape, so an XML-special character in an entry would
+// otherwise corrupt the plist itself.
+func TestGeneratePlistRejectsHostileExtras(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{
+		`/opt/a&b`,
+		`/opt/c<d`,
+		`/opt/e"f`,
+		"/opt/g\nh",
+		"relative/bin",
+	}})
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	for _, unwanted := range []string{"/opt/a", "/opt/c", "/opt/e", "/opt/g", "relative/bin"} {
+		if strings.Contains(plist, unwanted) {
+			t.Errorf("plist contains rejected entry %q", unwanted)
+		}
+	}
+
+	var parsed any
+	if err := xml.Unmarshal([]byte(plist), &parsed); err != nil {
+		t.Fatalf("rendered plist is not valid XML: %v\n%s", err, plist)
+	}
+}
+
+// TestPlatformRestartRewritesPreChangePlist covers the upgrade moment for every
+// existing install: after BOS-880 the on-disk plist differs from the new render
+// exactly once, so the comparison branch must take the rewrite path and
+// succeed rather than erroring or leaving the stale PATH in place.
+func TestPlatformRestartRewritesPreChangePlist(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	stubServiceSettings(t, config.Settings{})
+
+	// Stage a resolvable bossd and point executablePath at its sibling `boss`,
+	// exactly as TestPlatformRestartRestagesAndRewritesPlist does. Without this
+	// the restart's own ResolveBossdPath fails inside a hermetic sandbox, the
+	// rewrite branch is never reached, and the assertion below would be
+	// measuring the sandbox rather than the behaviour under test.
+	sourcePath := writeFakeCellarBossd(t, home, "version one")
+	originalExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
+	}
+	t.Cleanup(func() { executablePath = originalExecutablePath })
+
+	launchAgents := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(launchAgents, 0o700); err != nil {
+		t.Fatalf("create LaunchAgents dir: %v", err)
+	}
+	plistPath := filepath.Join(launchAgents, Label+".plist")
+
+	// The pre-change plist: the hardcoded PATH literal this ticket removed.
+	preChange := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+	<key>EnvironmentVariables</key>
+	<dict><key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string></dict>
+</dict></plist>
+`
+	if err := os.WriteFile(plistPath, []byte(preChange), 0o600); err != nil {
+		t.Fatalf("write pre-change plist: %v", err)
+	}
+
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart against a pre-change plist: %v", err)
+	}
+
+	rewritten, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read rewritten plist: %v", err)
+	}
+	if string(rewritten) == preChange {
+		t.Fatal("platformRestart left the pre-change plist in place; it must rewrite it")
+	}
+	if !strings.Contains(string(rewritten), "/.nodenv/shims") {
+		t.Errorf("rewritten plist does not carry the repaired PATH:\n%s", rewritten)
+	}
+}
+
+func TestPlistEnvironmentPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		plist string
+		want  string
+		ok    bool
+	}{
+		{
+			name: "reads the environment PATH",
+			plist: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/a:/b</string><key>LC_CTYPE</key><string>UTF-8</string></dict>
+</dict></plist>`,
+			want: "/a:/b",
+			ok:   true,
+		},
+		{
+			name: "PATH after other keys in the same dict",
+			plist: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict><key>LC_CTYPE</key><string>UTF-8</string><key>PATH</key><string>/a:/b</string></dict>
+</dict></plist>`,
+			want: "/a:/b",
+			ok:   true,
+		},
+		{
+			// An unrelated PATH key OUTSIDE EnvironmentVariables must not be
+			// mistaken for the service PATH.
+			name: "no environment PATH but an unrelated PATH key later",
+			plist: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict><key>LC_CTYPE</key><string>UTF-8</string></dict>
+<key>PATH</key><string>/not/the/service/path</string>
+</dict></plist>`,
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "no EnvironmentVariables at all",
+			plist: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>ProgramArguments</key><array><string>/bin/bossd</string></array>
+</dict></plist>`,
+			want: "",
+			ok:   false,
+		},
+		{
+			name:  "malformed XML",
+			plist: `<?xml version="1.0"?><plist><dict><key>EnvironmentVariables`,
+			want:  "",
+			ok:    false,
+		},
+		{
+			name: "empty PATH is not a usable value",
+			plist: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string></string></dict>
+</dict></plist>`,
+			want: "",
+			ok:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := plistEnvironmentPath([]byte(tc.plist))
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("plistEnvironmentPath() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestPlistEnvironmentPathRoundTripsGeneratedPlist keeps the reader and the
+// writer honest about each other: the parser is read back against the exact
+// plist this package renders, so a template change cannot silently break the
+// stale-PATH comparison in `boss daemon doctor`.
+func TestPlistEnvironmentPathRoundTripsGeneratedPlist(t *testing.T) {
+	stubHome(t)
+	stubServiceSettings(t, config.Settings{DaemonPathExtra: []string{"/opt/my tools/bin"}})
+
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	got, ok := plistEnvironmentPath([]byte(plist))
+	if !ok {
+		t.Fatalf("plistEnvironmentPath could not read the plist this package renders:\n%s", plist)
+	}
+	if want := serviceEnvPath(); got != want {
+		t.Errorf("round trip = %q, want %q", got, want)
+	}
 }

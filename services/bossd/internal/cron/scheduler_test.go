@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -1365,6 +1366,90 @@ func TestFire_GateFails(t *testing.T) {
 	}
 	if lrc.nextRunAt == nil {
 		t.Error("UpdateLastRun.NextRunAt was nil; expected non-nil (job is registered with a schedule)")
+	}
+}
+
+// TestFire_GateCouldNotRun_RecordsGateFailed is the BOS-881 regression. A gate
+// whose interpreter is missing (the `sh -c` exit-127 shape that made the
+// BOS-880 incident invisible) and a gate that times out must both record
+// outcome=gate_failed, not the healthy-looking outcome=gated. Both still block
+// the fire, create no session, and advance next_run_at; the classified failure
+// and the gate's captured output must reach the log at WARN with an exit code.
+func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
+	tests := []struct {
+		name        string
+		gateCommand string
+		wantOutput  string
+	}{
+		{
+			// `sh -c` launches fine; the inner command is missing, so Go sees a
+			// plain ExitError with code 127 and only the shell's convention
+			// distinguishes it from a real gate decision.
+			name:        "command not found",
+			gateCommand: "bos881-definitely-not-a-real-binary --check",
+			wantOutput:  "not found",
+		},
+		{
+			name:        "timeout",
+			gateCommand: "sleep 30",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			job := makeJob("j", "@every 1m", true)
+			job.GateCommand = tt.gateCommand
+			store.put(job)
+
+			repos := newFakeRepoStore()
+			repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+
+			creator := newFakeCreator()
+			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+			var logBuf bytes.Buffer
+			s.logger = zerolog.New(&logBuf)
+			s.gateTimeout = 50 * time.Millisecond
+			if err := s.AddJob(job); err != nil {
+				t.Fatalf("AddJob: %v", err)
+			}
+
+			sess, skipped, err := s.fire(context.Background(), "j")
+			if err != nil {
+				t.Fatalf("fire: unexpected error %v", err)
+			}
+			if skipped != "gate_failed" {
+				t.Errorf("skipped = %q, want 'gate_failed'", skipped)
+			}
+			if sess != nil {
+				t.Error("fire should return nil session when the gate could not run")
+			}
+			if len(creator.calls) != 0 {
+				t.Errorf("creator calls = %d, want 0 (a gate that cannot run still blocks the fire)", len(creator.calls))
+			}
+			if len(store.lastRunCalls) != 1 {
+				t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
+			}
+			lrc := store.lastRunCalls[0]
+			if lrc.outcome != models.CronJobOutcomeGateFailed {
+				t.Errorf("outcome = %q, want %q", lrc.outcome, models.CronJobOutcomeGateFailed)
+			}
+			if lrc.nextRunAt == nil {
+				t.Error("UpdateLastRun.NextRunAt was nil; a broken gate must still advance the schedule")
+			}
+			logged := logBuf.String()
+			if !strings.Contains(logged, `"level":"warn"`) {
+				t.Errorf("gate failure was not logged at warn:\n%s", logged)
+			}
+			if !strings.Contains(logged, "gate_exit_code") {
+				t.Errorf("gate failure log is missing gate_exit_code:\n%s", logged)
+			}
+			if !strings.Contains(logged, "gate_output") {
+				t.Errorf("gate failure log is missing the captured gate output:\n%s", logged)
+			}
+			if tt.wantOutput != "" && !strings.Contains(logged, tt.wantOutput) {
+				t.Errorf("gate failure log does not carry the gate's own message %q:\n%s", tt.wantOutput, logged)
+			}
+		})
 	}
 }
 

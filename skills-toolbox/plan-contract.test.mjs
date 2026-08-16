@@ -10,6 +10,11 @@ import {
   planContractVersion,
   requiredPlanSections,
   validatePlanDescription,
+  validateVerifyOnlyEvidence,
+  VERIFY_ONLY_MARKER,
+  VERIFY_ONLY_CHECK,
+  VERIFY_ONLY_CHECKED,
+  VERIFY_ONLY_RESULT,
 } from './skill-config.mjs'
 
 // Skill bodies live one level up from skills-toolbox/.
@@ -22,8 +27,16 @@ const PLAN_SKILL = read(`${CORE}/boss-plan/SKILL.md`)
 const BRIEF = read(`${CORE}/boss-plan/references/headless-drafting-brief.md`)
 const SWEEP = read('.claude/skills/bs-sweep-plan/SKILL.md')
 const IMPLEMENT = read(`${CORE}/boss-build/SKILL.md`)
+const FINALIZE = read(`${CORE}/boss-build/references/finalize-and-stop.md`)
+// The whole boss-build tree, so a literal may live in the resident body or in any reference —
+// the contract is that the consumer names the bytes, not which file it names them in.
+const IMPLEMENT_TREE = `${IMPLEMENT}\n${FINALIZE}`
 
 const HEADINGS = planSections(DEFAULT_CONFIG).map((s) => s.heading)
+
+/** A parsed criterion whose named check command carries actual content. */
+const nonEmptyCheck = (criterion) =>
+  typeof criterion.check === 'string' && criterion.check.trim().length > 0
 
 describe('plan-contract sync', () => {
   test('every contract heading is documented in the boss-plan resident body', () => {
@@ -84,6 +97,87 @@ describe('plan-contract sync', () => {
     assert.ok(
       !requiredPlanSections(DEFAULT_CONFIG).includes('## Proof harness analysis'),
       '`## Proof harness analysis` must NOT be a required heading',
+    )
+  })
+
+  test('the verify-only marker/clause literals are byte-identical across producer and consumer', () => {
+    // The marker is a LITERAL token, so classification needs zero heuristics — but only while the
+    // producer prose, the consumer prose and the parser agree byte-for-byte. A hand-typed copy in
+    // three places is exactly how that agreement rots, so `skill-config.mjs` owns the definition
+    // and this test pins both prose sides to it. Removing the literal from the drafting brief must
+    // turn this red; that direction was verified by running this test with the literal removed.
+    assert.ok(
+      BRIEF.includes(VERIFY_ONLY_MARKER),
+      `drafting brief must instruct the drafter to write the literal ${VERIFY_ONLY_MARKER} marker`,
+    )
+    // Assert the UNTRIMMED literals — the exact bytes the parser matches. `.trim()` here was
+    // vacuous in the precise way this ticket is about: it drops the surrounding spaces, which are
+    // load-bearing, so deleting one space before the em dash left this "byte-identical" test GREEN
+    // while `parseAcceptanceCriteria` stopped finding the clause at all and every correctly
+    // discharged criterion started failing the gate. A sync test that trims the bytes it exists to
+    // pin is not a sync test.
+    assert.ok(
+      BRIEF.includes(VERIFY_ONLY_CHECK),
+      `drafting brief must carry the plan-time \`${VERIFY_ONLY_CHECK}\` clause verbatim`,
+    )
+    assert.ok(
+      IMPLEMENT_TREE.includes(VERIFY_ONLY_MARKER),
+      `boss-build must reference the literal ${VERIFY_ONLY_MARKER} marker it classifies on`,
+    )
+    for (const literal of [VERIFY_ONLY_CHECKED, VERIFY_ONLY_RESULT]) {
+      assert.ok(
+        IMPLEMENT_TREE.includes(literal),
+        `boss-build must carry the discharge literal \`${literal}\` verbatim`,
+      )
+    }
+    // The gate itself must be named where it is executed, not merely described. The symbol gate
+    // (scripts/check-skill-symbols.mjs) separately resolves this citation against the real export.
+    assert.ok(
+      FINALIZE.includes('validateVerifyOnlyEvidence'),
+      'boss-build Step 9 must run validateVerifyOnlyEvidence over the PR body before readying',
+    )
+  })
+
+  test('the brief`s own Step 7 verify-only row round-trips through the evidence gate', () => {
+    // End-to-end producer→parser sync: the row the drafting brief tells planners to emit must
+    // parse as a verify-only criterion. If the brief's bytes drift from the parser's, this fails
+    // even when both substring assertions above still pass.
+    const row = BRIEF.split('\n').find(
+      (line) => line.startsWith('- [ ] ') && line.includes(VERIFY_ONLY_MARKER),
+    )
+    assert.ok(row, 'the Step 7 template must show a verify-only acceptance-criteria row')
+    const body = `## Acceptance criteria\n\n${row}\n\n## Original notes\n\nx`
+    const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+    assert.equal(result.verifyOnly.length, 1, 'the brief`s row must classify as verify-only')
+    assert.ok(nonEmptyCheck(result.verifyOnly[0]), 'the brief`s row must name a check command')
+    // Unticked, so it is reported but never a gate failure — the open-criterion rule owns that.
+    assert.equal(result.ok, true)
+    // The addition is additive INSIDE an existing required section: no section added, renamed or
+    // removed, so every already-planned v1 ticket keeps validating and keeps building.
+    assert.equal(planContractVersion(DEFAULT_CONFIG), 1, 'plan contract must remain v1')
+  })
+
+  test('boss-build`s own discharge template row round-trips through the evidence gate', () => {
+    // The CONSUMER side of the same sync, and the row that actually ships: a run copies this
+    // template into the PR body verbatim. The substring assertions above prove the literals are
+    // present somewhere in the tree; only parsing the real row proves the row a builder copies
+    // still satisfies the gate that will judge it. A drift here fails every run, not just this test.
+    const row = IMPLEMENT.split('\n').find(
+      (line) => line.startsWith('- [x] ') && line.includes(VERIFY_ONLY_MARKER),
+    )
+    assert.ok(row, 'the Step 7 PR-body template must show a discharged verify-only row')
+    const body = `## Acceptance criteria\n\n${row}\n\n## Original notes\n\nx`
+    const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+    assert.equal(result.verifyOnly.length, 1, 'the template row must classify as verify-only')
+    assert.equal(
+      result.ok,
+      true,
+      'the ticked template row must satisfy the gate it will be judged by',
+    )
+    assert.ok(nonEmptyCheck(result.verifyOnly[0]), 'the template row must name a command')
+    assert.ok(
+      typeof result.verifyOnly[0].result === 'string' && result.verifyOnly[0].result.trim() !== '',
+      'the template row must name a result',
     )
   })
 

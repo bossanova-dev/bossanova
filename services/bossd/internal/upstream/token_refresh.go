@@ -61,10 +61,45 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 			// metric, no backoff ramp, no re-dial) instead of a reconnect.
 			// Marking also cancels the live stream through the needs-login
 			// watcher, so the pause is immediate rather than one tick late.
-			if errors.Is(err, ErrAuthExpired) && c.authState != nil {
-				if c.authState.MarkNeedsLogin() {
+			//
+			// This branch is unchanged and deliberately final: a terminal
+			// state is never retried here, because the one state that could
+			// benefit from a retry (ErrRefreshOutcomeUnknown) is precisely
+			// the one where replaying the refresh token is unsafe.
+			if errors.Is(err, ErrAuthExpired) {
+				if c.authState != nil && c.authState.MarkNeedsLogin() {
 					logReloginPause(&c.logger, "", err)
 				}
+				return fmt.Errorf("token refresh: %w", err)
+			}
+
+			// Everything else leaves the stored refresh token usable: either
+			// nothing was dispatched, or WorkOS answered without exchanging
+			// it (a 5xx, say). Retrying is safe — this is NOT the ambiguous
+			// case, which the terminal branch above already claimed.
+			//
+			// Tearing the stream down here (the previous behaviour) forced
+			// the retry to travel through a full reconnect, and the refresh
+			// threshold used to leave ~1s of validity, so in practice there
+			// was room for one attempt. Staying on the stream and retrying on
+			// the next tick turns the threshold into a real budget: several
+			// attempts before the token expires, with no reconnect churn.
+			// Once the token really is expired there is nothing left to
+			// protect — bosso will reject it — so fall through and close.
+			//
+			// One exception: Refresh can hand back a rotated access token
+			// ALONGSIDE an error when the exchange succeeded but persisting
+			// it failed. Retrying would strand that token — the emit below is
+			// what tells bosso about it — so keep the old close-and-reconnect
+			// behaviour, which re-registers with the new token from cache.
+			if remaining := expiresAt.Sub(c.clock.Now()); remaining > 0 && newTok == "" {
+				event := c.logger.Warn().Err(err).Dur("remaining", remaining)
+				if failure, ok := refreshFailureOf(err); ok {
+					event = event.Str("refresh_failure_class", string(failure.class)).
+						Bool("conn_reused", failure.connReused)
+				}
+				event.Msg("token refresh failed; retrying before expiry")
+				continue
 			}
 			return fmt.Errorf("token refresh: %w", err)
 		}

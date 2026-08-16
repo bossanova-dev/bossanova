@@ -61,7 +61,11 @@ const CHAT_TERMINAL_GLYPH_ROW_SOURCE = CHAT_TERMINAL_GLYPH_TOKENS.join('\\s*')
 // Recipes whose staged attach socket replays that data frame. The chat page
 // clears its "Connecting…" overlay on the first data byte only, so a chat
 // capture without one shows a terminal that never connected.
-const CHAT_TERMINAL_DATA_REPLAY_IDS = new Set(['web-chat-terminal', 'web-chat-terminal-upload'])
+const CHAT_TERMINAL_DATA_REPLAY_IDS = new Set([
+  'web-chat-terminal',
+  'web-chat-terminal-upload',
+  'web-chat-terminal-paste',
+])
 
 // BOS-661 staged upload file for web-chat-terminal-upload. Small on purpose:
 // one chunk fits inside a single kind=7 frame, so the capture never depends on
@@ -1012,8 +1016,28 @@ function attachStageScript(recipe) {
     : ''
   return `
   await page.routeWebSocket('**/ws/attach*', (ws) => {
-    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));${initialData}${uploadServerScript(recipe)}
+    ws.send(Buffer.from([4, 0, 0, 2, 91, 93]));${initialData}${uploadServerScript(recipe)}${echoServerScript(recipe)}
   });${uploadFileChooserScript(recipe)}`
+}
+
+// echoServerScript makes the staged socket echo kind=0 data frames back, the
+// way a real PTY does. Without it a paste is invisible: xterm never echoes
+// locally — Terminal.paste() emits through onData, the page forwards the bytes,
+// and only the far end's echo paints them. So the BOS-879 capture's final
+// "text landed in the terminal" assertion has nothing to observe unless the
+// fixture plays the PTY's part. Scoped to the paste recipe so no other
+// capture's canvas gains unexpected content.
+export function echoServerScript(recipe) {
+  if (recipe?.id !== 'web-chat-terminal-paste') return ''
+  return `
+    ws.onMessage((message) => {
+      const buf = Buffer.isBuffer(message) ? message : Buffer.from(message);
+      // u8 kind | u24 len | payload — kind 0 is client input; ignore resize.
+      if (buf.length < 5 || buf[0] !== 0) return;
+      const payload = buf.subarray(4);
+      const header = Buffer.from([0, (payload.length >>> 16) & 0xff, (payload.length >>> 8) & 0xff, payload.length & 0xff]);
+      ws.send(Buffer.concat([header, payload]));
+    });`
 }
 
 // uploadServerScript answers the browser's BOS-661 upload frames the way bosso

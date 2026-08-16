@@ -32,6 +32,7 @@ import {
   isConfiguredForPlanning,
   planContractVersion,
   planSections,
+  planDescriptionSections,
   requiredPlanSections,
   validatePlanDescription,
 } from './skill-config.mjs'
@@ -1120,6 +1121,7 @@ test('planContract default is version 1 with today’s ordered section set', () 
       '## Risks / unknowns',
       '## Acceptance criteria',
       '## Required proof',
+      '## Proof harness analysis',
       '## Why this needs a human',
       '## Open Questions',
       '## Planning',
@@ -1128,10 +1130,13 @@ test('planContract default is version 1 with today’s ordered section set', () 
   )
 })
 
-test('requiredPlanSections excludes the two conditional sections', () => {
+test('requiredPlanSections excludes the conditional and optional sections', () => {
   const req = requiredPlanSections(DEFAULT_CONFIG)
   assert.ok(!req.includes('## Why this needs a human'))
   assert.ok(!req.includes('## Open Questions'))
+  // `optional` is RECOGNISED but never required: registering the drafting template's
+  // `## Proof harness analysis` must not newly require it of the plans already stamped v1.
+  assert.ok(!req.includes('## Proof harness analysis'))
   assert.ok(req.includes('## Summary') && req.includes('## Original notes'))
 })
 
@@ -1144,7 +1149,75 @@ const planDesc = (planningLine) =>
 
 test('validatePlanDescription accepts a well-formed v1 description', () => {
   const r = validatePlanDescription(DEFAULT_CONFIG, planDesc('- Contract: v1'))
-  assert.deepEqual(r, { ok: true, version: 1, missing: [], unsupportedVersion: false })
+  assert.deepEqual(r, {
+    ok: true,
+    version: 1,
+    missing: [],
+    unknown: [],
+    unsupportedVersion: false,
+  })
+})
+
+test('validatePlanDescription throws a named argument-order error when arguments are swapped', () => {
+  // The natural-reading (description, config) call used to surface as
+  // `Cannot read properties of undefined (reading 'sections')` from deep inside planSections().
+  assert.throws(
+    () => validatePlanDescription(planDesc('- Contract: v1'), DEFAULT_CONFIG),
+    (error) => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /validatePlanDescription\(config, description\)/)
+      assert.match(error.message, /arguments look swapped/)
+      assert.doesNotMatch(error.message, /Cannot read properties/)
+      return true
+    },
+  )
+})
+
+test('validatePlanDescription detects an asterisk-bullet Contract stamp', () => {
+  // A tracker may renormalise `-` to `*` on save, which made the stamp undetectable on read-back.
+  const r = validatePlanDescription(DEFAULT_CONFIG, planDesc('* Contract: v1'))
+  assert.equal(r.version, 1)
+  assert.equal(r.unsupportedVersion, false)
+  assert.equal(r.ok, true)
+})
+
+test('validatePlanDescription reports an off-contract heading in `unknown` without flipping `ok`', () => {
+  // CONSUMER COMPATIBILITY PIN: boss-build gates on `ok`. Folding `unknown` into `ok` here would
+  // newly BLOCK every already-planned ticket carrying an extra heading. Producer-side strictness
+  // belongs in the producer's guard, which reads `unknown` directly.
+  const desc = planDesc('- Contract: v1').replace('## Planning', '## Notes\n\nx\n\n## Planning')
+  const r = validatePlanDescription(DEFAULT_CONFIG, desc)
+  assert.deepEqual(r.unknown, ['## Notes'])
+  assert.deepEqual(r.missing, [])
+  assert.equal(r.ok, true)
+})
+
+test('planDescriptionSections ignores a `##` line inside a fenced code block', () => {
+  // A plan that quotes `make help` output or a markdown example carries `##` lines that are sample
+  // TEXT, not emitted structure. Reading one as a section invented an off-contract heading, which
+  // the producer-side gate then rejects with no remedy the drafter can act on.
+  const desc = planDesc('- Contract: v1').replace(
+    '## Key changes\n\nx',
+    '## Key changes\n\n```\n## test: Run tests with race detector\n```',
+  )
+  const headings = planDescriptionSections(DEFAULT_CONFIG, desc).map((s) => s.heading)
+  assert.ok(!headings.includes('## test: Run tests with race detector'))
+  const r = validatePlanDescription(DEFAULT_CONFIG, desc)
+  assert.deepEqual(r.unknown, [])
+  assert.deepEqual(r.missing, [])
+  assert.equal(r.ok, true)
+  // A real heading outside the fence is still a section — skipping can only REMOVE spurious ones.
+  assert.ok(headings.includes('## Key changes'))
+})
+
+test('validatePlanDescription treats a registered `optional` section as recognised, not unknown', () => {
+  const desc = planDesc('- Contract: v1').replace(
+    '## Planning',
+    '## Proof harness analysis\n\nx\n\n## Planning',
+  )
+  const r = validatePlanDescription(DEFAULT_CONFIG, desc)
+  assert.deepEqual(r.unknown, [])
+  assert.equal(r.ok, true)
 })
 
 test('validatePlanDescription reports a missing required section', () => {

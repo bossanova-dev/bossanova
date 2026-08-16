@@ -32,6 +32,20 @@ type ClaudeOptions struct {
 	PasteMode  bool                   // skip the CLI walkthrough, paste a token
 	Label      string                 // preseeded from --label; prompted when empty
 	Priority   int32                  // account ordering, from --priority (default 0)
+
+	// StdinUnavailable declares that there is no interactive input left to read,
+	// so identity prompts must resolve to their defaults instead of asking. It is
+	// the --token-stdin condition: the piped token has already consumed stdin, and
+	// a further Ask would hit io.EOF.
+	//
+	// It is deliberately NOT the same flag as PasteMode. PasteMode says only
+	// "obtain the token by pasting rather than by running the CLI", which is also
+	// true of a fully interactive caller — the TUI answering "No" to the
+	// walkthrough confirm, and the --host TUI flow that cannot spawn a local
+	// claude at all. Those callers have a working prompter and must still be asked
+	// for a label. Folding the two together made the same screen drop its label
+	// prompt based on a flag about a different machine (BOS-847).
+	StdinUnavailable bool
 }
 
 // RunClaudeAdd registers an additional Claude account via `claude setup-token`
@@ -55,10 +69,10 @@ func RunClaudeAdd(ctx context.Context, o ClaudeOptions) error {
 		return err
 	}
 
-	// PasteMode is the --token-stdin escape hatch: stdin is consumed by the token
-	// and there is no interactive terminal, so identity prompts must resolve to
-	// their defaults instead of reading a closed stdin.
-	label, err := promptIdentity(ctx, o.Prompter, o.Client, "claude", o.Label, o.PasteMode)
+	// StdinUnavailable — not PasteMode — is what suppresses the label prompt: a
+	// pasted token can come from an interactive prompter that is perfectly able to
+	// answer one more question.
+	label, err := promptIdentity(ctx, o.Prompter, o.Client, "claude", o.Label, o.StdinUnavailable)
 	if err != nil {
 		return err
 	}
@@ -238,7 +252,9 @@ func nextDefaultLabel(provider string, existing []*pb.Account) string {
 // resolveLabel uses flagLabel verbatim when supplied, otherwise prompts with
 // defaultLabel. It is the no-collision path of promptIdentity. When
 // nonInteractive is set, an empty flagLabel resolves to defaultLabel without
-// prompting a stdin that the piped token already consumed.
+// prompting a stdin that the piped token already consumed; the claude flow feeds
+// that argument from ClaudeOptions.StdinUnavailable (never from PasteMode, which
+// says nothing about whether a prompter can still be asked).
 func resolveLabel(p Prompter, flagLabel, defaultLabel string, nonInteractive bool) (string, error) {
 	if flagLabel != "" {
 		return flagLabel, nil

@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "title": "BOS-847 — under --host the add-account flow stops resolving the agent CLI locally: codex is refused with the command that works, claude drops to pasting a token",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_HOST_E2E_ATTACH_DESTINATION": "deploy@build-box.invalid" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Reach the provider chooser while boss is driving a daemon on another machine",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the session board is serving the remote daemon's sessions, so this run is genuinely in a --host context and not an empty local shell"
+          },
+          "timeoutMs": 15000,
+          "caption": "Boss is driving a daemon on another machine; the board renders that machine's work."
+        },
+        { "key": "s", "caption": "Open the Settings hub." },
+        {
+          "waitFor": { "text": "Settings", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible."
+        },
+        { "key": "a", "caption": "Open the Accounts list." },
+        {
+          "waitFor": {
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
+            "label": "the accounts table header, so [a]dd is pressed on a settled list rather than a loading frame"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled."
+        },
+        { "key": "a", "caption": "Press [a] to start adding an account." },
+        {
+          "waitFor": { "text": "Choose a provider", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "The native provider chooser opened — both providers are still offered up front."
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Codex is refused before anything is spawned, and the refusal carries the command that does work",
+      "steps": [
+        { "key": "down", "caption": "Move the chooser to codex." },
+        { "key": "enter", "caption": "Choose codex." },
+        {
+          "waitFor": {
+            "text": "Add codex account",
+            "match": "normalized",
+            "label": "the codex registration screen is on-screen, so what follows is read off the flow itself"
+          },
+          "timeoutMs": 15000,
+          "caption": "The codex flow starts and immediately reports why it cannot run here."
+        },
+        {
+          "expect": [
+            {
+              "text": "deploy@build-box.invalid",
+              "match": "normalized",
+              "label": "the refusal names the destination it is talking about — remote context evidence read off the flow, not inferred from the fixture"
+            },
+            {
+              "text": "boss account add codex",
+              "match": "normalized",
+              "label": "the remedy travels with the message: esc pops back to the accounts list, so the operator has to carry the working command away with them"
+            },
+            {
+              "text": "^(?![\\s\\S]*executable file not found)[\\s\\S]*Add codex account",
+              "match": "regex",
+              "label": "a frame carrying the codex registration screen with no exec-lookup failure on it: nothing was resolved against this machine's PATH. The pinned string is the one os/exec itself emits — there is no shell in this path, so a shell's 'command not found' could never appear and pinning it would hold on pre-fix code too"
+            }
+          ],
+          "caption": "BOS-847: codex registration runs a local subprocess, so under --host it is refused up front instead of failing at exec time."
+        },
+        { "key": "esc", "caption": "Leave the refusal screen." },
+        {
+          "waitFor": { "text": "LABEL PROVIDER", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Back on the accounts list, unchanged — a refused registration stores nothing."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "Claude drops to its paste shape, explaining why the walkthrough is gone and where a token comes from",
+      "steps": [
+        { "key": "a", "caption": "Start adding an account again." },
+        {
+          "waitFor": { "text": "Choose a provider", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "The provider chooser, with claude already under the cursor."
+        },
+        { "key": "enter", "caption": "Choose claude." },
+        {
+          "waitFor": {
+            "text": "Paste your Claude setup token",
+            "match": "normalized",
+            "label": "the flow reached the paste prompt, which is only possible without spawning the local claude CLI"
+          },
+          "timeoutMs": 15000,
+          "caption": "Claude registration skips the walkthrough and asks for a token instead."
+        },
+        {
+          "expect": [
+            {
+              "text": "Add claude account",
+              "match": "normalized",
+              "label": "the claude registration screen, so the paste prompt below belongs to this flow"
+            },
+            {
+              "text": "deploy@build-box.invalid",
+              "match": "normalized",
+              "label": "the explanatory line names the machine the credential will be stored on — remote context evidence read off the flow"
+            },
+            {
+              "text": "Run `claude setup-token` in a shell on deploy@build-box.invalid (or anywhere the claude CLI is signed in) and paste the token below",
+              "match": "normalized",
+              "label": "the REMEDY clause is on screen, not just the first clause: a bare `claude setup-token` also occurs in the opening 'the walkthrough is unavailable' sentence, so it matched on precisely the clipped frame this expectation exists to rule out. Pinning the second clause can only pass on a frame that actually wrapped it into view"
+            },
+            {
+              "text": "^(?![\\s\\S]*Run the claude setup-token walkthrough now\\?)[\\s\\S]*Paste your Claude setup token",
+              "match": "regex",
+              "label": "a frame carrying the paste prompt and NOT the walkthrough confirm: a walkthrough that could only run the wrong machine's CLI is never offered"
+            }
+          ],
+          "caption": "BOS-847: a Claude setup token is account-scoped, so the --host flow pastes one and stores it on the remote daemon."
+        }
+      ]
+    }
+  ]
+}

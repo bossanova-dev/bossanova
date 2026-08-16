@@ -568,6 +568,16 @@ Include, in the plan body, all of the following (scaled to triage):
   Complexity alone is **not** a reason — a large but well-specced ticket is still agent-friendly.
   Omit this section entirely for agent-friendly plans, and set `agentFriendly: true` in your returned
   metadata (set it `false` and include the section when you do add it).
+- When Step 4 recorded any open question, an **`## Open Questions`** section — spelled with that
+  exact casing, capital `Q` included. The description contract requires the cased form, so a plan
+  file that drifts to `## Open questions` leaves a consumer grepping the plan file finding nothing
+  while the description says the section exists.
+
+**The plan file must contain ONLY the plan body.** No tool-call scaffolding, no XML-ish wrapper
+tags, no transcript residue, no preamble narrating what you are about to write, and no trailing
+commentary after the last plan section. This file is finalized verbatim as the ticket's canonical
+plan attachment, and Phase 4's contract gate rejects a file whose last non-blank line is a bare
+closing scaffolding tag — the SAFE branch there is a full abort with no tracker write.
 
 ## Step 6 — Plan-body secret hygiene
 
@@ -723,6 +733,27 @@ rather than certify a comparison it cannot make. Your `description` input may le
 
 Fix any drop before writing the `ok` sentinel — the orchestrator's mechanical guard will otherwise
 abort the whole run.
+
+**Also self-verify the plan contract**, in a block of its own immediately after that one and before
+the `ok` sentinel — it re-derives `BOSS_PLAN_TOOLBOX` because blocks inherit nothing, so do not
+merge it into the block above. Write the composed `descriptionSummary` to a scratch file and run the
+contract guard over it and the plan file:
+
+```bash
+BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
+if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <new.md> --plan "$PLAN_PATH"
+```
+
+It prints one stderr line per violation, tagged `missing-sections`, `unknown-section`,
+`section-order`, `placeholder-residue`, `not-a-description`, `plan-file-residue`, or
+`unreadable-input`. **A non-zero exit means write no `ok` sentinel** — fix the description or the
+plan file and re-run, or leave the sentinel absent so the orchestrator reads `missing` and takes the
+safe branch.
+
+Running it here as well as in the orchestrator's Phase 4 is deliberate, not redundant: failing fast
+here turns an orchestrator-side abort into a self-describing dispatch failure, while the Phase 4
+gate remains the authoritative pre-write gate that does not trust this subagent.
 
 ## Step 9 — Return only bounded metadata (never the plan content)
 

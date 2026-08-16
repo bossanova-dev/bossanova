@@ -2,7 +2,10 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/accountflow"
@@ -84,8 +87,66 @@ func newTUIPrompter(ctx context.Context) *tuiPrompter {
 	}
 }
 
+// forwardedSocketDialParenthesised matches a parenthesised run carrying the
+// forwarded-socket dial failure. accountflow embeds an RPC failure as a reason
+// inside parentheses twice — "Verification couldn't run right now (%s)" and
+// keepOrRemove's "Account verification failed (%s). Keep the account anyway?" —
+// so the parentheses are a boundary the substitution can trust: the sentence
+// around the reason survives intact.
+var forwardedSocketDialParenthesised = regexp.MustCompile(`\([^()]*dial unix[^()]*\)`)
+
+// forwardedSocketDialRun matches the same failure where no parentheses bound
+// it. It is anchored at "dial unix" and never extends leftwards, so the
+// substitution can only ever consume the failure itself.
+//
+// Extending leftwards would be destructive on a line this change newly makes
+// reachable: accountflow reports a stranded credential as `warning: could not
+// remove unverified account <id>: <err>` (keepOrRemove), and that sentence
+// carries no parentheses, so a leftward run would replace the whole line with
+// "the connection to <destination> dropped" and leave the operator with no
+// trace that an unverified account is still sitting on the remote daemon —
+// strictly worse than the local path it was replacing.
+//
+// What precedes "dial unix" is kept as-is, which is the flow's own sentence
+// plus whatever gRPC framing the error arrived wrapped in (`rpc error: code =
+// Unavailable … Error while dialing`). That tail is noise, but it is noise the
+// operator saw before this substitution existed; keeping it is the price of
+// never guessing where the sentence ends, and the local socket path — the one
+// part that invites acting on the wrong machine — is always gone.
+var forwardedSocketDialRun = regexp.MustCompile(`dial unix[^()]*`)
+
+// hostAwareFlowText applies the --host substitution to text the registration
+// flow composed for the screen.
+//
+// Under --host the flow's AccountClient is the tunnelled one, so a dropped
+// tunnel fails TestAccount with `dial unix /var/folders/…/bossd.sock: connect:
+// no such file or directory` — a LOCAL temp path, from the machine that did not
+// stop answering. accountflow then folds that string into a prompt, so the
+// operator is asked "Account verification failed (dial unix /var/folders/…)
+// Keep the account anyway?" and has nothing to decide on. Every other view
+// reaches the same substitution through rpcErrorMessage/rpcStatusDetail; the
+// flow's text is composed inside accountflow, which knows nothing about hosts,
+// so the bridge is where it has to be applied.
+//
+// The replacement is taken from rpcStatusDetail rather than written out again,
+// so this surface cannot drift from the status lines — including the
+// supervisor-stopped and last-tunnel-failure variants. Replacement is literal
+// (ReplaceAllLiteralString): the supervisor's classified reason is arbitrary
+// text and must not be read as $-expansion.
+func hostAwareFlowText(s string) string {
+	if !isRemoteHost() || !strings.Contains(s, "dial unix") {
+		return s
+	}
+	detail := rpcStatusDetail(errors.New("dial unix"))
+	s = forwardedSocketDialParenthesised.ReplaceAllLiteralString(s, "("+detail+")")
+	if !strings.Contains(s, "dial unix") {
+		return s
+	}
+	return forwardedSocketDialRun.ReplaceAllLiteralString(s, detail)
+}
+
 func (p *tuiPrompter) Say(format string, args ...any) {
-	line := fmt.Sprintf(format, args...)
+	line := hostAwareFlowText(fmt.Sprintf(format, args...))
 	select {
 	case p.progress <- line:
 	case <-p.ctx.Done():
@@ -95,6 +156,9 @@ func (p *tuiPrompter) Say(format string, args ...any) {
 // ask sends req and blocks for the model's answer, honoring ctx cancellation so
 // a teardown mid-prompt returns an error rather than deadlocking the flow.
 func (p *tuiPrompter) ask(req promptRequest) (promptResponse, error) {
+	// The prompt text is the one part of a request that reaches the screen, and
+	// keepOrRemove builds it from a raw RPC error.
+	req.text = hostAwareFlowText(req.text)
 	req.reply = make(chan promptResponse, 1)
 	select {
 	case p.requests <- req:

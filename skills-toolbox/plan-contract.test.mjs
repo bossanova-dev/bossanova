@@ -8,6 +8,7 @@ import {
   DEFAULT_CONFIG,
   planSections,
   planContractVersion,
+  requiredPlanSections,
   validatePlanDescription,
 } from './skill-config.mjs'
 
@@ -65,13 +66,24 @@ describe('plan-contract sync', () => {
     )
   })
 
-  test('`## Proof harness analysis` is advisory — not a required contract section (contract stays v1)', () => {
-    // BOS-111 deliberately keeps the section out of planContract.sections so the contract stays v1
-    // and every pre-existing v1 plan + boss-build Step-4 validation keeps passing.
+  test('`## Proof harness analysis` is registered `optional` — recognised, never required (contract stays v1)', () => {
+    // BOS-111 kept the section advisory. BOS-741 registers it as `optional` so the producer-side
+    // unknown-heading check can be strict about the template boss-plan itself prescribes, WITHOUT
+    // newly requiring the section of the hundreds of tickets already stamped v1. Both halves matter:
+    // present in `sections`, absent from `requiredPlanSections`, contract still v1.
     assert.equal(planContractVersion(DEFAULT_CONFIG), 1, 'plan contract must remain v1')
+    const entry = planSections(DEFAULT_CONFIG).find(
+      (s) => s.heading === '## Proof harness analysis',
+    )
+    assert.ok(entry, '`## Proof harness analysis` must be a recognised contract section')
+    assert.equal(
+      entry.required,
+      'optional',
+      '`## Proof harness analysis` must be classed optional, never required',
+    )
     assert.ok(
-      !HEADINGS.includes('## Proof harness analysis'),
-      '`## Proof harness analysis` must NOT be a required contract heading (advisory only)',
+      !requiredPlanSections(DEFAULT_CONFIG).includes('## Proof harness analysis'),
+      '`## Proof harness analysis` must NOT be a required heading',
     )
   })
 
@@ -81,6 +93,10 @@ describe('plan-contract sync', () => {
       .map((s) => `${s.heading}\n\nbody`)
       .join('\n\n')
       .replace('## Planning\n\nbody', '## Planning\n\n- Contract: v1')
-    assert.equal(validatePlanDescription(DEFAULT_CONFIG, rendered).ok, true)
+    const result = validatePlanDescription(DEFAULT_CONFIG, rendered)
+    assert.equal(result.ok, true)
+    // The rendered required-section set must also be free of off-contract headings, otherwise the
+    // producer-side guard would reject the very template this contract emits.
+    assert.deepEqual(result.unknown, [])
   })
 })

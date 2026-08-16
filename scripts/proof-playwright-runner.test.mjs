@@ -17,6 +17,7 @@ import {
   OVERLAY_CAPTION_CSS,
   VIDEO_ACTIONS,
   uploadServerScript,
+  echoServerScript,
 } from './proof-playwright-runner.mjs'
 import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
 
@@ -275,6 +276,20 @@ test('the shipped catalog keeps the upload recipe wired to the web path rule', (
   // diff, so it would silently prove nothing.
   const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
   assert.ok(webRule.recipeIds.includes('web-chat-terminal-upload'))
+})
+
+test('the shipped catalog keeps the paste recipe wired to the web path rule', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'web-chat-terminal-paste')
+  assert.ok(recipe, 'web-chat-terminal-paste recipe is missing from the catalog')
+  assert.doesNotThrow(() => validateRecipe(recipe))
+  // Same hazard as the upload recipe above: absent from the pathRule it is
+  // never selected for a services/web diff, so BOS-879's required proof would
+  // silently never run.
+  const webRule = catalog.pathRules.find((rule) => rule.patterns.includes('services/web/'))
+  assert.ok(webRule.recipeIds.includes('web-chat-terminal-paste'))
 })
 
 test('buildSpec waits for the rendered glyph row before capturing the chat-terminal still', () => {
@@ -1059,4 +1074,63 @@ test('buildSpec stages the web fixture only when a stageEnv is supplied', () => 
   assert.ok(staged.includes('window.bossanovaE2e'))
   const unstaged = buildSpec({ recipe: base, outputDir: '/out', surface: 'web' })
   assert.ok(!unstaged.includes('window.bossanovaE2e'))
+})
+
+// ----- BOS-879 staged echo responder --------------------------------------
+//
+// The paste capture's final assertion is that the pasted text appears in the
+// terminal canvas. xterm never echoes locally — Terminal.paste() emits through
+// onData and only the far end's echo paints anything — so the fixture has to
+// play the PTY's part. These pin that it echoes client input and nothing else,
+// and that it stays scoped to the one recipe that needs it.
+
+function runEchoResponder(frames) {
+  const source = echoServerScript({ id: 'web-chat-terminal-paste' })
+  assert.ok(source.includes('ws.onMessage('), 'echo snippet is empty')
+  const sent = []
+  let handler = null
+  const ws = {
+    send: (buf) => sent.push(Buffer.from(buf)),
+    onMessage: (fn) => {
+      handler = fn
+    },
+  }
+  new Function('ws', 'Buffer', source)(ws, Buffer)
+  assert.ok(handler, 'echo responder registered no message handler')
+  for (const frame of frames) {
+    handler(frame)
+  }
+  return sent
+}
+
+function dataFrame(text) {
+  const payload = Buffer.from(text, 'utf-8')
+  const header = Buffer.from([
+    0,
+    (payload.length >>> 16) & 0xff,
+    (payload.length >>> 8) & 0xff,
+    payload.length & 0xff,
+  ])
+  return Buffer.concat([header, payload])
+}
+
+test('staged echo responder echoes kind=0 client input back as a data frame', () => {
+  const sent = runEchoResponder([dataFrame('hello from the clipboard')])
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0][0], 0, 'echo must be a kind=0 data frame')
+  assert.equal(sent[0].subarray(4).toString('utf8'), 'hello from the clipboard')
+})
+
+test('staged echo responder ignores non-data frames and runt frames', () => {
+  // kind=1 is a resize; a 4-byte frame carries no payload at all. Echoing
+  // either would put bytes on the canvas the paste never produced.
+  const resize = Buffer.from([1, 0, 0, 4, 0, 80, 0, 24])
+  const runt = Buffer.from([0, 0, 0, 0])
+  assert.equal(runEchoResponder([resize, runt]).length, 0)
+})
+
+test('staged echo responder is scoped to the paste recipe', () => {
+  assert.equal(echoServerScript({ id: 'web-chat-terminal-upload' }), '')
+  assert.equal(echoServerScript({ id: 'web-chat-terminal' }), '')
+  assert.equal(echoServerScript(undefined), '')
 })

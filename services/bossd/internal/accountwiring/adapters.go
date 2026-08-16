@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
@@ -65,6 +66,47 @@ type accountSuspender interface {
 // grpcstatus.Code unwraps the %w chain.
 func IsSuspension(err error) bool {
 	return err != nil && grpcstatus.Code(err) == codes.PermissionDenied
+}
+
+// IsProbeThrottled reports whether err is the claude plugin's usage-endpoint
+// throttle signal: a gRPC codes.ResourceExhausted. The plugin reserves that
+// code exclusively for an HTTP 429 from /api/oauth/usage (see
+// plugins/bossd-plugin-claude/probe.go claudeUsageThrottledError), so it is the
+// single source of truth for the plugin→daemon throttle contract, and it is
+// disjoint from IsSuspension by construction.
+//
+// This is deliberately paired with NO store-writing MarkThrottled... helper, in
+// pointed contrast to MarkSuspendedIfConfirmed below. A throttle means our
+// POLLER exceeded the usage endpoint's request budget; it is not evidence about
+// the account's quota, and the account's real capacity is untouched. Per
+// CONCEPTS.md a Cooldown is applied "when an account hits its usage cap", so
+// writing one here would bench a perfectly healthy account — exactly the
+// BOS-584 bug class. Keeping this surface read-only is what stops a future
+// caller reaching for the store. The correct reaction is caller-side backoff.
+func IsProbeThrottled(err error) bool {
+	return err != nil && grpcstatus.Code(err) == codes.ResourceExhausted
+}
+
+// ProbeRetryAfter returns the retry delay the throttling endpoint asked for,
+// carried as an errdetails.RetryInfo on the plugin's status. ok is false when
+// err is not a throttle or when the plugin could not parse a usable
+// Retry-After — a throttle with no stated horizon is still a throttle, so
+// callers must apply their own floor rather than treating (0, false) as
+// "retry immediately".
+func ProbeRetryAfter(err error) (time.Duration, bool) {
+	if !IsProbeThrottled(err) {
+		return 0, false
+	}
+	for _, detail := range grpcstatus.Convert(err).Details() {
+		info, ok := detail.(*errdetails.RetryInfo)
+		if !ok {
+			continue
+		}
+		if delay := info.GetRetryDelay().AsDuration(); delay > 0 {
+			return delay, true
+		}
+	}
+	return 0, false
 }
 
 // MarkSuspendedIfConfirmed is the single reaction point for the suspension

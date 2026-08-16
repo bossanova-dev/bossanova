@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/recurser/bossalib/models"
 )
@@ -39,7 +41,7 @@ func TestRefreshActiveAccountUsageProbesEveryActiveAccount(t *testing.T) {
 		},
 	}
 
-	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 	// The three active accounts refresh; only d-disabled is skipped.
 	if n != 3 {
@@ -76,7 +78,7 @@ func TestRefreshActiveAccountUsageReconcilesContradictedCooldown(t *testing.T) {
 		accounts: []*models.Account{cooling},
 	}
 
-	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache); n != 1 {
+	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 1 {
 		t.Fatalf("refreshed = %d, want 1", n)
 	}
 	if len(cache.updates) != 1 {
@@ -118,7 +120,7 @@ func TestRefreshActiveAccountUsageKeepsACooldownWrittenDuringTheProbe(t *testing
 		getByID:  map[string]*models.Account{"yuki": rebenched},
 	}
 
-	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 	if cache.getCalls != 1 {
 		t.Fatalf("Get calls = %d, want 1 (the clear must re-read before writing)", cache.getCalls)
@@ -149,7 +151,7 @@ func TestRefreshActiveAccountUsageKeepsCooldownWhenReReadFails(t *testing.T) {
 		getErr:   context.DeadlineExceeded,
 	}
 
-	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache); n != 1 {
+	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 1 {
 		t.Fatalf("refreshed = %d, want 1 (the probe itself still succeeded)", n)
 	}
 	if len(cache.updates) != 0 {
@@ -196,7 +198,7 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 		cooling := &models.Account{ID: "yuki", Status: models.AccountStatusActive, CooldownUntil: &future}
 		rec := &nonClearingRecorder{accounts: []*models.Account{cooling}}
 
-		if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), rec, rec); n != 1 {
+		if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), rec, rec, nil); n != 1 {
 			t.Fatalf("refreshed = %d, want 1", n)
 		}
 		if cooling.CooldownUntil == nil || !cooling.CooldownUntil.Equal(future) {
@@ -213,7 +215,7 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 			getErr:    sql.ErrNoRows,
 		}
 
-		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 		if len(cache.updates) != 0 {
 			t.Fatalf("account updates = %+v, want none (the row is gone)", cache.updates)
@@ -232,7 +234,7 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 			getByID:   map[string]*models.Account{"yuki": uncooled},
 		}
 
-		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 		if len(cache.updates) != 0 {
 			t.Fatalf("account updates = %+v, want none (already not cooling)", cache.updates)
@@ -248,7 +250,7 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 			getNil:    map[string]bool{"yuki": true},
 		}
 
-		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 		if len(cache.updates) != 0 {
 			t.Fatalf("account updates = %+v, want none (no row to reconcile)", cache.updates)
@@ -294,7 +296,7 @@ func TestRefreshActiveAccountUsageKeepsCooldownWhenProbeIsNotAuthoritative(t *te
 				accounts:  []*models.Account{cooling},
 			}
 
-			refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache)
+			refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
 
 			if len(cache.updates) != 0 {
 				t.Fatalf("account updates = %+v, want none", cache.updates)
@@ -322,7 +324,7 @@ func TestRefreshActiveAccountUsageSurvivesCooldownClearFailure(t *testing.T) {
 		updateErr: context.DeadlineExceeded,
 	}
 
-	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache); n != 2 {
+	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 2 {
 		t.Fatalf("refreshed = %d, want 2 despite the failed cooldown clear", n)
 	}
 	if cooling.CooldownUntil == nil {
@@ -340,7 +342,7 @@ func TestProbeUsageSnapshotSuspensionFailsHealth(t *testing.T) {
 		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
 	}
 
-	snap, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "susp-acct")
+	snap, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "susp-acct", nil)
 	if ok {
 		t.Fatalf("ok = true, want false on suspension")
 	}
@@ -368,7 +370,7 @@ func TestProbeUsageSnapshotTransientErrorDoesNotFailHealth(t *testing.T) {
 	cache := &fakeDecisionUsageCache{
 		probeErr: grpcstatus.Error(codes.Unauthenticated, "auth_invalidated"),
 	}
-	if _, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "acct"); ok {
+	if _, ok := probeUsageSnapshotForRotation(context.Background(), zerolog.Nop(), cache, cache, "acct", nil); ok {
 		t.Fatalf("ok = true, want false on probe error")
 	}
 	if cache.suspendCalls != 0 {
@@ -380,10 +382,204 @@ func TestProbeUsageSnapshotTransientErrorDoesNotFailHealth(t *testing.T) {
 // fail-soft: no probes, zero refreshed, no panic.
 func TestRefreshActiveAccountUsageListErrorIsSoft(t *testing.T) {
 	cache := &fakeDecisionUsageCache{listErr: context.DeadlineExceeded}
-	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache); n != 0 {
+	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 0 {
 		t.Fatalf("refreshed = %d, want 0 on list error", n)
 	}
 	if cache.probeCalls != 0 {
 		t.Fatalf("probeCalls = %d, want 0 on list error", cache.probeCalls)
+	}
+}
+
+// TestRefreshActiveAccountUsageSkipsAccountInsideThrottleBackoff is the
+// load-bearing BOS-828 assertion: an account whose usage-probe backoff deadline
+// is still in the future issues NO probe RPC at all. The skip must happen
+// BEFORE the RPC — a guard placed after it would still burn the polling budget
+// the backoff exists to protect — so the assertion is on probeCalls, not on the
+// refreshed count. A throttled account must also not suppress its peers.
+func TestRefreshActiveAccountUsageSkipsAccountInsideThrottleBackoff(t *testing.T) {
+	fetched := time.Now().UTC()
+	cache := &fakeDecisionUsageCache{
+		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts: []*models.Account{
+			{ID: "a-backing-off", Status: models.AccountStatusActive},
+			{ID: "b-healthy", Status: models.AccountStatusActive},
+		},
+	}
+	throttleUntil := map[string]time.Time{"a-backing-off": time.Now().Add(5 * time.Minute)}
+
+	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
+
+	if cache.probeCalls != 1 {
+		t.Fatalf("probeCalls = %d, want 1 (the backing-off account must not be probed at all)", cache.probeCalls)
+	}
+	if n != 1 {
+		t.Fatalf("refreshed = %d, want 1 (the skipped account is excluded from the count)", n)
+	}
+}
+
+// throttleProbeErr builds the exact error shape the claude plugin returns for a
+// throttled usage endpoint (codes.ResourceExhausted, optionally carrying an
+// errdetails.RetryInfo), so these tests pin the real plugin→daemon contract.
+func throttleProbeErr(t *testing.T, retryAfter time.Duration) error {
+	t.Helper()
+	st := grpcstatus.New(codes.ResourceExhausted, "usage_probe_throttled")
+	if retryAfter <= 0 {
+		return st.Err()
+	}
+	withDetails, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(retryAfter)})
+	if err != nil {
+		t.Fatalf("attach RetryInfo: %v", err)
+	}
+	return withDetails.Err()
+}
+
+// TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor pins
+// the backoff arithmetic at every boundary. The floor exists because the
+// measured Retry-After is a weak lower bound — the endpoint's budget is a
+// rolling TRAILING window, so a block frequently does not clear at its stated
+// horizon — while a longer stated horizon is the server's own answer and must
+// be honoured over our guess.
+func TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retryAfter time.Duration
+		want       time.Duration
+	}{
+		{name: "floor wins over a shorter retry-after", retryAfter: 2 * time.Minute, want: probeThrottleFloor},
+		{name: "retry-after wins over the floor", retryAfter: 20 * time.Minute, want: 20 * time.Minute},
+		{name: "absent retry-after falls back to the floor", retryAfter: 0, want: probeThrottleFloor},
+		// Retry-After is upstream input the daemon does not control. An
+		// implausible horizon must not park this account's refresh past the
+		// ceiling, or every rotation decision for it degrades to a stale
+		// snapshot until the daemon restarts.
+		{name: "ceiling wins over an implausible retry-after", retryAfter: 24 * time.Hour, want: probeThrottleCeiling},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &fakeDecisionUsageCache{
+				probeErr: throttleProbeErr(t, tc.retryAfter),
+				accounts: []*models.Account{{ID: "throttled", Status: models.AccountStatusActive}},
+			}
+			throttleUntil := map[string]time.Time{}
+
+			before := time.Now()
+			n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
+			after := time.Now()
+
+			if n != 0 {
+				t.Fatalf("refreshed = %d, want 0 (a throttled probe yields no snapshot)", n)
+			}
+			deadline, ok := throttleUntil["throttled"]
+			if !ok {
+				t.Fatal("no backoff deadline recorded for the throttled account")
+			}
+			if deadline.Before(before.Add(tc.want)) || deadline.After(after.Add(tc.want)) {
+				t.Fatalf("deadline = %v, want now+%v (within [%v, %v])",
+					deadline, tc.want, before.Add(tc.want), after.Add(tc.want))
+			}
+		})
+	}
+}
+
+// TestRefreshActiveAccountUsageThrottleWritesNoCooldownOrHealth is the BOS-584
+// guard: a polling throttle says nothing about the account's quota, so it must
+// leave both cooldown_until and account health completely untouched. Benching a
+// healthy account because our own poller ran hot is the bug this must not
+// re-create.
+func TestRefreshActiveAccountUsageThrottleWritesNoCooldownOrHealth(t *testing.T) {
+	cache := &fakeDecisionUsageCache{
+		probeErr: throttleProbeErr(t, 2*time.Minute),
+		accounts: []*models.Account{{ID: "throttled", Status: models.AccountStatusActive}},
+	}
+
+	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, map[string]time.Time{})
+
+	if len(cache.updates) != 0 {
+		t.Fatalf("account updates = %+v, want none (a throttle must not write cooldown_until)", cache.updates)
+	}
+	if cache.suspendCalls != 0 {
+		t.Fatalf("suspendCalls = %d, want 0 (a throttle must never fail account health)", cache.suspendCalls)
+	}
+	if cache.recordCalls != 0 {
+		t.Fatalf("recordCalls = %d, want 0 (no snapshot exists to cache)", cache.recordCalls)
+	}
+}
+
+// TestRefreshActiveAccountUsageThrottleDoesNotSuppressPeers pins that the
+// backoff is per-account. Under the account-scoped 429 regime one identity's
+// throttle says nothing about another's, so a single throttled account must not
+// stall the whole refresh pass.
+func TestRefreshActiveAccountUsageThrottleDoesNotSuppressPeers(t *testing.T) {
+	fetched := time.Now().UTC()
+	cache := &fakeDecisionUsageCache{
+		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		probeErrByID: map[string]error{
+			"a-throttled": throttleProbeErr(t, 2*time.Minute),
+		},
+		accounts: []*models.Account{
+			{ID: "a-throttled", Status: models.AccountStatusActive},
+			{ID: "b-healthy", Status: models.AccountStatusActive},
+			{ID: "c-healthy", Status: models.AccountStatusActive},
+		},
+	}
+	throttleUntil := map[string]time.Time{}
+
+	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
+
+	if n != 2 {
+		t.Fatalf("refreshed = %d, want 2 (both healthy peers still refresh)", n)
+	}
+	if cache.probeCalls != 3 {
+		t.Fatalf("probeCalls = %d, want 3 (every account is probed on the throttling pass)", cache.probeCalls)
+	}
+	if _, ok := throttleUntil["b-healthy"]; ok {
+		t.Fatal("a healthy peer was given a backoff deadline")
+	}
+}
+
+// TestRefreshActiveAccountUsageProbesAgainAfterBackoffExpires pins that the
+// backoff is a window, not a permanent bench: once the deadline passes the
+// account is probed normally again and its stale entry is not retained.
+func TestRefreshActiveAccountUsageProbesAgainAfterBackoffExpires(t *testing.T) {
+	fetched := time.Now().UTC()
+	cache := &fakeDecisionUsageCache{
+		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts:  []*models.Account{{ID: "recovered", Status: models.AccountStatusActive}},
+	}
+	throttleUntil := map[string]time.Time{"recovered": time.Now().Add(-time.Minute)}
+
+	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
+
+	if n != 1 || cache.probeCalls != 1 {
+		t.Fatalf("refreshed = %d probeCalls = %d, want 1/1 once the window expired", n, cache.probeCalls)
+	}
+	if _, ok := throttleUntil["recovered"]; ok {
+		t.Fatal("expired backoff entry was retained instead of being cleared")
+	}
+}
+
+// TestRefreshActiveAccountUsageThrottleLeavesCooldownReconciliationIntact pins
+// that the new backoff does not disturb the BOS-584 safety net: a cooling
+// account whose fresh probe contradicts the bench still has its cooldown
+// cleared, even while an unrelated account is backing off.
+func TestRefreshActiveAccountUsageThrottleLeavesCooldownReconciliationIntact(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	fetched := time.Now().UTC()
+	cooling := &models.Account{ID: "cooling", Status: models.AccountStatusActive, CooldownUntil: &future}
+	cache := &fakeDecisionUsageCache{
+		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts: []*models.Account{
+			{ID: "backing-off", Status: models.AccountStatusActive},
+			cooling,
+		},
+	}
+	throttleUntil := map[string]time.Time{"backing-off": time.Now().Add(5 * time.Minute)}
+
+	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
+
+	if len(cache.updates) != 1 || cache.updates[0].id != "cooling" {
+		t.Fatalf("account updates = %+v, want exactly one clearing cooling's cooldown", cache.updates)
+	}
+	if cache.updates[0].params.CooldownUntil == nil || *cache.updates[0].params.CooldownUntil != nil {
+		t.Fatalf("cooldown_until update = %+v, want an explicit clear to NULL", cache.updates[0].params)
 	}
 }

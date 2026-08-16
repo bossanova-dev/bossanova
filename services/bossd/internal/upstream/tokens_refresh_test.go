@@ -1568,3 +1568,124 @@ func TestKeychainTokenProviderReloadDistinguishesDeletedFromUnreadable(t *testin
 		t.Fatalf("provider token = %q, want the cache preserved through a transient read failure", unreadable.Token())
 	}
 }
+
+// TestRefreshWorkOSTokenAnnotatesFailureClass pins the diagnostics added
+// alongside the BOS-659 sanitization. The pause warning deliberately drops the
+// wrapped error, so without an enumerated class the logs cannot tell a stalled
+// laptop network apart from a response WorkOS sent but we could not read —
+// which is the difference between "raise the timeout" and "handle the body".
+// The classes are a closed set defined in this package; no upstream string
+// ever reaches them.
+func TestRefreshWorkOSTokenAnnotatesFailureClass(t *testing.T) {
+	cases := []struct {
+		name      string
+		handler   http.HandlerFunc
+		wantClass refreshFailureClass
+		ctx       func() (context.Context, context.CancelFunc)
+	}{
+		{
+			name: "response read",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"access_token":`))
+			},
+			wantClass: refreshFailureResponseRead,
+		},
+		{
+			name: "response decode",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`not json at all`))
+			},
+			wantClass: refreshFailureResponseDecode,
+		},
+		{
+			name: "no access token",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"expires_in":300}`))
+			},
+			wantClass: refreshFailureNoAccessToken,
+		},
+		{
+			name: "timeout after dispatch",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(200 * time.Millisecond)
+				w.WriteHeader(http.StatusOK)
+			},
+			wantClass: refreshFailureTimeout,
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 20*time.Millisecond)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var lockMu sync.Mutex
+			withTokenRefreshHooks(t, &lockMu)
+
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			workOSAuthenticateURL = srv.URL
+			workOSRefreshHTTPClient = srv.Client()
+
+			ctx := context.Background()
+			if tc.ctx != nil {
+				c, cancel := tc.ctx()
+				defer cancel()
+				ctx = c
+			}
+			_, err := refreshWorkOSToken(ctx, "client", "refresh")
+			if err == nil {
+				t.Fatal("refreshWorkOSToken returned no error")
+			}
+			failure, ok := refreshFailureOf(err)
+			if !ok {
+				t.Fatalf("error %v carries no refreshFailure annotation", err)
+			}
+			if failure.class != tc.wantClass {
+				t.Fatalf("failure class = %q, want %q", failure.class, tc.wantClass)
+			}
+			// Each of these is a first exchange on a fresh connection. A true
+			// value here is the half-open-pool signature and must not appear.
+			if failure.connReused {
+				t.Errorf("connReused = true on a freshly dialled connection")
+			}
+			// The annotation must not disturb the terminal classification the
+			// daemon keys its re-login decision on.
+			if !errors.Is(err, ErrRefreshOutcomeUnknown) {
+				t.Errorf("annotated error lost ErrRefreshOutcomeUnknown: %v", err)
+			}
+		})
+	}
+}
+
+// TestRefreshWorkOSTokenClassifiesUndispatchedAsDial proves the safe class is
+// still reported as such: nothing reached WorkOS, so the refresh token was not
+// consumed and the failure must stay retryable rather than terminal.
+func TestRefreshWorkOSTokenClassifiesUndispatchedAsDial(t *testing.T) {
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	// Port 1 on loopback refuses immediately: no connection is ever
+	// established, so httptrace's GotConn never fires.
+	workOSAuthenticateURL = "http://127.0.0.1:1/"
+	workOSRefreshHTTPClient = &http.Client{Timeout: 2 * time.Second}
+
+	_, err := refreshWorkOSToken(context.Background(), "client", "refresh")
+	if err == nil {
+		t.Fatal("refreshWorkOSToken returned no error")
+	}
+	failure, ok := refreshFailureOf(err)
+	if !ok {
+		t.Fatalf("error %v carries no refreshFailure annotation", err)
+	}
+	if failure.class != refreshFailureDial {
+		t.Fatalf("failure class = %q, want %q", failure.class, refreshFailureDial)
+	}
+	if errors.Is(err, ErrAuthExpired) {
+		t.Fatalf("an undispatched exchange must stay retryable, got terminal: %v", err)
+	}
+}

@@ -77,18 +77,38 @@ func guardInteractiveStdin(tokenStdin bool) error {
 	return errors.New("boss account add is interactive; run it in a terminal (or pass --token-stdin for claude)")
 }
 
-// requireLocalRegistration refuses interactive account registration against a
-// remote (--remote) daemon: the setup-token walkthrough and codex device flow
-// mint credentials by running a LOCAL subprocess, so the flow is only coherent
-// against the local daemon. It runs before any client dial or subprocess.
-// The same reasoning applies verbatim to --host: the subprocess would run here,
-// so the credential it mints would never be the remote machine's.
-func requireLocalRegistration(cmd *cobra.Command) error {
+// requireLocalRegistration refuses account registration that would have to run a
+// LOCAL subprocess — the claude setup-token walkthrough, the codex device flow —
+// against a daemon on another machine. It is the *subprocess* that is local, not
+// the credential: `claude setup-token` and `codex login` resolve their binary
+// against this process's PATH and write into scratch dirs here, so under --host
+// they 127 on a machine that need not have the agent CLIs at all.
+//
+// pastedToken marks the one shape with no subprocess in it: `boss account add
+// claude --token-stdin` reads a token that already exists and stores it through
+// the client, which under --host is the tunnelled one — so the credential lands
+// on the remote daemon, which is exactly where the operator asked for it. A
+// Claude setup token is account-scoped rather than machine-scoped, so there is
+// nothing incoherent about minting it elsewhere and registering it there. That
+// path is permitted under --host, and the TUI performs the same operation when
+// claude is chosen in a --host session (BOS-847).
+//
+// --remote stays refused for every shape: there is no remote *machine* behind a
+// cloud orchestrator to have run the CLI on, so allowing a paste there is a
+// separate design question rather than the same one.
+//
+// It runs before any client dial or subprocess.
+func requireLocalRegistration(cmd *cobra.Command, pastedToken bool) error {
 	if remoteURL(cmd) != "" {
 		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--remote) daemon")
 	}
-	if hostDestination(cmd) != "" {
-		return errors.New("boss account add registers credentials on the local daemon and cannot target a remote (--host) daemon; run it in a shell on that host instead")
+	if host := hostDestination(cmd); host != "" && !pastedToken {
+		// The claude escape hatch has to carry --host back with it. Suggesting the
+		// bare `boss account add claude --token-stdin` reads as a working remedy
+		// but drops the destination, so an operator who copies it registers the
+		// pasted credential on their *local* daemon — the wrong-machine outcome
+		// this guard exists to prevent (BOS-847).
+		return fmt.Errorf("boss account add runs the agent CLI on this machine and cannot target a remote (--host %s) daemon; run `ssh %s boss account add ...` on that host instead, or register claude with `boss --host %s account add claude --token-stdin`", host, host, host)
 	}
 	return nil
 }
@@ -120,10 +140,12 @@ func requireLocalDaemonTarget(cmd *cobra.Command) error {
 // registration: the claude setup-token walkthrough, or a pasted/piped token
 // with --token-stdin. The TTY guard runs before any RPC or subprocess.
 func runAccountAddClaude(cmd *cobra.Command) error {
-	if err := requireLocalRegistration(cmd); err != nil {
+	// Read --token-stdin first: it is what decides whether this invocation has a
+	// local subprocess in it, and therefore whether the --host guard applies.
+	tokenStdin, _ := cmd.Flags().GetBool("token-stdin")
+	if err := requireLocalRegistration(cmd, tokenStdin); err != nil {
 		return err
 	}
-	tokenStdin, _ := cmd.Flags().GetBool("token-stdin")
 	if err := guardInteractiveStdin(tokenStdin); err != nil {
 		return err
 	}
@@ -140,8 +162,11 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 		Client:    c,
 		Timeout:   timeout,
 		PasteMode: tokenStdin,
-		Label:     label,
-		Priority:  priority,
+		// --token-stdin is both "paste the token" and "stdin is spent", so the CLI
+		// sets both fields and behaves exactly as it did before they were split.
+		StdinUnavailable: tokenStdin,
+		Label:            label,
+		Priority:         priority,
 	})
 }
 
@@ -149,7 +174,8 @@ func runAccountAddClaude(cmd *cobra.Command) error {
 // flow. Codex has no token-stdin path (it needs an interactive browser
 // round-trip), so --token-stdin is rejected up front.
 func runAccountAddCodex(cmd *cobra.Command) error {
-	if err := requireLocalRegistration(cmd); err != nil {
+	// Codex has no pasted-token shape at all, so the guard always applies.
+	if err := requireLocalRegistration(cmd, false); err != nil {
 		return err
 	}
 	if tokenStdin, _ := cmd.Flags().GetBool("token-stdin"); tokenStdin {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/accountflow"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -613,6 +614,249 @@ func TestAccountRegisterCancelMidFlow(t *testing.T) {
 	}
 }
 
+// --- --host registration (BOS-847) --------------------------------------------
+//
+// `boss --host <dest>` forwards only the daemon socket: every subprocess and
+// every scratch directory still belongs to THIS machine. The registration flows
+// resolve `claude` / `codex` against this process's PATH, so under --host they
+// were running (or failing to run) the wrong machine's agent CLI while the
+// resulting credential went to the remote daemon.
+//
+// These tests must not run in parallel: hostDestination is a package global.
+
+// TestAccountRegisterCodexUnderHostRefusesBeforeSpawning pins that the codex
+// flow never reaches Exec.Start under --host. The assertion is on the recorded
+// binary NAME rather than on the options passed, because "no local spawn" is
+// the actual claim — an assertion about arguments would still pass if the
+// process were launched.
+func TestAccountRegisterCodexUnderHostRefusesBeforeSpawning(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+
+	client := &regAcctClient{}
+	ex := &regExec{proc: newRegScriptedProc([]string{"should never be read"}, nil)}
+	m := newRegisterModel(t, client, ex)
+	m.homeDir = func() (string, error) { return t.TempDir(), nil }
+	m = selectProvider(t, m, "codex")
+
+	m, _ = drivePump(t, m, &regAnswers{})
+
+	if got := ex.launchedName(); got != "" {
+		t.Fatalf("codex was spawned locally under --host (launched %q); the refusal must "+
+			"come before Exec.Start", got)
+	}
+	if m.state != registerStateError || m.err == nil {
+		t.Fatalf("expected the refusal to land on the error screen; state=%d err=%v", m.state, m.err)
+	}
+	if !strings.Contains(m.err.Error(), "deploy@build-box.invalid") {
+		t.Fatalf("refusal %q must name the destination it is talking about", m.err.Error())
+	}
+	// Esc pops back to the accounts list, so the remedy has to travel with the
+	// message rather than be something the operator is expected to work out.
+	if !strings.Contains(m.err.Error(), "boss account add codex") {
+		t.Fatalf("refusal %q must carry the command that does work", m.err.Error())
+	}
+	if client.addCount() != 0 {
+		t.Fatalf("a refused registration must store nothing; adds=%d", client.addCount())
+	}
+
+	// The flow goroutine returns on the refusal path too.
+	select {
+	case <-m.flowDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("flow goroutine leaked after a policy refusal")
+	}
+}
+
+// TestAccountRegisterCodexRefusalRendersOnTheErrorScreen is the rendered half:
+// m.err is only useful if it reaches the screen through rpcErrorMessage, which
+// is host-aware and could in principle swallow it.
+//
+// The refusal is raised INSIDE the flow goroutine, before any Exec.Start, so it
+// arrives as a flowDoneMsg with the flow's trailing Say lines still sitting in
+// the prompter's buffered progress channel. Those lines are therefore staged
+// here rather than left empty: handleFlowDone drains before it cancels
+// (BOS-267), and an empty channel would exercise drainProgress over zero lines
+// and prove nothing about the buffered case the acceptance criteria name.
+func TestAccountRegisterCodexRefusalRendersOnTheErrorScreen(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+
+	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m.prompter = newTUIPrompter(context.Background())
+	m.provider = "codex"
+	m.state = registerStateProgress
+
+	// Buffered before the flow-done message, exactly as a flow that Say'd and
+	// then returned leaves them.
+	buffered := []string{
+		"Checking the codex CLI on this machine…",
+		"Registration target is deploy@build-box.invalid.",
+	}
+	for _, line := range buffered {
+		m.prompter.progress <- line
+	}
+
+	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid")})
+	m = upd.(AccountRegisterModel)
+
+	content := stripANSI(m.View().Content)
+	for _, want := range []string{"deploy@build-box.invalid", "boss account add codex"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("error screen missing %q:\n%s", want, content)
+		}
+	}
+	// The buffered lines survived the drain-before-cancel ordering rather than
+	// being dropped when the flow context was released.
+	for _, want := range buffered {
+		if !strings.Contains(flattenPrompt(content), flattenPrompt(want)) {
+			t.Fatalf("progress line %q buffered before flowDoneMsg was dropped:\n%s", want, content)
+		}
+	}
+}
+
+// TestAccountRegisterHostRefusalIsNotAFailedAdd guards the telemetry meaning: a
+// policy refusal never dialled, never spawned, and never touched a credential,
+// so counting it as a failed account-add would report a failure rate for an
+// operation that was declined before it started.
+func TestAccountRegisterHostRefusalIsNotAFailedAdd(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+	enableViewTelemetryForTest(t)
+
+	rec := &fakeTelemetry{}
+	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m.SetTelemetry(rec)
+	m.prompter = newTUIPrompter(context.Background())
+	m.provider = "codex"
+	m.state = registerStateProgress
+
+	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid")})
+	if upd.(AccountRegisterModel).state != registerStateError {
+		t.Fatal("precondition: the refusal should land on the error screen")
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("a refusal emitted %v; nothing was attempted, so nothing may be recorded", rec.events)
+	}
+
+	// ...and an ordinary failure still is, or the guard would have silenced the
+	// signal entirely.
+	m2 := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m2.SetTelemetry(rec)
+	m2.prompter = newTUIPrompter(context.Background())
+	m2.provider = "codex"
+	m2.state = registerStateProgress
+	_, _ = m2.Update(flowDoneMsg{err: errors.New("codex device-code login disabled")})
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %v, want a real failure to still be recorded", rec.events)
+	}
+}
+
+// TestAccountRegisterClaudeUnderHostPastesInstead is the routed half of the
+// decision: claude has a token shape that needs no local subprocess, so the
+// --host flow drops to it rather than refusing.
+func TestAccountRegisterClaudeUnderHostPastesInstead(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+
+	client := &regAcctClient{}
+	ex := &regExec{proc: newRegScriptedProc([]string{"setup token: " + claudeFakeToken}, nil)}
+	m := newRegisterModel(t, client, ex)
+	m = selectProvider(t, m, "claude")
+
+	// Paste the token, then accept the default label.
+	m, transcript := drivePump(t, m, &regAnswers{texts: []string{claudeFakeToken, ""}})
+
+	if got := ex.launchedName(); got != "" {
+		t.Fatalf("claude was spawned locally under --host (launched %q)", got)
+	}
+	if !m.Done() {
+		t.Fatalf("host paste flow should complete; state=%d err=%v", m.state, m.err)
+	}
+
+	joined := strings.Join(transcript, "\n")
+	if !strings.Contains(joined, "Paste your Claude setup token") {
+		t.Fatalf("paste prompt missing:\n%s", joined)
+	}
+	// StdinUnavailable stays unset, so the label question is still asked — the
+	// bug this ticket fixes was PasteMode silently suppressing it.
+	if !strings.Contains(joined, "Label for this account") {
+		t.Fatalf("label prompt missing; PasteMode must not suppress it:\n%s", joined)
+	}
+	// The explanatory line has to answer both questions: why the walkthrough the
+	// operator expected is gone, and where a token comes from.
+	if !strings.Contains(joined, "deploy@build-box.invalid") {
+		t.Fatalf("notice must name the destination:\n%s", joined)
+	}
+	if !strings.Contains(joined, "claude setup-token") {
+		t.Fatalf("notice must say how to obtain a token:\n%s", joined)
+	}
+	// No walkthrough confirm is offered, because answering yes could not work.
+	if strings.Contains(joined, "Run the claude setup-token walkthrough now?") {
+		t.Fatalf("host flow must not offer a walkthrough it cannot run:\n%s", joined)
+	}
+
+	if client.addCount() != 1 {
+		t.Fatalf("AddAccount calls = %d, want 1", client.addCount())
+	}
+	if got := string(client.addReqs[0].GetCredential()); got != claudeFakeToken {
+		t.Fatalf("stored credential = %q, want the pasted token", got)
+	}
+	if strings.Contains(joined, claudeFakeToken) {
+		t.Fatalf("raw token leaked into the transcript:\n%s", joined)
+	}
+}
+
+// TestAccountRegisterClaudeUnderHostRepromptsOnce pins that routing to the paste
+// branch did not change the paste branch: one re-prompt, then failure.
+func TestAccountRegisterClaudeUnderHostRepromptsOnce(t *testing.T) {
+	withHostDestination(t, "deploy@build-box.invalid")
+
+	client := &regAcctClient{}
+	ex := &regExec{}
+	m := newRegisterModel(t, client, ex)
+	m = selectProvider(t, m, "claude")
+
+	m, transcript := drivePump(t, m, &regAnswers{texts: []string{"nope", "still-bad"}})
+
+	if m.state != registerStateError {
+		t.Fatalf("two invalid tokens must fail; state=%d", m.state)
+	}
+	if client.addCount() != 0 {
+		t.Fatalf("an invalid token must not be stored; adds=%d", client.addCount())
+	}
+	joined := strings.Join(transcript, "\n")
+	if strings.Count(joined, "Paste your Claude setup token") != 2 {
+		t.Fatalf("want exactly one re-prompt:\n%s", joined)
+	}
+	if got := ex.launchedName(); got != "" {
+		t.Fatalf("claude was spawned locally under --host (launched %q)", got)
+	}
+}
+
+// TestAccountRegisterLocalFlowsAreUnchangedByTheHostSwitch is the negative
+// control for the snapshot in the constructor: with no --host destination the
+// walkthrough confirm is still offered and the CLI is still spawned.
+func TestAccountRegisterLocalFlowsAreUnchangedByTheHostSwitch(t *testing.T) {
+	withHostDestination(t, "")
+
+	client := &regAcctClient{}
+	ex := &regExec{proc: newRegScriptedProc([]string{"setup token: " + claudeFakeToken}, nil)}
+	m := newRegisterModel(t, client, ex)
+	if m.remoteHost != "" {
+		t.Fatalf("remoteHost = %q, want empty for a local session", m.remoteHost)
+	}
+	m = selectProvider(t, m, "claude")
+
+	m, transcript := drivePump(t, m, &regAnswers{confirms: []bool{true}, texts: []string{""}})
+
+	if !m.Done() {
+		t.Fatalf("local claude flow should complete; state=%d err=%v", m.state, m.err)
+	}
+	if ex.launchedName() != "claude" {
+		t.Fatalf("local flow must still spawn claude; launched %q", ex.launchedName())
+	}
+	if !strings.Contains(strings.Join(transcript, "\n"), "Run the claude setup-token walkthrough now?") {
+		t.Fatalf("local flow must still offer the walkthrough:\n%s", strings.Join(transcript, "\n"))
+	}
+}
+
 func TestAccountRegisterProviderChooserEscCancels(t *testing.T) {
 	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
 	if m.Cancelled() {
@@ -630,6 +874,55 @@ func TestAccountRegisterProviderChooserView(t *testing.T) {
 	for _, want := range []string{"Add an account", "claude", "codex"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("provider chooser missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestAccountRegisterHostNoticeWrapsIntoTheFrame is the rendered half of plan
+// acceptance criterion 5. claudeRemotePasteNotice is one ~326-character Say
+// line whose SECOND clause carries the remedy; progressView used to render it
+// with padding but no Width, so bubbletea clipped the frame at the terminal
+// edge and an operator at a realistic 80 columns saw only "the walkthrough is
+// unavailable" — never `claude setup-token`, never "paste the token below".
+//
+// The assertion is deliberately on the RENDERED frame rather than on the model
+// state or the transcript: state carried the whole sentence throughout, so only
+// the frame can tell a clipped notice from a wrapped one. Whitespace is
+// flattened because a wrapped sentence is broken across lines by design.
+func TestAccountRegisterHostNoticeWrapsIntoTheFrame(t *testing.T) {
+	const width = 80
+	const dest = "deploy@build-box.invalid"
+
+	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m.prompter = newTUIPrompter(context.Background())
+	m.provider = "claude"
+	m.remoteHost = dest
+	m.width = width
+	m.state = registerStateAwaitText
+	m.pending = promptRequest{kind: promptKindAsk, text: "Paste your Claude setup token"}
+	m.appendProgress(claudeRemotePasteNotice(dest))
+
+	frame := stripANSI(m.View().Content)
+	flat := flattenPrompt(frame)
+
+	// Both halves of the notice: why the walkthrough is gone, AND how to obtain
+	// a token. The remedy substrings are the ones clipping used to eat.
+	for _, want := range []string{
+		"so it is unavailable in a --host session",
+		"Run `claude setup-token` in a shell on " + dest,
+		"paste the token below",
+		"it will be stored on " + dest,
+	} {
+		if !strings.Contains(flat, flattenPrompt(want)) {
+			t.Fatalf("rendered frame at %d columns is missing %q:\n%s", width, want, frame)
+		}
+	}
+
+	// ...and it is genuinely wrapped, not merely present in an over-wide frame
+	// that the terminal would clip anyway.
+	for _, line := range strings.Split(frame, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("rendered line is %d columns wide, over the %d-column terminal: %q", got, width, line)
 		}
 	}
 }

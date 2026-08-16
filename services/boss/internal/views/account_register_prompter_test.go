@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,6 +84,101 @@ func TestTUIPrompterSayDelivered(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Say line was not delivered")
 	}
+}
+
+// TestTUIPrompterSubstitutesForwardedSocketDial covers the one text the flow
+// composes from a raw RPC error and hands straight to the screen (BOS-847).
+//
+// Under --host the flow's client is the tunnelled one, so a dropped tunnel
+// fails TestAccount with a LOCAL socket path the operator cannot act on, and
+// accountflow folds it into "Account verification failed (…). Keep the account
+// anyway?" — a decision with nothing to decide on. Not parallel: hostDestination
+// is a package global.
+func TestTUIPrompterSubstitutesForwardedSocketDial(t *testing.T) {
+	const dialErr = "rpc error: code = Unavailable desc = connection error: " +
+		"desc = \"transport: Error while dialing dial unix /var/folders/x9/T/bossd.sock: " +
+		"connect: no such file or directory\""
+
+	t.Run("remote confirm prompt is rewritten", func(t *testing.T) {
+		withHostDestination(t, "deploy@build-box.invalid")
+		p := newTUIPrompter(context.Background())
+		res := make(chan askResult, 1)
+		go func() {
+			ok, err := p.Confirm("Account verification failed ("+dialErr+"). Keep the account anyway?", false)
+			res <- askResult{ok: ok, err: err}
+		}()
+
+		req := <-p.requests
+		if strings.Contains(req.text, "dial unix") {
+			t.Fatalf("prompt still shows a local socket path:\n%s", req.text)
+		}
+		if !strings.Contains(req.text, "deploy@build-box.invalid") {
+			t.Fatalf("prompt must name the machine that stopped answering:\n%s", req.text)
+		}
+		// The sentence around the substituted reason must survive, or the operator
+		// no longer knows what they are being asked to keep.
+		if !strings.Contains(req.text, "Account verification failed") ||
+			!strings.Contains(req.text, "Keep the account anyway?") {
+			t.Fatalf("substitution ate the surrounding prompt:\n%s", req.text)
+		}
+		req.reply <- promptResponse{ok: false}
+		<-res
+	})
+
+	t.Run("remote Say line is rewritten", func(t *testing.T) {
+		withHostDestination(t, "deploy@build-box.invalid")
+		p := newTUIPrompter(context.Background())
+		p.Say("Account %q registered. Verification couldn't run right now (%s); it will run later.", "claude-1", dialErr)
+		line := <-p.progress
+		if strings.Contains(line, "dial unix") {
+			t.Fatalf("progress line still shows a local socket path:\n%s", line)
+		}
+		if !strings.Contains(line, "registered") {
+			t.Fatalf("substitution ate the surrounding line:\n%s", line)
+		}
+	})
+
+	// keepOrRemove's stranded-credential warning has no parentheses to bound the
+	// failure, and it is the one line where losing the sentence costs the
+	// operator something they cannot recover: which account was left behind,
+	// unverified, on the remote daemon.
+	t.Run("an unparenthesised warning keeps the sentence around the failure", func(t *testing.T) {
+		withHostDestination(t, "deploy@build-box.invalid")
+		p := newTUIPrompter(context.Background())
+		p.Say("warning: could not remove unverified account %s: %s", "acct-7", dialErr)
+		line := <-p.progress
+		if strings.Contains(line, "dial unix") {
+			t.Fatalf("progress line still shows a local socket path:\n%s", line)
+		}
+		if !strings.Contains(line, "could not remove unverified account acct-7") {
+			t.Fatalf("substitution ate the stranded-credential warning:\n%s", line)
+		}
+		if !strings.Contains(line, "deploy@build-box.invalid") {
+			t.Fatalf("line must name the machine that stopped answering:\n%s", line)
+		}
+	})
+
+	t.Run("local text is passed through verbatim", func(t *testing.T) {
+		withHostDestination(t, "")
+		p := newTUIPrompter(context.Background())
+		p.Say("%s", dialErr)
+		line := <-p.progress
+		if line != dialErr {
+			t.Fatalf("local text must not be rewritten:\n%s", line)
+		}
+	})
+
+	t.Run("an answer from the remote daemon is left alone", func(t *testing.T) {
+		withHostDestination(t, "deploy@build-box.invalid")
+		p := newTUIPrompter(context.Background())
+		// The daemon answered; that answer is the most useful thing on screen and
+		// must not be replaced by a reconnecting message that is not true.
+		const answered = "Account verification failed (credential verification failed: 401). Keep the account anyway?"
+		p.Say("%s", answered)
+		if line := <-p.progress; line != answered {
+			t.Fatalf("a real daemon answer was rewritten:\n%s", line)
+		}
+	})
 }
 
 func TestTUIPrompterCtxCancelUnblocksPendingAsk(t *testing.T) {

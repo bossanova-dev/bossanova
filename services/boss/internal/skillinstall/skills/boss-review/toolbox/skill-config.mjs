@@ -138,8 +138,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
   // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
-  // ordered heading set as emitted, each classed `always` (every plan carries it) or
-  // conditional (`needs-human` / `open-questions`). v1 == today's exact section set —
+  // ordered heading set as emitted, each classed `always` (every plan carries it),
+  // conditional (`needs-human` / `open-questions`), or `optional` (recognised, never
+  // required — see PLAN_SECTION_REQUIRED_KINDS). v1 == today's exact section set —
   // introducing the stamp IS the versioning; no sections were added, removed, or renamed.
   planContract: {
     version: 1,
@@ -151,6 +152,7 @@ export const DEFAULT_CONFIG = Object.freeze({
       { heading: '## Risks / unknowns', required: 'always' },
       { heading: '## Acceptance criteria', required: 'always' },
       { heading: '## Required proof', required: 'always' },
+      { heading: '## Proof harness analysis', required: 'optional' },
       { heading: '## Why this needs a human', required: 'needs-human' },
       { heading: '## Open Questions', required: 'open-questions' },
       { heading: '## Planning', required: 'always' },
@@ -195,8 +197,16 @@ export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 // opposite agent's binary and classify the probe); 'skill' is not, so its probe is the dispatch.
 export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
 
-// The `required` classifications a planContract section may carry.
-export const PLAN_SECTION_REQUIRED_KINDS = new Set(['always', 'needs-human', 'open-questions'])
+// The `required` classifications a planContract section may carry. `optional` means RECOGNISED but
+// never required: the section may appear without tripping unknown-heading detection, and
+// requiredPlanSections() still excludes it. It exists so a template the skill itself prescribes can
+// be registered without newly requiring it of the plans already stamped against this contract.
+export const PLAN_SECTION_REQUIRED_KINDS = new Set([
+  'always',
+  'needs-human',
+  'open-questions',
+  'optional',
+])
 
 export function validateConfig(config, source) {
   const fail = (msg) => {
@@ -908,23 +918,85 @@ export function requiredPlanSections(config) {
 }
 
 /**
+ * One pass over `text`, returning the lines OUTSIDE fenced code blocks (`{ line, index }`, 0-based)
+ * and whether a fence was still open at EOF. Both facts come from the same scan so they can never
+ * disagree.
+ *
+ * Fence tracking is intentionally simple: an opening ``` / ~~~ run of 3+ is closed by a run of the
+ * same character that is at least as long. It only has to be good enough to tell markdown STRUCTURE
+ * from quoted sample text — a plan legitimately fences command output and markdown examples.
+ *
+ * ANY leading indent opens a fence, deliberately wider than CommonMark's 3-space limit for a
+ * top-level fence. A fence nested in a list item is indented by the marker width, so the strict
+ * limit missed exactly the shape a plan uses most — quoted output under a bullet — and let its
+ * sample lines read as document structure.
+ *
+ * The widening is BIDIRECTIONAL, not one-way: the same match drives the close branch, so an
+ * indented run can also TERMINATE an enclosing fence early and expose its content. Measured
+ * residual, accepted rather than fixed: a 3-backtick fence nested inside a 3-backtick outer fence
+ * closes the outer one, so the nested sample lines become visible again. Incidence is 0 of the
+ * 1212 tracked markdown files in this repo, and the CommonMark-idiomatic nesting — a LONGER outer
+ * fence — is unaffected, because the close branch still requires `run[1].length >= fence.length`.
+ * The airtight fix is to record the opening indent on `fence` and require the closing run's indent
+ * to be no greater than it plus 3; do that if the shape is ever observed in practice.
+ *
+ * It lives here, beside the splitter that needs it, because `plan-contract-guard.mjs` imports this
+ * module: putting it there instead would invert the dependency, and a second copy would drift.
+ */
+export function scanFences(text) {
+  const lines = []
+  let fence = null
+  const source = String(text ?? '').split('\n')
+  for (let index = 0; index < source.length; index += 1) {
+    const bare = source[index].replace(/\r$/, '')
+    const run = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(bare)
+    if (fence === null) {
+      if (run && !(run[1][0] === '`' && run[2].includes('`'))) {
+        fence = { character: run[1][0], length: run[1].length }
+        continue
+      }
+      lines.push({ line: bare, index })
+      continue
+    }
+    if (run && run[1][0] === fence.character && run[1].length >= fence.length && !run[2].trim()) {
+      fence = null
+    }
+  }
+  return { lines, unterminated: fence !== null }
+}
+
+/**
  * Split a plan description into its emitted top-level `##` sections, in order.
  *
  * The final contract section (`## Original notes`) echoes the ticket's original description
  * verbatim, which can itself contain `##` headings and stray `- Contract:` lines. To keep that
  * preserved body from masquerading as emitted plan structure, splitting stops at the terminal
  * section's heading: everything after it is that section's body, not a new section.
+ *
+ * A `##` line inside a FENCED CODE BLOCK is likewise not a section: plans routinely quote command
+ * output and markdown examples that begin with `##` (a `make help` listing, a `git status` line),
+ * and reading one as emitted structure invents a section the drafter never wrote. That was merely
+ * cosmetic while only `missing` was consumed; once a producer-side gate rejects off-contract
+ * headings it becomes a deterministic hard abort with no remedy the drafter can act on. Skipping
+ * them can only REMOVE spurious sections, so `missing`/`ok` are unchanged except where a required
+ * heading appears solely inside a fence — where the stricter reading is the correct one.
+ *
+ * Exported so producer-side gates (section ordering, placeholder scoping) share this one terminal-
+ * section rule instead of re-deriving it — a duplicate splitter would drift from the validator.
  * @returns {{ heading: string, bodyLines: string[] }[]}
  */
-function planDescriptionSections(config, description) {
+export function planDescriptionSections(config, description) {
   const contractSections = planSections(config)
   const terminalHeading = contractSections[contractSections.length - 1]?.heading
+  const outside = new Set(scanFences(description).lines.map(({ index }) => index))
   const sections = []
   let current = null
   let inTerminal = false
-  for (const line of description.split('\n')) {
+  const lines = String(description ?? '').split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
     const trimmed = line.trim()
-    if (!inTerminal && /^##\s/.test(trimmed)) {
+    if (!inTerminal && outside.has(index) && /^##\s/.test(trimmed)) {
       current = { heading: trimmed, bodyLines: [] }
       sections.push(current)
       if (trimmed === terminalHeading) inTerminal = true
@@ -936,24 +1008,49 @@ function planDescriptionSections(config, description) {
 }
 
 /**
- * Validate a plan description against the contract. Parses the `- Contract: v<N>` stamp from the
- * body of the `## Planning` section only (a missing stamp is treated as back-compat v1,
- * `version: null`), flags a stamped version newer than this contract as `unsupportedVersion`, and
- * lists any required heading not emitted as a top-level `##` section. Headings and stamps echoed
- * inside the verbatim `## Original notes` body do not satisfy the contract. `ok` is true iff
- * nothing is missing and the version is supported.
- * @returns {{ ok: boolean, version: number | null, missing: string[], unsupportedVersion: boolean }}
+ * Validate a plan description against the contract.
+ *
+ * The argument order is **config first**: `validatePlanDescription(config, description)`. The
+ * natural-reading `(description, config)` call is detected and rejected with a named error rather
+ * than allowed to surface as a `Cannot read properties of undefined (reading 'sections')` TypeError
+ * from deep inside `planSections()`.
+ *
+ * Parses the `- Contract: v<N>` stamp from the body of the `## Planning` section only — either
+ * bullet marker is accepted, because a tracker may renormalise `-` to `*` on save, which would
+ * otherwise make the stamp undetectable on read-back. A missing stamp is treated as back-compat v1
+ * (`version: null`); a stamped version newer than this contract is flagged as `unsupportedVersion`.
+ *
+ * `missing` lists any required heading not emitted as a top-level `##` section. `unknown` lists
+ * every emitted top-level `##` heading that is not in `planSections(config)` at all — including
+ * sections classed `optional`, which are recognised and therefore never unknown. Headings and
+ * stamps echoed inside the verbatim `## Original notes` body do not participate: splitting stops at
+ * that terminal section.
+ *
+ * `ok` is true iff nothing is missing and the version is supported. `unknown` is deliberately
+ * **additive** and does NOT flip `ok`: consumers (boss-build) gate on `ok`, and folding `unknown`
+ * into it would newly block already-planned tickets. Producer-side strictness belongs in the
+ * producer's own guard, which reads `unknown` directly.
+ * @returns {{ ok: boolean, version: number | null, missing: string[], unknown: string[], unsupportedVersion: boolean }}
  */
 export function validatePlanDescription(config, description) {
+  // A config is an object carrying a planContract object; a description is a string. That makes the
+  // swapped call unambiguously detectable, so diagnose it here instead of failing obscurely below.
+  if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
+    throw new Error(
+      'skill-config: validatePlanDescription(config, description) — arguments look swapped; pass the config first',
+    )
+  }
   const sections = planDescriptionSections(config, description)
   const present = new Set(sections.map((s) => s.heading))
   const missing = requiredPlanSections(config).filter((heading) => !present.has(heading))
+  const recognised = new Set(planSections(config).map((s) => s.heading))
+  const unknown = [...new Set(sections.map((s) => s.heading))].filter((h) => !recognised.has(h))
 
   const planning = sections.find((s) => s.heading === '## Planning')
   let version = null
   if (planning) {
     for (const bodyLine of planning.bodyLines) {
-      const stamp = /^-\s*Contract:\s*v(\d+)\s*$/.exec(bodyLine.trim())
+      const stamp = /^[-*]\s*Contract:\s*v(\d+)\s*$/.exec(bodyLine.trim())
       if (stamp) {
         version = Number(stamp[1])
         break
@@ -961,5 +1058,11 @@ export function validatePlanDescription(config, description) {
     }
   }
   const unsupportedVersion = version !== null && version > planContractVersion(config)
-  return { ok: missing.length === 0 && !unsupportedVersion, version, missing, unsupportedVersion }
+  return {
+    ok: missing.length === 0 && !unsupportedVersion,
+    version,
+    missing,
+    unknown,
+    unsupportedVersion,
+  }
 }

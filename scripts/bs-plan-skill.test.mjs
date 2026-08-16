@@ -263,6 +263,105 @@ test('Phase 4 permits required secret redaction without weakening attachment par
   )
 })
 
+test('Phase 4 carries a mandatory plan-contract STOP gate before the tracker write (BOS-741)', () => {
+  // Assert on BEHAVIOURAL WORDING, not just the helper name: a name-exact ratchet stays green while
+  // the surrounding prose has stopped saying the gate is mandatory or that failure means no write.
+  assert.match(
+    PHASE_4_SECTION,
+    /STOP — plan-contract gate \(mandatory, mechanical, do not skip\)/,
+    'Phase 4 must carry the contract gate as a mandatory mechanical STOP',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /plan-contract-guard\.mjs" --description "\$NEW" --plan "\$PLAN_FILE"/,
+    'the contract gate must run the guard over the composed description AND the plan file',
+  )
+  // The gate must be the LAST word before the numbered steps: a gate that runs after the write is
+  // not a gate. `1.` is the first numbered Phase 4 step (finalize the attachment).
+  const gateAt = PHASE_4_SECTION.indexOf('STOP — plan-contract gate')
+  const firstStepAt = PHASE_4_SECTION.search(/^1\. /m)
+  assert.ok(gateAt > 0 && firstStepAt > gateAt, 'the contract gate must precede Phase 4 step 1')
+  // …and it must sit AFTER the image-parity gate, not before it.
+  assert.ok(
+    gateAt > PHASE_4_SECTION.indexOf('STOP — image-parity gate'),
+    'the contract gate must follow the image-parity gate',
+  )
+  const gateBlock = PHASE_4_SECTION.slice(gateAt)
+  assert.match(
+    gateBlock,
+    /SAFE branch[\s\S]{0,200}no Linear write/,
+    'the contract gate must name the SAFE branch and that it performs no tracker write',
+  )
+  assert.match(gateBlock, /exit non-zero/, 'the SAFE branch must exit non-zero')
+  assert.match(
+    gateBlock,
+    /zero\*\* extra tracker[\s>]+reads/,
+    'the gate must state it adds no additional tracker read',
+  )
+  for (const code of [
+    'missing-sections',
+    'unknown-section',
+    'section-order',
+    'placeholder-residue',
+    'not-a-description',
+    'plan-file-residue',
+    'unreadable-input',
+  ]) {
+    assert.ok(gateBlock.includes(code), `the contract gate must name violation code ${code}`)
+  }
+})
+
+test('the resident body documents the config-first validatePlanDescription signature (BOS-741)', () => {
+  assert.match(
+    SKILL,
+    /validatePlanDescription\(config, description\)/,
+    'the plan-contract reference must state the config-first argument order',
+  )
+  assert.match(
+    SKILL,
+    /config-first\*\* order;[\s\S]{0,140}named\s+argument-order error/,
+    'the resident body must say the swapped call throws a named argument-order error',
+  )
+})
+
+test('the drafting brief runs the contract guard before the ok sentinel (BOS-741)', () => {
+  assert.match(
+    BRIEF,
+    /plan-contract-guard\.mjs" --description <new\.md> --plan "\$PLAN_PATH"/,
+    'the brief must run the contract guard over the description and the plan file',
+  )
+  assert.match(
+    BRIEF,
+    /non-zero exit means write no `ok` sentinel/,
+    'a contract violation must block the ok sentinel, not merely be reported',
+  )
+  const guardAt = BRIEF.indexOf('plan-contract-guard.mjs')
+  assert.ok(guardAt > 0 && guardAt < BRIEF.indexOf('## Step 9'), 'the guard runs inside Step 8')
+})
+
+test('the drafting brief pins the cased ## Open Questions heading and plan-body-only rule (BOS-741)', () => {
+  assert.match(
+    BRIEF,
+    /\*\*`## Open Questions`\*\*[\s\S]{0,160}exact casing, capital `Q`/,
+    'the brief must state the exact cased heading so plan file and description agree',
+  )
+  assert.match(
+    BRIEF,
+    /## Open questions/,
+    'the brief must name the drifted lower-case spelling it is correcting',
+  )
+  assert.match(
+    BRIEF,
+    /plan file must contain ONLY the plan body/,
+    'the brief must require the plan file to carry only the plan body',
+  )
+  assert.match(
+    BRIEF,
+    /No tool-call scaffolding[\s\S]{0,120}transcript residue/,
+    'the plan-body-only rule must name the residue it excludes',
+  )
+})
+
 test('Phase 4 counts canonical upload identities for the image guard (BOS-702)', () => {
   assert.match(
     PHASE_4_SECTION,
@@ -286,8 +385,21 @@ test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', ()
   assert.equal(
     (PHASE_4_SECTION.match(/cleanup_guard_scratch\n>   exit 1/g) ?? []).length,
     4,
-    'each of the four guard failures must clean scratch before exiting',
+    'each of the four image-guard failures must clean scratch before exiting',
   )
+  // Counting one helper name cannot see a failed-gate exit that cleans up some OTHER way — which is
+  // how the BOS-741 contract gate shipped leaking `$ORIG`/`$SAFE_ORIG`. Assert the property instead:
+  // EVERY `exit 1` in Phase 4 must be preceded by a cleanup naming all four scratch paths.
+  const exits = PHASE_4_SECTION.split(/^>\s+exit 1$/m)
+  assert.ok(exits.length - 1 >= 5, 'Phase 4 must carry the image gates plus the contract gate')
+  for (const [i, before] of exits.slice(0, -1).entries()) {
+    const tail = before.slice(-400)
+    assert.ok(
+      /cleanup_guard_scratch$/m.test(tail) ||
+        /rm -f "\$ORIG" "\$SAFE_ORIG" "\$NEW" "\$PLAN_FILE"/.test(tail),
+      `failed-gate exit #${i + 1} must delete all four scratch paths — $ORIG may carry sensitive content and Phase 5 never runs after exit 1`,
+    )
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -1545,8 +1657,8 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 85027
-  const RATCHET = 85011 // Re-baselined +1984 for the BOS-872 attachment read-backs; preserve the 16-byte guard margin.
+  const PRE_SPLIT_BASELINE = 87991
+  const RATCHET = 87975 // Re-baselined +2964 for the BOS-741 Phase-4 plan-contract gate and its scratch cleanup; preserve the 16-byte guard margin.
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

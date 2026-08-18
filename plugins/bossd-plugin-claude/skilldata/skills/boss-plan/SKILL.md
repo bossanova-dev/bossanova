@@ -72,7 +72,7 @@ names generically everywhere else:
    BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
    if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
    export BOSS_PLAN_TOOLBOX
-   CONFIGURED=$(node -e "import('file://'+process.env.BOSS_PLAN_TOOLBOX+'/skill-config.mjs').then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?'yes':'no')}).catch(e=>{process.stderr.write('boss-plan preflight: '+(e&&e.message||e)+'\n');process.stdout.write('error')})")
+   CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
    # `isConfiguredForPlanning` requires the tracker identity AND the full state role map
    # (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
    # core self-disables cleanly ('no') instead of running with undefined state names.
@@ -686,7 +686,7 @@ Whoever drafts — the interactive path or the headless subagent (per
 `references/headless-drafting-brief.md`) — produces a plan file at
 `.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored scratch; slug = issue id + hyphenated
 title; compute it with
-`node -e "import('file://'+process.argv[3]+'/plan-slug.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`).
+`node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`).
 The **full drafting spec** — the plan-body requirements (first dev step, `## Acceptance criteria`,
 `## Required proof`, a `## Proof harness analysis` readiness pass mapping each acceptance criterion to
 a concrete proof artifact, autonomous framing, agent-friendliness call) **and** the fill-in
@@ -718,9 +718,12 @@ section. Interactive runs have a human answering each fork, so they produce none
 
 ## Phase 3.5 — Extension plan-reviewers (additive, non-fatal)
 
-Before upload, run any repo-local `boss-plan-*` **extension** plan-reviewers over the drafted plan —
-strictly additive, a documented no-op when none are installed (the default today), in both the
-interactive and headless paths. Full protocol (discover → dispatch each as a fresh read-only
+Before upload, run any repo-local `boss-plan-*` **extension** plan-reviewers
+(`discover --core boss-plan --role plan-reviewer`) over the drafted plan — strictly additive, a
+documented no-op when none are installed (the default today), in both the interactive and headless
+paths. Pass that exact role: inferring `--role review` from this phase's name rejects every
+correctly-installed extension into `skipped` as `unknown requested role "review"`, which now reads
+as a misinstallation in the ledger. Full protocol (discover → dispatch each as a fresh read-only
 subagent → validate its envelope → fold or skip), against
 [`docs/skills/extension-contract.md`](../../../docs/skills/extension-contract.md), lives in
 [`references/extension-reviewers.md`](references/extension-reviewers.md).
@@ -993,6 +996,13 @@ BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
 if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
 NOTES_JSON=$(node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role notes --json)
 ```
+
+Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
 extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:

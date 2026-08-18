@@ -57,8 +57,8 @@ resumed**, not a stop condition; only foreign real work or a live concurrent wri
   `policy.watchTriggers` = `checks_passed`/`checks_failed`/`merged` (armed as one **group** so the
   first fire cancels its siblings). Every wake **reconciles against real PR state before acting**,
   re-arms one-shot watches while still waiting, and dedups by callback id (`policy.dedupById`).
-  Whether to arm at all is the single `callbacksAvailable(env)` gate (same module, keyed on
-  `BOSS_SESSION_ID`): gate false ⇒ skip `registerWatch` and degrade to bounded `policy.fallbackPoll`
+  Whether to arm at all is the single `callbacksAvailable(env)` gate (same module): gate false ⇒
+  skip `registerWatch` and degrade to bounded `policy.fallbackPoll`
   (`gh pr checks --watch --fail-fast`), never a failed wait. Full protocol:
   [`references/callback-watches.md`](references/callback-watches.md).
 
@@ -87,9 +87,10 @@ body carries the decision skeleton; every moved instruction is still reachable h
 - Implement exactly **one** ticket per run. No batching.
 - **Prefer a callback over blind polling.** Whenever you are about to block on or poll a PR / CI check
   / merge state, first arm a one-shot GitHub callback **group** — do not spin on `gh` blind. Gate the
-  choice on the single `callbacksAvailable(env)` signal (`toolbox/callback/adapter.mjs`, keyed on
-  `BOSS_SESSION_ID`): when it is **true**, `registerWatch` the group and let the wake drive you; when
-  it is **false**, skip arming and fall straight through to the bounded `policy.fallbackPoll`
+  choice on the single `callbacksAvailable(env)` signal (`toolbox/callback/adapter.mjs`: managed
+  session **and** resolvable `boss` binary): when it is **true**, `registerWatch` the group and let
+  the wake drive you; when it is **false**, log its `reason` and fall through to the bounded
+  `policy.fallbackPoll`
   (`gh pr checks --watch --fail-fast`) — a clean no-op, never a failed wait. This reflex applies
   everywhere a wait happens (Steps 8/9 are the concrete sites). Mechanics:
   [`references/callback-watches.md`](references/callback-watches.md).
@@ -247,7 +248,8 @@ your **own tool list** — never read a harness config file:
 
 ```bash
 node --input-type=module -e '
-  const { trackerMcpPreflight } = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/tracker/preflight.mjs`)
+  import{pathToFileURL as u}from"node:url"
+  const { trackerMcpPreflight } = await import(u(process.env.BOSS_BUILD_TOOLBOX+"/tracker/preflight.mjs").href)
   process.stdout.write(JSON.stringify(trackerMcpPreflight({
     operationMap: ADAPTER_OPERATION_MAP, mcpServer: TRACKER_MCP_SERVER,
     agent: process.env.BOSS_AGENT || "", availableTools: AVAILABLE_TOOLS, probeOk: PROBE_OK,
@@ -285,7 +287,8 @@ names and `boss` subcommands, then diff both at once:
 
 ```bash
 node --input-type=module -e '
-  const m = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/session/boss.mjs`)
+  import{pathToFileURL as u}from"node:url"
+  const m = await import(u(process.env.BOSS_BUILD_TOOLBOX+"/session/boss.mjs").href)
   process.stdout.write("tools:\n" + m.requiredBossToolsForEpic().join("\n") + "\n")
   process.stdout.write("cli:\n" + m.requiredBossCliCommandsForEpic().join("\n") + "\n")
 '

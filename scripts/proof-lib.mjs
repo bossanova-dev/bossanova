@@ -1194,7 +1194,33 @@ export const SCENARIO_USAGE =
 // its tests; keep in sync with the `base` keys in requiredIdsForSurface.
 export const ALLOWED_SURFACES = ['tui', 'web', 'recipe', 'docs', 'all']
 
+// BOS-789: appended to every `unknown proof argument` throw. The message PREFIX
+// (`unknown proof argument: <arg>`) stays byte-identical — existing tests and
+// recorded proof runs match on it — so only this pointer is new.
+const UNKNOWN_ARG_HINT = 'run `node scripts/proof.mjs --help` for the accepted flags'
+
 export function parseProofArgs(argv) {
+  // BOS-789: `--help`/`-h` is resolved by a pre-scan over the RAW argv, before
+  // command resolution. Doing it per-branch would miss `scenario`, whose
+  // positional parser (parseScenarioArgs) throws on any unknown `--` flag; and
+  // doing it inside the flag loop would miss `--help` as the first argument,
+  // which defaults the command to `run`. `-h` WAS a legal value token before
+  // this change — requireValue rejects only `--`-leading values and `-h` has a
+  // single dash — so `--recipe -h` now prints usage where it used to parse `-h`
+  // as a recipe id. Nothing real is shadowed: every value-taking flag
+  // (--recipe, --changed-file, --surface, --pr) takes a recipe id / path /
+  // surface name / PR number, none of which is ever `-h`. The negative test in
+  // proof-lib.test.mjs pins the flags the pre-scan must still reject.
+  if (argv.includes('--help') || argv.includes('-h')) {
+    return {
+      command: 'help',
+      recipes: [],
+      changedFiles: [],
+      dryRun: false,
+      json: false,
+      surface: null,
+    }
+  }
   const [firstArg, ...tail] = argv
   // A completely empty invocation prints usage rather than silently running a
   // real (uploading, comment-posting) capture. Flags-only invocations still
@@ -1249,7 +1275,7 @@ export function parseProofArgs(argv) {
       i += 1
       continue
     }
-    throw new Error(`unknown proof argument: ${arg}`)
+    throw new Error(`unknown proof argument: ${arg} — ${UNKNOWN_ARG_HINT}`)
   }
 
   return parsed
@@ -1288,7 +1314,7 @@ function parseScenarioArgs(parsed, rest) {
       continue
     }
     if (arg.startsWith('--')) {
-      throw new Error(`unknown proof argument: ${arg}`)
+      throw new Error(`unknown proof argument: ${arg} — ${UNKNOWN_ARG_HINT}`)
     }
     positionals.push(arg)
   }

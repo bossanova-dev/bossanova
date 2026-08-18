@@ -71,6 +71,201 @@ var extensionDispatchRemedy = regexp.MustCompile(`(?i)skillPath`)
 // receive the descriptor directory and resolve relative extension resources from it.
 var extensionDispatchResourceBase = regexp.MustCompile(`(?i)(?:relative\s+extension\s+resources\s+to\s+resolve|resolve\s+relative\s+extension\s+resources)\s+from ` + "`dir`")
 
+// extensionDiscoverySkippedClause marks a passage that tells the reader to record the BROKEN half
+// of a discovery's `skipped` array, keyed on the helper's own `deliberate` classification.
+//
+// It deliberately requires the literal `deliberate` predicate rather than merely a mention of
+// `skipped`: a paraphrase that drops the classification is the exact regression BOS-744 fixes. Two
+// wordings are both wrong and both stay green under a mention-only check — "record every `skipped`
+// entry", which cries wolf on every markerless same-prefix helper for as long as that skill exists,
+// and a hand-rolled exclusion keyed on the literal `reason` text, which silently stops excluding
+// anything the moment the helper rewords a sentence it is free to reword.
+//
+// The window is generous (and matched against whitespace-collapsed bytes) because the `skipped`
+// reference and the predicate can sit a couple of sentences apart — boss-review's lens paragraph
+// names `LENS_EXTENSIONS_JSON.skipped`, explains what it carries, and only then states the rule.
+var extensionDiscoverySkippedClause = regexp.MustCompile("(?is)skipped.{0,600}?`deliberate` is `false`")
+
+// extensionDiscoverySkippedSites is the number of discover sites in each core's spine that must
+// tell the reader to record the broken skips. Every call to `skill-extensions.mjs discover` is one
+// site, wherever in the spine it lives.
+//
+// This is a FLOOR, not a census, exactly like extensionDispatchSkillPathSites above: it catches
+// deletion, which is the failure mode. A presence-only check stays green after the clause is
+// deleted from all but one site, which would let a core ship a discover site whose misconfigured
+// extensions vanish with no ledger line — and a vanished extension is indistinguishable from one
+// that was never installed, so the core's fallback tier reads as the intended tier.
+//
+// If you genuinely consolidate two discover sites into one, lower the number here in the same
+// commit and say why. Adding a discover site RAISES it: the contract's MUST-record rule applies at
+// every site that calls discover, with no exemption.
+//
+// KNOWN TRADE-OFF, accepted deliberately. This counts clause OCCURRENCES across the spine, not
+// per-site coverage, so consolidating two clauses into one shared paragraph reds this gate even
+// though coverage is unchanged. The obvious alternative — require a clause within N bytes of each
+// `discover --core` invocation — is not available: boss-build's resident SKILL.md is 8 bytes under
+// a ratchet whose hard `RATCHET < PRE_EXTRACTION_BASELINE` invariant leaves ~12 bytes, so its three
+// clauses live in the references that are each site's full spec, arbitrarily far from the
+// invocation. A proximity gate would therefore fail the one core that most needs the rule. An
+// occurrence floor over-constrains; a proximity gate under-covers; this picks the former because
+// its failure mode is a red build a human reads, and the latter's is a silent gap.
+//
+// It also shares `coreBodyFiles` with two other floor maps, so WIDENING that spine can loosen this
+// floor and theirs at once (BOS-744 widened it and had to restore two dispatch floors in the same
+// change). Re-derive every floor that reads `bodyFilesFor` whenever the spine list changes.
+// boss-build states the rule in its REFERENCES rather than in SKILL.md, and that is forced, not a
+// preference: its resident body is injected whole at turn 0 of every run and sits 8 bytes under the
+// ratchet in scripts/boss-build-skill.test.mjs, whose own hard
+// `RATCHET < PRE_EXTRACTION_BASELINE` invariant leaves 12 bytes before the pre-extraction size the
+// Steps 8-12 extraction banked. Even the barest one-line clause measured 55 bytes over. That gate's
+// error message names this exact remedy — put the prose in a reference, leave the body a pointer —
+// so each of boss-build's three discover sites carries the rule in the reference that is its own
+// full spec: core-spine.md §2 for the Step 5 methodology tier, knowledge-extensions.md for Step
+// 6.5, finalize-and-stop.md for the Step 12 notes phase.
+//
+// That applies to BOTH of boss-build's resident discover sites, not just Step 5, and the omission
+// is deliberate at each: SKILL.md:789 (Step 5, methodology) and SKILL.md:1059 (Step 6.5, knowledge)
+// each state the discover call resident and route the rule to their reference. Step 6.5's resident
+// prose does mention `extension <name>: skipped (<reason>)`, but for `validate --role knowledge`
+// FAILURES rather than discovery skips — a different cause with the same ledger line — so a reader
+// checking only SKILL.md should not read either site as unfixed.
+var extensionDiscoverySkippedSites = map[string]int{
+	"boss-build":  3, // core-spine methodology, knowledge-extensions, finalize-and-stop notes
+	"boss-epic":   1, // SKILL.md notes
+	"boss-plan":   4, // SKILL.md notes, interactive-mode draft, headless-drafting-brief draft, extension-reviewers plan-reviewer
+	"boss-repair": 1, // SKILL.md notes
+	"boss-review": 3, // SKILL.md lens + round + notes
+}
+
+// TestPublishedCoresRecordBrokenDiscoverySkips is the BOS-744 gate. `discoverExtensions` can drop a
+// descriptor nine different ways; before this, nine of the twelve discover sites read `.extensions`
+// alone, so a misconfigured lens or drafter vanished silently and the core reported its fallback
+// tier as though that had always been the intended tier. The remaining three did read `.skipped`,
+// but each re-derived the deliberate-vs-broken split from the literal `reason` text.
+//
+// Twelve is the count the floor map below sums to, and it counts SITES, not textual matches: a
+// `discover --core` grep finds fourteen, because boss-plan names its plan-reviewer discover in both
+// SKILL.md and references/extension-reviewers.md, and boss-build names its knowledge discover in
+// both SKILL.md and references/knowledge-extensions.md. Each of those pairs is one site stated
+// twice, and the reference is where its clause lives.
+func TestPublishedCoresRecordBrokenDiscoverySkips(t *testing.T) {
+	for label, fsys := range shippedPayloads(t) {
+		for core, want := range extensionDiscoverySkippedSites {
+			got := 0
+			scanned := 0
+			for _, rel := range bodyFilesFor(core) {
+				path := filepath.Join("skills", core, rel)
+				data, err := fs.ReadFile(fsys, path)
+				if err != nil {
+					t.Fatalf("read %s %s: %v", label, path, err)
+				}
+				scanned++
+				flat := whitespaceRun.ReplaceAll(data, []byte(" "))
+				got += len(extensionDiscoverySkippedClause.FindAll(flat, -1))
+			}
+			// A floor over zero scanned files passes vacuously: if bodyFilesFor ever stops
+			// resolving this core's spine, every count silently becomes 0 >= 0 for a want of 0
+			// and the gate reports success while checking nothing.
+			if scanned == 0 {
+				t.Errorf("%s: core %q scanned no spine files — the floor below would pass vacuously", label, core)
+			}
+			if got < want {
+				t.Errorf("%s: core %q records broken discovery skips at %d site(s), want at least %d — a discover site lost its `deliberate: false` clause, so a misconfigured extension there now vanishes with no ledger line and its fallback tier reads as the intended tier", label, core, got, want)
+			}
+		}
+	}
+}
+
+// skipReasonBlock isolates the `SKIP_REASONS` object literal; skipReasonKey pulls each quoted or
+// bare key out of it. Reading the helper beats re-declaring the codes in Go: the helper is the only
+// place they are defined, and a Go-side copy is exactly the drift this gate exists to catch.
+var (
+	skipReasonBlock = regexp.MustCompile(`(?s)export const SKIP_REASONS = \{(.*?)\n\}`)
+	skipReasonKey   = regexp.MustCompile(`(?m)^\s*'([a-z-]+)':`)
+)
+
+// skipReasonCodes returns every code declared in the canonical helper's SKIP_REASONS table.
+// `make vendor-toolbox-check` pins the five vendored copies and the plugin mirror byte-identical to
+// this file, so reading the canonical one covers them all.
+func skipReasonCodes(t *testing.T) []string {
+	t.Helper()
+	helperPath := filepath.Join(findRepoRoot(t), "skills-toolbox", "skill-extensions.mjs")
+	data, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatalf("read discovery helper: %v", err)
+	}
+	block := skipReasonBlock.FindSubmatch(data)
+	if block == nil {
+		t.Fatalf("skills-toolbox/skill-extensions.mjs no longer declares an `export const SKIP_REASONS = {` block — this gate reads the codes from there, and silently matching nothing would make it vacuous")
+	}
+	var codes []string
+	for _, m := range skipReasonKey.FindAllSubmatch(block[1], -1) {
+		codes = append(codes, string(m[1]))
+	}
+	// Non-vacuity: an empty set would satisfy the caller's loop trivially. The helper documents
+	// nine codes today; the floor only guards against the regex silently matching nothing.
+	if len(codes) < 2 {
+		t.Fatalf("parsed %d skip codes from SKIP_REASONS, want at least 2 — the key regex has stopped matching and the documentation check below would pass vacuously", len(codes))
+	}
+	return codes
+}
+
+// TestExtensionContractDocumentsSkipClassification pins the authoring guidance the gate above
+// enforces. Without it the contract could drift into silence while the gate stayed green, leaving
+// core authors to re-derive the deliberate-vs-broken split from the `reason` text — which is the
+// re-derivation BOS-744 moved into the helper precisely so it would stop being re-derived.
+func TestExtensionContractDocumentsSkipClassification(t *testing.T) {
+	contractPath := filepath.Join(findRepoRoot(t), "docs", "skills", "extension-contract.md")
+	data, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read extension contract: %v", err)
+	}
+	flatContract := whitespaceRun.ReplaceAllString(string(data), " ")
+
+	// The entry shape and both classification fields.
+	for _, want := range []string{
+		"{ name, reason, code, deliberate }",
+		"`code`",
+		"`deliberate`",
+	} {
+		if !strings.Contains(flatContract, want) {
+			t.Errorf("docs/skills/extension-contract.md must document %q — core authors build their skip-recording clause against this file", want)
+		}
+	}
+
+	// Every code the helper can emit must be documented. The set is DERIVED from the helper rather
+	// than hand-copied here: a literal list only ever asserts doc ⊇ list, so a code added to
+	// SKIP_REASONS lands undocumented with this test still green — which is precisely the
+	// "arrives unannounced" case the list was meant to prevent.
+	for _, code := range skipReasonCodes(t) {
+		if !strings.Contains(flatContract, code) {
+			t.Errorf("docs/skills/extension-contract.md must document skip code %q — it is in SKIP_REASONS, so discovery can emit it and a core author has to know what it means", code)
+		}
+	}
+
+	// The normative rule itself. "MUST record ... at every site that calls discover" is the half
+	// that makes the floor gate above legible as a contract requirement rather than a local
+	// house rule, and "never fatal" is what stops a core turning a discovery skip into a stop.
+	for _, want := range []struct{ phrase, why string }{
+		{
+			"MUST** record every discovered `skipped` entry whose `deliberate` is `false`",
+			"must state the record-the-broken-ones rule normatively, keyed on `deliberate` rather than on the `reason` text a core would otherwise have to pattern-match",
+		},
+		{
+			"at **every** site that calls `discover`",
+			"must say the rule applies at every discover site — a rule stated once, for one phase, is how ten of the thirteen sites went unfixed",
+		},
+		{
+			"never fatal and never changes control flow",
+			"must state that recording is all that is due, so a core cannot escalate a discovery skip into a stop or a tier change",
+		},
+	} {
+		if !strings.Contains(flatContract, want.phrase) {
+			t.Errorf("docs/skills/extension-contract.md must contain %q: it %s", want.phrase, want.why)
+		}
+	}
+}
+
 // extensionDispatchConfigSkill marks a window that is talking about a `.boss-skills.json`
 // `lensMap` entry. Those name a foreign, model-invocable global skill with no known on-disk path
 // in an arbitrary checkout, so the Skill tool is the correct — and only — way to load one. This is
@@ -427,10 +622,19 @@ func TestExtensionDispatchAllowlistIsLive(t *testing.T) {
 // discovered `lens` extension bound to a config lens id, which names the mechanism twice
 // (`skillPath` from disk, and `skillPath` + `dir` in the worker brief). Without raising the floor
 // that new site could be deleted again with every test still green.
+// BOS-744 re-baselines `boss-plan` 1 → 7 and `boss-build` 3 → 5, and the reason is a REPAIR, not
+// growth: this floor counts over `bodyFilesFor(core)`, and BOS-744 widened that spine (see
+// coreBodyFiles in skills_manifest_test.go) so the new discovery-skip gate could see the discover
+// sites that live in references. Widening the shared spine raises what every floor over it measures,
+// so a floor left alone silently gains that much slack. Measured against the merged tree, `boss-plan`
+// scored 1 over a one-file spine and now scores 7 over four; `boss-build` scored 5 over two files and
+// now scores 7 over four. Re-baselining restores each core's PRE-WIDENING margin exactly — 0 for
+// `boss-plan`, 2 for `boss-build` — rather than inventing a new tightness: without it, deleting
+// boss-plan's only `skillPath` dispatch clause from SKILL.md left this gate green.
 var extensionDispatchSkillPathSites = map[string]int{
-	"boss-build":  3,
+	"boss-build":  5,
 	"boss-epic":   1,
-	"boss-plan":   1,
+	"boss-plan":   7,
 	"boss-repair": 1,
 	"boss-review": 4,
 }
@@ -444,10 +648,13 @@ var extensionDispatchSkillPathSites = map[string]int{
 // sites do. extensionDispatchResourceBase requires the literal "resolve ... from `dir`" form, so a
 // paraphrased Tier-1 sentence fails here rather than shipping a worker that cannot reach the
 // extension's sibling assets.
+// BOS-744 re-baselines `boss-plan` 1 → 4 and `boss-build` 2 → 3, for the same spine-widening reason
+// recorded on extensionDispatchSkillPathSites above. Both cores' pre-widening margin was 0, so the
+// new numbers are the exact merged-tree counts and this gate is exactly tight again.
 var extensionDispatchResourceBaseSites = map[string]int{
-	"boss-build":  2,
+	"boss-build":  3,
 	"boss-epic":   1,
-	"boss-plan":   1,
+	"boss-plan":   4,
 	"boss-repair": 1,
 	"boss-review": 3,
 }
@@ -457,9 +664,13 @@ var extensionDispatchResourceBaseSites = map[string]int{
 // outright from a core leaves every test green while that core ships no dispatch mechanism at all —
 // staleness and silent deletion both slip through a negative-only pin.
 //
-// The pin covers only each core's spine, not every markdown file under its tree: `boss-plan` names
-// `skillPath` in three references covering the draft and plan-reviewer roles, so a tree-wide search
-// would stay green after the clause was deleted from its notes dispatch.
+// The pin covers only each core's spine, not every markdown file under its tree. BOS-744 pulled
+// `boss-plan`'s three draft/plan-reviewer references INTO that spine (they hold discover sites the
+// new skip gate has to see), so the spine is no longer a single file per core and the floor is what
+// keeps the pin honest: `boss-plan` scores 7 across four files, and the floor is re-baselined to 7
+// so deleting any one of them still turns this red. What is still excluded is everything OUTSIDE
+// `bodyFilesFor` — a tree-wide search would count `skillPath` in reviewer briefs and contract prose
+// that dispatch nothing, and would stay green after a real dispatch clause was deleted.
 func TestPublishedCoresNameSkillPathForExtensionDispatch(t *testing.T) {
 	for label, fsys := range shippedPayloads(t) {
 		for core, want := range extensionDispatchSkillPathSites {

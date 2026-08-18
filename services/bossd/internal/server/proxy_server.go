@@ -18,11 +18,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -151,6 +153,28 @@ type ProxyServer struct {
 	listener net.Listener
 	srv      *http.Server
 
+	// inFlight counts authenticated proxied requests currently being served —
+	// from just after token auth until the handler returns, which spans body
+	// buffering, the upstream round trip, the SSE rate-limit peek, any replay,
+	// and the response copy (BOS-888). Agents route every model request through
+	// this proxy, so a non-zero count at shutdown is the number of agent turns a
+	// restart would sever. Read via InFlightStreams for the drain's
+	// start/progress/finish logs.
+	inFlight atomic.Int64
+
+	// streams, when wired, durably records which chats are holding an in-flight
+	// proxied stream so a hard-killed daemon leaves behind the set of streams
+	// its death severed (BOS-890). Narrow interface, not the concrete recorder,
+	// so this package keeps its one-way dependency direction. nil ⇒ the feature
+	// is off and every call site is a no-op.
+	streams StreamRecorder
+
+	// drainProgressInterval pins how often Shutdown logs the falling in-flight
+	// count while it drains, so a slow `boss daemon restart` reads as deliberate
+	// rather than hung. Zero — the production value — means "derive it from the
+	// drain budget" via drainProgressCadence; only tests pin it.
+	drainProgressInterval time.Duration
+
 	mu             sync.RWMutex
 	tokenToSession map[string]string
 	sessionToToken map[string]string
@@ -188,6 +212,23 @@ type ProxyServer struct {
 	ptStats *passthroughStats
 }
 
+// StreamRecorder is the durable in-flight stream record (BOS-890), satisfied by
+// *inflight.Recorder in production. Declared here as a narrow interface rather
+// than importing the package so the dependency arrow keeps pointing one way and
+// tests can substitute a trivial fake.
+//
+// Every method must be safe on a nil receiver and safe for concurrent use: they
+// are called from the proxy request path with no coordination.
+type StreamRecorder interface {
+	// Enter records that a chat has opened a proxied stream.
+	Enter(displayID string)
+	// Leave records that one of a chat's proxied streams has ended.
+	Leave(displayID string)
+	// Seal pins the current set and freezes further writes. Called only when a
+	// shutdown is about to cut streams that have not finished; see Shutdown.
+	Seal()
+}
+
 // ProxyServerConfig gathers the ProxyServer dependencies.
 type ProxyServerConfig struct {
 	Failover Failover
@@ -208,6 +249,10 @@ type ProxyServerConfig struct {
 	// minute-bucket counters. Defaults to time.Now; set by tests to advance the
 	// one-minute window deterministically. Production leaves it nil.
 	Now func() time.Time
+	// Streams is the durable in-flight stream record (BOS-890). nil ⇒ the
+	// daemon serves proxy traffic exactly as before and records nothing, so a
+	// restart simply has no severed-stream evidence to recover from.
+	Streams StreamRecorder
 }
 
 // NewProxyServer constructs a ProxyServer. Call Listen to bind, then Serve
@@ -232,6 +277,7 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 	return &ProxyServer{
 		failover:        cfg.Failover,
 		logger:          cfg.Logger,
+		streams:         cfg.Streams,
 		upstream:        u,
 		transport:       transport,
 		port:            cfg.Port,
@@ -308,26 +354,190 @@ func (p *ProxyServer) Serve() error {
 	return p.srv.Serve(p.listener)
 }
 
-// Shutdown gracefully stops the server and releases the listening socket.
+// The drain-progress cadence is derived from the drain budget rather than
+// fixed, because a fixed one silently stopped firing. defaultDrainProgressInterval
+// was 15s, sized against the plan's original 120s budget; the shipped budget
+// later became 15s (config.defaultProxyDrainTimeout) and a 15s ticker armed
+// inside a 15s deadline can never fire — drainFailoverProxy builds the ctx
+// BEFORE calling Shutdown, Shutdown starts the ticker after that, so the
+// deadline always expires and stopProgress always closes the channel strictly
+// before the first tick. The periodic line was unreachable in production and
+// only the tests that pinned a short interval ever saw it.
+const (
+	// defaultDrainProgressInterval caps the derived cadence, so a generous
+	// budget cannot make the drain log go quiet for minutes at a time. It is
+	// also the fallback for a ctx carrying no deadline at all.
+	defaultDrainProgressInterval = 15 * time.Second
+	// drainProgressTicksPerDrain is how many progress lines a drain that spends
+	// its entire budget should emit. Three is enough for the count to read as
+	// falling — one line is a snapshot, two is a direction, three is a rate.
+	drainProgressTicksPerDrain = 3
+	// minDrainProgressInterval floors the derived cadence so an absurdly short
+	// budget cannot turn the progress log into a hot loop.
+	minDrainProgressInterval = 50 * time.Millisecond
+)
+
+// drainProgressCadence picks the interval for the periodic drain log: a
+// fraction of the remaining budget, clamped at both ends. A pinned
+// drainProgressInterval (tests only) wins outright.
+func (p *ProxyServer) drainProgressCadence(ctx context.Context) time.Duration {
+	if p.drainProgressInterval > 0 {
+		return p.drainProgressInterval
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return defaultDrainProgressInterval
+	}
+	budget := time.Until(deadline)
+	if budget <= 0 {
+		return defaultDrainProgressInterval
+	}
+	interval := budget / drainProgressTicksPerDrain
+	if interval < minDrainProgressInterval {
+		interval = minDrainProgressInterval
+	}
+	if interval > defaultDrainProgressInterval {
+		interval = defaultDrainProgressInterval
+	}
+	return interval
+}
+
+// DrainOutcome reports how a ProxyServer.Shutdown resolved (BOS-888). The
+// caller logs it so a slow `boss daemon restart` is legible: whether in-flight
+// agent turns finished or were cut, how many there were, and how long it took.
+type DrainOutcome struct {
+	// Drained is true when every in-flight proxied stream finished inside the
+	// budget, false when the deadline expired and the remainder were cut.
+	Drained bool
+	// InFlightAtStart is how many authenticated proxied requests were being
+	// served when the drain began — i.e. how many agent turns it risked. See
+	// InFlightStreams: this counts whole requests, not just the body copy.
+	InFlightAtStart int
+	// InFlightAtEnd is how many were still running when the drain resolved.
+	// Zero on a clean drain; non-zero names the turns that were severed.
+	InFlightAtEnd int
+	// Elapsed is how long the drain took.
+	Elapsed time.Duration
+}
+
+// Shutdown drains in-flight proxied streams, then releases the listening socket.
 //
-// http.Server.Shutdown only closes listeners it is tracking — i.e. those
-// registered via Serve. When Listen ran but Serve did not (or Shutdown races
-// Serve's registration), the bound socket would otherwise stay open, so an
-// immediate re-bind of the same fixed port fails with EADDRINUSE. Closing
-// p.listener explicitly guarantees the port is fully released, which is what
-// makes the fixed-port re-bind after a daemon exit deterministic (BOS-409). The
-// close is idempotent: when Serve already ran, http.Server has closed the
-// listener and this second Close returns a benign "use of closed" error we
-// ignore.
-func (p *ProxyServer) Shutdown(ctx context.Context) error {
+// Draining matters because agents point ANTHROPIC_BASE_URL at this proxy, so
+// its lifetime is their connection lifetime: tearing it down mid-turn severs
+// the SSE stream and the agent reports "Connection lost mid-response"
+// (BOS-888). http.Server.Shutdown returns as soon as connections go idle, so a
+// generous ctx costs an idle restart nothing and only engages when streams
+// genuinely are in flight. The returned DrainOutcome distinguishes a completed
+// drain from an expired budget; a non-nil error is srv.Shutdown's (the ctx
+// error on expiry).
+//
+// The listener is closed only AFTER that drain resolves. http.Server.Shutdown
+// only closes listeners it is tracking — i.e. those registered via Serve. When
+// Listen ran but Serve did not (or Shutdown races Serve's registration), the
+// bound socket would otherwise stay open, so an immediate re-bind of the same
+// fixed port fails with EADDRINUSE. Closing p.listener explicitly guarantees the
+// port is fully released, which is what makes the fixed-port re-bind after a
+// daemon exit deterministic (BOS-409). The close is idempotent: when Serve
+// already ran, http.Server has closed the listener and this second Close returns
+// a benign "use of closed" error we ignore.
+func (p *ProxyServer) Shutdown(ctx context.Context) (DrainOutcome, error) {
+	started := time.Now()
+	outcome := DrainOutcome{InFlightAtStart: p.InFlightStreams()}
+
 	var srvErr error
 	if p.srv != nil {
+		stopProgress := p.startDrainProgressLog(ctx, outcome.InFlightAtStart)
 		srvErr = p.srv.Shutdown(ctx)
+		stopProgress()
 	}
+
+	outcome.InFlightAtEnd = p.InFlightStreams()
+	outcome.Elapsed = time.Since(started)
+	// Drained asks "did the streams finish?", which is NOT "did Shutdown return
+	// nil". http.Server.Shutdown closes its listeners first and returns that
+	// close error even when the subsequent wait drained every connection
+	// cleanly, so `srvErr == nil` would report a fully drained shutdown as
+	// drained=false whenever the listener close was noisy. Only an expired or
+	// cancelled ctx means connections were actually cut.
+	outcome.Drained = !errors.Is(srvErr, context.DeadlineExceeded) && !errors.Is(srvErr, context.Canceled)
+
+	// A budget that expired has to actually cut what it reports as cut.
+	// http.Server.Shutdown does NOT close active connections when its ctx
+	// expires: it returns ctx.Err() and leaves every in-flight handler running.
+	// Closing only the listener below would therefore leave those streams alive
+	// while DrainOutcome said Drained=false and the daemon logged that they were
+	// severed — a report contradicted by the process it describes. Close() is
+	// what makes the timed-out branch mean what it says; it is deliberately NOT
+	// called on the drained path, where there is nothing left to close and a
+	// Close would only race the listener close below.
+	//
+	// InFlightAtEnd is deliberately NOT re-read afterwards. It is the count of
+	// streams the expiry cut, which is the number the operator wants; re-reading
+	// it after Close would race the cut handlers' own decrements and report
+	// somewhere between that and zero depending on scheduling.
+	if !outcome.Drained && p.srv != nil {
+		// Seal the durable stream record FIRST (BOS-890). Close is about to cut
+		// every surviving handler, and each cut handler runs its own deferred
+		// Leave on the way out — so a record left live through the Close would be
+		// emptied by exactly the streams the Close severed, leaving the next
+		// startup a file that claims nothing was lost. Sealing pins the set as it
+		// stands here, which is precisely the set this expiry is about to cut.
+		//
+		// Nothing is sealed on the drained path, and that asymmetry is the point:
+		// there every handler finished on its own and removed itself, so the
+		// record is already empty and a graceful restart correctly recovers
+		// nothing.
+		if p.streams != nil {
+			p.streams.Seal()
+		}
+		_ = p.srv.Close()
+	}
+
 	if p.listener != nil {
 		_ = p.listener.Close()
 	}
-	return srvErr
+	return outcome, srvErr
+}
+
+// InFlightStreams reports how many authenticated proxied requests are currently
+// being served — the number of agent turns a shutdown right now would put at
+// risk (BOS-888). It counts the whole handler, not just the body copy, because
+// a request still awaiting upstream headers is just as much a turn the drain
+// has to wait out.
+func (p *ProxyServer) InFlightStreams() int {
+	return int(p.inFlight.Load())
+}
+
+// startDrainProgressLog begins periodically logging the falling in-flight count
+// and returns a stop function the caller must invoke once the drain resolves.
+// When nothing is in flight it starts no goroutine and no ticker at all: the
+// idle restart path must stay exactly as cheap as it was before BOS-888.
+func (p *ProxyServer) startDrainProgressLog(ctx context.Context, inFlightAtStart int) func() {
+	if inFlightAtStart == 0 {
+		return func() {}
+	}
+	p.logger.Info().Int("in_flight_streams", inFlightAtStart).
+		Msg("failover proxy: draining in-flight agent streams before shutdown")
+
+	interval := p.drainProgressCadence(ctx)
+	stop := make(chan struct{})
+	done := safego.Go(p.logger, func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				p.logger.Info().Int("in_flight_streams", p.InFlightStreams()).
+					Msg("failover proxy: still draining in-flight agent streams")
+			}
+		}
+	})
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 // Port returns the bound port, or 0 before Listen.
@@ -947,6 +1157,33 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		p.logUnknownToken(token, r.Method, upstreamPath)
 		http.Error(w, unknownTokenBody, http.StatusUnauthorized)
 		return
+	}
+
+	// Count this request for its WHOLE lifetime, not just the body copy
+	// (BOS-888). A request buffering its body, awaiting upstream headers, or
+	// sitting in the SSE rate-limit peek is an at-risk agent turn that
+	// srv.Shutdown will wait out exactly like a streaming one; counting only the
+	// copy would report zero in flight while the drain genuinely waited, and
+	// send the shutdown log down its "nothing in flight" quiet path. It is
+	// placed AFTER token auth so unauthenticated probes and 401s — which return
+	// immediately and are never agent turns — do not inflate the count.
+	p.inFlight.Add(1)
+	defer p.inFlight.Add(-1)
+
+	// Mirror the same span durably (BOS-890). The in-flight counter above lives
+	// only in this process's memory, so it tells the NEXT daemon nothing about
+	// the turns this one was serving when it died; the recorder is that memory
+	// written down.
+	//
+	// Only CHAT-scoped targets are recorded. The agent session id is the
+	// identifier the resume lane's gates and delivery seam speak, so a
+	// session-scoped token has nothing the next daemon could act on — recording
+	// it would arm a cycle that every gate below is guaranteed to abandon.
+	if p.streams != nil {
+		if agentSessionID, _, ok := session.ParseProxyChatTarget(sessionID); ok {
+			p.streams.Enter(agentSessionID)
+			defer p.streams.Leave(agentSessionID)
+		}
 	}
 
 	// Buffer the body (bounded) so it can be replayed byte-for-byte after a

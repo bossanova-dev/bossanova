@@ -6,17 +6,74 @@ import {
   CALLBACK_CAPABILITIES,
   assertConforms,
   callbacksAvailable,
+  callbacksUnavailableReason,
 } from './adapter.mjs'
+
+// A minimal injectable fs (statSync only) so no gate case reads the machine's real
+// PATH or its real ./bin/boss — the verdict must come from the injected world alone.
+function fakeFs(files = {}) {
+  return {
+    statSync(target) {
+      const entry = files[target]
+      if (!entry) {
+        const error = new Error(`ENOENT: no such file or directory, stat '${target}'`)
+        error.code = 'ENOENT'
+        throw error
+      }
+      return { mode: entry.mode ?? 0o755, isFile: () => entry.isFile !== false }
+    },
+  }
+}
+
+// No BOSS_BIN, no PATH entry, no .git ancestor and so no ./bin/boss: the managed
+// cron environment, which exports BOSS_SESSION_ID and nothing else useful.
+const NO_BINARY = { fs: fakeFs({}), cwd: '/tmp/nowhere/sub' }
+// A healthy host: `boss` really is on PATH.
+const HAS_BINARY = { fs: fakeFs({ '/usr/local/bin/boss': { mode: 0o755 } }), cwd: '/tmp/nowhere' }
+const HAS_BINARY_ENV = { PATH: '/usr/local/bin' }
 
 test('CALLBACK_CAPABILITIES lists the register / list / remove capabilities', () => {
   assert.deepEqual(CALLBACK_CAPABILITIES, ['registerWatch', 'listWatches', 'removeWatch'])
 })
 
-test('callbacksAvailable is true iff BOSS_SESSION_ID is set in the passed env', () => {
-  // BOS-495: the single "callbacks usable" gate. Present → true; unset/empty → false.
-  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'abc123' }), true)
-  assert.equal(callbacksAvailable({}), false)
-  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: '' }), false)
+test('callbacksAvailable is FALSE when BOSS_SESSION_ID is set but no boss binary resolves', () => {
+  // BOS-785, the decisive case. This is the managed cron environment exactly: bossd
+  // injects BOSS_SESSION_ID, but the cron PATH has no `boss`, so every CI wait armed a
+  // registration that could not run and then fell back to polling anyway. Before this
+  // change the gate returned TRUE here. It must be false, and it must say why.
+  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'x' }, NO_BINARY), false)
+  assert.match(callbacksUnavailableReason({ BOSS_SESSION_ID: 'x' }, NO_BINARY), /boss executable/)
+})
+
+test('callbacksAvailable is true only when BOTH conjuncts hold', () => {
+  // managed + binary → true; drop either conjunct → false.
+  assert.equal(
+    callbacksAvailable({ BOSS_SESSION_ID: 'abc123', ...HAS_BINARY_ENV }, HAS_BINARY),
+    true,
+  )
+  assert.equal(callbacksAvailable({ ...HAS_BINARY_ENV }, HAS_BINARY), false)
+  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'abc123' }, NO_BINARY), false)
+})
+
+test('callbacksAvailable stays false for an absent or empty BOSS_SESSION_ID', () => {
+  // BOS-495: unset/empty is standalone, and a reachable binary does not change that —
+  // there is no daemon behind the `boss callback` interface to answer.
+  assert.equal(callbacksAvailable({}, NO_BINARY), false)
+  assert.equal(callbacksAvailable({ ...HAS_BINARY_ENV }, HAS_BINARY), false)
+  assert.equal(callbacksAvailable({ BOSS_SESSION_ID: '' }, HAS_BINARY), false)
+})
+
+test('callbacksUnavailableReason names WHICH conjunct failed, and is empty when the gate is true', () => {
+  // The point of the reason string: "polling, because <x>" instead of a silent degrade.
+  assert.match(callbacksUnavailableReason({}, HAS_BINARY), /BOSS_SESSION_ID/)
+  assert.match(
+    callbacksUnavailableReason({ BOSS_SESSION_ID: 'x', BOSS_BIN: '/gone/boss' }, NO_BINARY),
+    /BOSS_BIN=\/gone\/boss/,
+  )
+  assert.equal(
+    callbacksUnavailableReason({ BOSS_SESSION_ID: 'x', ...HAS_BINARY_ENV }, HAS_BINARY),
+    '',
+  )
 })
 
 test('callbacksAvailable honours an explicit env object (no process.env bleed)', () => {
@@ -26,9 +83,12 @@ test('callbacksAvailable honours an explicit env object (no process.env bleed)',
   try {
     process.env.BOSS_SESSION_ID = 'ambient-session'
     // Explicit env without the var → false, despite the ambient process.env value.
-    assert.equal(callbacksAvailable({ CALLBACK: 'boss' }), false)
+    assert.equal(callbacksAvailable({ CALLBACK: 'boss', ...HAS_BINARY_ENV }, HAS_BINARY), false)
     // Explicit env with the var → true.
-    assert.equal(callbacksAvailable({ BOSS_SESSION_ID: 'explicit' }), true)
+    assert.equal(
+      callbacksAvailable({ BOSS_SESSION_ID: 'explicit', ...HAS_BINARY_ENV }, HAS_BINARY),
+      true,
+    )
   } finally {
     if (saved === undefined) delete process.env.BOSS_SESSION_ID
     else process.env.BOSS_SESSION_ID = saved

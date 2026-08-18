@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -666,4 +668,346 @@ func TestSendMessageWithModalBindsDetectorPerCall(t *testing.T) {
 	if err := c.SendMessageWithModal(context.Background(), "boss-test-sess", "hi", false, composerMarkerClaude, nil); err != nil {
 		t.Fatalf("a detector-free send was refused: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// BOS-892: the readiness timeout must distinguish "the pane was blank" from
+// "we never successfully looked at the pane".
+//
+// Before this change waitForReadyMarker bound the capture result only when
+// err == nil and discarded the error, so lastPane stayed "" for BOTH causes and
+// truncatePaneForError rendered both as `<empty>`. The tests below pin the two
+// causes apart at the only place an operator ever sees them: the error string.
+//
+// Note what these tests deliberately do NOT assert: exact capture counts. The
+// failed count is wall-clock dependent (the loop polls until a deadline), so an
+// exact number is flaky under -race on a loaded machine. Zero vs non-zero is the
+// contract; the exact tally is not.
+// ---------------------------------------------------------------------------
+
+// captureAccountingRe matches the capture-pane accounting clause the timeout
+// error carries. Anchoring the test on a parsed clause rather than on a
+// hand-built literal keeps the assertions honest about counts while leaving the
+// surrounding wording free to change.
+var captureAccountingRe = regexp.MustCompile(`capture-pane: (\d+) ok, (\d+) failed in ([^;]+)`)
+
+// captureAccounting parses the accounting clause out of a timeout error,
+// failing the test when the clause is absent entirely.
+func captureAccounting(t *testing.T, msg string) (ok, failed int, elapsed string) {
+	t.Helper()
+	m := captureAccountingRe.FindStringSubmatch(msg)
+	if m == nil {
+		t.Fatalf("timeout error carries no capture-pane accounting clause: %q", msg)
+	}
+	ok, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("unparseable successful-capture count %q in %q", m[1], msg)
+	}
+	failed, err = strconv.Atoi(m[2])
+	if err != nil {
+		t.Fatalf("unparseable failed-capture count %q in %q", m[2], msg)
+	}
+	return ok, failed, strings.TrimSpace(m[3])
+}
+
+// capturesFailFrom is the 0-based occurrence at which the fake's capture-pane
+// starts failing; 0 fails every call.
+func capturesFailFrom(n int) *int { return &n }
+
+// readyTimeout drives waitForReadyMarker to its deadline against the supplied
+// fake and returns the error, failing the test if the wait somehow succeeded.
+//
+// The modal detector is deliberately nil for every caller. A whitespace-only
+// pane is non-empty, so the deadline-branch modal probe fires against it, and an
+// installed detector could intercept the very outcome these tests assert on.
+// TestModalRefusalCarriesNoCaptureAccounting installs one by calling
+// waitForReadyMarker directly, which is the only case that wants a verdict.
+func readyTimeout(t *testing.T, fake *sendPlanRecordingFactory) error {
+	t.Helper()
+	return readyTimeoutWithin(t, fake, readyTimeoutBudget)
+}
+
+const (
+	// readyTimeoutBudget is enough for a case whose assertions are satisfied by
+	// the first capture alone.
+	readyTimeoutBudget = 60 * time.Millisecond
+	// readyTimeoutWideBudget is for a case that asserts on a LATER capture, and
+	// so must outlast several subprocess spawns rather than one.
+	readyTimeoutWideBudget = 500 * time.Millisecond
+)
+
+// readyTimeoutWithin is readyTimeout with an explicit budget, for the cases that
+// need more than one capture-pane iteration to reach the assertion they make.
+//
+// Every capture runs a real subprocess and costs ~10ms even unloaded, and
+// waitForReadyMarker tests the deadline immediately after each capture. A case
+// whose assertion depends on capture N only holds while the budget outlasts N
+// spawns, so such a case must buy the headroom rather than inherit the default.
+func readyTimeoutWithin(t *testing.T, fake *sendPlanRecordingFactory, deadline time.Duration) error {
+	t.Helper()
+	err := NewClient(WithCommandFactory(fake.factory)).
+		waitForReadyMarker(context.Background(), "boss-test-sess", sendPlanOpts{
+			deadline:     deadline,
+			pollInterval: 2 * time.Millisecond,
+			readyMarker:  composerMarkerClaude,
+		})
+	if err == nil {
+		t.Fatal("a pane that never drew the ready marker was accepted as ready")
+	}
+	return err
+}
+
+// TestReadyMarkerTimeoutNamesFailedCaptures is the first half of the
+// discriminator pair. Every capture-pane call fails, so there is no pane to
+// report — and the error must SAY so, name tmux's own words, and never claim it
+// saw an empty pane.
+func TestReadyMarkerTimeoutNamesFailedCaptures(t *testing.T) {
+	t.Parallel()
+
+	const tmuxMsg = "can't find session: boss-test-sess"
+	fake := &sendPlanRecordingFactory{
+		failCapturePaneFrom: capturesFailFrom(0),
+		captureFailStderr:   tmuxMsg,
+	}
+	err := readyTimeout(t, fake)
+	msg := err.Error()
+	t.Logf("no-successful-capture branch renders: %s", msg)
+
+	ok, failed, _ := captureAccounting(t, msg)
+	if ok != 0 {
+		t.Errorf("successful-capture count = %d, want 0 — every capture-pane call failed", ok)
+	}
+	if failed == 0 {
+		t.Errorf("failed-capture count = 0 though every capture-pane call failed: %q", msg)
+	}
+	if !strings.Contains(msg, "no capture-pane call succeeded") {
+		t.Errorf("error does not state that no capture succeeded: %q", msg)
+	}
+	// The whole point of the ticket: a pane that was never read must not be
+	// reported with the same token as a pane that was read and found blank.
+	if strings.Contains(msg, "<empty>") {
+		t.Errorf("a pane that was never captured is still reported as <empty>: %q", msg)
+	}
+	// errors.As on *exec.ExitError is what recovers this; formatting the error
+	// alone would print only "exit status 1".
+	if !strings.Contains(msg, tmuxMsg) {
+		t.Errorf("error does not carry tmux's own stderr text %q: %q", tmuxMsg, msg)
+	}
+	// The readiness timeout is deliberately unclassified — see
+	// tmux_submit_verify.go. Adding a cause must not move that.
+	if got := OutcomeOf(err); got != OutcomeUnclassified {
+		t.Errorf("OutcomeOf = %v, want %v", got, OutcomeUnclassified)
+	}
+}
+
+// TestReadyMarkerTimeoutBlankPaneStillReportsEmpty is the second half of the
+// pair, and the spurious-signal direction: a healthy-but-slow boot that renders
+// a whitespace-only pane must still read as <empty>, with a non-zero successful
+// count and NO capture error invented for it.
+//
+// This is also the case that most depends on readyTimeout's nil detector: a
+// whitespace-only pane is non-empty, so the deadline-branch modal probe fires
+// against it, and an installed detector could intercept the outcome under test.
+func TestReadyMarkerTimeoutBlankPaneStillReportsEmpty(t *testing.T) {
+	t.Parallel()
+
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"   \n  \n"}}
+	err := readyTimeout(t, fake)
+	msg := err.Error()
+	t.Logf("captured-but-blank branch renders: %s", msg)
+
+	if !strings.Contains(msg, "<empty>") {
+		t.Errorf("a genuinely blank pane no longer reports <empty>: %q", msg)
+	}
+	ok, failed, _ := captureAccounting(t, msg)
+	if ok == 0 {
+		t.Errorf("successful-capture count = 0 though every capture-pane call succeeded: %q", msg)
+	}
+	if failed != 0 {
+		t.Errorf("failed-capture count = %d though no capture-pane call failed: %q", failed, msg)
+	}
+	if strings.Contains(msg, "last capture error") {
+		t.Errorf("a healthy slow boot was reported as a tmux failure: %q", msg)
+	}
+	if strings.Contains(msg, "no capture-pane call succeeded") {
+		t.Errorf("captures succeeded but the error says none did: %q", msg)
+	}
+}
+
+// TestReadyMarkerTimeoutMixedRunReportsBoth covers the agent-died-mid-boot
+// shape and the reason the capture-error clause keys on the FAILED count rather
+// than on "no capture succeeded": the agent draws a pane, then dies with its
+// tmux session. Reporting only the stale pre-crash snapshot would discard the
+// message that names the cause.
+func TestReadyMarkerTimeoutMixedRunReportsBoth(t *testing.T) {
+	t.Parallel()
+
+	const fingerprint = "AUTH-PROMPT-VISIBLE-IN-PANE"
+	const tmuxMsg = "can't find session: boss-test-sess"
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs:  []string{"Welcome to Claude\n" + fingerprint + "\n"},
+		failCapturePaneFrom: capturesFailFrom(1),
+		captureFailStderr:   tmuxMsg,
+	}
+	// This case's assertions need capture 2 to have run, so it cannot use the
+	// default budget: a single slow spawn would exhaust that one and report
+	// "1 ok, 0 failed". The marker never appears in these fakes, so the loop
+	// always runs the budget out — it is a floor on wall time, not a ceiling.
+	// t.Parallel() is what makes that affordable, so a third case wanting the
+	// wide budget should price it as 500ms of real time, overlapped.
+	err := readyTimeoutWithin(t, fake, readyTimeoutWideBudget)
+	msg := err.Error()
+	t.Logf("mixed run renders: %s", msg)
+
+	if !strings.Contains(msg, fingerprint) {
+		t.Errorf("the last successful pane snapshot was dropped: %q", msg)
+	}
+	ok, failed, _ := captureAccounting(t, msg)
+	if ok == 0 {
+		t.Errorf("successful-capture count = 0 though the first capture succeeded: %q", msg)
+	}
+	if failed == 0 {
+		t.Errorf("failed-capture count = 0 though every later capture failed: %q", msg)
+	}
+	if !strings.Contains(msg, tmuxMsg) {
+		t.Errorf("captures failed but tmux's message %q was dropped: %q", tmuxMsg, msg)
+	}
+}
+
+// TestReadyMarkerTimeoutKeepsSnapshotAndAccounting is the ordinary slow-boot
+// case: captures all succeed against a real pane with no marker. The snapshot
+// stays, and the accounting now sits alongside it.
+func TestReadyMarkerTimeoutKeepsSnapshotAndAccounting(t *testing.T) {
+	t.Parallel()
+
+	const fingerprint = "STILL-BOOTING"
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"Welcome to Claude\n" + fingerprint + "\n"}}
+	err := readyTimeout(t, fake)
+	msg := err.Error()
+
+	if !strings.Contains(msg, fingerprint) {
+		t.Errorf("pane snapshot missing from the timeout error: %q", msg)
+	}
+	ok, failed, elapsed := captureAccounting(t, msg)
+	if ok == 0 {
+		t.Errorf("successful-capture count = 0 though captures succeeded: %q", msg)
+	}
+	if failed != 0 {
+		t.Errorf("failed-capture count = %d though no capture failed: %q", failed, msg)
+	}
+	if elapsed == "" {
+		t.Errorf("elapsed wait missing from the accounting: %q", msg)
+	}
+}
+
+// TestReadyMarkerTimeoutAccountingSurvivesFirstLine pins the accounting against
+// the TUI's truncation. services/boss/internal/views/status.go renders this
+// string through firstLine(), which cuts at the first newline — and a pane
+// snapshot is multi-line. Anything ordered after the snapshot is invisible to
+// the operator who most needs it, so the accounting must sit in the head.
+func TestReadyMarkerTimeoutAccountingSurvivesFirstLine(t *testing.T) {
+	t.Parallel()
+
+	const multiLinePane = "Welcome to Claude\nline two\nline three\n"
+	const tmuxMsg = "can't find session: boss-test-sess"
+
+	for _, tt := range []struct {
+		name          string
+		fake          *sendPlanRecordingFactory
+		deadline      time.Duration
+		wantCauseHead bool
+	}{
+		{
+			name: "captures succeeded",
+			fake: &sendPlanRecordingFactory{capturePaneOutputs: []string{multiLinePane}},
+		},
+		{
+			// Like the standalone mixed-run case, this row's cause assertion is
+			// only reachable once a LATER capture has failed, so it buys the
+			// headroom for more than one spawn.
+			name: "mixed run",
+			fake: &sendPlanRecordingFactory{
+				capturePaneOutputs:  []string{multiLinePane},
+				failCapturePaneFrom: capturesFailFrom(1),
+				captureFailStderr:   tmuxMsg,
+			},
+			deadline:      readyTimeoutWideBudget,
+			wantCauseHead: true,
+		},
+		{
+			name: "no capture succeeded",
+			fake: &sendPlanRecordingFactory{
+				failCapturePaneFrom: capturesFailFrom(0),
+				captureFailStderr:   tmuxMsg,
+			},
+			wantCauseHead: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deadline := tt.deadline
+			if deadline == 0 {
+				deadline = readyTimeoutBudget
+			}
+			msg := readyTimeoutWithin(t, tt.fake, deadline).Error()
+			head, _, _ := strings.Cut(msg, "\n")
+			if !captureAccountingRe.MatchString(head) {
+				t.Errorf("accounting fell past the first newline, where the TUI truncates it.\nhead: %q\nfull: %q", head, msg)
+			}
+			if tt.wantCauseHead && !strings.Contains(head, tmuxMsg) {
+				t.Errorf("the capture error fell past the first newline.\nhead: %q\nfull: %q", head, msg)
+			}
+		})
+	}
+}
+
+// TestReadyMarkerTimeoutKeepsLeadingClause pins the opening clause four other
+// assertions across two modules match on as a substring.
+func TestReadyMarkerTimeoutKeepsLeadingClause(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		fake *sendPlanRecordingFactory
+	}{
+		{"captures succeeded", &sendPlanRecordingFactory{capturePaneOutputs: []string{"still booting\n"}}},
+		{"no capture succeeded", &sendPlanRecordingFactory{failCapturePaneFrom: capturesFailFrom(0)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			msg := readyTimeout(t, tt.fake).Error()
+			want := fmt.Sprintf("ready marker %q not seen in pane %q within ", composerMarkerClaude, "boss-test-sess")
+			if !strings.HasPrefix(msg, want) {
+				t.Errorf("timeout error no longer opens with the ready-marker clause.\n got: %q\nwant prefix: %q", msg, want)
+			}
+		})
+	}
+}
+
+// TestModalRefusalCarriesNoCaptureAccounting pins the deliberate scope line:
+// blockedByModalErr's message is unchanged by BOS-892. The modal refusal path
+// shares the same blindness (it renders a never-read pane as <empty> too), but
+// unifying the two render paths is a separate ticket, and a silent drift here
+// would be a behaviour change nobody asked for.
+func TestModalRefusalCarriesNoCaptureAccounting(t *testing.T) {
+	t.Parallel()
+
+	pane := readPaneFixture(t, claudeQuestionFixture)
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{pane}}
+	err := NewClient(WithCommandFactory(fake.factory)).
+		waitForReadyMarker(context.Background(), "boss-test-sess", sendPlanOpts{
+			deadline:      60 * time.Millisecond,
+			pollInterval:  2 * time.Millisecond,
+			readyMarker:   composerMarkerClaude,
+			modalDetector: func(context.Context, []byte) (bool, error) { return true, nil },
+		})
+	if !errors.Is(err, ErrBlockedByModal) {
+		t.Fatalf("a pane showing a modal was not refused: %v", err)
+	}
+	if captureAccountingRe.MatchString(err.Error()) {
+		t.Errorf("modal refusal picked up capture accounting it is out of scope for: %q", err.Error())
+	}
+	assertNoDestructiveTmuxCalls(t, fake)
 }

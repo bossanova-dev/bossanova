@@ -70,6 +70,29 @@ AuthState is edge-triggered in both directions: a logout cancels any in-flight s
 
 ## Chat / session status
 
+### Liveness signal
+
+An affirmative marker scraped from a **Chat pane**'s current screen that says the agent is
+doing work right now — as distinct from inferring activity from output changing over time.
+
+A liveness signal is only valid for the lifetime of the turn that painted it. Most such
+markers are self-evicting: the agent redraws them away the moment the work they announce
+finishes, which is what lets a bare match count as proof. That property belongs to the
+renderer, not to the bytes — a turn that dies mid-work stops repainting and freezes its last
+frame, so the marker persists indefinitely and goes on asserting work that has ended. A marker
+whose disappearance depends on a live writer therefore needs an explicit freshness bound:
+positive evidence, in the same frame and below the marker's last occurrence, that the turn
+producing it has finished. The bound reads the last occurrence because a turn started after an
+earlier one ended is live again, and the earlier turn's terminators sit above its marker.
+
+The bound is deliberately asymmetric: evidence that proves nothing either way leaves the
+signal live, because a chat wrongly read as idle can be interrupted mid-work by an automated
+lane, while one wrongly read as working only waits. The freshness rule is also owned by a
+single predicate shared by every reader of a marker — liveness is consumed on more than one
+path, so a rule fixed on one path leaves the others asserting the old answer. For the same
+reason a terminator grammar is written for the lifecycle question specifically, never borrowed
+from a classifier built to answer a different one about the same lines.
+
 ### usage-limited
 
 A chat whose coding agent (Claude or Codex) has hit its subscription usage cap and cannot make progress until the cap resets. It is detected read-only — from the CLI's limit banner scraped off the interactive tmux pane (`CHAT_STATUS_LIMITED`, BOS-166) or the exit-log tail of a headless run (BOS-164) — never inferred from ordinary output. When the banner carries a parseable reset time it is threaded through as an absolute instant and rendered as a WARN badge: the chat-level badge shows a bare `limited`, while the session-level badge composes the reset time into `usage-limited (resets ~HH:MM)` (or just `usage-limited` when the reset time is unknown). Session detail additionally names which provider/agent is limited; account-level attribution ("which of my accounts") is out of scope until accounts exist (Epic 3).
@@ -118,6 +141,29 @@ is absent or missing any of its parts is rendered as nothing at all rather than 
 callers skip the line entirely, so the layout does not shift and no unselectable row is left for a
 cursor to strand on.
 
+### Chat title
+
+The human-readable name of a chat. It has **several writers** — a user rename, a caller-supplied
+title at creation, and more than one best-effort backfill that derives a name from the chat's own
+transcript — and, like a Blocked reason, it keeps no history: each write replaces the last.
+
+A **placeholder title** is one no human chose: the empty string, or the literal `New chat` a
+freshly-created chat starts life with. Everything else is a real name. That distinction is the whole
+precedence rule for **title writes**: an explicit rename always wins, and an auto-derived title may
+only ever fill in a placeholder — never overwrite a real name. A derived title is not evidence of
+intent (it is read back out of the transcript, typically the first user message), so a writer that
+clobbered a real name with one would be destroying the only durable record of what the user called
+the chat, in exchange for a name it can always re-derive later.
+
+Because the derivations are best-effort and repeat, **skipping a title write is cheap and taking one
+is not**: another backfill will fill a placeholder in on the next pass, so a writer that cannot
+establish what the stored title currently is must skip rather than guess. That also makes freshness
+part of the rule — a chat can be renamed while it is open, so a writer checks the stored title
+immediately before writing rather than trusting one it read earlier.
+
+The rule is scoped to title writes. It says nothing about deletion: a chat can still be reaped whole
+on other evidence, and a real name does not by itself protect the row.
+
 ## Chat panes and reaping
 
 ### Chat pane
@@ -156,6 +202,27 @@ chat with no current telemetry keeps (absence of evidence is unknown, never idle
 could not be resumed with its history intact keeps regardless of age — reaping that one would
 destroy context rather than reclaim memory. The idle clock is in-memory, so a daemon restart resets
 it; on a host restarted more often than the window, idle reaping simply never fires.
+
+## Session environment
+
+### Inherited path
+
+An absolute filesystem path that one process resolves once and exports into a session's environment,
+where every later command in that session reads it as the location of a tool. It is the counterpart
+of a bare name looked up on a search path: it names an exact file instead of asking the system to
+find one, so it is unambiguous, it outranks any search, and nothing revalidates it.
+
+An inherited path is a hint, never a guarantee, because its correctness is bounded by the lifetime of
+whatever holds the file it names — and that container can be reclaimed independently of both the
+process that exported the path and the session still reading it. The value does not change when the
+file disappears; an environment has no invalidation. So an inherited path is validated at the moment
+of use rather than at the moment of export, and it is consulted as the first candidate of a chain
+whose later candidates must still be reachable when it fails. A chain that accepts its first
+candidate for being _set_ rather than for being _usable_ has no fallback at all, because the arm most
+likely to be stale is the one it consults first. When no candidate resolves, the failure names each
+one tried and why it lost: a tool that cannot be located is otherwise indistinguishable from a
+capability the environment does not have, and that confusion turns a missing file into a silent,
+permanent degrade (see **Callback**).
 
 ## Scheduled sessions (cron)
 
@@ -319,6 +386,12 @@ A registered provider credential (Claude or Codex) that Bossanova can run sessio
 
 The daemon's automatic response to a usage-capped account: put the limited account on cooldown, select the next eligible account for the provider (active, not cooling, lowest priority first), and respawn/resume the interrupted session under it — posting an in-chat notice, and never auto-resending the interrupted prompt. On by default once extra accounts are registered, with per-repo opt-outs; `managed_accounts.enabled=false` (set via `boss settings --no-managed-accounts`; `--no-rotation` is a deprecated alias) is the global kill-switch that halts all automatic rotation, re-read live per decision, while manual `boss account switch` keeps working. Every decision is audit-logged as a rotation event (labels only, never credentials).
 
+### Failover proxy
+
+A loopback HTTP proxy the daemon runs and points every agent's provider traffic at, so model requests pass through Bossanova on their way out. It is what lets a Rotation happen without restarting the agent: the proxy inspects a response's opening frames before committing to them, so a usage-cap refusal that arrives before any content can be retried under a different Account and the replacement response returned in the failure's place — the swap is invisible to the agent process.
+
+Because the agent talks to nothing else, the proxy's lifetime _is_ the agent's connection lifetime, which makes it the last thing a shutdown may tear down rather than the first: cutting it mid-response severs the agent's stream, and the agent reports a lost connection rather than a restart. It is bound whenever the daemon runs; turning managed accounts off withholds its address from new sessions, it does not stop the proxy existing.
+
 ### Cooldown
 
 The per-account "do not select until T" window applied when an account hits its usage cap, where T is the reset time parsed from the provider's limit message (or a conservative default when unparseable). Persisted on the account, so restarts don't forget it.
@@ -341,6 +414,20 @@ By contract each window is a single fraction, but a provider does not always rep
 
 The provider's usage endpoint refusing the daemon's own polling rate. It is evidence about our request volume, not about the account's quota, so it is deliberately not a Cooldown and does not make an account Limited: nothing is written to the account's stored state and its real capacity is untouched. The only correct reaction is caller-side backoff before the next poll, applied in memory by the refresh loop and forgotten on restart. A retry horizon stated by the provider is treated as an unvalidated hint and bounded at both ends before use, since neither an absent value nor an implausibly long one may be honoured literally.
 
+## Daemon shutdown
+
+### Drain
+
+The shutdown phase in which a component stops taking new work but keeps serving what is already in flight, until that work finishes or a budget expires. Two properties separate a real drain from a decorative one: it runs _before_ whatever produces or consumes the in-flight work is torn down — stopping the producers first leaves nothing to drain and makes the drain report an empty set it emptied itself — and it holds a budget of its own rather than sharing a deadline sized for short requests.
+
+A drain reports which of its two endings occurred, finished or expired, because only that distinction tells an operator whether the budget needs changing. The report has to be earned rather than assumed: a graceful-shutdown primitive that abandons its wait on expiry typically leaves the in-flight work still running, so a drain that reports work as cut must perform the cut itself, and one that reports a clean finish must not be reading an unrelated teardown error as failure.
+
+### Shutdown ceiling
+
+A fixed wait, imposed by a layer above the daemon, after which that layer stops being patient — the CLI polling for the socket to disappear, and the OS service manager counting down to an uncatchable kill. Exceeding a ceiling never buys a longer drain; it buys a hard kill that skips the daemon's remaining cleanup, and on the restart path can leave the machine with no daemon running at all.
+
+Because the shutdown's legs run in sequence, it is their _sum_ that must stay under the lowest ceiling, and that makes a lengthening setting a bounded one: what an operator may configure is capped at what the ceilings can service, not at what the setting's author intended. The corollary for tests is that an invariant proved against a leg's default value proves nothing about a configured one — the sum must be checked against the largest value each leg can be made to produce.
+
 ## Multi-instance owner routing
 
 ### Daemon token authority
@@ -360,6 +447,23 @@ Finite daemon commands resolve a global owner and use one dispatcher: local owne
 Long-lived transports (`DaemonStream`, `TerminalStream`, attach/create/chat streams, attach-token issuance, and WebSocket attach) are proxied directly to the current owner. Load-balancer affinity is never a correctness mechanism; an exhaustive RPC catalog and source-level boundary test enforce the distinction between raw streams and distributed finite commands.
 
 ## Chat coordination
+
+### Callback
+
+A standing, one-shot request to be told when a pull request reaches a named state — its checks
+resolving, the PR merging or closing, or the PR becoming ready for review or ready to merge — so a
+run waiting on that event is woken the moment it happens instead of blocking on a poll loop. Registering one is an alternative to waiting, never a
+substitute for deciding: the woken run still reconciles the real state authoritatively before acting.
+
+Callbacks are usable only where two independent things hold: the run is daemon-managed, so something
+is behind the callback interface to answer, **and** the CLI that issues the registration actually
+resolves here as a file this process can execute. An environment can supply the first without the
+second — a scheduled one may export the managed-session marker while leaving the CLI off its search
+path — so a gate keyed on the marker alone reports callbacks usable, arms a registration that cannot
+run, and burns the attempt. Where callbacks are unavailable the waiting run degrades to bounded
+polling, and because that fallback is legitimate behavior rather than an error, the unavailability
+must carry a stated reason: nothing else in the system will ever raise it, so an unexplained degrade
+is indistinguishable from normal operation and can persist indefinitely while runs keep succeeding.
 
 ### Broadcast
 
@@ -386,6 +490,8 @@ The reconciliation between what `bazel test //...` runs and what `make` must sti
 ### Stamp
 
 A content-hash gate over a step's inputs: the step is skipped when the hash is unchanged. Used for cached lint/gen layers (e.g. `GEN_STAMP`, the cached-lint stamp) so unchanged inputs don't re-trigger expensive work.
+
+A stamped step is a caching decision, not an enforcement point. A correctness check mounted on one inherits the skip, and it inherits it precisely for changes outside the hashed input set — so a check that reads a tree the key does not cover goes silently non-gating on exactly the change class it exists to police. The same reasoning governs a CI path filter and a Make prerequisite: whatever triggers a check must be keyed on everything the check reads, not on where it lives.
 
 ### Disk cache
 
@@ -421,6 +527,21 @@ The condition where an installed copy of a toolbox helper is older than the sour
 Drift is reported as a warning at skill preflight rather than enforced as a gate, on the reasoning
 that a stale helper degrades rather than fails — which holds only for helpers that do not hard-reject
 what they do not recognise.
+
+### Byte ratchet
+
+A pinned upper bound on a published skill body's size, asserted in bytes so that prose added to a
+core has to be argued for against everything already there. A ratchet is a one-way mechanism: it may
+be tightened freely as a body shrinks, and loosened only by a deliberate re-baseline that records its
+reason next to the new number.
+
+Two kinds of pin sit alongside a ratchet and are not interchangeable. A **rolling** bound tracks the
+ratchet at a documented margin, and moving it with the ratchet is its stated procedure. A **fixed
+historical measurement** records a size the body actually had at a past moment, and exists to make a
+later reduction provable — moving it destroys the evidence it was created to hold. The two are
+indistinguishable in a diff and distinguishable only from the comment above them, so that comment is
+read before either is touched. A ratchet with little headroom also shapes what may be written under
+it, which is why terse spellings in a skill body are often deliberate and say so.
 
 ## Local attach paste path
 
@@ -459,14 +580,29 @@ while still reading as assurance. It is worse than an absent gate rather than eq
 absent gate leaves a risk everyone downstream still treats as unchecked, while a vacuous one converts
 that risk into a false assurance every consumer spends.
 
-A gate can become vacuous at any of three layers, and each has been observed independently: its
-parser, when it splits on a delimiter the operand may legally contain; its classifier, when the
+A gate can become vacuous at any of five layers, and each has been observed independently: its
+**scan surface**, when the region it reads does not coincide with the corpus its criterion
+quantifies over — narrower, so a defect that is really there is never seen, or wider than the
+artifact it certifies, so a subject that artifact never carried is counted as shown;
+its parser, when it splits on a delimiter the operand may legally contain; its classifier, when the
 written form of a marker is not the form the test recognises, so the item silently leaves the
-contract with no detector anywhere; and its own regression test, when that test borrows the
-definition it was supposed to check independently — normalising the very bytes it exists to pin, or
-measuring a bound in the same unit the guarded code counts in, so it can only ever confirm that the
-code agrees with itself. The failure is silent by construction, because a gate's job is to be quiet
-when nothing is wrong.
+contract with no detector anywhere; its own regression test, when that test borrows the definition
+it was supposed to check independently — normalising the very bytes it exists to pin, or measuring a
+bound in the same unit the guarded code counts in, so it can only ever confirm that the code agrees
+with itself; and its input discovery, when the set of subjects it scans comes back empty and that
+emptiness is reported as a pass rather than as an inability to evaluate. The failure is silent by
+construction, because a gate's job is to be quiet when nothing is wrong.
+
+The first and last layers are the two a **Falsification** usually cannot reach, and so the ones that
+most need checking by hand: the other three mis-answer a value that arrives at the check, while a
+reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
+it. The widened surface is the exception that fixes the rule's shape — there the offending value
+does arrive and the check wrongly accepts it, so one constructed input settles it. Direction decides
+the discipline: a narrowed surface is established by measurement, a widened one by construction. A
+gate therefore owes a floor on how many subjects it found, asserted inside the artifact that
+actually blocks a merge rather than only in its tests. Its cheapest tell is a single check that
+bails loudly on one missing input while returning an empty success on another: two opposite policies
+for one class of missing input means the quiet branch was never considered.
 
 ### Falsification
 
@@ -479,6 +615,112 @@ evidence that a gate is not vacuous.
 Asserting only that a good input still passes is not a falsification — the refusing direction is the
 whole record. A falsification that would stay green with its guard deleted is itself vacuous, one
 level up, which is why the mutation step is part of the definition rather than an optional check.
+
+A falsification proves the guard's **rule**, and a **Scan surface** only where that surface is too
+wide: it hands the value straight to the check, so it can show a check accepting what it should
+refuse, but never that the walker feeding the check fails to reach where the value is written. A
+guard can hold every falsification and still enforce nothing over most of its corpus.
+
+### Scan surface
+
+The region of an artifact a gate actually reads, as distinct from the corpus its acceptance criterion
+quantifies over. A gate that walks fenced code blocks has fenced blocks as its scan surface even when
+the criterion it discharges says "anywhere under this root"; the difference between those two is
+enforcement the project believes it has and does not.
+
+A surface can miss its corpus in either direction, and the two fail differently. Narrower is the
+common case: the gate exits clean over a region that excludes where the defect is written, and the
+loss is a defect never seen. Wider is the case where the gate reads beyond the artifact it
+certifies — where the thing being gated is one artifact and the thing actually read is a larger
+capture taken alongside it — and the loss is the opposite: a pass asserting that an artifact showed
+a subject it never carried. Whenever a gate reads a companion artifact rather than the one it
+certifies, the two are collected by different code and their scopes drift silently; the scope of
+what is read must be derived from the scope of what is certified, not from whatever handle was
+convenient to grab.
+
+A scan surface is inherited, not chosen: a new rule added to an existing scanner gets the surface
+that was picked for the original rule, which was picked for a different defect. A **narrowed** gap
+of that kind is invisible from both ends — the gate exits clean, and the criterion is ticked — so it
+is established by measurement rather than inspection: run the gate over a corpus known to contain
+the defect and compare its finding count against a count obtained some other way. A widened one is
+not established that way, because it hides in a pass rather than in a silence; construct the subject
+the artifact does not carry and watch the gate accept it. Where a reach gap is real and a
+second parser is not worth building, the standard cover is a whole-file assertion that imports the
+rule's own pattern rather than restating it, and that pins how many files it read before asserting it
+found nothing.
+
+### Silently-empty stub
+
+A member of a test double that answers with a zero-valued success no fixture stands behind, handing
+its caller a plausible "nothing here" — an empty list, a clean report — so the test that drove it
+reads as covered while exercising nothing. It is the test-double form of a **Vacuous gate**, and
+worse than an absent member for the same reason: an unimplemented member leaves a gap everyone
+downstream still treats as untested, while a silently-empty one converts that gap into coverage the
+team believes it has.
+
+Every member of a test double therefore belongs to one of exactly two categories, and a third is
+forbidden: **fixture-backed** — state a test can both stage through a seeder and read back, where a
+call log is the fixture whenever the response itself is empty by design — or **unimplemented**,
+refusing loudly. Which one a member gets is decided by whether a real consumer exists today, never by
+uniformity across the surface: a fixture nothing reads is itself a silent gap, drifting out of step
+with the real service while still looking like coverage. A member is promoted from unimplemented to
+fixture-backed when a consumer appears, never softened back the other way, and the invariant is held
+by a test that asserts the refusal — stated in a comment alone it is documentation, and documentation
+does not fail. Being a real process rather than a mock is no defence: a double that genuinely runs and
+genuinely fails is still silently empty when it never emits the field the code path under test reads.
+
+### Diagnostic conflation
+
+A single rendered value standing for two opposite causes — an observation that was taken and came
+back empty, and an observation that was never successfully taken at all — so the diagnostic carrying
+it distinguishes neither, while still reading as a report of what was seen. It is the reporting-side
+member of the family that includes a **Vacuous gate** and a **Silently-empty stub**: a signal that
+looks like information and carries none, and costs more than saying nothing because the reader spends
+it.
+
+The conflation is created by an accumulator whose zero value is also a legitimate observed value, and
+it is not repaired by testing that value for emptiness — a successful observation may legitimately be
+empty, which is exactly the case that must stay distinguishable, so keying on emptiness rebuilds the
+conflation one notch over. The only honest discriminator is whether an observation ever succeeded,
+which means the act of observing must be accounted for separately from the content observed: how many
+attempts succeeded, how many failed, and what the failing tool said in its own words. Where the
+failure clause names a cause, it is owed whenever any attempt failed rather than only when all did,
+since the common shape is a subject that is observable and then is not. A diagnostic also owes its
+ordering to whatever consumes it: where a surface truncates, the accounting belongs ahead of any
+multi-line payload, because a field rendered below the cut does not reach the person deciding.
+
+## Proof capture
+
+### Proof run
+
+A pass over a pull request's diff that captures evidence the change works, uploads it, and attaches
+it to the pull request as a comment. It is demonstration, not verification: a proof run shows the
+change behaving, while tests and gates decide whether it is correct.
+
+A proof run has read-only siblings that answer questions about it without performing it — what would
+be captured for this diff, and whether this host can capture a given surface at all. Those siblings
+share the run's option vocabulary but not its effects, which is why an option a run reads may be
+merely tolerated by a sibling rather than consumed by it.
+
+### Proof surface
+
+The kind of interface a change is demonstrated through — a terminal UI, a web UI, a scripted capture
+of a known route — and therefore which capture path a proof run takes. A surface is a property of
+what must be shown, not of where the code lives: a diff that touches only backend code still proves a
+web surface when the change's own required-proof notes name a user-visible interface.
+
+### Surface plan
+
+The authoritative answer, for one diff, to which proof surfaces must be captured and in what order.
+It is a set rather than a choice, so it may name several surfaces — and it may legitimately be
+**empty**, which is a decision rather than a missing answer: a diff with nothing demonstrable routes
+the run to an honest no-surface note instead of capturing something unrelated.
+
+A single-select classification of the same diff also exists, for deciding whether one host can
+capture one surface. That answer carries a fallthrough default, so it can name a surface the plan
+deliberately excluded. Where the two disagree the surface plan wins, and only the surface plan is
+safe to publish — printing the single-select answer beside it offers a consumer two answers to one
+question with no signal about which is authoritative.
 
 ## Flagged ambiguities
 

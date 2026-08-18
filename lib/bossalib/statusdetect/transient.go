@@ -66,7 +66,19 @@ var leadingStatusRe = regexp.MustCompile(`^[ \t]*([0-9]{3})\b`)
 //
 // "overloaded" covers both the human phrasing and the API's "overloaded_error"
 // type token, which is how a 529 body reads.
-var transientAPIPhraseRe = regexp.MustCompile(`(?i)bad gateway|service unavailable|overloaded|internal server error`)
+//
+// The connection-loss arm is BOS-889: a bossd restart tore down the in-process
+// failover proxy every agent routes through, and each severed stream ended on
+// "API Error: Connection lost mid-response. The response above may be
+// incomplete." — no status code, none of the gateway prose, so the auto-resume
+// lane never armed for any of the three stalled chats. A dropped connection is
+// the same retry class as a 5xx: the request never completed, and resuming the
+// session is exactly the right recovery (verified by hand, 3/3, during the
+// investigation). The arm stays narrow and claude-shaped per the NOTE on
+// IsTransientAPIError — "reset"/"closed" are the sibling wordings of the same
+// transport failure, and nothing here is generalised to codex without a real
+// captured fixture from that runner.
+var transientAPIPhraseRe = regexp.MustCompile(`(?i)bad gateway|service unavailable|overloaded|internal server error|connection lost|connection reset|connection closed`)
 
 // bannerChromeGlyphs are the left-gutter glyphs Claude Code renders before a
 // banner row (assistant marker ⏺, tool-result connector ⎿, and the failure

@@ -5,8 +5,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
+  FILE_URL_CONCAT_PATTERNS,
   SHELL_INFO_STRINGS,
   SKILL_ROOTS,
   checkSkillShellInRepo,
@@ -16,6 +18,7 @@ import {
   findInertGuards,
   findMultiGlobRemovals,
   findSkillMarkdownFiles,
+  findUnsafeNodeEval,
   findUnterminatedHeredoc,
   normalizePlaceholders,
 } from './check-skill-shell.mjs'
@@ -3863,4 +3866,178 @@ test('a lazy paragraph continuation keeps the list item and its fence in scope',
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// node-eval-interpolation (BOS-782)
+// ---------------------------------------------------------------------------
+
+test('findUnsafeNodeEval reports a double-quoted node -e argument', () => {
+  assert.deepEqual(findUnsafeNodeEval(`node -e "console.log('$NAME')"`), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  // Unquoted and partially-quoted sources are the same defect: the shell owns bytes of the program.
+  assert.deepEqual(findUnsafeNodeEval('node -e console.log(1)'), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval(`node -e 'console.log("'"$NAME"'")'`), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  // `--eval`, `--eval=`, and the `-pe` idiom compile their argument identically.
+  assert.deepEqual(findUnsafeNodeEval('node --eval "process.exit($CODE)"'), [
+    { lineOffset: 0, option: '--eval', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval('node --eval="process.exit($CODE)"'), [
+    { lineOffset: 0, option: '--eval', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval('node -pe "$EXPR"'), [
+    { lineOffset: 0, option: '-pe', reasons: ['unquoted-eval'] },
+  ])
+})
+
+test("findUnsafeNodeEval reports a 'file://' concatenation used as an import specifier", () => {
+  // Single-quoted throughout, so the shell interpolates nothing — the concat alone is the defect.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `node --input-type=module -e 'await import("file://" + process.env.DIR + "/m.mjs")'`,
+    ),
+    [{ lineOffset: 0, option: '-e', reasons: ['file-url-concat'] }],
+  )
+  // The template-literal spelling is the same trap.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      "node --input-type=module -e 'await import(`file://${process.env.DIR}/m.mjs`)'",
+    ),
+    [{ lineOffset: 0, option: '-e', reasons: ['file-url-concat'] }],
+  )
+  // Both defects on one line report once, carrying both reasons.
+  assert.deepEqual(
+    findUnsafeNodeEval(`node -e "import('file://'+process.env.DIR+'/m.mjs').then(m=>m.go())"`),
+    [{ lineOffset: 0, option: '-e', reasons: ['unquoted-eval', 'file-url-concat'] }],
+  )
+  // Reported through a command substitution, against the line the substitution opens on.
+  assert.deepEqual(
+    findUnsafeNodeEval(`OUT=$(node -e "import('file://'+process.env.DIR+'/m.mjs')")`),
+    [{ lineOffset: 0, option: '-e', reasons: ['unquoted-eval', 'file-url-concat'] }],
+  )
+})
+
+test('findUnsafeNodeEval permits the env-prefixed, fully single-quoted --input-type=module form', () => {
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `REGISTRY=$(BOSS_TOOLBOX="$BOSS_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { load } = await import(pathToFileURL(process.env.BOSS_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(load()))')`,
+    ),
+    [],
+  )
+  // Values arriving as argv, with a single-quoted CommonJS source, are equally safe.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `PLAN_FILE="$(node -e 'const {resolve}=require("node:path");const [a,b]=process.argv.slice(1);if(resolve(a)!==resolve(b))process.exit(1);process.stdout.write(b)' "$RAW" "$PATH")"`,
+    ),
+    [],
+  )
+  // A single-quoted literal left open at end of line still interpolates nothing.
+  assert.deepEqual(findUnsafeNodeEval("node -e 'const x = 1;\nconsole.log(x)'"), [])
+})
+
+test('findUnsafeNodeEval does not report a path passed as an entry argument (argv-call guard)', () => {
+  // The source note is explicit that the defect is per-line, not per-variable: Node resolves an
+  // entry path against the cwd, so the same $DIR is safe here and unsafe inside an eval.
+  assert.deepEqual(findUnsafeNodeEval('node "$DIR/mod.mjs" --flag'), [])
+  assert.deepEqual(findUnsafeNodeEval('node "$BOSS_PLAN_TOOLBOX/plan-slug.mjs" BOS-1 "title"'), [])
+  // A non-node command carrying -e is not this rule's business.
+  assert.deepEqual(findUnsafeNodeEval('grep -e "$PATTERN" file.txt'), [])
+  // `file://` outside an eval is untouched.
+  assert.deepEqual(findUnsafeNodeEval(`echo "file://" + "$DIR"`), [])
+})
+
+test('checkSkillShellInRepo emits node-eval-interpolation with an accurate file:line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('node-eval')]: md(
+      '# heading',
+      '',
+      '```bash',
+      'set -euo pipefail',
+      `CONFIGURED=$(node -e "import('file://'+process.env.TOOLBOX+'/skill-config.mjs').then(m=>m.go())")`,
+      'echo "$CONFIGURED"',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0].file, '.claude/skills/node-eval/SKILL.md')
+    assert.equal(findings[0].line, 5)
+    assert.equal(findings[0].kind, 'node-eval-interpolation')
+    assert.match(findings[0].message, /single-quoted/)
+    assert.match(findings[0].message, /pathToFileURL/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('findUnsafeNodeEval sees a multi-line eval source whose literal opens at end of line', () => {
+  // The `-e '` opener is a word of its own; the JavaScript arrives on the following physical lines.
+  // Scanning only the opener saw a lone quote and reported nothing — the false negative that hid
+  // four live `file://${…}` template literals in boss-build/boss-epic.
+  const body = [
+    "node --input-type=module -e '",
+    '  const { preflight } = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/tracker/preflight.mjs`)',
+    '  process.stdout.write(JSON.stringify(preflight()))',
+    "'",
+  ].join('\n')
+  assert.deepEqual(findUnsafeNodeEval(body), [
+    { lineOffset: 0, option: '-e', reasons: ['file-url-concat'] },
+  ])
+
+  // The same shape resolved through pathToFileURL is clean, and the multi-line single-quoted source
+  // is still not reported as shell-interpolated.
+  const fixed = [
+    "node --input-type=module -e '",
+    '  import { pathToFileURL } from "node:url"',
+    '  const { preflight } = await import(pathToFileURL(process.env.BOSS_BUILD_TOOLBOX + "/tracker/preflight.mjs").href)',
+    '  process.stdout.write(JSON.stringify(preflight()))',
+    "'",
+  ].join('\n')
+  assert.deepEqual(findUnsafeNodeEval(fixed), [])
+})
+
+test('no skill file builds a file:// specifier by concatenation, in a fence or in prose', () => {
+  // `findUnsafeNodeEval` walks FENCED BLOCKS, so it cannot see the same defect written as an inline
+  // code span in prose — and two of the four lines BOS-782 rewrote are exactly that: the boss-plan
+  // `issueSlug` one-liner and its copy in references/headless-drafting-brief.md, the text a headless
+  // drafting subagent is handed and copies verbatim. Replaying the pre-fix bodies through
+  // `checkSkillShellInRepo` reports the five FENCED sites and neither prose one, so without this
+  // assertion the two lines that generated the ticket are the two it cannot stop regressing.
+  //
+  // Deliberately whole-file rather than per-eval: a `'file://' +` specifier is wrong wherever it is
+  // written, and a payload that wants to DOCUMENT the anti-pattern should do so outside the two
+  // shipped skill roots. The patterns are imported, not restated, so this can never ban a narrower
+  // set than the rule itself catches.
+  const rootDir = fileURLToPath(new URL('..', import.meta.url))
+  // The published plugin mirror is byte-identical to the skillinstall root and separately asserted
+  // to be, but it is what actually ships, so scan it directly rather than through that guarantee.
+  const roots = [...SKILL_ROOTS, 'plugins/bossd-plugin-claude/skilldata/skills']
+  const offenders = []
+  let scanned = 0
+  for (const root of roots) {
+    const absRoot = path.join(rootDir, root)
+    if (!fs.existsSync(absRoot)) continue
+    for (const file of findSkillMarkdownFiles(absRoot)) {
+      scanned += 1
+      const lines = fs.readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        if (FILE_URL_CONCAT_PATTERNS.some((pattern) => pattern.test(line))) {
+          offenders.push(`${path.relative(rootDir, file)}:${i + 1}: ${line.trim()}`)
+        }
+      })
+    }
+  }
+  // A walker that silently found nothing would pass this test forever; pin that it read the corpus.
+  assert.ok(scanned > 50, `expected the skill corpus to be walked, scanned only ${scanned} files`)
+  assert.deepEqual(
+    offenders,
+    [],
+    `resolve the specifier with pathToFileURL(<path>).href instead of concatenating 'file://' — a relative path concatenated this way resolves as a bare package, and an absolute one truncates at a '#':\n${offenders.join('\n')}`,
+  )
 })

@@ -20,8 +20,10 @@ go_test(
         "login_test.go",
         "question_test.go",
         "spinner_test.go",
+        "stall_test.go",
         "transient_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":statusdetect"],
     deps = ["//lib/bossalib/agenterr"],
 )

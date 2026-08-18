@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,41 @@ func TestGenerateUnit(t *testing.T) {
 	}
 	if strings.Contains(mcpUnit, "LimitNOFILE") {
 		t.Error("MCP unit should not contain LimitNOFILE (bossd-only FD raise)")
+	}
+}
+
+// TestGeneratedUnitTimeoutStopSecCoversShutdownBudget pins the Linux half of
+// the BOS-888 ceiling chain. systemd SIGKILLs bossd at TimeoutStopSec, and a
+// hard kill there skips the deferred database.Close and the socket cleanup. The
+// distro default (90s) is generous, but a distro that lowered it would cut the
+// failover proxy drain, so the unit pins its own value — which must exceed
+// LifecycleShutdownTimeout for the CLI's wait to be what bounds a stuck
+// shutdown. Note the reach limit recorded in systemd.go: this covers new
+// installs only, because platformRestart does not regenerate the unit.
+func TestGeneratedUnitTimeoutStopSecCoversShutdownBudget(t *testing.T) {
+	unit, err := generateUnit("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generateUnit: %v", err)
+	}
+
+	const key = "TimeoutStopSec="
+	var value string
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, key) {
+			value = strings.TrimSpace(strings.TrimPrefix(line, key))
+			break
+		}
+	}
+	if value == "" {
+		t.Fatalf("unit has no %s line; a distro that lowered DefaultTimeoutStopSec would cut the proxy drain", key)
+	}
+	secs, err := strconv.Atoi(value)
+	if err != nil {
+		t.Fatalf("TimeoutStopSec value %q: %v", value, err)
+	}
+
+	if got := time.Duration(secs) * time.Second; got <= LifecycleShutdownTimeout {
+		t.Fatalf("unit TimeoutStopSec = %v, want > LifecycleShutdownTimeout = %v so the CLI's wait, not systemd's SIGKILL, bounds a stuck shutdown", got, LifecycleShutdownTimeout)
 	}
 }
 

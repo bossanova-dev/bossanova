@@ -1,0 +1,57 @@
+       1 # BOS-869 — Decide whether the TUI detach path should stop clobbering a user rename with a derived title
+       3 ## Summary
+       5 `AttachModel.updateChatTitle` (`services/boss/internal/views/attach.go:611-644`) runs on chat exit and detach. It re-derives a title from the agent transcript's first user message and writes it throu
+         gh the deliberately-unguarded `UpdateChatTitle` RPC without ever looking at the title already stored, so a chat the user renamed is renamed back on every detach. The decision this ticket asks for: **
+         .
+       7 ## Approach
+       9 - **Guard the detach write; do not keep the behaviour and do not add a source marker.** BOS-611 already ratified that a first-user-message-derived title is non-authoritative (`Explicit: false`) and m
+         ust not replace a non-placeholder title. The detach writer is the one place that settled rule goes unenforced, so "keep it and document why" is not defensible. A per-title source marker needs a schem
+      10 - **Read the stored title fresh at detach, inside the closure, immediately before the write** — `m.client.ListChats(m.ctx, m.sessionID)`, matched on `m.agentSessionID`. The rejected alternative is ca
+         pane can rename its own chat through the MCP `update_chat_title` tool, and `boss chat rename` and the web UI run from a second terminal. Renaming while attached is a normal path, not a race.
+     … +171 lines
+
+
+
+
+⏺ Step 4.5: bootstrap-only → fresh, full plan scope. Now Step 5 — methodology resolution.
+
+  Read 1 file, ran 1 shell command
+
+⏺ Tier-1 extension boss-build-ce found. Pre-dispatch clean-tree check and HEAD snapshot:
+
+  Ran 2 shell commands
+
+⏺ Dispatching the Tier-1 methodology extension:
+
+⏺ Agent(Implement BOS-869 via ce-work)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The methodology extension is running. Status so far:
+
+  - Preflight — headless, BOSSD_MANAGED=1, transport cli (degraded: createPlanningChat, getSessionStatuses, resolveContext; partial: getSession). Deadline armed at 4h.
+  - Step 1 — worktree lock ACQUIRED.
+  - Step 2 — BOS-869 selected (explicitly named). Both blockers cleared (BOS-811 Done, BOS-849 Done), so no override warning. Canonical plan attachment present.
+  - Step 2.5 — PR #2068 exists with only bossd's bootstrap commit → fresh, reuse the bootstrap PR. REVIEW_BASE = a50325ea9.
+  - Step 3 — claim WON and confirmed on a second pass.
+  - Step 4 — plan validated (contract v1, all sections) and copied to docs/plans/BOS-869-…md.
+  - Step 5 — Tier-1 extension boss-build-ce dispatched, awaiting its return.
+
+  I'll pick up at the post-dispatch verification when it completes.
+
+✻ Waiting for 1 background agent to finish
+
+⏺ Agent "Implement BOS-869 via ce-work" failed: Agent terminated early due to an API error: API Error: Connection lost mid-response. The response above may be incomplete.
+  ⎿  Found 2 new diagnostic issues in 2 files (ctrl+o to expand)
+
+
+⏺ The dispatched extension died mid-run on an API error. Running the post-dispatch verification.
+
+⏺ API Error: Connection lost mid-response. The response above may be incomplete.
+
+✻ Worked for 19m 9s
+                                                                                                                                                                                new task? /clear to save 192.9k tokens
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Silence — the run is mid-dispatch and unattended by design.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  bos-869-decide-whether-the-tui-detach-path-should-stop-clobbering-a Opus 5 (1M context) 81% remaining
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #2068 · ← 1 agent

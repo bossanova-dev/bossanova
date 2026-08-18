@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import fs from 'node:fs'
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
+
+import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
@@ -45,6 +47,47 @@ const BUILD_MIRRORS = [CORE, 'plugins/bossd-plugin-claude/skilldata/skills/boss-
 const FINALIZE_REF = 'references/finalize-and-stop.md'
 const finalizeAndStop = (dir = CORE) =>
   fs.readFileSync(path.join(rootDir, dir, FINALIZE_REF), 'utf8')
+
+// ---------------------------------------------------------------------------
+// A FROZEN CLOCK for the budget snippets lifted out of the shipped markdown.
+//
+// Several of those snippets read the wall clock themselves (`now=$(date +%s)`) while the absolute
+// deadline they are handed is computed here in JS. Two clocks sampled at two instants make every
+// derived budget `intended - (T_bash - T_js)`, so a runner slow enough to take a second spawning
+// bash silently shrinks the answer. That is why a handful of these assertions carried a ±1s
+// tolerance — a flake in the harness, never a property of the clamp, and a tolerance is exactly
+// how an assertion drifts toward vacuous. Shadowing `date` on PATH with a stub that prints one
+// fixed epoch (the technique scripts/worktree-lock.test.mjs case 13 uses to shadow `stat`) puts
+// both sides on the same instant, so those assertions become exact equality — strictly stronger
+// than the tolerance they replace. The stub answers ANY `date` invocation, not just `date +%s`.
+const FROZEN_EPOCH = 1700000000
+const frozenClockDirs = []
+let frozenClockPathCache
+function frozenClockPath() {
+  if (!frozenClockPathCache) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-frozen-clock-'))
+    frozenClockDirs.push(dir)
+    fs.writeFileSync(path.join(dir, 'date'), `#!/usr/bin/env sh\necho ${FROZEN_EPOCH}\n`, {
+      mode: 0o755,
+    })
+    frozenClockPathCache = `${dir}${path.delimiter}${process.env.PATH}`
+    // Fail loudly if the shadow does not take. A PATH that silently failed to shadow would
+    // restore the real clock underneath an exact-equality gate and re-open the very flake this
+    // helper closes — with no symptom until a loaded runner produced one.
+    assert.equal(
+      execFileSync('bash', ['-c', 'date +%s'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: frozenClockPathCache },
+      }).trim(),
+      String(FROZEN_EPOCH),
+      'the date stub must shadow the real clock, or these budgets are not deterministic',
+    )
+  }
+  return frozenClockPathCache
+}
+after(() => {
+  for (const dir of frozenClockDirs) fs.rmSync(dir, { recursive: true, force: true })
+})
 
 test('BOS-711: ownership ranges use the resolved remote base, not a stale local branch', () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-bos-711-'))
@@ -124,7 +167,7 @@ test('headless mode + mode-aware proof are present', () => {
 
 test('BOS-840: Preflight allows approximately four hours, not the retired three-hour or 45-minute caps', () => {
   const skill = fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
-  const preflight = skill.slice(skill.indexOf('## Preflight'), skill.indexOf('## Step 1:'))
+  const preflight = region(skill, '## Preflight', '## Step 1:')
 
   assert.match(preflight, /~4 hours/i)
   // Both retired caps stay named, so a prose-only revert to either cannot pass while the
@@ -387,8 +430,17 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // tick — a template showing only diff-demonstrated rows teaches exactly the tick this ticket
   // exists to stop. Everything else the change needed (the Step 9 gate, its falsifiability note and
   // the reclassification route, ~2 KB) went into the unratcheted references/finalize-and-stop.md.
-  const RATCHET = 80721 // exact measured resident body
-  // Headroom to the pre-extraction baseline is now 96 bytes (80817 - 80721) — read that as the
+  // BOS-782 re-baselines 80721 → 80805 (+84 B) for the two toolbox imports in the resident bash
+  // blocks. Both built their ESM specifier as `file://${…}`, which resolves a RELATIVE toolbox path
+  // as a bare package (ERR_MODULE_NOT_FOUND / ERR_INVALID_FILE_URL_HOST) and truncates an absolute
+  // one at a `#`. Each now resolves through `pathToFileURL(…).href` — the form boss-review/SKILL.md
+  // already proves and `check-skill-shell`'s `node-eval-interpolation` rule now enforces. Resident
+  // by necessity: the blocks are the thing a run executes, and no cheaper spelling survives a
+  // relative path. Written as `import{pathToFileURL as u}from"node:url"` + `u(…)` rather than the
+  // spaced form, which measured 80833 and would have breached the 80817 pre-extraction baseline —
+  // the aliasing is what buys the 12 B of headroom back, not decoration.
+  const RATCHET = 80805 // exact measured resident body
+  // Headroom to the pre-extraction baseline is now 12 bytes (80817 - 80805) — read that as the
   // real budget before writing ANY resident prose, because this assertion is the only thing
   // standing between the extraction's ~11.8 KB and it being quietly re-spent. When it reds, the fix
   // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
@@ -425,7 +477,13 @@ test('BOS-851: the knowledge phase is resident and sits between Step 6 and Step 
     // Position is not reachability. Step 6 ends in a verdict switch whose `clean` arm is the only
     // way onward; while it still said "proceed to Step 7" the phase above was correctly placed and
     // completely unreachable, and every assertion in this test passed. Pin the arm's target too.
-    const verdictSwitch = body.slice(body.indexOf('**Route on the file verdict.**'), phase)
+    // Same bound as `phase` above, named rather than passed as an index: `region()` takes
+    // markers, and a heading rename now throws here instead of yielding a 1-char window.
+    const verdictSwitch = region(
+      body,
+      '**Route on the file verdict.**',
+      '## Step 6.5: Knowledge extensions',
+    )
     const cleanArm = verdictSwitch.split('\n').find((l) => l.startsWith('- `clean`'))
     assert.ok(cleanArm, `${dir}: Step 6 must carry a \`clean\` verdict arm`)
     assert.match(
@@ -619,10 +677,10 @@ test('methodology extension returns the commits the tier-1 gate checks for', () 
   // successful extension unable to satisfy the gate and classified as having landed nothing.
   for (const skillDir of METHODOLOGY_EXTENSION_DIRS) {
     const skill = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')
-    const returnObject = skill.slice(
-      skill.indexOf('```json'),
-      skill.indexOf('```', skill.indexOf('```json') + 7),
-    )
+    // The closing fence is a suffix of the opening one, so the end marker must be searched
+    // from after the start — `region()`'s search-from-0 would land on the opening fence
+    // itself. Byte-identical to the raw `indexOf('```', i + '```json'.length)` form.
+    const returnObject = regionUntilNext(skill, '```json', '```')
     assert.match(
       returnObject,
       /"commitsMade"/,
@@ -787,14 +845,15 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
       path.join(rootDir, dir, 'references/review-stack.md'),
       'utf8',
     )
-    const tierSelection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6 entry — review tier selection'),
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+    const tierSelection = region(
+      reviewStack,
+      '## Step 6 entry — review tier selection',
+      '## Step 6: Whole-branch review loop',
     )
-    const step6c = reviewStack.slice(
-      reviewStack.indexOf('## Step 6c: Consolidated multi-lens review'),
-    )
-    assert.ok(step6c.length > 0, `${dir}: review-stack.md must carry a Step 6c section`)
+    // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
+    // region, so such a pin could never fail. Deleted rather than left standing as decoration:
+    // an assertion that cannot go red is the same false assurance this ticket exists to end.
+    const step6c = region(reviewStack, '## Step 6c: Consolidated multi-lens review')
 
     // (a) The formula must name the constant and say it is a bound, not a price. A bare `+ 15` is
     // indistinguishable from the underestimate this closes.
@@ -1261,17 +1320,16 @@ test('boss-review bounds its INITIAL passes by the caller deadline, not only the
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
       'utf8',
     )
-    const section = (from, to) =>
-      reviewSkill.slice(reviewSkill.indexOf(from), to ? reviewSkill.indexOf(to) : undefined)
+    // `to` omitted means "to end of source" — `region()`'s null end marker, which is what
+    // the old `: undefined` arm produced.
+    const section = (from, to) => region(reviewSkill, from, to || null)
 
     // The shared definition must exist ahead of the phases it bounds, or each phase invents its own.
+    // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
+    // region.
     const shared = section('## Caller deadline', '## Findings contract')
     assert.ok(
-      shared.length > 0,
-      `${dir}: boss-review must define the caller deadline once, up front`,
-    )
-    assert.ok(
-      reviewSkill.indexOf('## Caller deadline') < reviewSkill.indexOf('## Phase 1'),
+      precedes(reviewSkill, '## Caller deadline', '## Phase 1', `${dir}: boss-review SKILL.md`),
       `${dir}: the deadline contract must be stated before the first phase it bounds`,
     )
     for (const [pattern, why] of [
@@ -1334,7 +1392,9 @@ test('boss-review bounds its INITIAL passes by the caller deadline, not only the
       '### Tier 2 — host-native whole-diff review',
       '### Tier 3 — inline whole-diff rubric',
     ]) {
-      const body = reviewSkill.slice(reviewSkill.indexOf(tier), reviewSkill.indexOf(tier) + 500)
+      // Fixed 500-char window from the tier heading: `src.slice(i, i + 500)` is exactly
+      // `src.slice(i).slice(0, 500)`, so this is byte-identical with a fail-closed start.
+      const body = region(reviewSkill, tier).slice(0, 500)
       assert.match(
         body,
         /Caller\s+deadline\s+gate\s+admits\s+another\s*\n?\s*`DEADLINE_LEG_SECONDS`/i,
@@ -1414,7 +1474,7 @@ test('Step 5 directs a TUI PR to author + commit a proof scenario before finaliz
   // names, which are owned downstream (BOS-217).
   for (const skillPath of RESIDENT_BODY_SKILLS) {
     const skill = fs.readFileSync(path.join(rootDir, skillPath), 'utf8')
-    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    const step5 = region(skill, '## Step 5:', '## Step 6:')
     assert.match(
       step5,
       /proof\/scenarios\/\*\.scenario\.json/,
@@ -1505,7 +1565,7 @@ const claudeBody = () => fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`),
 
 test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)', () => {
   const skill = finalizeAndStop() // BOS-674: Step 8 moved out of the resident body
-  const step8 = skill.slice(skill.indexOf('## Step 8:'), skill.indexOf('## Step 9:'))
+  const step8 = region(skill, '## Step 8:', '## Step 9:')
   const tagIdx = step8.indexOf('inject-pr-tag')
   const gateIdx = step8.search(/Then run \*\*boss-repair\*\*/)
   assert.ok(
@@ -1521,7 +1581,7 @@ test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)',
 
 test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
   const skill = finalizeAndStop() // BOS-674: Step 9 moved out of the resident body
-  const step9 = skill.slice(skill.indexOf('## Step 9:'), skill.indexOf('## Step 10:'))
+  const step9 = region(skill, '## Step 9:', '## Step 10:')
   assert.match(step9, /idempotent/i, 'Step 9 must document the idempotent guard')
   // Guarded re-inject: conditional on commits still lacking the tag, not an unconditional rewrite.
   assert.match(step9, /if git log[^\n]*grep -qv/, 'Step 9 re-inject must be conditional')
@@ -1531,7 +1591,12 @@ test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
 
 test('Step 7 always posts the boss-review comment, unconditionally (BOS-181)', () => {
   const skill = claudeBody()
-  const step7 = skill.slice(skill.indexOf('## Step 7:'), skill.indexOf('## Step 8:'))
+  // BOS-737: the end marker was `## Step 8:`, which BOS-674 deleted from the resident body
+  // when it folded Steps 8-12 into one section. `indexOf` returned -1, `slice(i, -1)` handed
+  // back the whole tail of the document, and both positive assertions below were satisfiable
+  // by text from any later section. `## Steps 8-12:` is the real next heading — the same
+  // bound the sibling Step 7 assertions already use.
+  const step7 = region(skill, '## Step 7:', '## Steps 8-12:')
   // The old conditional-skip clause is gone.
   assert.doesNotMatch(step7, /Skip this when Step 6c was skipped/i)
   // Always upsert one marker comment, with an honest fallback when there is no report.
@@ -1590,7 +1655,7 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     // BOS-674: Steps 9 and 12 moved to references/finalize-and-stop.md, but the invariant is
     // load-bearing enough that the resident pointer block must restate it — a reader who never
     // opens the reference still learns that readying and REVIEW_READY are gated on it.
-    const pointers = body.slice(body.indexOf('## Steps 8-12:'), body.indexOf('## Cron gate'))
+    const pointers = region(body, '## Steps 8-12:', '## Cron gate')
     assert.match(
       pointers,
       /no required item was deferred/,
@@ -1604,13 +1669,13 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
 
     // Enforced at the finalize gate (Step 9) and terminal-state selection (Step 12).
     const ref = finalizeAndStop(path.dirname(rel))
-    const step9 = ref.slice(ref.indexOf('## Step 9:'), ref.indexOf('## Step 10:'))
+    const step9 = region(ref, '## Step 9:', '## Step 10:')
     assert.match(
       step9,
       /no required item was deferred/,
       `${mirror}: Step 9 must assert no required item was deferred before readying`,
     )
-    const step12 = ref.slice(ref.indexOf('## Step 12:'))
+    const step12 = region(ref, '## Step 12:')
     assert.match(
       step12,
       /REVIEW_READY only with no deferred required item/,
@@ -1629,14 +1694,14 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
 test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
-    const section = sliceSection(body, '## Decide vs ABORT', '## Mode detection', `${dir}/SKILL.md`)
+    const section = region(body, '## Decide vs ABORT', '## Mode detection', `${dir}/SKILL.md`)
 
     // A.1 — slice the ABORT list itself, and assert every bullet over THAT slice rather than over
     // the section. The section now spans both groups, so a section-wide match cannot tell a bullet
     // that was DELETED from one that was RELOCATED into the decide-and-record group — and silent
     // relocation is this file's documented failure mode, the very thing this ticket is performing.
     // Every assertion below therefore reads `abortList`, never `section`.
-    const abortList = sliceSection(
+    const abortList = region(
       section,
       'must **ABORT to BLOCKED**',
       'On any of these:',
@@ -1712,15 +1777,17 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
 
     // A.5 — the decide-and-record group, sliced, must carry the moved condition AND a recording
     // home. "Decide" without "record where" is the inert half of this change.
-    // Hand-rolled rather than `sliceSection`: this group runs to the END of the section, and there
-    // is no end marker to hand that helper — an invented one would pin a boundary this assertion
-    // does not care about and fail on an ordinary edit after the group.
-    const recordStart = section.indexOf('**Decide and record, never abort**')
-    assert.ok(
-      recordStart !== -1,
-      `${dir}/SKILL.md: Decide vs ABORT must carry a decide-and-record group`,
+    // This group runs to the END of the section, and inventing an end marker would pin a boundary
+    // this assertion does not care about and fail on an ordinary edit after the group. BOS-737:
+    // that used to force a hand-rolled `indexOf` + `!== -1` guard, because the local helper
+    // required an end marker; `region()` takes a null end marker meaning "to the end of source",
+    // so the guard is the helper's own throw now, and the label still names the mirror.
+    const recordGroup = region(
+      section,
+      '**Decide and record, never abort**',
+      null,
+      `${dir}/SKILL.md: Decide vs ABORT`,
     )
-    const recordGroup = section.slice(recordStart)
     assert.match(
       recordGroup,
       /a plan with unresolved decisions/,
@@ -1747,7 +1814,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     // two landing states, so an unsatisfied criterion freed from BLOCKED falls through to
     // REVIEW_READY — strictly worse than aborting. The sibling ticket owns moving this; when it
     // does, this assertion is the one it must deliberately update.
-    const hardRules = sliceSection(body, '## Hard rules', '## Trust rules', `${dir}/SKILL.md`)
+    const hardRules = region(body, '## Hard rules', '## Trust rules', `${dir}/SKILL.md`)
     assert.match(
       hardRules,
       /any in-scope acceptance criterion left unsatisfied/,
@@ -1790,7 +1857,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
       )
     }
     assert.match(
-      sliceSection(
+      region(
         body,
         'Return only the fixed short task-contract:',
         '## Step 6: Whole-branch review',
@@ -1890,7 +1957,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
     const body = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
 
     // B.1a — the Step 5 overlay statement of the contract.
-    const overlay = sliceSection(
+    const overlay = region(
       body,
       '**boss-build overlay:**',
       '**Commit-before-return contract.**',
@@ -1904,7 +1971,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
 
     // B.1b — the tier-3 restatement of the same contract. Two enumerations that disagree are how
     // a dispatched subagent reads the one that omits the element it was told to record.
-    const restatement = sliceSection(
+    const restatement = region(
       body,
       'Return only the fixed short task-contract:',
       '## Step 6: Whole-branch review',
@@ -1921,7 +1988,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
     // the heading AND its placeholder line at the start of a line: Step 7 prose now cites
     // `## Autonomous decisions` inline (see B.3), so a bare substring match would be satisfied by
     // the citation and could no longer be falsified by deleting the template heading it names.
-    const step7 = sliceSection(body, '## Step 7: PR gate', '## Steps 8-12:', `${dir}/SKILL.md`)
+    const step7 = region(body, '## Step 7: PR gate', '## Steps 8-12:', `${dir}/SKILL.md`)
     assert.match(
       step7,
       /^## Autonomous decisions\n- <decision \+ rationale>$/m,
@@ -1985,7 +2052,7 @@ test('BOS-303: an empty/bootstrap draft PR placeholder is adopted and resumed, n
     /bossd's bootstrap draft, an empty PR[^\n]*is \*\*adopted and\s*\n?resumed\*\*, not a stop condition/,
     'boss-build must state an existing empty/bootstrap draft PR is adopted and resumed, not a stop condition',
   )
-  const step25 = skill.slice(skill.indexOf('## Step 2.5:'), skill.indexOf('## Step 3:'))
+  const step25 = region(skill, '## Step 2.5:', '## Step 3:')
   assert.match(
     step25,
     /empty bootstrap PR is adoptable, never foreign/,
@@ -2006,7 +2073,7 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirror
   // three so the discoverability fix can never silently regress to a buried wait-step hint.
   for (const dir of BUILD_MIRRORS) {
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
-    const hardRules = skill.slice(skill.indexOf('## Hard rules'), skill.indexOf('## Trust rules'))
+    const hardRules = region(skill, '## Hard rules', '## Trust rules')
     assert.match(
       hardRules,
       /Prefer a callback over blind polling/i,
@@ -2075,8 +2142,8 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
   // The pointer is sibling-relative: these steps now live inside `references/` themselves, so a
   // `references/`-prefixed target would resolve to `references/references/callback-watches.md`.
   // The link must therefore NOT carry that prefix — assert the resolvable form.
-  const step8 = stepsRef.slice(stepsRef.indexOf('## Step 8:'), stepsRef.indexOf('## Step 9:'))
-  const step9 = stepsRef.slice(stepsRef.indexOf('## Step 9:'), stepsRef.indexOf('## Step 10:'))
+  const step8 = region(stepsRef, '## Step 8:', '## Step 9:')
+  const step9 = region(stepsRef, '## Step 9:', '## Step 10:')
   for (const [name, step] of [
     ['Step 8', step8],
     ['Step 9', step9],
@@ -2291,7 +2358,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // phrase that gates suppression AND fall-through AND tier 3's own entry condition — has to be
     // defined here rather than left to the reader. Scope the check to the Tier-1 block so a stray
     // definition elsewhere in a 70KB file cannot satisfy it.
-    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    const step5 = region(skill, '## Step 5:', '## Step 6:')
     const tier1Start = step5.indexOf('Tier 1 — discovered methodology extensions')
     const tier2Start = step5.indexOf('Tier 2 — host built-in')
     assert.ok(
@@ -2526,7 +2593,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
 test('BOS-519: commit-before-return contract reaches all three dispatch paths (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
-    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    const step5 = region(skill, '## Step 5:', '## Step 6:')
 
     // Slice on a marker that must exist: a missing marker makes `indexOf` return -1, and
     // `slice(0, -1)` would silently hand back nearly all of Step 5 — so an overlay-scoped
@@ -2686,9 +2753,10 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     )
 
     // Path 2 — tier-1 methodology extensions inherit and pass the contract down.
-    const tier1 = step5.slice(
-      step5.indexOf('Tier 1 — discovered methodology extensions'),
-      step5.indexOf('Tier 2 — host built-in'),
+    const tier1 = region(
+      step5,
+      'Tier 1 — discovered methodology extensions',
+      'Tier 2 — host built-in',
     )
     assert.match(
       tier1,
@@ -2704,10 +2772,7 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // Path 2b — tier 2 hands a host-native affordance the same contract. Without this the one
     // dispatch route that delegates to the host's own implementation loop silently opts out of
     // committing per task, and its subagents return dirty like the pre-BOS-519 behaviour.
-    const tier2 = step5.slice(
-      step5.indexOf('Tier 2 — host built-in'),
-      step5.indexOf('Tier 3 — inline TDD methodology'),
-    )
+    const tier2 = region(step5, 'Tier 2 — host built-in', 'Tier 3 — inline TDD methodology')
     assert.match(
       tier2,
       /\*\*commit-before-return contract\*\*/,
@@ -2758,7 +2823,7 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
 test('BOS-519: orchestrator verifies clean tree + advanced log and recovers residue (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
-    const step5 = skill.slice(skill.indexOf('## Step 5:'), skill.indexOf('## Step 6:'))
+    const step5 = region(skill, '## Step 5:', '## Step 6:')
 
     assert.match(
       step5,
@@ -3127,7 +3192,7 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
 test('BOS-519: resume dispatches only the remainder from committed state (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
-    const step45 = skill.slice(skill.indexOf('## Step 4.5:'), skill.indexOf('## Step 5:'))
+    const step45 = region(skill, '## Step 4.5:', '## Step 5:')
 
     // The resident sentence lives in Step 4.5 so a resume can't miss it.
     assert.match(
@@ -3251,22 +3316,22 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
 // Step 6b outside-voice pass. Assertions are section-scoped (slice the section, then assert inside
 // the slice): a whole-file `assert.match` is exactly the name-exact ratchet failure mode this
 // ticket exists to prevent.
-function sliceSection(doc, startMarker, endMarker, label) {
-  const start = doc.indexOf(startMarker)
-  const end = doc.indexOf(endMarker)
-  assert.ok(
-    start !== -1 && end > start,
-    `${label} must contain both "${startMarker}" and "${endMarker}", in order`,
-  )
-  return doc.slice(start, end)
-}
+//
+// BOS-737: the local `sliceSection(doc, startMarker, endMarker, label)` helper that used to sit
+// here was `region()` with a MANDATORY label and a hand-rolled `start !== -1 && end > start`
+// guard — a fourth copy of the guard family this ticket deletes. Its 26 call sites now call `region()`
+// directly with the same four arguments in the same order, which is what gives `region()`'s
+// `label` parameter its real callers: every one of them passes `${dir}/SKILL.md` (or a
+// `${dir}/...` refinement) from inside a mirror loop, so a failure names the mirror that drifted
+// as well as the marker that moved. The message gets strictly more specific — "must contain both
+// X and Y, in order" named both markers; `region()` names the one that actually moved.
 const readReviewStack = (dir) =>
   fs.readFileSync(path.join(rootDir, dir, 'references/review-stack.md'), 'utf8')
 
 test('BOS-742: Step 6b confirms or falsifies an outside-voice finding before any fix is authored (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = readReviewStack(dir)
-    const step6b = sliceSection(
+    const step6b = region(
       reviewStack,
       '## Step 6b:',
       '## Step 6c:',
@@ -3316,7 +3381,7 @@ test('BOS-742: the pre-change three-value disposition list is no longer the comp
     /disposition \(`Fixed` \/ `Rejected: <reason>` \/ `Duplicate-of-prior`\)/
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = readReviewStack(dir)
-    const step6b = sliceSection(
+    const step6b = region(
       reviewStack,
       '## Step 6b:',
       '## Step 6c:',
@@ -3340,7 +3405,7 @@ test('BOS-742: the pre-change three-value disposition list is no longer the comp
 test('BOS-742: Step 6 keeps "never re-litigates settled items" and adds the rationale-is-reviewable clause (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = readReviewStack(dir)
-    const step6 = sliceSection(
+    const step6 = region(
       reviewStack,
       '## Step 6:',
       '### Mechanical remediation',
@@ -3363,13 +3428,13 @@ test('BOS-742: Step 6 keeps "never re-litigates settled items" and adds the rati
 test('BOS-742: the added Step 6/6b prose stays project-agnostic (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = readReviewStack(dir)
-    const step6 = sliceSection(
+    const step6 = region(
       reviewStack,
       '## Step 6:',
       '### Mechanical remediation',
       `${dir}/references/review-stack.md`,
     )
-    const step6b = sliceSection(
+    const step6b = region(
       reviewStack,
       '## Step 6b:',
       '## Step 6c:',
@@ -3411,9 +3476,10 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // low, pick the degraded tier" satisfies the assertion above while restoring exactly the
     // argue-it-either-way selection the section exists to eliminate. Pin the named budget, the
     // round cap it is derived from, and both comparison directions.
-    const tierSelection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6 entry — review tier selection'),
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+    const tierSelection = region(
+      reviewStack,
+      '## Step 6 entry — review tier selection',
+      '## Step 6: Whole-branch review loop',
     )
     for (const [pattern, why] of [
       [/FULL_TIER_MINUTES/, 'the threshold must be a named, computed budget'],
@@ -3560,8 +3626,23 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // a SUBSECTION of the tier-selection section, so `tierSelection` runs straight through it — and
     // the degraded tier carries its own copy of this command. Unbounded, reverting the below-floor
     // route to a bare print-only helper leaves this assertion satisfied by the OTHER route's block.
-    const belowFloor = tierSelection.slice(0, tierSelection.indexOf('### Degraded tier (minimal)'))
-    assert.ok(belowFloor.length > 0, `${dir}: tier selection must precede the degraded tier`)
+    // BOS-737: the bound the paragraph above calls load-bearing was itself fail-OPEN. Raw, a
+    // renamed heading made `indexOf` return -1 and `slice(0, -1)` hand back nearly all of
+    // `tierSelection` — the degraded tier's own copy of this command included — so both
+    // positive assertions below would have been satisfied by the very route this window exists
+    // to exclude. `assert.ok(belowFloor.length > 0)` could not catch it either: a near-whole
+    // region has length. `region()` throws on the renamed heading instead.
+    // Scoped to `tierSelection`, not to the whole `reviewStack`: the paragraph above says the
+    // bound exists to keep the degraded tier's own copy of this command out of the window, and
+    // searching the whole file re-opens exactly that. Renamed, both forms throw; MOVED past
+    // `## Step 6: Whole-branch review loop`, the whole-file form still finds it and hands back a
+    // cross-section window, while this one throws because the marker has left the section.
+    // Byte-identical today — `tierSelection` begins at the start marker, so its index is 0.
+    const belowFloor = region(
+      tierSelection,
+      '## Step 6 entry — review tier selection',
+      '### Degraded tier (minimal)',
+    )
     assert.match(
       belowFloor,
       /node\s+"\$RUN_SENTINEL"\s+write\s+"\$RUN_DIR"\s+"\$RUN_ID"\s+review[\s\S]{0,160}sentinel\s+capped\s+1/,
@@ -3592,7 +3673,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // a mutant that deletes the whole tier body and replaces it with "an open must-fix is deferred
     // and the run proceeds to REVIEW_READY" still passes every one of them — i.e. the two
     // assertions guarding against exactly that coverage laundering are the ones that cannot fail.
-    const degradedRest = reviewStack.slice(reviewStack.indexOf('### Degraded tier (minimal)'))
+    const degradedRest = region(reviewStack, '### Degraded tier (minimal)')
     const degradedEnd = degradedRest.search(/\n## /)
     const degraded = degradedEnd === -1 ? degradedRest : degradedRest.slice(0, degradedEnd)
     assert.match(
@@ -4010,7 +4091,7 @@ test('BOS-859: the degraded repair pass is eligibility-gated and cites the abort
     // …and the abort set itself, in BOTH places: the citation would be worthless if the cited
     // predicate quietly lost a term, and the repair pass would be unsafe if its own copy did.
     assert.match(repair, HARD_ABORT_SET, `${dir}: the repair pass must carry the hard-ABORT set`)
-    const extension = sliceSection(
+    const extension = region(
       reviewStack,
       '### Mechanical remediation',
       '### API-surface check',
@@ -4067,7 +4148,7 @@ test('BOS-859: the degraded repair pass is priced without moving the branch-2 fl
     // into the tier price: `DEGRADED_TIER_MINUTES` feeds the branch-2 floor, so folding either
     // constant in would lift that floor by 20 minutes and hand every run in the gap NO review at
     // all — strictly worse than the detect-only review this whole change exists to improve on.
-    const tierPrice = sliceSection(
+    const tierPrice = region(
       reviewStack,
       'DEGRADED_TIER_MINUTES = $DEGRADED_REVIEWER_MINUTES',
       '# Review is NOT the last phase',
@@ -4449,17 +4530,14 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
 
     // Step 6 must point a reader at where the tier is chosen, or the body reads as if the full
     // stack is the only stack.
-    const step6 = body.slice(
-      body.indexOf('## Step 6: Whole-branch review'),
-      body.indexOf('## Step 7:'),
-    )
+    const step6 = region(body, '## Step 6: Whole-branch review', '## Step 7:')
     assert.match(
       step6,
       /tier/i,
       `${dir}/SKILL.md Step 6 must point at the review-stack tier selection`,
     )
 
-    const step7 = body.slice(body.indexOf('## Step 7:'), body.indexOf('## Steps 8-12:'))
+    const step7 = region(body, '## Step 7:', '## Steps 8-12:')
     assert.match(
       step7,
       /^## Review coverage$/m,
@@ -4494,9 +4572,10 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
     // Slice FIRST, then replace: an index taken from `step7` is meaningless against the shortened
     // post-replacement string, and every sanctioned phrase removed ahead of the heading would drag
     // the window start forward and silently eat the head of the coverage section.
-    const step7Appends = step7
-      .slice(step7.indexOf('## Review coverage'))
-      .replace(/(?:rather than|instead of|never|not)\s+append(?:ing|s|ed)?/gi, '')
+    const step7Appends = region(step7, '## Review coverage').replace(
+      /(?:rather than|instead of|never|not)\s+append(?:ing|s|ed)?/gi,
+      '',
+    )
     assert.doesNotMatch(
       step7Appends,
       /\bappend(?:ing|s|ed)?\b/i,
@@ -4705,6 +4784,13 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
   // the Tier-2/Tier-3 fallbacks had none, so a slow fallback ran past the caller's deadline with
   // every gate still reading as satisfied. ARITHMETIC, not prose-pinning: lift the clamp out of
   // the shipped markdown and run it.
+  //
+  // ONE clock for both sides — see frozenClockPath() above. The clamp reads the wall clock itself
+  // (`now=$(date +%s)`, exactly once, its only external command) while the deadline handed to it
+  // is computed here, so without the shadow the answer is `remaining - spawn_latency` and the
+  // assertions below could only be tolerances. Frozen, they are exact equality.
+  const frozenPath = frozenClockPath()
+
   for (const dir of BUILD_MIRRORS) {
     const reviewSkill = fs.readFileSync(
       path.join(rootDir, dir.replace(/boss-build$/, 'boss-review'), 'SKILL.md'),
@@ -4718,9 +4804,14 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
     const budget = (remaining) => {
       // Supply the deadline the way `boss-build` documents it — under `STEP_6C_DEADLINE`. Setting a
       // bare `deadline` here would prove nothing about the hand-off, only about the arithmetic.
-      const env = { ...process.env, DEADLINE_LEG_SECONDS: '300', deadline: '' }
+      const env = {
+        ...process.env,
+        DEADLINE_LEG_SECONDS: '300',
+        deadline: '',
+        PATH: frozenPath,
+      }
       if (remaining !== null) {
-        env.STEP_6C_DEADLINE = String(Math.floor(Date.now() / 1000) + remaining)
+        env.STEP_6C_DEADLINE = String(FROZEN_EPOCH + remaining)
       } else delete env.STEP_6C_DEADLINE
       return Number(
         execFileSync('bash', ['-c', `${clamp}\necho "$LEG_TIMEOUT_SECONDS"`], {
@@ -4733,14 +4824,13 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
     assert.equal(budget(null), 300, `${dir}: with no caller deadline the bound is a full leg`)
     assert.equal(budget(3600), 300, `${dir}: a large budget is still capped at one leg`)
     // THE REPORTED DEFECT: less clock than a leg must shrink the dispatch, not admit a full one.
-    assert.ok(
-      Math.abs(budget(120) - 120) <= 1,
-      `${dir}: with 120s left the dispatch must be bounded at ~120s, not a full 300s leg`,
+    // Exact, because the clock is frozen: 120s left budgets 120s, to the second.
+    assert.equal(
+      budget(120),
+      120,
+      `${dir}: with 120s left the dispatch must be bounded at exactly 120s, not a full 300s leg`,
     )
-    assert.ok(
-      Math.abs(budget(300) - 300) <= 1,
-      `${dir}: exactly one leg remaining budgets exactly one leg`,
-    )
+    assert.equal(budget(300), 300, `${dir}: exactly one leg remaining budgets exactly one leg`)
 
     // Every untimed fallback dispatch site must actually carry the bound.
     for (const tier of [
@@ -4799,10 +4889,20 @@ test('BOS-758 P1b: the degraded reviewer is bounded on the wall clock, not just 
       `${dir}: the conditional degraded API check must be priced, deadline-clamped, and fail closed`,
     )
 
-    const apiStart = reviewStack.indexOf('### API-surface check (conditional, required')
-    const apiEnd = reviewStack.indexOf('## Step 6b:', apiStart)
-    assert.ok(apiStart >= 0 && apiEnd > apiStart, `${dir}: review-stack.md must carry the API gate`)
-    const apiGate = reviewStack.slice(apiStart, apiEnd)
+    // BOS-737: this file carried three byte-identical copies of a hand-rolled
+    // `apiStart >= 0 && apiEnd > apiStart` guard around the same extraction. `regionUntilNext()`
+    // IS that form — the end marker searched from after the start — and it fails closed with a
+    // message naming the heading that moved, which the guard's message could not. Checked per
+    // site rather than assumed: against both mirrors' review-stack.md the extracted region is
+    // byte-identical to the raw `slice(apiStart, indexOf('## Step 6b:', apiStart))` it replaces.
+    // Labelled, per `region()`'s `@param label`: all three copies run inside a mirror loop, so an
+    // unlabelled throw would name the heading that moved but not the mirror it moved in.
+    const apiGate = regionUntilNext(
+      reviewStack,
+      '### API-surface check (conditional, required',
+      '## Step 6b:',
+      `${dir}/references/review-stack.md`,
+    )
     const clamp = bashBlocksOf(apiGate).find((block) => /^API_CHECK_SECONDS=/m.test(block))
     assert.ok(clamp, `${dir}: the API gate must ship an executable degraded-tier deadline clamp`)
     assert.match(
@@ -4855,9 +4955,10 @@ test('BOS-758 P2: the tier formula derives Step 6b from the configured cross-rev
   // ladder just classified as affordable. Pin the DERIVATION, not a new constant.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const tierSelection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6 entry — review tier selection'),
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+    const tierSelection = region(
+      reviewStack,
+      '## Step 6 entry — review tier selection',
+      '## Step 6: Whole-branch review loop',
     )
     // `\s+` between words, never a literal space — this prose is hand-wrapped near 100 columns and
     // any of these phrases can break across a line on the next edit.
@@ -4989,11 +5090,13 @@ test('BOS-758 P2: the tier formula derives Step 6b from the configured cross-rev
     )
     // Step 6b's OWN budget gate is the other reader of this number. Left as a judgement call it
     // admits the same chain the formula just re-priced, one section further down.
-    const step6bSection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6b: Outside voice'),
-      reviewStack.indexOf('## Step 6c: Consolidated multi-lens review'),
+    // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
+    // region.
+    const step6bSection = region(
+      reviewStack,
+      '## Step 6b: Outside voice',
+      '## Step 6c: Consolidated multi-lens review',
     )
-    assert.ok(step6bSection.length > 0, `${dir}: review-stack.md must carry a Step 6b section`)
     assert.match(
       step6bSection,
       /STEP_6B_MINUTES\s*\+\s*20\s*\+\s*POST_REVIEW_RESERVE_MINUTES/,
@@ -5159,7 +5262,7 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
     // (c) THE SINGLE SOURCE. Preflight stamps the absolute cap once. Step 6 then takes a fresh
     // snapshot from that immutable deadline; the worker must never recreate a later cap from an
     // already-stale snapshot.
-    const preflight = skill.slice(skill.indexOf('## Preflight'), skill.indexOf('## Step 1:'))
+    const preflight = region(skill, '## Preflight', '## Step 1:')
     assert.match(
       preflight,
       /PREFLIGHT_STARTED_AT="\$\(date \+%s\)"[\s\S]{0,160}PREFLIGHT_DEADLINE=\$\(\( PREFLIGHT_STARTED_AT \+ 4 \* 60 \* 60 \)\)[\s\S]{0,80}export PREFLIGHT_DEADLINE/,
@@ -5308,9 +5411,10 @@ test('BOS-758 P2: the Step 6b fallback reviewer carries the ten minutes the form
 
     // The clamp only binds if the dispatch actually states it, and only helps if the zero case is
     // a documented skip rather than an improvised dispatch.
-    const step6bSection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6b: Outside voice'),
-      reviewStack.indexOf('## Step 6c: Consolidated multi-lens review'),
+    const step6bSection = region(
+      reviewStack,
+      '## Step 6b: Outside voice',
+      '## Step 6c: Consolidated multi-lens review',
     )
     assert.match(
       step6bSection,
@@ -5337,9 +5441,10 @@ test('BOS-758 P2: the Step 6b fallback reviewer carries the ten minutes the form
     // The negative that matters: the formula's own comment must claim the same thing, or the
     // arithmetic above is true while the tier ladder still reads the term as a hope.
     assert.match(
-      reviewStack.slice(
-        reviewStack.indexOf('## Step 6 entry — review tier selection'),
-        reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+      region(
+        reviewStack,
+        '## Step 6 entry — review tier selection',
+        '## Step 6: Whole-branch review loop',
       ),
       /worst\s+LEGAL\s+cost[\s\S]{0,220}cooperative\s+return-by/i,
       `${dir}: the tier formula must say the fallback term is enforced, not merely assumed`,
@@ -5350,9 +5455,10 @@ test('BOS-758 P2: the Step 6b fallback reviewer carries the ten minutes the form
     // the blocks behind reprices the ladder while the enforcement keeps spending the old figures,
     // which is exactly how a spec fix moves its defect instead of closing it. Derive both from the
     // shipped formula and require every literal to agree.
-    const tierSelection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6 entry — review tier selection'),
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+    const tierSelection = region(
+      reviewStack,
+      '## Step 6 entry — review tier selection',
+      '## Step 6: Whole-branch review loop',
     )
     const reserve = Number(tierSelection.match(/#\s*=\s*(\d+)\s+minutes/)[1])
     const fallbackMinutes = Number(
@@ -5417,9 +5523,10 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
   // prevent. Both are now clamped against PREFLIGHT_DEADLINE. Run the arithmetic, don't read prose.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const tierSelection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6 entry — review tier selection'),
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
+    const tierSelection = region(
+      reviewStack,
+      '## Step 6 entry — review tier selection',
+      '## Step 6: Whole-branch review loop',
     )
     // Every literal below is pinned to the SHIPPED formula, never to a second constant — a later
     // re-pricing that leaves an enforcement block behind is how a spec fix relocates its defect.
@@ -5430,12 +5537,18 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
         /\+\s*(\d+)\s+#\s*the\s+one\s+bounded\s+re-review\s+Step\s+6b\s+can\s+trigger/,
       )[1],
     )
-    const now = Math.floor(Date.now() / 1000)
+    // Frozen clock (see frozenClockPath): these clamps read `date +%s` themselves, so the
+    // deadline handed in must be measured from the same instant or every budget below is
+    // `intended - spawn_latency` and the ~300s assertions can only be tolerances.
+    const clockPath = frozenClockPath()
+    const now = FROZEN_EPOCH
     const at = (block, mins, name) =>
       Number(
         runBlock(
           block,
-          mins === null ? {} : { PREFLIGHT_DEADLINE: String(now + mins * 60) },
+          mins === null
+            ? { PATH: clockPath }
+            : { PATH: clockPath, PREFLIGHT_DEADLINE: String(now + mins * 60) },
           `$${name}`,
         ).trim(),
       )
@@ -5456,15 +5569,17 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
     )
     // THE REPORTED DEFECT. The reviewer must reserve the fix ITS OWN findings make mandatory as
     // well as the post-review reserve, so 35 owed minutes come out, not 25: at 40 minutes left the
-    // reviewer gets ~300s, and a clamp that subtracted only the reserve would hand it the full 600
-    // and leave its must-fix with no clock to be fixed in.
-    assert.ok(
-      Math.abs(at(loop, reserve + 15, 'REVIEW_LEG_SECONDS') - 300) <= 1,
-      `${dir}: with ${reserve + 15} min left the reviewer must be bounded at ~300s, not a full leg`,
+    // reviewer gets exactly 300s, and a clamp that subtracted only the reserve would hand it the
+    // full 600 and leave its must-fix with no clock to be fixed in.
+    assert.equal(
+      at(loop, reserve + 15, 'REVIEW_LEG_SECONDS'),
+      300,
+      `${dir}: with ${reserve + 15} min left the reviewer must be bounded at 300s, not a full leg`,
     )
-    assert.ok(
-      Math.abs(at(loop, reserve + 5, 'FIX_LEG_SECONDS') - 300) <= 1,
-      `${dir}: the fix leg must be clamped by the reserve too — ${reserve + 5} min leaves ~300s`,
+    assert.equal(
+      at(loop, reserve + 5, 'FIX_LEG_SECONDS'),
+      300,
+      `${dir}: the fix leg must be clamped by the reserve too — ${reserve + 5} min leaves 300s`,
     )
     assert.ok(
       at(loop, reserve + 9, 'REVIEW_LEG_SECONDS') <= 0,
@@ -5522,9 +5637,10 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
 
     // ---- The hand-off. A budget its holder never states bounds nothing. -----------------------
     // `\s+` between words, never a literal space — prettier reflows this prose at 100 columns.
-    const loopSection = reviewStack.slice(
-      reviewStack.indexOf('## Step 6: Whole-branch review loop'),
-      reviewStack.indexOf('## Step 6b: Outside voice'),
+    const loopSection = region(
+      reviewStack,
+      '## Step 6: Whole-branch review loop',
+      '## Step 6b: Outside voice',
     )
     assert.match(
       loopSection,
@@ -5543,9 +5659,10 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
       /\*\*cooperative\*\*[\s\S]{0,300}worst\s+_legal_\s+cost/i,
       `${dir}: the round bound must be stated as cooperative, and as what makes the pair price legal`,
     )
-    const reReviewSection = reviewStack.slice(
-      reviewStack.indexOf('**3. Fix + bounded re-review.**'),
-      reviewStack.indexOf('**4. Record the outcome'),
+    const reReviewSection = region(
+      reviewStack,
+      '**3. Fix + bounded re-review.**',
+      '**4. Record the outcome',
     )
     assert.match(
       reReviewSection,
@@ -5620,10 +5737,7 @@ test('BOS-758 P2: boss-review Phase 8 notes dispatches are gated on the caller d
     )
     // The leg list is where a reader learns what is gated; an omission there reads as a decision.
     assert.match(
-      reviewSkill.slice(
-        reviewSkill.indexOf('The legs, each with its `LEG_SECONDS`'),
-        reviewSkill.indexOf('## Findings contract'),
-      ),
+      region(reviewSkill, 'The legs, each with its `LEG_SECONDS`', '## Findings contract'),
       /\*\*Phase\s+8\*\*[\s\S]{0,200}`DEADLINE_LEG_SECONDS`/i,
       `${dir}: Phase 8 must appear in the gated-leg list with a leg allowance`,
     )
@@ -5654,7 +5768,7 @@ test('BOS-758 P2: boss-review Phase 8 notes dispatches are gated on the caller d
     // A post-terminal phase may not reach back into the report. The generic "stop there" rule
     // routes a refused leg to the capped exit; doing that here would rewrite a verdict already
     // handed to the caller, so the exception has to be written down.
-    const phase8 = reviewSkill.slice(reviewSkill.indexOf('## Phase 8 — Cleanup'))
+    const phase8 = region(reviewSkill, '## Phase 8 — Cleanup')
     assert.match(
       phase8,
       /`extension <name>: skipped \(caller deadline\)`/,
@@ -5842,8 +5956,8 @@ test('BOS-758 P2: both timeout normalizers share one idiom, stated in shipped pr
     // ORDER is load bearing: `10#` on a non-digit string is itself an arithmetic error, so the
     // shape glob must precede the conversion, and the result test must follow it.
     assert.ok(
-      block.indexOf(`case "$${name}" in`) < block.indexOf(`10#$${name}`) &&
-        block.indexOf(`10#$${name}`) < block.indexOf(`[ "$${name}" -gt 0 ]`),
+      precedes(block, `case "$${name}" in`, `10#$${name}`, label) &&
+        precedes(block, `10#$${name}`, `[ "$${name}" -gt 0 ]`, label),
       `${label}: the three steps must run shape -> base-10 -> positive-result, in that order`,
     )
   }
@@ -6818,11 +6932,14 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     // Nothing between the injection and the retry loop may end the run: an `exit`/`break`/`return`
     // there turns a benign injector status into stranded commits, which is strictly worse than the
     // untagged commits this whole change exists to fix.
-    const injection = runnable.slice(
-      runnable.indexOf('TAGGED=skipped\n  TAG_NOTE="tag injection not attempted"'),
-      runnable.indexOf('attempts=0'),
+    const injection = region(
+      runnable,
+      'TAGGED=skipped\n  TAG_NOTE="tag injection not attempted"',
+      'attempts=0',
     )
-    assert.ok(injection.length > 0, `${dir}: the injection step must sit on the push arm`)
+    // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
+    // region. Its "the injection step must sit on the push arm" message is not lost: the
+    // markers ARE that claim, and the throw names whichever of them moved.
     assert.doesNotMatch(
       injection,
       /^\s*(exit|break|return)\b/m,
@@ -7460,12 +7577,15 @@ test('BOS-758 repair P2c: the API clamp assigns its constants before the arithme
   // tell a clamp that yields 300 from one that yields 0.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const apiStart = reviewStack.indexOf('### API-surface check (conditional, required')
-    const apiEnd = reviewStack.indexOf('## Step 6b:', apiStart)
-    assert.ok(apiStart >= 0 && apiEnd > apiStart, `${dir}: review-stack.md must carry the API gate`)
-    const clamp = bashBlocksOf(reviewStack.slice(apiStart, apiEnd)).find((block) =>
-      /^API_CHECK_SECONDS=/m.test(block),
+    // BOS-737: second of the three copies — see the note at the first, in the P1 degraded-tier
+    // test above, for why `regionUntilNext()` replaces the hand-rolled guard byte for byte.
+    const apiGate = regionUntilNext(
+      reviewStack,
+      '### API-surface check (conditional, required',
+      '## Step 6b:',
+      `${dir}/references/review-stack.md`,
     )
+    const clamp = bashBlocksOf(apiGate).find((block) => /^API_CHECK_SECONDS=/m.test(block))
     assert.ok(clamp, `${dir}: the API gate must ship an executable deadline clamp`)
 
     // (a) Both names assigned, and assigned BEFORE the arithmetic that reads them.
@@ -7533,9 +7653,16 @@ test('BOS-758 repair P2d: the API clamp binds BOTH tiers, not the degraded one a
   // works if it is stated to run in both tiers.
   for (const dir of BUILD_MIRRORS) {
     const reviewStack = reviewStackFor(dir)
-    const apiStart = reviewStack.indexOf('### API-surface check (conditional, required')
-    const apiEnd = reviewStack.indexOf('## Step 6b:', apiStart)
-    const apiGate = reviewStack.slice(apiStart, apiEnd)
+    // BOS-737: third of the three copies — see the note at the first, in the P1 degraded-tier
+    // test above. This site is the one that most wanted it: only positive `assert.match` runs
+    // over `apiGate` here, so a -1 already failed closed, but it failed naming a missing phrase
+    // rather than the heading that actually moved.
+    const apiGate = regionUntilNext(
+      reviewStack,
+      '### API-surface check (conditional, required',
+      '## Step 6b:',
+      `${dir}/references/review-stack.md`,
+    )
 
     assert.match(
       apiGate,
@@ -7569,8 +7696,9 @@ test('BOS-758 repair P1: Step 7 confirms the pushed tip is the tip that was revi
   // under a body reporting full coverage.
   for (const dir of BUILD_MIRRORS) {
     const skill = readSkill(`${dir}/SKILL.md`)
-    const step7 = skill.slice(skill.indexOf('## Step 7:'), skill.indexOf('## Steps 8-12:'))
-    assert.ok(step7.length > 0, `${dir}/SKILL.md: Step 7 section must be present`)
+    // BOS-737: no `length > 0` pin — `region()` already throws on an absent marker or an empty
+    // region.
+    const step7 = region(skill, '## Step 7:', '## Steps 8-12:')
 
     // (a) The body states the rule where the decision is taken, and points at the mechanics.
     assert.match(
@@ -7712,8 +7840,10 @@ test('BOS-758 repair P2e: the degraded reviewer is clamped against the live dead
 // BOS-842: `PARTIAL`, the fourth terminal state.
 //
 // These tests live at the END of the file on purpose: they consume `readReviewStack` /
-// `reviewStackFor` / `sliceSection`, and the first two are `const` arrows declared mid-file, so
-// registering the tests below their declarations is the only placement with no TDZ hazard.
+// `reviewStackFor`, both `const` arrows declared mid-file, so registering the tests below those
+// declarations is the only placement with no TDZ hazard. (They also consume `region()`, which is
+// a module import and so has no such hazard — BOS-737 replaced the third name here, the local
+// `sliceSection` helper, with it.)
 //
 // They are deliberately ADJACENT to the BOS-240 test rather than folded into it. BOS-240 byte-pins
 // the phrases this ticket must not disturb (`BLOCKED, never REVIEW_READY`,
@@ -7733,7 +7863,7 @@ test('BOS-842: the resident state list declares four states and names PARTIAL’
     // implementation is not complete", resume classification), so a whole-file `/PARTIAL/` would
     // stay green with the state itself deleted — the exact defect this ticket's own risk section
     // calls inertness.
-    const states = sliceSection(
+    const states = region(
       body,
       'Four terminal states, nothing else:',
       'An existing PR/branch',
@@ -7754,7 +7884,7 @@ test('BOS-842: the resident state list declares four states and names PARTIAL’
     // The bullet itself, not the list around it: a reader who never opens a reference must learn
     // what EARNS this state, or an unattended agent picks the state that reads as progress and
     // `BLOCKED` empties out. All three conjuncts, in the one bullet.
-    const partial = sliceSection(states, '- `PARTIAL`', '- `NO_CHANGE`', `${dir}/SKILL.md states`)
+    const partial = region(states, '- `PARTIAL`', '- `NO_CHANGE`', `${dir}/SKILL.md states`)
     assert.match(
       partial,
       /certified\s+by\s+the\s+acceptance-criteria\s+lens/,
@@ -7791,7 +7921,7 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     // the Hard-rules bullet and assert the SCOPING WORDING, not the presence of the token
     // `PARTIAL` — a token test passes on prose that says "any deferred required item may route
     // PARTIAL", which is the widening this assertion exists to red.
-    const rule = sliceSection(
+    const rule = region(
       body,
       '- **Required-deferred ⇒ BLOCKED, never REVIEW_READY**',
       '- Never merge. Terminal success',
@@ -7844,7 +7974,7 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     )
     // BOS-240's Step 12 pointer phrase is unchanged, and PARTIAL is attached as the else-branch
     // BELOW it — not substituted for it.
-    const pointers = sliceSection(body, '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
+    const pointers = region(body, '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
     assert.match(
       pointers,
       /REVIEW_READY only with no deferred required item/,
@@ -7890,19 +8020,18 @@ test('BOS-842: Step 12’s printed output enumerates all four states (body + ref
   // prints BLOCKED — the state would exist everywhere except on the one line a human reads.
   const allFour = /`REVIEW_READY`\s*\/\s*`PARTIAL`\s*\/\s*`BLOCKED`\s*\/\s*`NO_CHANGE`/
   for (const dir of BUILD_MIRRORS) {
-    const pointers = sliceSection(
-      buildBody(dir),
-      '## Steps 8-12:',
-      '## Cron gate',
-      `${dir}/SKILL.md`,
-    )
+    const pointers = region(buildBody(dir), '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
     assert.match(
       pointers,
       allFour,
       `${dir}: the resident Step 12 pointer must print one of all four terminal states`,
     )
-    const step12 = finalizeAndStop(dir).slice(finalizeAndStop(dir).indexOf('## Step 12:'))
-    assert.ok(step12.length > 0, `${dir}: finalize-and-stop.md must carry a Step 12`)
+    // BOS-737: hoisted to a local so the receiver is a plain identifier. As a call expression
+    // the raw form slipped the vacuity gate (its backreference matches one identifier, not
+    // `f(x)`), and the `length > 0` pin below was itself vacuous — a moved marker makes
+    // `slice(-1)` a ONE-character string, which passes it. `region()` throws instead.
+    const finalizeRef = finalizeAndStop(dir)
+    const step12 = region(finalizeRef, '## Step 12:')
     assert.match(
       step12,
       allFour,
@@ -7917,7 +8046,7 @@ test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label
     // Section-sliced, because each of these sentences is only correct in its own step: a
     // "never .inReview" clause sitting in Step 12 would leave Step 9 free to ready-and-move the
     // ticket, and the whole point of PARTIAL is that the ticket stays visibly incomplete.
-    const step9 = sliceSection(ref, '## Step 9:', '## Step 10:', `${dir}/${FINALIZE_REF}`)
+    const step9 = region(ref, '## Step 9:', '## Step 10:', `${dir}/${FINALIZE_REF}`)
     assert.match(
       step9,
       /no required item was deferred/,
@@ -8005,14 +8134,14 @@ test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label
     )
     // Step 11 is REVIEW_READY-only. Proof captured off a deliberately incomplete slice is evidence
     // of a finished feature — the single most misleading artifact this pipeline can publish.
-    const step11 = sliceSection(ref, '## Step 11:', '## Step 12:', `${dir}/${FINALIZE_REF}`)
+    const step11 = region(ref, '## Step 11:', '## Step 12:', `${dir}/${FINALIZE_REF}`)
     assert.match(
       step11,
       /Skip\s*\n?\s*entirely\s+for[^.]*`PARTIAL`/,
       `${dir}: Step 11's skip list must contain PARTIAL`,
     )
     // Step 12's pick, not just its printed line.
-    const step12 = ref.slice(ref.indexOf('## Step 12:'))
+    const step12 = region(ref, '## Step 12:')
     assert.match(
       step12,
       /`PARTIAL`\s+is\s+the\s+single\s+scoped\s+exception[\s\S]{0,320}T1\/T2\/T3\s+all\s+held/,
@@ -8028,7 +8157,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
       reviewStack.indexOf('### PARTIAL-route publication') >= 0,
       `${dir}: review-stack.md must carry the PARTIAL-route publication section`,
     )
-    const section = sliceSection(
+    const section = region(
       reviewStack,
       '### PARTIAL-route publication',
       '### BLOCKED-route publication',
@@ -8307,13 +8436,13 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
 // from where the section defends it — while every other assertion in this file stays green.
 test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publication section (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
-    const routes = sliceSection(
+    const routes = region(
       buildBody(dir),
       '**Route on the file verdict.**',
       'Steps 6b and 6c are',
       `${dir}/SKILL.md`,
     )
-    const capped = sliceSection(routes, '- `capped` →', '- `dispatch-failure`', `${dir}/SKILL.md`)
+    const capped = region(routes, '- `capped` →', '- `dispatch-failure`', `${dir}/SKILL.md`)
     assert.match(
       capped,
       /§PARTIAL-route publication/,
@@ -8355,7 +8484,7 @@ test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publicatio
 test('BOS-842: the do-not-merge marker is byte-identical across boss-build and boss-epic (all mirrors)', () => {
   const pairs = BUILD_MIRRORS.map((buildDir, i) => [buildDir, EPIC_MIRRORS[i]])
   for (const [buildDir, epicDir] of pairs) {
-    const section = sliceSection(
+    const section = region(
       readReviewStack(buildDir),
       '### PARTIAL-route publication',
       '### BLOCKED-route publication',
@@ -8401,7 +8530,7 @@ test('BOS-842: the do-not-merge marker is byte-identical across boss-build and b
 test('BOS-842: core-spine §1 carries four AGENT-NEUTRAL terminal states (both mirrors)', () => {
   for (const dir of BUILD_MIRRORS) {
     const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
-    const one = sliceSection(spine, '## 1. Four terminal states', '## 2. ', `${dir}/core-spine.md`)
+    const one = region(spine, '## 1. Four terminal states', '## 2. ', `${dir}/core-spine.md`)
     for (const state of ['review-ready', 'blocked', 'partial', 'no-change']) {
       assert.match(
         one,

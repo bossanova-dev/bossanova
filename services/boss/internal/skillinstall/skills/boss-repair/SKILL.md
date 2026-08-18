@@ -152,6 +152,7 @@ Based on the output, categorize the issue:
 - **Merge Conflict**: Git reports conflicts in files
 - **Failing Checks**: PR checks show failures (tests, lint, build)
 - **Review Feedback**: PR has requested changes or comments
+- **No problem**: every signal is already clear — checks passing with none pending, `repair_status=clean`, and `mergeable` not `CONFLICTING`. This is a **valid categorization result**, not a failure to categorize: route straight to the **nothing to repair** outcome in [Terminal outcomes](#terminal-outcomes) and select no strategy.
 
 **1.3 Identify Project Gate Commands**
 
@@ -169,6 +170,8 @@ dispatch attempted and failed          -> run the strategy inline (sanctioned)
 ```
 
 Dispatch is the normal branch — a session that provisions the subagent tool should use it (`subagent_type: general-purpose`), because the subagent keeps the bulk material out of the orchestrator's context and gives the fix a second voice. Inline is the **sanctioned** path for a session where the tool genuinely is not usable, not a lesser mode to choose by preference: read the permission actually in force rather than assuming. A blanket "do not call the subagent tool unless the user asked for it" instruction is one common instance of the second branch; `BOSS_CRON=true` by itself is **not** one — an unattended run may dispatch. Either way the strategy's steps and its reporting are identical; only the context they run in differs, so running inline is never a reason to skip a step or shorten the summary.
+
+Read that blanket instruction against its own condition before routing on it. A managed or cron **dispatch grant** — a session preamble stating that launching the unattended session is the operator's standing request for the protocol-mandated dispatches this skill describes — **satisfies** the "unless the user requested it" condition, so a blanket no-subagent instruction is not an inline-routing trigger in such a session and the first branch of the table applies as normal. Absent a grant, that same blanket instruction still routes to the inline branch.
 
 <!-- tier: opus (no override) because this dispatch runs whichever strategy triggered — A (merge-conflict resolution), B (fixing failing tests/build), or C (implementing review feedback) — all of which author or evaluate code, i.e. judgment. Not tiered down. -->
 
@@ -396,6 +399,8 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    If checks are still pending, do not block only on CI. First probe review threads and mergeability, then poll again as described in Phase 3 or Watch Mode.
 
+   **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed is there a failure to repair.
+
 3. For **test failures**:
    - Read test output to identify failing tests
    - Read the test file and implementation
@@ -465,9 +470,16 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - `repair_status=clean`: there are no unresolved review threads. Historical REST `inline_comments`, resolved GraphQL `review_threads`, and `COMMENTED` latest reviews do not require action by themselves.
    - `repair_status=needs_repair`: handle every printed unresolved thread.
    - `repair_status=parked`: every unresolved thread is waiting on a human. Do not re-dispatch repair work unless a later probe reports `needs_repair`.
+
+     A park keys on the **reviewer's last-comment identity**, not on the branch head, so the branch can move underneath a park and address the complaint without ever unparking it. **Never carry a prior pass's parked verdict forward.** Before reporting a parked thread as a residual, **re-derive its premise against current HEAD**: grep the files the parked comment names for the feature keyword it disputes. That check is decisive in both directions — the same files and keyword that established the premise settle whether it still holds. If the premise no longer holds, clear the park, reply citing the file and line that now satisfies it, and resolve the thread:
+
+     ```bash
+     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition open
+     ```
+
    - `repair_status=unknown`: REST and GraphQL disagree or thread state is unavailable. Retry with explicit repo/pr before concluding there is no review feedback.
 
-2. For each unresolved thread, triage into one of three categories:
+2. For each unresolved thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is the finding factually true against the tree? — and then the **remedy** — must the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless.
 
    **a) Actionable — fix it:**
    - Read the relevant code/files
@@ -509,8 +521,9 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
        }'
      ```
 
-   **b) Not actionable — decline and resolve:**
-   Some review comments are by design, already fixed, stale (reference old code), or low-priority style suggestions. For these:
+   **b) Premise does not hold — decline and resolve:**
+   The finding is by design, stale (references old code), a low-priority style suggestion, or already satisfied in the tree. For these:
+   - An **already fixed** decline must cite the **file and line** in the current tree that satisfies the finding. A commit hash, a commit subject line, or "fixed in a later commit" is **not** sufficient: a subject states intent and names its scope loosely, so a commit reference alone cannot close a thread, and settling the decline against one can resolve a thread over a live bug.
    - Add a reply comment explaining why it won't be fixed:
      First create and print a temporary path, then write the reply to that exact printed path with
      the agent's file-editing tool:
@@ -539,7 +552,16 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
        }'
      ```
 
-   **c) Unclear — ask for clarification:**
+   **c) Premise holds, remedy declined — affirm, record, resolve:**
+   The finding is factually correct, but the change it suggests must not be applied as written. This is neither "fix it" nor "premise false", and it is not an escape hatch for a round that would rather not do the work: choosing it costs more reporting than fixing would. Three shapes recur:
+
+   1. the correct fix is **outside the approved plan's scope**, and the plan already records it as a deliberate follow-up;
+   2. the suggested change sits in the **wrong layer** and would not achieve what it claims;
+   3. the remedy is **feature-sized** — several steps across several modules — and is not actionable within a repair pass.
+
+   The reply must do three things: **affirm the defect is real**, state precisely why the suggested change is not being applied, and **record a residual or follow-up instead of implementing it**. Post it through the same reply path as (b) — the same temporary-path block, the same submission block — then resolve the thread the same way. A reply that declines without affirming the defect is category (b) wrongly applied, and one that affirms without recording the residual loses the finding entirely.
+
+   **d) Unclear — ask for clarification:**
    - Add a reply comment asking for clarification:
      First create and print a temporary path, then write the reply to that exact printed path with
      the agent's file-editing tool:
@@ -567,7 +589,13 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - A thread left open this way is a **residual**: record it in the Repair Summary alongside the
      rest, per [Residuals vs true stops](#residuals-vs-true-stops). It does not fail the pass.
 
-   **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification. Fixed or declined threads must be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
+   **Required verifications before you reply.** Each costs a grep or two, and each is a required step, not a guideline. Run the ones that apply before the triage above is final, and state the result in the reply:
+
+   - **Verify each link of a multi-step causal claim separately.** When a finding asserts a chain — this call does X, so Y follows, therefore Z is broken — check each link independently against the code instead of grading the comment as a whole. The reply must state which links held and which were restated or corrected. Answering wholesale goes wrong in both directions: a blanket accept commits the run to a false statement in the PR record, and a blanket reject discards the real defect the chain was built around.
+   - **Settle a flagged documentation claim against the adjacent code comment and the nearest test.** When a finding says a documented claim is wrong, read the code comment beside the implementation and the **name** of the nearest test before treating it as a code defect. When those two agree with each other and contradict the doc, the fix is prose-only and **no code change is in scope** — this is what stops a round "fixing" behaviour that was already correct.
+   - **Find the sibling constant before designing a tunable-constant fix.** Before implementing a timeout, deadline, retry count, limit, or any other tunable constant in response to an open-ended suggestion, grep the containing package for sibling constants and follow the naming and test-seam shape already established there. An open-ended suggestion invites an invented mechanism; a sibling turns the fix into a mechanical, reviewable change with a ready-made test shape.
+
+   **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline as premise-false and resolve with an explanation, affirm-and-record a declined remedy and resolve, or ask for clarification. Fixed, declined, and affirmed-but-declined threads must all be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
 
 3. After implementing changes:
    - Because this checklist runs before commit, use only a zero-write scratch copy. Do not mutate the
@@ -599,6 +627,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      go test ./...
      cargo test
      ```
+   - **An exit code is not a finding.** Before treating a red gate as a defect in this branch, read the failing output. A lock-contention warning from a tool that permits only one instance at a time, a signing or memory failure raised by a commit hook, and a failure in a file this change does not touch are infrastructure flakes, not findings — each produces a non-zero exit that says nothing about the branch. Re-run the affected target in isolation to confirm, and consult the repo's own agent instructions for the flake signatures it records. Only once the output names something this branch changed is there a failure to repair.
    - Commit with reference to review feedback:
 
      ```bash
@@ -678,6 +707,38 @@ Provide a concise summary:
 **Residuals**:
 - [What this pass could not resolve and why the round stopped short | none]
 ```
+
+---
+
+## Terminal outcomes
+
+Every pass ends in exactly one of the outcomes below. Decide which one you are in before writing the
+Repair Summary. These are **outcome names**, not new reason tokens:
+the Watch Mode reason-line vocabulary is unchanged,
+and each outcome records which existing token it maps to.
+
+- **repaired** — a fix was committed and pushed. Exit zero. In Watch Mode the reason token is
+  whatever the next poll reaches.
+- **nothing to repair** — the pass arrived with every signal already clear: checks passing with none
+  pending, `repair_status=clean`, and `mergeable` not `CONFLICTING`. Assess, confirm green,
+  report **nothing to repair** with `**Residuals**: none`, and exit zero.
+  This is a **legitimate terminal outcome, distinct from a failed pass** — a pass that finds nothing
+  wrong has done its job in full, and there is no work owed.
+  Manufacturing work in this state is scope creep and is **forbidden**:
+  do not re-run gates this pass had no reason to invoke,
+  do not re-read already-resolved threads,
+  and do not make an unrelated improvement while you are here.
+  Watch token: `green`.
+- **parked no-op** — checks pass, `mergeable` is not `CONFLICTING`, and `repair_status=parked` with
+  zero actionable threads, so no strategy fires and no mandated dispatch was skipped.
+  The parked thread or threads are the residual. Exit zero. Watch token: `parked`.
+- **residual** — the pass ran and something remains: pending CI, the bounded-pass limit, review
+  feedback that arrived after the final push, a superseded CI view, a re-rolled flake, or an
+  escalated edge case. Report it and exit zero, per
+  [Residuals vs true stops](#residuals-vs-true-stops).
+  Watch tokens: `no-progress` / `max-attempts` / `blocked`.
+- **true stop** — the worker could not run at all. Exit non-zero; the definition stays in
+  [Residuals vs true stops](#residuals-vs-true-stops).
 
 ---
 
@@ -927,13 +988,23 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 
 8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. Once all four hold, stop and exit zero.
 
+   `repair_status=clean` is **head-scoped**: it is clean only for the head it was read against, so a clean probe at the end of one round predicts nothing about the next. A reviewer who re-reviews every push opens fresh threads against this round's own fix, which means **new threads since the previous round's head are an expected steady state** — not a regression, and not a fresh failure.
+
+   That is **not licence to batch, defer, or wait for a quiet reviewer**: those fresh threads are routinely genuine defects in the fix just pushed, and deferring them ships the defect. What is bounded is the number of repair **rounds**, never the reviewer's cadence. So the **review re-poll runs after the CI-green check in every round** and is never skipped once checks pass — reaching green is the moment fresh feedback is most likely, not a reason to stop looking.
+
+   Once those four conditions hold, the round that reaches them is one that **stops pushing** — and there are **two distinct terminators** wearing that same shape: a round that arrives green and does nothing, reported as `green`, and a round that replied and **parked without pushing**, reported as `parked`. Neither shortcuts the four conditions above; they name which terminal a satisfied round is reporting. The parked terminator did substantive work — it read, triaged and answered threads — so it is **not** the no-progress stop of step 9, which describes a round that could not move an unchanged failing signal.
+
 9. **No-progress stop:** after a repair pass, if `git rev-parse HEAD` equals the `$BEFORE` value captured immediately before that pass (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
 
 10. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
 
 11. **Ending short of green is a residual, not a true stop:** the no-progress stop, the 5-pass bound, and any escalation out of [Edge Cases and Error Handling](#edge-cases-and-error-handling) all end a loop that ran fine and left something behind. Record what is still red in the Repair Summary's `**Residuals**` line and **exit zero**; watch mode exits non-zero only on a true stop, per [Residuals vs true stops](#residuals-vs-true-stops).
 
-When watch mode exits (green, parked, no-progress, 5 attempts reached, or escalated to a human per an edge case), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `parked` / `no-progress` / `max-attempts` / `blocked`). Use `blocked` for an edge-case escalation: it is the established token for "this needs a human", and callers that classify this line already understand it.
+    "What is still red" is not the whole residual. On the bound, it must name **pending CI checks** and **review feedback that arrived after the final push** as well — a pending check is not red, and a fresh unaddressed thread is not red either, so both fall outside that wording and are exactly what a bounded loop leaves behind.
+
+    A round that ends because a failing check was **re-rolled and came back green** must name the concrete `file:line` hardening candidates that will stall again, or explicitly record that none was identified. A re-roll clears the signal without removing the fragility, and without that line the next occurrence pays the full triage cost from zero.
+
+When watch mode exits (green, parked, no-progress, 5 attempts reached, or escalated to a human per an edge case), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `parked` / `no-progress` / `max-attempts` / `blocked`). Use `blocked` for an edge-case escalation: it is the established token for "this needs a human", and callers that classify this line already understand it. Alongside that token the final line carries the **number of repair passes used** and the **pending-check state**, so an exhausted budget is visible without re-deriving it from the transcript.
 
 ---
 
@@ -953,6 +1024,11 @@ Before completing the repair:
 A pass that ends on a residual without changing the branch skips the commit/push/gate boxes above —
 there is nothing to commit — and is complete once the residual is reported.
 
+A zero-diff pass records the gate boxes as **not run**.
+Permission to skip a box is not permission to fill it in:
+quoting a pass or fail status for a gate this pass never invoked is a **reporting defect**,
+because a reviewer and the next round will both read it as evidence.
+
 ---
 
 ## Success Criteria
@@ -960,8 +1036,12 @@ there is nothing to commit — and is complete once the residual is reported.
 "Successful" here means the **run** did its job, not that the PR came out green. A pass that ends on
 a reported residual is still a successful run — see [Residuals vs true stops](#residuals-vs-true-stops).
 Criteria 2–4 apply only when the pass produced a change; a pass that ends on a residual without
-touching the branch has nothing to gate, commit, or push and is judged on 1, 5, and 6 alone. One
-repair run is successful when:
+touching the branch has nothing to gate, commit, or push and is judged on 1, 5, and 6 alone.
+A zero-diff pass records the gate boxes as **not run**.
+Permission to skip a box is not permission to fill it in:
+quoting a pass or fail status for a gate this pass never invoked is a **reporting defect**,
+because a reviewer and the next round will both read it as evidence.
+One repair run is successful when:
 
 1. ✅ The immediate issue was identified and fixed, or the reason it could not be is recorded as a residual
 2. ✅ Local formatting and test gates passed
@@ -987,6 +1067,13 @@ BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolb
 if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
 NOTES_JSON=$(node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" discover --core boss-repair --role notes --json)
 ```
+
+Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
 extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:

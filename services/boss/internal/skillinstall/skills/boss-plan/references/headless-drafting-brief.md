@@ -19,7 +19,7 @@ metadata object.
 - `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/<ISSUE-ID>-<slug>.md`
   (gitignored scratch; the slug is the issue id + hyphenated title). The orchestrator computed it
   with
-  `node -e "import('file://'+process.argv[3]+'/plan-slug.mjs').then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))" <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
+  `node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
   — the toolbox dir is passed in as an argument, re-derived in the calling block, so the command
   never depends on an inherited export.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
@@ -436,6 +436,13 @@ noise defeats the signal). These become the `openQuestions` you return and the p
 First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json`. If
 that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
+
+Record every `skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the tiers below still resolve exactly as documented.
 
 **Seed the run scratch before you dispatch anything.** Tier 1 hands each extension a `runTmp` and
 anchors the per-dispatch plan target to it, and an extension may anchor its own staging and cleanup

@@ -7,11 +7,65 @@ keeping the poll as a bounded fallback and authoritative reconciliation as the o
 actually decides. This is the boss-epic parity of boss-build's `references/callback-watches.md`.
 
 **First decide whether callbacks are usable at all.** `callbacksAvailable(env)`
-(`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`) is the single "callbacks usable" gate.
-When it is **false**, **skip `registerWatch` entirely and let `policy.fallbackPoll` alone drive
-Phase 3** — the clean, documented no-op below, never a failed wait. When it is **true**, arm a group
-per in-flight child as described. It is an up-front check, not a "did the CLI happen to fail at
-runtime" guess, and the one place to extend if the usability signal ever diverges from raw in-boss.
+(`toolbox/callback/adapter.mjs`) is the single "callbacks usable" gate, and it is a **conjunction of
+two checks — both must hold**:
+
+1. the run is daemon-managed (`BOSS_SESSION_ID` is set), so something is behind the `boss callback`
+   interface to answer; and
+2. **the `boss` executable that issues the commands actually resolves here** —
+   `resolveBossBinary(env)` (`toolbox/boss-binary.mjs`) tries `$BOSS_BIN`, then `boss` on `PATH`,
+   then the repo build `./bin/boss`, and accepts a candidate only when it is an existing executable
+   file. Executability is decided by a **stat, never by running the binary**, so a slow or wedged
+   `boss` cannot hang the gate.
+
+The second check is not redundant: a scheduled/cron environment can export `BOSS_SESSION_ID` while
+leaving the CLI off its `PATH`, and a session-variable-only gate then reports callbacks usable and
+arms per-child registrations that cannot run.
+
+**Run the executable the gate resolved, not a bare `boss`.** This is the same `BOSS` the Operating
+Contract already tells you to resolve once (`SKILL.md`, "**`boss` binary**") — the resolver is that
+ladder as code. `resolveBossBinary(env)` returns the winning candidate as `path`, and two of its
+three arms — an explicit `$BOSS_BIN` and the repo build `./bin/boss` — resolve to something a bare
+`boss` in a shell would not find at all, or would find as a **different** binary (`$BOSS_BIN`
+deliberately outranks `PATH`). So bind that `path` once and use `"$BOSS"` in place of the literal
+`boss` at every call site below; the snippets spell `boss` only because that is the common case.
+Taking the gate's verdict while discarding its `path` reintroduces the same failure from the other
+side: a true gate followed by `command not found`.
+
+```bash
+# Each fenced block is a FRESH shell, so re-resolve the toolbox rather than assuming
+# the startup block's export survived — unset, the bridge below imports
+# `undefined/boss-binary.mjs`, dies, and hands back the bare `boss` this exists to avoid.
+BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"
+export BOSS_EPIC_TOOLBOX
+BOSS="$(
+  node --input-type=module -e '
+    import{pathToFileURL as u}from"node:url"
+    const { resolveBossBinary } = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/boss-binary.mjs").href)
+    process.stdout.write(resolveBossBinary().path ?? "")
+  '
+)"
+# Empty means the gate is false OR this bridge itself failed — the two are not the
+# same, so never read one as the other. `boss` is a last resort, not a substitute:
+# under a true gate an empty result is a bug worth logging, alongside the resolver's
+# own `reason`.
+[ -n "$BOSS" ] || BOSS=boss
+```
+
+**The gate is deliberately CLI-only.** A host may expose the same three callback capabilities over an
+MCP tool surface as well as over the `boss callback` CLI. This gate does **not** count that surface:
+the protocol below is written against the CLI, so a host offering only the MCP tools is treated as
+callbacks-unavailable and polls. That is a deliberate narrowing rather than an oversight — widening
+it means giving the adapter a second transport signal, which is a separate change.
+
+When the gate is **false**, **skip `registerWatch` entirely and let `policy.fallbackPoll` alone drive
+Phase 3** — the clean, documented no-op below, never a failed wait — and **report why**:
+`callbacksUnavailableReason(env)` returns the failing conjunct (`BOSS_SESSION_ID is unset`, or the
+binary rejection naming `BOSS_BIN`/`PATH`/`./bin/boss`), so the epic log records "polling, because …"
+rather than degrading silently. When it is **true**, arm a group per in-flight child as described. It
+is an up-front check, not a "did the CLI happen to fail at runtime" guess.
 
 **Then select a verified callback target before any callback operation.** The driver records
 `CHILD_PR_REPOSITORY` from the PR and the candidate chat/repository pairs from verified orchestrator
@@ -128,7 +182,8 @@ read are the authoritative filter, and both run again on every wake regardless o
    fi
    ```
 
-   When `callbacksAvailable(env)` is false (no daemon behind the `boss callback` interface), **skip
+   When `callbacksAvailable(env)` is false (no daemon behind the `boss callback` interface, or no
+   resolvable `boss` executable — see the two conjuncts above), **skip
    registration**; the poll below is the sole wait mechanism. Consult the gate before arming rather
    than discovering unavailability from a CLI error. If a `registerWatch` call nonetheless errors at
    runtime under a **true** gate (e.g. an older host that lacks the `boss callback` subcommand), treat
@@ -227,6 +282,8 @@ what makes the two mechanisms safe to run at once: a duplicate wake is a no-op, 
 - **Idempotent under duplicate/late delivery** (`policy.dedupById`). Re-delivery is a no-op.
 - **Graceful degradation gated on `callbacksAvailable`.** Gate false ⇒ skip `registerWatch`, use
   `fallbackPoll` — an explicit no-op, never a failed wait. The gate, not a runtime CLI failure,
-  decides.
+  decides. The gate **verifies the `boss` executable** (an existing executable file, by stat) as
+  well as the managed-session variable, and a false gate **reports its reason**
+  (`callbacksUnavailableReason(env)`) so a fallback poll is always explained.
 - **Project-agnostic.** Only the generic `boss callback` interface and `gh` are named; no host- or
   tracker-specific identifiers appear here.

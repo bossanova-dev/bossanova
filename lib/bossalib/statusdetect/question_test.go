@@ -2119,6 +2119,34 @@ func TestHasWorkingIndicator(t *testing.T) {
 			want: true,
 		},
 		{
+			// Claude renders background work other than shells under the same
+			// footer grammar. "monitor" is the noun that exposed the enumerated
+			// `shells?` matcher as too narrow.
+			name: "one monitor still running",
+			data: "✻ Baked for 42m 54s · 1 monitor still running\n",
+			want: true,
+		},
+		{
+			name: "multiple monitors still running",
+			data: "✻ Baked for 42m 54s · 2 monitors still running\n",
+			want: true,
+		},
+		{
+			// The reported fixture (BOS session 618377459a55a4f3, reported IDLE
+			// for 42m). Two kinds of live background work join into ONE comma
+			// list under a SHARED "still running" suffix, so nothing follows
+			// "1 shell" — the old `[0-9]+ shells? still running` matcher missed
+			// the shell it did know about, not just the monitor.
+			name: "shell and monitor joined in one comma list (ticket fixture)",
+			data: "✻ Baked for 42m 54s · 1 shell, 1 monitor still running\n",
+			want: true,
+		},
+		{
+			name: "plural shells and monitors joined in one comma list",
+			data: "✻ Baked for 1m 2s · 2 shells, 3 monitors still running\n",
+			want: true,
+		},
+		{
 			name: "esc to interrupt spinner footer",
 			data: "✻ Thinking… (esc to interrupt)\n",
 			want: true,
@@ -2337,5 +2365,34 @@ func TestHasWorkingIndicator_UsesLatestShellFooter(t *testing.T) {
 		"✻ Planning… · 2 shells still running\n"
 	if !HasWorkingIndicator([]byte(pane)) {
 		t.Error("a later live shell footer must override an earlier completed footer")
+	}
+}
+
+// TestHasWorkingIndicator_CommaJoinedFooterStaleMarkerEvicted guards the
+// freshness rule for the comma-joined footer shape. Widening the noun to match
+// the list's LAST item moved the match's end offset, and lastFooterIsLive reads
+// the region below that offset — so the eviction path needs its own coverage on
+// this shape, not just on the single-noun one.
+func TestHasWorkingIndicator_CommaJoinedFooterStaleMarkerEvicted(t *testing.T) {
+	pane := "" +
+		"✻ Baked for 42m 54s · 1 shell, 1 monitor still running\n" +
+		"⏺ Background command \"make test\" completed (exit code 0)\n" +
+		"╭──────────────────────────────────────╮\n" +
+		"│ ❯                                    │\n" +
+		"╰──────────────────────────────────────╯\n"
+	if HasWorkingIndicator([]byte(pane)) {
+		t.Error("a comma-joined footer followed by later ⏺ output must not report working")
+	}
+}
+
+// TestHasWorkingIndicator_ProseCountIsNotEvictedByPrecedingMarker documents the
+// cost of the generic noun: prose carrying the "N <thing> still running" shape
+// pins the pane WORKING until a ⏺ marker follows it. That is the deliberate
+// direction (see backgroundWorkRunningRe) — a busy chat misread as IDLE can be
+// auto-prompted mid-work, whereas this only delays the idle flip.
+func TestHasWorkingIndicator_ProseCountIsNotEvictedByPrecedingMarker(t *testing.T) {
+	pane := "⏺ Heads up: there are 3 jobs still running on the box.\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("generic-noun prose is expected to report working; if this now passes, the matcher was narrowed")
 	}
 }

@@ -165,7 +165,16 @@ test('size ratchet', () => {
   // reads the same bytes boss-build's `references/review-stack.md` specifies — a paraphrase on
   // either side silently unlatches the hold. Resident because the driver decides the merge at
   // the rail, not while reading a reference. Re-baselined 52224 → 53248.
-  const RATCHET = 53248
+  // BOS-788 routes the `BOSS` resolution through `resolveBossBinary` (+2098 bytes): the old
+  // paragraph named the right candidate ORDER but never tested that the preferred one exists,
+  // so a cron session's inherited-then-reaped $BOSS_BIN short-circuited the chain and every
+  // call-site died with an opaque ENOENT a run read as "capability unavailable". The block now
+  // stats each candidate and states the two-way branch — resolved `path`, or
+  // `BLOCKED: boss CLI unavailable — <reason>` quoting the resolver verbatim. Resident, not a
+  // reference: this is Phase 0 preflight and every later call-site depends on `"$BOSS"`, and
+  // the unavailable branch is only obeyed if the agent reads it at the rail. Re-baselined
+  // 53248 → 55296.
+  const RATCHET = 55296
   const bytes = Buffer.byteLength(CLAUDE, 'utf8')
   assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
 })

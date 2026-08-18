@@ -231,6 +231,13 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 NOTES_JSON=$(node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" discover --core boss-build --role notes --json)
 ```
 
+Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the phase still degrades exactly as documented below.
+
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
 extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:
 

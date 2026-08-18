@@ -374,7 +374,18 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// merely relocated onto last_substantive_output_at. On the first
 		// observation both stamps are seeds (true); a spinner-only redraw carries
 		// the previous value forward; the first substantive observation clears it,
-		// and because the carry reads prev.seeded it can never re-arm afterwards.
+		// and because the carry reads prev.seeded it cannot re-arm for the rest of
+		// THIS prevCaptures entry's life.
+		//
+		// That lifetime is not the chat's lifetime. pollOnce GCs entries for chats
+		// missing from `seen`, so a single tick where tmux.HasSession says no (or
+		// the row's tmux name is momentarily nil) drops the entry; Unregister/
+		// RegisterChat is a second path to the same place. The next tick is a first
+		// observation again and the flag comes back true. That was harmless while
+		// the flag was only disclosure, and it is now a decision input for the
+		// restart-resume lane (resume.stillStalled reads seeded as "still
+		// stalled") — bounded there by MaxAttempts and the cycle window, which is
+		// why the drop is left alone rather than papered over with a grace period.
 		lastOutputSeeded := firstObservation || (prev.seeded && !substantiveChanged)
 		// Written unconditionally, unlike before: when nothing changed every
 		// field above already equals its stored value, so this is a no-op for

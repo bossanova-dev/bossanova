@@ -23,7 +23,16 @@ hash_path() { printf '%s' "$1" | { shasum -a 256 2>/dev/null || sha256sum; } | c
 LOCK="$HOME_DIR/linear-implement/locks/$SLUG/$(basename "$CANON_TOP")-$(hash_path "$CANON_TOP")"
 META="$LOCK/owner"   # 4 lines: runid, pid (non-load-bearing), heartbeat-epoch, ticket
 
-now() { date +%s; }
+# ONE clock reading per invocation. This script is a single short-lived command, so every
+# age/heartbeat it computes must be measured against the SAME instant. Sampling `date +%s`
+# twice manufactures a phantom second whenever the two samples straddle a tick: dir_mtime's
+# fallback would stamp the heartbeat at T1 while the acquire path subtracted it from T2==T1+1,
+# yielding age=1 for a lock the fallback had just declared LIVE (mtime≈now) — and with a 1s
+# stale window that flips a correct HELD_BY_PEER into a bogus TOOK_OVER_STALE. Freezing the
+# reading makes that fallback exactly age=0, always, which is strictly stricter than a
+# tolerance. It does NOT touch the STALE_SECS boundary semantics below (still strictly `-lt`).
+NOW="$(date +%s)"
+now() { printf '%s' "$NOW"; }
 # Single emitter for the line-ordered owner meta so the 4-line format (read back by
 # owner_field / eff_heartbeat by line index) lives in exactly one place and cannot drift.
 # Field 2 (PID) is non-load-bearing: liveness reads only the runid + heartbeat; it is

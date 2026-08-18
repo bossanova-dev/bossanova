@@ -902,20 +902,42 @@ func hasQuestionPrompt(data []byte, modalOnly bool) bool {
 // match anywhere in the current screen is a live signal.
 var escToInterruptRe = regexp.MustCompile(`esc to interrupt`)
 
-// shellsRunningRe matches Claude's "N shell still running" / "N shells still
-// running" background-shell footer (e.g. "✻ Cooked for 48s · 1 shell still
+// backgroundWorkRunningRe matches Claude's "N <thing> still running" footer for
+// background work the finished turn left behind (e.g. "✻ Cooked for 48s ·
+// 1 shell still running", "✻ Baked for 42m 54s · 1 shell, 1 monitor still
 // running"). Unlike the spinner, Claude prints this as each completed turn's
 // summary line, so a finished turn leaves the footer frozen in the transcript.
-// A bare match is therefore NOT proof a shell is running now — see
+// A bare match is therefore NOT proof the work is running now — see
 // HasWorkingIndicator for the freshness check.
-var shellsRunningRe = regexp.MustCompile(`[0-9]+ shells? still running`)
+//
+// The noun is matched generically rather than enumerated as `shells?`, for two
+// reasons. Claude renders several kinds of background work here and adds more
+// over time — "monitor" appeared without this matcher learning about it, and an
+// enumerated list re-runs that silent failure on the next new noun. And when
+// more than one kind is live, Claude joins them into ONE comma list under a
+// SHARED "still running" suffix ("1 shell, 1 monitor still running"), so an
+// enumerated single-noun pattern misses the shell it does know about too — the
+// list's leading items are not followed by the suffix. Matching the list's LAST
+// item is sufficient: lastFooterIsLive only uses the match's end offset.
+//
+// Widening the noun widens prose false positives ("…3 jobs still running.") in
+// the same direction turnEndedAfterFooter documents as the safe one: a match
+// pins the pane WORKING until a ⏺ response marker evicts it, whereas a miss
+// flips a busy chat to IDLE where the transient-resume lane can auto-prompt it
+// mid-work. Bounded by the workingTailLines current-screen window.
+var backgroundWorkRunningRe = regexp.MustCompile(`[0-9]+ [a-z]+ still running`)
 
 // waitingForBackgroundAgentRe matches Claude's footer while the main thread
 // is blocked on background subagents (e.g. "✻ Waiting for 1 background agent
-// to finish", "Waiting for 2 background agents to finish"). Like the spinner,
-// Claude renders this only while actively waiting and redraws it away the
-// instant the agents return, so it is self-evicting — a match anywhere in the
-// current-screen tail is a live WORKING signal (no freshness check needed).
+// to finish", "Waiting for 2 background agents to finish"). Claude redraws it
+// away the instant the agents return — but ONLY while the turn rendering it is
+// alive. When the turn dies mid-wait (BOS-889: a bossd restart severed three
+// in-flight streams), nothing ever repaints the footer and it freezes in the
+// transcript with the failure notice, the API-error banner, and the
+// completed-turn summary rendered BELOW it. This comment used to assert the
+// footer was self-evicting and needed no freshness check; that invariant is
+// false for a dead turn, and believing it is why three panes reported WORKING
+// for hours. See backgroundAgentFooterIsLive for the check.
 //
 // The phrase is matched independent of the leading spinner glyph (robust across
 // animation frames and after StripANSI) but anchored to the end of its line
@@ -931,6 +953,116 @@ var waitingForBackgroundAgentRe = regexp.MustCompile(`(?m)Waiting for [0-9]+ bac
 // the shell has since finished (Claude printed e.g. `⏺ Background command "…"
 // completed`) and the footer is stale history, not a live signal.
 var responseMarkerRe = regexp.MustCompile(`(?m)^[^\S\n]*\x{23FA}`)
+
+// lastFooterIsLive is the shared freshness rule behind every lingering-footer
+// signal in this file: find the LAST footer footerRe matches, then ask whether
+// the region BELOW it terminates the state that footer claims. No footer at all
+// is not a signal, so it reports false.
+//
+// Only the last footer decides: a fresh footer drawn after an earlier one was
+// terminated is live again, and that earlier footer's terminators sit above it,
+// outside the region examined.
+//
+// The terminator is a parameter rather than a fixed rule because the two
+// footers are terminated by genuinely different evidence — see the callers.
+// Sharing the rule keeps the two from drifting apart; parameterising the
+// terminator keeps their asymmetry deliberate instead of accidental.
+func lastFooterIsLive(tail []byte, footerRe *regexp.Regexp, terminated func([]byte) bool) bool {
+	matches := footerRe.FindAllIndex(tail, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	return !terminated(tail[matches[len(matches)-1][1]:])
+}
+
+// backgroundAgentFooterIsLive reports whether tail's LAST
+// "Waiting for N background agent(s) to finish" footer is a live WORKING signal
+// rather than one frozen by a turn that died mid-wait. It is the single shared
+// predicate behind both readers of that footer — HasWorkingIndicator and
+// NormalizeSpinner's spinnerPresent — because they compute liveness on separate
+// paths and fixing only one would leave the other lying.
+//
+// The eviction signal is deliberately NOT the sibling backgroundWorkRunningRe rule
+// ("a ⏺ response marker after the footer ⇒ stale"). That rule clears the real
+// stalled panes, but it also suppresses the arm for the reporter's pane in
+// TestHasWorkingIndicator_WaitingForBackgroundAgent_CurrentScreenMarker, whose
+// git status bar renders a trailing "⏺ main" row. The status bar can forge a
+// response marker; it cannot forge a completed-turn summary.
+func backgroundAgentFooterIsLive(tail []byte) bool {
+	return lastFooterIsLive(tail, waitingForBackgroundAgentRe, turnEndedAfterFooter)
+}
+
+// completedTurnFrameGlyphs is the subset of spinnerGlyphs that Claude uses ONLY
+// as an animation frame — never as an ordinary output bullet. It is what makes
+// a completed-turn summary recognizable, and it deliberately EXCLUDES the
+// dual-use runes spinnerGlyphs carries for the classifier's benefit: · and •
+// are each an agent's working frame AND its ordinary output bullet, and * is a
+// markdown bullet. Those three lead real agent output, and "for <n><unit>" is
+// ordinary English ("· Waited for 5m before retrying", "• Polled for 30s"), so
+// admitting them would let a live footer be evicted by the agent's own chatter.
+var completedTurnFrameGlyphs = map[rune]bool{
+	'✻': true, // U+273B
+	'✽': true, // U+273D
+	'✢': true, // U+2722
+	'✳': true, // U+2733
+	'✶': true, // U+2736
+	'∗': true, // U+2217
+}
+
+// isCompletedTurnSummary reports whether one line is Claude's end-of-turn
+// summary — a frame-glyph-led elapsed-duration line, e.g. "✻ Worked for 19m 9s"
+// (all three BOS-889 captures render exactly this shape).
+//
+// This is its own named grammar rather than a reuse of classifySpinnerLine's
+// spinnerCounter class, which is a NORMALIZATION verdict ("this line carries a
+// volatile counter"), not a turn-lifecycle one. That class spans the dual-use
+// glyphs and the "↑ 1.2k tokens" usage form, neither of which says a turn ended;
+// borrowing it made ordinary bulleted output evict a live footer, and left the
+// guard reading as a redundant conjunction that a later simplification would
+// have widened further.
+func isCompletedTurnSummary(line []byte) bool {
+	trimmed := bytes.TrimLeft(line, " \t")
+	r, _ := utf8.DecodeRune(trimmed)
+	if !completedTurnFrameGlyphs[r] {
+		return false
+	}
+	// The elapsed grammar is required (not the token-count half of the counter
+	// class): it is what the genuine-waiting pane provably cannot produce, since
+	// its trailing "← for agents" carries no digits.
+	return spinnerElapsedRe.Match(trimmed)
+}
+
+// turnEndedAfterFooter reports whether the pane region below a background-agent
+// footer proves the turn that drew it has finished.
+//
+// Two shapes count, both observed in the BOS-889 captures:
+//
+//   - A completed-turn summary — see isCompletedTurnSummary. Claude prints one
+//     as each finished turn's summary, so one rendered BELOW the footer is
+//     proof the turn is over.
+//   - An API-error banner. The turn can die on the banner without ever printing
+//     a summary line, and the banner is equally terminal.
+//
+// Anything else — ordinary output, tool results, task lists, the status bar —
+// is not evidence either way, so the footer stays live. That asymmetry is
+// intentional: over-eviction is the dangerous direction here, because a
+// genuinely-waiting chat misread as idle can be auto-prompted mid-work by the
+// transient-resume lane.
+func turnEndedAfterFooter(rest []byte) bool {
+	// The matchers below assume ASCII spaces; Claude pads its footers with NBSP.
+	// HasWorkingIndicator feeds a StripANSI'd tail (already normalized) and
+	// NormalizeSpinner feeds its own normalized buffer, but normalizing again
+	// here is cheap and keeps this correct for any future caller.
+	for line := range bytes.SplitSeq(unicodeSpaceRe.ReplaceAll(rest, []byte(" ")), []byte("\n")) {
+		if isCompletedTurnSummary(line) {
+			return true
+		}
+		if apiErrorBannerRe.Match(bytes.Trim(line, bannerChromeGlyphs)) {
+			return true
+		}
+	}
+	return false
+}
 
 // HasWorkingIndicator reports whether the pane shows an affirmative "the agent
 // is busy" marker. Unlike working/idle inference from content-change timing,
@@ -964,24 +1096,26 @@ func HasWorkingIndicator(data []byte) bool {
 		return true
 	}
 
-	// A blocked-on-background-agents footer is a live spinner state, self-evicting
-	// like escToInterrupt — bare match in the current-screen tail means WORKING.
-	if waitingForBackgroundAgentRe.Match(tail) {
+	// A blocked-on-background-agents footer is a live spinner state only while
+	// the turn drawing it survives. A turn that dies mid-wait never repaints it,
+	// so the footer needs its own freshness check — see
+	// backgroundAgentFooterIsLive.
+	if backgroundAgentFooterIsLive(tail) {
 		return true
 	}
 
-	// The background-shell footer also renders as a completed-turn summary that
+	// The background-work footer also renders as a completed-turn summary that
 	// lingers in the transcript — even inside the current-screen window when the
 	// run goes idle right after (the 30-line scope alone does not evict it). It
 	// is live only when it is the bottom-most agent status line: a response
-	// marker (⏺) rendered after the last such footer proves the shell finished
+	// marker (⏺) rendered after the last such footer proves the work finished
 	// and Claude redrew, so the footer is stale.
-	shellMatches := shellsRunningRe.FindAllIndex(tail, -1)
-	if len(shellMatches) == 0 {
-		return false
-	}
-	lastFooterEnd := shellMatches[len(shellMatches)-1][1]
-	return !responseMarkerRe.Match(tail[lastFooterEnd:])
+	//
+	// Same freshness rule as the background-agent footer above, with a different
+	// terminator: this footer IS evicted by a bare response marker, because the
+	// shell's completion is what prints one. The background-agent footer is not,
+	// for the reason backgroundAgentFooterIsLive documents.
+	return lastFooterIsLive(tail, backgroundWorkRunningRe, responseMarkerRe.Match)
 }
 
 // workingTailLines bounds HasWorkingIndicator to the current screen. It matches

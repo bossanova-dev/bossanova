@@ -1,6 +1,7 @@
 package resume
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -38,8 +39,25 @@ type harness struct {
 	stateOK      bool
 	resumable    bool
 
+	// The liveness half of the tracker (BOS-805), which the restart lane gates on
+	// instead of lastOutputAt. Kept SEPARATE from lastOutputAt on purpose: the two
+	// diverge in production (a spinner frame moves one and not the other, and a
+	// bootstrap seed marks the pair as "nothing observed yet"), and a harness that
+	// collapsed them could not express either case.
+	lastSubstantiveAt time.Time
+	livenessSeeded    bool
+	livenessOK        bool
+
 	delivered  []string
 	deliverErr error
+	// onDeliver, when set, runs under h.mu immediately after a delivery is
+	// recorded, so a test can model delivery's real side effects. The one that
+	// matters: in production a prompt that LANDS is itself pane output, which is
+	// the evidence the restart lane's stalled predicate reads.
+	onDeliver func(h *harness)
+	// logs, when non-nil, captures the resumer's own log output. The give-up
+	// escalation is a Warn and nothing else, so it is the only way to assert it.
+	logs *bytes.Buffer
 }
 
 // newHarness returns a harness in the happy-path shape: marker set, chat IDLE,
@@ -54,12 +72,21 @@ func newHarness() *harness {
 		lastOutputAt: now.Add(-time.Hour),
 		stateOK:      true,
 		resumable:    true,
+		// A real observation an hour old, NOT a bootstrap seed: the default shape is
+		// a pane the poller has genuinely watched go quiet.
+		lastSubstantiveAt: now.Add(-time.Hour),
+		livenessSeeded:    false,
+		livenessOK:        true,
 	}
 }
 
 func (h *harness) resumer() *TransientResumer {
+	logger := zerolog.Nop()
+	if h.logs != nil {
+		logger = zerolog.New(h.logs)
+	}
 	return NewTransientResumer(TransientResumerDeps{
-		Logger: zerolog.Nop(),
+		Logger: logger,
 		MarkerSet: func(string) bool {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -75,6 +102,11 @@ func (h *harness) resumer() *TransientResumer {
 			defer h.mu.Unlock()
 			return h.status, h.lastOutputAt, h.stateOK
 		},
+		ChatLiveness: func(string) (time.Time, bool, bool) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			return h.lastSubstantiveAt, h.livenessSeeded, h.livenessOK
+		},
 		SessionResumable: func(context.Context, string) bool {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -84,6 +116,9 @@ func (h *harness) resumer() *TransientResumer {
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			h.delivered = append(h.delivered, message)
+			if h.onDeliver != nil {
+				h.onDeliver(h)
+			}
 			return h.deliverErr
 		},
 		Now: func() time.Time {

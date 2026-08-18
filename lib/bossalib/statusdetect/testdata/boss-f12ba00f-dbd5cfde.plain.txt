@@ -1,0 +1,33 @@
+  actually in the post-dispatch log range,
+  cross-checked against the reported
+  commitsMade) as soon as it returns, then
+  recompute the remaining scope from the
+  branch before deciding whether tiers 2/3
+  need to run.
+
+✻ Waiting for 1 background agent to finish
+
+⏺ Agent "Implement BOS-744 via ce-work"
+failed: Agent terminated early due to an
+API error: API Error: Connection lost
+mid-response. The response above may be
+incomplete.
+
+⏺ The dispatch died mid-run (API connection
+  error). That's the "subagent never
+  returned" case — the snapshot is present
+  and the tree was clean at dispatch, so
+  everything dirty is its residue.
+  Inventorying before touching anything.
+
+⏺ API Error: Connection lost
+  mid-response. The response above
+  may be incomplete.
+
+✻ Worked for 17m 41s
+    new task? /clear to save 216.8k tokens
+───────────────────────────────────────────
+❯ keep going
+───────────────────────────────────────────
+  bos-744-06-skill-extension-discovery-dr…
+  ⏵⏵ bypass permissions on · PR #2069 · ←…

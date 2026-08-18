@@ -66,9 +66,48 @@ node scripts/skill-extensions.mjs discover --core <core> --role <role> --json
 ```
 
 It prints an ordered `extensions` array of matched descriptors plus a `skipped` array
-recording any directory that was excluded and why (missing marker, wrong `extends`,
-wrong `role`, unreadable frontmatter). With nothing installed it prints
+recording any directory that was excluded and why. With nothing installed it prints
 `{"extensions":[],"skipped":[]}` and exits `0` — never an error.
+
+Each `skipped` entry carries four fields — the human `reason`, plus a stable `code` to branch on
+and a `deliberate` classification:
+
+```json
+{
+  "extensions": [],
+  "skipped": [
+    {
+      "name": "boss-review-golang",
+      "reason": "invalid \"lens\" binding (expected a non-empty string)",
+      "code": "invalid-lens-binding",
+      "deliberate": false
+    },
+    {
+      "name": "boss-review-helper",
+      "reason": "missing x-boss-extension marker",
+      "code": "missing-marker",
+      "deliberate": true
+    }
+  ]
+}
+```
+
+`deliberate: true` means the skip is the contract working as designed: the directory is a
+same-prefix skill that simply is not an extension of this core — a markerless helper, or one
+extending a core that this one's prefix merely nests into (`boss-` also matches `boss-plan-notes`)
+— so reporting it would cry wolf on every run. Only two codes are classified that way
+(`missing-marker` and `extends-other-core`).
+
+A wrong `extends` is **not** one of them. An extension of `<core>` is a directory named
+`<core>-<suffix>`, so `boss-review-x` declaring `extends: boss-plan` is unreachable from
+`boss-plan` too — nothing anywhere would report it. That case gets its own reportable code,
+`extends-unrelated-core`, with the same `reason` sentence.
+
+Every other code is a real misconfiguration, and a core **must record each one** as
+`extension <name>: skipped (<reason>)` in its ledger, at every site that calls `discover`. A
+misconfigured extension that vanishes with no ledger line is indistinguishable from one that was
+never installed, so the core's fallback tier reads as though it had always been the intended tier.
+Recording is all that is due — a discovery skip is never fatal and never changes control flow.
 
 ## Extension roles
 

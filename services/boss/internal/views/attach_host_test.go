@@ -940,6 +940,16 @@ type chatMutationSpy struct {
 	// test can assert *what* was written and not merely that a write happened
 	// (BOS-839). Purely additive: the counters above are unchanged.
 	lastTitle string
+	// chats is the stored chat list the detach path's fresh stored-title read
+	// answers with (BOS-869). Additive: a zero-valued spy returns no chats,
+	// which is itself one of the fail-closed cases.
+	chats []*pb.ClaudeChat
+	// listChatsErr makes that read fail — the other fail-closed half.
+	listChatsErr error
+	// listChatsCalls proves the read happens only inside the title-write branch:
+	// the orphan reap must not fire it. The embedded stubClient.ListChats panics,
+	// so before BOS-869 no fixture in this file could reach it at all.
+	listChatsCalls int
 }
 
 func (s *chatMutationSpy) UpdateChatTitle(_ context.Context, _ string, title string) error {
@@ -951,6 +961,15 @@ func (s *chatMutationSpy) UpdateChatTitle(_ context.Context, _ string, title str
 func (s *chatMutationSpy) DeleteChat(context.Context, string) error {
 	s.deletes++
 	return nil
+}
+
+// ListChats answers the detach path's fresh stored-title read (BOS-869).
+func (s *chatMutationSpy) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+	s.listChatsCalls++
+	if s.listChatsErr != nil {
+		return nil, s.listChatsErr
+	}
+	return s.chats, nil
 }
 
 func (s *chatMutationSpy) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
@@ -974,72 +993,146 @@ func attachModelForTranscriptTest(client *chatMutationSpy) AttachModel {
 	return m
 }
 
-// TestAttach_DetachClobbersUserRenameWithDerivedTitle is a CHARACTERIZATION
-// test. It pins writer 5 of the five chat-title writers (BOS-839) — and unlike
-// the other four, it documents current behaviour that is arguably WRONG.
+// TestAttach_DetachWritesDerivedTitleOnlyOverAPlaceholder pins writer 5 of the
+// five chat-title writers. It is the successor to BOS-839's
+// TestAttach_DetachClobbersUserRenameWithDerivedTitle, which characterized this
+// writer as the one hole in the project's title-precedence rule; BOS-869 closed
+// the hole and this test asserts the guarded behaviour instead. Renamed, not
+// deleted — the rename is the record that the hole was closed deliberately.
 //
-// AttachModel.updateChatTitle has NO placeholder guard. Locally it always reads
-// the transcript and, whenever the derived title is non-empty, writes it through
-// the unguarded UpdateChatTitle RPC:
+// The title AttachModel.updateChatTitle derives is NOT a user-set name.
+// agentChatTitle resolves to agent.ChatTitle -> parseSessionMeta
+// (services/boss/internal/agent/title.go), which scans the JSONL and returns the
+// FIRST USER MESSAGE. It is therefore non-authoritative, exactly as BOS-611
+// ratified: an auto-derived title must never replace a real name.
 //
-//	title := agentChatTitle(worktreePath, agentSessionID)
-//	if title != "" { _ = m.client.UpdateChatTitle(...) }
+// So the detach path now carries a placeholder guard. Immediately before the
+// write it re-reads the stored title (a fresh ListChats on the session, matched
+// on the agent session id) and writes only when that title is still a
+// placeholder — isPlaceholderChatTitle's exact match on "" and "New chat", the
+// same predicate the picker's backfillTitles uses. The read is fresh rather than
+// captured at attach time because a chat can be renamed mid-attach: by the agent
+// in the attached pane through the MCP update_chat_title tool, or by `boss chat
+// rename` and the web UI from a second terminal.
 //
-// There is no `shouldRefreshChatTitle`-style check and no comparison against the
-// stored title, so the stored name is irrelevant to whether the write happens.
+// It fails CLOSED. A read error, or no chat matching the agent session id, skips
+// the write: skipping costs nothing durable (the daemon poller and the chat
+// picker both still backfill a placeholder title) while clobbering destroys a
+// name the user typed.
 //
-// The title it derives is NOT a user-set name. agentChatTitle resolves to
-// agent.ChatTitle -> parseSessionMeta (services/boss/internal/agent/title.go),
-// which scans the JSONL and returns the FIRST USER MESSAGE. So detaching from a
-// chat the user deliberately renamed re-derives an auto title from that first
-// message and overwrites the rename — every single detach.
-//
-// That contradicts the invariant the other writers uphold, namely that
-// auto-derived titles never clobber a real name: the poller's
-// shouldRefreshChatTitle and the picker's backfillTitles both refuse exactly
-// this write (see TestChatPicker_BackfillTitlesLeavesNonPlaceholderTitleAlone).
-// This writer is the one hole in it.
-//
-// The fix is DELIBERATELY OUT OF SCOPE. BOS-839 is scoped test-only by the
-// reporter, and an unpinned invariant violation is worse than a pinned one, so
-// this test records the behaviour instead of silently adding a guard. A
-// follow-up ticket decides whether the detach path should route through a
-// guarded write (or skip the write when the stored title is non-placeholder).
-//
-// WHEN THAT FIX LANDS, THIS TEST WILL FAIL BY DESIGN. Update it deliberately to
-// assert the new, guarded behaviour. Do not delete it as flaky — the failure is
-// the signal that the hole is finally closed.
-func TestAttach_DetachClobbersUserRenameWithDerivedTitle(t *testing.T) {
-	// Local destination: the remote-host short-circuit must not be what makes
-	// this test pass, since that gate is what the sibling test above measures.
-	withHostDestination(t, "")
-	// A non-empty derived title and a present transcript — i.e. the ordinary
-	// detach from a real chat whose first message was "First user prompt".
-	spy := withTranscriptSpy(t, "First user prompt", false)
-	client := &chatMutationSpy{}
-	m := attachModelForTranscriptTest(client)
+// The final case is the falsification half for the read itself: the orphan-reap
+// branch is untouched and must not fire the stored-title read at all.
+func TestAttach_DetachWritesDerivedTitleOnlyOverAPlaceholder(t *testing.T) {
+	const derived = "First user prompt"
 
-	cmd := m.updateChatTitle()
-	if cmd == nil {
-		t.Fatal("updateChatTitle returned nil locally, want the title-write cmd (the detach path must be reached for this test to mean anything)")
+	storedChat := func(title string) []*pb.ClaudeChat {
+		return []*pb.ClaudeChat{{AgentSessionId: "agent-1", Title: title}}
 	}
-	runAttachCmdGraph(t, cmd, func(tea.Msg) {})
 
-	if spy.titleCalls != 1 {
-		t.Fatalf("agent.ChatTitle called %d time(s) locally, want 1", spy.titleCalls)
+	tests := []struct {
+		name string
+		// derivedTitle is what the JSONL read answers; transcriptAbsent is the
+		// orphan-reap probe's answer, consulted only when derivedTitle is "".
+		derivedTitle     string
+		transcriptAbsent bool
+		// chats / listChatsErr configure the fresh stored-title read.
+		chats        []*pb.ClaudeChat
+		listChatsErr error
+
+		wantTitleUpdates   int
+		wantLastTitle      string
+		wantDeletes        int
+		wantListChatsCalls int
+	}{
+		{
+			// The behaviour BOS-869 changed: a real name survives the detach.
+			name:               "user rename is not clobbered",
+			derivedTitle:       derived,
+			chats:              storedChat("Manual investigation"),
+			wantTitleUpdates:   0,
+			wantListChatsCalls: 1,
+		},
+		{
+			// The positive half. Without it the guard test above passes
+			// vacuously — a writer that never writes would satisfy it.
+			name:               "placeholder New chat is still backfilled",
+			derivedTitle:       derived,
+			chats:              storedChat("New chat"),
+			wantTitleUpdates:   1,
+			wantLastTitle:      derived,
+			wantListChatsCalls: 1,
+		},
+		{
+			// An empty stored title is a placeholder, not an unknown.
+			name:               "empty stored title is a placeholder",
+			derivedTitle:       derived,
+			chats:              storedChat(""),
+			wantTitleUpdates:   1,
+			wantLastTitle:      derived,
+			wantListChatsCalls: 1,
+		},
+		{
+			name:               "read error fails closed",
+			derivedTitle:       derived,
+			listChatsErr:       errors.New("daemon unreachable"),
+			wantTitleUpdates:   0,
+			wantListChatsCalls: 1,
+		},
+		{
+			name:               "no chat matching the agent session fails closed",
+			derivedTitle:       derived,
+			chats:              []*pb.ClaudeChat{{AgentSessionId: "agent-2", Title: "New chat"}},
+			wantTitleUpdates:   0,
+			wantListChatsCalls: 1,
+		},
+		{
+			// Untouched neighbour: the reap keys on a confirmed-absent
+			// transcript and never consults the stored title, so the read must
+			// not fire outside the write branch.
+			name:               "orphan reap is untouched and never reads the stored title",
+			derivedTitle:       "",
+			transcriptAbsent:   true,
+			chats:              storedChat("Manual investigation"),
+			wantTitleUpdates:   0,
+			wantDeletes:        1,
+			wantListChatsCalls: 0,
+		},
 	}
-	if client.titleUpdates != 1 {
-		t.Fatalf("UpdateChatTitle called %d time(s), want exactly 1 — the detach path writes unconditionally", client.titleUpdates)
-	}
-	// The heart of the characterization: what lands is the JSONL-derived first
-	// user message, which would overwrite any name the user had set.
-	if client.lastTitle != "First user prompt" {
-		t.Fatalf("UpdateChatTitle title = %q, want %q (the first user message, re-derived from the transcript)", client.lastTitle, "First user prompt")
-	}
-	// The orphan reap is the dangerous neighbouring branch and must stay shut
-	// whenever a title did parse.
-	if client.deletes != 0 {
-		t.Fatalf("DeleteChat called %d time(s), want 0 — a chat with a parsed title is not an unused orphan", client.deletes)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Local destination: the remote-host short-circuit must not be what
+			// makes any of these pass, since that gate is what the sibling test
+			// below measures.
+			withHostDestination(t, "")
+			spy := withTranscriptSpy(t, tc.derivedTitle, tc.transcriptAbsent)
+			client := &chatMutationSpy{chats: tc.chats, listChatsErr: tc.listChatsErr}
+			m := attachModelForTranscriptTest(client)
+
+			cmd := m.updateChatTitle()
+			if cmd == nil {
+				t.Fatal("updateChatTitle returned nil locally, want the title-write cmd (the detach path must be reached for this test to mean anything)")
+			}
+			runAttachCmdGraph(t, cmd, func(tea.Msg) {})
+
+			if spy.titleCalls != 1 {
+				t.Fatalf("agent.ChatTitle called %d time(s) locally, want 1", spy.titleCalls)
+			}
+			// Behaviour first, mechanism second: when the guard is missing the
+			// headline failure should name the clobber, not the absent read.
+			if client.titleUpdates != tc.wantTitleUpdates {
+				t.Errorf("UpdateChatTitle called %d time(s), want %d", client.titleUpdates, tc.wantTitleUpdates)
+			}
+			if client.lastTitle != tc.wantLastTitle {
+				t.Errorf("UpdateChatTitle title = %q, want %q", client.lastTitle, tc.wantLastTitle)
+			}
+			if client.deletes != tc.wantDeletes {
+				t.Errorf("DeleteChat called %d time(s), want %d", client.deletes, tc.wantDeletes)
+			}
+			if client.listChatsCalls != tc.wantListChatsCalls {
+				t.Errorf("ListChats called %d time(s), want %d — the stored-title read fires once, and only inside the title-write branch", client.listChatsCalls, tc.wantListChatsCalls)
+			}
+		})
 	}
 }
 

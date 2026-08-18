@@ -413,19 +413,22 @@ LENS_EXTENSIONS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover
 
 `LENS_EXTENSIONS_JSON.skipped` carries every same-prefix directory discovery **rejected** — a
 missing `SKILL.md`, unreadable or malformed frontmatter, an incomplete or absent `x-boss-extension`
-marker or one extending another core, or a typo'd role. Record each as
-`lens extension <name>: skipped (<reason>)` in the ledger **before** resolving the matched lenses,
-with one exclusion: the exact reason `missing x-boss-extension marker` is not reported. That reason
-is emitted **only** for a SKILL.md whose frontmatter parsed cleanly and declares no marker at all.
-The marker is precisely what separates a genuine extension from an incidental name-prefix collision,
-so such a `boss-review-<suffix>` skill is a deliberate non-extension rather than a failed
-declaration — warning about it would fire on every review, for as long as the helper exists. A
-broken frontmatter fence and a half-written marker are _not_ covered by that exclusion: discovery
-gives each its own reason — `malformed frontmatter: ...` and
-`incomplete x-boss-extension marker: ...` — because both are a genuine extension that failed to
-declare itself, and exempting them would silently drop the very Tier-1 reviewer this ledger exists
-to account for. Every reason other than the exact markerless one is a real misconfiguration and is
-still recorded.
+marker or one extending another core, a typo'd role, or a `role: lens` descriptor whose `lens` key
+is present but unusable. Record every entry whose `deliberate` is `false` as
+`lens extension <name>: skipped (<reason>)` in the ledger **before** resolving the matched lenses.
+Key that decision on the entry's own `deliberate` field — never on the text of `reason`, which is a
+human sentence the helper is free to reword.
+
+A `deliberate: true` entry is a same-prefix skill that is not an extension of this core at all: a
+SKILL.md whose frontmatter parsed cleanly and declares no marker, or one declaring a marker that
+extends a core this core's own prefix merely nests into. A marker naming a core that could never
+own the directory is _not_ that — nothing else discovers it either, so it stays reportable. The
+marker is precisely what separates a genuine extension from an
+incidental name-prefix collision, so such a `boss-review-<suffix>` skill is a deliberate
+non-extension rather than a failed declaration — warning about it would fire on every review, for as
+long as the helper exists. A broken frontmatter fence and a half-written marker are _not_ classified
+that way: each is a genuine extension that failed to declare itself, and exempting them would
+silently drop the very Tier-1 reviewer this ledger exists to account for.
 
 A rejected extension never reaches `.extensions`, and the `lens` binding that would attribute it to
 an entry lives in the very frontmatter that failed to parse, so it is recorded against the phase
@@ -640,6 +643,13 @@ BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolb
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 ROUNDS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role round --json)
 ```
+
+Record every `ROUNDS_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the phase still degrades exactly as documented below.
 
 ### Tier 1 — repo-local round extensions
 
@@ -1248,6 +1258,13 @@ BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolb
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
 NOTES_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role notes --json)
 ```
+
+Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` in the ledger, before dispatching. Key that on the entry's
+own `deliberate` field, never on the text of `reason`. A `deliberate: true` entry is a same-prefix
+skill that is not an extension of this core — a markerless helper, or one extending another core —
+and is never reported. Recording is all that is due: a discovery skip is never fatal and never
+changes control flow; the phase still degrades exactly as documented below.
 
 If `NOTES_JSON.extensions` is empty, do nothing and print nothing: a repo without a local notes
 extension has not opted in. Create no scratch in that case. Otherwise create a terminal-only handoff:

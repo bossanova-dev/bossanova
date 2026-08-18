@@ -57,6 +57,21 @@ const (
 	// whitespace into separate assignments, so a perfectly legal directory such
 	// as `/opt/my tools/bin` would silently truncate the daemon's PATH — the
 	// same class of failure this change exists to fix.
+	//
+	// TimeoutStopSec is the SIGTERM-to-SIGKILL grace, and BOS-888 pins it
+	// rather than inheriting it. systemd's DefaultTimeoutStopSec (90s) already
+	// exceeds bossd's graceful budget, but a distro that lowered the default
+	// would cut the failover-proxy drain mid-stream, so the value is written
+	// explicitly and must stay above LifecycleShutdownTimeout. The rationale
+	// lives here rather than as a `#` comment in the rendered unit because
+	// TestGenerateUnitRejectsNewlineInjection requires every generated line to
+	// be a directive or a section header — prose in the template would blunt an
+	// injection guard to no operator benefit.
+	//
+	// Reach: NEW INSTALLS ONLY. Unlike launchd's, this platform's restart is a
+	// bare `systemctl --user restart`, so it neither regenerates the unit nor
+	// daemon-reloads; an existing install keeps whatever TimeoutStopSec it was
+	// written with until `boss daemon install --force`.
 	unitTemplate = `[Unit]
 Description=Bossanova Daemon
 After=network.target
@@ -66,6 +81,7 @@ ExecStart={{.BossdPath}}
 LimitNOFILE=65536
 Restart=always
 RestartSec=5
+TimeoutStopSec=90
 Environment="PATH={{.Path}}"
 Environment=LC_CTYPE=C.UTF-8
 

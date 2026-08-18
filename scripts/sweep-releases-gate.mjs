@@ -39,7 +39,8 @@ export function parseFinding(comment) {
   const badge = firstLine.match(/!\[\s*(P\d+)\s+Badge\s*\]/)
   const headline = (
     badge
-      ? firstLine.slice(firstLine.indexOf(badge[0]) + badge[0].length).replace(/^\([^)]*\)/, '')
+      ? // gate-region-ok: not a marker region, and guarded by this ternary — `badge[0]` is a match OF `firstLine`, so `indexOf` cannot return -1 on the arm where it runs.
+        firstLine.slice(firstLine.indexOf(badge[0]) + badge[0].length).replace(/^\([^)]*\)/, '')
       : firstLine
   )
     .replace(/<\/?sub>/g, '')

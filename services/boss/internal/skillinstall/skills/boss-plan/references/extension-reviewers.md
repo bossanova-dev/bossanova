@@ -25,11 +25,16 @@ dispatched as an awaited subagent (no human gating).
    wrong marker role (e.g. `role: lens`, or a typo) is rejected into `skipped` rather than returned
    for dispatch — dispatching a wrong-role add-on under the `plan-reviewer` envelope would run the
    wrong extension. A valid `role: draft` sibling is ignored here because Phase 2 owns draft
-   discovery. For every entry in `skipped`, record `extension <name>: skipped (<reason>)` — a
-   same-prefix directory that fails discovery (no `x-boss-extension` marker, wrong `extends`, wrong
-   `role`, or missing `SKILL.md`) is a misinstalled extension the degradation contract requires you
-   to surface, not silently ignore. **Only when _both_ `extensions` and `skipped` are empty** is this a true no-op:
-   record nothing and proceed with the plan unchanged (the default path is untouched).
+   discovery. For every `skipped` entry whose `deliberate` is `false`, record
+   `extension <name>: skipped (<reason>)` — a same-prefix directory that fails discovery (a broken
+   or half-written `x-boss-extension` marker, a wrong `role`, or a missing `SKILL.md`) is a
+   misinstalled extension the degradation contract requires you to surface, not silently ignore.
+   Key that on the entry's own `deliberate` field, never on the text of `reason`. A
+   `deliberate: true` entry is a same-prefix skill that is not an extension of this core at all — a
+   markerless helper, or one extending another core — and is never reported; warning about it would
+   fire on every plan for as long as that skill exists. **Only when `extensions` is empty and no
+   `skipped` entry is reportable** is this a true no-op: record nothing and proceed with the plan
+   unchanged (the default path is untouched).
 
 2. **Dispatch each extension in order** as a **fresh read-only subagent** (of type
    `general-purpose`; **await** it, **never** `run_in_background` — this holds in headless mode too).

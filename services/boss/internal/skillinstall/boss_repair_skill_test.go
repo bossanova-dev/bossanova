@@ -195,9 +195,13 @@ func TestBossRepairSkillResidualContract(t *testing.T) {
 	checklist := sectionBetween(t, skill, "## Checklist", "## Success Criteria")
 	assertContains(t, checklist, "Residuals reported in the summary")
 
-	// A residual is visible in the round's output rather than implied by its absence. The window
-	// ends at the residuals section so this cannot be satisfied by the definition prose above.
-	summary := sectionBetween(t, skill, "## Repair Summary", "## Residuals vs true stops")
+	// A residual is visible in the round's output rather than implied by its absence. The window ends
+	// at the section that FOLLOWS the summary template so this cannot be satisfied by the definition
+	// prose below it. That end marker is `## Terminal outcomes`, not `## Residuals vs true stops`:
+	// the terminal-outcome model was inserted between the two, and sectionBetween rejects a window
+	// spanning a same-level heading — correctly, since the wider window would let the assertion be
+	// satisfied by the outcome list rather than by the template that must carry the line.
+	summary := sectionBetween(t, skill, "## Repair Summary", "## Terminal outcomes")
 	assertContains(t, summary, "**Residuals**:")
 
 	// The contradicted directive is gone from the whole skill, not merely from these sections.
@@ -427,6 +431,423 @@ func TestBossRepairSkillPhase2InlineBranchContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBossRepairSkillTerminalOutcomeContract pins the closed set of pass outcomes. Before this
+// section existed the skill described how to repair things but never named what a pass ARRIVES at,
+// so a round that found an already-green, thread-clean, mergeable PR had no route through Phase 1.2
+// (which presupposes a problem), no name for what it reached, and therefore read as an
+// under-performed run — which is exactly the pressure that produces manufactured work.
+//
+// Each outcome is pinned WITH its exit instruction, because a name without an exit code leaves the
+// worker to infer one, and the inference that "nothing happened" means "the run failed" is the
+// defect. The scope-creep prohibition is pinned as three concrete prohibited acts rather than a
+// general exhortation: "do not do unnecessary work" is unfalsifiable at the point of temptation,
+// whereas "do not re-run gates this pass had no reason to invoke" names the act.
+func TestBossRepairSkillTerminalOutcomeContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			outcomes := sectionBetween(t, skill, "## Terminal outcomes", "## Residuals vs true stops")
+
+			// Every outcome is named, and each carries its own exit instruction.
+			assertContains(t, outcomes, "**repaired** — a fix was committed and pushed. Exit zero.")
+			assertContains(t, outcomes, "**nothing to repair**")
+			assertContains(t, outcomes, "**parked no-op**")
+			assertContains(t, outcomes, "**residual**")
+			assertContains(t, outcomes, "**true stop** — the worker could not run at all. Exit non-zero")
+
+			// "nothing to repair" is legitimate, not a failed pass, and its exit is spelled out.
+			assertContains(t, outcomes, "a **legitimate terminal outcome, distinct from a failed pass**")
+			assertContains(t, outcomes, "report **nothing to repair** with `**Residuals**: none`, and exit zero")
+
+			// The prohibition, with the three concrete acts it forbids.
+			assertContains(t, outcomes, "Manufacturing work in this state is scope creep and is **forbidden**")
+			assertContains(t, outcomes, "do not re-run gates this pass had no reason to invoke")
+			assertContains(t, outcomes, "do not re-read already-resolved threads")
+			assertContains(t, outcomes, "do not make an unrelated improvement while you are here")
+
+			// The parked no-op and residual outcomes both exit zero, and the residual defers to the
+			// section that defines the model rather than restating it.
+			assertContains(t, outcomes, "The parked thread or threads are the residual. Exit zero.")
+			assertContains(t, outcomes, "Report it and exit zero, per")
+			assertContains(t, outcomes, "[Residuals vs true stops](#residuals-vs-true-stops)")
+
+			// These are outcome names mapped onto the EXISTING reason vocabulary, never new tokens.
+			assertContains(t, outcomes, "**outcome names**, not new reason tokens")
+			assertContains(t, outcomes, "the Watch Mode reason-line vocabulary is unchanged")
+		})
+	}
+}
+
+// TestBossRepairSkillTerminalOutcomesMintNoNewWatchTokens is the negative half of the terminal-outcome
+// model. The final reason line's vocabulary is a CLOSED SET consumed by callers that classify it; a
+// token outside the set degrades to a retry, which would send a case the skill just declared terminal
+// back around the loop. Naming five new outcomes is exactly the edit that tempts an author to give
+// each one its own token, so the watch window is pinned on the surviving vocabulary and asserted to
+// contain none of the new names in the backticked form the reason line uses.
+func TestBossRepairSkillTerminalOutcomesMintNoNewWatchTokens(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+
+			// The existing closed set is intact.
+			assertContains(t, watchMode, "`green` / `parked` / `no-progress` / `max-attempts` / `blocked`")
+			assertContains(t, watchMode, "`max-attempts` / `blocked`")
+
+			// No outcome name became a reason token. Each is checked in the backticked spelling the
+			// reason line uses, which is the only form a caller would parse.
+			for _, minted := range []string{
+				"`repaired`",
+				"`nothing to repair`",
+				"`nothing-to-repair`",
+				"`parked no-op`",
+				"`parked-no-op`",
+				"`residual`",
+				"`true stop`",
+				"`true-stop`",
+			} {
+				assertNotContains(t, watchMode, minted)
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillPhase1AdmitsNoProblem pins the fourth categorization outcome. Phase 1.2's three
+// categories all presuppose a problem exists, so a round that found none had nothing to select and no
+// sanctioned way forward — the categorization step itself pushed toward inventing a problem.
+//
+// The window is the Phase 1 section narrowed to step 1.2 by its two bold sub-headings. sectionBetween
+// cannot anchor on those directly (it requires markers beginning with `#`), so the narrowing is done
+// here with an explicit ordering check: a window that silently spanned 1.1 and 1.3 would let the
+// bullet be satisfied by prose under a step the categorizing worker never reads.
+func TestBossRepairSkillPhase1AdmitsNoProblem(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase1 := sectionBetween(t, skill, "### Phase 1: Assess Current State", "### Phase 2: Execute Repair Strategy")
+			step12 := boldStepWindow(t, phase1, "**1.2 Identify Problem Type**", "**1.3 Identify Project Gate Commands**")
+
+			// The three pre-existing categories are still there — this is an addition, not a swap.
+			assertContains(t, step12, "**Merge Conflict**")
+			assertContains(t, step12, "**Failing Checks**")
+			assertContains(t, step12, "**Review Feedback**")
+
+			// The fourth category, its signal set, and the statement that it is a RESULT.
+			assertContains(t, step12, "**No problem**")
+			assertContains(t, step12, "every signal is already clear")
+			assertContains(t, step12, "This is a **valid categorization result**, not a failure to categorize")
+			assertContains(t, step12, "route straight to the **nothing to repair** outcome")
+			assertContains(t, step12, "[Terminal outcomes](#terminal-outcomes)")
+			assertContains(t, step12, "select no strategy")
+		})
+	}
+}
+
+// TestBossRepairSkillZeroDiffGatesRecordedNotRun pins the reporting rule for a pass that changed
+// nothing. Both windows already PERMITTED skipping the gate/commit/push boxes on a zero-diff pass;
+// neither said what to write in them instead. Permission to skip is not permission to fill in, and a
+// quoted "gates passed" for a gate that was never invoked is worse than a blank — a reviewer and the
+// next round both read it as evidence.
+//
+// Asserted in BOTH windows because the two state the same contract to two different readers (the
+// completion checklist and the success definition), and a rule present in only one is one an editor
+// working from the other will contradict.
+func TestBossRepairSkillZeroDiffGatesRecordedNotRun(t *testing.T) {
+	const (
+		notRun = "A zero-diff pass records the gate boxes as **not run**."
+		defect = "quoting a pass or fail status for a gate this pass never invoked is a **reporting defect**"
+	)
+
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			checklist := sectionBetween(t, skill, "## Checklist", "## Success Criteria")
+			assertContains(t, checklist, notRun)
+			assertContains(t, checklist, defect)
+			assertContains(t, checklist, "Permission to skip a box is not permission to fill it in")
+
+			success := sectionBetween(t, skill, "## Success Criteria", "### Post-terminal notes extensions (repo opt-in)")
+			assertContains(t, success, notRun)
+			assertContains(t, success, defect)
+			assertContains(t, success, "Permission to skip a box is not permission to fill it in")
+		})
+	}
+}
+
+// TestBossRepairSkillStrategyCTriagesOnRemedy pins the axis change in Strategy C's triage. The old
+// three categories graded a finding on its PREMISE alone and silently assumed a true premise implied
+// its suggested change, which left three real dispositions homeless: a correct finding whose fix is
+// out of the approved plan's scope, one whose suggestion sits in the wrong layer, and one whose
+// remedy is feature-sized. A round meeting any of them had to either implement work it should not
+// have, or decline a finding it knew was true.
+//
+// Category (b)'s file-and-line requirement is pinned separately because "already fixed" was the
+// specific decline being settled against a commit subject line — which states intent and names its
+// scope loosely, so it can close a thread over a live bug.
+//
+// Category (c)'s three obligations are each pinned: without the mandatory residual/follow-up record,
+// (c) reads as a cheaper exit than fixing and becomes the escape hatch for an under-performing round.
+func TestBossRepairSkillStrategyCTriagesOnRemedy(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			// Four categories, split on the remedy as well as the premise.
+			assertContains(t, strategyC, "triage into one of four categories")
+			assertContains(t, strategyC, "A true premise does **not** by itself license implementing the suggestion")
+			assertNotContains(t, strategyC, "triage into one of three categories")
+
+			// All four labels, in order, so a category cannot be dropped or renamed silently.
+			labels := []string{
+				"**a) Actionable — fix it:**",
+				"**b) Premise does not hold — decline and resolve:**",
+				"**c) Premise holds, remedy declined — affirm, record, resolve:**",
+				"**d) Unclear — ask for clarification:**",
+			}
+			at := -1
+			for _, label := range labels {
+				assertContains(t, strategyC, label)
+				next := strings.Index(strategyC, label)
+				if next >= 0 && next < at {
+					t.Errorf("category %q appears out of order", label)
+				}
+				if next >= 0 {
+					at = next
+				}
+			}
+
+			// (b): an "already fixed" decline is settled against the code, never a commit reference.
+			assertContains(t, strategyC, "must cite the **file and line** in the current tree that satisfies the finding")
+			assertContains(t, strategyC, "a commit reference alone cannot close a thread")
+
+			// (c): the affirmation, the three shapes, and the mandatory record.
+			assertContains(t, strategyC, "outside the approved plan's scope")
+			assertContains(t, strategyC, "**wrong layer**")
+			assertContains(t, strategyC, "**feature-sized**")
+			assertContains(t, strategyC, "**affirm the defect is real**")
+			assertContains(t, strategyC, "state precisely why the suggested change is not being applied")
+			assertContains(t, strategyC, "**record a residual or follow-up instead of implementing it**")
+			assertContains(t, strategyC, "it is not an escape hatch")
+
+			// (d) keeps the behaviour the old (c) had, including its residual designation. Pinned so
+			// the renumbering cannot quietly drop the clarification path's distinguishing rules.
+			assertContains(t, strategyC, "Do NOT resolve the thread")
+			assertContains(t, strategyC, "--disposition needs-human")
+			assertContains(t, strategyC, "A thread left open this way is a **residual**")
+
+			// The closing IMPORTANT paragraph must enumerate all four dispositions, not the old three.
+			assertContains(t, strategyC, "affirm-and-record a declined remedy and resolve")
+		})
+	}
+}
+
+// TestBossRepairSkillStrategyCVerificationSteps pins the four cheap verifications as REQUIRED steps.
+// Each costs a grep or two, and each prevented a wrong reply in an observed run: a multi-link claim
+// answered wholesale, a documentation claim "fixed" in code that was already correct, a tunable
+// constant invented from scratch beside a sibling that already set the shape, and a parked thread
+// reported as a residual after the branch had already addressed it.
+//
+// The parked check is the load-bearing one: a park keys on the reviewer's last-comment identity, not
+// on the head, so the branch can move underneath it indefinitely. Without a re-derivation the park is
+// carried forward forever, and the un-park lever the probe already ships is never reached — so the
+// exact `--disposition open` invocation is pinned rather than described.
+func TestBossRepairSkillStrategyCVerificationSteps(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			// Required, not advisory — the framing the whole block turns on.
+			assertContains(t, strategyC, "each is a required step, not a guideline")
+
+			// Per-link verification of a multi-step causal claim, with the reply obligation.
+			assertContains(t, strategyC, "**Verify each link of a multi-step causal claim separately.**")
+			assertContains(t, strategyC, "check each link independently against the code")
+			assertContains(t, strategyC, "The reply must state which links held")
+
+			// Doc-claim check: adjacent code comment plus the NAME of the nearest test.
+			assertContains(t, strategyC, "the **name** of the nearest test")
+			assertContains(t, strategyC, "the fix is prose-only and **no code change is in scope**")
+
+			// Sibling-constant lookup before designing a tunable-constant fix.
+			assertContains(t, strategyC, "**Find the sibling constant before designing a tunable-constant fix.**")
+			assertContains(t, strategyC, "grep the containing package for sibling constants")
+
+			// Parked-premise re-derivation, its rationale, and the un-park lever.
+			assertContains(t, strategyC, "A park keys on the **reviewer's last-comment identity**, not on the branch head")
+			assertContains(t, strategyC, "**Never carry a prior pass's parked verdict forward.**")
+			assertContains(t, strategyC, "**re-derive its premise against current HEAD**")
+			assertContains(t, strategyC, "node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition open")
+		})
+	}
+}
+
+// TestBossRepairSkillWatchModeHeadScopedClean pins the head-scoping of a clean review probe. A clean
+// probe at the end of a round predicts nothing about the next one: it was read against one head, and
+// a reviewer who re-reviews every push opens fresh threads against the round's own fix. Without the
+// scoping stated, a round reads its own clean probe as a steady state reached and treats the next
+// round's threads as a regression — or, worse, as licence to batch them.
+//
+// The two-terminator clause is the other half. A round that replied and parked without pushing looks
+// identical to step 9's no-progress stop (no new commit) while being its opposite: substantive work
+// was done. Conflating them either spins the loop on a genuinely finished PR or reports a working
+// round as unfixable.
+func TestBossRepairSkillWatchModeHeadScopedClean(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+
+			assertContains(t, watchMode, "`repair_status=clean` is **head-scoped**")
+			assertContains(t, watchMode, "it is clean only for the head it was read against")
+			assertContains(t, watchMode, "**new threads since the previous round's head are an expected steady state**")
+			assertContains(t, watchMode, "not a regression, and not a fresh failure")
+
+			// Not licence to batch or defer.
+			assertContains(t, watchMode, "**not licence to batch, defer, or wait for a quiet reviewer**")
+			assertContains(t, watchMode, "What is bounded is the number of repair **rounds**, never the reviewer's cadence")
+
+			// The re-poll ordering, stated as an every-round obligation.
+			assertContains(t, watchMode, "**review re-poll runs after the CI-green check in every round**")
+			assertContains(t, watchMode, "never skipped once checks pass")
+
+			// Two distinct terminators, and the parked one explicitly separated from step 9.
+			assertContains(t, watchMode, "there are **two distinct terminators**")
+			assertContains(t, watchMode, "**parked without pushing**")
+			assertContains(t, watchMode, "it is **not** the no-progress stop of step 9")
+		})
+	}
+}
+
+// TestBossRepairSkillWatchModeBoundResidualNamesPendingWork pins what the bounded loop must SAY when
+// it stops. "Record what is still red" was the whole instruction, and it covers neither of the two
+// things a bounded watch actually leaves behind: a pending check is not red, and review feedback that
+// landed after the final push is not red either — so both were routinely omitted and the caller had
+// to re-derive them.
+//
+// The flake clause is separate and easily lost: a round that ends because a failing check was
+// re-rolled green has learned exactly where the fragility is, and dropping that knowledge makes the
+// next occurrence pay the full triage cost from zero. It is pinned with the "or record that none"
+// half, so an honest empty answer stays available and the rule does not push toward invention.
+func TestBossRepairSkillWatchModeBoundResidualNamesPendingWork(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+
+			// The residual names both things "what is still red" misses, and says why.
+			assertContains(t, watchMode, "must name **pending CI checks** and **review feedback that arrived after the final push**")
+			assertContains(t, watchMode, "a pending check is not red, and a fresh unaddressed thread is not red either")
+
+			// The reason line carries the budget actually spent and the pending state.
+			assertContains(t, watchMode, "the **number of repair passes used** and the **pending-check state**")
+			assertContains(t, watchMode, "so an exhausted budget is visible without re-deriving it")
+
+			// A re-rolled flake leaves hardening candidates behind, or an explicit none.
+			assertContains(t, watchMode, "**re-rolled and came back green**")
+			assertContains(t, watchMode, "must name the concrete `file:line` hardening candidates")
+			assertContains(t, watchMode, "or explicitly record that none was identified")
+		})
+	}
+}
+
+// TestBossRepairSkillPhase2AcceptsCronDispatchGrant pins the missing half of the inline-routing rule.
+// The lead-in already said `BOSS_CRON=true` alone is not a prohibition; it never said what DOES clear
+// the "unless the user requested it" condition a blanket no-subagent instruction is written against.
+// So a managed run carrying an explicit operator grant still read the blanket instruction as binding
+// and took the weaker single-voice route for every strategy.
+//
+// The negative list is re-asserted here rather than left to TestBossRepairSkillPhase2InlineBranchContract:
+// this change adds prose to precisely that window, and the phrasing most likely to creep in while
+// writing about a grant is a restatement of the prohibition it replaces.
+func TestBossRepairSkillPhase2AcceptsCronDispatchGrant(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase2 := sectionBetween(t, skill, "### Phase 2: Execute Repair Strategy", "#### Strategy A: Merge Conflicts")
+
+			assertContains(t, phase2, "A managed or cron **dispatch grant**")
+			assertContains(t, phase2, "the operator's standing request for the protocol-mandated dispatches")
+			assertContains(t, phase2, "**satisfies** the \"unless the user requested it\" condition")
+			assertContains(t, phase2, "not an inline-routing trigger in such a session")
+
+			lowered := strings.ToLower(phase2)
+			for _, forbidden := range []string{
+				"may not dispatch",
+				"must not dispatch",
+				"cannot dispatch",
+				"forbidden from dispatching",
+				"forbidden to dispatch",
+				"cron runs are forbidden",
+			} {
+				assertNotContains(t, lowered, forbidden)
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillGateRedIsNotAutomaticallyAFinding pins the portable reading rule for a red gate.
+// Both strategies that run repo gates could read an exit code as a defect in the branch, and an
+// infrastructure flake — lock contention, a commit-hook signing or memory failure, a failure in a
+// file this change never touched — then gets "fixed" in code that was never wrong.
+//
+// The rule deliberately names NO tool-specific flake string. This core extracts into every user's
+// global skill directory, where a signature borrowed from one toolchain is dead weight at best and
+// actively misleading at worst; the reasoning error it prevents is portable, the strings are not. The
+// absence is asserted, not merely intended, because pasting a worked example verbatim is exactly how
+// such a string arrives.
+func TestBossRepairSkillGateRedIsNotAutomaticallyAFinding(t *testing.T) {
+	const (
+		rule    = "**An exit code is not a finding.**"
+		read    = "read the failing output"
+		flakes  = "are infrastructure flakes, not findings"
+		confirm = "Re-run the affected target in isolation to confirm"
+	)
+
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			// Reachable from BOTH gate-running strategies: a worker in Strategy B never reads
+			// Strategy C's step 3, and vice versa.
+			strategyB := sectionBetween(t, skill, "#### Strategy B: Failing Checks", "#### Strategy C: Review Feedback")
+			assertContains(t, strategyB, rule)
+			assertContains(t, strategyB, read)
+			assertContains(t, strategyB, flakes)
+			assertContains(t, strategyB, confirm)
+
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertContains(t, strategyC, rule)
+			assertContains(t, strategyC, read)
+			assertContains(t, strategyC, flakes)
+			assertContains(t, strategyC, confirm)
+
+			// It points at the repo's own instructions for the signatures, rather than carrying any.
+			assertContains(t, strategyB, "consult the repo's own agent instructions for the flake signatures it records")
+
+			// No tool-specific flake signature anywhere in the published core.
+			lowered := strings.ToLower(skill)
+			for _, toolSpecific := range []string{
+				"golangci",
+				"parallel golangci-lint is running",
+				"gpg",
+				"secret key not available",
+			} {
+				assertNotContains(t, lowered, toolSpecific)
+			}
+		})
+	}
+}
+
+// boldStepWindow narrows an already-anchored section to one bold-labelled step. sectionBetween cannot
+// do this itself — it requires both markers to be markdown `#` headings — but a gate on a numbered
+// sub-step still needs a window, or the assertion can be satisfied by prose under a neighbouring step
+// the reader of this one never sees. Both labels must be present and in order.
+func boldStepWindow(t *testing.T, section, start, end string) string {
+	t.Helper()
+
+	begin := strings.Index(section, start)
+	if begin == -1 {
+		t.Fatalf("step label %q not found in section", start)
+	}
+	rest := section[begin:]
+	stop := strings.Index(rest, end)
+	if stop == -1 {
+		t.Fatalf("step label %q not found after %q", end, start)
+	}
+	return rest[:stop]
 }
 
 // bossRepairSkillPayloads returns the boss-repair SKILL.md body from BOTH shipped payloads — the

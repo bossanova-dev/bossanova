@@ -170,6 +170,11 @@ export function computeReviewLensSignature(changedFiles) {
  * @returns {{ tui: boolean, web: boolean, recipes: Array<{id:string,surface:string}> }}
  */
 export function computeProofSurfaceSignature(changedFiles, catalog) {
+  // Only BROWSER-surface recipe ids reach the returned `recipes` list; the tui
+  // and web surfaces are recorded as plain booleans. So adding a web or tui
+  // recipe leaves proof-surface.snapshot.json byte-identical by design — a green
+  // parity gate is the correct outcome, and the baseline must not be regenerated
+  // for one. Same statement lives in proof/recipes/README.md; keep them in sync.
   const { tui, web, recipes } = classifySurfaces({ changedFiles, catalog })
   const sortedRecipes = recipes
     .map((r) => ({ id: r.id, surface: r.surface }))

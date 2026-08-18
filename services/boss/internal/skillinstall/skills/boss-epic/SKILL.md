@@ -43,7 +43,8 @@ schedules and merges.
 - **Prefer a callback over blind polling.** Whenever you are about to wait on a
   child's PR / CI check / merge state, arm a one-shot callback group first rather
   than spinning on the poll — gated on the single `callbacksAvailable(env)` signal
-  (`toolbox/callback/adapter.mjs`, keyed on `BOSS_SESSION_ID`). Gate true ⇒
+  (`toolbox/callback/adapter.mjs`: a managed session **and** a `boss` executable
+  that actually resolves; gate false ⇒ log `callbacksUnavailableReason(env)`). Gate true ⇒
   resolve `selectEpicCallbackTarget` (`toolbox/callback/epic-target.mjs`) from the
   child PR repository plus verified orchestrator and child identities before any
   callback operation. A matching orchestrator wins; otherwise a matching child is
@@ -217,10 +218,38 @@ assumeCleared, assumeClearedAndMerge}`.
    (or an operator-supplied id) and pass it as `create_session {model: …}` in
    Phase 3a. No `/model` two-step: the model is a first-class field on the run.
 
-   **`boss` binary.** Resolve it once as `BOSS`: prefer `$BOSS_BIN` (exported in
-   boss-managed chats), else `boss` on `PATH`, else the repo build `./bin/boss`
-   (`make build` if missing). Use `"$BOSS"` at every call-site so a driver chat
-   without `boss` on `PATH` still works.
+   **`boss` binary.** Resolve it **once** as `BOSS` via the toolbox's
+   `resolveBossBinary`, never by hand. Same order as always (`$BOSS_BIN`, else
+   `boss` on `PATH`, else the repo build `./bin/boss`),
+   but it **stats each candidate before accepting it** — which a bare
+   `${BOSS_BIN:-boss}` never did, so a cron session inheriting `$BOSS_BIN` from a
+   since-reaped worktree short-circuits the fallback chain this order defines.
+   Then take one of **two** branches; there is no third and no other transport:
+
+   - **`ok: true`** → bind the returned `path`; use `"$BOSS"` at every call-site,
+     never a bare `boss` (`$BOSS_BIN` outranks `PATH`, so two arms name a binary a
+     bare `boss` would miss or resolve to a _different_ one).
+   - **`ok: false`** → stop `BLOCKED: boss CLI unavailable — <reason>`, quoting
+     `reason` **verbatim** (it names each candidate and why it lost; a missing
+     `./bin/boss` is what `make build` produces). Never a bare
+     ENOENT, never a silent poll: a missing binary read as a missing capability is
+     the failure this exists to prevent.
+
+   ```bash
+   BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
+   if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
+   BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+   test -f "$BOSS_EPIC_TOOLBOX/boss-binary.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_WHY="$(mktemp)"  # stdout = resolved path (empty if none); stderr = the reason
+   BOSS="$(node --input-type=module -e '
+     import{pathToFileURL as u}from"node:url"
+     const { resolveBossBinary } = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/boss-binary.mjs").href)
+     const r = resolveBossBinary()
+     if (r.ok) process.stdout.write(r.path); else process.stderr.write(r.reason)
+   ' 2>"$BOSS_WHY")"
+   if [ -z "$BOSS" ]; then echo "BLOCKED: boss CLI unavailable — $(cat "$BOSS_WHY")"; rm -f "$BOSS_WHY"; exit 1; fi
+   rm -f "$BOSS_WHY"; export BOSS
+   ```
 
 2. **Verify the tracker MCP** with a cheap read — the adapter's `selectPlanned`
    capability (`operationMap.selectPlanned`), the same planned-queue list the epic
@@ -228,20 +257,27 @@ assumeCleared, assumeClearedAndMerge}`.
 
    A failed read has two causes with **opposite** fixes, so classify it with
    `trackerMcpPreflight` instead of reporting a bare unreachable. Each block is a
-   fresh shell and `$BOSS_EPIC_TOOLBOX` is exported in step 3's, so re-resolve it:
+   fresh shell and `$BOSS_EPIC_TOOLBOX` is exported in step 3's, so re-resolve it —
+   and `BOSS`, which a bare `boss` would silently replace:
 
    ```bash
    set -euo pipefail
    BOSS_SKILLS_HOME="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}"
    if [ ! -d "$BOSS_SKILLS_HOME/boss-epic/toolbox" ]; then BOSS_SKILLS_HOME="$HOME/.codex/skills"; fi
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
+   BOSS="${BOSS:-$(node --input-type=module -e '
+     import{pathToFileURL as u}from"node:url"
+     const m = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/boss-binary.mjs").href)
+     process.stdout.write(m.resolveBossBinary().path ?? "")
+   ' 2>/dev/null || true)}"
    # A server failing at CONNECT publishes no tools, so the tool list alone cannot
    # tell it from one never declared. Older binaries lack this read — hence the
    # explicit failure branch; no report is supported and degrades to today.
-   DECLARED="$("${BOSS:-boss}" session mcp "${BOSS_AGENT_SESSION_ID:-}" --json 2>/dev/null)" || DECLARED=''
+   DECLARED="$("$BOSS" session mcp "${BOSS_AGENT_SESSION_ID:-}" --json 2>/dev/null)" || DECLARED=''
    export DECLARED
    node --input-type=module -e '
-     const { trackerMcpPreflight } = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/tracker/preflight.mjs`)
+     import{pathToFileURL as u}from"node:url"
+     const { trackerMcpPreflight } = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/tracker/preflight.mjs").href)
      let declaredServers = []
      try { declaredServers = JSON.parse(process.env.DECLARED || "{}").servers || [] } catch {}
      process.stdout.write(JSON.stringify(trackerMcpPreflight({
@@ -272,7 +308,8 @@ assumeCleared, assumeClearedAndMerge}`.
    BOSS_EPIC_TOOLBOX="$BOSS_SKILLS_HOME/boss-epic/toolbox"; export BOSS_EPIC_TOOLBOX
    test -f "$BOSS_EPIC_TOOLBOX/session/boss.mjs" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
    node --input-type=module -e '
-     const m = await import(`file://${process.env.BOSS_EPIC_TOOLBOX}/session/boss.mjs`)
+     import{pathToFileURL as u}from"node:url"
+     const m = await import(u(process.env.BOSS_EPIC_TOOLBOX+"/session/boss.mjs").href)
      process.stdout.write("tools:\n" + m.requiredBossToolsForEpic().join("\n") + "\n")
      process.stdout.write("cli:\n" + m.requiredBossCliCommandsForEpic().join("\n") + "\n")
    '  # → authoritative checklists, one per transport
@@ -729,6 +766,12 @@ BOSS_EPIC_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-epic/toolbox"
 if [ ! -d "$BOSS_EPIC_TOOLBOX" ]; then BOSS_EPIC_TOOLBOX="$HOME/.codex/skills/boss-epic/toolbox"; fi
 NOTES_JSON=$(node "$BOSS_EPIC_TOOLBOX/skill-extensions.mjs" discover --core boss-epic --role notes --json)
 ```
+
+Record every `NOTES_JSON.skipped` entry whose `deliberate` is `false` as
+`extension <name>: skipped (<reason>)` before dispatching, keying on that field rather than on the
+`reason` text. A `deliberate: true` entry is a same-prefix skill that is not an extension of this
+core — a markerless helper, or one extending another core — and is never reported. Recording is all
+that is due: a skip is never fatal and changes no control flow.
 
 Empty means silent no-op/no scratch. Otherwise:
 

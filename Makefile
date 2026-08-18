@@ -6,7 +6,7 @@
 	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
 	test-native-ledger test-native-ledger-affected test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
-	test-legacy-refs test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
+	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
@@ -558,6 +558,7 @@ test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check build
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
+	$(MAKE) test-no-vacuous-regions
 	$(MAKE) test-public-mirror
 ifeq ($(BAZEL_USABLE),1)
 	$(BAZEL) test $(BAZEL_TEST_FLAGS) //...
@@ -915,6 +916,13 @@ test-public-mirror:
 
 test-no-inline-stop-hooks:
 	node scripts/check-no-inline-stop-hooks.mjs
+
+## test-no-vacuous-regions: BOS-737 — fail if a raw `X.slice(X.indexOf(…))` region
+## extraction lands. `indexOf` returns -1 on a moved marker and `slice` reads -1 as
+## "one char from the end", so every negative assertion over the region passes while
+## the forbidden content sits in the file. Use region() from scripts/gate-region-lib.mjs.
+test-no-vacuous-regions:
+	node scripts/check-vacuous-regions.mjs
 
 ## test-legacy-refs: BOS-815 tree-wide retirement scan — fail if any ACTIVE file
 ## reintroduces a reference to either retired system (the scan names them; this

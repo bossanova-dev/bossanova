@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inflight",
+    srcs = [
+        "record.go",
+        "sever.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/inflight",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)
+
+go_test(
+    name = "inflight_test",
+    srcs = ["record_test.go"],
+    embed = [":inflight"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

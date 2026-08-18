@@ -62,6 +62,11 @@ export const VENDOR_MAP = {
     'callback/adapter.mjs',
     'callback/boss.mjs',
     'bossd-present.mjs',
+    // boss-binary.mjs (BOS-785) backs callbacksAvailable's second conjunct — the
+    // `boss` CLI must actually be a resolvable executable, not just implied by
+    // BOSS_SESSION_ID. adapter.mjs imports it directly, so every skill that vendors
+    // callback/adapter.mjs must vendor this too or the import cannot resolve.
+    'boss-binary.mjs',
     'finalize/adapter.mjs',
     'finalize/cli.mjs',
     'finalize/boss-finalize.mjs',
@@ -120,6 +125,9 @@ export const VENDOR_MAP = {
     'callback/boss.mjs',
     'callback/epic-target.mjs',
     'bossd-present.mjs',
+    // See boss-build above: adapter.mjs's boss-binary dependency ships with every
+    // copy of the adapter or the vendored copy fails to resolve its import.
+    'boss-binary.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-extensions.mjs',

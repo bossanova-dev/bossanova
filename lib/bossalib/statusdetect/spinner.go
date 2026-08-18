@@ -76,10 +76,18 @@ const spinnerCounterPlaceholder = "#"
 const (
 	// spinnerNone: an ordinary line, preserved byte-for-byte.
 	spinnerNone = iota
-	// spinnerLive: an unambiguous live-spinner footer — Claude's or codex's
-	// "esc to interrupt" line, or Claude's background-agent wait. EVERY token on
-	// such a line animates (frame glyph, gerund, elapsed, tokens), so the line is
+	// spinnerLive: a spinner-footer SHAPE — Claude's or codex's "esc to
+	// interrupt" line, or Claude's background-agent wait. EVERY token on such a
+	// line animates (frame glyph, gerund, elapsed, tokens), so the line is
 	// blanked rather than partially rewritten.
+	//
+	// The name is about normalization, not liveness. It says "if this footer is
+	// being redrawn, the whole line is volatile" — it does NOT assert the footer
+	// is live. Only the "esc to interrupt" shape is self-evicting; a
+	// background-agent wait frozen by a turn that died mid-wait still lands in
+	// this class, and correctly so, since blanking a frozen footer is harmless
+	// for a diff key. Liveness is decided separately, by
+	// backgroundAgentFooterIsLive, and only for spinnerPresent (BOS-889).
 	spinnerLive
 	// spinnerCounter: a glyph-led line in a recognized status-line grammar —
 	// the completed-turn summary "✻ Cooked for 48s · 1 shell still running" or
@@ -122,8 +130,13 @@ func classifySpinnerLine(line []byte) int {
 
 // NormalizeSpinner returns a copy of the captured pane content with the volatile
 // agent-spinner regions removed, plus whether a LIVE spinner is on the current
-// screen. One pass yields both, because the matcher that recognizes a spinner
-// line is the same one that normalizes it.
+// screen.
+//
+// The normalization pass and the spinnerPresent verdict are computed separately.
+// They ask different questions of the same bytes — "is this line volatile?"
+// versus "is an agent working right now?" — and only the second needs the
+// freshness check a frozen background-agent footer defeats (BOS-889), so folding
+// them back into one pass would reintroduce that bug.
 //
 // normalized is for DIFFING ONLY. It is a comparison key, not display text: two
 // captures whose normalized forms are equal differ only in spinner chrome, and
@@ -143,11 +156,14 @@ func classifySpinnerLine(line []byte) int {
 // trailing blank pane rows trimmed first — `tmux capture-pane` pads to the pane
 // height, so counting from the raw end would spend the whole window on padding
 // and miss a spinner drawn directly under the last output line. Only the
-// spinnerLive grammar sets it: those footers are self-evicting (the agent
-// redraws them away the instant the turn ends), whereas a "Cooked for 48s ·
-// 1 shell still running" summary lingers in scrollback and is therefore no proof
-// of anything current. This mirrors HasWorkingIndicator's freshness reasoning
-// deliberately — it is the same distinction, asked over the same window.
+// spinnerLive grammar sets it, whereas a "Cooked for 48s · 1 shell still
+// running" summary lingers in scrollback and is therefore no proof of anything
+// current. Of the two spinnerLive shapes, "esc to interrupt" really is
+// self-evicting; the background-agent wait is not once its turn dies, so it goes
+// through the same backgroundAgentFooterIsLive freshness check
+// HasWorkingIndicator uses. That sharing is deliberate: spinnerPresent feeds
+// SetLiveness on a path independent of HasWorkingIndicator, so fixing one
+// without the other would leave the second detector lying (BOS-889).
 func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 	if len(data) == 0 {
 		return nil, false
@@ -187,7 +203,7 @@ func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 	}
 
 	tail := LastNLines(bytes.TrimRight(spaced, " \t\r\n"), workingTailLines)
-	spinnerPresent = escToInterruptRe.Match(tail) || waitingForBackgroundAgentRe.Match(tail)
+	spinnerPresent = escToInterruptRe.Match(tail) || backgroundAgentFooterIsLive(tail)
 
 	return out.Bytes(), spinnerPresent
 }

@@ -16,7 +16,8 @@
 // against the committed baseline file. Part B (extension-discovery) asserts the
 // structural contract the generalized cores rely on: the authored lens/surface/
 // agent-driver/draft extensions are discovered by name with zero skips, their roles
-// resolve in ROLE_SCHEMAS except behavior-shipping roles, and the two
+// all resolve in ROLE_SCHEMAS — behaviour-shipping roles included, since BOS-744 derived
+// discovery and validation from one EXTENSION_ROLES table — and the two
 // agent-driver extensions export valid driver records. Part C (directory
 // coverage) supplies the independent, non-circular teeth for the specs whose
 // membership is discovery-derived — see checkDirectoryCoverage.
@@ -37,15 +38,6 @@ const SNAPSHOT_SKILL_LABELS = {
   'dag-schedule.snapshot.json': 'boss-epic',
   'plan-sections.snapshot.json': 'boss-plan',
 }
-
-/**
- * Roles that ship BEHAVIOUR rather than a findings envelope, so ROLE_SCHEMAS deliberately
- * carries no schema for them and its absence is not drift: an `agent-driver` exports a driver
- * record (asserted separately below), a `draft` extension authors a plan document, and a
- * `methodology` extension runs an implementation loop. None of them return `items` for
- * validateResult to check, so there is nothing for a result schema to describe.
- */
-const SCHEMALESS_ROLES = new Set(['agent-driver', 'draft', 'methodology'])
 
 /** The authored dogfood extensions each generalized core must discover. */
 const EXPECTED_EXTENSIONS = [
@@ -212,32 +204,6 @@ function resolveExpectedNames(spec, root) {
   )
 }
 
-/**
- * Names of the authored extensions that legitimately belong to a DIFFERENT role
- * under the SAME core than the given spec — the only role-mismatch skips that
- * are expected cross-role filtering rather than a misconfiguration. Any other
- * role skip (e.g. a typo'd `role:` on an authored or new same-prefix extension)
- * must be surfaced as drift.
- *
- * BOS-852: `root` is threaded in so a `discovered` sibling resolves its names through
- * discovery rather than silently contributing none. Dropping those names would make this
- * exemption STRICTER, not looser — it cannot let drift through — but it would turn a typo'd
- * round role into a false red. The carve-out's scope is unchanged: per the discovery contract
- * a known-role mismatch never reaches `skipped` at all, so this only ever exempts a typo.
- * @param {{ core: string, role: string }} spec
- * @param {string} root
- * @returns {Set<string>}
- */
-function crossRoleSiblingNames({ core, role }, root) {
-  const names = new Set()
-  for (const other of EXPECTED_EXTENSIONS) {
-    if (other.core === core && other.role !== role) {
-      for (const name of resolveExpectedNames(other, root)) names.add(name)
-    }
-  }
-  return names
-}
-
 function sortedNames(extensions) {
   return extensions.map((e) => e.name).sort()
 }
@@ -254,17 +220,22 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
     const { core, role, skill } = spec
     const expected = resolveExpectedNames(spec, root)
     const { extensions, skipped } = discoverExtensions({ core, role, root })
-    // A same-prefix sibling that legitimately belongs to a DIFFERENT role is
-    // filtered out with a `role "X", not "<role>"` skip — expected cross-role
-    // filtering, not drift (boss-proof- spans both surface and agent-driver).
-    // Only the KNOWN cross-role siblings are exempt: a role skip for any other
-    // name (e.g. a typo'd `role:` on an authored or new same-prefix extension)
-    // is a genuine misconfiguration and must surface as drift, as is any OTHER
-    // skip reason (no SKILL.md, unreadable/absent marker, wrong extends).
-    const crossRoleSiblings = crossRoleSiblingNames(spec, root)
-    const badSkips = skipped.filter(
-      (s) => !(/^role "/.test(s.reason) && crossRoleSiblings.has(s.name)),
-    )
+    // In THIS repo's curated dogfood tree, every skip is drift. There is no exemption, and the
+    // absence of one is deliberate — see the `no x-boss-extension marker still reports DRIFT` case
+    // in parity-gate.test.mjs, which pins it.
+    //
+    // BOS-744 removed a cross-role exemption from here that could never fire: it required a
+    // `wrong-role` skip whose NAME appeared among EXPECTED_EXTENSIONS' cross-role entries, but
+    // `discoverExtensions` `continue`s a sibling declaring a KNOWN other role without recording it
+    // at all, and pushes `wrong-role` ONLY for an unknown declared role — while every name it
+    // matched against has a known role. The two halves were mutually exclusive. (It also keyed on a
+    // `/^role "/` regex over `reason`, the re-derivation the skip-code contract exists to end.)
+    //
+    // Note this is the OPPOSITE policy to a core's own ledger, and correctly so. A core runs in an
+    // arbitrary consumer checkout, where a markerless same-prefix skill is somebody else's helper
+    // and reporting it cries wolf forever — hence `deliberate`. This gate runs over one known tree
+    // whose contents are authored here, so an unexplained same-prefix directory IS the drift.
+    const badSkips = skipped
     if (badSkips.length > 0) {
       const detail = badSkips.map((s) => `${s.name} (${s.reason})`).join(', ')
       findings.push(`DRIFT ${skill} ${core}/${role}: unexpected skipped extension(s): ${detail}`)
@@ -288,7 +259,7 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
         )
       }
     }
-    if (!SCHEMALESS_ROLES.has(role) && !ROLE_SCHEMAS[role]) {
+    if (!ROLE_SCHEMAS[role]) {
       findings.push(`DRIFT ${skill} ${core}/${role}: ROLE_SCHEMAS has no schema for role "${role}"`)
     }
   }

@@ -1102,12 +1102,26 @@ func escapeSendKeysLiteral(line string) string {
 // tmux session as failure cleanup, so without this snapshot the operator
 // has no way to see what Claude was actually showing — auth prompt,
 // update banner, missing binary, or just slow startup.
+//
+// It also embeds how the capturing itself went — how many capture-pane calls
+// succeeded, how many failed, over what elapsed wait, and tmux's own words for
+// the last failure. Without that, a pane nothing ever read and a pane read and
+// found blank are the same string, and the operator cannot tell a slow boot from
+// a session that was never there to look at.
 func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opts sendPlanOpts) error {
-	deadline := time.Now().Add(opts.deadline)
+	start := time.Now()
+	deadline := start.Add(opts.deadline)
 	var lastPane string
+	// Capture accounting (BOS-892). Without it a pane that was never read and a
+	// pane that was read and found blank both leave lastPane == "" and render
+	// identically as `<empty>`, which is the difference between "the agent is
+	// still booting" and "we never successfully looked at the pane".
+	var capturesOK, capturesFailed int
+	var lastCaptureErr error
 	for {
 		out, err := c.CapturePane(ctx, sessionName)
 		if err == nil {
+			capturesOK++
 			lastPane = out
 			if composerRowIndex(out, opts.readyMarker) != -1 {
 				if paneShowsModal(ctx, opts.modalDetector, out) {
@@ -1115,6 +1129,9 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 				}
 				return nil
 			}
+		} else {
+			capturesFailed++
+			lastCaptureErr = err
 		}
 		if time.Now().After(deadline) {
 			// The loop above never probed this pane: nothing composer-shaped was
@@ -1124,8 +1141,27 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 			if lastPane != "" && paneShowsModal(ctx, opts.modalDetector, lastPane) {
 				return blockedByModalErr(sessionName, lastPane)
 			}
-			return fmt.Errorf("ready marker %q not seen in pane %q within %s; last pane (truncated): %s",
-				opts.readyMarker, sessionName, opts.deadline, truncatePaneForError(lastPane))
+			// The accounting comes BEFORE the pane snapshot deliberately: the TUI
+			// renders this string through firstLine() (services/boss/internal/
+			// views/status.go), which cuts at the first newline, and a snapshot is
+			// multi-line. Anything ordered after it is invisible to the operator
+			// who most needs it.
+			//
+			// Branch on the successful-capture count, never on the emptiness of
+			// the snapshot: a successful capture can legitimately return an empty
+			// pane, which is exactly the case this diagnostic exists to keep
+			// distinguishable. Using emptiness would rebuild the original
+			// conflation one notch over.
+			elapsed := time.Since(start).Round(time.Millisecond)
+			if capturesOK == 0 {
+				return fmt.Errorf(
+					"ready marker %q not seen in pane %q within %s; capture-pane: 0 ok, %d failed in %s; no capture-pane call succeeded; last capture error: %s",
+					opts.readyMarker, sessionName, opts.deadline, capturesFailed, elapsed, captureErrText(lastCaptureErr))
+			}
+			return fmt.Errorf(
+				"ready marker %q not seen in pane %q within %s; capture-pane: %d ok, %d failed in %s%s; last pane (truncated): %s",
+				opts.readyMarker, sessionName, opts.deadline, capturesOK, capturesFailed, elapsed,
+				lastCaptureErrClause(capturesFailed, lastCaptureErr), truncatePaneForError(lastPane))
 		}
 		select {
 		case <-ctx.Done():
@@ -1133,6 +1169,59 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 		case <-time.After(opts.pollInterval):
 		}
 	}
+}
+
+// captureErrMaxBytes bounds the capture-error text folded into the readiness
+// timeout. tmux's own messages are short, but this clause sits ahead of the pane
+// snapshot in the first line, so a pathological stderr must not be able to push
+// the rest of the diagnostic out of the operator's view.
+const captureErrMaxBytes = 200
+
+// lastCaptureErrClause renders the optional cause clause. It keys on the FAILED
+// count, not on "no capture succeeded": the likeliest production shape of this
+// timeout is an agent that boots, draws a pane, then dies with its tmux session,
+// where early captures succeed and every later one fails. Gating the cause on
+// the success count would report the stale pre-crash snapshot and discard the
+// message that names why — in the very run where it names the cause.
+func lastCaptureErrClause(capturesFailed int, err error) string {
+	if capturesFailed == 0 || err == nil {
+		return ""
+	}
+	return "; last capture error: " + captureErrText(err)
+}
+
+// captureErrText renders a CapturePane failure using tmux's OWN words.
+//
+// CapturePane calls cmd.Output() without setting Stderr, which is precisely the
+// condition under which os/exec parks the child's stderr on
+// (*exec.ExitError).Stderr. Formatting the error alone prints only "exit status
+// 1"; errors.As reaches the real text ("can't find session: …"). Recovering it
+// here rather than inside CapturePane keeps that method's error string — shared
+// by the status poller and the submit verifier — byte-for-byte unchanged.
+//
+// The result is deliberately single-line: newlines here would push the pane
+// snapshot past the TUI's firstLine() cut.
+func captureErrText(err error) string {
+	if err == nil {
+		// Unreachable from the call sites above, which both require a recorded
+		// failure. Named as an observation rather than left blank so a future
+		// caller cannot render a dangling "last capture error: ".
+		return "<none recorded>"
+	}
+	text := err.Error()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+			text += ": " + stderr
+		}
+	}
+	// strings.Fields splits on every kind of whitespace, so this collapses
+	// embedded newlines as well as runs of spaces.
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > captureErrMaxBytes {
+		text = text[:captureErrMaxBytes] + " (truncated)"
+	}
+	return text
 }
 
 // truncatePaneForError trims the pane snapshot embedded in a SendPlan

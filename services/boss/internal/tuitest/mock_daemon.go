@@ -40,6 +40,31 @@ func cloneMsg[T proto.Message](m T) T {
 	return c
 }
 
+// cloneMsgs deep-copies a slice of protobuf messages: a fresh backing array
+// whose every element is a cloneMsg of the corresponding input. A nil or empty
+// input yields an empty, non-nil slice.
+//
+// Deep-clone is the contract for this daemon's call-log accessors, and this
+// helper is where that contract lives. A test's whole job is to poke at what it
+// was handed — read a recorded request, mutate it to build the next assertion,
+// reuse the slice for the next tick — and none of that may reach mock state.
+// An accessor that hands back the stored pointers lets a test corrupt the very
+// record the next assertion reads, and the corruption shows up as an unrelated
+// failure somewhere downstream. Clone on the read side and that is impossible.
+//
+// Not every accessor here has been brought onto this contract yet: the note
+// accessors (CreateNoteCalls, ListNoteCalls, UpdateNoteCalls) still hand back a
+// shallow `copy`, so their elements remain aliased to mock state. That is a
+// known gap, not a second sanctioned shape — a NEW accessor goes through this
+// helper.
+func cloneMsgs[T proto.Message](in []T) []T {
+	out := make([]T, 0, len(in))
+	for _, m := range in {
+		out = append(out, cloneMsg(m))
+	}
+	return out
+}
+
 // MockDaemon is a minimal ConnectRPC server that implements the DaemonService
 // interface with in-memory data. Only the RPCs actually used by the TUI are
 // implemented; the rest return Unimplemented.
@@ -284,6 +309,18 @@ type MockDaemon struct {
 	// only place the wake/submit flags are observable — the response says
 	// nothing about them.
 	sendChatMessageCalls []*pb.SendChatMessageRequest
+	// reportChatStatusCalls records every ReportChatStatus request. The RPC's
+	// response is an empty message, so the request is the ONLY place a test can
+	// see what the heartbeat actually reported — which chats, in which status.
+	// Without it, a heartbeat that reported nothing and one that reported the
+	// wrong status are the same observation (BOS-811).
+	reportChatStatusCalls []*pb.ReportChatStatusRequest
+	// updateChatTitleCalls records every UpdateChatTitle request. The handler
+	// below also persists the title onto the stored chat, so the stored state
+	// answers "did the rename land"; this log answers the separate question of
+	// whether the caller asked at all, and with what — the two come apart for a
+	// title aimed at a chat this daemon never saw, which is a deliberate no-op.
+	updateChatTitleCalls []*pb.UpdateChatTitleRequest
 
 	// rpcStall is the current wedge window applied to unary handlers by
 	// rpcStallInterceptor. See SetRPCStall / SetRPCStallFor in harness.go.
@@ -999,8 +1036,30 @@ func (m *MockDaemon) ListChats(_ context.Context, req *connect.Request[pb.ListCh
 	return connect.NewResponse(&pb.ListChatsResponse{Chats: out}), nil
 }
 
-func (m *MockDaemon) ReportChatStatus(_ context.Context, _ *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
+// ReportChatStatus records the request and answers success. The heartbeat
+// (services/boss/internal/views/heartbeat.go) and the attach view both push
+// statuses here and discard the response — which is an empty message anyway —
+// so the recorded request is the whole observable surface. ReportChatStatusCalls
+// is what turns "the heartbeat says it reported" into something a test can
+// check.
+//
+// The request is cloned on the way in: the caller builds its reports slice once
+// per tick and is free to reuse or mutate it afterwards, and mock state that
+// changed under a test's feet would be worse than no record at all.
+func (m *MockDaemon) ReportChatStatus(_ context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reportChatStatusCalls = append(m.reportChatStatusCalls, cloneMsg(req.Msg))
 	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
+}
+
+// ReportChatStatusCalls returns a copy of every ReportChatStatus request
+// recorded, in arrival order. Each request carries the whole reports slice the
+// caller sent, so a test can assert on the agent session ids and their statuses.
+func (m *MockDaemon) ReportChatStatusCalls() []*pb.ReportChatStatusRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.reportChatStatusCalls)
 }
 
 // SetChatStatusesError makes GetChatStatuses fail with the given connect code
@@ -1242,9 +1301,16 @@ func (m *MockDaemon) DeleteChat(_ context.Context, req *connect.Request[pb.Delet
 // turn "this test did not seed that chat" into a confusing RPC failure far from
 // its cause. DeleteChat is the one that needs NotFound, because deleting a
 // missing chat is what its own tests assert on.
+//
+// The request is also recorded, because the stored chat cannot answer every
+// question on its own: an unseeded chat leaves no trace of the rename, and two
+// renames that settle on the same title are indistinguishable in the stored
+// state. UpdateChatTitleResponse is an empty proto message, so the call log is
+// the only place that detail survives (BOS-811).
 func (m *MockDaemon) UpdateChatTitle(_ context.Context, req *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateChatTitleCalls = append(m.updateChatTitleCalls, cloneMsg(req.Msg))
 	for _, c := range m.chats {
 		if c.AgentSessionId == req.Msg.AgentSessionId {
 			c.Title = req.Msg.Title
@@ -1252,6 +1318,15 @@ func (m *MockDaemon) UpdateChatTitle(_ context.Context, req *connect.Request[pb.
 		}
 	}
 	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
+}
+
+// UpdateChatTitleCalls returns a copy of every UpdateChatTitle request
+// recorded, in arrival order — the agent session id each rename targeted and the
+// title it asked for, including renames aimed at chats this daemon never saw.
+func (m *MockDaemon) UpdateChatTitleCalls() []*pb.UpdateChatTitleRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.updateChatTitleCalls)
 }
 
 // ResolveContext answers with whatever SetResolvedContext seeded, ignoring the
@@ -1270,8 +1345,66 @@ func (m *MockDaemon) ResolveContext(context.Context, *connect.Request[pb.Resolve
 }
 
 // --- Unimplemented RPCs (streaming or not used by tested views) ---
+//
+// Every RPC on this daemon belongs to one of exactly two categories, and there
+// is no third one:
+//
+//  1. Fixture-backed — state guarded by m.mu, an exported seeder (Add*/Set*)
+//     and/or an exported reader (*Calls(), Notes(), CronJobs()) so a test can
+//     both stage the answer and observe what was asked. An empty proto response
+//     message is fine here: DeleteChat and ReportChatStatus have nothing to say
+//     back, and their fixture state is what the test reads.
+//  2. Unimplemented — the handlers below, answering CodeUnimplemented. Nothing
+//     the TUI renders calls them today, so there is no fixture to get right.
+//
+// What must never come back is the third shape this file used to carry: a
+// handler that returns a zero-valued success with no fixture behind it. It
+// hands a caller a plausible "nothing here" — an empty plugin list, an empty
+// doctor report — and the test that drove it reads as covered while exercising
+// nothing. A stub that answers Unimplemented fails on the first line the moment
+// a view starts calling it, and whoever added that view writes the fixture then.
+// That failure is the point: keep the gap loud (BOS-811).
+//
+// So when a view does start calling one of these, promote it to category 1 —
+// give it fixture state and an exported seeder — rather than softening it back
+// into an empty success.
+//
+// TestMockDaemonUnfixturedRPCsStayUnimplemented (mock_daemon_notes_test.go) is
+// what makes the paragraph above enforceable rather than advisory: it asserts
+// CodeUnimplemented for the five handlers BOS-811 flipped, so softening one back
+// fails there first.
 
 func (m *MockDaemon) CloneAndRegisterRepo(context.Context, *connect.Request[pb.CloneAndRegisterRepoRequest]) (*connect.Response[pb.CloneAndRegisterRepoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+// RepairDoctor, StartRepairWorkflow and ListPlugins reach the daemon only from
+// the `boss repair …` and `boss plugin list` CLI commands
+// (services/boss/cmd/repair_doctor.go, repair_start.go, handlers.go).
+// GetSettings and UpdateSettings have no caller in services/boss at all — the
+// global-settings pair is driven by the MCP backend
+// (services/mcp/internal/socketbackend) and lib/bossalib/bossmcp, neither of
+// which can reach this mock. So none of the five is on a TUI view's path, and
+// no test here drives them through this mock. They returned empty successes
+// until BOS-811.
+
+func (m *MockDaemon) RepairDoctor(context.Context, *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) StartRepairWorkflow(context.Context, *connect.Request[pb.StartRepairWorkflowRequest]) (*connect.Response[pb.StartRepairWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) ListPlugins(context.Context, *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) GetSettings(context.Context, *connect.Request[pb.GetSettingsRequest]) (*connect.Response[pb.GetSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) UpdateSettings(context.Context, *connect.Request[pb.UpdateSettingsRequest]) (*connect.Response[pb.UpdateSettingsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
@@ -1660,11 +1793,7 @@ func (m *MockDaemon) RecordChatCalls() []*pb.RecordChatRequest {
 func (m *MockDaemon) SendChatMessageCalls() []*pb.SendChatMessageRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*pb.SendChatMessageRequest, 0, len(m.sendChatMessageCalls))
-	for _, c := range m.sendChatMessageCalls {
-		out = append(out, cloneMsg(c))
-	}
-	return out
+	return cloneMsgs(m.sendChatMessageCalls)
 }
 
 // RecordChat mints (or returns) the chat row the attach flow needs, including a
@@ -2278,16 +2407,6 @@ func (m *MockDaemon) DeleteBroadcastSubscription(_ context.Context, req *connect
 	return connect.NewResponse(&pb.DeleteBroadcastSubscriptionResponse{}), nil
 }
 
-func (m *MockDaemon) RepairDoctor(_ context.Context, _ *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {
-	// Tests that exercise the doctor flow can replace this stub via a
-	// dedicated MockDaemon mode; for now return an empty report.
-	return connect.NewResponse(&pb.RepairDoctorResponse{}), nil
-}
-
-func (m *MockDaemon) StartRepairWorkflow(_ context.Context, _ *connect.Request[pb.StartRepairWorkflowRequest]) (*connect.Response[pb.StartRepairWorkflowResponse], error) {
-	return connect.NewResponse(&pb.StartRepairWorkflowResponse{}), nil
-}
-
 // ListCheckSnapshots mirrors the real daemon's semantics
 // (services/bossd/internal/server/check_snapshots.go): session_id is required,
 // a non-positive limit means 10, and the newest snapshots are returned first.
@@ -2462,18 +2581,6 @@ func (m *MockDaemon) ListAgents(_ context.Context, _ *connect.Request[pb.ListAge
 	agents := make([]*pb.AgentInfo, len(m.agents))
 	copy(agents, m.agents)
 	return connect.NewResponse(&pb.ListAgentsResponse{Agents: agents}), nil
-}
-
-func (m *MockDaemon) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
-	return connect.NewResponse(&pb.ListPluginsResponse{}), nil
-}
-
-func (m *MockDaemon) GetSettings(_ context.Context, _ *connect.Request[pb.GetSettingsRequest]) (*connect.Response[pb.GetSettingsResponse], error) {
-	return connect.NewResponse(&pb.GetSettingsResponse{Settings: &pb.GlobalSettings{}}), nil
-}
-
-func (m *MockDaemon) UpdateSettings(_ context.Context, _ *connect.Request[pb.UpdateSettingsRequest]) (*connect.Response[pb.UpdateSettingsResponse], error) {
-	return connect.NewResponse(&pb.UpdateSettingsResponse{Settings: &pb.GlobalSettings{}}), nil
 }
 
 // SetAgents overrides the agents returned by ListAgents. Tests use this to

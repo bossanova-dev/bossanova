@@ -304,9 +304,15 @@ test(${testTitle}, async ({ page }) => {
     await expect(region).toBeVisible();
     const box = await region.boundingBox();
     if (!box) throw new Error('cropToSelector not found: ' + cropToSelector);
-    auditText = await page.locator('body').evaluate(collectProofAuditText);
     const size = page.viewportSize() ?? ${viewport};
     const height = Math.min(size.height, Math.ceil(box.y + box.height + 24));
+    // Harvest audit text only from nodes whose top edge is above the clip. A
+    // token below \`height\` never appeared in the artifact, so matching it in
+    // audit.txt would be a vacuous proof. This is a VERTICAL top-edge test, not
+    // a visibility test: a display:none subtree measures 0/0 and still counts as
+    // in frame, and nothing here excludes content off to the right. See the
+    // caveat list in proof/recipes/README.md.
+    auditText = await page.locator('body').evaluate(collectProofAuditText, height);
     await page.screenshot({ path: ${target}, clip: { x: 0, y: 0, width: size.width, height } });
   } else if (selector) {
     const target = page.locator(selector).first();
@@ -582,23 +588,89 @@ async function captureStill(page, outPath, cropToSelector, viewport) {
 `
 }
 
-function collectProofAuditTextScript() {
+export function collectProofAuditTextScript() {
   return `
-function collectProofAuditText(element) {
+// \`cutoff\` is the clip height of a cropToSelector capture, in CSS pixels. When
+// supplied, only nodes whose top edge sits above it are harvested, so audit.txt
+// describes the saved frame rather than the whole document. Omit it and the
+// whole-body / element-scoped behaviour is unchanged.
+function collectProofAuditText(element, cutoff) {
   const values = [];
   const push = (value) => {
     const text = String(value ?? '').trim();
     if (text) values.push(text);
   };
+  const limit = typeof cutoff === 'number' && Number.isFinite(cutoff) ? cutoff : null;
+  // Fail-open: a text node has no getBoundingClientRect, so fall back to its
+  // parent element's box, and INCLUDE any node whose top edge cannot be
+  // resolved at all. Dropping unpositioned text would silently shrink audit.txt.
+  const rectOf = (node) => {
+    if (typeof node?.getBoundingClientRect !== 'function') return null;
+    try {
+      return node.getBoundingClientRect();
+    } catch {
+      return null;
+    }
+  };
+  const withinCutoff = (node) => {
+    if (limit === null) return true;
+    const measured = typeof node?.getBoundingClientRect === 'function' ? node : node?.parentElement;
+    if (!measured) return true;
+    const rect = rectOf(measured);
+    if (!rect) return true;
+    const top = rect.top;
+    if (typeof top !== 'number' || !Number.isFinite(top)) return true;
+    return top < limit;
+  };
   const visit = (node) => {
-    push(node.textContent);
+    if (!withinCutoff(node)) return;
+    // \`textContent\` is the WHOLE subtree. Under a cut-off that would re-admit
+    // below-clip text through any element that merely STARTS above the clip —
+    // a straddling [aria-label] section or nav is the common shape — so take
+    // it only when unscoped. The walk below already harvested every in-frame
+    // text node, making this push redundant as well as leaky.
+    if (limit === null) push(node.textContent);
     push(node.getAttribute?.('aria-label'));
     push(node.getAttribute?.('title'));
     push(node.getAttribute?.('alt'));
     if ('value' in node) push(node.value);
     if ('placeholder' in node) push(node.placeholder);
   };
+  // Under a cut-off this contributes the root's own attributes only — its
+  // textContent is the whole document, which is what the walk below exists to
+  // avoid taking wholesale.
   visit(element);
+  if (limit !== null) {
+    // The root's own textContent carries the entire document, including
+    // everything below the clip, so descend instead of taking it in one piece.
+    //
+    // A container whose own top edge is at/below the cut-off is skipped whole:
+    // its subtree is below the clip too, except for the rare child lifted above
+    // it by absolute positioning, a negative margin or a transform.
+    //
+    // A container that is ENTIRELY above the cut-off is taken whole, in one
+    // contiguous string, exactly as the unscoped path would. Descending into it
+    // would split a phrase that spans inline elements — \`<p>Rotation
+    // <strong>history</strong></p>\` becoming two separate lines — and drop a
+    // multi-word evidence token whose every glyph was in frame. Only a
+    // STRADDLING container is worth walking node by node.
+    const walk = (node) => {
+      for (const child of node.childNodes ?? []) {
+        if (child.nodeType === 3) {
+          if (withinCutoff(child)) push(child.textContent);
+        } else if (child.nodeType === 1 && withinCutoff(child)) {
+          const rect = rectOf(child);
+          const bottom = rect ? rect.bottom : null;
+          if (typeof bottom === 'number' && Number.isFinite(bottom) && bottom <= limit) {
+            push(child.textContent);
+          } else {
+            walk(child);
+          }
+        }
+      }
+    };
+    if (withinCutoff(element)) walk(element);
+  }
   for (const node of element.querySelectorAll?.('input, textarea, select, option, img, [aria-label], [title], [alt]') ?? []) {
     visit(node);
   }

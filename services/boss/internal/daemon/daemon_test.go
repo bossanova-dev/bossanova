@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/config"
 )
 
 func TestResolveBossdPath(t *testing.T) {
@@ -159,15 +161,49 @@ func TestWaitForSocketReturnsTrueWhenSocketBecomesReachable(t *testing.T) {
 }
 
 func TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown(t *testing.T) {
-	// bossd's graceful shutdown removes the socket only after draining the cron
-	// scheduler (bounded ~10s) and shutting down the gRPC server (~5s). The
-	// shutdown wait must comfortably cover that worst case so a slow drain does
-	// not produce a false "timed out waiting for socket to stop" error. Keep
-	// this coupled to bossd's shutdown budget (services/bossd/cmd/main.go): if
-	// those timeouts grow, this floor should grow with them.
-	const bossdShutdownBudget = 15 * time.Second
+	// What the CLI actually waits for is the gRPC socket becoming unreachable,
+	// which happens when srv.Shutdown closes the listener — NOT when bossd
+	// removes the socket file. So the legs that count are the ones bossd runs
+	// before srv.Shutdown returns (services/bossd/cmd/main.go), in order:
+	//
+	//	cron scheduler drain           10s
+	//	failover proxy drain           config's own budget (BOS-888)
+	//	plugin host stop               pluginCount × plugin.killTimeout (3s each)
+	//	gRPC + hook server shutdown    5s (shared ctx)
+	//
+	// The draft-PR join (5s) and the goroutine wait (10s) run AFTER that, so
+	// they are deliberately excluded: the CLI's wait has already resolved.
+	//
+	// The shutdown wait must cover that worst case, because the installed
+	// `boss daemon restart` path returns an error here WITHOUT starting the
+	// replacement daemon — an undershoot does not merely misreport, it leaves
+	// the machine daemonless.
+	//
+	// The proxy leg is read from config rather than hardcoded so this test is
+	// the thing that trips when someone raises defaultProxyDrainTimeout without
+	// raising this ceiling. The platform SIGKILL timeouts ABOVE the ceiling are
+	// pinned separately, per-GOOS: TestGeneratedPlistExitTimeOutCoversShutdownBudget
+	// (darwin) and TestGeneratedUnitTimeoutStopSecCoversShutdownBudget (linux).
+	const (
+		cronDrainBudget  = 10 * time.Second
+		serverStopBudget = 5 * time.Second
+		// plugin.Host.Stop kills its plugins SEQUENTIALLY, each bounded by
+		// plugin.killTimeout. The count is whatever the operator has installed,
+		// so no constant can cover it in principle; this is the shipped set
+		// (plugins/bossd-plugin-*). Duplicated rather than imported because
+		// services/boss must not depend on services/bossd internals.
+		pluginKillTimeout = 3 * time.Second
+		shippedPlugins    = 8
+		pluginStopBudget  = pluginKillTimeout * shippedPlugins
+	)
+	// Ask for the LONGEST drain the setting can produce, not the default one. The
+	// accessor clamps, so this is the worst case any config file can reach;
+	// reading the default here would leave the ceiling unverified for every
+	// operator who tuned proxy_drain_timeout_seconds upward.
+	proxyDrainBudget := config.ManagedAccountsConfig{ProxyDrainTimeoutSeconds: 1 << 20}.ProxyDrainTimeout()
+	bossdShutdownBudget := cronDrainBudget + proxyDrainBudget + pluginStopBudget + serverStopBudget
 	if LifecycleShutdownTimeout < bossdShutdownBudget {
-		t.Fatalf("LifecycleShutdownTimeout = %v, want >= %v to cover bossd graceful shutdown", LifecycleShutdownTimeout, bossdShutdownBudget)
+		t.Fatalf("LifecycleShutdownTimeout = %v, want >= %v to cover bossd graceful shutdown (proxy drain %v, plugin stop %v)", LifecycleShutdownTimeout, bossdShutdownBudget, proxyDrainBudget, pluginStopBudget)
 	}
 
 	// Startup can involve plugin launch and initial work before the socket

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "title": "BOS-811 — the chat picker still lists every seeded chat title after the mock daemon's silent stubs were partitioned into fixture-backed and Unimplemented",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "The chat picker renders the titles MockDaemon serves from m.chats, with its own header and action bar intact",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Add dark mode",
+            "match": "normalized",
+            "label": "the demo preset's session is on the board, so the chat picker below is opened against a populated daemon rather than an empty shell"
+          },
+          "timeoutMs": 15000,
+          "caption": "Home lists the demo world's sessions — the mock daemon is answering ListSessions normally."
+        },
+        {
+          "key": "enter",
+          "caption": "Open the selected session's chat picker, the view that reads chat titles back out of the mock."
+        },
+        {
+          "waitFor": {
+            "text": "[n]ew chat",
+            "match": "normalized",
+            "label": "the chat picker's own action-bar entry — unlike the CHAT column header it cannot be matched inside a home-view string, so every assertion below is read off a settled chat picker and not a loading frame"
+          },
+          "timeoutMs": 15000,
+          "caption": "The chat picker has settled; its rows are served straight from the mock daemon's stored chats."
+        },
+        {
+          "expect": [
+            {
+              "text": "Initial implementation",
+              "match": "normalized",
+              "label": "a seeded chat title renders verbatim — ListChats still serves m.chats, which is the fixture UpdateChatTitle now mutates and records"
+            },
+            {
+              "text": "Follow-up review",
+              "match": "normalized",
+              "label": "a second seeded title, so the list is genuinely populated rather than showing one lucky row"
+            },
+            {
+              "text": "Final polish pass",
+              "match": "normalized",
+              "label": "the oldest seeded title, proving the whole seeded set survived the mock daemon change rather than a truncated prefix of it"
+            },
+            {
+              "text": "[enter] select",
+              "match": "normalized",
+              "label": "the chat picker's own action bar is intact — the five RPCs flipped to Unimplemented are not on any path this view drives"
+            },
+            {
+              "text": "[n]ew chat",
+              "match": "normalized",
+              "label": "a second action-bar entry, guarding against a collapsed or error-degraded bar rather than a genuinely rendered one"
+            }
+          ],
+          "caption": "BOS-811: partitioning the mock's stubs left every chat title the picker reads from m.chats exactly where it was."
+        }
+      ]
+    }
+  ]
+}

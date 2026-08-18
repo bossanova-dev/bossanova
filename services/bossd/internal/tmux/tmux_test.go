@@ -1555,6 +1555,38 @@ type sendPlanRecordingFactory struct {
 	// failOnSubcommand maps a subcommand (e.g. "send-keys") to the call
 	// index at which it should exit non-zero. Default: never fail.
 	failOnSubcommand map[string]int
+
+	// failCapturePaneFrom, when non-nil, makes EVERY capture-pane call at or
+	// after that 0-based occurrence exit non-zero — 0 fails every occurrence,
+	// 1 lets the first succeed and fails all the rest. It is consulted before
+	// the indexed capturePaneOutputs lookup below, so a failing occurrence
+	// consumes its index without producing stdout.
+	//
+	// Unlike failOnSubcommand (which returns `false`, whose stderr is empty),
+	// the failing command writes captureFailStderr to STDERR. That matters:
+	// CapturePane runs cmd.Output() with no Stderr set, so os/exec parks the
+	// child's stderr on (*exec.ExitError).Stderr, and an empty stderr cannot
+	// exercise the errors.As recovery in captureErrText.
+	failCapturePaneFrom *int
+
+	// captureFailStderr is the text a failed capture-pane writes to stderr.
+	// Empty → defaultCaptureFailStderr, a real tmux message.
+	captureFailStderr string
+}
+
+// defaultCaptureFailStderr is what tmux itself prints when the target session
+// has gone — the production shape of the failure this models.
+const defaultCaptureFailStderr = "can't find session: boss-test-sess"
+
+// failingCaptureCmd returns a command that writes stderr and exits non-zero,
+// mirroring how tmux reports a missing session. The message is passed as $0
+// rather than interpolated into the script so no test string can be read as
+// shell syntax.
+func failingCaptureCmd(ctx context.Context, stderr string) *exec.Cmd {
+	if stderr == "" {
+		stderr = defaultCaptureFailStderr
+	}
+	return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$0" >&2; exit 1`, stderr)
 }
 
 type sendPlanCall struct {
@@ -1579,6 +1611,9 @@ func (f *sendPlanRecordingFactory) factory(ctx context.Context, name string, arg
 	switch subcommand {
 	case "capture-pane":
 		idx := int(f.captureCallIdx.Add(1)) - 1
+		if f.failCapturePaneFrom != nil && idx >= *f.failCapturePaneFrom {
+			return failingCaptureCmd(ctx, f.captureFailStderr)
+		}
 		out := ""
 		if len(f.capturePaneOutputs) > 0 {
 			if idx >= len(f.capturePaneOutputs) {

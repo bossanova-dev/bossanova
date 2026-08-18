@@ -242,8 +242,25 @@ func shippedPayloads(t *testing.T) map[string]fs.FS {
 // merely moved. The list stays EXPLICIT rather than becoming a tree-wide walk of `references/`:
 // a tree-wide search would stay green after a clause was deleted from a core that names it in
 // unrelated references too (see TestPublishedCoresNameSkillPathForExtensionDispatch).
+//
+// BOS-744 added the reference files that carry a `skill-extensions.mjs discover` call, so
+// TestPublishedCoresRecordBrokenDiscoverySkips can see every discover site rather than only the
+// ones that stayed in SKILL.md. `boss-plan` keeps three-quarters of its discover sites in
+// references, so a SKILL.md-only spine would have floored it at 1 of 4. Keep SKILL.md FIRST in each
+// list: the notes-section resolver below takes the first spine file carrying the notes heading.
 var coreBodyFiles = map[string][]string{
-	"boss-build": {"SKILL.md", "references/finalize-and-stop.md"},
+	"boss-build": {
+		"SKILL.md",
+		"references/core-spine.md",
+		"references/finalize-and-stop.md",
+		"references/knowledge-extensions.md",
+	},
+	"boss-plan": {
+		"SKILL.md",
+		"references/extension-reviewers.md",
+		"references/headless-drafting-brief.md",
+		"references/interactive-mode.md",
+	},
 }
 
 // bodyFilesFor returns the payload-relative files that make up core's spine, defaulting to the

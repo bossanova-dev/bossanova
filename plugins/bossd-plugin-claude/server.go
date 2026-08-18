@@ -407,8 +407,9 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 }
 
 // HasWorkingIndicator reports whether the supplied pane bytes show an
-// affirmative "still working" marker (a running background shell or an active
-// spinner), so the daemon can keep a busy-but-static pane from flipping idle.
+// affirmative "still working" marker (running background work — a shell, a
+// monitor — or an active spinner), so the daemon can keep a busy-but-static
+// pane from flipping idle.
 // Delegates to bossalib/statusdetect, shared between the daemon's tmux poller
 // and the client-side PTY monitor.
 func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation

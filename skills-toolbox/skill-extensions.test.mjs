@@ -5,7 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
+  EXTENSION_ROLES,
   ROLE_SCHEMAS,
+  SKIP_REASONS,
   discoverExtensions,
   extensionMarker,
   parseFrontmatter,
@@ -83,6 +85,56 @@ test('extensionMarker ignores a non-string or empty lens binding rather than fai
     assert.ok(marker, `marker should still resolve for ${declared}`)
     assert.equal('lens' in marker, false, `${declared}: ${JSON.stringify(marker)}`)
   }
+})
+
+// BOS-744: `extensionMarker`'s contract above is unchanged — it is role-generic and simply omits an
+// unusable binding. What changes is that `discoverExtensions` no longer lets that omission pass
+// SILENTLY for a `role: lens` descriptor. Before this, a lens extension that declared `lens: 42` was
+// reported by the core as `unbound` — the same line a descriptor that never declared a binding gets
+// — so the operator had no signal that the extension tried to bind and failed.
+test('discoverExtensions reports an invalid lens binding as a skip instead of dropping it', () => {
+  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
+    const root = scratchRoot()
+    writeSkill(root, 'bs-review-misbound', [
+      'name: bs-review-misbound',
+      'x-boss-extension:',
+      '  extends: bs-review',
+      '  role: lens',
+      declared,
+    ])
+    const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+    assert.deepEqual(
+      extensions,
+      [],
+      `${declared}: a rejected extension must never reach .extensions`,
+    )
+    assert.deepEqual(skipped, [
+      {
+        name: 'bs-review-misbound',
+        reason: 'invalid "lens" binding (expected a non-empty string)',
+        code: 'invalid-lens-binding',
+        deliberate: false,
+      },
+    ])
+  }
+})
+
+test('discoverExtensions still admits a lens extension that declares no binding at all', () => {
+  // The boundary on the other side of the skip above: an ABSENT `lens` key is the documented
+  // unbound-but-valid case (it starts at tier 2), not a failed declaration.
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-unbound', [
+    'name: bs-review-unbound',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+  ])
+  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.deepEqual(
+    extensions.map((e) => e.name),
+    ['bs-review-unbound'],
+  )
+  assert.deepEqual(skipped, [])
 })
 
 test('extensionMarker keeps a quoted numeric lens binding as a string', () => {
@@ -245,6 +297,36 @@ test('discoverExtensions does not filter a round extension carrying a stray lens
   )
   assert.equal(extensions[0].lens, 'go')
   assert.deepEqual(skipped, [])
+})
+
+// BOS-744, the falsification for the SCOPING of the new `invalid-lens-binding` skip. The test above
+// pairs a non-`lens` role with a VALID `lens` value, so it passes with or without the
+// `marker.role === 'lens'` guard in discoverExtensions — `marker.lens` is defined either way and the
+// skip could never fire. Only an INVALID value on a non-`lens` role separates the two: with the
+// guard the descriptor is carried through (the `lens` key is role-generic, so a stray one on another
+// role is inert), without it every round extension carrying a mistyped key would be rejected into
+// `skipped` and its Tier-1 dispatch would vanish.
+test('discoverExtensions does not skip a non-lens role whose stray lens key is invalid', () => {
+  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
+    const root = scratchRoot()
+    writeSkill(root, 'bs-review-strayinvalid', [
+      'name: bs-review-strayinvalid',
+      'x-boss-extension:',
+      '  extends: bs-review',
+      '  role: round',
+      declared,
+    ])
+    const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
+    assert.deepEqual(
+      extensions.map((e) => e.name),
+      ['bs-review-strayinvalid'],
+      `${declared}: a stray invalid lens key must not reject a non-lens descriptor`,
+    )
+    // The unusable value is dropped by extensionMarker exactly as before, so the descriptor is
+    // byte-identical to one authored without the key at all.
+    assert.equal(extensions[0].lens, undefined, declared)
+    assert.deepEqual(skipped, [], declared)
+  }
 })
 
 // BOS-856: `capability` is the round-side mirror of `lens` — it binds a discovered round to the
@@ -673,7 +755,196 @@ test('discoverExtensions reports a reasoned skip when SKILL.md is absent', () =>
   const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root })
 
   assert.deepEqual(extensions, [])
-  assert.deepEqual(skipped, [{ name: 'bs-review-headless', reason: 'no SKILL.md' }])
+  assert.deepEqual(skipped, [
+    {
+      name: 'bs-review-headless',
+      reason: 'no SKILL.md',
+      code: 'no-skill-md',
+      deliberate: false,
+    },
+  ])
+})
+
+// BOS-744, the exhaustiveness ratchet. Note 7's failure mode is that the deliberate-vs-broken
+// classification lived in ONE consuming core's prose, keyed on a literal reason string, so every
+// other site had to restate it and any NEW reason defaulted to "not classified anywhere". Owning the
+// classification in the helper only helps if a new `skipped.push` cannot arrive unclassified — this
+// drives discovery through a fixture reproducing every code and fails when an emitted code is absent
+// from the exported table.
+test('every skip discoverExtensions can emit carries a classified code', () => {
+  const root = scratchRoot()
+  const writeRaw = (name, text) => {
+    const dir = path.join(root, '.claude', 'skills', name)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), text)
+  }
+  // no-skill-md
+  fs.mkdirSync(path.join(root, '.claude', 'skills', 'bs-review-nofile'), { recursive: true })
+  // malformed-frontmatter
+  writeRaw(
+    'bs-review-unfenced',
+    '---\nname: x\nx-boss-extension:\n  extends: bs-review\n\n# body\n',
+  )
+  // incomplete-marker
+  writeRaw('bs-review-partial', '---\nname: x\nx-boss-extension:\n  extends: bs-review\n---\n')
+  // missing-marker
+  writeSkill(root, 'bs-review-helper', ['name: bs-review-helper'])
+  // extends-unrelated-core: a `bs-review-*` directory is unreachable from `bs-plan`, so this
+  // marker is simply wrong and stays reportable from EVERY core that enumerates it.
+  writeSkill(root, 'bs-review-foreign', [
+    'name: bs-review-foreign',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: lens',
+  ])
+  // extends-other-core: the genuine nesting case. `bs-plan` really does own `bs-plan-notes`, so
+  // the `bs` pass below must stay quiet about it.
+  writeSkill(root, 'bs-plan-notes', [
+    'name: bs-plan-notes',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: lens',
+  ])
+  // wrong-role
+  writeSkill(root, 'bs-review-typo', [
+    'name: bs-review-typo',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lenz',
+  ])
+  // invalid-lens-binding
+  writeSkill(root, 'bs-review-misbound', [
+    'name: bs-review-misbound',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: lens',
+    '  lens: 42',
+  ])
+
+  const emitted = new Set()
+  for (const { core, role } of [
+    { core: 'bs-review', role: 'lens' },
+    // 'lenz' is an unknown REQUESTED role; it is a property of the caller's argument rather than
+    // of any fixture, so it needs its own pass.
+    { core: 'bs-review', role: 'lenz' },
+    // The NESTING core. `bs-` prefixes every directory above, so this pass is the only one that
+    // can reach `extends-other-core` — and it reaches it through `bs-plan-notes`, whose declared
+    // `bs-plan` genuinely owns it. `bs-review-foreign` is NOT that case even from here: no core
+    // named `bs-plan` can ever enumerate a `bs-review-*` directory, so it stays reportable.
+    { core: 'bs', role: 'lens' },
+  ]) {
+    const { skipped } = discoverExtensions({ core, root, role })
+    for (const entry of skipped) {
+      assert.ok(
+        entry.code in SKIP_REASONS,
+        `skip code ${JSON.stringify(entry.code)} for ${entry.name} is absent from SKIP_REASONS — classify it there rather than letting it default to silence: ${JSON.stringify(entry)}`,
+      )
+      assert.equal(typeof entry.deliberate, 'boolean', JSON.stringify(entry))
+      assert.equal(
+        entry.deliberate,
+        SKIP_REASONS[entry.code].deliberate,
+        `${entry.code}: entry disagrees with the exported classification`,
+      )
+      assert.equal(typeof entry.reason, 'string', JSON.stringify(entry))
+      assert.deepEqual(Object.keys(entry).sort(), ['code', 'deliberate', 'name', 'reason'])
+      emitted.add(entry.code)
+    }
+  }
+  // The one code no fixture can reach: `unreadable-frontmatter` fires only when reading the file
+  // throws, which needs a filesystem fault rather than a content shape. It is classified all the
+  // same, so the reachable set is the whole table minus that one.
+  assert.deepEqual(
+    [...emitted].sort(),
+    Object.keys(SKIP_REASONS)
+      .filter((code) => code !== 'unreadable-frontmatter')
+      .sort(),
+    'the fixture must reproduce every reachable skip code, or the ratchet stops being exhaustive',
+  )
+})
+
+test('exactly the two non-extension skips are classified deliberate', () => {
+  // A `deliberate: true` skip is the contract working: the directory is a same-prefix skill that is
+  // not an extension of THIS core, so reporting it would cry wolf on every run. Everything else is a
+  // misconfiguration a core MUST record. This partition is the whole point of the field, so it is
+  // pinned name-exact rather than by count.
+  const deliberate = Object.entries(SKIP_REASONS)
+    .filter(([, spec]) => spec.deliberate)
+    .map(([code]) => code)
+    .sort()
+  assert.deepEqual(deliberate, ['extends-other-core', 'missing-marker'])
+  assert.deepEqual(Object.keys(SKIP_REASONS).sort(), [
+    'extends-other-core',
+    'extends-unrelated-core',
+    'incomplete-marker',
+    'invalid-lens-binding',
+    'malformed-frontmatter',
+    'missing-marker',
+    'no-skill-md',
+    'unknown-requested-role',
+    'unreadable-frontmatter',
+    'wrong-role',
+  ])
+})
+
+// A wrong `extends` on a correctly-named directory is unreachable from the core it names — the
+// contract fixes an extension's directory to `<core>-<suffix>` and discovery scans only that prefix
+// — so nothing else would ever report it. Suppressing it as "somebody else's extension" is the
+// silent drop this ticket exists to end, which is why it is a SEPARATE code from the nesting case.
+test('a wrong extends is reportable, while a nesting core stays quiet about its neighbours', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'bs-review-typoextends', [
+    'name: bs-review-typoextends',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: lens',
+  ])
+
+  // From `bs-review`: `bs-plan` is not a `bs-review-` descendant, so the marker is simply wrong.
+  const near = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  assert.deepEqual(near.extensions, [])
+  assert.deepEqual(near.skipped, [
+    {
+      name: 'bs-review-typoextends',
+      reason: 'extends "bs-plan", not "bs-review"',
+      code: 'extends-unrelated-core',
+      deliberate: false,
+    },
+  ])
+
+  // From `bs`, whose prefix also matches the directory, the verdict is UNCHANGED. The question is
+  // whether the DECLARED core could own this directory, not whether it is a sub-core of the one
+  // asking: `bs-plan` can only ever enumerate `bs-plan-*`, so no core anywhere would report this
+  // typo if `bs` stayed quiet about it. Classifying on the two core names instead would suppress it
+  // here — the silent drop this ticket exists to end.
+  const nesting = discoverExtensions({ core: 'bs', root, role: 'lens' })
+  assert.deepEqual(nesting.extensions, [])
+  assert.deepEqual(nesting.skipped, [
+    {
+      name: 'bs-review-typoextends',
+      reason: 'extends "bs-plan", not "bs"',
+      code: 'extends-unrelated-core',
+      deliberate: false,
+    },
+  ])
+
+  // The genuine nesting case, for contrast: `bs-plan` really does own `bs-plan-notes`, so `bs` must
+  // stay quiet about it or the warning fires on every run for as long as that extension exists.
+  writeSkill(root, 'bs-plan-notes', [
+    'name: bs-plan-notes',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: lens',
+  ])
+  const owned = discoverExtensions({ core: 'bs', root, role: 'lens' })
+  assert.deepEqual(
+    owned.skipped.find((s) => s.name === 'bs-plan-notes'),
+    {
+      name: 'bs-plan-notes',
+      reason: 'extends "bs-plan", not "bs"',
+      code: 'extends-other-core',
+      deliberate: true,
+    },
+  )
 })
 
 test('validateResult accepts a well-formed lens envelope', () => {
@@ -769,13 +1040,18 @@ test('validateResult never throws on a non-object envelope', () => {
   assert.equal(result.ok, false)
 })
 
-test('ROLE_SCHEMAS enumerates the consumer roles', () => {
-  // Name-exact rather than a count: a new role costs TWO edits (KNOWN_EXTENSION_ROLES gates
-  // discovery, ROLE_SCHEMAS gates validation) and the two registries have drifted apart before.
-  // BOS-851 added `knowledge`.
+test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
+  // Name-exact rather than a count, so a role cannot arrive without a documented contract
+  // (docs/skills/extension-contract.md). BOS-744 re-baselined this list from six keys to nine ON
+  // PURPOSE: `KNOWN_EXTENSION_ROLES` and `ROLE_SCHEMAS` are now DERIVED from one `EXTENSION_ROLES`
+  // table, so the drift that let discovery accept `draft`/`methodology`/`agent-driver` while
+  // `validateResult` answered `unknown role` is no longer expressible.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
+    'agent-driver',
+    'draft',
     'knowledge',
     'lens',
+    'methodology',
     'notes',
     'plan-reviewer',
     'round',
@@ -784,11 +1060,74 @@ test('ROLE_SCHEMAS enumerates the consumer roles', () => {
   assert.deepEqual(ROLE_SCHEMAS.round, ROLE_SCHEMAS.lens)
 })
 
+test('the merged role table is the single source for discovery and validation', () => {
+  // The invariant that replaces the two hand-maintained literals: every role in the table declares a
+  // non-empty result schema, and ROLE_SCHEMAS is exactly its projection. A role added to
+  // EXTENSION_ROLES with no `keys` fails here rather than surfacing as an empty schema that
+  // validates everything.
+  assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), Object.keys(EXTENSION_ROLES).sort())
+  for (const [role, spec] of Object.entries(EXTENSION_ROLES)) {
+    assert.ok(['items', 'fields'].includes(spec.kind), `${role}: unknown result kind ${spec.kind}`)
+    assert.ok(
+      Array.isArray(spec.keys) && spec.keys.length > 0,
+      `${role}: declares no result schema`,
+    )
+    assert.deepEqual(ROLE_SCHEMAS[role], spec.keys, role)
+    assert.notEqual(
+      validateResult({}, role).errors[0],
+      `unknown role "${role}"`,
+      `${role}: discovery accepts it, so validateResult must not answer "unknown role"`,
+    )
+  }
+})
+
+test('validateResult accepts the behavior-shipping roles that ship no items array', () => {
+  assert.deepEqual(
+    validateResult(
+      { ok: true, extension: 'boss-plan-x', role: 'draft', planPath: '.linear-plans/A-1.md' },
+      'draft',
+    ),
+    { ok: true, errors: [] },
+  )
+  // `planPath` is a claim of persistence, exactly like `notes`' `noteId`: blank proves nothing.
+  assert.deepEqual(
+    validateResult({ ok: true, extension: 'boss-plan-x', role: 'draft', planPath: '' }, 'draft'),
+    { ok: false, errors: ['"planPath" is not a non-empty string'] },
+  )
+  const taskContract = {
+    taskId: 'Task 1',
+    filesTouched: [],
+    testsAddedOrPassing: [],
+    interfaceSignatures: [],
+    residualRisks: [],
+    decisionsRecorded: [],
+    commitsMade: [],
+  }
+  assert.deepEqual(validateResult(taskContract, 'methodology'), { ok: true, errors: [] })
+  const { commitsMade, ...missingCommits } = taskContract
+  assert.deepEqual(validateResult(missingCommits, 'methodology'), {
+    ok: false,
+    errors: ['missing "commitsMade"'],
+  })
+  const surfaceRun = {
+    surface: 'tui',
+    captureShapes: [],
+    brief: {},
+    agentResult: { passed: true, summary: '', evidence: [], steps: [] },
+    hasFailure: false,
+    noSurface: false,
+    scanTexts: [],
+    elapsedMs: 1,
+    reasonCode: null,
+  }
+  assert.deepEqual(validateResult(surfaceRun, 'agent-driver'), { ok: true, errors: [] })
+})
+
 test('extension contract documents draft as a plan-writing exception', () => {
   const contract = fs.readFileSync('docs/skills/extension-contract.md', 'utf8')
   assert.match(contract, /`draft` → `\{ mode, planPath, ticket, designDoc\? \}`/)
   assert.match(contract, /`draft` is the behavior-writing exception/)
-  assert.match(contract, /does not use `ROLE_SCHEMAS`, `items\[\]`, or `validate --role draft`/)
+  assert.match(contract, /does not use `items\[\]`/)
   assert.match(contract, /may write only `context\.planPath` and `outPath`/)
 })
 

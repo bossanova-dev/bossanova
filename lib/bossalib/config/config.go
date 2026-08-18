@@ -356,6 +356,21 @@ type ManagedAccountsConfig struct {
 	// would require promoting this to a *int in a later ticket (see accessor).
 	FailoverProxyPortSetting int `json:"failover_proxy_port,omitempty"`
 
+	// ProxyDrainTimeoutSeconds bounds how long a daemon shutdown waits for
+	// in-flight proxied model streams to finish before it cuts them (BOS-888).
+	// Agents route every model request through the loopback failover proxy, so
+	// the proxy's lifetime IS the agent's connection lifetime: a restart that
+	// tears the proxy down mid-turn severs the stream ("Connection lost
+	// mid-response"). It is deliberately separate from — and larger than — the
+	// 5s the gRPC/hook servers share, but it is sized against ONE in-flight
+	// /v1/messages response rather than a whole agent turn, because it also has
+	// to fit under the shutdown ceilings above bossd (see the accessor's
+	// default). It bounds worst-case `boss daemon restart` latency: a restart
+	// with nothing in flight is unaffected (http.Server.Shutdown returns as soon
+	// as connections are idle), and only a genuinely mid-turn restart can wait
+	// this long. 0/unset or negative ⇒ the accessor's default (15s).
+	ProxyDrainTimeoutSeconds int `json:"proxy_drain_timeout_seconds,omitempty"`
+
 	// AutoResumeOrphans gates auto-resume of headless runs that a daemon restart
 	// orphaned (BOS-407). Unlike the rotation bools it defaults OFF (nil ⇒ false):
 	// auto-resume reverses the deliberate "a one-shot's prompt may have side
@@ -480,6 +495,67 @@ func (c ManagedAccountsConfig) FailoverProxyPort() int {
 		return c.FailoverProxyPortSetting
 	}
 	return defaultFailoverProxyPort
+}
+
+// defaultProxyDrainTimeout is how long a daemon shutdown waits for in-flight
+// proxied model streams before cutting them (BOS-888).
+//
+// The ceiling on this value is set by the shutdown budgets ABOVE bossd, not by
+// how long an agent turn can run. `boss daemon stop|restart` gives up waiting
+// for the socket after daemon.LifecycleShutdownTimeout and, on the installed
+// path, restart RETURNS AN ERROR WITHOUT STARTING THE REPLACEMENT; macOS
+// launchd SIGKILLs at its ExitTimeOut and systemd at TimeoutStopSec. A drain
+// longer than those does not buy a longer drain — it buys a hard kill that
+// skips the deferred database.Close and socket cleanup, plus a CLI that
+// reports a false timeout and leaves the daemon down.
+//
+// 15s is sized against what the drain actually protects: ONE in-flight
+// /v1/messages response. A Claude turn is many such requests (every tool
+// round-trip is a new one), and http.Server.Shutdown closes the listener
+// immediately, so the drain finishes the current response rather than the
+// whole turn. That leaves room under the ceilings for the other legs of the
+// same shutdown — the 10s cron drain, the sequential plugin-host stop (3s per
+// plugin), and the 5s server shutdown. The relationship is pinned by
+// TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown in
+// services/boss/internal/daemon — raising this without raising those is a bug,
+// and that test will say so.
+const defaultProxyDrainTimeout = 15 * time.Second
+
+// maxProxyDrainTimeout caps what the setting can ask for, and it is deliberately
+// EQUAL to the default: this key can shorten the drain, never lengthen it.
+//
+// The ceiling argument above is about the shipped default, but nothing made it
+// true of a configured value — `proxy_drain_timeout_seconds: 45` would have
+// produced a 10 + 45 + 24 + 5 = 84s worst-case shutdown against a 60s
+// LifecycleShutdownTimeout, i.e. exactly the "restart returns an error without
+// starting the replacement daemon" failure this whole change exists to prevent,
+// reachable by editing one JSON key. The invariant test could not catch it
+// because it read the default.
+//
+// Capping at the default keeps the proven arithmetic (10 + 15 + 24 + 5 = 54s,
+// 6s of headroom under 60s) true for EVERY reachable configuration rather than
+// for one of them. Raising this cap is therefore not a local edit: it requires
+// raising daemon.LifecycleShutdownTimeout, daemon.LifecycleStartupTimeout, the
+// launchd ExitTimeOut and the systemd TimeoutStopSec in lockstep, and
+// TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown — which reads this cap,
+// not the default — will fail until they are.
+const maxProxyDrainTimeout = defaultProxyDrainTimeout
+
+// ProxyDrainTimeout returns the failover proxy's own shutdown drain budget, or
+// the default of 15 seconds when unset (BOS-888). A value <= 0 (absent JSON
+// key or a negative sentinel) is treated as unset and defaults, mirroring
+// FailoverProxyPort: the drain is on by default, because the failure it
+// prevents (a restart severing a mid-turn agent stream) is silent and costly.
+// A value above maxProxyDrainTimeout is clamped rather than rejected — see that
+// constant for why the ceiling above bossd makes a longer drain unserviceable.
+func (c ManagedAccountsConfig) ProxyDrainTimeout() time.Duration {
+	if c.ProxyDrainTimeoutSeconds <= 0 {
+		return defaultProxyDrainTimeout
+	}
+	if configured := time.Duration(c.ProxyDrainTimeoutSeconds) * time.Second; configured < maxProxyDrainTimeout {
+		return configured
+	}
+	return maxProxyDrainTimeout
 }
 
 // AutoResumeOrphansEnabled reports whether auto-resume of daemon-restart-

@@ -82,18 +82,37 @@
             "title": { "type": "string" },
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
-            "capture": { "enum": ["image", "still", "video"], "default": "video" },
+            "capture": {
+              "enum": ["image", "still", "video"],
+              "default": "video",
+              "description": "Artifact kind. \"still\"/\"image\" opt out of video and produce one PNG through the still path in scripts/proof-playwright-runner.mjs buildSpec. The default \"video\" records a webm plus a per-step still for every step and a poster PNG; normalizeRecipe (scripts/proof-lib.mjs) synthesises a goto/wait/scroll step sequence for a route-only recipe, so a recipe with no steps still becomes a video."
+            },
             "slowMo": { "type": "integer", "minimum": 0, "maximum": 60000 },
             "route": {
               "type": "string",
               "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
             },
-            "selector": { "type": "string" },
-            "cropToSelector": { "type": "string" },
-            "fullPage": { "type": "boolean", "default": false },
-            "canvas": { "type": "boolean", "default": false },
+            "selector": {
+              "type": "string",
+              "description": "STILL PATH ONLY (capture \"still\"/\"image\"): screenshot ONLY this element. Nothing outside its own box is in frame, so a required proof naming page chrome or surrounding furniture is unobtainable while this is set — drop \"selector\" for a full-viewport capture instead of widening it. Mutually exclusive in effect with \"cropToSelector\", which is evaluated first. On the DEFAULT \"video\" capture buildVideoSpec never reads this field at all: the poster is a full-viewport screenshot and the per-step stills crop to \"cropToSelector\" or the surface's defaultCropToSelector, so \"selector\" excludes nothing there."
+            },
+            "cropToSelector": {
+              "type": "string",
+              "description": "Full-width TOP SLICE, not a box crop: the screenshot runs from the viewport origin (0,0) down to box.y + box.height + 24 (clamped to the viewport height), so everything ABOVE the element — header and chrome — is in frame and only the empty space below the element is trimmed. Do not describe such a still as 'cropped to' the element. On the still path only, audit text for this branch is harvested from just those nodes whose top edge sits above the clip height; a \"video\" recipe's audit.txt is still harvested from the whole <body>."
+            },
+            "fullPage": {
+              "type": "boolean",
+              "default": false,
+              "description": "Only consulted on the still path's plain-viewport branch: \"cropToSelector\" and \"selector\" both take precedence and ignore it, and the default \"video\" capture ignores it too."
+            },
+            "canvas": {
+              "type": "boolean",
+              "default": false,
+              "description": "Authoring marker for a recipe whose subject is a <canvas> (for example the xterm terminal pane). The runner never reads it — it changes no capture geometry. Because a DOM audit cannot see canvas pixels, a guard in scripts/proof-lib.test.mjs requires every canvas recipe in the shipped catalog to use privacy \"fixture\" (a consumer BOSS_PROOF_CATALOG recipe is not covered by it)."
+            },
             "viewport": {
               "type": "object",
+              "description": "Capture size in CSS pixels. Keep the width at or below 1024 for small-control evidence: the fresh-context judge downscales any still whose long edge exceeds JUDGE_MAX_PX (1024, scripts/proof-judge.mjs) and the runner sets no deviceScaleFactor, so widening past 1024 makes glyphs SMALLER at the judge, not larger.",
               "additionalProperties": false,
               "required": ["width", "height"],
               "properties": {

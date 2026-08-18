@@ -10,25 +10,48 @@
 
 import { createBossCallbackAdapter } from './boss.mjs'
 import { isBossdManaged } from '../bossd-present.mjs'
+import { resolveBossBinary } from '../boss-binary.mjs'
 
 // Capabilities every callback notifier must document.
 export const CALLBACK_CAPABILITIES = ['registerWatch', 'listWatches', 'removeWatch']
 
 /**
  * The single "are callbacks usable here?" gate the skills consult before arming a
- * one-shot PR/CI watch. Returns `isBossdManaged(env)` (BOSS_SESSION_ID present):
- * a daemon-provisioned session can reach the `boss callback` interface, a plain
- * standalone runner cannot. When this is false the skills MUST skip `registerWatch`
- * and go straight to `policy.fallbackPoll` — a clean, documented no-op, never a
- * failed wait. It replaces the older "did the `boss callback` CLI happen to fail at
- * runtime" heuristic with an up-front, unit-testable check, and is the one place to
- * extend if the usability signal ever diverges from raw in-boss (e.g. also requiring
- * the `boss` binary on PATH).
+ * one-shot PR/CI watch. BOTH conjuncts must hold:
+ *   - `isBossdManaged(env)` — a daemon-provisioned session is behind the
+ *     `boss callback` interface; a plain standalone runner has nothing to answer.
+ *   - `resolveBossBinary(env).ok` — the `boss` CLI that issues the calls is actually
+ *     an existing executable here (a stat, never a spawn).
+ * The second conjunct is not redundant: the managed cron environment exports
+ * BOSS_SESSION_ID but does not put the CLI on the cron PATH, so a session-variable-only
+ * gate reported callbacks usable, armed a registration that could not run, and fell
+ * back to polling anyway. When this is false the skills MUST skip
+ * `registerWatch` and go straight to `policy.fallbackPoll` — a clean, documented no-op,
+ * never a failed wait — and SHOULD log `callbacksUnavailableReason(env)` so the poll is
+ * explained rather than silent.
  * @param {Record<string,string|undefined>} [env]
+ * @param {{fs?: object, cwd?: string}} [deps] injection seam, forwarded to
+ *   `resolveBossBinary` so a test never reads the machine's real PATH.
  * @returns {boolean}
  */
-export function callbacksAvailable(env = process.env) {
-  return isBossdManaged(env)
+export function callbacksAvailable(env = process.env, deps = {}) {
+  return isBossdManaged(env) && resolveBossBinary(env, deps).ok
+}
+
+/**
+ * Why `callbacksAvailable` is false, or `''` when it is true. Names the conjunct that
+ * failed — the difference between "polling, because BOSS_BIN=… does not exist" and an
+ * unexplained poll loop.
+ * @param {Record<string,string|undefined>} [env]
+ * @param {{fs?: object, cwd?: string}} [deps]
+ * @returns {string}
+ */
+export function callbacksUnavailableReason(env = process.env, deps = {}) {
+  if (!isBossdManaged(env)) {
+    return 'not a bossd-managed session: BOSS_SESSION_ID is unset'
+  }
+  const binary = resolveBossBinary(env, deps)
+  return binary.ok ? '' : binary.reason
 }
 
 // name -> factory. Add a host by implementing the same operationMap + policy shape.

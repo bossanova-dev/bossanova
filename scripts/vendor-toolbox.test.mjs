@@ -641,6 +641,9 @@ test('withSkillSourceRewriteLock waits for a successor to the stale sentinel', a
 
 test('VENDOR_MAP routes each helper to the right skills', () => {
   assert.deepEqual(VENDOR_MAP['boss-epic'].sort(), [
+    // boss-binary.mjs backs callbacksAvailable's executable check; callback/adapter.mjs
+    // imports it, so it ships wherever the adapter does.
+    'boss-binary.mjs',
     'bossd-present.mjs',
     'bs-epic-lib.mjs',
     'bs-run-sentinel.mjs',

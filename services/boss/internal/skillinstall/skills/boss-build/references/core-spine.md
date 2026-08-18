@@ -57,6 +57,37 @@ The orchestrator threads only that short contract into the next task's brief; it
 prior task's full transcript forward. Larger hand-offs (the task brief, a report file, a review
 package) travel as files, not as inline text.
 
+Discovery itself reports before any of that. Record every `skipped` entry whose `deliberate` is
+`false` as `extension <name>: skipped (<reason>)` in the ledger, before dispatching — at **every**
+site that calls `discover`, the methodology tier and the knowledge and notes phases alike. Key it on
+that field rather than on the text of `reason`, which is a human sentence the helper is free to
+reword. A `deliberate: true` entry is a same-prefix skill that is not an extension of this core at
+all — a markerless helper, or one extending another core — and is never reported; warning about it
+would fire on every run for as long as that skill exists. Recording is all that is due: a discovery
+skip is never fatal and never changes control flow, and the tier still falls through exactly as
+documented. A misconfigured extension that vanishes with no ledger line is indistinguishable from
+one that was never installed, so the fallback tier reads as though it had always been intended.
+
+Where that contract comes back from a **discovered methodology extension** rather than from a task
+subagent the core dispatched itself, check its **shape** mechanically before judging it. Write the
+returned object to a scratch file outside the worktree and run
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" validate --role methodology --file <path>
+```
+
+which enforces the fixed short task-contract fields (`taskId`, `filesTouched`,
+`testsAddedOrPassing`, `interfaceSignatures`, `residualRisks`, `decisionsRecorded`, `commitsMade`).
+A result that fails that validation is **not** a valid result: record
+`extension <name>: skipped (invalid result: <errors>)` and fall through, exactly as for an extension
+that returned nothing. Discovery accepting a role and validation understanding it are two different
+things, and a core that dispatches a role it cannot then validate folds an unchecked envelope.
+
+Validation is a **necessary** condition, never a sufficient one. A well-shaped contract can still
+report scope it did not finish, so the branch check — the commits it claims present in the
+post-dispatch log range, and the dispatch's acceptance criteria actually satisfied by the diff —
+still decides whether the extension ran successfully.
+
 Every subagent writes the failing test first, watches it fail, then writes the minimal code to make
 it pass — red, green, refactor. A test that never failed proves nothing. Model effort scales to the
 task: the cheapest tier only for pure transcription where the plan already carries the complete

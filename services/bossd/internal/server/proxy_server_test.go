@@ -164,7 +164,7 @@ func startProxyConfigured(t *testing.T, f Failover, upstreamURL string, logger z
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = ps.Shutdown(ctx)
+		_, _ = ps.Shutdown(ctx)
 		<-serveErr
 	})
 	return ps, fmt.Sprintf("http://127.0.0.1:%d", ps.Port())
@@ -838,7 +838,7 @@ func TestProxy_replayTransportError_502(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = ps.Shutdown(ctx)
+		_, _ = ps.Shutdown(ctx)
 		<-serveErr
 	})
 	base := fmt.Sprintf("http://127.0.0.1:%d", ps.Port())
@@ -1347,7 +1347,7 @@ func TestProxyListen_FixedPortBindsExactly(t *testing.T) {
 	if err := ps.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer func() { _ = ps.Shutdown(context.Background()) }()
+	defer func() { _, _ = ps.Shutdown(context.Background()) }()
 	if got := ps.Port(); got != port {
 		t.Fatalf("Port() = %d, want the fixed configured port %d", got, port)
 	}
@@ -1370,7 +1370,7 @@ func TestProxyListen_ImmediateRebindSamePort(t *testing.T) {
 	if got := ps1.Port(); got != port {
 		t.Fatalf("first bind Port() = %d, want %d", got, port)
 	}
-	if err := ps1.Shutdown(context.Background()); err != nil {
+	if _, err := ps1.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown 1: %v", err)
 	}
 
@@ -1382,7 +1382,7 @@ func TestProxyListen_ImmediateRebindSamePort(t *testing.T) {
 	if err := ps2.Listen(); err != nil {
 		t.Fatalf("immediate re-bind of port %d failed (restart-wedge regression): %v", port, err)
 	}
-	defer func() { _ = ps2.Shutdown(context.Background()) }()
+	defer func() { _, _ = ps2.Shutdown(context.Background()) }()
 	if got := ps2.Port(); got != port {
 		t.Fatalf("re-bind Port() = %d, want the SAME fixed port %d", got, port)
 	}
@@ -1398,7 +1398,7 @@ func TestProxyListen_ZeroPortEphemeral(t *testing.T) {
 	if err := ps.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer func() { _ = ps.Shutdown(context.Background()) }()
+	defer func() { _, _ = ps.Shutdown(context.Background()) }()
 	if got := ps.Port(); got == 0 {
 		t.Fatal("Port() = 0 after ephemeral bind, want a non-zero OS-assigned port")
 	}
@@ -1426,7 +1426,7 @@ func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
 	if err := ps.Listen(); err != nil {
 		t.Fatalf("Listen must fall back on EADDRINUSE, not error: %v", err)
 	}
-	defer func() { _ = ps.Shutdown(context.Background()) }()
+	defer func() { _, _ = ps.Shutdown(context.Background()) }()
 	got := ps.Port()
 	if got == 0 {
 		t.Fatal("fallback Port() = 0, want a non-zero ephemeral port")

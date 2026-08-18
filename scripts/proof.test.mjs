@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,6 +16,7 @@ import {
   isDocsOnlyChange,
   newestSourceMtime,
   prefixStillFileNames,
+  PROOF_USAGE,
   resolvePrebuiltTuiBins,
   resolveSurfacePlan,
   shouldPostDocsBuildCheck,
@@ -23,6 +25,7 @@ import {
   tuiAgentCanCapture,
   tuiAgentUsable,
   uploadBundle,
+  UPLOAD_RETRY_BACKOFF_MS,
 } from './proof.mjs'
 
 const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -1188,6 +1191,257 @@ test('uploadBundle: a manifest naming absent media throws by NAME before any wra
   } finally {
     fs.rmSync(localDir, { recursive: true, force: true })
   }
+})
+
+// ── BOS-789 Task E: bounded idempotent retry on the object-upload stage ─────
+
+const UPLOAD_PREFIX = 'proof/bossanova/pr-1/abc1234/run1'
+const UPLOAD_FRAME = 'tui-agent/scene-01-frame-01.png'
+const UPLOAD_FRAME_KEY = `${UPLOAD_PREFIX}/${UPLOAD_FRAME}`
+
+// proofUploadFiles always uploads manifest.json first, then the artifacts, so a
+// fake runner has to be key-aware to target one object's attempts.
+const uploadFixture = () => {
+  const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-upload-retry-'))
+  fs.writeFileSync(path.join(localDir, 'manifest.json'), '{}')
+  fs.mkdirSync(path.join(localDir, 'tui-agent'), { recursive: true })
+  fs.writeFileSync(path.join(localDir, ...UPLOAD_FRAME.split('/')), 'png')
+  return { localDir, manifest: { captures: [{ stills: [{ fileName: UPLOAD_FRAME }] }] } }
+}
+
+const uploadKeyOf = (commandTuple) => {
+  const argv = commandTuple[1].join(' ')
+  return argv.includes(UPLOAD_FRAME_KEY) ? UPLOAD_FRAME_KEY : `${UPLOAD_PREFIX}/manifest.json`
+}
+
+test('uploadBundle: a transient upload failure is retried twice, then succeeds', () => {
+  const { localDir, manifest } = uploadFixture()
+  const attempts = new Map()
+  const slept = []
+  try {
+    uploadBundle({
+      localDir,
+      publicPrefix: UPLOAD_PREFIX,
+      manifest,
+      bucket: 'b',
+      run: (commandTuple) => {
+        const key = uploadKeyOf(commandTuple)
+        const n = (attempts.get(key) ?? 0) + 1
+        attempts.set(key, n)
+        if (key === UPLOAD_FRAME_KEY && n < 3) {
+          throw new Error('wrangler r2 object put exited 1')
+        }
+      },
+      sleep: (ms) => slept.push(ms),
+    })
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+  // The attempt count is what distinguishes this from the pre-BOS-789 behaviour:
+  // without the retry the first throw escapes and the object never reaches 3.
+  assert.equal(attempts.get(UPLOAD_FRAME_KEY), 3, 'the frame is uploaded on its third attempt')
+  assert.equal(attempts.get(`${UPLOAD_PREFIX}/manifest.json`), 1, 'a healthy object is not retried')
+  assert.deepEqual(slept, UPLOAD_RETRY_BACKOFF_MS, 'backoff runs between attempts only')
+})
+
+test('uploadBundle: a persistent upload failure escapes naming the stage and object key', () => {
+  const { localDir, manifest } = uploadFixture()
+  let frameAttempts = 0
+  try {
+    assert.throws(
+      () =>
+        uploadBundle({
+          localDir,
+          publicPrefix: UPLOAD_PREFIX,
+          manifest,
+          bucket: 'my-bucket',
+          run: (commandTuple) => {
+            if (uploadKeyOf(commandTuple) !== UPLOAD_FRAME_KEY) return
+            frameAttempts += 1
+            throw new Error('wrangler r2 object put exited 1')
+          },
+          sleep: () => {},
+        }),
+      (err) => {
+        assert.match(err.message, /upload/i, 'the message names the upload stage')
+        assert.ok(
+          err.message.includes(UPLOAD_FRAME_KEY),
+          `the message must name the object key, got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+  assert.equal(
+    frameAttempts,
+    UPLOAD_RETRY_BACKOFF_MS.length + 1,
+    'bounded at two extra attempts, then it propagates',
+  )
+})
+
+test('uploadBundle: the dangling-manifest precondition is not retried', () => {
+  // A manifest naming absent media is a real pipeline defect, never a transient:
+  // it must throw before any upload attempt and must not consume the retry budget.
+  const { localDir, manifest } = uploadFixture()
+  manifest.captures[0].stills.push({ fileName: 'tui-agent/scene-01-frame-03.png' })
+  let attempts = 0
+  let slept = 0
+  try {
+    assert.throws(
+      () =>
+        uploadBundle({
+          localDir,
+          publicPrefix: UPLOAD_PREFIX,
+          manifest,
+          bucket: 'b',
+          run: () => {
+            attempts += 1
+          },
+          sleep: () => {
+            slept += 1
+          },
+        }),
+      /missing from/,
+    )
+  } finally {
+    fs.rmSync(localDir, { recursive: true, force: true })
+  }
+  assert.equal(attempts, 0, 'nothing is uploaded when the manifest is already inconsistent')
+  assert.equal(slept, 0, 'the precondition failure never enters the retry backoff')
+})
+
+// ── BOS-789 Task D: plan emits no contradictory top-level `surface` scalar ───
+
+// `--changed-file` pins the diff input, but the brief is a SECOND input to the
+// same answer: main()'s plan branch feeds briefSurfaceOverride() — which reads
+// BOSS_PROOF_BRIEF — into resolveSurfacePlan, so an inherited brief naming
+// `web` turns the backend-only case's surfaces into {tui:false, web:true} and
+// its order into ["web"]. That is exactly the environment `make test` runs in
+// inside a proof-enabled boss session, so scrub both surface-forcing vars here
+// rather than let the assertions below depend on who started the process.
+const runPlan = (changedFile, ...extra) => {
+  const { BOSS_PROOF_BRIEF, BOSS_PROOF_AGENT_SURFACE, ...cleanEnv } = process.env
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/proof.mjs', 'plan', '--changed-file', changedFile, ...extra],
+    { cwd: repoRootForTest, encoding: 'utf8', env: cleanEnv },
+  )
+  assert.equal(result.status, 0, `plan exited ${result.status}: ${result.stderr}`)
+  return JSON.parse(result.stdout)
+}
+
+test('BOS-789: plan emits no top-level surface scalar for a backend-only diff', () => {
+  // The scalar came from agentSurface, whose fallthrough is a bare `return web`,
+  // so it read "web" while the authoritative map said no surface at all.
+  const out = runPlan('services/bossd/internal/session/session.go', '--json')
+  assert.ok(!('surface' in out), `plan must not emit a surface scalar; got ${Object.keys(out)}`)
+  assert.deepEqual(Object.keys(out), ['changedFiles', 'recipes', 'surfaces', 'order'])
+  assert.deepEqual(out.recipes, [])
+  assert.deepEqual(out.surfaces, { tui: false, web: false })
+  assert.deepEqual(out.order, [])
+})
+
+test('BOS-789: plan keeps the authoritative multi-surface view intact', () => {
+  const out = runPlan('proto/x.proto')
+  assert.ok(!('surface' in out), 'no surface scalar on the TUI path either')
+  assert.deepEqual(out.surfaces, { tui: true, web: false })
+  assert.deepEqual(out.order, ['tui'])
+})
+
+test('BOS-789: an unknown proof command names the accepted set and points at --help', () => {
+  // Acceptance criterion: `node scripts/proof.mjs parity` still exits non-zero,
+  // and its message now lists the accepted commands. Run the real CLI so this
+  // pins the dispatch throw, not a re-implementation of it.
+  const result = spawnSync(process.execPath, ['scripts/proof.mjs', 'parity'], {
+    cwd: repoRootForTest,
+    encoding: 'utf8',
+  })
+  assert.notEqual(result.status, 0, 'an unknown command must still exit non-zero')
+  const output = `${result.stdout}${result.stderr}`
+  assert.match(output, /unknown proof command: parity/, 'prefix stays byte-identical')
+  for (const command of ['plan', 'run', 'doctor', 'scenario']) {
+    assert.ok(
+      new RegExp(`unknown proof command: parity[\\s\\S]*\\b${command}\\b`).test(output),
+      `the error must name the accepted command "${command}"`,
+    )
+  }
+  assert.match(output, /node scripts\/proof\.mjs --help/, 'the error points at --help')
+})
+
+test('BOS-789: every --help/-h invocation exits 0 through the real CLI', () => {
+  // The pre-scan is pinned at the parseProofArgs level too, but that cannot see
+  // the exit code or the printed block — and the exit code IS the acceptance
+  // criterion. Run the real binary for each documented invocation, including the
+  // bare one, and require the same usage block out of all of them.
+  const invocations = [
+    [],
+    ['--help'],
+    ['-h'],
+    ['run', '--help'],
+    ['plan', '-h'],
+    ['scenario', '--help'],
+  ]
+  for (const argv of invocations) {
+    const result = spawnSync(process.execPath, ['scripts/proof.mjs', ...argv], {
+      cwd: repoRootForTest,
+      encoding: 'utf8',
+    })
+    const label = argv.length > 0 ? argv.join(' ') : '(no arguments)'
+    assert.equal(result.status, 0, `\`${label}\` exited ${result.status}: ${result.stderr}`)
+    assert.equal(result.stdout.trimEnd(), PROOF_USAGE, `\`${label}\` must print the usage block`)
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}`,
+      /unknown proof (argument|command)/,
+      `\`${label}\` must not report an unknown argument`,
+    )
+  }
+})
+
+// ── BOS-789 Task B: PROOF_USAGE states the per-subcommand flag ownership ─────
+// Matched on distinctive substrings, not the whole block, so ordinary rewording
+// does not red these gates — only removing the stated contract does.
+
+test('PROOF_USAGE lists doctor as a command', () => {
+  assert.match(PROOF_USAGE, /^ {2}doctor\s{2,}\S/m, 'doctor appears in the Commands list')
+})
+
+test('PROOF_USAGE lists both scenario subcommands', () => {
+  assert.match(PROOF_USAGE, /scenario validate <file>/)
+  assert.match(PROOF_USAGE, /scenario run <file>/)
+})
+
+test('PROOF_USAGE annotates --pr as scenario run only', () => {
+  assert.match(PROOF_USAGE, /--pr <n>\s+\(scenario run\)/)
+})
+
+test('PROOF_USAGE annotates --surface as doctor only', () => {
+  assert.match(PROOF_USAGE, /--surface <s>\s+\(doctor\)/)
+})
+
+test('PROOF_USAGE annotates every option with its owning subcommand', () => {
+  for (const flag of ['--recipe <id>', '--changed-file <p>', '--dry-run', '--json']) {
+    const line = PROOF_USAGE.split('\n').find((l) => l.trimStart().startsWith(flag))
+    assert.ok(line, `usage must document ${flag}`)
+    assert.match(line, /\((plan|run|doctor|scenario run)[^)]*\)/, `${flag} names its command(s)`)
+  }
+})
+
+test('PROOF_USAGE states that plan takes no baseline flag and names the fields to consume', () => {
+  assert.match(PROOF_USAGE, /plan accepts no baseline flag/)
+  assert.match(PROOF_USAGE, /--base and --since are not parsed/)
+  // Anchored to the sentence, not to the bare words: `recipes` also occurs in
+  // the `plan` command description, so a `\brecipes\b` probe stayed green with
+  // the whole "Consume the …" sentence deleted — a vacuous third of the gate.
+  assert.match(PROOF_USAGE, /Consume the recipes, surfaces and\s+order fields/)
+})
+
+test('PROOF_USAGE points proof-surface parity at the snapshot gate, not a proof.mjs verb', () => {
+  assert.match(PROOF_USAGE, /scripts\/skill-parity\/baseline\/proof-surface\.snapshot\.json/)
+  assert.match(PROOF_USAGE, /scripts\/skill-parity\/parity-gate\.mjs/)
+  assert.match(PROOF_USAGE, /no parity command/i, 'says plainly that parity is not a verb')
+  assert.doesNotMatch(PROOF_USAGE, /^ {2}parity\s/m, 'parity is never listed as a command')
 })
 
 test('BOS-223 (d): keyless + scenario-less is resolved by the BOS-220 scenario-missing gate upstream', () => {

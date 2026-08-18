@@ -61,6 +61,17 @@ const (
 </plist>
 `
 
+	// ExitTimeOut is the SIGTERM-to-SIGKILL grace launchd gives bossd on
+	// `bootout`. It defaults to 20s, which is BELOW bossd's own graceful
+	// shutdown budget once the failover proxy drain is in the path (BOS-888) —
+	// a hard kill there skips the deferred database.Close and the socket
+	// cleanup. Keep it above LifecycleShutdownTimeout so the CLI's wait, not
+	// launchd's axe, is what bounds a stuck shutdown.
+	//
+	// Reach: platformRestart rewrites the plist, so existing installs pick this
+	// up without a reinstall — but it boots the old job out FIRST, so the one
+	// restart that performs the upgrade still shuts down under the previous
+	// ExitTimeOut. Only the restart after that is covered.
 	plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -79,6 +90,8 @@ const (
 	<string>{{.LogDir}}/bossd.stdout.log</string>
 	<key>StandardErrorPath</key>
 	<string>{{.LogDir}}/bossd.stderr.log</string>
+	<key>ExitTimeOut</key>
+	<integer>90</integer>
 	<key>SoftResourceLimits</key>
 	<dict>
 		<key>NumberOfFiles</key>

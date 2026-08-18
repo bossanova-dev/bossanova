@@ -479,8 +479,8 @@ func TestStopMcpInstances_ToleratesESRCH(t *testing.T) {
 }
 
 func TestStopMcpInstances_SurvivorIsNeverSigkilled(t *testing.T) {
-	// A tight poll deadline so this test doesn't wait out
-	// LifecycleShutdownTimeout (20s) for a process that never exits.
+	// A tight poll deadline so this test doesn't wait out the full
+	// LifecycleShutdownTimeout for a process that never exits.
 	withShortStopPoll(t, 30*time.Millisecond, 5*time.Millisecond)
 
 	const survivorPID = 5201

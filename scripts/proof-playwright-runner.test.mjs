@@ -18,8 +18,10 @@ import {
   VIDEO_ACTIONS,
   uploadServerScript,
   echoServerScript,
+  collectProofAuditTextScript,
 } from './proof-playwright-runner.mjs'
 import { OVERLAY_CAPTION_CSS as SPEC_OVERLAY_CAPTION_CSS } from './proof-caption-spec.mjs'
+import { precedes, region } from './gate-region-lib.mjs'
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const runnerPath = path.join(repoRoot, 'scripts/proof-playwright-runner.mjs')
@@ -311,7 +313,7 @@ test('buildSpec waits for the rendered glyph row before capturing the chat-termi
   // Tolerant spacing: xterm pads a row with cell spaces between style runs.
   assert.ok(staged.includes(String.raw`toContainText(new RegExp("✓\\s*↳\\s*─")`))
   // The wait must precede the screenshot, or it gates nothing.
-  assert.ok(staged.indexOf('.xterm-rows') < staged.indexOf('.screenshot('))
+  assert.ok(precedes(staged, '.xterm-rows', '.screenshot('))
 
   // No staging → no glyph line → the wait would hang forever.
   assert.doesNotMatch(specFor('web-chat-terminal', undefined), /\.xterm-rows/)
@@ -769,9 +771,12 @@ test('buildSpec video: scrolls click target into view before measuring ripple po
   })
   assert.match(spec, /window\.__proofOverlay\?\.ripple\(/)
   assert.match(spec, /boundingBox\(\)/)
-  const actionBlock = spec.slice(spec.indexOf("const __loc = page.locator('button').first();"))
+  const actionBlock = region(spec, "const __loc = page.locator('button').first();")
+  // BOS-737: `precedes()` rather than the raw `indexOf < indexOf`. Raw, deleting the
+  // `scrollIntoViewIfNeeded()` call — the exact regression this pins — makes `indexOf` return -1
+  // and `-1 < n` true, so the assertion goes green on precisely the spec it exists to forbid.
   assert.ok(
-    actionBlock.indexOf('scrollIntoViewIfNeeded()') < actionBlock.indexOf('boundingBox()'),
+    precedes(actionBlock, 'scrollIntoViewIfNeeded()', 'boundingBox()'),
     'click ripple must measure after target is in the viewport',
   )
 })
@@ -788,9 +793,9 @@ test('buildSpec video: scrolls type target into view before measuring ripple pos
   })
   assert.match(spec, /window\.__proofOverlay\?\.ripple\(/)
   assert.match(spec, /boundingBox\(\)/)
-  const actionBlock = spec.slice(spec.indexOf("const __loc = page.locator('input').first();"))
+  const actionBlock = region(spec, "const __loc = page.locator('input').first();")
   assert.ok(
-    actionBlock.indexOf('scrollIntoViewIfNeeded()') < actionBlock.indexOf('boundingBox()'),
+    precedes(actionBlock, 'scrollIntoViewIfNeeded()', 'boundingBox()'),
     'type ripple must measure after target is in the viewport',
   )
 })
@@ -1133,4 +1138,230 @@ test('staged echo responder is scoped to the paste recipe', () => {
   assert.equal(echoServerScript({ id: 'web-chat-terminal-upload' }), '')
   assert.equal(echoServerScript({ id: 'web-chat-terminal' }), '')
   assert.equal(echoServerScript(undefined), '')
+})
+
+// --- BOS-790: audit text is scoped to what the saved frame actually shows ----
+
+const AUDIT_RECIPE_VIEWPORT = { width: 1024, height: 768 }
+
+function auditSpecFor(overrides) {
+  return buildSpec({
+    recipe: {
+      id: 'web-audit-scope',
+      surface: 'web',
+      route: '/',
+      viewport: AUDIT_RECIPE_VIEWPORT,
+      ...overrides,
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  })
+}
+
+// buildSpec emits ONE spec carrying all three runtime branches, so a whole-spec
+// match cannot tell them apart. Extract each branch body fail-closed (region()
+// throws on a moved marker rather than silently yielding an empty region).
+//
+// What these three gates pin is therefore the EMITTED CODE of each branch, not
+// a per-recipe outcome: the recipe passed to buildSpec only changes the baked-in
+// `const selector` / `const cropToSelector` literals, so all three specs are
+// structurally identical and the recipe in each case is scene-setting. The
+// runtime branch a given recipe takes is decided inside Playwright, which these
+// gates never run.
+const CROP_BRANCH = ['  if (cropToSelector) {', '  } else if (selector) {']
+const SELECTOR_BRANCH = [
+  '  } else if (selector) {',
+  "  } else {\n    auditText = await page.locator('body')",
+]
+const PLAIN_BRANCH = [
+  "  } else {\n    auditText = await page.locator('body')",
+  '  await test.info().attach',
+]
+
+test('buildSpec emits a cropToSelector branch harvesting audit text only up to the clip height', () => {
+  const spec = auditSpecFor({ cropToSelector: '#root' })
+  const branch = region(spec, ...CROP_BRANCH, 'cropToSelector branch')
+  assert.match(
+    branch,
+    /evaluate\(collectProofAuditText, height\)/,
+    'the crop branch must pass the computed clip height into the audit collector',
+  )
+  // The height must be computed BEFORE the harvest, or the cut-off is undefined
+  // at call time and the scoping silently degrades to whole-body.
+  assert.ok(
+    precedes(branch, 'const height = Math.min(', 'evaluate(collectProofAuditText, height)'),
+    'clip height must be computed before the harvest',
+  )
+})
+
+test('buildSpec emits a selector branch keeping its element-scoped audit source, uncapped', () => {
+  const spec = auditSpecFor({ selector: '[data-testid="row"]' })
+  const branch = region(spec, ...SELECTOR_BRANCH, 'selector branch')
+  assert.match(branch, /await target\.evaluate\(collectProofAuditText\);/)
+  assert.doesNotMatch(
+    branch,
+    /collectProofAuditText,/,
+    'the element screenshot is not clipped, so it must not take a cut-off',
+  )
+})
+
+test('buildSpec emits a plain-viewport branch keeping its whole-body audit source, uncapped', () => {
+  const spec = auditSpecFor({})
+  const branch = region(spec, ...PLAIN_BRANCH, 'plain-viewport branch')
+  assert.match(branch, /await page\.locator\('body'\)\.evaluate\(collectProofAuditText\);/)
+  assert.doesNotMatch(
+    branch,
+    /collectProofAuditText,/,
+    'a full-viewport capture genuinely shows the whole body',
+  )
+})
+
+function loadAuditCollector() {
+  const src = collectProofAuditTextScript()
+  return new Function(`${src}\nreturn collectProofAuditText;`)()
+}
+
+// A real rect carries `bottom` as well as `top`, and the collector reads both:
+// `top` decides whether the node is in frame at all, `bottom` whether it is
+// ENTIRELY in frame and can therefore be taken as one contiguous string. A stub
+// that supplied only `top` would never exercise that second branch, so default
+// to a plausible 100px-tall box and let a caller widen it.
+function stubElement(top, texts, { measurable = true, height = 100 } = {}) {
+  const node = {
+    nodeType: 1,
+    textContent: texts.join('\n'),
+    getAttribute: () => null,
+    querySelectorAll: () => [],
+    childNodes: [],
+  }
+  if (measurable) node.getBoundingClientRect = () => ({ top, bottom: top + height })
+  node.childNodes = texts.map((text) => ({ nodeType: 3, textContent: text, parentElement: node }))
+  return node
+}
+
+// The root is the whole document: always straddling, never taken whole.
+function stubRoot(children) {
+  return {
+    nodeType: 1,
+    textContent: children.map((child) => child.textContent).join('\n'),
+    getBoundingClientRect: () => ({ top: 0, bottom: 100000 }),
+    getAttribute: () => null,
+    querySelectorAll: () => [],
+    childNodes: children,
+  }
+}
+
+test('collectProofAuditText drops nodes below the cut-off and keeps them without one', () => {
+  const collect = loadAuditCollector()
+  const root = stubRoot([
+    stubElement(10, ['in-frame token']),
+    stubElement(5000, ['below-fold token']),
+  ])
+  const clipped = collect(root, 800)
+  assert.match(clipped, /in-frame token/)
+  assert.doesNotMatch(clipped, /below-fold token/, 'text below the clip never appeared in the PNG')
+
+  const whole = collect(root)
+  assert.match(whole, /in-frame token/)
+  assert.match(whole, /below-fold token/, 'with no cut-off the whole element is harvested')
+})
+
+test('collectProofAuditText fails OPEN for a node with no resolvable rect', () => {
+  // Text nodes have no getBoundingClientRect; an element with no resolvable box
+  // must still be harvested, because dropping unpositioned text would silently
+  // shrink audit.txt and could red an existing recipe's evidence gate.
+  const collect = loadAuditCollector()
+  const root = stubRoot([
+    stubElement(10, ['in-frame token']),
+    stubElement(9999, ['unpositioned token'], { measurable: false }),
+    stubElement(5000, ['below-fold token']),
+  ])
+  const clipped = collect(root, 800)
+  assert.match(clipped, /in-frame token/)
+  assert.match(clipped, /unpositioned token/, 'no resolvable rect must mean included, not dropped')
+  assert.doesNotMatch(clipped, /below-fold token/)
+})
+
+test('collectProofAuditText does not leak below-clip text through the attribute pass', () => {
+  // The trailing querySelectorAll pass visits every [aria-label]/[title]/[alt]
+  // and form element. Such a container routinely STRADDLES the clip — its top
+  // edge is in frame while its subtree runs past it (SessionDetail's
+  // `<section aria-label="Rotation history">`, SettingsLayout's
+  // `<nav aria-label="Settings">`). Pushing its textContent there would put the
+  // below-clip half straight back into audit.txt and re-open the vacuous-gate
+  // hole the cut-off exists to close. The label itself is still harvested.
+  const collect = loadAuditCollector()
+  // The container's own box really does span its children, so it straddles the
+  // clip rather than sitting entirely above it — that is the whole point.
+  const straddler = stubElement(10, ['in-frame token', 'below-fold token'], { height: 5090 })
+  straddler.getAttribute = (name) => (name === 'aria-label' ? 'Rotation history' : null)
+  // Only the second child sits below the clip; the container starts above it.
+  straddler.childNodes = [
+    stubElement(10, ['in-frame token']),
+    stubElement(5000, ['below-fold token']),
+  ]
+  const root = stubRoot([straddler])
+  root.querySelectorAll = () => [straddler]
+
+  const clipped = collect(root, 800)
+  assert.match(clipped, /in-frame token/)
+  assert.match(clipped, /Rotation history/, 'the aria-label itself is in frame and must be kept')
+  assert.doesNotMatch(
+    clipped,
+    /below-fold token/,
+    'a straddling labelled container must not re-admit its below-clip subtree',
+  )
+
+  // Uncapped, the attribute pass still harvests the whole subtree as before.
+  const whole = collect(root)
+  assert.match(whole, /below-fold token/, 'no cut-off means no scoping, on every path')
+})
+
+test('collectProofAuditText keeps a fully in-frame subtree contiguous', () => {
+  // Scoping must not become a SECOND cause of token loss. A phrase spanning
+  // inline elements — `<p>Rotation <strong>history</strong></p>` — is one
+  // string in the unscoped harvest, and every glyph of it is inside the clip
+  // here. Splitting it per text node would drop the phrase from audit.txt for a
+  // reason unrelated to clipping, and invite exactly the wrong diagnosis: "the
+  // token was below the clip, the recipe was vacuous".
+  const collect = loadAuditCollector()
+  // Built by hand rather than via stubElement: this needs a real inline split,
+  // where the element's textContent is the CONCATENATION of its text nodes.
+  const paragraph = {
+    nodeType: 1,
+    textContent: 'Rotation history',
+    getBoundingClientRect: () => ({ top: 10, bottom: 50 }),
+    getAttribute: () => null,
+    querySelectorAll: () => [],
+    childNodes: [],
+  }
+  paragraph.childNodes = [
+    { nodeType: 3, textContent: 'Rotation ', parentElement: paragraph },
+    { nodeType: 3, textContent: 'history', parentElement: paragraph },
+  ]
+  const root = stubRoot([paragraph, stubElement(5000, ['below-fold token'])])
+
+  const clipped = collect(root, 800)
+  assert.match(
+    clipped,
+    /Rotation history/,
+    'a phrase entirely inside the clip must survive as one contiguous string',
+  )
+  assert.doesNotMatch(clipped, /below-fold token/, 'scoping still drops what is below the clip')
+})
+
+test('recipe schema documents what each capture field actually captures', () => {
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'proof/recipes/schema.json'), 'utf8'),
+  )
+  const props = schema.$defs.browserRecipe.allOf[1].properties
+  for (const field of ['selector', 'cropToSelector', 'viewport', 'fullPage', 'capture', 'canvas']) {
+    const description = props[field]?.description
+    assert.equal(typeof description, 'string', `${field} must carry a description`)
+    assert.ok(description.trim().length > 0, `${field} description must be non-empty`)
+  }
+  // The two descriptions that exist to stop a specific, repeatedly-made mistake.
+  assert.match(props.cropToSelector.description, /top/i)
+  assert.match(props.cropToSelector.description, /not a box crop/i)
+  assert.match(props.selector.description, /unobtainable/i)
 })

@@ -1657,8 +1657,22 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 87991
-  const RATCHET = 87975 // Re-baselined +2964 for the BOS-741 Phase-4 plan-contract gate and its scratch cleanup; preserve the 16-byte guard margin.
+  const PRE_SPLIT_BASELINE = 88867
+  // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
+  // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
+  // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
+  // package and truncates an absolute one at a `#`. Both now resolve through
+  // `require("node:url").pathToFileURL(…).href` — kept in CommonJS and written without optional
+  // whitespace precisely to hold the growth to +30 B per line, against +65 B for the
+  // `--input-type=module` spelling. Resident by necessity: both lines are executed/copied verbatim.
+  // Re-baselined a further +816 (88035 → 88851) for BOS-744, carrying PRE_SPLIT_BASELINE with it
+  // to keep the 16-byte guard margin: Phase 3.5's resident sentence now names the literal
+  // `--role plan-reviewer` token, and the Phase-8 notes discover site gained the
+  // record-the-broken-skips clause. Both are resident by necessity — a headless orchestrator that
+  // never opens `references/extension-reviewers.md` infers `--role review` from the phase name and
+  // rejects every correctly-installed extension into `skipped`, and a discover site whose skips go
+  // unrecorded reports its fallback tier as though it had always been the intended tier.
+  const RATCHET = 88851 // exact measured resident body
   assert.ok(
     RATCHET < PRE_SPLIT_BASELINE,
     'the ratchet ceiling must sit below the pre-split baseline',

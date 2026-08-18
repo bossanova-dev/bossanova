@@ -110,6 +110,24 @@ func (m ChatPickerModel) refreshStatuses() tea.Cmd {
 	}
 }
 
+// isPlaceholderChatTitle reports whether a stored chat title is still a
+// placeholder, i.e. a name no human chose, which a transcript-derived title may
+// therefore overwrite. A title that fails this test is a real name and wins:
+// titles derived from the first user message are non-authoritative (BOS-611), so
+// no TUI writer may clobber one with a derivation.
+//
+// The match is EXACT on "" and "New chat", mirroring the inline comparison this
+// was extracted from and pinned by TestChatPicker_BackfillTitlesGuardIsExactMatch.
+// It deliberately diverges from the daemon poller's shouldRefreshChatTitle
+// (services/bossd/internal/status/tmux_poller.go), which trims and lowercases and
+// so also treats "new chat" as a placeholder. Converging the two — ideally by
+// moving the rule server-side to the single UpdateChatTitle write choke point —
+// needs a proto change and is its own ticket; until then the two TUI writers
+// share one predicate rather than each growing its own.
+func isPlaceholderChatTitle(title string) bool {
+	return title == "" || title == "New chat"
+}
+
 // backfillTitles reads JSONL files for chats still titled "New chat" and
 // updates their titles via RPC. This is best-effort and non-blocking.
 func (m ChatPickerModel) backfillTitles() tea.Cmd {
@@ -126,7 +144,7 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	}
 	var needsUpdate []*pb.ClaudeChat
 	for _, c := range m.chats {
-		if c.Title == "" || c.Title == "New chat" {
+		if isPlaceholderChatTitle(c.Title) {
 			needsUpdate = append(needsUpdate, c)
 		}
 	}

@@ -709,6 +709,25 @@ test('parseProofArgs: scenario --pr without a value throws', () => {
   )
 })
 
+test('parseProofArgs: an unknown argument keeps its prefix and points at --help', () => {
+  // BOS-789: the `unknown proof argument: <arg>` PREFIX is byte-identical on
+  // purpose — existing tests and recorded proof runs match on it. Only the
+  // trailing pointer is new.
+  for (const argv of [
+    ['run', '--unknown'],
+    ['scenario', 'run', 'f.json', '--nope'],
+  ]) {
+    assert.throws(parseProofArgs.bind(null, argv), (err) => {
+      assert.ok(
+        err.message.startsWith(`unknown proof argument: ${argv[argv.length - 1]}`),
+        `prefix must stay byte-identical, got: ${err.message}`,
+      )
+      assert.match(err.message, /node scripts\/proof\.mjs --help/)
+      return true
+    })
+  }
+})
+
 test('parseProofArgs: scenario rejects unknown flags and extra positionals', () => {
   assert.throws(
     () => parseProofArgs(['scenario', 'run', 'f.json', '--nope']),
@@ -718,6 +737,47 @@ test('parseProofArgs: scenario rejects unknown flags and extra positionals', () 
     () => parseProofArgs(['scenario', 'run', 'a.json', 'b.json']),
     /unexpected extra argument: b\.json/,
   )
+})
+
+// ── BOS-789 Task A: `--help`/`-h` is a real path on every command ────────────
+
+test('parseProofArgs: --help/-h anywhere in argv resolves to the help command', () => {
+  // The pre-scan runs BEFORE command resolution precisely so it also covers the
+  // `scenario` branch, whose positional parser throws on any unknown `--` flag.
+  const helpShape = {
+    command: 'help',
+    recipes: [],
+    changedFiles: [],
+    dryRun: false,
+    json: false,
+    surface: null,
+  }
+  const cases = [
+    ['--help'],
+    ['-h'],
+    ['run', '--help'],
+    ['plan', '-h'],
+    ['scenario', '--help'],
+    ['scenario', 'run', 'f.json', '-h'],
+  ]
+  for (const argv of cases) {
+    assert.deepEqual(
+      parseProofArgs(argv),
+      helpShape,
+      `${JSON.stringify(argv)} must parse as the help command`,
+    )
+  }
+})
+
+test('parseProofArgs: the help pre-scan does not swallow genuinely unknown flags', () => {
+  // Negative pin for BOS-789: `--pr` really is `scenario run`-only, and the
+  // pre-scan must not turn every unknown flag into a silent help print.
+  assert.throws(() => parseProofArgs(['run', '--pr', '1']), /unknown proof argument: --pr/)
+  assert.throws(() => parseProofArgs(['run', '--unknown']), /unknown proof argument: --unknown/)
+})
+
+test('parseProofArgs: empty invocation still yields help (unchanged)', () => {
+  assert.equal(parseProofArgs([]).command, 'help')
 })
 
 test('parseProofArgs: every non-scenario command parses byte-identically (regression table)', () => {

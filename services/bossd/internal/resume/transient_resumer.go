@@ -21,10 +21,18 @@ import (
 // ResumeMessage is the verbatim prompt delivered on every auto-resume attempt.
 // It is deliberately a plain instruction rather than a slash command: the target
 // chat may be any agent runner, and the only thing this consumer knows is that a
-// turn ended on a retryable 5xx banner. The wording steers the agent back to its
+// turn ended without finishing. The wording steers the agent back to its
 // committed state instead of restarting finished work, because the pane's own
 // scrollback is the only record of how far the interrupted turn got.
-const ResumeMessage = "Transient API error detected (5xx). Resume the interrupted work: continue from committed state; do not restart completed work."
+//
+// The parenthetical says "connection lost mid-response" rather than naming a
+// status code. Two of the three stalls this lane fires on never had one: a
+// connection-loss banner carries no code (BOS-889), and a stream severed by a
+// daemon restart (BOS-890) never rendered a banner at all. This is also the
+// exact text verified by hand during the BOS-890 investigation, which recovered
+// 3/3 stalled panes — so it is what an agent has actually been observed to act
+// on correctly, not a plausible rewrite.
+const ResumeMessage = "Transient API error detected (connection lost mid-response). Resume the interrupted work: continue from committed state; do not restart completed work."
 
 const (
 	// DefaultSettleWindow is the wait before the FIRST attempt, and also the
@@ -93,6 +101,26 @@ type TransientResumerDeps struct {
 	// ChatState returns the chat's current status and last-output time; ok=false
 	// when the tracker has no fresh entry (unknown ⇒ never fire).
 	ChatState func(agentSessionID string) (status bossanovav1.ChatStatus, lastOutputAt time.Time, ok bool)
+	// ChatLiveness reports the SPINNER-INSENSITIVE substantive-output stamp for a
+	// chat (status.Tracker.Liveness, BOS-805) plus whether that stamp is still
+	// only a bootstrap SEED rather than a real observation. ok=false when the
+	// tracker holds no liveness reading at all.
+	//
+	// It exists because ChatState's LastOutputAt cannot answer the restart lane's
+	// question. That stamp moves on ANY pane repaint — a cosmetic spinner frame
+	// included — and on a restart it is SEEDED to a synthetic past time by the
+	// poller's Bootstrap, so its value relative to a severance stamp says nothing
+	// about whether the chat produced output. This seam distinguishes both cases:
+	// the stamp ignores spinner-only redraws, and the seeded flag says "the
+	// poller has observed nothing real yet", which is exactly the state a chat
+	// left parked by a severed stream is in.
+	//
+	// Deliberately NOT part of capable(): a daemon that never wires it keeps the
+	// banner lane (BOS-518) working in full and merely never resumes a
+	// restart-severed chat, which is the fail-safe direction. Making it mandatory
+	// would let one unwired seam silently switch the whole lane off, including
+	// the older trigger that does not need it.
+	ChatLiveness func(agentSessionID string) (lastSubstantiveOutputAt time.Time, lastOutputSeeded bool, ok bool)
 	// SessionResumable reports whether the owning session is still live (not
 	// archived, not stopped/closed). false ⇒ never fire.
 	SessionResumable func(ctx context.Context, agentSessionID string) bool
@@ -122,10 +150,12 @@ type timerSlot struct {
 	cancelled bool
 }
 
-// TransientResumer auto-resumes chats whose pane ends on a retryable API-failure
-// banner (BOS-518). It is edge-driven by status.Tracker's transient-API-error
-// transition hook and bounded on every axis: at most one armed timer per chat, at
-// most MaxAttempts deliveries per banner cycle, and a re-check of every gate
+// TransientResumer auto-resumes chats whose turn ended without finishing. It has
+// two triggers and ONE cycle: status.Tracker's transient-API-error transition
+// hook, for a pane that ends on a retryable API-failure banner (BOS-518), and
+// OnStreamSevered, for a chat whose proxied stream was cut by this daemon's own
+// death (BOS-890). Both are bounded on every axis: at most one armed timer per
+// chat, at most MaxAttempts deliveries per cycle, and a re-check of every gate
 // against LIVE state immediately before each delivery.
 //
 // The blast radius of a false positive is deliberately tiny: one extra prompt in
@@ -152,6 +182,13 @@ type TransientResumer struct {
 	// MaxGateRechecks). It is cleared by anything that ends or advances the cycle:
 	// a delivered attempt, a cleared marker, or Deregister.
 	rechecks map[string]int
+	// severedAt marks a cycle as RESTART-SOURCED (BOS-890) and stamps when this
+	// daemon learned the stream was cut. Its presence is what lets stillStalled
+	// substitute a pane-independent predicate for the pane marker on this one
+	// source; its absence keeps every banner-sourced cycle on the original
+	// MarkerSet gate byte for byte. Cleared wherever a cycle ends, so a chat can
+	// never carry a stale severance into a later banner incident.
+	severedAt map[string]time.Time
 }
 
 // NewTransientResumer builds a TransientResumer from its dependency seams,
@@ -178,6 +215,7 @@ func NewTransientResumer(deps TransientResumerDeps) *TransientResumer {
 		attempts:      map[string]int{},
 		lastAttemptAt: map[string]time.Time{},
 		rechecks:      map[string]int{},
+		severedAt:     map[string]time.Time{},
 	}
 }
 
@@ -199,6 +237,7 @@ func (r *TransientResumer) OnTransientAPIError(agentSessionID string) {
 		// refilled by elapsed quiet alone.
 		r.stop(agentSessionID)
 		r.clearRechecks(agentSessionID)
+		r.clearSevered(agentSessionID)
 		r.expireBudget(agentSessionID)
 		return
 	}
@@ -216,6 +255,155 @@ func (r *TransientResumer) OnTransientAPIError(agentSessionID string) {
 	r.arm(agentSessionID, r.settleWindow())
 }
 
+// OnStreamSevered is the RESTART-SOURCED trigger (BOS-890): the daemon has just
+// come back up and found, in the in-flight stream record the previous process
+// left behind, that this chat was mid-response when that process died. The
+// failover proxy is in-process, so the death cut the stream — but unlike a 5xx
+// the pane may show nothing at all, because the REPL was still waiting on bytes
+// that will never arrive. There is therefore no marker to flip and no poller
+// tick that will ever produce one; this call is the only evidence that exists.
+//
+// It joins the SAME cycle as the banner trigger — same settle window, same
+// gates, same attempt budget, same backoff ladder. The only difference is which
+// predicate answers "is this chat still stalled?" at fire time (see
+// stillStalled), because the pane marker cannot answer for a stall that never
+// rendered.
+//
+// That one difference changes how far the ladder is USUALLY walked, and the
+// distinction matters enough to state: the restart lane's predicate is "has this
+// chat produced substantive output since the severance?", and a prompt that
+// LANDS is itself substantive output. So a successful delivery is the very
+// evidence that ends the cycle, and the normal restart-lane outcome is exactly
+// ONE prompt — the ladder is never walked, because there is nothing left to
+// nag. The budget and the backoff rungs are reached only when a delivery did NOT
+// land (Deliver errored, so the pane never changed and the chat is still parked
+// where the severed stream left it), which is precisely when retrying is right.
+// The banner lane behaves differently for the same reason inverted: its marker
+// is re-stamped by the poller for as long as the banner is on screen, so a
+// delivery that does not fix anything leaves the gate satisfied and the ladder
+// runs to MaxAttempts.
+//
+// Callers should invoke this AFTER the startup pane-token re-adoption sweep, so
+// a pane that is about to reconnect on its own has already been given its token
+// back before the settle window starts running. Unlike the poller-bootstrap
+// ordering (which stillStalled no longer depends on), this one is a preference
+// rather than a correctness requirement: marking early would only mean the
+// settle window starts a few seconds sooner, and every gate is re-evaluated
+// against live state at fire time anyway.
+func (r *TransientResumer) OnStreamSevered(agentSessionID string) {
+	if agentSessionID == "" || !r.capable() {
+		return
+	}
+	// A restart is by definition a long quiet period, so any budget spent by the
+	// previous process's incident has expired; this refills it when it has.
+	r.expireBudget(agentSessionID)
+
+	// Stamp and claim in ONE lock acquisition (armStamped). Stamping first and
+	// arming after would leave a window in which a banner trigger claims the slot
+	// in between: this call would then bail, having already written a
+	// restart-severance stamp onto a cycle it does not own. That cycle would keep
+	// the stamp for its whole life and fall back to the pane-independent
+	// predicate the moment its marker cleared — loosening a gate for a chat that
+	// had real on-screen evidence, which is the wrong direction for a lane that
+	// must fail toward NOT resuming. Whoever claims the slot owns the predicate.
+	r.armStamped(agentSessionID, r.settleWindow(), r.deps.Now())
+}
+
+// stillStalled answers the first gate of every attempt: is this chat STILL in
+// the state that armed the cycle? It is the one place BOS-890 touches the gate
+// ladder, and it strictly widens nothing for the pre-existing source.
+//
+// For a banner-sourced cycle the answer is the live pane marker, exactly as
+// before — the marker is re-stamped by the poller every tick a banner is on
+// screen, so a set marker is current evidence, not a memory.
+//
+// A restart-sourced cycle has no such marker and never will, so it needs a
+// pane-independent substitute: has the poller OBSERVED any real output since it
+// restored this pane? Output it observed — the agent's own retry succeeding, a
+// human typing, another lane acting — ends the cycle untouched, which is what
+// keeps a chat that recovered under this daemon's watch from being prompted.
+//
+// Note the limit precisely, because it is narrower than "since the stream was
+// severed". The severance happened when the PREVIOUS daemon died, and the gap
+// between that death and this poller's Bootstrap is unbounded — a reboot, an
+// upgrade, an overnight stop. Anything that happened inside that gap left no
+// trace this process can read: Bootstrap captures the pane in whatever state it
+// is already in and seeds it, so a chat that recovered before we started
+// looking is indistinguishable from one still parked mid-turn, and it will
+// receive one resume prompt. That cost is chosen, not overlooked. The
+// alternative is the pre-fix behaviour, where the lane never fired at all for
+// this ordering — the bug this ticket exists to fix. One spurious prompt to an
+// already-recovered chat, telling it to continue from committed state, is the
+// deliberately accepted price of the lane firing at all.
+//
+// The evidence is ChatLiveness, not ChatState.LastOutputAt, because that stamp
+// answers a different question and gets this one wrong twice over:
+//
+//   - It advances on ANY pane repaint, a cosmetic spinner frame included, so one
+//     spinner redraw during the settle window would read as "recovered" and end
+//     the cycle before a single prompt was ever delivered.
+//   - After a restart it is not an observation at all. The poller's Bootstrap
+//     SEEDS every restored pane with a synthetic `now - IdleThreshold - 1s`, and
+//     bootstrap runs after the severance is marked — so on any workspace where
+//     the startup work between the two takes longer than that margin, the
+//     synthetic seed lands AFTER the severance stamp and every severed chat
+//     reads as recovered. The feature would no-op under exactly the load that
+//     makes a restart likely.
+//
+// Liveness fixes both: its stamp ignores spinner-only redraws, and lastOutputSeeded
+// says outright "this is still the bootstrap placeholder, nothing real has been
+// observed". A seeded stamp therefore reads as STILL STALLED whatever its value,
+// which removes the ordering dependency between the severance mark and the
+// poller's bootstrap entirely rather than leaving it as an unenforced contract.
+//
+// Unknown state (no seam, no liveness reading, a zero unseeded stamp) reads as
+// NOT stalled, so every uncertainty still falls toward leaving the chat alone.
+func (r *TransientResumer) stillStalled(agentSessionID string) bool {
+	if r.deps.MarkerSet(agentSessionID) {
+		return true
+	}
+	r.mu.Lock()
+	severedAt, restartSourced := r.severedAt[agentSessionID]
+	r.mu.Unlock()
+	if !restartSourced || severedAt.IsZero() {
+		return false
+	}
+	if r.deps.ChatLiveness == nil {
+		return false
+	}
+	lastSubstantiveAt, seeded, ok := r.deps.ChatLiveness(agentSessionID)
+	if !ok {
+		return false
+	}
+	if seeded {
+		// The poller has observed no substantive output since it restored this
+		// pane, so the only "output" on record is its own placeholder. A synthetic
+		// seed is not evidence of recovery, whichever side of severedAt it fell on.
+		//
+		// This says nothing about the window BEFORE Bootstrap ran, which is where
+		// the honest limit of this predicate sits: a chat that recovered between
+		// the previous daemon's death and this poller's first look is captured by
+		// Bootstrap already recovered, marked seeded all the same, and reads as
+		// still stalled here — so it gets one prompt. Accepted, per the trade-off
+		// spelled out on this function: the alternative was a lane that never
+		// fired for this ordering at all.
+		return true
+	}
+	if lastSubstantiveAt.IsZero() {
+		return false
+	}
+	return !lastSubstantiveAt.After(severedAt)
+}
+
+// clearSevered drops a chat's restart-severance stamp. Called wherever a cycle
+// ends, so the next cycle for that chat is classified by its own trigger rather
+// than inheriting this one's relaxed predicate.
+func (r *TransientResumer) clearSevered(agentSessionID string) {
+	r.mu.Lock()
+	delete(r.severedAt, agentSessionID)
+	r.mu.Unlock()
+}
+
 // Deregister cancels any pending timer and drops all in-memory state for a chat
 // that is going away (its row was deleted / the daemon is draining). Safe to call
 // for an unknown chat.
@@ -228,6 +416,15 @@ func (r *TransientResumer) Deregister(agentSessionID string) {
 // triggers cannot both arm; Schedule itself runs outside the lock because it may
 // take its own lock or start a goroutine.
 func (r *TransientResumer) arm(agentSessionID string, d time.Duration) {
+	r.armStamped(agentSessionID, d, time.Time{})
+}
+
+// armStamped is arm plus the restart-severance stamp, written under the SAME
+// lock acquisition that claims the pending slot. A zero severedStamp writes
+// nothing, which is every non-restart caller. Coupling the two is what makes
+// "the trigger that armed the cycle chooses the stalled-predicate" an invariant
+// rather than a race the callers happen to usually win.
+func (r *TransientResumer) armStamped(agentSessionID string, d time.Duration, severedStamp time.Time) {
 	slot := &timerSlot{}
 	r.mu.Lock()
 	if _, exists := r.pending[agentSessionID]; exists {
@@ -235,6 +432,9 @@ func (r *TransientResumer) arm(agentSessionID string, d time.Duration) {
 		return
 	}
 	r.pending[agentSessionID] = slot
+	if !severedStamp.IsZero() {
+		r.severedAt[agentSessionID] = severedStamp
+	}
 	r.mu.Unlock()
 
 	cancel := r.deps.Schedule(d, func() { r.attempt(agentSessionID, slot) })
@@ -293,6 +493,7 @@ func (r *TransientResumer) reset(agentSessionID string) {
 	delete(r.attempts, agentSessionID)
 	delete(r.lastAttemptAt, agentSessionID)
 	delete(r.rechecks, agentSessionID)
+	delete(r.severedAt, agentSessionID)
 	r.mu.Unlock()
 }
 
@@ -318,6 +519,7 @@ func (r *TransientResumer) gateNotYet(log zerolog.Logger, agentSessionID, reason
 	n := r.rechecks[agentSessionID] + 1
 	if n > MaxGateRechecks {
 		delete(r.rechecks, agentSessionID)
+		delete(r.severedAt, agentSessionID)
 		r.mu.Unlock()
 		log.Debug().Str("reason", reason).Int("max_rechecks", MaxGateRechecks).
 			Msg("auto-resume: gate still unsatisfied after max re-checks; abandoning cycle")
@@ -360,11 +562,15 @@ func (r *TransientResumer) attempt(agentSessionID string, slot *timerSlot) {
 	}
 	log := r.deps.Logger.With().Str("agent_session_id", agentSessionID).Logger()
 
-	if !r.deps.MarkerSet(agentSessionID) {
+	if !r.stillStalled(agentSessionID) {
 		// Recovered while we waited — the common case, and the reason the settle
-		// window exists. Treat it exactly like the clear transition.
-		log.Debug().Msg("auto-resume: transient API banner cleared before the attempt; abandoning cycle")
+		// window exists. Treat it exactly like the clear transition. For a
+		// banner-sourced cycle this IS the marker check it always was; for a
+		// restart-sourced one it is the pane-independent substitute (see
+		// stillStalled), and either way "recovered" ends the cycle silently.
+		log.Debug().Msg("auto-resume: chat is no longer stalled before the attempt; abandoning cycle")
 		r.clearRechecks(agentSessionID)
+		r.clearSevered(agentSessionID)
 		r.expireBudget(agentSessionID)
 		return
 	}
@@ -387,6 +593,7 @@ func (r *TransientResumer) attempt(agentSessionID string, slot *timerSlot) {
 		// gates this one is genuinely terminal: re-checking would poll forever.
 		log.Debug().Msg("auto-resume: session is not resumable; abandoning cycle")
 		r.clearRechecks(agentSessionID)
+		r.clearSevered(agentSessionID)
 		return
 	}
 	st, lastOutputAt, ok := r.deps.ChatState(agentSessionID)
@@ -426,6 +633,7 @@ func (r *TransientResumer) attempt(agentSessionID string, slot *timerSlot) {
 		// here means state drifted. Go quiet loudly.
 		log.Warn().Int("max_attempts", MaxAttempts).
 			Msg("auto-resume: attempt budget already exhausted; not resuming")
+		r.clearSevered(agentSessionID)
 		return
 	}
 
@@ -448,6 +656,7 @@ func (r *TransientResumer) attempt(agentSessionID string, slot *timerSlot) {
 	}
 	// Terminal: no more timers. This log IS the escalation signal — a chat that
 	// burned every attempt needs a human, and nothing else will say so.
+	r.clearSevered(agentSessionID)
 	log.Warn().Int("attempt", n).Int("max_attempts", MaxAttempts).
 		Msg("auto-resume: max attempts reached; chat needs manual attention")
 }

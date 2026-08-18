@@ -115,6 +115,19 @@
 //     Heredoc payloads are masked, while command substitutions are re-entered because they execute
 //     shell commands.
 //
+// (h) THE SHELL MUST NOT WRITE `node` EVAL SOURCE. A value the shell expands into a `-e`/`--eval`/
+//     `-p`/`--print` argument is COMPILED, so any byte of it can change the program — the failure
+//     that produced three separate review findings on one PR, each fix escaping one more character.
+//     Two conditions, one rule: the eval argument must be ONE fully single-quoted shell literal,
+//     and a `'file://'` concatenation must not build an import specifier inside it (relative paths
+//     resolve as a BARE PACKAGE, and `#`/`?`/space truncate or mis-encode). The accepted form —
+//     value through an env assignment prefix, single-quoted source, specifier via
+//     `pathToFileURL(...).href` — is spelled out on `findUnsafeNodeEval`. Passing a path as an ENTRY
+//     argument (`node "$DIR/mod.mjs"`) is unaffected: the defect is per-line, not per-variable.
+//     ACCEPTED FALSE NEGATIVE, same direction as (f): this walks FENCED BLOCKS, so the same defect
+//     written as an inline code span in prose is invisible here. `check-skill-shell.test.mjs` carries
+//     a payload-wide `file://`-concatenation assertion over both roots to cover exactly that gap.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -3554,6 +3567,158 @@ export function findMultiGlobRemovals(body) {
   return findings
 }
 
+// Node compiles the argument of each of these as JavaScript, so every byte the SHELL places there is
+// program text. `-pe` is the one bundled spelling node accepts (`-ep` is rejected outright).
+const NODE_EVAL_OPTIONS = new Set(['-e', '--eval', '-p', '--print', '-pe'])
+const NODE_COMMANDS = new Set(['node', 'nodejs'])
+
+// True only for a word the shell hands to node as ONE single-quoted literal, which is the only form
+// that guarantees no external byte reaches the JavaScript source. A literal left open at end of line
+// counts: a single quote suppresses every expansion right through the newline, so the continuation
+// cannot interpolate either. Anything else — double quotes, no quotes, or single quotes spliced
+// around an expansion (`'a'"$X"'b'`) — lets the shell choose part of the program.
+function isFullySingleQuotedWord(raw) {
+  if (!raw.startsWith("'")) return false
+  const close = raw.indexOf("'", 1)
+  return close === -1 || close === raw.length - 1
+}
+
+// The bare-specifier trap, in its three spellings. `'file://' + dir` builds a URL whose authority is
+// whatever `dir` starts with when `dir` is relative, so Node reads it as a bare package name and
+// fails with ERR_MODULE_NOT_FOUND / ERR_INVALID_FILE_URL_HOST — and an absolute path carrying `#`,
+// `?` or a space silently truncates or mis-encodes instead. `pathToFileURL()` percent-encodes and
+// absolutises, so it has no such failure mode.
+// Exported so the payload-wide regression assertion in check-skill-shell.test.mjs bans the SAME
+// three spellings this rule knows. Two hand-kept copies would drift, and the copy that drifts is the
+// one covering the prose code spans this fenced-block walker cannot reach (see header rule (h)).
+export const FILE_URL_CONCAT_PATTERNS = [
+  /(['"])file:\/\/[^'"\n]*\1\s*\+/,
+  /\+\s*(['"])file:\/\/[^'"\n]*\1/,
+  /`file:\/\/[^`]*\$\{/,
+]
+
+function hasFileUrlConcat(source) {
+  return FILE_URL_CONCAT_PATTERNS.some((pattern) => pattern.test(source))
+}
+
+// True when a word OPENS a quote it never closes, so the value continues on the following physical
+// line. `node -e '` + newline + JavaScript + newline + `'` is the common multi-line eval spelling,
+// and the tokenizer hands the opener back as a word of its own — scanning only that word sees a lone
+// quote and finds nothing.
+function quoteLeftOpen(raw) {
+  const quote = raw[0]
+  if (quote !== "'" && quote !== '"') return false
+  return raw.indexOf(quote, 1) === -1
+}
+
+/**
+ * Report shell interpolation into `node` eval source as [{ lineOffset, option, reasons }], where
+ * `reasons` holds `unquoted-eval` and/or `file-url-concat` in that order, and `lineOffset` is the
+ * 0-based index of the first physical line of the (continuation-joined) logical line within `body`.
+ *
+ * Two conditions, one rule, because they are one class: a value interpolated into `node -e` source
+ * is COMPILED, so any byte of it — an apostrophe, a quote, a path segment — can change the program,
+ * and its most common instance is the ESM specifier built by concatenating `'file://'`. Fixing one
+ * without the other is what kept the class alive across three repair rounds on a single PR, each fix
+ * escaping one more character rather than removing the interpolation.
+ *
+ * The one accepted form, proven at boss-review/SKILL.md:
+ *
+ *   X="$X" node --input-type=module -e 'import { pathToFileURL } from "node:url"
+ *                                       const m = await import(pathToFileURL(process.env.X + "/m.mjs").href)'
+ *
+ * — the value crosses through an env assignment PREFIX, the `-e` argument is a fully single-quoted
+ * shell literal so nothing is expanded into it, and the specifier is resolved by `pathToFileURL`.
+ * Passing a path as an ENTRY argument (`node "$DIR/mod.mjs" --flag`) is unaffected and not reported:
+ * Node resolves an entry path against the cwd, so the defect is per-line, not per-variable.
+ */
+export function findUnsafeNodeEval(body) {
+  const findings = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset, logicalText) => {
+    let segment = []
+    const segments = []
+    for (const token of tokens) {
+      if (token.operator) {
+        segments.push(segment)
+        segment = []
+        continue
+      }
+      segment.push(token)
+    }
+    segments.push(segment)
+
+    for (const seg of segments) {
+      const at = commandWordIndex(seg)
+      if (at === -1) continue
+      // Quote removal before the basename split, so `"/usr/local/bin/node"` is still node.
+      const command = removeQuotes(seg[at].raw).split('/').pop()
+      if (!NODE_COMMANDS.has(command)) continue
+
+      for (let i = at + 1; i < seg.length; i++) {
+        const raw = seg[i].raw
+        const word = removeQuotes(raw)
+        let option = null
+        let rawSource = null
+
+        // `--eval=SOURCE` carries its source in the same word; the FIRST `=` is the separator, so a
+        // source containing `=` survives intact.
+        const inline = /^(--eval|--print)=/.exec(word)
+        if (inline) {
+          option = inline[1]
+          // gate-region-ok: not a marker region — this drops a known `--eval=` / `--print=` prefix off one shell word. `word` is `raw` with only quote characters removed, so the `=` the regex above just matched is still present in `raw` and `indexOf` cannot return -1 on this arm.
+          rawSource = raw.slice(raw.indexOf('=') + 1)
+        } else if (NODE_EVAL_OPTIONS.has(word)) {
+          // A trailing `-e` with nothing after it evaluates nothing, so there is no source to judge.
+          if (i + 1 >= seg.length) continue
+          option = word
+          rawSource = seg[i + 1].raw
+          i += 1
+        } else {
+          continue
+        }
+
+        const reasons = []
+        if (!isFullySingleQuotedWord(rawSource)) reasons.push('unquoted-eval')
+        // Shell quote removal only, so the JavaScript's OWN quotes survive: the outer `"` of
+        // `-e "import('file://'+x)"` goes, the inner `'` around the specifier stays. When the source
+        // opens a quote it does not close, its JavaScript lives on the following physical lines as
+        // separate words, so the whole continuation-joined logical line is what has to be scanned.
+        const source = quoteLeftOpen(rawSource) ? logicalText : removeQuotes(rawSource)
+        if (hasFileUrlConcat(source)) reasons.push('file-url-concat')
+        if (reasons.length > 0) findings.push({ lineOffset, option, reasons })
+      }
+    }
+
+    // Then the command lists nested inside substitutions, which the tokenizer holds as opaque words —
+    // `CONFIGURED=$(node -e "…")` reaches this rule only here. Reported against the line the
+    // substitution opens on, since that is where a reader must look.
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findUnsafeNodeEval(inner)) findings.push({ ...nested, lineOffset })
+      }
+    }
+  }
+
+  // A word still open at end of line — an unbalanced substitution, a quoted string, or an unclosed
+  // `${…}` — means the command and its arguments span the newline. Hold the tokens until it closes
+  // so a multi-line `-e '…'` source is judged whole, and report against the line the command sits on.
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(text, state)
+    if (pending) {
+      pending.tokens.push(...tokens)
+      pending.text += `\n${text}`
+    } else pending = { tokens, lineOffset, text }
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    analyze(pending.tokens, pending.lineOffset, pending.text)
+    pending = null
+  }
+  if (pending) analyze(pending.tokens, pending.lineOffset, pending.text)
+  return findings
+}
+
 // True when a backtick, `$(`, or process substitution remains active after shell quoting.
 // Single/ANSI-C quotes and an escaping backslash make those bytes literal. Double quotes still
 // allow backticks and `$()`, but leave `<()` / `>()` as literal text.
@@ -4113,8 +4278,8 @@ function makeBashRunner(tmpDir) {
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
  * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `inert-guard` /
- * `gh-body-interpolation` / `gh-body-file-interpolation`, plus `missing-bash` when the gate fails
- * closed.
+ * `gh-body-interpolation` / `gh-body-file-interpolation` / `node-eval-interpolation`, plus
+ * `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -4185,6 +4350,22 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + fileWrite.lineOffset,
             kind: 'gh-body-file-interpolation',
             message: `body file ${fileLabel} is written with a heredoc; use a delimiter-free literal write before -F body=@"${fileLabel}"`,
+          })
+        }
+
+        for (const nodeEval of findUnsafeNodeEval(block.body)) {
+          const because = nodeEval.reasons
+            .map((reason) =>
+              reason === 'unquoted-eval'
+                ? `its argument is not a single-quoted shell literal, so the shell compiles its own bytes as JavaScript`
+                : `it concatenates 'file://' into an import specifier, which resolves a relative path as a bare package`,
+            )
+            .join('; ')
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + nodeEval.lineOffset,
+            kind: 'node-eval-interpolation',
+            message: `node ${nodeEval.option} is unsafe: ${because} — pass the value through an env assignment prefix, keep the ${nodeEval.option} argument a fully single-quoted shell literal, and resolve specifiers with pathToFileURL(process.env.X + "/m.mjs").href`,
           })
         }
 

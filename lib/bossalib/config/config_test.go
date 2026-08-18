@@ -1188,6 +1188,62 @@ func TestManagedAccountsConfig_DefaultCooldown(t *testing.T) {
 	})
 }
 
+func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
+	t.Run("returns 15s default when unset", func(t *testing.T) {
+		c := ManagedAccountsConfig{}
+		got := c.ProxyDrainTimeout()
+		if got != 15*time.Second {
+			t.Errorf("ProxyDrainTimeout() = %v, want %v", got, 15*time.Second)
+		}
+	})
+	t.Run("returns configured value when it shortens the drain", func(t *testing.T) {
+		c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: 5}
+		got := c.ProxyDrainTimeout()
+		if got != 5*time.Second {
+			t.Errorf("ProxyDrainTimeout() = %v, want %v", got, 5*time.Second)
+		}
+	})
+	// A configured value LONGER than the cap is the dangerous direction: it pushes
+	// bossd's worst-case shutdown past daemon.LifecycleShutdownTimeout, where the
+	// CLI reports a false timeout and launchd/systemd SIGKILL past the deferred
+	// cleanup — the exact failure the drain exists to avoid, reachable by editing
+	// one JSON key. Clamping keeps the ceiling arithmetic true for every
+	// configuration rather than only for the default.
+	t.Run("clamps a value that would outlive the shutdown ceiling", func(t *testing.T) {
+		for _, v := range []int{16, 45, 120, 1 << 20} {
+			c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: v}
+			if got := c.ProxyDrainTimeout(); got != maxProxyDrainTimeout {
+				t.Errorf("ProxyDrainTimeout() with %d = %v, want the %v cap", v, got, maxProxyDrainTimeout)
+			}
+		}
+	})
+	t.Run("zero and negative fall back to the default", func(t *testing.T) {
+		for _, v := range []int{0, -1} {
+			c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: v}
+			if got := c.ProxyDrainTimeout(); got != 15*time.Second {
+				t.Errorf("ProxyDrainTimeout() with %d = %v, want %v", v, got, 15*time.Second)
+			}
+		}
+	})
+	t.Run("parses proxy_drain_timeout_seconds from the managed_accounts block", func(t *testing.T) {
+		var s Settings
+		raw := `{"managed_accounts":{"proxy_drain_timeout_seconds":45}}`
+		if err := json.Unmarshal([]byte(raw), &s); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if s.ManagedAccounts.ProxyDrainTimeoutSeconds != 45 {
+			t.Errorf("ProxyDrainTimeoutSeconds = %d, want 45", s.ManagedAccounts.ProxyDrainTimeoutSeconds)
+		}
+		// The raw field keeps what the file said; the accessor is where the cap
+		// applies. This is the end-to-end version of the clamp subtest above: a
+		// real settings file asking for 45s gets a serviceable drain, not an
+		// 84s shutdown that outlives every ceiling above bossd.
+		if got := s.ManagedAccounts.ProxyDrainTimeout(); got != maxProxyDrainTimeout {
+			t.Errorf("ProxyDrainTimeout() = %v, want the %v cap", got, maxProxyDrainTimeout)
+		}
+	})
+}
+
 func TestManagedAccountsConfig_ManagedAccountsEnabled(t *testing.T) {
 	t.Run("nil defaults to true", func(t *testing.T) {
 		c := ManagedAccountsConfig{}

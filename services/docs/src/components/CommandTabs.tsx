@@ -23,7 +23,20 @@ export type CommandTabsProps = {
   chat?: string
   /** The `boss` CLI invocation, e.g. `boss notes ls`. */
   cli?: string
-  /** Bare MCP tool name as registered in `lib/bossalib/bossmcp/manifest.go`. */
+  /**
+   * Bare MCP tool name as registered in the `lib/bossalib/bossmcp` package (the
+   * tools are registered across `tools.go`, `tools_mutating.go` and
+   * `tools_destructive.go` — `manifest.go` itself registers none).
+   *
+   * `scripts/check-docs-mcp-props.mjs` gates this prop in `make lint`, but
+   * presence in the tool set is **necessary, not sufficient**: the gate only
+   * proves the name exists. It cannot tell whether the named tool does what the
+   * `cli` example beside it does, and a real tool with the wrong parameters
+   * passes it while still documenting a wrong equivalence. Before adding or
+   * changing this prop, read the named tool's parameters and confirm they
+   * actually express the CLI command's effect — a green gate is not an
+   * endorsement of the equivalence.
+   */
   mcp?: string
 }
 

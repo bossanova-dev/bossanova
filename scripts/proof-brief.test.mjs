@@ -12,6 +12,7 @@ import {
   scopeRequiredProof,
   validateBrief,
 } from './proof-brief.mjs'
+import { precedes, region } from './gate-region-lib.mjs'
 
 // BRIEF_SCHEMA is passed verbatim to the Anthropic structured-output API
 // (output_config.format.schema), which is strict: it rejects `maxItems`/
@@ -886,7 +887,7 @@ test('prioritizeDiff moves code sections ahead of docs sections', () => {
     '',
   ].join('\n')
   const out = prioritizeDiff(diff)
-  assert.ok(out.indexOf('CODE_TOKEN') < out.indexOf('DOCS_TOKEN'), out)
+  assert.ok(precedes(out, 'CODE_TOKEN', 'DOCS_TOKEN'), out)
 })
 
 test('buildBriefPrompt always lists every changed file even when the diff is truncated', () => {
@@ -941,8 +942,7 @@ test('buildBriefPrompt: bs-plan-shaped PR keeps the code hunk inside the 120KB w
   assert.ok(prompt.includes('...[diff truncated]'), 'diff body must be truncated')
   // …and the code token survived because prioritizeDiff hoisted it ahead of docs.
   assert.ok(
-    prompt.indexOf('CODE_TOKEN_ZZZ') !== -1 &&
-      prompt.indexOf('CODE_TOKEN_ZZZ') < prompt.indexOf('...[diff truncated]'),
+    precedes(prompt, 'CODE_TOKEN_ZZZ', '...[diff truncated]'),
     'code hunk must sit inside the retained (pre-truncation) window',
   )
   // Every low-signal path still appears in the never-truncated inventory.
@@ -1038,7 +1038,7 @@ test('buildBriefPrompt: excludeLowSignal drops docs from the body but inventory 
     fixtures: 'F',
     excludeLowSignal: true,
   })
-  const body = prompt.slice(prompt.indexOf('## Diff'))
+  const body = region(prompt, '## Diff')
   assert.ok(!body.includes('DOCS_TOKEN'), 'docs section must be excluded from the diff body')
   assert.ok(body.includes('CODE_TOKEN'), 'code section must remain in the diff body')
   // The inventory is built from changedFiles, independent of the body.
@@ -1062,11 +1062,11 @@ test('buildBriefPrompt: scenarioAnchors form a secondary block after the require
   assert.ok(withBoth.includes('- READY'))
   // Required proof stays PRIMARY (first), anchors are SECONDARY, both precede the inventory.
   assert.ok(
-    withBoth.indexOf('REQUIRES demonstrating') < withBoth.indexOf('committed proof scenario'),
+    precedes(withBoth, 'REQUIRES demonstrating', 'committed proof scenario'),
     'scenario anchors must come after the required-proof block',
   )
   assert.ok(
-    withBoth.indexOf('committed proof scenario') < withBoth.indexOf('## Changed files'),
+    precedes(withBoth, 'committed proof scenario', '## Changed files'),
     'scenario anchors must precede the changed-files inventory',
   )
 })
@@ -1356,7 +1356,7 @@ test('buildBriefPrompt: includes the required block only when bullets present', 
   assert.ok(withReq.includes('REQUIRES demonstrating'))
   assert.ok(withReq.includes('- Show the toggle'))
   // Required block comes before the changed-files inventory.
-  assert.ok(withReq.indexOf('REQUIRES demonstrating') < withReq.indexOf('## Changed files'))
+  assert.ok(precedes(withReq, 'REQUIRES demonstrating', '## Changed files'))
   // Existing sections are preserved.
   assert.ok(withReq.includes('## Available routes'))
   assert.ok(withReq.includes('## Diff'))
@@ -1427,7 +1427,7 @@ test('generateBriefFromDiff: injected planRequiredProof leads the prompt AND set
   assert.ok(seenContent.includes('REQUIRES demonstrating'), 'required block present in prompt')
   assert.ok(seenContent.includes('- Show the toggle'))
   assert.ok(
-    seenContent.indexOf('REQUIRES demonstrating') < seenContent.indexOf('## Changed files'),
+    precedes(seenContent, 'REQUIRES demonstrating', '## Changed files'),
     'required block leads the prompt',
   )
   assert.deepEqual(raw.planRequiredProof, ['Show the toggle', 'Open settings'])

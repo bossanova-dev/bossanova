@@ -624,21 +624,22 @@ var (
 	agentTranscriptAbsentOrEmpty = agent.TranscriptAbsentOrEmpty
 )
 
-// updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
-// If the session was never used (no real user message), it deletes the orphan record.
+// updateChatTitle reads the Claude JSONL file and backfills the chat title via
+// RPC, but only over a placeholder title — see the guard inside. If the session
+// was never used (no real user message), it deletes the orphan record instead.
 func (m AttachModel) updateChatTitle() tea.Cmd {
 	if m.agentSessionID == "" || m.session == nil {
 		return nil
 	}
 	// Against a remote daemon the worktree — and the transcript inside it — are
 	// on the other machine, so both reads below would answer about a local path
-	// that does not exist. The title backfill would silently no-op forever
-	// (harmless in itself: the remote daemon's tmux poller keeps refreshing
-	// titles server-side, and only ever over "" / "New chat", so a user-set
-	// title is never at risk). The orphan reap is the dangerous one: an absent
-	// local transcript reads as "this chat was never used" and would DELETE the
-	// record of a perfectly live remote chat. Skip both; a nil tea.Cmd is
-	// compacted away by tea.Batch and tea.Sequence.
+	// that does not exist. The title backfill would silently no-op forever,
+	// which is harmless: it only ever fills in a placeholder title (see the
+	// stored-title guard below), and the remote daemon's own tmux poller keeps
+	// refreshing titles server-side anyway. The orphan reap is the dangerous
+	// one: an absent local transcript reads as "this chat was never used" and
+	// would DELETE the record of a perfectly live remote chat. Skip both; a nil
+	// tea.Cmd is compacted away by tea.Batch and tea.Sequence.
 	if isRemoteHost() {
 		return nil
 	}
@@ -647,7 +648,37 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 	return func() tea.Msg {
 		title := agentChatTitle(worktreePath, agentSessionID)
 		if title != "" {
-			_ = m.client.UpdateChatTitle(m.ctx, agentSessionID, title)
+			// title here is the transcript's FIRST USER MESSAGE (agent.ChatTitle
+			// -> parseSessionMeta), not a name anyone chose, so it may only ever
+			// fill in a placeholder — the rule backfillTitles and the daemon
+			// poller's shouldRefreshChatTitle already enforce, and which this
+			// writer used to be the one hole in (BOS-869).
+			//
+			// The stored title is re-read here rather than captured at attach
+			// time because an attach lasts hours and the chat can be renamed
+			// inside that window: by the agent in this very pane through the MCP
+			// update_chat_title tool, or by `boss chat rename` / the web UI from
+			// somewhere else. A captured title would be stale exactly when it
+			// matters.
+			//
+			// Fail CLOSED — a read error or no matching chat skips the write.
+			// Skipping is free (the daemon poller and the chat picker both still
+			// backfill a placeholder later); clobbering destroys a name the user
+			// typed. Reading on m.ctx, the same context the write it gates would
+			// use, makes that free: a dead context can only suppress a write that
+			// could not have landed anyway.
+			write := false
+			if chats, err := m.client.ListChats(m.ctx, m.sessionID); err == nil {
+				for _, c := range chats {
+					if c.GetAgentSessionId() == agentSessionID {
+						write = isPlaceholderChatTitle(c.GetTitle())
+						break
+					}
+				}
+			}
+			if write {
+				_ = m.client.UpdateChatTitle(m.ctx, agentSessionID, title)
+			}
 		} else if agentTranscriptAbsentOrEmpty(worktreePath, agentSessionID) {
 			// Reap a genuinely-unused orphan ONLY when its transcript is
 			// confirmed absent or zero-length. A non-empty transcript whose

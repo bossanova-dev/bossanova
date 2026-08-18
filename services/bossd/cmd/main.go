@@ -57,6 +57,7 @@ import (
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/inflight"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/proofenvkeyring"
@@ -3431,6 +3432,26 @@ func run(opts runOpts) error {
 			}
 			return entry.Status, entry.LastOutputAt, true
 		},
+		ChatLiveness: func(agentSessionID string) (time.Time, bool, bool) {
+			// The restart lane's stalled predicate needs a stamp that a spinner frame
+			// does not move and a bootstrap seed does not fake. Entry.LastOutputAt is
+			// neither: it advances on any repaint, and after a restart it is the
+			// poller's synthetic seed. Tracker.Liveness (BOS-805) carries both the
+			// spinner-insensitive stamp and the flag that discloses the seed, which is
+			// exactly the pair the resumer gates on.
+			//
+			// spinnerPresent is discarded on purpose: it is a "working right now"
+			// reading with its own staleness gate, and the resumer's question is about
+			// the past ("has anything real happened since the severance?"), which the
+			// substantive stamp answers on its own.
+			_, lastSubstantiveAt, seeded := chatStatusTracker.Liveness(agentSessionID)
+			if lastSubstantiveAt.IsZero() && !seeded {
+				// No reading at all — the poller has never observed this pane. Report
+				// ok=false so the resumer's unknown ⇒ never-fire rule applies.
+				return time.Time{}, false, false
+			}
+			return lastSubstantiveAt, seeded, true
+		},
 		SessionResumable: func(ctx context.Context, agentSessionID string) bool {
 			chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
 			if err != nil || chat == nil {
@@ -3591,15 +3612,67 @@ func run(opts runOpts) error {
 	// leave the proxy unbound — proxyPort stays 0 and no registrar is wired, so
 	// injection is disabled and every session falls back to the direct
 	// api.anthropic.com path.
-	var proxySrv *server.ProxyServer
-	if ps, perr := server.NewProxyServer(server.ProxyServerConfig{
+	//
+	// Read the PREVIOUS daemon's in-flight stream record before the new proxy
+	// starts writing its own (BOS-890). The ordering is load-bearing in both
+	// directions: reading later would race the fresh proxy's first Enter, and
+	// the read CLEARS the file, so a later read would delete entries this
+	// process had already recorded. The ids are held in memory and only acted on
+	// after Bootstrap's pane-token re-adoption sweep, further below.
+	inflightPath := inflight.Path(appDataDir)
+	severedStreamIDs, severedErr := inflight.ReadAndClear(inflightPath)
+	if severedErr != nil {
+		log.Warn().Err(severedErr).Msg("in-flight stream record: unreadable; severed streams from the previous exit cannot be recovered")
+	}
+	// The read above DELETED the record, and the ids now live only in this local.
+	// Every early return between here and the MarkSevered call below would
+	// therefore lose them permanently — one such path already exists (the cron
+	// scheduler's fatal Start error), and nothing stops another being added. Put
+	// the ids back on disk instead, so the next startup recovers what this one
+	// never got to act on. severedStreamIDs is cleared at the consumption point,
+	// so on the normal path this defer is a no-op at daemon shutdown.
+	defer func() {
+		if len(severedStreamIDs) == 0 {
+			return
+		}
+		if err := inflight.Restore(inflightPath, severedStreamIDs); err != nil {
+			log.Warn().Err(err).Int("streams", len(severedStreamIDs)).
+				Msg("in-flight stream record: could not re-persist unconsumed severed streams; they are lost")
+			return
+		}
+		log.Warn().Int("streams", len(severedStreamIDs)).
+			Msg("in-flight stream record: startup ended before severed streams were queued; re-persisted for the next start")
+	}()
+	streamRecorder := inflight.NewRecorder(inflightPath, log.Logger)
+
+	proxyCfg := server.ProxyServerConfig{
 		Failover: lifecycle,
 		Logger:   log.Logger,
 		// Bind a FIXED loopback port so a frozen ANTHROPIC_BASE_URL baked into a
 		// live tmux pane survives a daemon restart (BOS-409). Falls back to an
 		// ephemeral port on a collision; 0/unset defaults to 44127.
 		Port: settings.ManagedAccounts.FailoverProxyPort(),
-	}); perr != nil {
+	}
+	// Assigned only when non-nil, to keep the interface value honest. NewRecorder
+	// yields a nil *Recorder when there is no app-data path, and assigning a nil
+	// POINTER into the StreamRecorder INTERFACE field produces a typed nil —
+	// non-nil as an interface value, so every `p.streams != nil` check inside the
+	// proxy would pass.
+	//
+	// No observable behaviour changed when this guard was added, and that is worth
+	// saying plainly: every method on *inflight.Recorder (Enter, Leave, Seal,
+	// Snapshot) opens with its own `if r == nil` no-op, so the typed nil was
+	// already harmless at the only call sites there are. The point of the guard is
+	// that the proxy's own nil check now means what it says, leaving the Recorder's
+	// nil-receiver guards as a SECOND line of defence rather than the only one.
+	// Neither layer is redundant — do not delete the other one on the strength of
+	// this comment.
+	if streamRecorder != nil {
+		proxyCfg.Streams = streamRecorder
+	}
+
+	var proxySrv *server.ProxyServer
+	if ps, perr := server.NewProxyServer(proxyCfg); perr != nil {
 		log.Warn().Err(perr).Msg("failover proxy server construction failed; proxy unbound, sessions use the direct path")
 	} else if lerr := ps.Listen(); lerr != nil {
 		log.Warn().Err(lerr).Msg("failover proxy server listen failed; proxy unbound, sessions use the direct path")
@@ -3645,6 +3718,37 @@ func run(opts runOpts) error {
 		opts.onBootstrapStart()
 	}
 	lifecycle.Bootstrap(pollerCtx)
+
+	// Now — and only now — act on the streams the previous daemon's death
+	// severed (BOS-890). Bootstrap has just re-adopted every surviving pane's
+	// frozen proxy token (BOS-481), so a pane that can reconnect on its own has
+	// already been handed back the means to do it; marking earlier would start
+	// the settle window against chats that were never really stuck. Marking is
+	// only a trigger: each chat still has to pass the resumer's full gate ladder
+	// — settle window, auth deference, session-resumable, IDLE, attempt budget —
+	// a settle window from now, against live state.
+	//
+	// This placement is NOT an ordering contract against the tmux poller's
+	// Bootstrap further below, and deliberately so. It used to be one implicitly:
+	// the resumer compared the tracker's last-output stamp against the severance
+	// instant, and Bootstrap seeds every restored pane with `now - IdleThreshold
+	// - 1s` — a margin of ~6 seconds that the startup work between here and there
+	// (orphan advancement, headless resume, a display backfill that recomputes
+	// every active session under a 30s timeout) blows through on any busy
+	// workspace, at which point the seed lands after the severance and every
+	// severed chat reads as recovered. The resumer now gates on
+	// Tracker.Liveness's seeded flag instead, which says "the poller has observed
+	// nothing real here yet" regardless of what the placeholder timestamp says.
+	// The dependency is removed rather than documented-and-untested, which is why
+	// there is no ordering assertion here to keep honest.
+	if transientResumer != nil {
+		inflight.MarkSevered(log.Logger, severedStreamIDs, transientResumer.OnStreamSevered)
+	}
+	// Consumed (or unconsumable — with no resumer wired nothing will ever act on
+	// them, and re-persisting would hand the next daemon an ever-growing backlog
+	// of stale claims, which is exactly what ReadAndClear's one-shot rule
+	// forbids). Either way the fail-safe re-persist above must not fire.
+	severedStreamIDs = nil
 
 	// Advance sessions stuck in ImplementingPlan whose driving workflows are no
 	// longer running. Must run after FailOrphaned (above) so the subquery sees
@@ -4007,10 +4111,29 @@ func run(opts runOpts) error {
 	}
 	cronStopCancel()
 
-	// Stop plugin host.
-	if err := pluginHost.Stop(); err != nil {
-		log.Warn().Err(err).Msg("plugin host stop error")
+	// Drain the failover proxy, THEN stop the plugin host (BOS-888). Agents reach
+	// the model only through the proxy, so stopping plugins first tears down the
+	// agent processes while their model streams are still open. The proxy gets its
+	// own budget rather than the shared 5s ctx created below — an ordinary Claude
+	// turn outlives 5s by minutes. A nil interface, not a typed nil, when the
+	// proxy never came up: it is constructed and bound unconditionally above and
+	// only its injection is gated on managed accounts, so proxySrv is nil exactly
+	// when construction or Listen failed.
+	//
+	// Known cost: srv.Shutdown is now up to the drain budget later, so the gRPC
+	// socket keeps accepting for that window in a daemon whose poller,
+	// dispatcher and orchestrator are already cancelled above. A `boss` command
+	// that connects mid-drain reaches a half-shut-down daemon rather than
+	// failing fast. The window was already a few seconds before BOS-888 and the
+	// drain budget is deliberately sized (config.defaultProxyDrainTimeout) to
+	// stay well inside daemon.LifecycleShutdownTimeout, which is what bounds it.
+	// Closing the gRPC listener first would narrow the window but would cut
+	// in-flight CreateSession calls earlier than today, so it is not done here.
+	var drainer proxyDrainer
+	if proxySrv != nil {
+		drainer = proxySrv
 	}
+	drainProxyThenStopPlugins(log.Logger, drainer, pluginHost, settings.ManagedAccounts.ProxyDrainTimeout())
 	pluginBus.Close()
 
 	// Graceful shutdown with 5-second timeout.
@@ -4026,21 +4149,19 @@ func run(opts runOpts) error {
 		log.Warn().Err(err).Msg("hook server shutdown error")
 	}
 
-	if proxySrv != nil {
-		if err := proxySrv.Shutdown(ctx); err != nil {
-			log.Warn().Err(err).Msg("failover proxy shutdown error")
-		}
-	}
-
 	// Join any background draft-PR creates StartSession spawned (BOS-540).
 	// They run on a context deliberately detached from the request that started
 	// them, so nothing else cancels them; this is what keeps an interrupted
 	// create from being stranded *silently*. It runs AFTER srv.Shutdown so the
 	// set it snapshots is final — draining earlier would miss a create spawned
 	// by a CreateSession still in flight — and after the other Shutdown calls
-	// because it owns its own budget: they share the single 5s ctx above, and a
-	// drain wedged in between would hand them an already-expired one, turning
-	// every graceful shutdown into an abrupt listener close. The bound is short
+	// because it owns its own budget: srv and hookSrv share the single 5s ctx
+	// above, and a drain wedged in between would hand them an already-expired
+	// one, turning every graceful shutdown into an abrupt listener close. The
+	// failover proxy's drain is the one long wait that is deliberately NOT in
+	// that group (BOS-888): it runs further up, before the plugin host stops and
+	// before the 5s ctx is created at all, on a budget of its own, so it cannot
+	// eat anyone else's. The bound is short
 	// because a create can legitimately take ~a minute: the point is not to
 	// finish it but to name the sessions we are walking away from, whose branch
 	// and placeholder commit survive on the remote for the next reconcile pass

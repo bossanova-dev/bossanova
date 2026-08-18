@@ -273,12 +273,17 @@ type processSignaler interface {
 var findMcpProcess = func(pid int) (processSignaler, error) { return os.FindProcess(pid) }
 
 // mcpStopPollTimeout and mcpStopPollInterval bound StopMcpInstances' wait for
-// signalled processes to exit. They default to the shared daemon lifecycle
-// constants but are package vars (not the LifecycleShutdownTimeout constant
-// directly) so a test can shrink the survivor-path deadline instead of
-// waiting out a real 20s timeout.
+// signalled processes to exit. Package vars, not consts, so a test can shrink
+// the survivor-path deadline instead of waiting the whole window out.
+//
+// The timeout is its OWN number rather than LifecycleShutdownTimeout. It used
+// to alias it, which silently coupled "how long we tolerate a wedged stray MCP
+// process" to bossd's graceful-shutdown ceiling — so BOS-888's ceiling raise
+// would have tripled this wait for no related reason. A stray MCP server that
+// has not honoured SIGTERM in 20s is not going to, and it is returned as a
+// survivor rather than killed, so waiting longer buys nothing.
 var (
-	mcpStopPollTimeout  = LifecycleShutdownTimeout
+	mcpStopPollTimeout  = 20 * time.Second
 	mcpStopPollInterval = LifecyclePollInterval
 )
 

@@ -51,6 +51,7 @@ go_test(
         "e2e_resilience_test.go",
         "e2e_session_deleted_test.go",
         "e2e_session_env_test.go",
+        "e2e_stale_footer_resume_test.go",
         "e2e_start_tmux_chat_start_error_test.go",
         "e2e_transient_resume_test.go",
         "e2e_webhook_realtime_test.go",

@@ -14,7 +14,10 @@ go_library(
 
 go_test(
     name = "resume_test",
-    srcs = ["transient_resumer_test.go"],
+    srcs = [
+        "transient_resumer_restart_test.go",
+        "transient_resumer_test.go",
+    ],
     embed = [":resume"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

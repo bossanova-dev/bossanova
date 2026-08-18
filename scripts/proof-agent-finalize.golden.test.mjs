@@ -21,6 +21,7 @@ import { test } from 'node:test'
 
 import { finalizeAgentProof } from './proof-agent-finalize.mjs'
 import { silenceConsole } from './quiet-test-console.mjs'
+import { region } from './gate-region-lib.mjs'
 
 // Silence the code-under-test console output (finalize manifest JSON dumps +
 // DEGRADED warnings) so a passing run stays quiet. See quiet-test-console.mjs.
@@ -495,11 +496,8 @@ test('golden: multi-surface judged → per-scene ✗ stays in its own surface se
     '<!-- bossanova-proof:pr-123 -->\n### ⚠️ Proof produced — partially convincing\n\n### [📸 Proof manifest](https://proof.example/pr/manifest.json)\n\n**Multi brief**\n\n**Commit:** `abc1234`  **Run:** RUN  **Gen-AI:** not live (UI-only demo)\n\n#### TUI — ✅ proven\n\n<details><summary>Agent summary</summary>\n\ntui ok\n\n</details>\n\n**Fresh-context judge (claude-haiku-4-5):** Evidence: Partial · Confidence: Medium\n- Caveat: agent-runner stubbed: UI + orchestration exercised against a stubbed daemon\n\n#### Web — ✅ proven\n\n<details><summary>Agent summary</summary>\n\nweb ok\n\n</details>\n\n**Fresh-context judge (claude-haiku-4-5):** Evidence: Partial · Confidence: Medium\n- Scene scene-web — rename session: ✗ rename result never appears in the stills\n- Caveat: agent-runner stubbed: UI + orchestration exercised against a stubbed daemon\n',
   )
   // Explicit attribution asserts (belt-and-suspenders on top of the byte-exact match).
-  const tuiSection = commentBody.slice(
-    commentBody.indexOf('#### TUI'),
-    commentBody.indexOf('#### Web'),
-  )
-  const webSection = commentBody.slice(commentBody.indexOf('#### Web'))
+  const tuiSection = region(commentBody, '#### TUI', '#### Web')
+  const webSection = region(commentBody, '#### Web')
   assert.ok(!tuiSection.includes('scene-web'), 'TUI section must not carry the Web scene failure')
   assert.ok(!tuiSection.includes('✗'), 'TUI section carries no ✗ per-scene line')
   assert.ok(

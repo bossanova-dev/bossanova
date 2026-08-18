@@ -15,11 +15,21 @@ import (
 
 const (
 	// LifecycleStartupTimeout bounds waits for bossd to finish startup work and
-	// begin accepting socket connections.
-	LifecycleStartupTimeout = 30 * time.Second
-	// LifecycleShutdownTimeout covers bossd's graceful shutdown path, including
-	// cron drain and server shutdown, before the socket is removed.
-	LifecycleShutdownTimeout = 20 * time.Second
+	// begin accepting socket connections. It tracks LifecycleShutdownTimeout
+	// because startup launches the same plugin set shutdown has to stop; the
+	// coupling is asserted in daemon_test.go.
+	LifecycleStartupTimeout = 60 * time.Second
+	// LifecycleShutdownTimeout covers bossd's graceful shutdown path up to the
+	// point the gRPC listener closes — cron drain, the failover proxy drain
+	// (BOS-888), the plugin host stop and the server shutdown. It is a CEILING,
+	// not a sleep: every wait built on it polls and returns the moment the
+	// socket goes, so the only cost of headroom is a slower error in a genuinely
+	// wedged shutdown. Undershooting is the expensive direction: the installed
+	// `boss daemon restart` path returns an error here WITHOUT starting the
+	// replacement daemon, so a shutdown that legitimately outruns this leaves
+	// the machine with no daemon at all. The legs are enumerated and summed in
+	// daemon_test.go, which is what trips when one of them grows.
+	LifecycleShutdownTimeout = 60 * time.Second
 	// LifecyclePollInterval is the shared cadence for daemon socket lifecycle
 	// probes.
 	LifecyclePollInterval = 100 * time.Millisecond

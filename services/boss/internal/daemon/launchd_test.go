@@ -574,6 +574,39 @@ func TestGeneratePlist(t *testing.T) {
 	}
 }
 
+// TestGeneratedPlistExitTimeOutCoversShutdownBudget pins the macOS half of the
+// BOS-888 ceiling chain. launchd SIGKILLs bossd at ExitTimeOut (default 20s, so
+// this key must be present at all), and a hard kill there skips the deferred
+// database.Close and the socket cleanup. If it does not exceed
+// LifecycleShutdownTimeout, the CLI is still politely waiting for a socket
+// launchd has already destroyed mid-drain.
+func TestGeneratedPlistExitTimeOutCoversShutdownBudget(t *testing.T) {
+	plist, err := generatePlist("/usr/local/bin/bossd")
+	if err != nil {
+		t.Fatalf("generatePlist: %v", err)
+	}
+
+	marker := "<key>ExitTimeOut</key>"
+	at := strings.Index(plist, marker)
+	if at < 0 {
+		t.Fatalf("plist has no %s; launchd would fall back to its 20s default", marker)
+	}
+	rest := plist[at+len(marker):]
+	open := strings.Index(rest, "<integer>")
+	shut := strings.Index(rest, "</integer>")
+	if open < 0 || shut < open {
+		t.Fatalf("ExitTimeOut is not followed by an <integer> value: %q", rest[:min(len(rest), 80)])
+	}
+	secs, err := strconv.Atoi(strings.TrimSpace(rest[open+len("<integer>") : shut]))
+	if err != nil {
+		t.Fatalf("ExitTimeOut value: %v", err)
+	}
+
+	if got := time.Duration(secs) * time.Second; got <= LifecycleShutdownTimeout {
+		t.Fatalf("plist ExitTimeOut = %v, want > LifecycleShutdownTimeout = %v so the CLI's wait, not launchd's SIGKILL, bounds a stuck shutdown", got, LifecycleShutdownTimeout)
+	}
+}
+
 func TestGenerateMcpPlist(t *testing.T) {
 	plist, err := generateMcpPlist("/usr/local/bin/mcp", 8765)
 	if err != nil {

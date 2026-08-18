@@ -293,22 +293,54 @@ function resolveProofTitle({ recipes }) {
   return recipes[0]?.title ?? 'Proof of implementation'
 }
 
-const PROOF_USAGE = `Usage: node scripts/proof.mjs <command> [options]
+// BOS-789: the commands main() dispatches, named by the unknown-command error so
+// a wrong guess lands on the real set rather than a bare rejection.
+const PROOF_COMMANDS = ['plan', 'run', 'doctor', 'scenario', 'help']
+
+// BOS-789: this block is the CLI's contract of record. Every option states the
+// command(s) that actually READ it (verified against main()'s dispatch), because
+// every non-scenario command parses the same flag set and silently ignores the
+// ones it never reads. Acceptance and readership are separate axes and the block
+// states both: parseProofArgs's shared loop rejects --pr on plan/run/doctor, and
+// parseScenarioArgs rejects everything but --dry-run/--pr (with --help resolved
+// by the pre-scan ahead of it), so "accepted everywhere" would be false in both
+// directions.
+export const PROOF_USAGE = `Usage: node scripts/proof.mjs <command> [options]
 
 Commands:
-  plan                 Print the selected recipes for the current diff (read-only)
+  plan                 Print the selected recipes and surface plan for the
+                       current diff as JSON (read-only; never uploads or comments)
   run                  Capture, upload, and comment proof on the PR
-  scenario validate <file>          Validate a committed proof scenario file
-  scenario run <file> [--dry-run] [--pr <n>]
-                       Deterministically replay a scenario into a TUI proof (no LLM)
+  doctor               Report whether this host can capture a surface
+  scenario validate <file>
+                       Validate a committed proof scenario file
+  scenario run <file>  Deterministically replay a scenario into a TUI proof (no LLM)
 
-Options:
-  --recipe <id>        Capture a specific recipe (repeatable)
-  --changed-file <p>   Override changed-file detection (repeatable)
-  --dry-run            Capture locally without uploading or commenting
+Options (each is read only by the command(s) named beside it). Acceptance is a
+separate axis from readership: plan, run and doctor parse and validate every
+option below except --pr, then ignore the values they never read; scenario
+parses only the --dry-run, --pr and --help options and rejects any other
+dash-dash flag:
+  --recipe <id>        (plan, run) Capture a specific recipe (repeatable)
+  --changed-file <p>   (plan, run, doctor) Override changed-file detection (repeatable)
+  --dry-run            (run, scenario run) Capture locally without uploading or commenting
+  --json               (doctor) Print the doctor report as JSON. plan always
+                       prints JSON and ignores this flag
   --surface <s>        (doctor) Override the auto-detected surface;
                        s = tui|web|recipe|docs|all
   --pr <n>             (scenario run) PR number when not on a PR branch
+  --help, -h           Print this usage and exit 0 (accepted anywhere in the argv)
+
+plan output:
+  plan accepts no baseline flag: --base and --since are not parsed. It diffs
+  against the BASE_REF environment variable (default origin/main), or against
+  the --changed-file list when one is given. Consume the recipes, surfaces and
+  order fields of its JSON; there is no top-level surface scalar.
+
+Proof-surface parity:
+  There is no parity command. Proof-surface parity is a snapshot gate --
+  scripts/skill-parity/baseline/proof-surface.snapshot.json, checked by
+  \`node scripts/skill-parity/parity-gate.mjs\`.
 
 Examples:
   node scripts/proof.mjs plan
@@ -350,9 +382,11 @@ async function main() {
   selected.forEach((recipe) => validateRecipeId(recipe.id))
 
   if (args.command === 'plan') {
-    // `surface` (single-select) is kept for one release; `surfaces` + `order`
-    // are the BOS-139 multi-surface view of the same diff.
-    const surface = agentSurface({ catalog, changedFiles })
+    // BOS-789: the top-level `surface` scalar is gone. agentSurface's
+    // fallthrough is a bare `return 'web'`, so on a backend-only diff it
+    // printed "web" while the authoritative `surfaces`/`order` from
+    // resolveSurfacePlan said no surface at all. `agentSurface` itself stays —
+    // `doctor` still calls it, and the agent dispatch path is unchanged.
     const requiredProofBullets = await loadPlanEvidence(changedFiles, (p) =>
       fs.promises.readFile(path.join(repoRoot, p), 'utf8'),
     )
@@ -367,7 +401,6 @@ async function main() {
         {
           changedFiles,
           recipes: selected,
-          surface,
           surfaces: surfacePlan.surfaces,
           order: surfacePlan.order,
         },
@@ -379,7 +412,13 @@ async function main() {
   }
 
   if (args.command !== 'run') {
-    throw new Error(`unknown proof command: ${args.command}`)
+    // BOS-789: keep the `unknown proof command: <cmd>` prefix byte-identical
+    // (recorded runs match on it) and append the accepted set, so a caller who
+    // guessed a verb (`parity`, say) is told what does exist.
+    throw new Error(
+      `unknown proof command: ${args.command} — expected one of ${PROOF_COMMANDS.join(', ')}; ` +
+        'run `node scripts/proof.mjs --help` for the full contract',
+    )
   }
 
   // ── Docs-only branch: short-circuit before agent/recipe dispatch ───────────
@@ -1036,15 +1075,82 @@ function postDeferredComment({ prNumber, dryRun, commentBody, tmpPrefix }) {
   }
 }
 
-export function uploadBundle({ localDir, publicPrefix, manifest, bucket }) {
+/**
+ * BOS-789: backoff between the upload attempts, in order. Its length is the
+ * number of EXTRA attempts, so `[1000, 3000]` means three attempts in total.
+ */
+export const UPLOAD_RETRY_BACKOFF_MS = [1000, 3000]
+
+/**
+ * Blocking sleep. uploadBundle is synchronous — both call sites (the recipe run
+ * and proof-agent-finalize) invoke it without awaiting, so making it async would
+ * silently detach its errors from their catch blocks. Injectable in tests.
+ */
+export function sleepSync(ms) {
+  if (!(ms > 0)) return
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * Uploads one object, retrying a failure on a bounded backoff before giving up.
+ *
+ * The retry is deliberately BLIND — it does not inspect the failure. runCommand
+ * inherits stdio, so wrangler's status line (`520: <none>` and friends) is
+ * printed straight to the console and is NOT present in the thrown Error; a
+ * retry keyed on a 5xx status would therefore never fire. Do not "improve" this
+ * into a status match without first switching the upload leg to a
+ * captured-output runner. A blind retry is safe here because an R2 object PUT
+ * to a fixed key is idempotent: re-putting the same bytes to the same key is
+ * indistinguishable from having put them once.
+ */
+function uploadObjectWithRetry({ run, sleep, backoffMs, bucket, key, file, contentType }) {
+  const command = r2UploadCommand({
+    bucket,
+    key,
+    file: path.relative(repoRoot, file),
+    contentType,
+  })
+  let lastError
+  for (let attempt = 0; attempt <= backoffMs.length; attempt += 1) {
+    try {
+      run(command)
+      return
+    } catch (err) {
+      lastError = err
+      if (attempt < backoffMs.length) sleep(backoffMs[attempt])
+    }
+  }
+  // Name the stage and the object key so the resulting pipeline-error note
+  // points at the upload rather than reading as an unspecified tooling defect.
+  // `cause` keeps the underlying runCommand failure reachable for a stack dump;
+  // the message uses String(lastError) because a non-Error throw would render
+  // `undefined` through `.message` and erase the one diagnostic we still have.
+  throw new Error(
+    `proof upload failed after ${backoffMs.length + 1} attempt(s): ` +
+      `could not upload object key ${key} to bucket ${bucket}: ` +
+      `${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    { cause: lastError },
+  )
+}
+
+export function uploadBundle({
+  localDir,
+  publicPrefix,
+  manifest,
+  bucket,
+  run = runCommand,
+  sleep = sleepSync,
+  backoffMs = UPLOAD_RETRY_BACKOFF_MS,
+}) {
   const uploads = proofUploadFiles({ manifest, localDir })
   // Fail on a dangling manifest reference BEFORE shelling out. Wrangler reports a
   // missing --file as a bare `exited 1` through runCommand (stdio is inherited, so
   // its ENOENT is not in the thrown Error), which made every such bug read as an
   // unexplained upload failure. Listing the missing paths up front keeps the run
   // fail-loud — a manifest naming absent media is a real pipeline defect, never
-  // something to skip past — while naming the defect precisely. It also stops a
-  // half-uploaded bundle: nothing is written when the list is already inconsistent.
+  // something to skip past, and so is deliberately OUTSIDE the retry below —
+  // while naming the defect precisely. It also stops a half-uploaded bundle:
+  // nothing is written when the list is already inconsistent.
   const missing = uploads.filter(({ file }) => !fs.existsSync(file)).map(({ relative }) => relative)
   if (missing.length > 0) {
     throw new Error(
@@ -1052,15 +1158,15 @@ export function uploadBundle({ localDir, publicPrefix, manifest, bucket }) {
     )
   }
   for (const { file, relative, contentType } of uploads) {
-    const key = `${publicPrefix}/${relative}`
-    runCommand(
-      r2UploadCommand({
-        bucket,
-        key,
-        file: path.relative(repoRoot, file),
-        contentType,
-      }),
-    )
+    uploadObjectWithRetry({
+      run,
+      sleep,
+      backoffMs,
+      bucket,
+      key: `${publicPrefix}/${relative}`,
+      file,
+      contentType,
+    })
   }
 }
 
@@ -1154,9 +1260,13 @@ export function tuiAgentCanCapture() {
  * @returns {'tui' | 'web' | 'recipe'}
  */
 export function agentSurface({ catalog, changedFiles }) {
-  // BOS-356: intentionally NOT harness-exempt. This legacy single-select field is
-  // cosmetic (kept for one release) and no longer drives dispatch — resolveSurfacePlan's
-  // `order`/`surfaces` is authoritative and carries the harness-only carve-out.
+  // BOS-356: intentionally NOT harness-exempt. resolveSurfacePlan's
+  // `order`/`surfaces` is authoritative for dispatch and carries the harness-only
+  // carve-out; this single-select answer never drives it.
+  // BOS-789: it is no longer "cosmetic" either. `plan` used to print it as a
+  // top-level `surface` scalar and that scalar is now gone, which leaves exactly
+  // one production caller — doctor's surface auto-detection, whose result gates
+  // doctor's exit code. Do not delete this on the strength of the old wording.
   const override = process.env.BOSS_PROOF_AGENT_SURFACE
   if (override === 'tui' || override === 'web') return override
   const briefSurface = briefSurfaceOverride()

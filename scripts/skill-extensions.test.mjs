@@ -171,9 +171,20 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // BOS-851 re-baselined this name-exact list from five keys to six by adding `knowledge`.
   // The list is EXACT rather than a superset check so a role added to `ROLE_SCHEMAS` without a
   // documented contract (docs/skills/extension-contract.md) cannot arrive unannounced.
+  //
+  // BOS-744 re-baselines it six → nine ON PURPOSE. `KNOWN_EXTENSION_ROLES` and `ROLE_SCHEMAS` are
+  // no longer two hand-maintained literals that can drift: both are derived from one
+  // `EXTENSION_ROLES` table, so every role discovery accepts necessarily declares a result schema.
+  // `draft`, `methodology` and `agent-driver` therefore appear here — they ship BEHAVIOUR rather
+  // than an `items[]` findings array, and their schemas describe the named top-level fields their
+  // documented results carry, which is what stopped `validateResult` answering `unknown role` for a
+  // role discovery had just handed the core.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
+    'agent-driver',
+    'draft',
     'knowledge',
     'lens',
+    'methodology',
     'notes',
     'plan-reviewer',
     'round',
@@ -181,6 +192,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   ])
   assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
   assert.deepEqual(ROLE_SCHEMAS.knowledge, ['path', 'title', 'kind'])
+  assert.deepEqual(ROLE_SCHEMAS.draft, ['planPath'])
 })
 
 test('repo-authored notes extensions are discoverable for each terminal core', () => {

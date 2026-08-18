@@ -752,6 +752,7 @@ function maskQuoted(text) {
 function isPrintingForm(command, segment) {
   if (!OPERANDS_REQUIRED.has(command)) return false
   const words = segment.trim().split(/\s+/).filter(Boolean)
+  // gate-region-ok: `words` is an ARRAY of shell tokens, not a source string — this drops the command token off the front of a token list, and `command` came from that same list so `indexOf` cannot return -1.
   const operands = words.slice(words.indexOf(command) + 1)
   // Bare `set` / `export` dump the variable set; `trap -p` prints the registered traps.
   if (operands.length === 0) return true

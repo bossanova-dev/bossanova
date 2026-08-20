@@ -180,11 +180,23 @@ func (s *RecomputingSessionStore) notifyPersistedState(ctx context.Context, id s
 // A failed read reports (0, false): "cannot prove this is a transition", and the
 // hook stays silent. The reconcile sweep covers the miss.
 func (s *RecomputingSessionStore) priorState(ctx context.Context, id string, params UpdateSessionParams) (machine.State, bool) {
-	if s.observer == nil || params.State == nil {
+	if params.State == nil {
 		return 0, false
 	}
-	// Get is not decorated (only the writers are), so this is a plain read of the
-	// inner store with no side effects.
+	return s.stateBefore(ctx, id)
+}
+
+// stateBefore is the parameter-free half of priorState, for the conditional
+// writers whose target state is an argument rather than an UpdateSessionParams
+// field. Same convention: (0, false) means "cannot prove this is a transition",
+// and the point read is skipped entirely when no observer is wired.
+//
+// Get is not decorated (only the writers are), so this is a plain read of the
+// inner store with no side effects.
+func (s *RecomputingSessionStore) stateBefore(ctx context.Context, id string) (machine.State, bool) {
+	if s.observer == nil {
+		return 0, false
+	}
 	prev, err := s.Get(ctx, id)
 	if err != nil || prev == nil {
 		return 0, false
@@ -309,6 +321,66 @@ func (s *RecomputingSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id,
 		s.notifyPersistedState(ctx, id)
 	}
 	return advanced, err
+}
+
+// ResurrectToState delegates the atomic un-archive-and-live-state write and,
+// when it wins, recomputes display state and reports the transition. Both are
+// required: RecomputingSessionStore embeds SessionStore, so without this
+// override a new state-writing method is promoted straight through and skips
+// the BOS-557 transition seam entirely.
+//
+// The recompute is unconditional on a winning write: the row's display state
+// was computed for an archived terminal session and is stale the moment the
+// resurrect lands, whatever the state column did.
+//
+// The notify is NOT, and cannot be inferred from the write winning. Every other
+// notifyPersistedState caller is edge-triggered structurally, because its CAS
+// pins the prior state to a different value (AND state = ?). This CAS pins only
+// archived_at, so the prior state is unconstrained — and an archived row can
+// already be wearing newState, because Lifecycle.ArchiveSession writes no state
+// column, so a session archived mid-flight stays in ImplementingPlan. Firing
+// there would report a transition that did not happen, which the
+// SessionTransitionObserver contract forbids. So the pre-write state is point-read
+// and the notify gated on it actually changing; a read that fails stays silent,
+// per stateBefore, and the reconcile sweep covers the miss.
+//
+// The state is still read BACK rather than asserted, for the reason
+// notifyPersistedState documents: the target state is a parameter here, but the
+// row is what actually happened.
+func (s *RecomputingSessionStore) ResurrectToState(ctx context.Context, id string, newState int) (bool, error) {
+	prev, prevKnown := s.stateBefore(ctx, id)
+	resurrected, err := s.SessionStore.ResurrectToState(ctx, id, newState)
+	if err == nil && resurrected {
+		_ = s.recomputer.Recompute(ctx, id)
+		if prevKnown && int(prev) != newState {
+			s.notifyPersistedState(ctx, id)
+		}
+	}
+	return resurrected, err
+}
+
+// RollbackFailedResurrect delegates the compensating re-archive and recomputes
+// display state — and deliberately notifies NOTHING.
+//
+// The carve-out is the same one CommitOrphanResume documents, for a stronger
+// reason: this write restores the pre-resurrect state, which for the shape this
+// exists to undo is Merged, and TriggerClassFor maps Merged to ClassCompleted.
+// Notifying would re-fire every standing completion subscription for a
+// completion that never re-happened — the session merely failed to come back.
+// The recompute still runs, because the row's display state was recomputed for
+// the live session the failed resurrect briefly advertised.
+//
+// The silence is unconditional, so for a row archived in some other state the
+// reverse transition (ImplementingPlan back to that state) also goes
+// unreported. That is deliberate: the observer's last-known state is
+// reconciled by the standing ReconcileAll sweep, and re-firing on a
+// compensating write is the failure mode this carve-out exists to prevent.
+func (s *RecomputingSessionStore) RollbackFailedResurrect(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
+	restored, err := s.SessionStore.RollbackFailedResurrect(ctx, id, archivedAt, restoreState, expectState)
+	if err == nil && restored {
+		_ = s.recomputer.Recompute(ctx, id)
+	}
+	return restored, err
 }
 
 // CommitOrphanResume writes agent_session_id and blocked_reason but NOT the

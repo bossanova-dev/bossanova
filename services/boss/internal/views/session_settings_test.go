@@ -142,7 +142,9 @@ func (s *stubSessionSettingsClient) GetChatTranscript(context.Context, *pb.GetCh
 func (s *stubSessionSettingsClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) NotifyAuthChange(context.Context, string) error { return nil }
+func (s *stubSessionSettingsClient) NotifyAuthChange(context.Context, string) (*pb.NotifyAuthChangeResponse, error) {
+	return nil, nil
+}
 func (s *stubSessionSettingsClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	panic("unused")
 }
@@ -215,6 +217,10 @@ func (s *stubSessionSettingsClient) TestAccount(context.Context, string) (*pb.Te
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+
+func (s *stubSessionSettingsClient) GetAuthState(context.Context) (*pb.GetAuthStateResponse, error) {
 	panic("unused")
 }
 

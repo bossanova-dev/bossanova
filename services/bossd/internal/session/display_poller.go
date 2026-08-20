@@ -32,7 +32,8 @@ type DisplayPoller struct {
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
 	completionNotifier SessionCompletionNotifier
-	archiver           SessionArchiver // optional; nil disables archive-after-merge
+	archiver           SessionArchiver      // optional; nil disables archive-after-merge
+	archiveTracker     ArchiveWorkerTracker // optional; nil leaves archives outside shutdown coordination
 	interval           time.Duration
 	logger             zerolog.Logger
 	done               chan struct{}
@@ -87,9 +88,19 @@ func (p *DisplayPoller) SetCompletionNotifier(n SessionCompletionNotifier) {
 // webhook runs (BOS-697). Before this, the reconcile was the *only* path to
 // Merged for a daemon that missed the webhook, and it never archived.
 // nil-safe: leaving it unset disables the automation.
-func (p *DisplayPoller) SetArchiver(a SessionArchiver) {
+//
+// track joins the archive goroutine this path launches to daemon shutdown
+// (BOS-923); nil leaves it untracked. It is a parameter of this setter, not a
+// separate method, so an archiver cannot be wired without a tracker decision at
+// the same call site.
+func (p *DisplayPoller) SetArchiver(a SessionArchiver, track ArchiveWorkerTracker) {
 	p.archiver = a
+	p.archiveTracker = track
 }
+
+// HasArchiveTracker reports whether an archive worker tracker is wired, for the
+// startup wiring assertion. See Dispatcher.HasArchiveTracker.
+func (p *DisplayPoller) HasArchiveTracker() bool { return p.archiveTracker != nil }
 
 func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
 	if p.completionNotifier != nil {
@@ -553,7 +564,7 @@ func (p *DisplayPoller) reconcileNonTerminalToResolved(ctx context.Context, sess
 	// already filtered to merged-or-closed, but a future second caller must not
 	// silently turn an open PR into an archive.
 	if prStatus.State == vcs.PRStateMerged {
-		archiveSessionAfterMergeIfEnabled(ctx, p.repos, p.archiver, p.logger, sess)
+		archiveSessionAfterMergeIfEnabled(ctx, p.repos, p.archiver, p.archiveTracker, p.logger, sess)
 	}
 
 	p.logger.Info().

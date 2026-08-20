@@ -836,6 +836,14 @@ type runOpts struct {
 	// daemon that silently never auto-resumes.
 	onTransientResumeSeamsWired func(live bool)
 
+	// onArchiveTrackerSeamsWired, if non-nil, fires synchronously immediately
+	// after the four archive-after-merge archivers are wired. live reports that
+	// ALL FOUR received a non-nil archive worker tracker, because an archiver
+	// wired without one silently reopens the BOS-923 shutdown gap. The tracker
+	// itself is passed too, so a test can register a handle it controls and
+	// assert shutdown actually waits on it.
+	onArchiveTrackerSeamsWired func(live bool, track func(string, <-chan struct{}))
+
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
@@ -1662,7 +1670,16 @@ func run(opts runOpts) error {
 	// Every session this client creates carries BOSS_DAEMON_ID, which is the
 	// only thing that lets the reaper tell its own orphans from a peer
 	// daemon's panes on a shared host.
-	tmuxClient := tmux.NewClient(tmux.WithDaemonID(tmuxDaemonID))
+	// The two composer-readiness budgets come from settings.json (BOS-893) via
+	// accessors that supply the defaults and clamp the send path, so the tmux
+	// package never has to import config to carry two integers. They are passed
+	// unconditionally: an unset block yields the same defaults the package
+	// already holds, which the drift guard in the tmux tests keeps in step.
+	tmuxClient := tmux.NewClient(
+		tmux.WithDaemonID(tmuxDaemonID),
+		tmux.WithSessionStartReadyDeadline(settings.TmuxDelivery.SessionStartReadyDeadline()),
+		tmux.WithSendReadyDeadline(settings.TmuxDelivery.SendReadyDeadline()),
+	)
 	ghProvider := github.New(log.Logger)
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
 		WithBranchResolver(worktrees).
@@ -2364,6 +2381,72 @@ func run(opts runOpts) error {
 	// directly below use wg.Add/wg.Done via trackedGo below.
 	var shutdownWG sync.WaitGroup
 
+	// archiveWG joins the auto-archive workers (BOS-923). They are deliberately
+	// NOT on shutdownWG: shutdownWG's Wait is what proves the poller,
+	// dispatcher, reconcile sweep and task orchestrator have stopped, and those
+	// four are the archive producers — an archive launched by a producer's last
+	// tick has to be joinable AFTER that Wait returns, not refused by it.
+	//
+	// A standing sentinel holds archiveWG's counter at one for the daemon's
+	// whole life, released by closeArchiveTracking under the same mutex that
+	// flips archiveTrackClosed. sync.WaitGroup forbids only an Add that lifts
+	// the counter up FROM ZERO concurrently with Wait, so while the sentinel is
+	// held no Add can be that Add, and after it is released no Add happens at
+	// all. That matters because archives register from goroutines the daemon
+	// does not own: Server.MergeSession's synchronous post-merge refresh
+	// reaches the display poller's archive path on a gRPC handler goroutine,
+	// which is not tracked anywhere. "The producing goroutine is itself already
+	// tracked" is NOT true of every archive launch point and must not be
+	// relied on.
+	var (
+		archiveWG          sync.WaitGroup
+		archiveTrackMu     sync.Mutex
+		archiveTrackClosed bool
+	)
+	archiveWG.Add(1)
+	// closeArchiveTracking releases the sentinel and refuses any further
+	// archive registration. Idempotent. Only ever called by drainArchiveWorkers
+	// below, immediately before the join.
+	closeArchiveTracking := func() {
+		archiveTrackMu.Lock()
+		defer archiveTrackMu.Unlock()
+		if archiveTrackClosed {
+			return
+		}
+		archiveTrackClosed = true
+		archiveWG.Done()
+	}
+
+	// drainArchiveWorkers closes registration and then joins the archives
+	// already registered, under a hard 10-second bound. Idempotent, and
+	// deferred immediately below so it covers EVERY return from run, not just
+	// the shutdown tail that calls it explicitly. That matters most for the
+	// error return from srv.Shutdown missing its 5s deadline: without the defer
+	// that path walks straight past the join into the deferred database.Close
+	// and loses the archived_at write this whole mechanism exists to protect —
+	// and it is the path a slow MergeSession handler, the archive producer the
+	// tracker was built around, is most likely to take. Defers run LIFO and
+	// database.Close is registered far above this, so this always runs first.
+	// Reaching it before the daemon is up is harmless: the counter holds only
+	// the sentinel, so releasing it makes the Wait return at once.
+	var archiveDrainOnce sync.Once
+	drainArchiveWorkers := func() {
+		archiveDrainOnce.Do(func() {
+			closeArchiveTracking()
+			archiveCh := make(chan struct{})
+			go func() {
+				archiveWG.Wait()
+				close(archiveCh)
+			}()
+			select {
+			case <-archiveCh:
+			case <-time.After(10 * time.Second):
+				log.Warn().Msg("forced exit: auto-archive workers did not finish within 10s; a session may be left unarchived")
+			}
+		})
+	}
+	defer drainArchiveWorkers()
+
 	// trackedGo spawns fn via safego.Go and registers it with shutdownWG.
 	trackedGo := func(fn func()) {
 		shutdownWG.Add(1)
@@ -2373,11 +2456,40 @@ func run(opts runOpts) error {
 		})
 	}
 
-	// trackDone registers a subsystem's Done() channel with shutdownWG.
+	// trackDone registers a subsystem's Done() channel with shutdownWG. Every
+	// call is on this startup path, before any Wait, which is what keeps its
+	// Add off zero.
 	trackDone := func(done <-chan struct{}) {
 		shutdownWG.Add(1)
 		go func() {
 			defer shutdownWG.Done()
+			<-done
+		}()
+	}
+
+	// trackArchiveDone is the archive-worker tracker handed to the four archive
+	// launch points below (BOS-923). Unlike trackDone it is called from
+	// goroutines the daemon does not own — including a gRPC handler goroutine,
+	// via MergeSession's synchronous post-merge refresh — at any moment,
+	// shutdown included. The sentinel plus this mutex are what make that safe.
+	//
+	// Registration is refused only after the producers have stopped and the
+	// archive drain has begun. A refused archive still runs, it is just no
+	// longer joined — the pre-BOS-923 behaviour, and the session it abandons is
+	// named in the log so the row can be reconciled by hand.
+	trackArchiveDone := func(sessionID string, done <-chan struct{}) {
+		archiveTrackMu.Lock()
+		if archiveTrackClosed {
+			archiveTrackMu.Unlock()
+			log.Warn().
+				Str("session", sessionID).
+				Msg("archive started after shutdown closed archive tracking; not joined, archived_at may not be written")
+			return
+		}
+		archiveWG.Add(1)
+		archiveTrackMu.Unlock()
+		go func() {
+			defer archiveWG.Done()
 			<-done
 		}()
 	}
@@ -2663,7 +2775,10 @@ func run(opts runOpts) error {
 	// previous daemon left under the app data dir — inside the user's checkout,
 	// on a dev-mode layout — would sit there forever.
 	if legacyErr := removeLegacyChatUploadDir(appDataDir); legacyErr != nil {
-		log.Warn().Err(legacyErr).Msg("could not fully remove the legacy chat upload directory")
+		// Refusal-neutral: the reclaim can decline to touch anything at all
+		// (a symlink or non-directory at that path), so this must not assert
+		// a partial removal that never happened.
+		log.Warn().Err(legacyErr).Msg("legacy chat upload directory not reclaimed")
 	}
 	chatUploadMgr, chatUploadErr := chatupload.NewManager(chatUploadDir(), chatUploads)
 	if chatUploadErr != nil {
@@ -2683,6 +2798,9 @@ func run(opts runOpts) error {
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var snapshotPublisher func(context.Context)
 	var authNotifier server.AuthNotifier
+	// authStateReporter stays nil in local-only mode; the GetAuthState handler
+	// reads that as upstream_configured=false rather than an error.
+	var authStateReporter server.AuthStateReporter
 	var cmdHandlerStream *upstream.CommandHandlerAdapter
 	var creatorAdapter *upstream.SessionCreatorAdapter
 	// Cross-daemon broadcasts (BOS-558). Both halves of the path are inert
@@ -2754,6 +2872,11 @@ func run(opts runOpts) error {
 		// the outer Run loop will back off, but the daemon stays up in
 		// local-only mode.
 		tokenProvider := upstream.NewKeychainTokenProvider()
+		// Give the provider the daemon logger so its credential-state
+		// transition warning lands in bossd's log. Without this the provider
+		// is silent by construction, which is how a daemon reloaded from an
+		// already-marked record started up looking healthy (BOS-942).
+		tokenProvider.SetLogger(log.Logger)
 		authToken := cfg.UserJWT
 		if authToken == "" {
 			// If the cached keychain token is expired (or about to be),
@@ -2764,7 +2887,29 @@ func run(opts runOpts) error {
 			// falls back to local-only mode.
 			exp := tokenProvider.ExpiresAt()
 			if !exp.IsZero() && time.Until(exp) < 60*time.Second {
-				refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				// The logger rides on the context so the provider's in-window
+				// replay warning is logged rather than dropped to zerolog's
+				// disabled logger (BOS-941, see upstream.logRefreshReplay).
+				//
+				// The 10s deadline deliberately stays as it is, even though it
+				// is smaller than the provider's 24s replay budget, because
+				// startup blocks on this call: widening it would trade up to
+				// 25s of extra daemon-startup latency for a recovery the outer
+				// Run loop's reRegister and the periodic refresher — which do
+				// get the whole budget — already provide within seconds.
+				//
+				// Truncating the budget is safe, but NOT because a failure here
+				// cannot be ambiguous — a connected dispatch cut short by this
+				// deadline is classified exactly as unknown. It is safe because
+				// refresh() checks the caller's context before it spends a
+				// replay or writes the durable sign-out marker (BOS-941), so a
+				// deadline that expires mid-budget returns a plain, retryable
+				// error and leaves the credentials unflagged. The only way this
+				// path signs the daemon out is a genuinely exhausted budget —
+				// three unconfirmed dispatches completed inside 10s — which is
+				// the same verdict the full budget would have reached.
+				refreshCtx, refreshCancel := context.WithTimeout(
+					log.Logger.WithContext(context.Background()), 10*time.Second)
 				if _, err := tokenProvider.Refresh(refreshCtx); err != nil {
 					log.Warn().Err(err).Msg("proactive token refresh before register failed")
 				}
@@ -3099,17 +3244,33 @@ func run(opts runOpts) error {
 			}
 		}
 
-		authNotifier = &streamAuthAdapter{
+		authAdapter := &streamAuthAdapter{
 			streamClient:  streamClient,
 			tokenProvider: tokenProvider,
 			authState:     authState,
 			logger:        log.Logger,
+			// Read-only sources for the GetAuthState diagnostic. The stream
+			// client owns the wedge clock; the holder owns "when did this
+			// process last successfully register".
+			streamAuth:    streamClient,
+			sessionTokens: sessionTokenHolder,
 			// Proactive login-triggered register. Same closure the reactive
 			// Run-loop path uses, so both serialize on reRegisterMu and write
 			// the one shared sessionTokenHolder — login and auth-failure
 			// recovery can never double-register or fight each other.
 			reRegister: reRegister,
 		}
+		authNotifier = authAdapter
+		// A nil *streamAuthAdapter stored in the AuthStateReporter INTERFACE is
+		// non-nil AS an interface, so the handler's `s.authStateReporter == nil`
+		// local-only check would wave it through and call straight into a nil
+		// pointer — a panic inside the very diagnostic used to explain a wedged
+		// daemon. The composite literal above can never be nil, so there is no
+		// guard to write here; the defence that actually holds is AuthState's
+		// own nil-receiver guard, which returns the zero state instead of
+		// dereferencing. Keep that guard if this assignment ever moves behind a
+		// constructor that can return nil.
+		authStateReporter = authAdapter
 
 		// TerminalStream is a sibling of DaemonStream — separate bidi
 		// for keystroke / data-chunk traffic so it cannot starve
@@ -3224,6 +3385,7 @@ func run(opts runOpts) error {
 		Tmux:               tmuxClient,
 		CompletionNotifier: orchestrator,
 		AuthNotifier:       authNotifier,
+		AuthStateReporter:  authStateReporter,
 		// Publish a SessionDelta_KIND_DELETED on the reverse stream for
 		// every session row removed from the DB (failed setup cleanup,
 		// RemoveSession, EmptyTrash). Without this, bosso's in-memory
@@ -3262,18 +3424,18 @@ func run(opts runOpts) error {
 	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
 	// The server's archive-and-notify path also emits the stream update so the
 	// session leaves the TUI immediately.
-	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
 
 	// Auto-archive a session when its PR merges, if the repo has the
 	// ShouldArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
 	// archive-and-notify path as the dependabot auto-archive above.
-	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
 
 	// The webhook is not the only path to Merged (BOS-697). The display
 	// poller's terminal reconcile lands it whenever the merge webhook never
 	// arrives — and also backs MergeSession's synchronous post-merge refresh —
 	// so it needs the same archiver, or those merges never auto-archive.
-	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
 
 	// Heal rows that reached Merged while the archive hook was unreachable
 	// (BOS-697). Wired here rather than into the builder chain above because
@@ -3281,7 +3443,21 @@ func run(opts runOpts) error {
 	// the option mutates the resolver in place, so the periodic reconcile picks
 	// it up. The startup reconcile above runs without it, which only defers the
 	// heal to the first tick.
-	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
+	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
+
+	// Every archiver above must have been handed trackArchiveDone, or its
+	// archives run outside shutdown coordination again — the exact defect BOS-923 fixed, and
+	// one with no shape at runtime. Report liveness (and the tracker itself) so a
+	// startup test can assert both the wiring and the join it buys.
+	if opts.onArchiveTrackerSeamsWired != nil {
+		opts.onArchiveTrackerSeamsWired(
+			orchestrator.HasArchiveTracker() &&
+				dispatcher.HasArchiveTracker() &&
+				displayPoller.HasArchiveTracker() &&
+				prAssociationResolver.HasArchiveTracker(),
+			trackArchiveDone,
+		)
+	}
 
 	// Rebase the repo's other in-flight branches onto the base a merged PR just
 	// advanced, when the repo opted in (BOS-521). Wired on the merged-webhook
@@ -4195,6 +4371,19 @@ func run(opts runOpts) error {
 		log.Warn().Msg("forced exit: daemon goroutines did not stop within 10s")
 	}
 
+	// Only now join the auto-archive workers (BOS-923). The wait above is what
+	// proves their producers — poller, dispatcher, reconcile sweep, task
+	// orchestrator — have stopped, and srv.Shutdown above drained the handler
+	// goroutine that MergeSession's post-merge refresh runs on, so closing
+	// registration here cannot refuse an archive any live producer is about to
+	// start. On the forced-exit branch a producer may still be alive, and then
+	// a refusal is possible and says so in the log.
+	//
+	// Called explicitly here, rather than left to its defer, so the join lands
+	// inside the shutdown sequence and ahead of the "daemon stopped" log line
+	// instead of after it. The defer is what covers the error returns above.
+	drainArchiveWorkers()
+
 	log.Info().Msg("daemon stopped")
 	return nil
 }
@@ -4473,16 +4662,60 @@ type streamReconnector interface {
 	Reconnect()
 }
 
+// streamAuthSnapshotter is the read-only subset of *upstream.StreamClient the
+// auth adapter needs to answer the GetAuthState diagnostic.
+//
+// Kept separate from streamReconnector rather than widening it: Reconnect is a
+// command and AuthSnapshot is a query, and the existing login tests' fake
+// implements only the former. Segregating them means a diagnostic addition
+// does not force every command-side fake to grow a method it has no opinion
+// about.
+type streamAuthSnapshotter interface {
+	AuthSnapshot() upstream.AuthSnapshot
+}
+
 // streamAuthAdapter implements server.AuthNotifier by reloading
 // credentials from the keychain on login and signalling active streams on
 // logout. The shared AuthState is wired into both DaemonStream and
 // TerminalStream, so MarkNeedsLogin cancels any open bidi immediately and
 // the outer Run loops pause until NotifyLogin marks auth OK again.
+// authTokenReloader is the slice of *upstream.KeychainTokenProvider that
+// NotifyLogin needs. It is an interface so a test can drive the post-reload
+// log line — including the read-failure case, which is the one the
+// instrumentation exists for and which a real keychain will not stage on
+// demand.
+type authTokenReloader interface {
+	ReloadResult() upstream.ReloadOutcome
+	Token() string
+	ExpiresAt() time.Time
+	ReloginReason() string
+	// CredentialVerdict answers "are the reloaded credentials usable?" under a
+	// single lock, so the gate decision below cannot be made from a token and
+	// a marker that were never true at the same instant.
+	CredentialVerdict() (usable bool, reloginReason string)
+}
+
 type streamAuthAdapter struct {
 	streamClient  streamReconnector
-	tokenProvider *upstream.KeychainTokenProvider
+	tokenProvider authTokenReloader
 	authState     *upstream.AuthState
 	logger        zerolog.Logger
+	// streamAuth and sessionTokens back the read-only AuthState() reporter.
+	// Both are nil-tolerant: a local-only daemon never builds this adapter at
+	// all, and the login unit tests construct it without them.
+	//
+	// Know what that tolerance costs before you rely on it. A nil source
+	// leaves its DaemonAuthState fields at their Go zero values, which is
+	// byte-identical to a healthy reading — Connected=false,
+	// AuthFailingSince=zero — while GetAuthState still answers
+	// UpstreamConfigured=true. So an adapter built upstream-side WITHOUT
+	// streamAuth reports "signed in" for a wedged daemon, the exact reading
+	// this whole feature exists to make impossible. The single production
+	// construction site (search streamAuthAdapter{ in this file) wires all
+	// four sources together; keep it that way rather than adding a caller that
+	// omits one.
+	streamAuth    streamAuthSnapshotter
+	sessionTokens *upstream.SessionTokenHolder
 	// reRegister proactively (re-)registers the daemon with the
 	// orchestrator on login. It shares the reRegisterMu + sessionTokenHolder
 	// with the reactive tryReRegister path, so login and auth-failure
@@ -4514,34 +4747,186 @@ type streamAuthAdapter struct {
 // CodeUnauthenticated — the primary anti-storm guarantee; the shared
 // reRegisterMu + sessionTokenHolder keep login and the reactive path from
 // double-registering. Re-register is best-effort — a failure is logged and
-// MarkOK still runs so the reactive path remains the backstop, so login
-// never fails on it.
+// MarkOK still runs so the reactive path remains the backstop. Note that this
+// function DOES return that failure, as a RegisterFailed verdict plus the
+// error; "login never fails on it" is now Server.NotifyAuthChange's doing,
+// which deliberately reports the verdict without an RPC error. A second caller
+// of NotifyLogin must make that same choice for itself.
 //
-// MarkOK (called last) clears the "needs re-login" flag set by the opener
-// when the previous refresh token could no longer be exchanged — WorkOS
+// MarkOK is called last, and is no longer unconditional: it runs only when
+// the reloaded record was judged usable, or when the reload could not read the
+// record at all (unreadable is not evidence of a bad credential, and refusing
+// the gate there would strand the daemon). It clears the "needs re-login" flag
+// set by the opener when the previous refresh token could not be exchanged — WorkOS
 // rejected it, or the exchange outcome was never confirmed. The Run
 // loops are blocked on AuthState.Wait() in that case; clearing the flag
 // wakes them so they reconnect with the freshly-loaded keychain credentials
 // and the now-populated session token. While the re-register runs (bounded
 // below), a NeedsLogin-parked loop simply stays parked — there is nothing to
 // dial without a token yet.
-func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) error {
+func (a *streamAuthAdapter) NotifyLogin(ctx context.Context, _ []string) (server.LoginVerdict, error) {
+	// reloadUnverified records that the reload could not read the record at
+	// all, so the cache below describes the PRE-login state and cannot be used
+	// to judge the credentials this login just wrote. See the gate below.
+	reloadUnverified := false
 	if a.tokenProvider != nil {
-		a.tokenProvider.Reload()
+		// Log what the RELOAD observed, not merely what the cache holds
+		// afterwards: a read failure leaves the previous cache in place, so
+		// without reload_read_ok an empty token here would mean either "the
+		// record really is still flagged" or "the reload could not read the
+		// record at all". The backend is here because a boss CLI writing to a
+		// different keyring backend than this daemon reads from produces a
+		// perfectly successful read of the wrong store.
+		outcome := a.tokenProvider.ReloadResult()
+		// ONE verdict snapshot, taken here and reused by the gate below.
+		// Token(), ReloginReason() and CredentialVerdict() each take their
+		// own RLock, so deriving the log line and the gate from separate
+		// calls lets a concurrent Refresh/applyTokens land between them and
+		// print a line saying the credentials look fine directly above a
+		// gate that closed on them — the log would misdescribe the very
+		// decision it exists to explain. credentials_usable and
+		// relogin_reason are therefore the gate's OWN values, so the two can
+		// no longer disagree about the outcome. token_present and expires_at
+		// stay as separate best-effort reads: BOS-942 wants them for
+		// diagnosis, neither one feeds the gate, and a skew in either can at
+		// worst age the detail beside a verdict that is still correct.
+		credsUsable, reloginReason := a.tokenProvider.CredentialVerdict()
+		a.logger.Info().
+			Str("component", "auth-reload").
+			Bool("reload_read_ok", outcome.ReadOK).
+			Str("reload_error_class", outcome.ErrorClass).
+			Str("keyring_backend", upstream.KeyringBackend()).
+			Bool("credentials_usable", credsUsable).
+			Str("relogin_reason", reloginReason).
+			Bool("token_present", a.tokenProvider.Token() != "").
+			Time("expires_at", a.tokenProvider.ExpiresAt()).
+			Msg("reloaded credentials after login")
+
+		// The gate below is the whole point of this function: MarkOK used to
+		// fire unconditionally, which turned a wedged daemon into a wedged
+		// daemon that LOOKED recovered — the Run loops woke, openStream found
+		// no JWT, bosso rejected the handshake, and the daemon fell straight
+		// back to MarkNeedsLogin with the only evidence in its own log.
+		// ...but only where the reload actually observed the record. A
+		// ReloadErrorReadFailed leaves the previous cache in place by design,
+		// so a verdict drawn from it describes the credentials the daemon held
+		// BEFORE this login — exactly the ones the user just replaced. Gating
+		// on that would answer a transient keyring read error with a confident
+		// "your credentials are still flagged", withhold MarkOK, and park both
+		// Run loops with no way back: the reactive Reload() hatch lives inside
+		// openStream, downstream of the NeedsLogin gate, so a parked loop can
+		// never reach it. Unreadable is not the same as unusable, so this path
+		// keeps the pre-BOS-945 behaviour (register, then MarkOK, letting the
+		// reload hatch self-heal) and reports no verdict rather than a wrong
+		// one. ReloadErrorRecordDeleted is authoritative and clears the cache,
+		// so it is judged normally.
+		reloadUnverified = !outcome.ReadOK && outcome.ErrorClass == upstream.ReloadErrorReadFailed
+		if reloadUnverified {
+			a.logger.Warn().
+				Str("component", "auth-reload").
+				Str("reload_error_class", outcome.ErrorClass).
+				Msg("could not re-read credentials after login; clearing the auth gate unjudged so the stream can retry")
+		}
+		if !reloadUnverified && !credsUsable {
+			// Nothing to dial with, so the proactive re-register is skipped
+			// too: with no bearer token it sends no Authorization header and
+			// bosso answers "missing or invalid Authorization header",
+			// manufacturing a misleading log line for a call that could not
+			// have worked. The auth gate stays closed, which is honest — the
+			// Run loops have nothing to reconnect with either way.
+			//
+			// The reason is one of the enumerated persisted markers, never
+			// token material, so it is safe to log and to return.
+			verdict := server.LoginVerdict{
+				Outcome:       server.LoginOutcomeCredentialsMissing,
+				ReloginReason: reloginReason,
+			}
+			if reloginReason != "" {
+				verdict.Outcome = server.LoginOutcomeCredentialsFlagged
+			}
+			a.logger.Warn().
+				Str("component", "auth-reload").
+				Str("relogin_reason", reloginReason).
+				Msg("credentials still unusable after login; auth gate left closed")
+			return verdict, fmt.Errorf("credentials still unusable after login (relogin_reason=%q)", reloginReason)
+		}
 	}
+	var registerErr error
 	if a.reRegister != nil {
 		regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		if _, err := a.reRegister(regCtx); err != nil {
 			a.logger.Warn().Err(err).Msg("login re-register failed; reactive path will retry")
+			registerErr = err
 		} else if a.streamClient != nil {
 			a.streamClient.Reconnect()
 		}
 	}
-	if a.authState != nil {
-		a.authState.MarkOK()
+	// MarkOK still fires when only the re-register failed. Re-register is
+	// documented best-effort and the reactive path is the backstop; withholding
+	// the gate on a CLEAN record would park both Run loops behind
+	// AuthState.Wait() with usable credentials on disk and nothing left to wake
+	// them. Only the reporting changes: the failure now rides back in the
+	// verdict instead of dying in the log.
+	if a.authState != nil && a.authState.MarkOK() {
+		// Gated on the transition so this line means "the daemon was actually
+		// parked and is now released", not "a login happened" — the latter is
+		// the steady state and would drown the signal.
+		a.logger.Info().
+			Str("component", "auth-reload").
+			Msg("credentials usable after login; auth gate cleared")
 	}
-	return nil
+	if registerErr != nil {
+		return server.LoginVerdict{Outcome: server.LoginOutcomeRegisterFailed}, registerErr
+	}
+	if reloadUnverified {
+		// The gate was cleared, but nothing here verified the credentials, and
+		// OUTCOME_OK is a claim. Unspecified is the value built for "no verdict
+		// given", and it renders as silence rather than as reassurance.
+		return server.LoginVerdict{Outcome: server.LoginOutcomeUnspecified}, nil
+	}
+	return server.LoginVerdict{Outcome: server.LoginOutcomeOK}, nil
+}
+
+// AuthState reports what this daemon currently knows about its own upstream
+// auth. It implements server.AuthStateReporter, the read-only counterpart to
+// the AuthNotifier commands above.
+//
+// Every field is read from a live, concurrently-mutated source rather than
+// recomputed from disk — that is the entire point. Re-reading the keychain
+// here would reproduce the BOS-942 blind spot exactly: the record was present
+// and parseable the whole time the daemon could not register.
+//
+// Each source is independently nil-tolerant so a partially wired adapter
+// degrades to "nothing known about that field" instead of panicking inside a
+// diagnostic, which is the worst possible place to crash.
+func (a *streamAuthAdapter) AuthState(_ context.Context) server.DaemonAuthState {
+	var state server.DaemonAuthState
+	// Nil-receiver tolerant, deliberately. A nil *streamAuthAdapter assigned
+	// into the server's AuthStateReporter interface field reads as non-nil
+	// there, so the handler's local-only guard would let the call through;
+	// answering with a zero state degrades that to "nothing known" instead of
+	// crashing the daemon inside the RPC an operator reaches for when things
+	// are already going wrong. The assignment site guards it too — both layers
+	// are wanted, neither is redundant.
+	if a == nil {
+		return state
+	}
+	if a.authState != nil {
+		state.NeedsLogin = a.authState.NeedsLogin()
+	}
+	if a.tokenProvider != nil {
+		state.ReloginReason = a.tokenProvider.ReloginReason()
+	}
+	if a.sessionTokens != nil {
+		state.LastRegisteredAt = a.sessionTokens.LastSetAt()
+	}
+	if a.streamAuth != nil {
+		snap := a.streamAuth.AuthSnapshot()
+		state.Connected = snap.Connected
+		state.AuthFailingSince = snap.AuthFailingSince
+	}
+	return state
 }
 
 // NotifyLogout marks the auth state as "needs login". Active streams watch

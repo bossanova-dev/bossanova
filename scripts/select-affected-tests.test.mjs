@@ -102,6 +102,28 @@ test('selectTargets maps Codex skills to manifest, Stop-hook guard, and skill co
   ])
 })
 
+test('selectTargets maps every prettier-pinning input to the script tests', () => {
+  // scripts/prettier-pin-drift.test.mjs compares the root manifest's prettier range
+  // against the standalone services/docs package's, and the version each tree's
+  // lockfile resolves. A bump to any of the four touches no scripts/** path, so the
+  // gate must be selected from those files themselves.
+  assert.deepEqual(selectTargets(['package.json']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['services/docs/package.json']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['services/docs/pnpm-lock.yaml']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  // The root lockfile is also a web-tree input: adding the gate must not cost it the
+  // web targets it has always selected.
+  assert.deepEqual(selectTargets(['pnpm-lock.yaml']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+})
+
 test('selectTargets maps the skill config to the script tests', () => {
   // scripts/check-skill-symbols.mjs resolves skill role citations through this file, so a
   // config-only edit can turn the gate red with no scripts/** change.
@@ -168,7 +190,10 @@ test('selectTargets maps ui-tokens changes to the turbo web target', () => {
 })
 
 test('selectTargets maps the lockfile and turbo.json to the turbo web target', () => {
+  // The lockfile keeps its web target and additionally selects the script tests, since
+  // the prettier pin-drift gate reads the version it resolves (see the pin-drift case).
   assert.deepEqual(selectTargets(['pnpm-lock.yaml']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
   assert.deepEqual(selectTargets(['turbo.json']), [{ kind: 'make', target: 'test-web', env: {} }])

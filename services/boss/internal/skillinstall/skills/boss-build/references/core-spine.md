@@ -57,7 +57,24 @@ The orchestrator threads only that short contract into the next task's brief; it
 prior task's full transcript forward. Larger hand-offs (the task brief, a report file, a review
 package) travel as files, not as inline text.
 
-Discovery itself reports before any of that. Record every `skipped` entry whose `deliberate` is
+**A prose task's blast radius is wider than the lines the plan quotes.** When a task edits a skill
+body, a contract doc, or any other prose the repo gates on, the brief carries these three rules:
+
+- Before extracting or relocating a passage out of a skill body, grep for every file that reads that
+  exact path — gates, embed or asset manifests, build files, and generated mirrors — and record
+  them in the task's scope. A legal extraction reds suites that have no textual link to the ticket,
+  and the plan will not have named them.
+- When the change is a glyph or a formatting convention, grep whole directories — the one the
+  changed file sits in, plus every fixture and artifact tree that quotes that glyph in prose —
+  rather than an enumerated file list, which cannot cover the copy nobody thought to enumerate.
+- When the deliverable is a corrected sentence, add a whitespace-tolerant pin for it to the gate
+  guarding that file in the same commit — `\s+` between words, never a literal space, or the pin
+  reds the first time the paragraph rewraps. That is for prose only: `\s+` also matches a newline,
+  so a pin over a command or a code shape keeps the literal space rather than widening to spellings
+  that would not run. Then falsify it: mutate the sentence with an equally whitespace-tolerant
+  substitution, see the gate go red, restore, see it go green.
+
+Discovery itself reports before any dispatch. Record every `skipped` entry whose `deliberate` is
 `false` as `extension <name>: skipped (<reason>)` in the ledger, before dispatching — at **every**
 site that calls `discover`, the methodology tier and the knowledge and notes phases alike. Key it on
 that field rather than on the text of `reason`, which is a human sentence the helper is free to

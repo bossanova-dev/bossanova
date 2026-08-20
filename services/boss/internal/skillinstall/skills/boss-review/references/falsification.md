@@ -61,20 +61,27 @@ case "$TMP_ROOT" in
     ;;
 esac
 PROBE_DIR=
+# The status travels in a VARIABLE the trap sets, not as an argument: this file belongs to a skill
+# whose SKILL.md body is reachable as a slash command, and the harness rewrites `$0`-`$9` in that
+# body before any shell runs it. A reference file is read rather than substituted, so the hazard is
+# latent here — but this block exists to be lifted verbatim into a body. Substituted,
+# `cleanup_probe_dir $?` calls the function with no arguments and exits 0 — a probe that reports
+# success while destroying its own verdict. `PROBE_STATUS=$?` must stay the FIRST command in each
+# trap string; anything before it clobbers `$?`.
+PROBE_STATUS=0
 cleanup_probe_dir() {
-  probe_status=$1
   trap - EXIT HUP INT TERM
   if [ -n "${PROBE_DIR:-}" ] && [ -e "$PROBE_DIR" ]; then
     rm -rf -- "$PROBE_DIR" || exit 1
   fi
-  exit "$probe_status"
+  exit "$PROBE_STATUS"
 }
 # Register cleanup before adding any probe artifacts. POSIX shells do not run an
 # EXIT-only trap for SIGTERM.
-trap 'cleanup_probe_dir $?' EXIT
-trap 'cleanup_probe_dir 129' HUP
-trap 'cleanup_probe_dir 130' INT
-trap 'cleanup_probe_dir 143' TERM
+trap 'PROBE_STATUS=$?; cleanup_probe_dir' EXIT
+trap 'PROBE_STATUS=129; cleanup_probe_dir' HUP
+trap 'PROBE_STATUS=130; cleanup_probe_dir' INT
+trap 'PROBE_STATUS=143; cleanup_probe_dir' TERM
 PROBE_DIR=$(mktemp -d "$TMP_ROOT/boss-review-tier-a.XXXXXX") || exit 1
 PROBE_DIR=$(cd "$PROBE_DIR" && pwd -P) || exit 1
 case "$PROBE_DIR" in
@@ -419,8 +426,11 @@ Tier B is restricted to state-owning orchestrator, fix, and repair paths.
      rm -f -- "$PROBE_TARGET"
    }
    MUTATION_ACTIVE=0
+   # Same reason as the Tier A cleanup above: the status travels in a variable, because a
+   # slash-command invocation rewrites `$0`-`$9` in a published skill body before any shell runs it.
+   # `PROBE_STATUS=$?` must stay the FIRST command in each trap string.
+   PROBE_STATUS=0
    cleanup_probe() {
-     probe_status=$1
      trap - EXIT HUP INT TERM
      if [ "${MUTATION_ACTIVE:-0}" = 1 ]; then
        if ! remove_mutated_probe_target; then
@@ -436,14 +446,14 @@ Tier B is restricted to state-owning orchestrator, fix, and repair paths.
        printf '%s\n' "failed to remove probe directory $PROBE_DIR" >&2
        exit 1
      fi
-     exit "$probe_status"
+     exit "$PROBE_STATUS"
    }
    # Install one-shot signal handlers before the target becomes mutable. POSIX
    # shells such as dash do not run an EXIT-only trap for SIGTERM.
-   trap 'cleanup_probe $?' EXIT
-   trap 'cleanup_probe 129' HUP
-   trap 'cleanup_probe 130' INT
-   trap 'cleanup_probe 143' TERM
+   trap 'PROBE_STATUS=$?; cleanup_probe' EXIT
+   trap 'PROBE_STATUS=129; cleanup_probe' HUP
+   trap 'PROBE_STATUS=130; cleanup_probe' INT
+   trap 'PROBE_STATUS=143; cleanup_probe' TERM
    backup_probe_target || exit 1
    # Start the mutation immediately after this check; do not allow a later mount to replace the target.
    validate_probe_target || {

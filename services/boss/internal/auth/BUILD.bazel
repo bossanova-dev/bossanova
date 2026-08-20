@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "devicecode.go",
         "e2e_login_prod.go",
+        "loginverify.go",
         "manager.go",
         "refresh.go",
         "tokenstore.go",
@@ -15,7 +16,9 @@ go_library(
         "//lib/bossalib/authlock",
         "//lib/bossalib/authtoken",
         "//lib/bossalib/keyringutil",
+        "//lib/bossalib/safego",
         "@com_github_99designs_keyring//:keyring",
+        "@com_github_rs_zerolog//log",
     ],
 )
 
@@ -24,11 +27,17 @@ go_test(
     srcs = [
         "auth_test.go",
         "devicecode_test.go",
+        "loginverify_test.go",
         "migration_test.go",
         "refresh_test.go",
         "relogin_test.go",
+        "tokenstore_roundtrip_test.go",
         "tokenstore_test.go",
     ],
     embed = [":auth"],
-    deps = ["@com_github_99designs_keyring//:keyring"],
+    deps = [
+        "@com_github_99designs_keyring//:keyring",
+        "@com_github_rs_zerolog//:zerolog",
+        "@com_github_rs_zerolog//log",
+    ],
 )

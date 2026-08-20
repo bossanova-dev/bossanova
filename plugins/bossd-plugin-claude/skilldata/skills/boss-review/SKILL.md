@@ -49,6 +49,33 @@ owns aggregation, the fix-loop, and all commits; **await every subagent** (never
   crash in dependency-free worktrees; bossd's finalize injects the `[#PR]` tag). Stage only
   the paths a fix touched — never a blanket `git add -A`.
 
+### Verify a claim before you write it down
+
+These are general authoring rules, not project-specific ones. They govern the prose and comments
+this skill authors, and the identical claims when it reviews them in a diff:
+
+- **Grep before asserting a repo-wide fact.** Before a comment asserts repo-wide state ("this now
+  has no caller", "nothing else uses this"), grep the symbol and paste the result. Review such a
+  claim with the same scrutiny as a code change — a non-blocking dead-code detector will not catch
+  it, and a later cleanup that trusts the comment deletes live code.
+- **Prove an equivalence against the callee, not the signature.** When a comment asserts two paths
+  are equivalent, prove it against the callee's actual argument handling before committing. A
+  follow-up "fix" that changes nothing because the callee ignores the argument is a behavioural
+  no-op that reads as a fix.
+- **State the total a subtotal partitions.** Prose carrying a derived count must also state the
+  total it partitions, so the sum is checkable from the prose alone.
+- **A list ratchet covers the list only.** Treat a name/count ratchet over a document's lists as
+  covering the lists and nothing else; require a separate reading pass, or a claim-level assertion,
+  over the rationale prose citing those lists. A green ratchet beside false rationale falsely
+  signals that the rationale was verified.
+- **Grep for the retired claim, not the corrected one.** When a change corrects a fact in
+  documentation, grep the whole documentation and skills trees for the **superseded** wording before
+  finalizing — grepping the corrected term returns only the sites already fixed. A partial correction
+  ships looking complete and leaves the tree self-contradictory.
+- **Scope a self-referential universal claim.** Before writing a rule about a document's own
+  contents ("every example below carries X"), enumerate every element it quantifies over — or
+  scope the claim to the section it can actually cover.
+
 ## Caller deadline (wall-clock cap)
 
 A caller may supply a **wall-clock deadline** with the invocation (`boss-build` Step 6c does, as
@@ -297,7 +324,7 @@ Step 9 gate keeps the ticket out of In Review until it is genuinely satisfied.
 Resolve the branch, base, diff, change types, and host agent; initialise the ledger.
 
 ```bash
-BASE="${1:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')}"
+BASE="${1:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')}" # skill-positional-ok: braced, so the harness leaves it intact and bash expands it; a slash-command invocation supplies nothing here and the fallback is what runs
 BASE="${BASE:-main}"   # symbolic-ref|sed exits 0 on empty input, so guard the EMPTY result, not the pipeline
 git fetch origin "$BASE" --quiet || true
 MERGE_BASE=$(git merge-base "origin/$BASE" HEAD 2>/dev/null || git merge-base "$BASE" HEAD)
@@ -323,9 +350,11 @@ printf '[]\n' > "$RUN_TMP/expected-reviewer-outputs.json"
 
 Variable meanings:
 
-- `BASE` — the base branch to diff against: arg `$1` when a caller passes one (a base ref
-  only — there is no PR-number arg form), else the repo default (`origin/HEAD`), else `main`.
-  Invoked via the `Skill` tool there is usually no `$1`, so it resolves to the default.
+- `BASE` — the base branch to diff against: the first argument when this block is run as a shell
+  script and a caller passes one (a base ref only — there is no PR-number arg form), else the repo
+  default (`origin/HEAD`), else `main`. That argument form exists on the shell path only. Invoked
+  via the `Skill` tool there is usually no such argument, and a slash command passes none either, so
+  on every path this skill is actually reached by today it resolves to the default.
 - `MERGE_BASE` — the commit the branch forked from; the review baseline.
 - `CHANGED` — newline-separated changed files (`MERGE_BASE..HEAD`); the review surface.
 - `HOST_AGENT` — the agent running this skill (`claude` or `codex`).
@@ -1094,6 +1123,14 @@ Each round:
    `<FALSIFICATION_REFERENCE>`, the resolved absolute installed path — never resolve it relative
    to the target repository — for the probe. Follow Tier B after committing the work and do not
    close the round without non-vacuity evidence.
+   When the returned diff touches markdown, **eyeball the hunk yourself the moment the dispatch
+   returns** — delegating the edit does not delegate this. Prettier's default `proseWrap: preserve`
+   does not reflow prose, so a hand-split or worker-inserted sentence leaves an orphan line
+   mid-paragraph that `--check` reports as correctly formatted. The subagent commits its own work,
+   so put the eyeball in its brief too — check the hunk before you commit — and on return amend its
+   commit, or add a follow-up one when it is no longer the tip. Same class: run the formatter
+   immediately after editing a markdown table cell and confirm the churn is padding-only, so the
+   next round adjudicates the change instead of the padding.
 2. Re-run the review rounds over a fresh **confirming surface**: the union of the newly-changed
    files and the cited files of every `verified` must-fix item. A verified item changes no code,
    but its recorded rationale and evidence still need independent confirmation. If every item was

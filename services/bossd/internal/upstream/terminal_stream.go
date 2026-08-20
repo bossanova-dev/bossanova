@@ -173,11 +173,18 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 		// Matches connectOpener.DaemonStream's policy so a reconnect after
 		// a long bosso outage doesn't tight-loop on stale credentials.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
-			if _, err := o.tokens.Refresh(ctx); err != nil {
+			// Same as the DaemonStream opener: carry the logger on the context
+			// so an in-window replay warning is not dropped.
+			if _, err := o.tokens.Refresh(o.logger.WithContext(ctx)); err != nil {
 				// ErrAuthExpired means the stored refresh token can no
-				// longer be exchanged — either WorkOS rejected it, or the
-				// exchange outcome could never be confirmed (BOS-659), so
-				// replaying it is unsafe. Mark the shared AuthState so the
+				// longer be exchanged — either WorkOS rejected it
+				// authoritatively, or every dispatch in refresh()'s replay
+				// budget went unconfirmed (BOS-659, BOS-941). It is final
+				// because that budget is SPENT, not because replaying an
+				// unconfirmed exchange is unsafe: re-presenting the same
+				// token inside WorkOS's grace window is the documented
+				// recovery, and refresh() has already taken it by the time
+				// this branch sees the error. Mark the shared AuthState so the
 				// Run loop pauses instead of tight-looping on a credential
 				// that will never work. One sanitized line, keyed off the
 				// enumerated reason so an ambiguous timeout is not reported

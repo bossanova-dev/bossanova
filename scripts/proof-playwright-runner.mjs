@@ -681,6 +681,9 @@ function collectProofAuditText(element, cutoff) {
 
 function webStageScript(recipe) {
   return `
+  // NOTE: comments in here live inside a template literal, so a backtick in one ENDS the literal.
+  // The file still parses and prettier reformats the wreckage, so nothing looks wrong. Escape it as
+  // a backslash-backtick if you truly need one. Gated by scripts/check-template-literal-comments.mjs.
   await page.addInitScript(() => {
     window.bossanovaE2e = {
       sessions: [{

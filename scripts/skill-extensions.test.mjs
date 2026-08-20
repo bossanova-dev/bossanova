@@ -250,11 +250,11 @@ test('fresh notes workers receive only a bounded completed-run observation artif
       'utf8',
     )
 
-    assert.match(published, /at most five\s+secret-scrubbed candidate observations/, core)
-    assert.match(published, /maximum 8 KiB/, core)
+    assert.match(published, /at\s+most\s+five\s+secret-scrubbed\s+candidate\s+observations/, core)
+    assert.match(published, /maximum\s+8\s+KiB/, core)
     assert.match(published, /"?observationPath"?:\s*"<NOTES_OBSERVATIONS>"/, core)
     assert.match(extension, /context\.observationPath/, core)
-    assert.match(extension, /only completed-run\s+observation source/, core)
+    assert.match(extension, /only\s+completed-run\s+observation\s+source/, core)
   }
 })
 

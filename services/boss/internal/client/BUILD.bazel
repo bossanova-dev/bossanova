@@ -49,5 +49,6 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "//lib/bossalib/socketauth",
         "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

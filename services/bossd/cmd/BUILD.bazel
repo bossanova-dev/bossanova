@@ -87,6 +87,7 @@ go_binary(
 go_test(
     name = "cmd_test",
     srcs = [
+        "archive_tracker_wiring_test.go",
         "auth_failed_stream_test.go",
         "chat_upload_dir_test.go",
         "daemon_identity_test.go",

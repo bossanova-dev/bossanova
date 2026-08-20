@@ -797,8 +797,12 @@ message HasQuestionPromptResponse {
   // a conversational question asked with a live composer.
   bool has_prompt = 1;
   // The prompt is MODAL: a selection UI has taken over the composer, so a
-  // keystroke is consumed as a choice rather than typed as text. Strict subset
-  // of has_prompt. Callers gating whether it is safe to DELIVER input must read
+  // keystroke is consumed as a choice rather than typed as text. NOT a subset
+  // of has_prompt, in either direction: a boot-time interstitial that seizes
+  // the composer before any conversation exists answers blocks_input=true with
+  // has_prompt=false, because it owns the keystrokes but asks nothing a human
+  // needs to be notified about (BOS-894). Neither field may be inferred from
+  // the other. Callers gating whether it is safe to DELIVER input must read
   // this field, never has_prompt -- a conversational question sets has_prompt
   // with the composer live, and refusing there would drop the answer (BOS-600).
   // Plugins predating this field leave it false, which fails open to the

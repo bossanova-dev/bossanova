@@ -65,6 +65,7 @@ go_test(
         "httpclient_test.go",
         "logout_stream_test.go",
         "snapshot_test.go",
+        "stream_auth_wedge_test.go",
         "stream_bus_test.go",
         "stream_reconnect_test.go",
         "stream_reregister_test.go",

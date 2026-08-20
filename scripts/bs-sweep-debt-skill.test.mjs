@@ -22,6 +22,13 @@ import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import { parseDetectorFindings, candidateKey } from './bs-sweep-debt-survey.mjs'
+import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
+import {
+  assertArtifactSet,
+  assertExactSize,
+  assertMirrorRegenerated,
+  measureFile,
+} from './size-ratchet-lib.mjs'
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const skillDirs = ['.claude/skills/bs-sweep-debt', '.codex/skills/bs-sweep-debt']
@@ -209,10 +216,14 @@ test('the three subagent dispatches + sentinel language are present', () => {
     assert.match(CLAUDE_SKILL, new RegExp(token), `SKILL.md must document the ${token} sentinel`)
   }
   assert.match(CLAUDE_SKILL, /bs-run-sentinel/, 'must resolve the shared sentinel helper')
-  assert.match(CLAUDE_SKILL, /run-file sentinel (only|only\b)|from the (run-file )?sentinel/i)
+  assert.match(CLAUDE_SKILL, /run-file\s+sentinel (only|only\b)|from\s+the (run-file )?sentinel/i)
   assert.match(CLAUDE_SKILL, /bounded/i, 'watch must be a bounded poll (watchdog hardening)')
-  assert.match(CLAUDE_SKILL, /Bulk-output discipline/, 'the bulk-output rule block must be present')
-  assert.match(CLAUDE_SKILL, /cheap tier/i, 'the survey tier annotation must be present')
+  assert.match(
+    CLAUDE_SKILL,
+    /Bulk-output\s+discipline/,
+    'the bulk-output rule block must be present',
+  )
+  assert.match(CLAUDE_SKILL, /cheap\s+tier/i, 'the survey tier annotation must be present')
   assert.match(CLAUDE_SKILL, /Opus/, 'the fix/watch tier annotation must be present')
   assert.match(
     CLAUDE_SKILL,
@@ -227,7 +238,7 @@ test('survey dispatch requires focus plus extra non-excluded categories and repo
     for (const body of [skill, dispatch]) {
       assert.match(
         body,
-        /focus-category detector plus additional non-excluded category detectors/i,
+        /focus-category\s+detector\s+plus\s+additional\s+non-excluded\s+category\s+detectors/i,
         `${dir} must require detectors beyond the category focus`,
       )
       assert.match(body, /surveyedCategories/, `${dir} must include surveyedCategories payload`)
@@ -244,7 +255,7 @@ test('a missing/stale sentinel is a distinct dispatch-failure on the safe non-gr
     CLAUDE_SKILL.includes(`DISPATCH_FAILURE="${DISPATCH_FAILURE}"`),
     'the shell DISPATCH_FAILURE must equal the module constant',
   )
-  assert.match(CLAUDE_SKILL, /missing\/stale|missing or stale/i)
+  assert.match(CLAUDE_SKILL, /missing\/stale|missing\s+or\s+stale/i)
   assert.match(CLAUDE_SKILL, /never .{0,30}READY_GREEN_PR|never `READY_GREEN_PR`/i)
 })
 
@@ -258,11 +269,11 @@ test('cron gate exists and uses shared open-PR suppression', () => {
     const gate = read(path.join(dir, 'gate/gate.mjs'))
     const skill = read(path.join(dir, 'SKILL.md'))
     assert.match(gate, /cron-open-pr\.mjs/, `${dir} gate must use shared cron-open-pr helper`)
-    assert.match(gate, /Bossanova sweep debt/, `${dir} gate must match the live cron name`)
-    assert.match(gate, /prior sweep PR still open/, `${dir} skip reason must be loud`)
+    assert.match(gate, /Bossanova[ ]sweep[ ]debt/, `${dir} gate must match the live cron name`)
+    assert.match(gate, /prior[ ]sweep[ ]PR[ ]still[ ]open/, `${dir} skip reason must be loud`)
     assert.match(gate, /gateExit\(false/, `${dir} gh errors must fail closed`)
     assert.match(skill, /GateCommand/, `${dir}/SKILL.md must document the gate command`)
-    assert.doesNotMatch(skill, /Intentionally ungated/, `${dir}/SKILL.md must not say ungated`)
+    assert.doesNotMatch(skill, /Intentionally\s+ungated/, `${dir}/SKILL.md must not say ungated`)
     assert.doesNotMatch(
       skill,
       /Leave `GateCommand` empty/,
@@ -354,17 +365,17 @@ test('the debt-filesize detector exists and its threshold knob actually rewrites
   // was emptied, or one whose failing half was deleted along with its consequent.
   assert.match(
     recipe[0],
-    /case "\$\$\(DEBT_FILESIZE_THRESHOLD\)" in ''\|\*\[!0-9\]\*\|0\*\)[\s\S]{0,220}?exit 1;; esac/,
+    /case "\$\$\(DEBT_FILESIZE_THRESHOLD\)" in ''\|\*\[!0-9\]\*\|0\*\)[\s\S]{0,220}?exit\s+1;; esac/,
     'a non-numeric/leading-zero DEBT_FILESIZE_THRESHOLD must exit 1 before the config is built',
   )
   assert.match(
     recipe[0],
-    /grep -q '\^\\\[rule\\\.file-length-limit\\\]'[\s\S]{0,80}?grep -qE "max = \$\$\(DEBT_FILESIZE_THRESHOLD\)[\s\S]{0,240}?exit 1; \}/,
+    /grep -q '\^\\\[rule\\\.file-length-limit\\\]'[\s\S]{0,80}?grep -qE "max = \$\$\(DEBT_FILESIZE_THRESHOLD\)[\s\S]{0,240}?exit\s+1; \}/,
     'a generated config missing the rule or the REQUESTED max must exit 1',
   )
   assert.match(
     recipe[0],
-    /trap 'rm -f "\$\$\$\$cfg"' EXIT INT TERM/,
+    /trap 'rm -f "\$\$\$\$cfg"' EXIT\s+INT\s+TERM/,
     'the recipe must trap-clean its temp config',
   )
   // The survey parser only understands revive's `default` one-line shape. Fed `friendly`
@@ -372,7 +383,7 @@ test('the debt-filesize detector exists and its threshold knob actually rewrites
   // asserts over a static fixture rather than a live run. Pin the formatter to the parser.
   assert.match(
     recipe[0],
-    /-formatter default\b/,
+    /-formatter\s+default\b/,
     "the recipe must use revive's default formatter; the survey parser silently drops every friendly-shaped finding",
   )
 })
@@ -425,7 +436,7 @@ test('the cheap survey dispatch carries a provider-guarded sonnet model directiv
 // Ratchet — the always-resident body stays under the post-split ceiling.
 // ---------------------------------------------------------------------------
 
-test('the always-resident body stays under the post-split ratchet', () => {
+test('the always-resident body is pinned at its exact post-split size', () => {
   // Measured post-split resident bodies: 29635 B (.claude) / 29718 B (.codex), down from the
   // 32575 B (.claude) / 32658 B (.codex) pre-split baseline. CEILING = 30 KiB gives ~0.9 KiB of
   // headroom above the larger mirror and stays ~1.8 KiB below the 32575 B baseline — regrowth
@@ -445,16 +456,47 @@ test('the always-resident body stays under the post-split ratchet', () => {
   //
   // BOS-653 added `START_SHA="$START_SHA" ` to the gate invocation (+23 B, no bump): bodies are
   // 30181 B (.claude) / 30261 B (.codex), leaving 41 B.
-  const CEILING = 30302
-  assert.ok(CEILING < 32575, 'ceiling must stay below the pre-split baseline')
-  // The pre-split baseline is 2.4 KiB stale and constrains nothing this extraction cares
-  // about; pin the pre-extraction body too so the saving cannot be handed back.
-  assert.ok(CEILING < 30669, 'ceiling must stay below the pre-extraction body')
-  for (const dir of skillDirs) {
-    const bytes = Buffer.byteLength(read(path.join(dir, 'SKILL.md')), 'utf8')
-    assert.ok(
-      bytes < CEILING,
-      `${dir}/SKILL.md must stay under ${CEILING} bytes (post-split ratchet), got ${bytes} — move situational content into a reference`,
-    )
-  }
+  //
+  // BOS-768 replaces the ceiling with an exact pin on the AUTHORED source. The ceiling was
+  // "larger mirror + 64 B", i.e. slack by construction — 91 B of it by the time this landed,
+  // and a trim would only have widened it. The `.codex` copy leaves the byte loop entirely:
+  // it is GENERATED, so its size is a function of this file plus a fixed header, and it is
+  // verified below by regenerating it and comparing exactly.
+  //
+  // Only the tighter of the two old upper bounds is kept. `CEILING < 32575` (pre-split) was
+  // implied by `CEILING < 30669` (pre-extraction body) and so could never fire on its own.
+  // Rebased onto main at 5978bd850: #2090 rewrote the awk whole-record positionals out of the
+  // published bodies, growing this one by 110 B. That is a correctness rewrite of code the body
+  // must carry, not new prose, so the pin absorbs exactly it.
+  const SOURCE_BYTES = 30321 // exact measured .claude body, re-measured 2026-08-19
+
+  // Seven separate gates in this file index or iterate skillDirs, and this pin reads
+  // skillDirs[0]. A list that silently shortened would leave every one of them asserting
+  // against a single directory with nothing going red to say the other stopped being
+  // checked — the vacuity assertArtifactSet exists for.
+  assertArtifactSet(skillDirs, 2, 'skillDirs')
+
+  assertExactSize({
+    below: { name: 'PRE_EXTRACTION_BODY', value: 30669 },
+    constFile: 'scripts/bs-sweep-debt-skill.test.mjs',
+    constName: 'SOURCE_BYTES',
+    expected: SOURCE_BYTES,
+    label: 'bs-sweep-debt always-resident body',
+    measured: measureFile(path.join(rootDir, skillDirs[0], 'SKILL.md')),
+    path: `${skillDirs[0]}/SKILL.md`,
+    residual:
+      'the five references/ files this body routes to and the toolbox scripts it invokes — ' +
+      'content moved out of the body is invisible to this pin',
+  })
+})
+
+test('the codex mirror is exactly what regenerating it from the .claude source produces', () => {
+  // Replaces the old byte ceiling on the mirror. `make codex-skills` unconditionally prepends
+  // a generated-by header, so a healthy mirror is ALWAYS larger than its source — "larger than
+  // source" can never be the tell. Exact regeneration equality is, and it subsumes size.
+  assertMirrorRegenerated({
+    mirrorPath: path.join(rootDir, skillDirs[1], 'SKILL.md'),
+    regenerate: rewriteClaudeSkillMarkdown,
+    sourcePath: path.join(rootDir, skillDirs[0], 'SKILL.md'),
+  })
 })

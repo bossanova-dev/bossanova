@@ -8,12 +8,18 @@ import (
 	"connectrpc.com/connect"
 )
 
+// interceptorRequest embeds a nil connect.AnyRequest and overrides only the
+// methods the interceptor calls. Any() must be one of them: the interceptor
+// hands the decoded request message to the classifier, so without this override
+// the embedded nil interface panics on every classified call.
 type interceptorRequest struct {
 	connect.AnyRequest
 	spec connect.Spec
+	msg  any
 }
 
 func (r interceptorRequest) Spec() connect.Spec { return r.spec }
+func (r interceptorRequest) Any() any           { return r.msg }
 
 type interceptorCapture struct {
 	event      Event
@@ -37,7 +43,7 @@ func (r *interceptorRecorder) Close()                                           
 
 func TestInterceptor_MutatingSuccessCapturesAllowedProperties(t *testing.T) {
 	recorder := &interceptorRecorder{}
-	interceptor := Interceptor(recorder, func(procedure string) (string, bool) {
+	interceptor := Interceptor(recorder, func(procedure string, _ any) (string, bool) {
 		return "sessions", procedure == "/bossanova.v1.OrchestratorService/ProxyStopSession"
 	}, func(context.Context) string { return "user:test" })
 
@@ -83,7 +89,7 @@ func TestInterceptor_MutatingSuccessCapturesAllowedProperties(t *testing.T) {
 
 func TestInterceptor_ExcludedProcedureDoesNotCapture(t *testing.T) {
 	recorder := &interceptorRecorder{}
-	interceptor := Interceptor(recorder, func(string) (string, bool) { return "", false }, func(context.Context) string { return "user:test" })
+	interceptor := Interceptor(recorder, func(string, any) (string, bool) { return "", false }, func(context.Context) string { return "user:test" })
 
 	wrapped := interceptor.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		return connect.NewResponse(&struct{}{}), nil
@@ -99,7 +105,7 @@ func TestInterceptor_ExcludedProcedureDoesNotCapture(t *testing.T) {
 
 func TestInterceptor_ErrorCapturesStatusAndConnectCode(t *testing.T) {
 	recorder := &interceptorRecorder{}
-	interceptor := Interceptor(recorder, func(string) (string, bool) { return "sessions", true }, func(context.Context) string { return "user:test" })
+	interceptor := Interceptor(recorder, func(string, any) (string, bool) { return "sessions", true }, func(context.Context) string { return "user:test" })
 
 	wantErr := connect.NewError(connect.CodeInvalidArgument, errors.New("bad request"))
 	wrapped := interceptor.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
@@ -124,7 +130,7 @@ func TestInterceptor_ErrorCapturesStatusAndConnectCode(t *testing.T) {
 
 func TestInterceptor_PanicIsTransparent(t *testing.T) {
 	recorder := &interceptorRecorder{}
-	interceptor := Interceptor(recorder, func(string) (string, bool) { return "sessions", true }, func(context.Context) string { return "user:test" })
+	interceptor := Interceptor(recorder, func(string, any) (string, bool) { return "sessions", true }, func(context.Context) string { return "user:test" })
 	wrapped := interceptor.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		panic("handler panic")
 	})
@@ -142,7 +148,7 @@ func TestInterceptor_PanicIsTransparent(t *testing.T) {
 
 func TestInterceptor_MissingAuthenticationDoesNotCapture(t *testing.T) {
 	recorder := &interceptorRecorder{}
-	interceptor := Interceptor(recorder, func(string) (string, bool) { return "sessions", true }, func(context.Context) string { return "" })
+	interceptor := Interceptor(recorder, func(string, any) (string, bool) { return "sessions", true }, func(context.Context) string { return "" })
 
 	wrapped := interceptor.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		return connect.NewResponse(&struct{}{}), nil
@@ -176,6 +182,63 @@ func TestProcedureCommand(t *testing.T) {
 			got, ok := procedureCommand(tt.procedure)
 			if got != tt.want || ok != tt.wantOK {
 				t.Fatalf("procedureCommand(%q) = (%q, %v), want (%q, %v)", tt.procedure, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestInterceptor_ClassifierReceivesDecodedRequest pins the widened
+// ProcedureClassifier contract: the interceptor hands the decoded request
+// message to the classifier, and honours a classifier that rejects on the
+// message alone even when the procedure is otherwise recordable.
+func TestInterceptor_ClassifierReceivesDecodedRequest(t *testing.T) {
+	type listRequest struct{ refresh bool }
+
+	tests := []struct {
+		name        string
+		message     any
+		wantCapture bool
+	}{
+		{name: "message accepted", message: &listRequest{refresh: true}, wantCapture: true},
+		{name: "message rejected", message: &listRequest{refresh: false}},
+		{name: "nil message rejected", message: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := &interceptorRecorder{}
+			var seen []any
+			interceptor := Interceptor(recorder, func(_ string, request any) (string, bool) {
+				seen = append(seen, request)
+				list, ok := request.(*listRequest)
+				if !ok || !list.refresh {
+					return "", false
+				}
+				return "accounts", true
+			}, func(context.Context) string { return "user:test" })
+
+			wrapped := interceptor.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+				return connect.NewResponse(&struct{}{}), nil
+			})
+			_, err := wrapped(context.Background(), interceptorRequest{
+				spec: connect.Spec{Procedure: "/bossanova.v1.OrchestratorService/ProxyManageListAccounts"},
+				msg:  tt.message,
+			})
+			if err != nil {
+				t.Fatalf("wrapped: %v", err)
+			}
+			if len(seen) != 1 {
+				t.Fatalf("classifier calls = %d, want 1", len(seen))
+			}
+			if seen[0] != tt.message {
+				t.Fatalf("classifier request = %#v, want %#v", seen[0], tt.message)
+			}
+			wantCaptures := 0
+			if tt.wantCapture {
+				wantCaptures = 1
+			}
+			if len(recorder.captures) != wantCaptures {
+				t.Fatalf("captures = %d, want %d", len(recorder.captures), wantCaptures)
 			}
 		})
 	}

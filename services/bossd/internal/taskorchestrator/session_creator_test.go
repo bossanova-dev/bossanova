@@ -78,8 +78,12 @@ func (m *mockSessionStore) Archive(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockSessionStore) Resurrect(ctx context.Context, id string) error {
-	return nil
+func (m *mockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+	return false, nil
+}
+
+func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+	return false, nil
 }
 
 func (m *mockSessionStore) Delete(ctx context.Context, id string) error {

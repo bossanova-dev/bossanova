@@ -145,7 +145,7 @@ export BOSS_EPIC_TOOLBOX
 # .boss-skills.json upward walk is the FALLBACK (the only source for an adapter without the
 # capability). Both roles go through the one helper so they cannot diverge.
 ADAPTER_STATES="$(node "$BOSS_EPIC_TOOLBOX/tracker/cli.mjs" states 2>/dev/null || true)"
-resolve_state() { ADAPTER_STATES="$ADAPTER_STATES" ROLE="$1" node --input-type=module -e '
+resolve_state() { ADAPTER_STATES="$ADAPTER_STATES" ROLE="$ROLE" node --input-type=module -e '
   import { readFileSync } from "node:fs"; import { dirname, join } from "node:path"
   const { resolveStateRole } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/bs-epic-lib.mjs`)
   let adapterStates = null, trackerConfigStates = null
@@ -158,7 +158,7 @@ resolve_state() { ADAPTER_STATES="$ADAPTER_STATES" ROLE="$1" node --input-type=m
   }
   process.stdout.write(resolveStateRole({ role: process.env.ROLE, adapterStates, trackerConfigStates }) ?? "")
 ' 2>/dev/null; }
-BOSS_EPIC_PLANNED_STATE="$(resolve_state planned)"; BOSS_EPIC_REVIEW_STATE="$(resolve_state inReview)"
+BOSS_EPIC_PLANNED_STATE="$(ROLE=planned resolve_state)"; BOSS_EPIC_REVIEW_STATE="$(ROLE=inReview resolve_state)"
 export BOSS_EPIC_PLANNED_STATE BOSS_EPIC_REVIEW_STATE
 # Fail closed with an actionable message naming BOTH probed sources (symmetric with the
 # BOSS_SKILLS_HOME guard above) rather than a buried exception: BLOCK only when NEITHER the
@@ -571,11 +571,26 @@ arm/reconcile/re-arm/cleanup protocol:
 Every 2–5 minutes (or on a callback wake), for each in-flight ticket read
 `get_session` (state, `last_agent_activity_at`, `AGENT_AUTH_FAILED`),
 `list_check_snapshots` (DisplayStatus), and `get_chat_statuses {session_id}` for the entry whose
-`agent_session_id` equals the ticket's recorded `chat_id`. A green is trustworthy
-only once that tracked chat has **settled**: `IDLE` + stale
-`last_agent_activity_at`, or `STOPPED` + stale/missing activity.
-STOPPED + missing `last_agent_activity_at` = settled. `WORKING`/`QUESTION` =
-still running, and `LIMITED` = not merge-settled. If unreadable, treat the child as **not settled** and re-poll; never assume settled on an unreadable status.
+`agent_session_id` equals the ticket's recorded `chat_id`.
+
+**Session state carries no push information.** A `state` transition, and a
+`last_check_state` appearing where there was none, both fire when the daemon
+re-polls checks that already exist — they move while the remote branch is
+unchanged. Reading one as a push puts the driver on merge rails against a branch
+still holding only its bootstrap commit. The push oracle is the remote itself:
+`git fetch --quiet origin && git rev-list --count origin/<base>..origin/<branch> 2>/dev/null || echo 0`
+— zero means nothing was pushed, whatever the session state says. Keep the
+guard: before the first push `origin/<branch>` does not exist and `rev-list`
+errors with empty output instead of printing `0`.
+
+A green is trustworthy only once that tracked chat has **settled**: `IDLE` or
+`STOPPED` on **two consecutive polls** with the spinner absent. STOPPED +
+missing `last_agent_activity_at` = settled once the second poll agrees. Never
+gate settled on timestamp staleness: `last_output_at` is a floor that any pane
+change advances (a spinner's elapsed counter alone keeps it fresh), and chats
+seeded in one tick can share it to the nanosecond, so a staleness test can never
+pass. `WORKING`/`QUESTION` = still running, and `LIMITED` = not merge-settled.
+If unreadable, treat the child as **not settled** and re-poll; never assume settled on an unreadable status.
 
 `get_session_statuses` is a session-level `get_session_statuses` aggregate across
 all chats; display/diagnostic only. Never gate green/settled on it: an older
@@ -585,7 +600,8 @@ IDLE/STOPPED + passing.
 ### 3c. Transitions
 
 - **READY_FOR_REVIEW + DisplayStatus Passing + chat SETTLED** (tracked `chat_id`
-  is `IDLE` stale, or `STOPPED` stale/missing) → check the remaining rail
+  is `IDLE` or `STOPPED` on two consecutive polls, spinner absent) → check the
+  remaining rail
   conditions before queueing: the PR is **not a draft**, the linked ticket sits
   in the tracker's **review** state (`$BOSS_EPIC_REVIEW_STATE`), and the PR title/body
   carries no partial-slice / `do not merge` marker. Its producer is a child build

@@ -60,6 +60,17 @@ func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) erro
 	return f(ctx, id)
 }
 
+// ArchiveWorkerTracker receives an archive worker's completion channel, and the
+// session it archives, so the daemon can join in-flight archives during
+// shutdown and can name the session if it ever declines to (BOS-923). nil means
+// the archive runs untracked.
+//
+// Declared here rather than imported from internal/session for the same reason
+// SessionArchiver above is: this package keeps its own parallel type instead of
+// taking a dependency on the session package. Structurally identical, so the
+// same main.go closure satisfies both.
+type ArchiveWorkerTracker func(sessionID string, done <-chan struct{})
+
 // TaskSourceProvider returns the currently active task source plugins.
 // This is typically backed by plugin.Host.GetTaskSources().
 type TaskSourceProvider interface {
@@ -109,6 +120,7 @@ type Orchestrator struct {
 	baseSyncer      BaseBranchSyncer       // optional; nil-safe
 	livenessChecker SessionLivenessChecker // optional; nil-safe — see sessionLiveness
 	archiver        SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
+	archiveTracker  ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
 	autoMergeSem    chan struct{}
 	interval        time.Duration
 	logger          zerolog.Logger
@@ -173,10 +185,21 @@ func (o *Orchestrator) Start(ctx context.Context) {
 func (o *Orchestrator) Done() <-chan struct{} { return o.done }
 
 // SetSessionArchiver injects the archiver used to auto-archive dependabot
-// repair sessions when their PR merges. nil disables auto-archive.
-func (o *Orchestrator) SetSessionArchiver(a SessionArchiver) {
+// repair sessions when their PR merges, together with the tracker that joins the
+// resulting archive goroutine to daemon shutdown (BOS-923). A nil archiver
+// disables auto-archive; a nil tracker leaves the archive untracked.
+//
+// track is a parameter here rather than a separate setter so an archiver cannot
+// be injected without a tracker decision being made at the same call site.
+func (o *Orchestrator) SetSessionArchiver(a SessionArchiver, track ArchiveWorkerTracker) {
 	o.archiver = a
+	o.archiveTracker = track
 }
+
+// HasArchiveTracker reports whether an archive worker tracker is wired. It
+// exists so a startup wiring test can assert the production call site supplied
+// one: an omitted tracker has no shape at runtime.
+func (o *Orchestrator) HasArchiveTracker() bool { return o.archiveTracker != nil }
 
 func (o *Orchestrator) run(ctx context.Context) {
 	ticker := time.NewTicker(o.interval)
@@ -587,7 +610,7 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 		mapping.SessionID != nil &&
 		o.archiver != nil {
 		archiveSessionID := *mapping.SessionID
-		safego.Go(o.logger, func() {
+		done := safego.Go(o.logger, func() {
 			if err := o.archiver.ArchiveSession(context.Background(), archiveSessionID); err != nil {
 				o.logger.Warn().Err(err).Str("session", archiveSessionID).
 					Msg("auto-archive dependabot repair session failed")
@@ -596,6 +619,12 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 			o.logger.Info().Str("session", archiveSessionID).
 				Msg("auto-archived dependabot repair session after merge")
 		})
+		// Join the archive to daemon shutdown instead of dropping the handle
+		// (BOS-923): the detached context above outlives the caller's ctx, so
+		// without this the daemon could exit mid-archive.
+		if o.archiveTracker != nil {
+			o.archiveTracker(archiveSessionID, done)
+		}
 	}
 
 	// Notify the plugin about the task outcome.

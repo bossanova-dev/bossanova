@@ -352,9 +352,14 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	return s, nil
 }
 
-func (m *reconcileMockSessionStore) Archive(_ context.Context, _ string) error   { return nil }
-func (m *reconcileMockSessionStore) Resurrect(_ context.Context, _ string) error { return nil }
-func (m *reconcileMockSessionStore) Delete(_ context.Context, _ string) error    { return nil }
+func (m *reconcileMockSessionStore) Archive(_ context.Context, _ string) error { return nil }
+func (m *reconcileMockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+	return false, nil
+}
+func (m *reconcileMockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+	return false, nil
+}
+func (m *reconcileMockSessionStore) Delete(_ context.Context, _ string) error { return nil }
 func (m *reconcileMockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	return 0, nil
 }
@@ -682,7 +687,7 @@ func TestReconcile_ArchivesMergedButUnarchivedSessions(t *testing.T) {
 
 			arch := newFakeArchiver()
 			resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
-				WithArchiver(arch)
+				WithArchiver(arch, nil)
 
 			if _, err := resolver.Reconcile(context.Background()); err != nil {
 				t.Fatalf("Reconcile: %v", err)
@@ -716,6 +721,105 @@ func TestReconcile_ArchivesMergedButUnarchivedSessions(t *testing.T) {
 	}
 }
 
+// TestReconcile_SweepSkipsCandidatesArchivedAfterTheSnapshot pins the read-side
+// half of BOS-924. The snapshot the sweep is handed comes from the top of the
+// tick and the archive it launches is detached and slow, so a row can be
+// archived by another path in between. Archiving on the stale copy would delete
+// a worktree twice and re-run the whole archive path against a row already gone.
+//
+// The stale copy is what the sweep sees; the store holds the row as it now is.
+// Delete the re-read guard and this goes red, because the stale copy still
+// matches the predicate.
+func TestReconcile_SweepSkipsCandidatesArchivedAfterTheSnapshot(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		OriginURL:                       "https://github.com/owner/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+	prNumber := 42
+	archivedAt := time.Now()
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.Merged,
+		PRNumber:   &prNumber,
+		ArchivedAt: &archivedAt, // the row as it is NOW
+	})
+	stale := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.Merged,
+		PRNumber:   &prNumber,
+		// ArchivedAt nil: the row as it looked when the snapshot was taken.
+	}
+
+	arch := newFakeArchiver()
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithArchiver(arch, nil)
+
+	resolver.archiveMergedButUnarchived(context.Background(), []*models.Session{stale})
+
+	select {
+	case id := <-arch.calls:
+		t.Fatalf("session %q archived from a stale snapshot; the row was already archived", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestReconcile_SweepSkipsCandidatesResurrectedAfterTheSnapshot is the case the
+// guard exists for. A user resurrects an archived merged session; the sweep is
+// still holding the pre-resurrect snapshot, which matches its predicate exactly.
+// Dispatching on it would archive the session back out from under the agent that
+// was just started for it and delete the worktree the resurrect recreated.
+//
+// The store holds the resurrected row (live, ImplementingPlan); the snapshot is
+// the archived-then-merged copy. Nothing here sleeps or advances a clock: the
+// two shapes disagree, which is the whole point.
+func TestReconcile_SweepSkipsCandidatesResurrectedAfterTheSnapshot(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                              "repo-1",
+		OriginURL:                       "https://github.com/owner/repo",
+		ShouldArchiveSessionsAfterMerge: true,
+	}
+	prNumber := 42
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.ImplementingPlan, // resurrected: live, no longer Merged
+		PRNumber:   &prNumber,
+	})
+	stale := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.Merged,
+		PRNumber:   &prNumber,
+	}
+
+	arch := newFakeArchiver()
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithArchiver(arch, nil)
+
+	resolver.archiveMergedButUnarchived(context.Background(), []*models.Session{stale})
+
+	select {
+	case id := <-arch.calls:
+		t.Fatalf("session %q archived from a pre-resurrect snapshot; the resurrect would be undone", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestReconcileSessions_DoesNotRunTheMergedSweep pins where the sweep lives.
 // It hangs off Reconcile, the full scanner, NOT the shared ReconcileSessions:
 // the other ReconcileSessions caller is Server.ListSessions, which passes rows
@@ -744,7 +848,7 @@ func TestReconcileSessions_DoesNotRunTheMergedSweep(t *testing.T) {
 
 	arch := newFakeArchiver()
 	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
-		WithArchiver(arch)
+		WithArchiver(arch, nil)
 
 	if _, err := resolver.ReconcileSessions(context.Background(), []*models.Session{merged}); err != nil {
 		t.Fatalf("ReconcileSessions: %v", err)

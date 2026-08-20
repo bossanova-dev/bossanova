@@ -396,9 +396,12 @@ func looksLikeTitleCommentary(line string) bool {
 //
 // The two fields are NOT the same predicate. has_prompt is the notify signal
 // and includes a conversational "…?" asked with a live composer; blocks_input
-// is the modal subset, and is the only one safe to gate delivery on — a caller
-// that refused on has_prompt would refuse to answer the very question Claude
-// just asked (BOS-600).
+// is, FOR THIS AGENT, the modal subset, and is the only one safe to gate
+// delivery on — a caller that refused on has_prompt would refuse to answer the
+// very question Claude just asked (BOS-600). The per-agent qualifier matters
+// since BOS-894: plugin.proto no longer promises the subset in general, because
+// codex answers blocks_input=true with has_prompt=false for a boot screen that
+// owns the composer but asks nothing.
 func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{
 		HasPrompt:   statusdetect.HasQuestionPrompt(req.PaneContent),

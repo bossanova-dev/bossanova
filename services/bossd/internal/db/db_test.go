@@ -804,21 +804,40 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	}
 
 	// Resurrect
-	if err := store.Resurrect(ctx, sess.ID); err != nil {
+	ok, err := store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	if err != nil {
 		t.Fatalf("resurrect: %v", err)
+	}
+	if !ok {
+		t.Fatal("resurrect of archived session returned false, want true")
 	}
 	resurrected, _ := store.Get(ctx, sess.ID)
 	if resurrected.ArchivedAt != nil {
 		t.Error("archived_at should be nil after resurrect")
+	}
+	if resurrected.State != machine.ImplementingPlan {
+		t.Errorf("state after resurrect = %v, want ImplementingPlan", resurrected.State)
 	}
 
 	// Double archive is idempotent
 	if err := store.Archive(ctx, sess.ID); err != nil {
 		t.Fatalf("second archive: %v", err)
 	}
-	// Double resurrect should work too
-	if err := store.Resurrect(ctx, sess.ID); err != nil {
+	// A second resurrect of the re-archived row still wins; a third against the
+	// now-live row reports the lost race rather than overwriting its state.
+	ok, err = store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	if err != nil {
 		t.Fatalf("second resurrect: %v", err)
+	}
+	if !ok {
+		t.Fatal("second resurrect returned false, want true")
+	}
+	ok, err = store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("third resurrect: %v", err)
+	}
+	if ok {
+		t.Fatal("resurrect of live session returned true, want false")
 	}
 }
 

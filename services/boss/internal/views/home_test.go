@@ -4548,13 +4548,13 @@ func TestHomeLogoutReturnsBeforeStalledNotification(t *testing.T) {
 	notifyStarted := make(chan struct{})
 	h := HomeModel{
 		ctx: ctx,
-		client: &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+		client: &stubClient{notifyAuthChange: func(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
 			if action != "logout" {
 				t.Errorf("NotifyAuthChange action = %q, want logout", action)
 			}
 			close(notifyStarted)
 			<-ctx.Done()
-			return ctx.Err()
+			return nil, ctx.Err()
 		}},
 		authMgr:       auth.NewManager(&countingLogoutTokenStore{}, auth.Config{}),
 		sessions:      []*pb.Session{},
@@ -4605,7 +4605,7 @@ func TestAuthChangeQueueReleasesFollowerAfterTimedOutNotification(t *testing.T) 
 	loginStarted := make(chan struct{})
 	q := newAuthChangeQueue()
 	q.notificationTimeout = 10 * time.Millisecond
-	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
 		switch action {
 		case "logout":
 			close(logoutStarted)
@@ -4614,7 +4614,7 @@ func TestAuthChangeQueueReleasesFollowerAfterTimedOutNotification(t *testing.T) 
 		case "login":
 			close(loginStarted)
 		}
-		return nil
+		return nil, nil
 	}}
 
 	logout := q.notify(context.Background(), c, "logout")

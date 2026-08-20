@@ -135,7 +135,7 @@ var Registry = map[Event]EventSpec{
 	EventCloudCheckoutReturned:     {Surface: "cloud", Description: "Cloud checkout return was processed", Properties: billingProperties()},
 	EventSignupUserCreated:         {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
 	EventBillingAccountProvisioned: {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
-	EventCloudActionInvoked:        {Surface: "cloud", Description: "A mutating cloud RPC completed", Properties: propertySet("command", "status", "product_area", "error_code")},
+	EventCloudActionInvoked:        {Surface: "cloud", Description: "A user-initiated cloud action completed; passive polling reads are excluded", Properties: propertySet("command", "status", "product_area", "error_code")},
 	EventAccountRotated:            {Surface: "daemon", Description: "An account rotation selected a replacement", Properties: propertySet("rotation_reason", "provider", "status")},
 	EventCronJobFired:              {Surface: "daemon", Description: "A cron job fire reached an outcome", Properties: propertySet("status", "skip_reason", "zero_output")},
 	EventPRCallbackDelivered:       {Surface: "daemon", Description: "A PR callback reached a terminal delivery outcome", Properties: propertySet("trigger", "status", "attempt_count")},

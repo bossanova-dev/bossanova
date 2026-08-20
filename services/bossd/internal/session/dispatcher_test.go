@@ -556,7 +556,7 @@ func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
 
 	arch := newFakeArchiver()
 	d := NewDispatcher(sessions, repos, vp, logger)
-	d.SetArchiver(arch)
+	d.SetArchiver(arch, nil)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
@@ -609,7 +609,7 @@ func TestDispatcherPRMerged_ArchivesWhenAlreadyReconciledToMerged(t *testing.T) 
 
 	arch := newFakeArchiver()
 	d := NewDispatcher(sessions, repos, vp, logger)
-	d.SetArchiver(arch)
+	d.SetArchiver(arch, nil)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
@@ -647,7 +647,7 @@ func TestDispatcherPRMerged_DoesNotArchiveWhenDisabled(t *testing.T) {
 
 	arch := newFakeArchiver()
 	d := NewDispatcher(sessions, repos, vp, logger)
-	d.SetArchiver(arch)
+	d.SetArchiver(arch, nil)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}

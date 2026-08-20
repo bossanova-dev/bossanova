@@ -128,6 +128,7 @@ go_library(
         "skills/boss-epic/toolbox/tracker/preflight.mjs",
         "skills/boss-build/references/knowledge-extensions.md",
         "skills/boss-plan/toolbox/plan-contract-guard.mjs",
+        "skills/boss-plan/toolbox/plan-deps-lib.mjs",
         "skills/boss-build/toolbox/boss-binary.mjs",
         "skills/boss-epic/toolbox/boss-binary.mjs",
     ],

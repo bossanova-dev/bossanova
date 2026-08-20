@@ -29,6 +29,50 @@ const (
 	streamMaxBackoff     = 30 * time.Second
 )
 
+// authWedgeWarnBudget is how many consecutive suppressed auth failures may
+// pass before the wedge is re-stated at WARN. It mirrors the
+// terminalReadyTimeoutBudget idiom in terminal_liveness.go: stay quiet through
+// the ordinary case, but never go permanently silent about a condition an
+// operator has to act on.
+//
+// This is a count of loop iterations, NOT a wall-clock period. The outer loop
+// backs off from streamInitialBackoff to streamMaxBackoff, so the real-world
+// cadence is backoff-dependent: at the streamMaxBackoff ceiling a budget of 30
+// is roughly one WARN every 15 minutes; during the early ramp it is sooner.
+// Deliberate — the point is bounded log volume, not a calendar.
+const authWedgeWarnBudget = 30
+
+// streamAuthSustainedFor is how long a stream must stay OPEN before the run
+// loop treats it as positive proof bosso accepted this daemon's credentials.
+//
+// It exists because the only other direct proof — an inbound
+// OrchestratorCommand (noteUpstreamAccepted) — is not something bosso is
+// obliged to ever send. There is no ping or keepalive in the
+// OrchestratorCommand oneof; bosso writes only when a webhook, a web-UI
+// action, or a cron job produces a command. So a daemon that recovers and
+// then holds a long-lived IDLE stream would otherwise keep reporting an
+// hours-old wedge forever, and `boss daemon doctor` would print a FAIL that
+// survives the very `boss login` it recommends.
+//
+// Duration, rather than the mere fact of an open stream, is the whole point:
+// bosso authenticates on the request HEADERS, so a rejected daemon's stream
+// dies within about one round trip of the handshake — the shape every wedge
+// test drives. 30s is roughly an order of magnitude more than that rejection
+// latency and still fast enough that an operator running the doctor after a
+// login sees the recovery.
+const streamAuthSustainedFor = 30 * time.Second
+
+// The two escalated auth messages the Run loop emits. Both carry the same
+// auth_failing_since / auth_failing_for / relogin_reason fields; only the
+// claim differs, so an operator grepping the log can tell "one rejected open"
+// from "this has been going on and needs you". Named constants because the
+// wedge suite asserts on them and a silent divergence between the log and the
+// test that pins it is precisely the failure BOS-944 is about.
+const (
+	streamAuthRejectedMsg = "stream closed, reconnecting (upstream auth rejected)"
+	streamAuthWedgedMsg   = "stream closed, reconnecting (upstream auth wedged; run `boss login`)"
+)
+
 // Token refresh cadence. The refresher wakes every defaultRefreshInterval and
 // exchanges the token once it is within defaultRefreshThreshold of expiry.
 //
@@ -83,12 +127,63 @@ type streamOpener interface {
 type SessionTokenHolder struct {
 	mu  sync.RWMutex
 	tok string
+	// clock is the injectable time source the lastSetAt stamps come from, so
+	// a test can drive the holder from the same fake clock that drives the
+	// stream client instead of racing wall time. Nil means "never set through
+	// a constructor" (a zero-value holder), which now() answers with the real
+	// clock rather than panicking — see now().
+	clock Clock
+	// lastSetAt is when this holder last took a non-empty token. Every write
+	// path below happens only AFTER a successful upstream.Register — the
+	// startup seed, the reRegister closure, and the opener's rotation calls
+	// driven by tryReRegister — so the stamp is exactly "last successful
+	// upstream registration in this daemon process" with no parallel
+	// bookkeeping to drift out of step. Zero means this process has never
+	// completed one. Read by the GetAuthState RPC (BOS-944).
+	lastSetAt time.Time
 }
 
 // NewSessionTokenHolder constructs a holder seeded with the given token.
 // Callers typically pass the SessionToken returned by upstream.Register.
+// An empty seed leaves LastSetAt zero: startup Register failed, so there is
+// no successful registration to report.
 func NewSessionTokenHolder(tok string) *SessionTokenHolder {
-	return &SessionTokenHolder{tok: tok}
+	return newSessionTokenHolderWithClock(tok, realClock{})
+}
+
+// newSessionTokenHolderWithClock is the injectable-clock constructor behind
+// NewSessionTokenHolder. Unexported because only this package's tests need to
+// control the stamp; production always wants realClock.
+func newSessionTokenHolderWithClock(tok string, clock Clock) *SessionTokenHolder {
+	if clock == nil {
+		clock = realClock{}
+	}
+	h := &SessionTokenHolder{tok: tok, clock: clock}
+	if tok != "" {
+		h.lastSetAt = clock.Now()
+	}
+	return h
+}
+
+// now reads the holder's clock, tolerating a zero-value holder. A holder built
+// with a composite literal instead of the constructor has no clock, and a
+// diagnostic timestamp is not worth a nil-pointer panic on a write path that
+// every reconnect takes. Caller may hold h.mu; the clock is immutable after
+// construction.
+func (h *SessionTokenHolder) now() time.Time {
+	if h.clock == nil {
+		return time.Now()
+	}
+	return h.clock.Now()
+}
+
+// LastSetAt reports when the holder last took a non-empty token, i.e. the
+// last successful upstream registration in this process. Zero when there has
+// never been one. Safe for concurrent callers.
+func (h *SessionTokenHolder) LastSetAt() time.Time {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastSetAt
 }
 
 // Get returns the current token. Safe for concurrent callers.
@@ -102,6 +197,9 @@ func (h *SessionTokenHolder) Get() string {
 func (h *SessionTokenHolder) Set(tok string) {
 	h.mu.Lock()
 	h.tok = tok
+	if tok != "" {
+		h.lastSetAt = h.now()
+	}
 	h.mu.Unlock()
 }
 
@@ -114,6 +212,9 @@ func (h *SessionTokenHolder) CompareAndSwap(old, tok string) bool {
 		return false
 	}
 	h.tok = tok
+	if tok != "" {
+		h.lastSetAt = h.now()
+	}
 	return true
 }
 
@@ -210,7 +311,9 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 		// it to the threshold would make every reconnect force an
 		// exchange the refresher had already scheduled.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
-			if _, err := o.tokens.Refresh(ctx); err != nil {
+			// o.logger rides on the context so the provider's in-window replay
+			// warning is logged rather than dropped (see logRefreshReplay).
+			if _, err := o.tokens.Refresh(o.logger.WithContext(ctx)); err != nil {
 				// Distinguish terminal from transient. ErrAuthExpired
 				// covers both BOS-659 terminal states — the refresh token
 				// was authoritatively rejected, or the exchange outcome
@@ -726,6 +829,192 @@ type StreamClient struct {
 	// successful handshake, not on dial-level flakes.
 	mu        sync.Mutex
 	connected bool
+	// streamOpen is the LIVE connectivity bit, distinct from `connected`.
+	// `connected` is a latch the backoff logic reads AFTER openStream has
+	// returned ("did the last attempt reach snapshot-accepted?"), so it must
+	// survive the teardown; a diagnostic that reused it would report
+	// `stream connected: true` for the whole reconnect backoff gap, which is
+	// exactly when an operator runs `boss daemon doctor`. streamOpen is
+	// cleared the moment openStream returns.
+	streamOpen bool
+	// streamOpenedAt is when the currently-open stream reached
+	// snapshot-accepted; zero when no stream is open. Read only through
+	// streamSustainedLocked. It is the clock behind streamAuthSustainedFor.
+	streamOpenedAt time.Time
+	// authFailingSince is the instant the current unbroken run of
+	// unrecoverable auth failures began; zero when auth is not failing. It is
+	// the discriminating fact for the BOS-942 wedge — a daemon whose
+	// NeedsLogin() reads false while re-registration fails every 30s — and it
+	// is read by BOTH the periodic wedge WARN and the GetAuthState RPC, so the
+	// log and `boss daemon doctor` cannot disagree about how long the daemon
+	// has been broken.
+	authFailingSince time.Time
+	// authStuckStreak counts consecutive suppressed (debug-level) auth
+	// failures since the last WARN. Crossing authWedgeWarnBudget re-states the
+	// wedge in the log and resets the counter.
+	authStuckStreak int
+	// zeroExpiryWarned gates the token refresher's zero-expiry-with-a-relogin
+	// -reason warning to once per transition, mirroring the authStuck idiom.
+	zeroExpiryWarned bool
+}
+
+// AuthSnapshot is the immutable view of the stream client's auth-relevant
+// state that the GetAuthState RPC reports. Deliberately tiny and free of any
+// token material.
+type AuthSnapshot struct {
+	// Connected reports whether a stream is open RIGHT NOW — it is set when
+	// the snapshot is accepted and cleared as soon as that attempt returns.
+	// It reads false during an ordinary reconnect gap on a healthy daemon, so
+	// it is context, never a failure verdict on its own. In particular it is
+	// NOT evidence that the upstream accepted our credentials: the snapshot
+	// Send completes locally before bosso's header-only rejection arrives.
+	Connected bool
+	// AuthFailingSince is the start of the current unbroken run of
+	// unrecoverable auth failures; zero when auth is not currently failing.
+	AuthFailingSince time.Time
+}
+
+// AuthSnapshot returns the current auth-relevant stream state. Safe for
+// concurrent callers.
+func (c *StreamClient) AuthSnapshot() AuthSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	failingSince := c.authFailingSince
+	if c.streamSustainedLocked() {
+		// A stream that has stayed open past streamAuthSustainedFor is
+		// proof the credentials were accepted, and it is the ONLY proof
+		// available on an idle stream (see streamAuthSustainedFor). The
+		// stored field is left alone rather than cleared here: a read
+		// path that mutates would make the wedge state depend on whether
+		// anyone happened to run the doctor. markStreamClosed does the
+		// real clear when this same stream ends.
+		failingSince = time.Time{}
+	}
+	return AuthSnapshot{Connected: c.streamOpen, AuthFailingSince: failingSince}
+}
+
+// streamSustainedLocked reports whether a stream is open RIGHT NOW and has
+// been for at least streamAuthSustainedFor. Caller must hold c.mu.
+func (c *StreamClient) streamSustainedLocked() bool {
+	if !c.streamOpen || c.streamOpenedAt.IsZero() {
+		return false
+	}
+	return c.clock.Now().Sub(c.streamOpenedAt) >= streamAuthSustainedFor
+}
+
+// authFailureNote is what one unrecoverable auth failure tells the caller.
+type authFailureNote struct {
+	// Escalate is true when this iteration must log at WARN rather than DEBUG.
+	Escalate bool
+	// First is true only for the opening failure of a run. It is escalated,
+	// but it is not yet evidence of a wedge — one rejected open is ordinary.
+	// Only a re-escalation after a full budget of suppressed repeats is.
+	First bool
+	// Since is the start of the current failure run.
+	Since time.Time
+}
+
+// noteAuthFailure records one unrecoverable auth failure and reports whether
+// this iteration should escalate to a WARN. It escalates on the FIRST failure
+// of a run (the streak starts fresh) and again every time the suppressed
+// streak crosses authWedgeWarnBudget, resetting the streak so the next
+// escalation needs a full budget again.
+//
+// It also stamps authFailingSince on the first failure of a run, which is what
+// makes the log line's duration and the doctor's duration the same number.
+func (c *StreamClient) noteAuthFailure() authFailureNote {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.authFailingSince.IsZero() {
+		c.authFailingSince = c.clock.Now()
+		c.authStuckStreak = 0
+		return authFailureNote{Escalate: true, First: true, Since: c.authFailingSince}
+	}
+	c.authStuckStreak++
+	if c.authStuckStreak >= authWedgeWarnBudget {
+		c.authStuckStreak = 0
+		return authFailureNote{Escalate: true, Since: c.authFailingSince}
+	}
+	return authFailureNote{Since: c.authFailingSince}
+}
+
+// clearAuthFailure resets the wedge state after a recovery — an attempt that
+// reached the handshake and then died of something that was NOT an auth
+// rejection, or the post-login NeedsLogin reset — so the next failure warns as
+// a first again. The whole state machine resets, not just the log level.
+// markStreamClosed clears it too, for a stream that stayed open long enough to
+// prove itself (streamAuthSustainedFor).
+//
+// Note what is NOT on that list: a successful re-register. Rotating a token
+// proves only that a token was stored, so clearing the clock there hides the
+// rotate-and-reject loop (see the Run loop's hotRetry comment).
+func (c *StreamClient) clearAuthFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resetAuthFailureLocked()
+}
+
+// noteUpstreamAccepted records the strongest positive proof bosso accepted
+// this daemon's credentials: a message arriving FROM it. A successful Send
+// proves nothing (see markConnected), a successful re-register proves only
+// that a token was stored (see the Run loop's hotRetry comment), and the
+// loop's remaining recovery signals — a post-login reset, an attempt that
+// reached the handshake and then died of something other than an auth
+// rejection — are inferences drawn after the stream is already gone.
+//
+// It is direct, but it is not guaranteed to ever arrive: bosso sends a command
+// only when a webhook, a UI action, or a cron produces one, so an idle stream
+// can be healthy for hours without delivering a single one. That gap is why
+// streamAuthSustainedFor exists as a second live signal; this one is what
+// makes a busy daemon recover immediately rather than after the grace period.
+func (c *StreamClient) noteUpstreamAccepted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resetAuthFailureLocked()
+}
+
+// noteZeroExpiry reports whether the token refresher should warn about a
+// zero-expiry-with-a-relogin-marker provider on this tick. True exactly once
+// per transition: the flag is cleared only by a recovery (see
+// resetAuthFailureLocked), so a permanent condition costs one line, not one
+// line per refreshInterval.
+//
+// Note the deliberate cross-component coupling, because it looks like a bug
+// from either side: this gate belongs to the token REFRESHER, but the only
+// thing that reopens it is a DaemonStream recovery (noteUpstreamAccepted, a
+// stream that stayed open past streamAuthSustainedFor, a clean non-auth close
+// after a handshake, or a post-login reset — every path that runs
+// resetAuthFailureLocked). That is intentional and load-bearing. The condition
+// the warning describes — a provider reloaded from a re-login-marked record —
+// can only end when fresh credentials arrive, and the observable proof that
+// they did is a stream that authenticates again. The refresher itself never
+// sees that moment: it skips every tick while ExpiresAt() is zero, so a gate
+// cleared from inside the refresher would either never reopen or reopen on a
+// tick that proves nothing. Do not "decouple" this by clearing the flag on a
+// refresher tick; that reintroduces one warn per refreshInterval for a
+// condition that is permanent until `boss login`.
+func (c *StreamClient) noteZeroExpiry() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.zeroExpiryWarned {
+		return false
+	}
+	c.zeroExpiryWarned = true
+	return true
+}
+
+// resetAuthFailureLocked clears the wedge state. Caller holds c.mu.
+//
+// zeroExpiryWarned is cleared here even though nothing in the stream loop sets
+// it — the token refresher does (noteZeroExpiry). That coupling is deliberate:
+// a recovery is the ONLY event that can end the condition that warning
+// describes, and the refresher cannot observe one because it skips every tick
+// while the expiry is zero. See noteZeroExpiry for the full argument before
+// deciding this line is a stray.
+func (c *StreamClient) resetAuthFailureLocked() {
+	c.authFailingSince = time.Time{}
+	c.authStuckStreak = 0
+	c.zeroExpiryWarned = false
 }
 
 // StreamClientConfig bundles the constructor inputs. Pointer fields are
@@ -880,11 +1169,13 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 // escalate.
 func (c *StreamClient) Run(ctx context.Context) {
 	backoff := streamInitialBackoff
-	// authStuck tracks "we're in a sustained CodeUnauthenticated loop where
-	// ReRegister also can't recover" so the next retry's log line drops to
-	// debug. Cleared as soon as the error class changes or a re-register
-	// succeeds.
-	authStuck := false
+	// The "we're in a sustained CodeUnauthenticated loop where ReRegister also
+	// can't recover" state used to be a local bool. It now lives on the client
+	// under c.mu (authFailingSince / authStuckStreak) because the GetAuthState
+	// RPC has to read it from another goroutine: the whole point of BOS-944 is
+	// that this loop is the only place that knows the daemon is wedged, and a
+	// function-local flag is unreachable from the RPC handler.
+	c.clearAuthFailure()
 	for {
 		if ctx.Err() != nil {
 			return
@@ -903,15 +1194,21 @@ func (c *StreamClient) Run(ctx context.Context) {
 			case <-c.authState.Wait():
 				c.logger.Info().Msg("stream resumed after re-login signal")
 			}
-			// Reset backoff and authStuck so the post-login dial doesn't
-			// inherit a long backoff from the paused era.
+			// Reset backoff and the wedge state so the post-login dial
+			// doesn't inherit a long backoff — or a stale authFailingSince —
+			// from the paused era.
 			backoff = streamInitialBackoff
-			authStuck = false
+			c.clearAuthFailure()
 			continue
 		}
 
 		c.markDisconnected()
 		err := c.openStream(ctx)
+		// authWedged is set by the default arm below when this attempt died
+		// on credentials we could not repair. It is hoisted out of the switch
+		// because the exponential ramp at the bottom of the loop needs it:
+		// see the comment there.
+		authWedged := false
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -930,7 +1227,7 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// and try again immediately — this is usually a recycle, not
 			// a sustained outage.
 			backoff = streamInitialBackoff
-			authStuck = false
+			c.clearAuthFailure()
 		default:
 			c.metrics.IncStreamError(err)
 			// CodeUnauthenticated from the stream means bosso rejected
@@ -944,29 +1241,101 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// backoff.
 			authFailed := connect.CodeOf(err) == connect.CodeUnauthenticated
 			rotated := false
-			if authFailed {
-				rotated = c.tryReRegister(ctx, authStuck)
-			}
-			// Reduce log spam on a sustained auth loop: log the first
-			// failure (and any change in error code or rotation outcome)
-			// at warn, then drop to debug while the same condition
-			// repeats. The state-change branch surfaces real progress
-			// (e.g. JWT became valid mid-loop) without burying it.
+			// hotRetry means "this rotation is still plausibly a recovery".
+			// It is true only for the FIRST rejection of a run, and it is
+			// deliberately NOT the same thing as `rotated`.
 			//
-			// Without this: every retry comes back "missing or invalid
-			// Authorization header" at warn and fills the log, even
-			// though there's nothing actionable beyond the first one.
-			suppressLog := authStuck && authFailed && !rotated
-			if suppressLog {
+			// tryReRegister reports that a NEW token was STORED, never that it
+			// authenticates — it even answers true from its "someone else
+			// already rotated it" fallback. So in the rotate-and-reject shape
+			// (ReRegister keeps succeeding while bosso keeps rejecting the
+			// stream) `rotated` is true on every single iteration. Clearing the
+			// wedge clock there — which is what this code used to do — re-stamps
+			// authFailingSince forever: the duration never accumulates, the
+			// suppression budget is never reached, and GetAuthState answers
+			// `boss daemon doctor` with "signed in" for a daemon that has not
+			// authenticated in hours. That is the BOS-942 blind spot this whole
+			// change exists to close, reproduced one layer up from markConnected.
+			//
+			// So a rotation buys exactly one hot retry per failure run, and
+			// nothing else: the clock keeps running until something PROVES the
+			// credentials work (noteUpstreamAccepted), or a login resets it.
+			hotRetry := false
+			var note authFailureNote
+			if authFailed {
+				// Order matters. tryReRegister takes the "suppress the
+				// failure warn" flag, and the log gate below is eleven lines
+				// further on, so the escalation decision has to be made HERE,
+				// before the call. Deciding at the log gate would hand
+				// tryReRegister the previous iteration's answer and put its
+				// warning one iteration out of step with the loop's own.
+				note = c.noteAuthFailure()
+				rotated = c.tryReRegister(ctx, !note.Escalate)
+				hotRetry = rotated && note.First
+			}
+			authWedged = authFailed && !hotRetry
+			// Reduce log spam on a sustained auth loop while refusing to go
+			// permanently silent. The first failure of a run warns; the
+			// repeats drop to debug; every authWedgeWarnBudget suppressed
+			// repeats the wedge is re-stated at warn with how long it has been
+			// going on. Before BOS-944 the suppression was unbounded, so a
+			// daemon that had been unable to re-register for six hours looked
+			// in the log exactly like one that recovered after the first
+			// warning.
+			//
+			// The escalated line carries auth_failing_since / auth_failing_for
+			// from the same c.mu-guarded state the GetAuthState RPC reads, so
+			// `boss daemon doctor` and the log cannot disagree about the
+			// duration.
+			//
+			// Note: terminal_stream.go has a structurally similar per-terminal
+			// retry loop, and it is deliberately left alone. Its failures are
+			// per-terminal and already bounded by terminalReadyTimeoutBudget;
+			// this gate is about a process-wide upstream credential wedge,
+			// which is a different fault with a different audience. Please
+			// don't "unify" them.
+			switch {
+			case authFailed && !note.Escalate:
 				c.logger.Debug().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting (auth still failing)")
-			} else {
+			case authFailed:
+				// EVERY escalated auth line carries the same fields — the
+				// first failure of a run as well as each budget re-statement.
+				// The first one used to fall through to the generic arm
+				// below, which meant the opening line of a wedge, the one an
+				// operator reads first when they go looking, was the only one
+				// that could not tell them which wedge it was or when it
+				// started.
+				event := c.logger.Warn().Err(err).
+					Dur("backoff", backoff).
+					Time("auth_failing_since", note.Since).
+					Dur("auth_failing_for", c.clock.Now().Sub(note.Since))
+				// The enumerated reason is the one field that says WHICH
+				// wedge this is; it is empty for providers that cannot carry
+				// one, so only attach it when there is something to say.
+				if reason := providerReloginReason(c.tokenProvider); reason != "" {
+					event = event.Str("relogin_reason", reason)
+				}
+				// The wording still separates the two, because they are
+				// different claims: one rejected open is ordinary and often
+				// self-heals on the next dial, while a re-statement after a
+				// full budget of suppressed repeats is evidence of a wedge
+				// that needs a human. Only the latter tells anyone to log in.
+				if note.First {
+					event.Msg(streamAuthRejectedMsg)
+				} else {
+					event.Msg(streamAuthWedgedMsg)
+				}
+			default:
 				c.logger.Warn().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting")
 			}
-			authStuck = authFailed && !rotated
 			// Reset backoff only when we actually progressed:
 			//   - non-auth error after a real handshake (one-off flake)
-			//   - auth error but ReRegister got us a fresh token (real
-			//     recovery; retry now while the token is hot)
+			//   - the FIRST auth error of a run where ReRegister got us a
+			//     fresh token (plausible recovery; retry now while the token
+			//     is hot). Only the first: a rotation that keeps happening on
+			//     every iteration is a rotate-and-reject loop, not progress,
+			//     and pinning the backoff at 1s there tight-loops against
+			//     bosso and blows the log budget this change exists to bound.
 			// A bare CodeUnauthenticated where ReRegister also failed
 			// means we're stuck on bad credentials. wasConnected() is
 			// misleading there because Send(snapshot) succeeds locally
@@ -974,10 +1343,17 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// every attempt looks "connected" and would reset the
 			// backoff to 1s — that's what was filling the log.
 			switch {
-			case rotated:
+			case hotRetry:
 				backoff = streamInitialBackoff
 			case !authFailed && c.wasConnected():
 				backoff = streamInitialBackoff
+				// Same evidence, second conclusion: this attempt reached
+				// snapshot-accepted and then died of something that was NOT
+				// an auth rejection, so whatever wedge was running has ended.
+				// markConnected can no longer draw that conclusion for us —
+				// it fires before the rejection is observable — so it is
+				// drawn here, where `authFailed` is actually known.
+				c.clearAuthFailure()
 			}
 		}
 
@@ -997,9 +1373,19 @@ func (c *StreamClient) Run(ctx context.Context) {
 		case <-c.clock.After(backoff):
 		}
 
-		// Exponential ramp, capped at streamMaxBackoff. Only grow when
-		// the last attempt was a dead-on-arrival failure (no handshake).
-		if !c.wasConnected() {
+		// Exponential ramp, capped at streamMaxBackoff. Grow when the last
+		// attempt was a dead-on-arrival failure (no handshake) — and also when
+		// it died on credentials we could not repair, even though it DID reach
+		// the handshake. That second clause is the same trap the backoff-reset
+		// switch above already documents, arriving one branch later: bosso
+		// checks auth on the headers and reports it via Receive, so the
+		// snapshot Send of a wedged daemon succeeds and wasConnected() reads
+		// true on every attempt. Ramping on wasConnected() alone therefore
+		// pins a wedged daemon at the 1s initial backoff forever — the tight
+		// reconnect loop this cap exists to prevent, and 24x the log volume
+		// the suppression budget is sized against, since that budget counts
+		// loop iterations rather than wall-clock time.
+		if !c.wasConnected() || authWedged {
 			backoff *= 2
 			if backoff > streamMaxBackoff {
 				backoff = streamMaxBackoff
@@ -1037,8 +1423,11 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	}
 
 	// Mark connected only after a successful handshake. The outer loop
-	// uses this to decide whether to reset backoff on the next error.
+	// uses this to decide whether to reset backoff on the next error, so the
+	// latch has to outlive this function — only the live-connectivity bit is
+	// dropped on the way out.
 	c.markConnected()
+	defer c.markStreamClosed()
 
 	// Every successful handshake corresponds to a fresh DaemonState on
 	// bosso; let sibling streams (TerminalStream) rebind to it.
@@ -1130,6 +1519,9 @@ func (c *StreamClient) runWriter(ctx context.Context, stream bidirectionalStream
 // command. Returns when Receive returns an error (EOF, reset, ctx) so
 // the outer loop can decide whether to reconnect.
 func (c *StreamClient) runCommandReader(ctx context.Context, stream bidirectionalStream, outbound chan<- *pb.DaemonEvent) error {
+	// accepted keeps the wedge-clearing call to once per stream without a
+	// second field or a lock acquisition per inbound command.
+	accepted := false
 	for {
 		cmd, err := stream.Receive()
 		if err != nil {
@@ -1140,6 +1532,10 @@ func (c *StreamClient) runCommandReader(ctx context.Context, stream bidirectiona
 				return nil
 			}
 			return fmt.Errorf("receive: %w", err)
+		}
+		if !accepted {
+			accepted = true
+			c.noteUpstreamAccepted()
 		}
 		c.handleCommand(ctx, cmd, outbound)
 	}
@@ -1226,16 +1622,51 @@ func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bo
 // markConnected / markDisconnected / wasConnected are the tiny state
 // machine that tells Run whether the last attempt reached the "snapshot
 // accepted" point. Backoff resets only when this is true.
+//
+// It deliberately does NOT clear the auth-wedge state. Reaching this point
+// means our own Send(snapshot) returned nil, which is a purely LOCAL fact:
+// Run's own comment on the backoff switch records that bosso's header-only
+// auth rejection arrives later, from Receive, so "every attempt looks
+// connected". Clearing the wedge here would therefore re-stamp
+// authFailingSince on every reconnect of a genuinely wedged daemon — the
+// duration would never accumulate, the suppression budget would never be
+// reached (so the WARN would fire on every single iteration), and
+// GetAuthState would answer `boss daemon doctor` with a wedge that looks
+// seconds old or absent. That is the BOS-942 blind spot this whole change
+// exists to remove. See noteUpstreamAccepted for what does clear it.
 func (c *StreamClient) markConnected() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connected = true
+	c.streamOpen = true
+	c.streamOpenedAt = c.clock.Now()
 }
 
 func (c *StreamClient) markDisconnected() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connected = false
+	c.streamOpen = false
+	c.streamOpenedAt = time.Time{}
+}
+
+// markStreamClosed drops only the live-connectivity bit, leaving `connected`
+// latched for the backoff decision Run makes right after openStream returns.
+//
+// A stream that lasted at least streamAuthSustainedFor also clears the wedge
+// state on the way out, and it does so BEFORE Run classifies the error that
+// ended it: a daemon whose credentials were accepted for hours and is only now
+// being rejected is starting a NEW failure run, so the next failure must warn
+// as a first and its duration must count from now, not from the wedge that
+// ended when this stream was accepted.
+func (c *StreamClient) markStreamClosed() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.streamSustainedLocked() {
+		c.resetAuthFailureLocked()
+	}
+	c.streamOpen = false
+	c.streamOpenedAt = time.Time{}
 }
 
 func (c *StreamClient) wasConnected() bool {

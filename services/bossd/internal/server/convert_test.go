@@ -579,9 +579,14 @@ func (f *fakeSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, er
 func (f *fakeSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) Archive(_ context.Context, _ string) error   { panic("not used") }
-func (f *fakeSessionStore) Resurrect(_ context.Context, _ string) error { panic("not used") }
-func (f *fakeSessionStore) Delete(_ context.Context, _ string) error    { panic("not used") }
+func (f *fakeSessionStore) Archive(_ context.Context, _ string) error { panic("not used") }
+func (f *fakeSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) Delete(_ context.Context, _ string) error { panic("not used") }
 func (f *fakeSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	panic("not used")
 }

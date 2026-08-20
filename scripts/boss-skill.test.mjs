@@ -22,8 +22,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 
 // The canonical committed home is the embedded skillinstall payload; the plugin
 // copy is the `make copy-skills` mirror. Both are asserted so a partial edit trips
@@ -36,18 +40,38 @@ const BOSS_MIRRORS = [
 const CANONICAL = read(`${BOSS_MIRRORS[0]}/SKILL.md`)
 
 test('size ratchet', () => {
-  // Ratchet = committed size rounded up to the next KiB. Never raise this
-  // casually — a growing SKILL.md erodes the context budget of EVERY session on
-  // the machine, because the boss core installs globally.
+  // Exact pin, not a ceiling. The pin used to be the committed size rounded up to
+  // the next KiB, compared one-sidedly — which meant a reduction bought nothing:
+  // it just became headroom the resident body could regrow into with nothing going
+  // red. assertExactSize reds in BOTH directions, so a shrink is only cleared by
+  // banking it here. Never raise this casually — a growing SKILL.md erodes the
+  // context budget of EVERY session on the machine, because the boss core installs
+  // globally.
   //
   // Pre-split this file was 48624 bytes: the whole generated CLI reference was
   // inline. BOS-637 moved it to references/<group>.md behind an index table,
-  // leaving the resident body at ~16.5 KiB. If the reference ever creeps back
-  // inline this ratchet is what catches it — regenerating with `make gen-skill`
-  // must not be able to grow the resident payload by ~30 KiB unnoticed.
-  const RATCHET = 17408
-  const bytes = Buffer.byteLength(CANONICAL, 'utf8')
-  assert.ok(bytes <= RATCHET, `boss SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
+  // leaving the resident body at ~17 KB. If the reference ever creeps back inline
+  // this pin is what catches it — regenerating with `make gen-skill` must not be
+  // able to grow the resident payload by ~30 KB unnoticed.
+  const RATCHET = 17402 // exact measured resident body, re-measured 2026-08-19
+
+  // This pin measures BOSS_MIRRORS[0]; the mirror test at the bottom of this file
+  // compares BOSS_MIRRORS[1] against it. A shortened list would silently stop
+  // gating one of the two, with nothing going red — this is what prevents that.
+  assertArtifactSet(BOSS_MIRRORS, 2, 'BOSS_MIRRORS')
+
+  assertExactSize({
+    constFile: 'scripts/boss-skill.test.mjs',
+    constName: 'RATCHET',
+    expected: RATCHET,
+    label: 'boss resident SKILL.md',
+    measured: measureFile(abs(`${BOSS_MIRRORS[0]}/SKILL.md`)),
+    path: 'services/boss/internal/skillinstall/skills/boss/SKILL.md',
+    residual:
+      'whether the resident body is any GOOD — only that it is this many bytes. A rewrite ' +
+      'landing on the identical byte count passes, and the references/ files this body routes ' +
+      'to are not measured at all, so content moved out of here is invisible to this pin',
+  })
 })
 
 test('frontmatter identifies the skill', () => {
@@ -91,7 +115,7 @@ test('the generated region routes to per-group references instead of inlining th
     )
     assert.match(
       region,
-      /^\| Reference\s+\| Read it when…\s+\|$/m,
+      /^\| Reference\s+\| Read\s+it\s+when…\s+\|$/m,
       `${dir}: index table needs its header row`,
     )
     const rows = region.match(/^\| `references\/[a-z][a-z0-9-]*\.md`\s+\| .+\|$/gm) ?? []

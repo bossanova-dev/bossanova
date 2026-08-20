@@ -57,11 +57,44 @@ func NewDispatcher(runners map[string]AgentRunner, lookup func(sessionID string)
 	if lookup == nil {
 		panic("agent.NewDispatcher: lookup must not be nil")
 	}
+	warnUnboundedStoppers(runners, logger)
 	return &Dispatcher{
 		runners:      runners,
 		lookup:       lookup,
 		defaultAgent: defaultAgent,
 		logger:       logger,
+	}
+}
+
+// warnUnboundedStoppers turns StopByAgent's prose rule — "a future runner that
+// talks to something remote must implement ContextualStopper rather than rely on
+// this fallback" — into an observable fact, at the one place runners are
+// registered.
+//
+// A warning, never a panic: a daemon must still come up, and a local synchronous
+// runner that returns immediately is a legitimate non-implementer. The message
+// is therefore worded as an observation about that runner's stop, not as a
+// fault, and its value is that a reviewer or operator reading bossd.stderr.log
+// after adding a remote runner sees the demotion instead of discovering it as a
+// wedged create months later.
+//
+// It fires zero times in production today, which is the intended state rather
+// than dead code: every entry of the map cmd/main.go builds is a *PluginRunner,
+// and plugin_runner.go asserts that type against ContextualStopper at compile
+// time. NoopRunner is not a counterexample — the no-plugin path installs it as
+// the whole AgentDispatcher and never reaches NewDispatcher at all. So the only
+// things this can warn about are test fakes and the next runner someone adds.
+func warnUnboundedStoppers(runners map[string]AgentRunner, logger zerolog.Logger) {
+	for name, runner := range runners {
+		if runner == nil {
+			continue
+		}
+		if _, ok := runner.(ContextualStopper); ok {
+			continue
+		}
+		logger.Warn().
+			Str("agent", name).
+			Msg("agent runner does not implement ContextualStopper; its stop is unbounded and ignores the caller's deadline (harmless for a local runner that returns immediately, a defect for any runner that talks to something remote)")
 	}
 }
 

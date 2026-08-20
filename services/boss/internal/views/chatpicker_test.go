@@ -200,7 +200,9 @@ func (s *chatPickerStub) GetChatTranscript(context.Context, *pb.GetChatTranscrip
 func (s *chatPickerStub) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) NotifyAuthChange(context.Context, string) error { return nil }
+func (s *chatPickerStub) NotifyAuthChange(context.Context, string) (*pb.NotifyAuthChangeResponse, error) {
+	return nil, nil
+}
 func (s *chatPickerStub) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }
@@ -267,6 +269,10 @@ func (s *chatPickerStub) TestAccount(context.Context, string) (*pb.TestAccountRe
 	panic("unused")
 }
 func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+
+func (s *chatPickerStub) GetAuthState(context.Context) (*pb.GetAuthStateResponse, error) {
 	panic("unused")
 }
 

@@ -272,9 +272,17 @@ func newRegistry() map[string]Prose {
 				{Command: "boss chat wait <session-id|chat-id>"},
 				{Command: "boss chat wait <session-id|chat-id> --timeout 10m"},
 				{
+					// `sed`, not `awk '{print $2}'`, and not `cut -d' ' -f2` either. This example is
+					// rendered verbatim into a shell fence in the published `boss` skill, and a slash
+					// command rewrites `$1`-`$9` in a skill body before any shell parses it, so the awk
+					// form would ship with its field reference blanked. `cut` is not the fix: the real
+					// output pads the label to a column, so the delimiter run makes field 2 empty. The
+					// substitution strips the label and any following whitespace, which is what the
+					// reader wants and what check-skill-shell header rule (j) requires of the rendered
+					// file. A Go string is outside that gate's reach, so the constraint is recorded here.
 					Command: "CHAT=$(boss new --agent codex --repo my-repo " +
 						"--prompt \"second opinion on PR #42\" --detach | " +
-						"awk '/^chat-id/{print $2}') && boss chat wait $CHAT",
+						"sed -n 's/^chat-id:[[:space:]]*//p') && boss chat wait $CHAT",
 					Explanation: "Full cross-agent second-opinion recipe",
 				},
 			},

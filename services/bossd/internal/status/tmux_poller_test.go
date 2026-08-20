@@ -417,9 +417,14 @@ func (m *mockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, er
 func (m *mockSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }
-func (m *mockSessionStore) Archive(_ context.Context, _ string) error   { return nil }
-func (m *mockSessionStore) Resurrect(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStore) Delete(_ context.Context, _ string) error    { return nil }
+func (m *mockSessionStore) Archive(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+	return false, nil
+}
+func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+	return false, nil
+}
+func (m *mockSessionStore) Delete(_ context.Context, _ string) error { return nil }
 func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	return 0, nil
 }

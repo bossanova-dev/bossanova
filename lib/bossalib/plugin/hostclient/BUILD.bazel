@@ -18,6 +18,7 @@ go_test(
     srcs = ["hostclient_test.go"],
     embed = [":hostclient"],
     deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",

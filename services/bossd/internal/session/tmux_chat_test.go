@@ -392,7 +392,7 @@ func TestInjectTmuxChatInput_DeliveryMatrix(t *testing.T) {
 			t.Run(label, func(t *testing.T) {
 				ctx := context.Background()
 				h := newStartTmuxChatHarness(t)
-				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", input, cmdResp); err != nil {
+				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", input, cmdResp, h.agentFake, "claude"); err != nil {
 					t.Fatalf("injectTmuxChatInput: %v", err)
 				}
 				got := h.tmuxFake.enterSendKeysCount()
@@ -426,7 +426,12 @@ type startTmuxChatHarness struct {
 	lc         *Lifecycle
 }
 
-func newStartTmuxChatHarness(t *testing.T) *startTmuxChatHarness {
+// newStartTmuxChatHarness builds the StartTmuxChat fixture. tmuxOpts are
+// appended to the tmux client's own options, so a test can shorten a readiness
+// budget it would otherwise have to sit through at production length — the
+// session-start wait now runs twice (BOS-895), which doubles what a never-ready
+// pane costs a test.
+func newStartTmuxChatHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxChatHarness {
 	t.Helper()
 	h := &startTmuxChatHarness{
 		t:         t,
@@ -439,7 +444,7 @@ func newStartTmuxChatHarness(t *testing.T) *startTmuxChatHarness {
 		wt:        &mockWorktreeManager{},
 		logsDir:   t.TempDir(),
 	}
-	h.tmuxClient = tmux.NewClient(tmux.WithCommandFactory(h.tmuxFake.factory))
+	h.tmuxClient = tmux.NewClient(append([]tmux.Option{tmux.WithCommandFactory(h.tmuxFake.factory)}, tmuxOpts...)...)
 	h.repos.repos["repo-abcdef12"] = &models.Repo{
 		ID:                "repo-abcdef12",
 		LocalPath:         "/tmp/repo",
@@ -1518,6 +1523,78 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	}
 	if !strings.Contains(h.chats.markStartFailedCalls[0].reason, "send plan failed") {
 		t.Errorf("MarkStartFailed reason missing context, got %q", h.chats.markStartFailedCalls[0].reason)
+	}
+	// The readiness wait in front of this delivery is retried (BOS-895); the
+	// delivery itself is not, and this is the layer where getting that wrong
+	// would be an incident rather than a test failure — the pane here is
+	// HEALTHY, so a retry that reached past the wait would re-paste a payload
+	// that may already have landed. Exactly one load-buffer is the proof.
+	if n := h.tmuxFake.subcommandCount("load-buffer"); n != 1 {
+		t.Errorf("tmux load-buffer ran %d times, want exactly 1 — a post-delivery failure was retried", n)
+	}
+}
+
+// TestStartTmuxChat_ReadinessWaitIsRetriedBeforeFailing is the session-level
+// half of BOS-895. The failure it covers is the one from PRs #9499/#361/#362
+// read one layer up: the agent TUI is alive and drawing, just not finished, and
+// a single expired readiness budget used to condemn the whole chat to
+// "(failed to start)". The wait now runs twice before the teardown above fires.
+//
+// The elapsed-time assertion is doing the real work. Attempt boundaries are
+// invisible from here — the fake sees an unbroken run of capture-pane calls
+// either way — so the only evidence reachable at this layer that the
+// session-start path (and not the one-attempt send path) is what ran is that it
+// spent two budgets, and said so.
+func TestStartTmuxChat_ReadinessWaitIsRetriedBeforeFailing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	const budget = 150 * time.Millisecond
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t, tmux.WithSessionStartReadyDeadline(budget))
+	// A pane that is up and capturable but has not drawn a composer yet. This
+	// is NOT the same as a dead pane: capture-pane succeeds every time, which
+	// is what keeps the wait polling instead of short-circuiting.
+	h.tmuxFake.capturePaneOutput = "Welcome to Claude — still booting\n"
+
+	started := time.Now()
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit}, "T", HookOpts{})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("expected an error when the composer never becomes ready")
+	}
+	if elapsed < 2*budget {
+		t.Errorf("start failed after %v, less than two %v readiness budgets — the wait was not retried", elapsed, budget)
+	}
+	if !strings.Contains(err.Error(), "after 2 attempts") {
+		t.Errorf("error does not report that the readiness wait was retried: %v", err)
+	}
+
+	// Nothing may have been typed into a pane that never showed a composer, and
+	// the failure path is otherwise unchanged: tmux torn down, row preserved
+	// and stamped so the chat list can show "(failed to start)".
+	for _, sub := range []string{"send-keys", "load-buffer", "paste-buffer"} {
+		if h.tmuxFake.hasSubcommand(sub) {
+			t.Errorf("tmux %s ran even though the composer was never ready", sub)
+		}
+	}
+	if !h.tmuxFake.hasSubcommand("kill-session") {
+		t.Error("expected tmux kill-session after the readiness wait was exhausted")
+	}
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected NO row delete (row must be preserved as failed-to-start), got %v", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call, got %d", len(h.chats.markStartFailedCalls))
+	}
+	reason := h.chats.markStartFailedCalls[0].reason
+	if !strings.Contains(reason, "send plan failed") {
+		t.Errorf("MarkStartFailed reason missing context, got %q", reason)
+	}
+	// The operator reads this string in the chat list, so it must say the wait
+	// was retried rather than implying one budget was the whole story.
+	if !strings.Contains(reason, "after 2 attempts") {
+		t.Errorf("MarkStartFailed reason hides the retry, got %q", reason)
 	}
 }
 

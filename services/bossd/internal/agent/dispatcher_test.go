@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -507,4 +508,82 @@ func TestNewDispatcher_PanicsOnNilLookup(t *testing.T) {
 	}()
 
 	_ = NewDispatcher(map[string]AgentRunner{}, nil, "claude", zerolog.Nop())
+}
+
+// unboundedStopRunner is a runner that does NOT implement ContextualStopper —
+// the shape a future remote runner would have if it relied on StopByAgent's
+// unbounded fallback. Registering one must be observable at construction.
+type unboundedStopRunner struct{}
+
+func (r *unboundedStopRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+	return sid, nil
+}
+func (r *unboundedStopRunner) Stop(_ string) error      { return nil }
+func (r *unboundedStopRunner) IsRunning(_ string) bool  { return false }
+func (r *unboundedStopRunner) ExitError(_ string) error { return nil }
+func (r *unboundedStopRunner) Subscribe(_ context.Context, _ string) (<-chan OutputLine, error) {
+	return nil, nil
+}
+func (r *unboundedStopRunner) History(_ string) []OutputLine { return nil }
+
+// The rule "a future runner that talks to something remote must implement
+// ContextualStopper rather than rely on this fallback" used to live only in a
+// comment. NewDispatcher now states it as an observable fact at the single place
+// runners are registered, so a silent demotion to the unbounded stop shows up in
+// the log instead of surfacing months later as a wedged create.
+func TestNewDispatcher_WarnsForRunnerWithoutContextualStopper(t *testing.T) {
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+
+	NewDispatcher(map[string]AgentRunner{
+		"legacy-remote": &unboundedStopRunner{},
+		"claude":        &blockingContextualRunner{},
+	}, func(string) (string, error) { return "", nil }, "claude", logger)
+
+	out := buf.String()
+	if !strings.Contains(out, "legacy-remote") {
+		t.Errorf("log = %q, want a warning naming the runner whose stop is unbounded", out)
+	}
+	if !strings.Contains(out, "ContextualStopper") {
+		t.Errorf("log = %q, want the warning to name the interface the runner is missing", out)
+	}
+	if !strings.Contains(out, `"level":"warn"`) {
+		t.Errorf("log = %q, want the message at warn level", out)
+	}
+	// A runner that DOES implement the interface must not be warned about, or
+	// the signal is noise the first time anyone reads it. The warned cases are
+	// test fakes and whatever runner someone adds next — not NoopRunner, which
+	// never reaches NewDispatcher — which is why this is a warning, not a panic.
+	if strings.Contains(out, `"agent":"claude"`) {
+		t.Errorf("log = %q, warned about a runner that implements ContextualStopper", out)
+	}
+}
+
+// The guard must not have changed routing: a ContextualStopper still goes
+// through StopWithContext, and a context that is ALREADY cancelled still ends
+// the call rather than falling through to the unbounded Stop (which blocks
+// forever in this fake, so a regression fails here rather than hanging).
+func TestDispatcher_StopByAgent_CancelledContextStillEndsTheCall(t *testing.T) {
+	runner := &blockingContextualRunner{}
+	d := NewDispatcher(map[string]AgentRunner{"claude": runner}, func(string) (string, error) {
+		return "claude", nil
+	}, "claude", zerolog.Nop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- d.StopByAgent(ctx, "claude", "agent-sid-9") }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StopByAgent err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopByAgent did not honor an already-cancelled context")
+	}
+	if !runner.sawContext() {
+		t.Error("the runner's contextual stop was never used; StopByAgent fell back to the unbounded Stop")
+	}
 }

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -159,4 +161,194 @@ func TestLoginModelErrorBlockFitsTerminalWidth(t *testing.T) {
 			}
 		})
 	}
+}
+
+// loginNotifyStub records the daemon auth-change notifications the login view
+// queues. It embeds the interface (nil) so any other call panics, keeping the
+// fake honest about what this view depends on.
+type loginNotifyStub struct {
+	client.BossClient
+
+	mu      sync.Mutex
+	actions []string
+}
+
+func (s *loginNotifyStub) NotifyAuthChange(_ context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actions = append(s.actions, action)
+	return nil, nil
+}
+
+func (s *loginNotifyStub) recorded() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.actions...)
+}
+
+// runFirstCmd runs the first command of a batched result, which is the slot the
+// login view reserves for the daemon notification.
+func runFirstCmd(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("login complete returned nil cmd, want batched post-login commands")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("login complete cmd returned %T, want tea.BatchMsg", cmd())
+	}
+	if len(batch) == 0 {
+		t.Fatal("login complete batch is empty")
+	}
+	batch[0]()
+}
+
+func TestLoginModelVerifiedNotifiesAndRendersEmail(t *testing.T) {
+	stub := &loginNotifyStub{}
+	m := LoginModel{ctx: context.Background(), client: stub}
+	m.SetAuthChangeQueue(newAuthChangeQueue())
+
+	updated, cmd := m.Update(loginCompleteMsg{
+		email:        "dev@example.com",
+		verification: auth.LoginVerification{Outcome: auth.LoginVerified, Email: "dev@example.com"},
+	})
+	m = updated.(LoginModel)
+	runFirstCmd(t, cmd)
+
+	if m.phase != loginPhaseSuccess {
+		t.Fatalf("phase = %v, want success", m.phase)
+	}
+	if got := stub.recorded(); len(got) != 1 || got[0] != "login" {
+		t.Fatalf("daemon notifications = %v, want exactly one \"login\"", got)
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "Logged in as dev@example.com") {
+		t.Fatalf("success view missing the email label:\n%q", m.View().Content)
+	}
+}
+
+// An inconclusive verdict may or may not have landed, so the view must not
+// claim a login happened and must not wake the daemon into connecting.
+func TestLoginModelInconclusiveShowsNoteAndSkipsNotify(t *testing.T) {
+	stub := &loginNotifyStub{}
+	m := LoginModel{ctx: context.Background(), client: stub}
+	m.SetAuthChangeQueue(newAuthChangeQueue())
+
+	verdict := auth.LoginVerification{
+		Outcome: auth.LoginVerifyInconclusive,
+		Reason:  auth.LoginVerifyReasonReadFailed,
+		Email:   "dev@example.com",
+	}
+	updated, cmd := m.Update(loginCompleteMsg{email: verdict.Email, verification: verdict})
+	m = updated.(LoginModel)
+	runFirstCmd(t, cmd)
+
+	if got := stub.recorded(); len(got) != 0 {
+		t.Fatalf("daemon notifications = %v, want none for an unconfirmed write", got)
+	}
+
+	view := stripANSI(m.View().Content)
+	if strings.Contains(view, "Logged in as") {
+		t.Errorf("inconclusive view claimed a confirmed login:\n%q", view)
+	}
+	for _, want := range []string{"boss auth-status", "boss login"} {
+		if !strings.Contains(normalizeViewText(view), want) {
+			t.Errorf("inconclusive view missing %q:\n%q", want, view)
+		}
+	}
+}
+
+// A verdict saying nothing was stored must surface as a login failure, with the
+// reason and the remediation pointer, not as a success screen.
+func TestLoginPollResultRecordNotUpdatedDrivesErrorPhase(t *testing.T) {
+	verdict := auth.LoginVerification{
+		Outcome: auth.LoginVerifyRecordNotUpdated,
+		Reason:  auth.LoginVerifyReasonRecordAbsent,
+	}
+	msg := loginPollResult(verdict, nil)
+	errMsg, ok := msg.(loginErrorMsg)
+	if !ok {
+		t.Fatalf("loginPollResult returned %T, want loginErrorMsg", msg)
+	}
+
+	stub := &loginNotifyStub{}
+	m := LoginModel{ctx: context.Background(), client: stub, width: 80}
+	m.SetAuthChangeQueue(newAuthChangeQueue())
+	updated, cmd := m.Update(errMsg)
+	m = updated.(LoginModel)
+	if cmd != nil {
+		t.Fatal("a failed login must not queue any command")
+	}
+	if m.phase != loginPhaseError {
+		t.Fatalf("phase = %v, want error", m.phase)
+	}
+	if got := stub.recorded(); len(got) != 0 {
+		t.Fatalf("daemon notifications = %v, want none", got)
+	}
+
+	view := normalizeViewText(stripANSI(m.View().Content))
+	for _, want := range []string{"Login failed", "no credential record was found", "boss auth-status"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("error view missing %q:\n%q", want, view)
+		}
+	}
+}
+
+// A verified or inconclusive verdict both reach the success message; only the
+// error path is diverted.
+func TestLoginPollResultPassesThroughTheVerdict(t *testing.T) {
+	for _, outcome := range []auth.LoginVerifyOutcome{auth.LoginVerified, auth.LoginVerifyInconclusive} {
+		verdict := auth.LoginVerification{Outcome: outcome, Email: "dev@example.com"}
+		msg := loginPollResult(verdict, nil)
+		complete, ok := msg.(loginCompleteMsg)
+		if !ok {
+			t.Fatalf("%s: loginPollResult returned %T, want loginCompleteMsg", outcome, msg)
+		}
+		if complete.verification.Outcome != outcome {
+			t.Errorf("%s: carried outcome = %s", outcome, complete.verification.Outcome)
+		}
+		if complete.email != "dev@example.com" {
+			t.Errorf("%s: carried email = %q", outcome, complete.email)
+		}
+	}
+
+	pollErr := errors.New("device code expired")
+	if msg := loginPollResult(auth.LoginVerification{}, pollErr); !errors.Is(msg.(loginErrorMsg).err, pollErr) {
+		t.Fatalf("poll error was not passed through: %v", msg)
+	}
+}
+
+// The rendered surfaces are built from the enumerated reason alone; the
+// verdict's Err may wrap keyring text that embeds record bytes.
+func TestLoginViewsCarryNoTokenMaterial(t *testing.T) {
+	const secret = "sk-live-super-secret-token"
+	leaky := errors.New("keyring: " + secret)
+
+	inconclusive := LoginModel{
+		phase: loginPhaseSuccess,
+		width: 80,
+		verification: auth.LoginVerification{
+			Outcome: auth.LoginVerifyInconclusive,
+			Reason:  auth.LoginVerifyReasonLockTimeout,
+			Err:     leaky,
+		},
+	}
+	notUpdated := loginPollResult(auth.LoginVerification{
+		Outcome: auth.LoginVerifyRecordNotUpdated,
+		Reason:  auth.LoginVerifyReasonAccessTokenMismatch,
+		Err:     leaky,
+	}, nil)
+
+	rendered := inconclusive.View().Content + "\n" + notUpdated.(loginErrorMsg).err.Error()
+	if strings.Contains(rendered, secret) {
+		t.Fatalf("login surfaces leaked token material:\n%q", rendered)
+	}
+	if strings.Contains(rendered, "keyring: ") {
+		t.Fatalf("login surfaces printed the raw error:\n%q", rendered)
+	}
+}
+
+// normalizeViewText collapses the wrapping the renderers apply so an assertion
+// on a two-word phrase does not depend on where a line happened to break.
+func normalizeViewText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

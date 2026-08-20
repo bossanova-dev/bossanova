@@ -277,6 +277,10 @@ func TestMockDaemonUnfixturedRPCsStayUnimplemented(t *testing.T) {
 			_, err := d.UpdateSettings(ctx, connect.NewRequest(&pb.UpdateSettingsRequest{}))
 			return err
 		}},
+		{"GetAuthState", func(d *tuitest.MockDaemon) error {
+			_, err := d.GetAuthState(ctx, connect.NewRequest(&pb.GetAuthStateRequest{}))
+			return err
+		}},
 	}
 
 	for _, tt := range tests {

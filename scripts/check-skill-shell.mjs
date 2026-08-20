@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // check-skill-shell — a `bash -n` syntax gate over every fenced shell block in the skill tree,
-// plus one non-syntactic predicate (at most one UNQUOTED glob per `rm`/`find` invocation).
+// plus non-syntactic predicates (at most one UNQUOTED glob per `rm`/`find` invocation; no unquoted
+// glob at all in an option value).
 //
 // Why this exists: a mid-review fix once left a markdown fence unclosed in a SKILL.md; prettier
 // normalized it to a four-backtick fence, which swallowed the block below it. The phase became a
@@ -128,6 +129,155 @@
 //     written as an inline code span in prose is invisible here. `check-skill-shell.test.mjs` carries
 //     a payload-wide `file://`-concatenation assertion over both roots to cover exactly that gap.
 //
+// (i) A GLOB IN AN OPTION VALUE NEEDS NO SECOND GLOB. (f) needs two patterns before it calls a line
+//     wrong, because on `rm`/`find` argv one glob is the ordinary correct spelling. In an OPTION
+//     VALUE it never is: `grep --include=*.md`, `rg --glob=*.go` and `find -name *.yml` all hand the
+//     pattern to the command to match internally, so the shell was never meant to see it. Measured
+//     on fish 4.6.0, `grep -rn boss-build . --include=*.md` does not run grep at all — fish reports
+//     `No matches for wildcard '--include=*.md'` and exits 124, which an agent reads as "the pattern
+//     is absent". That abort is UNCONDITIONAL: the wildcard is matched against the whole word, and
+//     no file is ever named `--include=README.md`, so the attached form aborts even in a directory
+//     full of `.md`. The SEPARATED spelling is the silent one — there the glob is a word of its own,
+//     so it expands, the option eats the first filename as its value and the rest become path
+//     arguments. Measured with `README.md` and `other.md` in the CWD, `--include *.md` expanded to
+//     `--include other.md README.md`: grep filtered on `other.md`, never looked at `README.md`, and
+//     exited 0 — an answer that is simply wrong. One spelling lies by aborting and the other lies by
+//     answering, so the rule fires on ONE unquoted glob. `*` is the only fish wildcard among these
+//     (`?` stopped being one in fish 3.0, and fish has no bracket globs), but zsh — named alongside
+//     fish in (f) — aborts on an unmatched `?` or `[…]` in an option value just the same, so those
+//     marks are reported too. The attached `--opt=<glob>` form is recognised structurally on any
+//     option; the space-separated form is allowlisted to options known to take a pattern value,
+//     because nothing in the shell says which options take a value and "any long option" reads
+//     `git diff --stat [BASE_SHA]..[HEAD_SHA]` as one — a false POSITIVE, the direction this gate
+//     must never fail in. The attached form has no allowlist to hide behind, so it carves out that
+//     same word by SHAPE: a `[UPPER_SNAKE]` span in the value is this corpus's documentation
+//     placeholder, not a bracket glob, so `--session=[SESSION_ID]` is clean. The carve-out is the
+//     SPAN and not the value, so `--include=[BASE_SHA]*.md` still reports. Without it the two
+//     spellings disagree about the same placeholder. That allowlist is keyed by COMMAND, not by
+//     option spelling: `-g` is
+//     ripgrep's glob but gcc's debug flag, ls's group flag and sort's general-numeric flag, so a
+//     flat list rejects `gcc -g *.c` — a single ordinary argv glob (f) deliberately allows.
+//     Two syntactic contexts are exempt from BOTH forms, because the shell performs no pathname
+//     expansion in either: a `case` pattern (`case "$1" in --out=*)` — the canonical argument
+//     parser) and the right-hand side of `[[ … == … ]]`. The POSIX `[` command is not exempt; it is
+//     an ordinary command whose unquoted word IS expanded. ACCEPTED FALSE NEGATIVES, same direction
+//     as (f) and (h): a separated value after an option outside its command's list, a separated
+//     value whose command word cannot be resolved, a subshell whose closing `)` follows the glob
+//     directly, and an array literal (`arr=(--include=*.md)`, which the POSIX case-branch
+//     heuristic reads as a pattern list even though bash and zsh do expand its elements) are all
+//     unreported. One false POSITIVE is known and left: `[[` is matched within a logical line, so a
+//     test broken across a newline by a trailing `||` or `&&` — rather than by a backslash, which
+//     `joinContinuations` already rejoins — loses the exemption for the operands after the break.
+//     Holding those lines would mean teaching the cross-newline accumulator a second reason to
+//     hold, on the one path whose coverage 14bx2 pins; the corpus has no such line today.
+//
+// (j) A PUBLISHED SKILL BODY MUST NOT SPELL `$0`-`$9`. Not a shell rule at all — the substitution
+//     happens ABOVE the shell. A skill core is also reachable as a slash command, and the harness
+//     replaces every `$0`-`$9` in the body with that invocation's argument tokens before the agent
+//     reads a byte of it, so the on-disk text and the executed text are different programs.
+//
+//     THE INDEX IS ZERO-BASED, which is the first thing to get wrong here because every shell
+//     instinct says otherwise. `$N` is shorthand for `$ARGUMENTS[N]`, "such as `$0` for the first
+//     argument or `$1` for the second" (code.claude.com/docs/en/slash-commands, quoted 2026-08-19).
+//     `$0` is therefore the token an invocation is MOST likely to overwrite, not the one shell
+//     tradition would let you skip; and the awk idiom `!seen[$0]++`, which every author reads as
+//     "the whole record", is a live rewrite target.
+//
+//     Measured incident: `awk 'NR == 1 {print $2}'` in a published core reached the agent as
+//     `awk 'NR == 1 {print }'`, which awk accepts — it prints the whole line — so the pipeline
+//     stayed exit-0 and handed a wrong base branch on silently. Note what that measurement does and
+//     does not settle. The documented contract is that "an indexed placeholder with no corresponding
+//     argument, such as `$2` when only one argument was passed, stays in the content unchanged", so
+//     the blank-on-no-argument behaviour we measured is NOT the contract — treat the two as a known
+//     disagreement, and do not lean on either. The failure that holds under BOTH readings, and the
+//     worse one, is an argument that IS supplied landing in a slot the author never meant to have.
+//
+//     QUOTING DOES NOT HELP, and this is the part that surprises everyone: single quotes protect a
+//     `$` from the SHELL, and the shell never sees these bytes. There is exactly ONE documented
+//     escape — a single backslash directly before the token, `\$1` — and it is not a general
+//     remedy: it works where the byte is PROSE, and it does not survive a single-quoted awk program,
+//     where awk itself would receive the backslash. Nor is there a `printf` wrapper that helps. So
+//     the fixes for code are to not write the token — `head -1 | cut -d' ' -f2` instead of
+//     `awk '{print $2}'`, `getline` into a named variable instead of `$0`, an env assignment prefix
+//     instead of a `$1` parameter, `$?` captured by the trap CALLER instead of passed as `$1` — or,
+//     where a positional is genuinely wanted, to waive that one line with a reason:
+//
+//         BASE="${1:-$(…)}"   # skill-positional-ok: braced, so the harness leaves it intact
+//
+//     Note what that reason has to establish, because a waiver is a CLAIM and a false one is worse
+//     than the finding it silences. It is not enough to say a positional is "intended": the reason
+//     must say why the token survives to the shell at all. A BARE `$1` in an injected body never
+//     does, so no reason can make one correct — a waiver there is only ever "this body is not
+//     injected". The braced arm is the case a waiver genuinely fits.
+//
+//     The waiver is scoped to the offender's OWN PHYSICAL LINE — a marker on the line that closes a
+//     multi-line group must not reach back to the line that opened it. This is why the rule walks
+//     physical lines where every other rule here walks backslash-joined groups: joining would put a
+//     marker and an offender written on different lines into one unit, and would also let a comment
+//     ending in a backslash swallow the lines after it unscanned. It must carry a NON-EMPTY reason,
+//     and counts only in a real comment — quote-aware, so the three `#` in `sed 's#^origin/##'`
+//     waive nothing. Fail-closed: no marker means a finding.
+//
+//     ONE PLACE THE WAIVER DOES NOT REACH, and it fails in the safe direction: a marker written on a
+//     line inside a still-open `$( … )` is not recognised, because the tokenizer is mid-substitution
+//     there and does not report a comment for that line. The offender is still reported, so the cost
+//     is a finding you cannot waive in place rather than a miss you never see. Lift the assignment
+//     out of the substitution, or waive it on the line that closes. HEREDOC PAYLOAD IS NOT THAT
+//     CASE — a marker inside a heredoc IS recognised (see `heredocOptOut`), by locating the line's
+//     first `#` directly, since the tokenizer never sees a payload line at all. It carries the cost
+//     the payload paragraph below states: the marker ships in whatever the heredoc writes out.
+//
+//     WHAT THE HARNESS ACTUALLY SUBSTITUTES is the BARE spelling only — `$0`-`$9`, `$ARGUMENTS`,
+//     `$ARGUMENTS[N]`, and a frontmatter `$name`. The braced forms are NOT on the documented list,
+//     so `${1:-default}` reaches bash intact and expands the ordinary way. This rule still reports
+//     them, deliberately and precautionarily; the reasoning, and why the arm covers every expansion
+//     operator rather than two of them, is recorded at `BARE_POSITIONAL_PATTERN` below.
+//
+//     HEREDOC PAYLOAD IS IN SCOPE, and it is the one place this rule deliberately departs from the
+//     shell reading every other rule here takes. Sibling rules mask heredoc bodies because their
+//     subject is what bash executes, and payload is data. This rule's subject is what the harness
+//     rewrites, which is bytes: a positional inside `<<'EOF'` is blanked exactly like one outside
+//     it, quoted delimiter and all — so a heredoc that writes out a wrapper script taking arguments
+//     ships that script with the arguments already deleted. The line is tokenized masked (so an
+//     apostrophe in a commit-message heredoc cannot open a quote) and SCANNED raw. Measured over
+//     both authoring roots when this was written: 0 findings, so the hole closed at no cost.
+//
+//     ACCEPTED FALSE NEGATIVE — A COMMENT IS NOT SCANNED, and the harness does not care that it is
+//     a comment. The rule cuts its scan at the comment boundary on purpose: a waiver has to be able
+//     to NAME the token it waives without tripping the rule it is waiving. The cost is that a
+//     positional written in an ordinary explanatory comment is missed, and it will still be
+//     rewritten — a comment that explains this very defect gets mangled by it. Measured at the time
+//     of writing, in LINES rather than occurrences (one line can spell several): across both
+//     authoring roots 8 fenced-shell lines carry a `$0`-`$9` token and the corpus reports 0
+//     findings — but from TWO different causes, which must not be conflated into one number.
+//     SEVEN are silenced by this comment cut, and every one of them is in a `references/*.md` file
+//     (five in `boss-build/references/review-stack.md`, two in
+//     `boss-review/references/falsification.md`) — files a skill READS at runtime rather than
+//     injecting, so the substitution never reaches them and the miss costs nothing today. The
+//     EIGHTH is not a comment at all: `boss-review/SKILL.md:300` is LIVE CODE, in a body a slash
+//     command really does inject, and it is silenced by the explicit waiver on that line — by the
+//     escape hatch below, not by this cut. Closing the comment case would need the reason string
+//     parsed out of the comment before scanning the remainder — a separate change, not a patch
+//     here.
+//
+//     ACCEPTED FALSE NEGATIVE, same direction as (f) and (h). The scan surface is INHERITED, not
+//     chosen: this rule runs on the fenced blocks `extractFencedBlocks` yields whose info string is
+//     in `SHELL_INFO_STRINGS`, so a positional written in prose or in a non-shell fence is invisible
+//     to it even though the harness rewrites it just the same. Measured across both authoring
+//     roots: 8 fenced-shell lines carry a positional, and a whole-file `$N` scan finds the same 8
+//     — so the surface this rule gives up is currently EMPTY, in prose and in non-shell fences
+//     alike. Read that as a fact about today's corpus and not as a bound: it was 10 against 8
+//     earlier on this branch, the two extra being `boss-review/SKILL.md` bullet prose that named
+//     the positional its fenced code takes, and it fell to 8 only because that prose was reworded
+//     to describe the argument instead of spelling it. Nothing stops the next author writing it
+//     back. Widening the surface is a separate change to the extractor, not a patch here — see
+//     BOS-782.
+//
+//     Related but distinct, and NOT this rule's business: the Codex mirror generator rewrites a
+//     backticked leading slash as a slash-command (see `.claude/skills/boss-plan-compound-
+//     engineering/SKILL.md:73-75`, which works around it in prose). Same class of defect — a
+//     publisher rewriting a skill body before execution — different trigger and different tool.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -144,6 +294,15 @@ import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
 
+// The two AUTHORING roots. Deliberately NOT scanned, for the same reason
+// `scripts/check-skill-symbols.mjs` gives: `plugins/bossd-plugin-claude/skilldata/skills/` and
+// `.codex/skills/` are generated mirrors, gated for freshness by `make copy-skills` /
+// `make codex-skills-check`, so scanning them would double-report every finding at the copy
+// rather than at the file an author can edit. That exclusion is only as strong as those freshness
+// gates, and rule (j) is the first rule here whose subject is bytes rather than shell semantics —
+// so it was measured rather than assumed: pointed at `.codex/skills` alone, this checker reports
+// exactly the un-regenerated mirrors of `.claude/skills` findings and nothing else. A positional
+// cannot reach a mirror without first standing in a root below.
 export const SKILL_ROOTS = ['services/boss/internal/skillinstall/skills', '.claude/skills']
 
 export const SHELL_INFO_STRINGS = new Set(['bash', 'sh', 'shell', 'zsh'])
@@ -552,6 +711,58 @@ function skipArithmetic(line, start, state) {
   return line.length
 }
 
+// One shared answer to "does this `#` open a comment?", because six scanners in this file used to
+// each carry their own inline spelling of it and they had already drifted apart. A `#` opens a
+// comment only where a WORD could start: at the very beginning of the text, or right after an
+// unquoted separator. Mid-word it is an ordinary character (`foo#bar`, `refs/heads/#1`), and inside
+// a `${…}` parameter expansion it is an operator or pattern text (`${#x}`, `${x#pat}`), never a
+// comment. Quote state is the CALLER's to track — every call site here is already inside a
+// quote-aware loop and only consults this predicate on unquoted bytes.
+//
+// Two ways to answer the word-boundary question, because the callers know it in two different forms:
+//   - `wordOpen` — the caller already tracks whether a word is open (a tokenizer). When supplied it
+//     is authoritative on its own and `separators` is not consulted.
+//   - `separators` — the caller inspects the preceding byte. `escapedAt` names an index whose byte
+//     was backslash-escaped, so `\ #` is a literal space-then-hash inside a word, not a comment.
+//     `separators: null` is a THIRD answer, and deliberately NOT the same as omitting the option: it
+//     skips the preceding-byte test outright, so every unquoted `#` the caller reaches opens a
+//     comment. A caller that has already settled word-boundedness by other means wants exactly that,
+//     and omitting the option instead would silently re-litigate it against the default class — a
+//     byte that caller knows is not the evidence. `null` is spelled out rather than inferred so the
+//     two intents cannot be confused at a call site. NO PRODUCTION CALLER PASSES IT TODAY — the one
+//     scanner that has settled word-boundedness (`tokenizeShellLine`) says so with `wordOpen`, which
+//     is authoritative earlier and never consults `separators` at all. It is kept as a supported
+//     parameterization, and pinned by a test, so the next caller with that shape has an answer that
+//     is not "omit it and hope the default class agrees".
+const COMMENT_SEPARATORS = /[\s;|&(){}]/
+
+// The heredoc delimiter scanner uses a NARROWER set deliberately: it runs with its own brace/paren
+// frame stack, so `}` and `)` there are frame closers it has already consumed rather than separators
+// a word may follow. Kept as a distinct constant so the difference stays visible instead of being
+// re-derived — or quietly widened — at the call site.
+const HEREDOC_COMMENT_SEPARATORS = /[\s;&|(]/
+
+export function startsComment(text, index, options = {}) {
+  if (text[index] !== '#') return false
+  const {
+    separators = COMMENT_SEPARATORS,
+    wordOpen = null,
+    escapedAt = null,
+    inParam = false,
+  } = options
+  if (inParam) return false
+  if (wordOpen !== null) return wordOpen === false
+  if (index === 0) return true
+  if (separators !== null && !separators.test(text[index - 1])) return false
+  if (escapedAt !== null && index - 1 === escapedAt) return false
+  return true
+}
+
+// NOT converged into the predicate above: the four line-level `trimmed.startsWith('#')` checks
+// (search this file for `startsWith('#')`). Those ask a different question — "is this whole physical
+// line a comment?" — on already-trimmed text with no index, no quote state, and no word to be inside
+// of. Folding them in would mean inventing arguments for state they do not have.
+
 // `joins` holds the indices in `line` at which a physical newline was elided by a backslash
 // continuation, so the delimiter parser can put back the pair bash itself keeps. See the single-quote
 // branch below; everywhere else bash really does remove it, and an absent set means "no joins".
@@ -684,11 +895,7 @@ function heredocDelimiters(line, state, joins = null) {
     // `#` opens a comment only at the start of a word — and an ESCAPED separator does not start one.
     // Inside a parameter expansion it is an operator or plain text (`${#x}`, `${x#pat}`, `${x:-a #b}`),
     // never a comment, so a word-initial one there must not blank the rest of the line.
-    if (
-      !inParam &&
-      ch === '#' &&
-      (i === 0 || (/[\s;&|(]/.test(line[i - 1]) && i - 1 !== escapedAt))
-    )
+    if (startsComment(line, i, { separators: HEREDOC_COMMENT_SEPARATORS, escapedAt, inParam }))
       break
     if (ch !== '<' || line[i + 1] !== '<') continue
     // A `<<` in an expansion word is text: `echo ${x#<<EOF}` is a valid one-line command.
@@ -1020,6 +1227,14 @@ function joinContinuations(lines) {
   return joined
 }
 
+// Joining is not comment-aware, and every caller below inherits that: a backslash ending a COMMENT
+// is part of the comment, so bash starts a new line where this joins one. A rule that cuts its scan
+// at a comment therefore loses the rest of the group. `findBarePositionals` is the one rule with
+// that shape and it walks physical lines instead (see header rule (j)); the others read the joined
+// text whole, so the seam is invisible to them. Teaching the joiner to stop at a comment would need
+// quote state it does not carry, and would change the input of eight rules this change does not
+// touch.
+
 // Track options in command-list order. A later `set +e` or `shopt -u` must take effect before
 // the next command; scanning the whole source for an enable would apply both options backwards.
 function shellOptionStateAfter(body, initial) {
@@ -1328,7 +1543,7 @@ function matchingBrace(source, open) {
       quote = ch
       continue
     }
-    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(source[i - 1]))) {
+    if (startsComment(source, i)) {
       const end = source.indexOf('\n', i + 1)
       if (end === -1) return -1
       i = end
@@ -1560,9 +1775,7 @@ function scanGuardOperators(line) {
       }
       continue
     }
-    if (ch === '#') {
-      if (i === 0 || /[\s;|&(){}]/.test(line[i - 1])) break
-    }
+    if (startsComment(line, i)) break
     if (ch === '(') {
       parens += 1
       parenDelta += 1
@@ -2261,7 +2474,7 @@ function matchingParen(line, open) {
       quote = ch
       continue
     }
-    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(line[i - 1]))) {
+    if (startsComment(line, i)) {
       const end = line.indexOf('\n', i + 1)
       if (end === -1) return -1
       i = end
@@ -2322,7 +2535,7 @@ function inlineCompoundParts(text) {
       commandStart = false
       continue
     }
-    if (ch === '#' && (i === 0 || /[\s;|&(){}]/.test(text[i - 1]))) {
+    if (startsComment(text, i)) {
       const end = text.indexOf('\n', i + 1)
       if (end === -1) return { bodies, trailing: null }
       i = end + 1
@@ -3063,7 +3276,27 @@ function tokenizeShellLine(line, state = { quote: null, substDepth: 0, substQuot
       flush()
       continue
     }
-    if (ch === '#' && current === null) break // comment runs to end of line
+    // `wordOpen` is authoritative here: the tokenizer already knows whether a word is open, which
+    // is exactly the boundary the predicate asks about.
+    if (startsComment(line, i, { wordOpen: current !== null })) {
+      // Record the comment so callers can read an opt-out marker written in it, keyed by the
+      // PHYSICAL line offset the caller set before this call. A single carried scalar would be
+      // wrong twice over: a logical line joined from several physical lines produces one call for
+      // many offsets, and an unterminated quote or substitution carries `state` across calls with
+      // no natural reset point, so the last comment seen would leak forward onto later lines.
+      //
+      // Opt-in, because the key is only meaningful to a caller that maintains `state.lineOffset`.
+      // Every other caller in this file leaves it undefined, so recording unconditionally wrote
+      // each of them a one-entry map at key 0 that the next line overwrote — dead for them, and a
+      // trap for the next rule that reads `state.comments` without setting the offset.
+      if (state.recordComments) {
+        ;(state.comments ??= new Map()).set(state.lineOffset ?? 0, {
+          index: i,
+          text: line.slice(i),
+        })
+      }
+      break // comment runs to end of line
+    }
     // `$(…)`, and likewise the process substitutions `<(…)` / `>(…)`, are part of the surrounding
     // WORD rather than top-level operators — the shell passes each as one argument to the same
     // command. Splitting on their parens would end the `rm` segment of
@@ -3564,6 +3797,419 @@ export function findMultiGlobRemovals(body) {
     pending = null
   }
   if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
+// The options whose value is a filename PATTERN the command matches internally, so an unquoted glob
+// there is always wrong (see (i)). Only the space-separated form needs this table: the attached
+// `--opt=<glob>` form carries its own `=` and is recognised structurally on any option. A separated
+// value cannot be recognised structurally — the shell has no idea which options take one — and
+// guessing "any long option" reads `git diff --stat [BASE_SHA]..[HEAD_SHA]` as an option value and
+// rejects a correct line, the one direction this gate must never fail in. So the separated form is
+// allowlisted and deliberately under-reports; extend the table when a real invocation needs it.
+//
+// KEYED BY COMMAND, not by option word alone. An option spelling means nothing on its own: `-g` is
+// ripgrep's glob but gcc's debug flag, ls's group flag and sort's general-numeric flag, so a flat
+// list rejects `gcc -g *.c`, `ls -g *.md` and `sort -g data*.txt` — ordinary argv globs that (f)
+// deliberately allows, one unquoted pattern each. Reading the command word first is what keeps this
+// rule and (f) from contradicting each other. An unresolvable command word (a pipeline fragment, a
+// wrapper hiding it) reports nothing: an accepted false NEGATIVE, the safe direction.
+const PATTERN_VALUE_OPTIONS_BY_COMMAND = new Map([
+  // GNU grep: `--include`/`--exclude` take a shell pattern grep matches against each filename.
+  ['grep', ['--include', '--exclude', '--exclude-dir']],
+  ['egrep', ['--include', '--exclude', '--exclude-dir']],
+  ['fgrep', ['--include', '--exclude', '--exclude-dir']],
+  ['rgrep', ['--include', '--exclude', '--exclude-dir']],
+  // ripgrep: `-g`/`--glob`/`--iglob` take a gitignore-style pattern. It does NOT accept grep's
+  // spellings — `rg --include '*.md' x .` fails with `unrecognized flag --include` — so listing them
+  // here would be dead entries justified by a claim that is simply false.
+  ['rg', ['-g', '--glob', '--iglob']],
+  ['ripgrep', ['-g', '--glob', '--iglob']],
+  // `find`'s name primaries are single-dash options that DO take a pattern value. Every other
+  // single-dash word — `rm -f`, `ls -l` — takes none, which is what keeps an ordinary argv glob out
+  // of this rule and inside (f)'s.
+  ['find', ['-name', '-iname', '-path', '-ipath', '-wholename', '-lname', '-ilname']],
+  ['fd', ['-g', '--glob', '-E', '--exclude']],
+  ['tar', ['--exclude', '--include']],
+])
+
+// An option word that carries its value after `=`. `[^=]*` stops at the FIRST `=`, so the match
+// length is the index just past it and any glob mark at or beyond that index sits in the value.
+const ATTACHED_OPTION_VALUE = /^-{1,2}[A-Za-z0-9][^=]*=/
+
+// See (i): `[UPPER_SNAKE]` is this corpus’s documentation placeholder — a word a reader
+// substitutes by hand, not a bracket glob they are meant to quote. The space-separated form is
+// already exempt from it, because that branch only fires for an option on its command’s
+// pattern-value allowlist (`git diff --stat [BASE_SHA]..[HEAD_SHA]` is why that allowlist
+// exists). The attached form is recognised structurally on ANY option, so without this it would
+// report the same placeholder one space to the right and the two spellings would disagree.
+const DOC_PLACEHOLDER = /\[[A-Z][A-Z0-9_]*\]/g
+
+/** Half-open [start, end) ranges of every `[UPPER_SNAKE]` placeholder in a raw token. */
+function docPlaceholderSpans(raw) {
+  const spans = []
+  DOC_PLACEHOLDER.lastIndex = 0
+  for (let match = DOC_PLACEHOLDER.exec(raw); match; match = DOC_PLACEHOLDER.exec(raw))
+    spans.push([match.index, match.index + match[0].length])
+  return spans
+}
+
+// The tokens of a logical line the shell NEVER pathname-expands, so a glob mark on one of them is
+// pattern syntax rather than a filename pattern. Returned as a Set of the token objects themselves,
+// so callers compare by identity and never by position. Two constructs qualify.
+//
+// `[[ … ]]` is a KEYWORD, not a command: bash and zsh parse its words themselves and expand no
+// pathnames inside, so `[[ "$x" == --pat=* ]]` is correct shell. It is tracked as a SPAN from the
+// `[[` word to the matching `]]`, not as a segment property: `[[ "$x" == --a=* || "$y" == --b=* ]]`
+// is ONE test whose `||` is an operator token, which splits it into two segments, and the second
+// operand would otherwise lose the exemption. Same for the grouping parens of `[[ ( … ) ]]`.
+// The POSIX `[` command is NOT exempt — it is an ordinary command whose unquoted word IS expanded.
+//
+// A `case` PATTERN is matched against the word being tested, never against the filesystem, so
+// `case "$1" in --out=*)` — the canonical argument parser — is correct shell too. A case body is
+// normally spread over several logical lines, so the enclosing `case … in` is not available on the
+// line a branch lives on; what IS local is the pattern list's shape, words joined by `|` and closed
+// by `)`. A SUBSHELL also closes with `)`, so a token with an unmatched `(` before it is not in
+// pattern position and `( cd x && grep --include=*.md . )` stays reported. The exception is the
+// POSIX-portable branch spelling `case $x in (--out=*)`, whose leading `(` is a pattern-list opener
+// and not a subshell: told apart by the run holding only words and `|`, and by its first word being
+// option-shaped or already a glob, which a subshell's COMMAND word is never allowed to be.
+function nonExpandingTokens(tokens) {
+  const exempt = new Set()
+
+  // `[[ … ]]` spans, walked over the raw list so no operator inside can end one early.
+  let inTest = false
+  for (const token of tokens) {
+    if (token.operator) continue
+    if (token.raw === '[[') {
+      inTest = true
+      continue
+    }
+    if (token.raw === ']]') {
+      inTest = false
+      continue
+    }
+    if (inTest) exempt.add(token)
+  }
+
+  // `(` operators that open a case pattern list rather than a subshell, mapped to their closer.
+  const patternListClose = new Map()
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (!tokens[i].operator || tokens[i].raw !== '(') continue
+    let first = null
+    let j = i + 1
+    let shaped = true
+    for (; j < tokens.length; j += 1) {
+      const token = tokens[j]
+      if (!token.operator) {
+        if (first === null) first = token
+        continue
+      }
+      if (token.raw === '|') continue
+      if (token.raw === ')') break
+      shaped = false
+      break
+    }
+    if (!shaped || j >= tokens.length || first === null) continue
+    if (!first.raw.startsWith('-') && !first.glob) continue
+    patternListClose.set(i, j)
+  }
+  const patternListClosers = new Set(patternListClose.values())
+
+  let depth = 0
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (token.operator) {
+      if (token.raw === '(') {
+        if (!patternListClose.has(i)) depth += 1
+      } else if (token.raw === ')') {
+        if (!patternListClosers.has(i) && depth > 0) depth -= 1
+      }
+      continue
+    }
+    if (depth > 0) continue
+    for (let j = i + 1; j < tokens.length; j += 1) {
+      const next = tokens[j]
+      if (!next.operator) continue
+      // Exactly `|`, never `||`: alternation inside a pattern list, not a command separator.
+      if (next.raw === '|') continue
+      if (next.raw === ')') exempt.add(token)
+      break
+    }
+  }
+  return exempt
+}
+
+/**
+ * Report a SINGLE unquoted glob sitting in an option VALUE, as [{ lineOffset, option, globs }] with
+ * `lineOffset` the 0-based index of the first physical line of the (continuation-joined) logical
+ * line within `body`.
+ *
+ * WHY ONE GLOB IS ENOUGH HERE, WHEN (f) NEEDS TWO ON `rm`/`find` ARGV. In argv a glob is the
+ * ordinary correct spelling: `rm -f *.log` is exactly what the author means, the shell is *meant* to
+ * expand it, and a lone unmatched pattern fails loudly having removed nothing. (f) needs a second
+ * pattern before it can call the line wrong, because that is the case where the abort silently skips
+ * removals the author did intend. An option value is the opposite: `--include=*.md` is never handed
+ * to the shell on purpose — grep matches the pattern internally, exactly as `find -name '*.yml'`
+ * does — so ONE unquoted glob there is already a defect regardless of what it expands to. Measured
+ * on fish 4.6.0, `grep -rn boss-build . --include=*.md` never runs grep: fish reports
+ * `No matches for wildcard '--include=*.md'` and exits 124, which an agent reads as "no results".
+ * That abort is unconditional — the wildcard is matched against the whole word, and no file is ever
+ * named `--include=README.md`. The silent case belongs to the SEPARATED spelling, where the glob is
+ * a word of its own: it expands, the option eats the first filename as its value and the rest become
+ * path arguments. Measured with `README.md` and `other.md` in the CWD, `--include *.md` expanded to
+ * `--include other.md README.md`, so grep filtered on `other.md`, never looked at `README.md` and
+ * exited 0 — an answer that is simply wrong.
+ * One spelling lies by aborting and the other lies by answering, which is why quoting is the only
+ * correct form.
+ */
+export function findUnquotedOptionGlobs(body) {
+  const findings = []
+  // Carried across logical lines, exactly as in `findMultiGlobRemovals`: heredoc bodies are already
+  // blanked, so their literal text cannot desynchronise it.
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset) => {
+    const exempt = nonExpandingTokens(tokens)
+    let segment = []
+    const segments = []
+    for (const token of tokens) {
+      if (token.operator) {
+        segments.push(segment)
+        segment = []
+        continue
+      }
+      segment.push(token)
+    }
+    segments.push(segment)
+
+    for (const seg of segments) {
+      // Quote removal before the basename split, so `"/usr/bin/grep"` is still grep.
+      const commandAt = commandWordIndex(seg)
+      const command = commandAt === -1 ? null : removeQuotes(seg[commandAt].raw).split('/').pop()
+      const patternOptions = command ? PATTERN_VALUE_OPTIONS_BY_COMMAND.get(command) : undefined
+      for (let i = 0; i < seg.length; i += 1) {
+        const token = seg[i]
+        // A `case` pattern and the inside of `[[ … ]]` are pattern syntax the shell never matches
+        // against the filesystem. Measured: `bash -c 'x=--out=z; case $x in (--out=*) echo M ;; esac'`
+        // and `bash -c 'x=--a=1; y=--b=2; [[ "$x" == --a=* || "$y" == --b=* ]] && echo M'` both print
+        // M and exit 0. See `nonExpandingTokens` for how each is recognised.
+        if (exempt.has(token)) continue
+        // A word with no UNQUOTED glob metacharacter cannot be expanded by the shell, so
+        // `--include='*.md'`, `--include "*.md"` and `--exclude-dir=node_modules` all stop here.
+        // This is also what keeps the heredoc-delimiter exemption working: the tokenizer clears
+        // `glob` on a delimiter without clearing `globAt`.
+        if (!token.glob) continue
+        const attached = ATTACHED_OPTION_VALUE.exec(token.raw)
+        if (attached) {
+          // `--include=*.md` — the glob must sit in the VALUE. `--foo*=bar` is a pathname pattern
+          // that happens to look like an option, which is (f)'s business and not this rule's.
+          // A `[UPPER_SNAKE]` placeholder inside the value is documentation, not a glob to quote;
+          // see DOC_PLACEHOLDER for why the separated form is already exempt from the same word.
+          const spans = docPlaceholderSpans(token.raw)
+          const expands = (at) =>
+            at >= attached[0].length && !spans.some(([start, end]) => at >= start && at < end)
+          if ((token.globAt || []).some(expands)) {
+            findings.push({
+              lineOffset,
+              form: 'attached',
+              option: attached[0].slice(0, -1),
+              globs: globPatterns(token),
+            })
+          }
+          continue
+        }
+        const previous = seg[i - 1]
+        if (previous && patternOptions && patternOptions.includes(removeQuotes(previous.raw))) {
+          // Report the unquoted spelling: membership already stripped quotes, and echoing
+          // `previous.raw` back would render the fix hint as `'--include'='<PATTERN>'`.
+          findings.push({
+            lineOffset,
+            form: 'separated',
+            option: removeQuotes(previous.raw),
+            globs: globPatterns(token),
+          })
+        }
+      }
+    }
+
+    // Command lists nested inside substitutions, which the tokenizer holds as opaque words — the
+    // same recursion `findMultiGlobRemovals` does, reported against the line the substitution opens.
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findUnquotedOptionGlobs(inner))
+          findings.push({ ...nested, lineOffset })
+      }
+    }
+  }
+
+  // A word still open at end of line means the invocation spans the newline; hold the tokens until
+  // it closes so the option and its value are analyzed together.
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(text, state)
+    if (pending) pending.tokens.push(...tokens)
+    else pending = { tokens, lineOffset }
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    analyze(pending.tokens, pending.lineOffset)
+    pending = null
+  }
+  if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
+// The BARE form `$0`-`$9` is what a slash-command argument substitution actually overwrites, and it
+// is the only form the harness documents (alongside `$ARGUMENTS` / `$ARGUMENTS[N]` / a frontmatter
+// `$name`; see the substitution table at https://code.claude.com/docs/en/skills.md). The BRACED arm
+// is therefore PRECAUTIONARY, not a described mechanism, and it is worth stating why it is here
+// rather than letting a later reader delete it as an over-match:
+//   - `${1}` is one keystroke from `$1`, and an editor tightening quoting turns one into the other
+//     without thinking about it. The braced spelling is where the bare one gets written next.
+//   - The documentation and this repo's own measurement already disagree once about the bare form —
+//     the docs say an indexed placeholder with no matching argument stays in the body unchanged,
+//     while the incident in rule (j) measured `$2` arriving as nothing. A gate that exists because
+//     substitution behaviour surprised us should not also assume that behaviour is now pinned.
+// Since the arm is precautionary it covers EVERY parameter-expansion operator rather than an
+// arbitrary two: the lookahead rejects only a following DIGIT, so `${1}`, `${1:-d}`, `${1-d}`,
+// `${1?e}`, `${1+a}`, `${1=a}`, `${1#p}`, `${1%s}`, `${1/a/b}` and `${1^^}` all match. Catching
+// `${1:-d}` but not `${1-d}` was the previous behaviour and had no principle behind it.
+//
+// `$0` IS matched, and the shell reading is what makes that look wrong. To bash `$0` is the script
+// name, never an argument — but this rule's subject is the harness, and the harness's index is
+// ZERO-BASED: "`$N` — Shorthand for `$ARGUMENTS[N]`, such as `$0` for the first argument or `$1` for
+// the second", with the worked example `/my-skill "hello world" second` making `$0` expand to
+// `hello world` (code.claude.com/docs/en/slash-commands, quoted 2026-08-19). So `$0` is the FIRST
+// token an invocation overwrites — the likeliest one to be filled, not the least — and excluding it
+// would leave the rule blind to the single highest-probability rewrite in the set.
+//
+// Deliberately NOT matched: `$#`, `$@`, `$*`, `$?`, `$$`, any named variable, and `${10}` and up —
+// the digit lookahead is what excludes a two-digit index, so that exclusion survives the widening
+// above.
+//
+// Exported so a test can pin the token set against the same source the rule reads, instead of a
+// second hand-kept copy that drifts from it.
+export const BARE_POSITIONAL_PATTERN = /\$(?:[0-9]|\{[0-9](?![0-9]))/g
+
+// The opt-out. Shaped after `scripts/check-vacuous-regions.mjs`: a required NON-EMPTY reason, and it
+// counts only inside a real comment (the caller has already decided that, quote-aware), so the same
+// bytes inside a string literal or a `sed 's#…#…#'` expression waive nothing.
+//
+// ONE grammar, spelled once. The marker has two entry points — the tokenizer hands back comment text
+// already sliced from its `#`, while a heredoc payload line has no comment for the tokenizer to
+// report and must be searched — and a second hand-written copy of `#\s*skill-positional-ok:` is
+// exactly the duplicated-`#`-predicate drift this file's own `startsComment` convergence was written
+// to end. Derive both forms from `POSITIONAL_OPT_OUT_MARKER`.
+//
+// ANCHORED, and that `^` is load-bearing rather than tidiness. `comment.text` begins at the comment's
+// own `#`, so an unanchored match also fires on a LATER `#` in the same comment: the prose
+// `# you can silence this with #skill-positional-ok: yes` would silently waive a live positional on
+// that line. That is a fail-OPEN in a gate whose contract is "no marker means a finding", and it also
+// corrupts the exception count, since grepping for the marker then finds mentions as well as waivers.
+const POSITIONAL_OPT_OUT_MARKER = /#\s*skill-positional-ok:/
+const POSITIONAL_OPT_OUT = new RegExp(`^${POSITIONAL_OPT_OUT_MARKER.source}(.*)$`)
+
+// Bare `$0`-`$9` in a published skill body, in ANY quoting, because the defect is upstream of the
+// shell: see header rule (j).
+//
+// Detection runs over the line's own source text rather than over tokens. Two reasons, both
+// load-bearing:
+//   1. Attribution. A `$( … )` spanning several lines is accumulated by `consumeSubstitution` and
+//      handed back as one word only on its CLOSING line, so a token-driven scan would report an
+//      offender at the `)` instead of at the line a reader must edit.
+//   2. Exactly one finding per occurrence. The same bytes reach a caller both as a word's `raw` and
+//      as its recorded `subs` body, so scanning both double-reports; scanning the source text once
+//      cannot.
+// The tokenizer still runs on every line, and its carried state is what makes the comment
+// recognition quote-aware — that is the only thing its output is consulted for here.
+//
+// The walk is over PHYSICAL lines, and every other rule in this file walks `joinContinuations`
+// groups instead. The difference is not an oversight, it is the rule: a backslash at the end of a
+// COMMENT is part of that comment, and bash does not continue the line — so joining first and then
+// cutting the scan at the comment swallows every later line of the group unscanned. `echo # note \`
+// followed by `echo $1` is the whole shape, and it reported nothing: a false negative that leaves no
+// marker to grep for and no finding to argue with. Walking physical lines makes the comment cut, the
+// reported location, and the opt-out window one and the same unit, which is what the waiver's
+// own-line scoping already claimed to be.
+//
+// What the physical walk gives up, joining never had. Quote state still carries line to line through
+// `state`, so a `$1` inside a string opened three lines earlier is still seen. Only the tokenizer's
+// per-line WORD state is lost, and that costs exactly one shape — `echo abc\` + newline + `#def $1`,
+// where bash pastes the halves into one word and the `#` is ordinary text. Joining reported that
+// wrong too, and for a duller reason: it inserts a space at the seam, so the `#` read as
+// separator-preceded there as well.
+// Inside a heredoc there is no shell comment to find, because the tokenizer never sees the line.
+// Locate the opt-out marker directly, and return the same `{ index, text }` shape the tokenizer
+// records so the one caller can treat both sources alike.
+function heredocOptOut(line) {
+  // The marker must open the line's FIRST `#`, exactly as a real comment would. Searching for the
+  // marker anywhere instead would re-open, inside heredoc payload, the same fail-open the `^` on
+  // `POSITIONAL_OPT_OUT` closes everywhere else. Returning null when it does not match is what keeps
+  // the rest of the payload scanned: a `#` in payload is data, not a comment, so it must not cut the
+  // scan unless it is genuinely a waiver.
+  const at = line.indexOf('#')
+  if (at === -1) return null
+  const text = line.slice(at)
+  return POSITIONAL_OPT_OUT.test(text) ? { index: at, text } : null
+}
+
+export function findBarePositionals(body) {
+  const findings = []
+  const state = {
+    quote: null,
+    substDepth: 0,
+    substQuote: null,
+    backtick: false,
+    paramDepth: 0,
+    recordComments: true,
+  }
+
+  const raw = body.split('\n')
+  const lines = maskHeredocBodies(raw)
+  for (let lineOffset = 0; lineOffset < lines.length; lineOffset++) {
+    const text = lines[lineOffset]
+    state.lineOffset = lineOffset
+    tokenizeShellLine(text, state)
+
+    // A heredoc BODY line is masked to '' so the tokenizer's quote state survives payload that is
+    // not shell — an apostrophe in a commit-message heredoc must not open a quote. This rule still
+    // has to READ that payload: substitution happens above the shell, so a `$1` inside `<<'EOF'` is
+    // blanked exactly like one outside it, quoted delimiter or not. Tokenize the masked line for
+    // state, scan the raw line for offenders. Measured over both skill roots at the time this was
+    // written: scanning heredoc payload adds 0 findings, so it closes the hole at no cost today.
+    //
+    // The opt-out comes from the raw line too. Inside a heredoc that `#` is payload rather than a
+    // comment, so the waiver would appear in whatever the heredoc emits — a deliberate cost, and
+    // the reason to prefer lifting the value out of the heredoc over waiving it in place.
+    const inHeredocBody = text === '' && raw[lineOffset] !== ''
+    const source = inHeredocBody ? raw[lineOffset] : text
+    const comment = inHeredocBody
+      ? heredocOptOut(source)
+      : (state.comments?.get(lineOffset) ?? null)
+
+    // The opt-out window is the offender's OWN line and nothing else. A marker on a neighbouring
+    // line — including the line that closes a multi-line group the offender opened — must not reach
+    // back and waive it, or one annotation silently covers code nobody annotated.
+    if (comment) {
+      const match = POSITIONAL_OPT_OUT.exec(comment.text)
+      if (match && match[1].trim() !== '') continue
+    }
+
+    // Everything from a real comment onward is inert to the shell, and scanning it would let a
+    // reason string that merely MENTIONS `$1` trip the rule it is waiving.
+    const scanned = comment ? source.slice(0, comment.index) : source
+    BARE_POSITIONAL_PATTERN.lastIndex = 0
+    let match
+    while ((match = BARE_POSITIONAL_PATTERN.exec(scanned)) !== null) {
+      // The braced form matches as `${1` — the lookahead consumes nothing after the digit. Recover
+      // the whole expansion for the message, because a reader told `${1}` will not find `${1:-x}`.
+      let token = match[0]
+      if (token.startsWith('${')) {
+        const close = scanned.indexOf('}', match.index)
+        token = close === -1 ? `${token}…` : scanned.slice(match.index, close + 1)
+      }
+      findings.push({ lineOffset, token, column: match.index })
+    }
+  }
   return findings
 }
 
@@ -4277,9 +4923,9 @@ function makeBashRunner(tmpDir) {
 
 /**
  * Walk both authoring roots and return [{ file, line, kind, message }]. `kind` is one of
- * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `inert-guard` /
- * `gh-body-interpolation` / `gh-body-file-interpolation` / `node-eval-interpolation`, plus
- * `missing-bash` when the gate fails closed.
+ * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `option-glob` / `inert-guard` /
+ * `gh-body-interpolation` / `gh-body-file-interpolation` / `node-eval-interpolation` /
+ * `bare-positional`, plus `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -4328,6 +4974,32 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + glob.lineOffset,
             kind: 'multi-glob',
             message: `${glob.command} carries ${glob.globs.length} unquoted globs on one line (${glob.globs.join(' ')}) — an unmatched glob aborts the whole line under zsh/fish, silently skipping the others`,
+          })
+        }
+
+        for (const optionGlob of findUnquotedOptionGlobs(block.body)) {
+          // The hint must be pasteable as-is, so it has to keep the OFFENDING form's separator.
+          // `find . -name='<PATTERN>'` is not a quoted `-name`; it is a word `find` rejects outright
+          // (`Unknown argument; did you mean -name?`) — and, carrying no unquoted glob, it would then
+          // sail through this very gate. Attached stays attached, separated stays separated.
+          const fix =
+            optionGlob.form === 'attached'
+              ? `${optionGlob.option}='<PATTERN>'`
+              : `${optionGlob.option} '<PATTERN>'`
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + optionGlob.lineOffset,
+            kind: 'option-glob',
+            message: `${optionGlob.option} carries an unquoted glob in its value (${optionGlob.globs.join(' ')}) — the shell expands it before the command runs: the attached \`--opt=<glob>\` form aborts the line under fish (\`No matches for wildcard\`, exit 124) and zsh (\`no matches found\`, exit 1), which reads as zero hits, and the space-separated form expands to real filenames so the command silently filters on the wrong value; quote it, e.g. ${fix}`,
+          })
+        }
+
+        for (const positional of findBarePositionals(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + positional.lineOffset,
+            kind: 'bare-positional',
+            message: `\`${positional.token}\` is a slash-command argument slot: the harness rewrites it in this skill's body before any shell sees it, so the on-disk bytes are not the executed bytes and quoting does not help — rewrite without a positional, or waive it on this line with \`# skill-positional-ok: <reason>\``,
           })
         }
 
@@ -4395,9 +5067,11 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
       stats.skipped = true
       if (deps.onStats) deps.onStats(stats)
       warn(`${message} (skipped: BOSS_SKILL_SHELL_OPTIONAL=1)`)
-      // It waives `bash -n` ONLY. `unterminated` and `multi-glob` are decided without ever running
-      // bash, so returning [] here would let an absent interpreter silently swallow findings the
-      // gate had already made — the exact exit-0-with-a-real-defect class this gate exists for.
+      // It waives `bash -n` ONLY. `unterminated`, `multi-glob`, `option-glob` and
+      // `bare-positional` are decided
+      // without ever running bash, so returning [] here would let an absent interpreter silently
+      // swallow findings the gate had already made — the exact exit-0-with-a-real-defect class this
+      // gate exists for.
       return findings
     }
     if (deps.onStats) deps.onStats(stats)

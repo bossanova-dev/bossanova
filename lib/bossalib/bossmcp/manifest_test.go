@@ -135,7 +135,16 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 		t.Fatalf("marshal tool definitions: %v", err)
 	}
 
-	// MEASURED 2026-08-04, in this PR: 69 tools / 58,537 bytes.
+	// MEASURED 2026-08-19 (BOS-768 re-measurement): 69 tools / 58,491 bytes.
+	//
+	// Every companion figure in this comment was re-derived from that same run,
+	// by the METHOD below, and several moved: the prose had been left quoting
+	// the superseded 58,537 measurement after the BOS-800 re-pin took the
+	// constant down to 58,491, so the constant was right and the explanation
+	// around it was stale. The constants are unchanged by that repair — the
+	// test passes at 58,491, which makes the constant the measured truth and
+	// the prose the thing that drifted. See scripts/size-ratchet-lib.mjs for
+	// the JS statement of the same two-sided rule this test pioneered.
 	//
 	// METHOD — exactly what this test does, so the ceilings can be re-derived:
 	// listedToolDefinitions(t, Options{}) lists the tools over an in-process
@@ -146,25 +155,40 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// because the comparison is exact, cannot shrink by one either without that
 	// saving being banked into the constant below.
 	//
-	// 58,537 is NOT the 56,089 bytes from the 2026-08-03 live tools/list, and
+	// 58,491 is NOT the 56,089 bytes from the 2026-08-03 live tools/list, and
 	// the difference is not drift: that figure was measured a different way.
 	// The sibling measurement child re-measured the same surface at 58,326 by
 	// JSON.stringify over a live stdio ./bin/mcp session
-	// (docs/solutions/performance/2026-08-03-session-launch-context-baseline.md);
-	// 95 bytes of the remainder is Go's HTML escaping of <, > and & — dropping
-	// it gives 58,442. The last ~116 bytes vs 58,326 are NOT reconciled here and
-	// are not expected to be: that run was a different binary on a different
-	// branch, and JS and Go do not agree byte-for-byte on key order or number
-	// formatting anyway. Three near-but-unequal numbers, three methods. Compare
-	// like for like, or not at all: re-run the method above.
+	// (docs/solutions/performance/2026-08-03-session-launch-context-baseline.md).
+	// Those two runs are not reconciled here and are not expected to be: they
+	// were different binaries on different branches, Go HTML-escapes <, > and &
+	// in JSON where JS does not, and JS and Go do not agree byte-for-byte on key
+	// order or number formatting anyway. Several near-but-unequal numbers,
+	// several methods. Compare like for like, or not at all: re-run the method
+	// above rather than reconciling figures across languages.
 	//
 	// SCOPE: Options{} is the FULL tool set. Options{ReadOnly} and Options{Only}
-	// register strictly fewer tools — read-only measured 24 tools / 14,875 bytes
-	// the same day, by the same method — so a filtered deployment pays less than
+	// register strictly fewer tools — read-only measures 24 tools / 14,859 bytes
+	// by the same method — so a filtered deployment pays less than
 	// the numbers below. Do not read them as any one profile's resident cost.
+	// RE-PINNED DOWN 2026-08-19 (BOS-800): 69 tools / 58,491 bytes, same method.
+	// BOS-800 had to spend bytes on the three status tools, whose one-line
+	// descriptions were being read as signals they do not carry. Rather than
+	// raise this ceiling — which is not a thing that happens — the growth was
+	// funded out of list_notes and get_note, whose descriptions were restating
+	// what their own jsonschema argument tags already say to the same caller in
+	// the same definition. That de-duplication paid for the caveats outright.
+	//
+	// Review then found get_session naming the push oracle WITHOUT a fetch,
+	// which reads a stale remote-tracking ref and reports 0 for work that was
+	// pushed — the exact inverse of the bug this ticket fixes. Spelling the
+	// command as `git fetch origin && …` costs 30 bytes here, not 20: Go's JSON
+	// encoder escapes each `&` to `\u0026`. The fetch requirement is therefore
+	// carried as the prose "(fetch first)" and the redundant "so both change"
+	// clause was dropped, which lands one byte UNDER the previous pin.
 	const (
 		maxToolCount   = 69
-		maxSchemaBytes = 58507
+		maxSchemaBytes = 58491
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."
@@ -173,10 +197,10 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// surface. mcp.Tool.InputSchema is typed `any`, and client-side it holds
 	// whatever the SDK round-tripped into a map[string]any; if an SDK bump or a
 	// schema-inference regression ever left those empty, the byte count would
-	// fall from 58,537 to 26,928 — 31,609 bytes of headroom handed back
-	// silently, with both ceilings below still green. (26,928 is the floor,
+	// fall from 58,491 to 26,712 — 31,779 bytes of headroom handed back
+	// silently, with both ceilings below still green. (26,712 is the floor,
 	// measured by setting every InputSchema to an empty map; leaving them nil
-	// gives 27,066 and a bare {"type":"object"} gives 27,963. The names and
+	// gives 26,850 and a bare {"type":"object"} gives 27,747. The names and
 	// descriptions are what remains.) That is the exact
 	// failure this ratchet exists to prevent, so self-check the shape of what
 	// was just measured before trusting its size.
@@ -190,8 +214,8 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// schema inference is per-argument-type: a regression can hit some argument
 	// shapes and not others, so counting how many tools still have a schema lets
 	// a handful of survivors vouch for the rest. Measured today: schemas are
-	// 31,609 of 58,537 bytes, 54.0%. Emptying the 27 largest schemas leaves
-	// 22.6% and the 34 largest leaves 17.4%, so a 30% floor catches a partial
+	// 31,779 of 58,491 bytes, 54.3%. Emptying the 27 largest schemas leaves
+	// 22.8% and the 34 largest leaves 17.5%, so a 30% floor catches a partial
 	// collapse that a "most tools still have one" rule waves through. It also
 	// survives a legitimate shrink: the read-only profile, whose no-argument
 	// listers are the largest share of any registered subset, still measures
@@ -199,14 +223,14 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	//
 	// KNOWN RESIDUAL, stated so it is not mistaken for coverage this does not
 	// have. The share is a threshold, so it bounds a collapse rather than
-	// detecting one: the 18 largest schemas can empty and still measure 30.7%.
+	// detecting one: the 18 largest schemas can empty and still measure 30.9%.
 	// It is also blind to a UNIFORM intra-schema degradation — stripping every
-	// argument doc from every schema hands back 18,492 bytes and still measures
-	// 32.8%, because the total falls too. A per-turn cost that dropped that way
+	// argument doc from every schema hands back 18,626 bytes and still measures
+	// 33.0%, because the total falls too. A per-turn cost that dropped that way
 	// would be real, so the byte ceiling is the gate that matters there; this
 	// check exists for the shape of the measurement, not its size.
 	//
-	// 32.8% is also why the message below must not assert a collapse: trimming
+	// 33.0% is also why the message below must not assert a collapse: trimming
 	// argument docs is the very remedy the byte ceiling prescribes, and it moves
 	// the share DOWN. A doc-light surface and a broken measurement look alike
 	// from here, so name both and let the reader decide.
@@ -265,7 +289,7 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 			got:       len(serialized),
 			ceiling:   maxSchemaBytes,
 			constName: "maxSchemaBytes",
-			remedy:    "A verbose description is not free documentation, it is rent charged every turn. The fix is a SHORTER description or a trimmed argument doc, or moving situational detail out of the description entirely — for scale, create_session's definition alone is 5,349 of these bytes. Raising the ceiling is not the fix.",
+			remedy:    "A verbose description is not free documentation, it is rent charged every turn. The fix is a SHORTER description or a trimmed argument doc, or moving situational detail out of the description entirely — for scale, create_session's definition alone is 5,319 of these bytes. Raising the ceiling is not the fix.",
 			bank:      "Before banking a byte reduction, confirm it is the SURFACE that shrank and not the MEASUREMENT. A collapsed measurement — an SDK bump or schema-inference regression leaving InputSchema empty — reads from here exactly like a genuine saving, and hands back over 31,000 bytes on today's numbers. The schema-share self-check above is what tells the two apart, so require it green in this same run: a ceiling standing over a broken measurement is vacuous and must not be re-pinned until the measurement is fixed. Re-derive the number by the METHOD note above rather than copying one from a different tool, branch or language.",
 		},
 	} {

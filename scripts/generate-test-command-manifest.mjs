@@ -167,6 +167,15 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     ...rootTargets.map((target) => `- \`${renderCommand(target)}\``),
     '',
+    '### Coverage gaps worth knowing (BOS-768)',
+    '',
+    // This manifest is byte-for-byte generated and `scripts/check-test-command-manifest.mjs`
+    // fails if the checked-in file differs, so prose belongs HERE and nowhere else. Editing
+    // docs/testing/test-command-manifest.md by hand turns that gate red on the next run.
+    '`make test-smoke` runs `node --test scripts/bs-*-skill.test.mjs`. That glob does **not** match `scripts/boss-skill.test.mjs`, `scripts/boss-build-skill.test.mjs`, or `scripts/check-agent-test-guidance.test.mjs`, so those suites — including their exact-size ratchets — are not covered by a smoke run. `make test-scripts` (the `test` target in `scripts/Makefile`) runs every `scripts/*.test.mjs` and is the target that covers them, along with the `check-vacuous-regions.mjs` and `check-raw-size-ratchets.mjs` gates. Neither of those two is a whole-tree scan, and neither claims to be: `check-vacuous-regions.mjs` reads `scripts/` and `skills-toolbox/` only, and `check-raw-size-ratchets.mjs` reads `scripts/` files matching `skill*.test.mjs` plus one named extra. Each prints its own scope and residual with its success line — read that line, not this sentence, for what a given run actually covered.',
+    '',
+    '`codex-skills-check` (the `.codex` mirror staleness check) is a prerequisite of `make test-smoke` and `make test-all`, but **not** of `make test` / `make test-affected` — those run only the commands `scripts/select-affected-tests.mjs` picked, and reach `test-smoke` only when the selection is empty. A change that leaves a `.codex` mirror stale can therefore pass `make test`. The per-skill `assertMirrorRegenerated` checks in the `bs-sweep-*` suites close this for those skills by regenerating the mirror in memory and comparing exactly; size is never the discriminator, because the generated header makes a healthy mirror larger than its source.',
+    '',
     '## Web Targets (`services/web`)',
     '',
     ...renderTable(['Command', 'Description', 'CI?'], webRows),

@@ -41,7 +41,15 @@ type headlessCapabilityProfilePreflightClient interface {
 	PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
 }
 
-var _ AgentRunner = (*PluginRunner)(nil)
+var (
+	_ AgentRunner = (*PluginRunner)(nil)
+	// PluginRunner is the runner every production agent goes through, and
+	// Dispatcher.StopByAgent's bounded path exists only for runners that
+	// implement ContextualStopper. Asserting it here makes deleting or renaming
+	// StopWithContext a build failure rather than a silent demotion to the
+	// unbounded Stop — the wedge BOS-717 removed.
+	_ ContextualStopper = (*PluginRunner)(nil)
+)
 
 // PluginRunner adapts the AgentRunnerClient + Tailer to the existing
 // agent.AgentRunner interface so all in-process call sites in bossd

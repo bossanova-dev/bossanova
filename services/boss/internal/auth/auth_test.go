@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
+	zlog "github.com/rs/zerolog/log"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -31,6 +35,12 @@ type mockTokenStore struct {
 
 	saveCalled   bool
 	deleteCalled bool
+	// loadCalled counts read-backs so a test can prove the post-save
+	// verification never ran (a failed save has nothing to verify).
+	loadCalled int
+	// loadGate, when non-nil, blocks every Load until it is closed. It exists
+	// so a test can hold the read-back past its own bound.
+	loadGate chan struct{}
 }
 
 type errorRefreshLock struct{ err error }
@@ -47,11 +57,17 @@ func (m *mockTokenStore) Save(tokens *Tokens) error {
 }
 
 func (m *mockTokenStore) Load() (*Tokens, error) {
+	m.loadCalled++
+	if m.loadGate != nil {
+		<-m.loadGate
+	}
 	if m.loadErr != nil {
 		return nil, m.loadErr
 	}
 	if m.tokens == nil {
-		return nil, fmt.Errorf("no tokens stored")
+		// Mirror KeychainStore: "nothing stored" is a missing-key error, which
+		// callers discriminate from an unreadable record with tokenKeyMissing.
+		return nil, fmt.Errorf("no tokens stored: %w", fs.ErrNotExist)
 	}
 	return m.tokens, nil
 }
@@ -883,5 +899,564 @@ func TestManager_WithCredentialLockReportsUnlockFailureOnSuccess(t *testing.T) {
 	}
 	if !strings.Contains(warnings.String(), "flock release refused") {
 		t.Fatalf("unlock failure was swallowed silently; warnings = %q", warnings.String())
+	}
+}
+
+// --- Login verification (BOS-942) ---
+
+// stubCredentialLock replaces the cross-process credential lock with a
+// process-local one and returns a pointer to the acquisition count. Without
+// this every test here would take the machine-global WorkOS flock and contend
+// with every other worktree on the box.
+func stubCredentialLock(t *testing.T) *int {
+	t.Helper()
+	orig := acquireRefreshLock
+	var mu sync.Mutex
+	count := 0
+	acquireRefreshLock = func(context.Context) (refreshUnlocker, error) {
+		mu.Lock()
+		count++
+		return &mutexRefreshLock{mu: &mu}, nil
+	}
+	t.Cleanup(func() { acquireRefreshLock = orig })
+	return &count
+}
+
+// stubWorkOSLogin serves both device-code endpoints so Manager.Login and
+// Manager.PollLogin can run end to end without the network.
+func stubWorkOSLogin(t *testing.T, accessToken, refreshToken, email string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/user_management/authorize/device":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":               "device-code",
+				"user_code":                 "USER-CODE",
+				"verification_uri":          srvVerificationURI,
+				"verification_uri_complete": srvVerificationURI,
+				"expires_in":                600,
+				"interval":                  0,
+			})
+		case "/user_management/authenticate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  accessToken,
+				"refresh_token": refreshToken,
+				"expires_in":    3600,
+				"user":          map[string]string{"id": "user_01", "email": email},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	origBase := workosAPIBase
+	origOpen := openBrowserFn
+	workosAPIBase = srv.URL
+	openBrowserFn = func(string) error { return nil }
+	t.Cleanup(func() {
+		workosAPIBase = origBase
+		openBrowserFn = origOpen
+	})
+}
+
+const srvVerificationURI = "https://auth.example.test/device"
+
+// The whole point of the feature: a login that really persisted comes back
+// verified, with no reason and no error to explain away.
+func TestManagerLogin_VerifiesPersistedRecord(t *testing.T) {
+	stubCredentialLock(t)
+	stubWorkOSLogin(t, "fresh-access", "fresh-refresh", "dave@example.com")
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{ClientID: "test-client"})
+
+	verdict, err := mgr.Login(context.Background())
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerified {
+		t.Fatalf("outcome = %s (reason %q), want verified", verdict.Outcome, verdict.Reason)
+	}
+	if verdict.Reason != "" {
+		t.Errorf("verified verdict carried reason %q", verdict.Reason)
+	}
+	if verdict.Err != nil {
+		t.Errorf("verified verdict carried error %v", verdict.Err)
+	}
+	if verdict.Email != "dave@example.com" {
+		t.Errorf("email = %q, want dave@example.com", verdict.Email)
+	}
+}
+
+func TestManagerPollLogin_VerifiesPersistedRecord(t *testing.T) {
+	stubCredentialLock(t)
+	stubWorkOSLogin(t, "fresh-access", "fresh-refresh", "dave@example.com")
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{ClientID: "test-client"})
+
+	verdict, err := mgr.PollLogin(context.Background(), "device", 0)
+	if err != nil {
+		t.Fatalf("PollLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerified || verdict.Reason != "" || verdict.Err != nil {
+		t.Fatalf("verdict = %s/%q/%v, want a clean verified verdict", verdict.Outcome, verdict.Reason, verdict.Err)
+	}
+}
+
+// A full login must take the credential lock exactly once. Verifying under a
+// second acquisition would let a concurrent daemon refresh land between the
+// write and the read, and the verdict would then describe somebody else's
+// record.
+func TestManagerLogin_AcquiresCredentialLockOnce(t *testing.T) {
+	count := stubCredentialLock(t)
+	stubWorkOSLogin(t, "fresh-access", "fresh-refresh", "dave@example.com")
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{ClientID: "test-client"})
+
+	if _, err := mgr.Login(context.Background()); err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+	if *count != 1 {
+		t.Fatalf("credential lock acquisitions = %d, want exactly 1", *count)
+	}
+	if store.loadCalled != 1 {
+		t.Fatalf("read-backs = %d, want exactly 1", store.loadCalled)
+	}
+}
+
+// The incident's own signature: Save() returns nil, the record never changes,
+// and the old release announced success anyway.
+func TestManagerCommitLogin_ReportsAccessTokenMismatch(t *testing.T) {
+	stubCredentialLock(t)
+	stale := &Tokens{
+		AccessToken:  "stale-access",
+		RefreshToken: "stale-refresh",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	store := &mockTokenStore{tokens: stale}
+	mgr := NewManager(store, Config{})
+	fresh := &Tokens{
+		AccessToken:  "fresh-access",
+		RefreshToken: "fresh-refresh",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	verdict, err := mgr.commitLogin(context.Background(), fresh, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyRecordNotUpdated {
+		t.Fatalf("outcome = %s, want record_not_updated", verdict.Outcome)
+	}
+	if verdict.Reason != LoginVerifyReasonAccessTokenMismatch {
+		t.Fatalf("reason = %q, want %q", verdict.Reason, LoginVerifyReasonAccessTokenMismatch)
+	}
+}
+
+// A record that survived the save still flagged for re-login is not a login:
+// the daemon would refuse to use it.
+func TestManagerCommitLogin_ReportsRetainedReloginFlag(t *testing.T) {
+	stubCredentialLock(t)
+	flagged := &Tokens{
+		AccessToken:   "fresh-access",
+		RefreshToken:  "fresh-refresh",
+		Email:         "dave@example.com",
+		ExpiresAt:     time.Now().Add(time.Hour),
+		NeedsRelogin:  true,
+		ReloginReason: ReloginReasonRefreshOutcomeUnknown,
+	}
+	store := &mockTokenStore{tokens: flagged}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), flagged, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyRecordNotUpdated {
+		t.Fatalf("outcome = %s, want record_not_updated", verdict.Outcome)
+	}
+	if verdict.Reason != ReloginReasonRefreshOutcomeUnknown {
+		t.Fatalf("reason = %q, want %q", verdict.Reason, ReloginReasonRefreshOutcomeUnknown)
+	}
+}
+
+// An absent record after a save that claimed success is a verdict, not a
+// mystery — and it must not be confused with an unreadable one.
+func TestManagerCommitLogin_ReportsRecordAbsent(t *testing.T) {
+	stubCredentialLock(t)
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), &Tokens{AccessToken: "a"}, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyRecordNotUpdated || verdict.Reason != LoginVerifyReasonRecordAbsent {
+		t.Fatalf("verdict = %s/%q, want record_not_updated/record_absent", verdict.Outcome, verdict.Reason)
+	}
+	if verdict.Err != nil {
+		t.Fatalf("record_absent must not carry an error: %v", verdict.Err)
+	}
+}
+
+func TestManagerCommitLogin_ReportsMissingTokens(t *testing.T) {
+	stubCredentialLock(t)
+	cases := []struct {
+		name   string
+		stored *Tokens
+		want   string
+	}{
+		{
+			name:   "no access token",
+			stored: &Tokens{RefreshToken: "r", ExpiresAt: time.Now().Add(time.Hour)},
+			want:   LoginVerifyReasonNoAccessToken,
+		},
+		{
+			name:   "no refresh token",
+			stored: &Tokens{AccessToken: "a", ExpiresAt: time.Now().Add(time.Hour)},
+			want:   LoginVerifyReasonNoRefreshToken,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &mockTokenStore{tokens: tc.stored}
+			mgr := NewManager(store, Config{})
+			verdict, err := mgr.commitLogin(context.Background(), tc.stored, func() error { return nil })
+			if err != nil {
+				t.Fatalf("commitLogin returned error: %v", err)
+			}
+			if verdict.Outcome != LoginVerifyRecordNotUpdated || verdict.Reason != tc.want {
+				t.Fatalf("verdict = %s/%q, want record_not_updated/%s", verdict.Outcome, verdict.Reason, tc.want)
+			}
+		})
+	}
+}
+
+// Verification checks persistence, not freshness. An already-expired access
+// token is still a correctly persisted login, because the daemon can refresh
+// it — so Tokens.Valid() must stay out of this path.
+func TestManagerCommitLogin_ExpiredAccessTokenStillVerifies(t *testing.T) {
+	stubCredentialLock(t)
+	expired := &Tokens{
+		AccessToken:  "fresh-access",
+		RefreshToken: "fresh-refresh",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+	}
+	if expired.Valid() {
+		t.Fatal("fixture is meant to be expired")
+	}
+	store := &mockTokenStore{tokens: expired}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), expired, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerified {
+		t.Fatalf("outcome = %s (reason %q), want verified", verdict.Outcome, verdict.Reason)
+	}
+}
+
+// An unreadable record leaves the question open: the login may well have
+// persisted. That is inconclusive, with a nil returned error so the command
+// still exits zero, and the sentinel reachable through errors.Is.
+func TestManagerCommitLogin_UnreadableRecordIsInconclusive(t *testing.T) {
+	stubCredentialLock(t)
+	store := &mockTokenStore{loadErr: fmt.Errorf("decrypt: %w", ErrCredentialsUnreadable)}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), &Tokens{AccessToken: "a"}, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyInconclusive || verdict.Reason != LoginVerifyReasonReadFailed {
+		t.Fatalf("verdict = %s/%q, want inconclusive/read_failed", verdict.Outcome, verdict.Reason)
+	}
+	if !errors.Is(verdict.Err, ErrCredentialsUnreadable) {
+		t.Fatalf("Err = %v, want it to wrap ErrCredentialsUnreadable", verdict.Err)
+	}
+}
+
+// A keychain that hangs must not pin the credential lock against every other
+// process: the read-back carries its own bound, and blowing it releases the
+// lock with an inconclusive verdict.
+func TestManagerCommitLogin_ReadBoundReleasesLock(t *testing.T) {
+	stubCredentialLock(t)
+	// The caller's own deadline bounds the read-back too — it is the tighter
+	// of the two — so a short parent context exercises the same abandon path a
+	// blown refreshLockTimeout would.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	store := &mockTokenStore{
+		tokens:   &Tokens{AccessToken: "a", RefreshToken: "r"},
+		loadGate: gate,
+	}
+	mgr := NewManager(store, Config{})
+
+	done := make(chan LoginVerification, 1)
+	go func() {
+		verdict, err := mgr.commitLogin(ctx, &Tokens{AccessToken: "a"}, func() error { return nil })
+		if err != nil {
+			t.Errorf("commitLogin returned error: %v", err)
+		}
+		done <- verdict
+	}()
+
+	select {
+	case verdict := <-done:
+		if verdict.Outcome != LoginVerifyInconclusive || verdict.Reason != LoginVerifyReasonLockTimeout {
+			t.Fatalf("verdict = %s/%q, want inconclusive/lock_timeout", verdict.Outcome, verdict.Reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commitLogin never returned; the read-back bound did not fire")
+	}
+
+	// The lock is released, so a second credential mutation can proceed.
+	released := make(chan error, 1)
+	go func() { released <- mgr.Logout(context.Background()) }()
+	select {
+	case err := <-released:
+		if err != nil {
+			t.Fatalf("Logout after an abandoned read-back failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential lock was never released")
+	}
+}
+
+// A failed save has nothing to prove: the error comes back unchanged and the
+// read-back never runs.
+func TestManagerCommitLogin_SaveFailureSkipsVerification(t *testing.T) {
+	stubCredentialLock(t)
+	saveErr := errors.New("keychain write refused")
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), &Tokens{AccessToken: "a"}, func() error { return saveErr })
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("err = %v, want the save error", err)
+	}
+	if verdict.Outcome != 0 {
+		t.Fatalf("outcome = %s, want the zero 'never ran' sentinel", verdict.Outcome)
+	}
+	if store.loadCalled != 0 {
+		t.Fatalf("read-backs = %d, want 0 after a failed save", store.loadCalled)
+	}
+}
+
+// The e2e login seam persists from inside its own callback, so the Manager
+// never sees the record it wrote. It records that record on the Manager
+// instead, and commitLogin falls back to it — without which a silently
+// no-oped save over an unflagged record would render as a successful login,
+// exactly the class this verification exists to catch.
+func TestManagerPollLogin_SeamBranchRunsEqualityLeg(t *testing.T) {
+	stubCredentialLock(t)
+	stale := &Tokens{
+		AccessToken:  "stale-access",
+		RefreshToken: "stale-refresh",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	store := &mockTokenStore{tokens: stale}
+	mgr := NewManager(store, Config{})
+	// Stand in for SetE2ELogin: record what the seam meant to persist, then
+	// let the save silently do nothing.
+	mgr.pollLogin = func(context.Context, string, int) error {
+		mgr.lastE2ETokens = &Tokens{
+			AccessToken:  "seam-access",
+			RefreshToken: "seam-refresh",
+			Email:        "dave@example.com",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}
+		return nil
+	}
+
+	verdict, err := mgr.PollLogin(context.Background(), "device", 0)
+	if err != nil {
+		t.Fatalf("PollLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyRecordNotUpdated {
+		t.Fatalf("outcome = %s, want record_not_updated", verdict.Outcome)
+	}
+	if verdict.Reason != LoginVerifyReasonAccessTokenMismatch {
+		t.Fatalf("reason = %q, want %q", verdict.Reason, LoginVerifyReasonAccessTokenMismatch)
+	}
+}
+
+// A seam record left over from an earlier login must never satisfy a later
+// login's equality leg.
+func TestManagerPollLogin_SeamRecordIsResetPerAttempt(t *testing.T) {
+	stubCredentialLock(t)
+	stored := &Tokens{
+		AccessToken:  "stored-access",
+		RefreshToken: "stored-refresh",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	store := &mockTokenStore{tokens: stored}
+	mgr := NewManager(store, Config{})
+	mgr.lastE2ETokens = &Tokens{AccessToken: "stored-access"}
+	mgr.pollLogin = func(context.Context, string, int) error { return nil }
+
+	verdict, err := mgr.PollLogin(context.Background(), "device", 0)
+	if err != nil {
+		t.Fatalf("PollLogin returned error: %v", err)
+	}
+	// With the stale seam record cleared there is no expectation to compare
+	// against, so the remaining legs decide: the record is present and usable.
+	if verdict.Outcome != LoginVerified {
+		t.Fatalf("outcome = %s (reason %q), want verified", verdict.Outcome, verdict.Reason)
+	}
+	if mgr.lastE2ETokens != nil {
+		t.Fatal("seam record survived a login that did not set one")
+	}
+}
+
+// --- Save-path instrumentation (BOS-942 U4) ---
+
+// captureGlobalLog installs a buffer on the global zerolog logger for the
+// duration of the test and returns it.
+func captureGlobalLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := zlog.Logger
+	zlog.Logger = zerolog.New(&buf)
+	t.Cleanup(func() { zlog.Logger = orig })
+	return &buf
+}
+
+// assertNoTokenMaterial fails if any fixture token value reached the buffer.
+// The save-path lines exist to make the next incident diagnosable; they must
+// not make the log a credential store.
+func assertNoTokenMaterial(t *testing.T, buf *bytes.Buffer, values ...string) {
+	t.Helper()
+	got := buf.String()
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		if strings.Contains(got, v) {
+			t.Fatalf("log leaked token material %q: %s", v, got)
+		}
+	}
+}
+
+func TestCommitLogin_LogsSaveAndVerdict(t *testing.T) {
+	stubCredentialLock(t)
+	buf := captureGlobalLog(t)
+
+	saved := &Tokens{
+		AccessToken:  "secret-access-value",
+		RefreshToken: "secret-refresh-value",
+		Email:        "dave@example.com",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	store := &mockTokenStore{tokens: saved}
+	mgr := NewManager(store, Config{})
+
+	verdict, err := mgr.commitLogin(context.Background(), saved, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerified {
+		t.Fatalf("outcome = %s, want verified", verdict.Outcome)
+	}
+
+	got := buf.String()
+	for _, want := range []string{
+		`"component":"auth-store"`,
+		`"email":"dave@example.com"`,
+		`"expires_at"`,
+		`"needs_relogin":false`,
+		`"relogin_reason":""`,
+		`"outcome":"verified"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log missing %s\ngot: %s", want, got)
+		}
+	}
+	assertNoTokenMaterial(t, buf, saved.AccessToken, saved.RefreshToken)
+}
+
+func TestCommitLogin_LogsMarkerStateOnANotUpdatedVerdict(t *testing.T) {
+	stubCredentialLock(t)
+	buf := captureGlobalLog(t)
+
+	stored := &Tokens{
+		AccessToken:   "secret-access-value",
+		RefreshToken:  "secret-refresh-value",
+		Email:         "dave@example.com",
+		ExpiresAt:     time.Now().Add(time.Hour),
+		NeedsRelogin:  true,
+		ReloginReason: ReloginReasonRefreshTokenRejected,
+	}
+	store := &mockTokenStore{tokens: stored}
+	mgr := NewManager(store, Config{})
+
+	if _, err := mgr.commitLogin(context.Background(), stored, func() error { return nil }); err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, `"needs_relogin":true`) {
+		t.Errorf("log missing the marker state\ngot: %s", got)
+	}
+	if !strings.Contains(got, `"outcome":"record_not_updated"`) {
+		t.Errorf("log missing the verdict outcome\ngot: %s", got)
+	}
+	if !strings.Contains(got, `"reason":"`+ReloginReasonRefreshTokenRejected+`"`) {
+		t.Errorf("log missing the enumerated reason\ngot: %s", got)
+	}
+	assertNoTokenMaterial(t, buf, stored.AccessToken, stored.RefreshToken)
+}
+
+// A failed save has nothing to report: no save line, no verdict line.
+func TestCommitLogin_NoLogWhenSaveFails(t *testing.T) {
+	stubCredentialLock(t)
+	buf := captureGlobalLog(t)
+
+	store := &mockTokenStore{}
+	mgr := NewManager(store, Config{})
+	saved := &Tokens{AccessToken: "secret-access-value", RefreshToken: "secret-refresh-value"}
+
+	_, err := mgr.commitLogin(context.Background(), saved, func() error { return errors.New("write refused") })
+	if err == nil {
+		t.Fatal("expected the save error to be returned")
+	}
+	if strings.Contains(buf.String(), "auth-store") {
+		t.Fatalf("a failed save emitted a save-path log line: %s", buf.String())
+	}
+}
+
+// The inconclusive verdict's Err can wrap a keyring error whose text embeds
+// record bytes. It must never reach the log.
+func TestCommitLogin_InconclusiveVerdictNeverLogsTheError(t *testing.T) {
+	stubCredentialLock(t)
+	buf := captureGlobalLog(t)
+
+	store := &mockTokenStore{loadErr: fmt.Errorf("keyring blob secret-access-value: %w", ErrCredentialsUnreadable)}
+	mgr := NewManager(store, Config{})
+	saved := &Tokens{AccessToken: "secret-access-value", RefreshToken: "secret-refresh-value", Email: "dave@example.com"}
+
+	verdict, err := mgr.commitLogin(context.Background(), saved, func() error { return nil })
+	if err != nil {
+		t.Fatalf("commitLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerifyInconclusive {
+		t.Fatalf("outcome = %s, want inconclusive", verdict.Outcome)
+	}
+	if !strings.Contains(buf.String(), `"outcome":"inconclusive"`) {
+		t.Errorf("log missing the inconclusive outcome\ngot: %s", buf.String())
+	}
+	assertNoTokenMaterial(t, buf, saved.AccessToken, saved.RefreshToken)
+	if strings.Contains(buf.String(), "keyring blob") {
+		t.Fatalf("log rendered the raw verification error: %s", buf.String())
 	}
 }

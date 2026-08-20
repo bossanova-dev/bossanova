@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/machine"
 )
@@ -528,5 +529,164 @@ func TestRecomputingSessionStore_NilObserverIsACleanNoOp(t *testing.T) {
 	if _, err := store.UpdateStateConditional(context.Background(), sess.ID,
 		int(machine.Closed), int(machine.Merged)); err != nil {
 		t.Fatalf("conditional update with no observer: %v", err)
+	}
+}
+
+// newResurrectObservedStore parks an ARCHIVED session in startState and returns
+// the decorated store plus the spies watching it. The archive and the park both
+// happen on the raw store so neither setup write is observed.
+func newResurrectObservedStore(t *testing.T, startState machine.State) (*RecomputingSessionStore, *spyTransitionObserver, *spyRecomputer, string, time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	database := setupTestDB(t)
+	repos := NewRepoStore(database)
+	repo, err := repos.Create(ctx, CreateRepoParams{
+		DisplayName:       "test-repo",
+		LocalPath:         "/tmp/test-resurrect-observer",
+		OriginURL:         "https://github.com/test/repo.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	inner := NewSessionStore(database)
+	sess, err := inner.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "t",
+		WorktreePath: "/tmp/wt-resurrect-observer",
+		BranchName:   "br",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	start := int(startState)
+	if _, err := inner.Update(ctx, sess.ID, UpdateSessionParams{State: &start}); err != nil {
+		t.Fatalf("park session in %v: %v", startState, err)
+	}
+	if err := inner.Archive(ctx, sess.ID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	got, err := inner.Get(ctx, sess.ID)
+	if err != nil || got.ArchivedAt == nil {
+		t.Fatalf("read archived session: %v", err)
+	}
+	obs := &spyTransitionObserver{}
+	rec := &spyRecomputer{}
+	store := NewRecomputingSessionStore(inner, rec).WithTransitionObserver(obs)
+	return store, obs, rec, sess.ID, *got.ArchivedAt
+}
+
+// TestRecomputingSessionStore_ResurrectToStateRecomputesAndNotifies proves the
+// new state-writing method goes through the BOS-557 seam. Without the explicit
+// override the embedded SessionStore promotes it straight through and a
+// terminal-to-live transition is published to nobody.
+func TestRecomputingSessionStore_ResurrectToStateRecomputesAndNotifies(t *testing.T) {
+	store, obs, rec, id, _ := newResurrectObservedStore(t, machine.Merged)
+
+	resurrected, err := store.ResurrectToState(context.Background(), id, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("ResurrectToState: %v", err)
+	}
+	if !resurrected {
+		t.Fatal("ResurrectToState returned false, want true")
+	}
+
+	if got := rec.calls.Load(); got != 1 {
+		t.Errorf("recompute calls = %d, want 1", got)
+	}
+	if got := obs.count(); got != 1 {
+		t.Fatalf("observer calls = %d, want exactly 1", got)
+	}
+	if got := obs.seen()[0]; got != machine.ImplementingPlan {
+		t.Errorf("observed state = %v, want %v", got, machine.ImplementingPlan)
+	}
+}
+
+// TestRecomputingSessionStore_ResurrectToStateSilentOnLostRace keeps the seam
+// honest in the other direction: a CAS miss wrote nothing, so nothing may be
+// recomputed or published.
+func TestRecomputingSessionStore_ResurrectToStateSilentOnLostRace(t *testing.T) {
+	store, obs, rec, id, _ := newResurrectObservedStore(t, machine.Merged)
+	ctx := context.Background()
+
+	if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+		t.Fatalf("first ResurrectToState: %v", err)
+	}
+	before := rec.calls.Load()
+	beforeObs := obs.count()
+
+	resurrected, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("second ResurrectToState: %v", err)
+	}
+	if resurrected {
+		t.Fatal("ResurrectToState on live row returned true, want false")
+	}
+	if got := rec.calls.Load(); got != before {
+		t.Errorf("recompute calls after lost race = %d, want %d", got, before)
+	}
+	if got := obs.count(); got != beforeObs {
+		t.Errorf("observer calls after lost race = %d, want %d", got, beforeObs)
+	}
+}
+
+// TestRecomputingSessionStore_ResurrectToStateStaysEdgeTriggered pins the half
+// of the SessionTransitionObserver contract this method cannot get structurally:
+// its CAS pins only archived_at, so an archived row may ALREADY be wearing the
+// state the resurrect targets. Lifecycle.ArchiveSession writes no state column,
+// so a session archived mid-flight stays in ImplementingPlan and this is a
+// reachable durable shape, not a hypothetical. Re-stating a state is not a
+// transition and must not reach the observer — while the recompute, which is
+// about the display row rather than the state column, still has to run.
+func TestRecomputingSessionStore_ResurrectToStateStaysEdgeTriggered(t *testing.T) {
+	store, obs, rec, id, _ := newResurrectObservedStore(t, machine.ImplementingPlan)
+
+	resurrected, err := store.ResurrectToState(context.Background(), id, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("ResurrectToState: %v", err)
+	}
+	if !resurrected {
+		t.Fatal("ResurrectToState returned false, want true")
+	}
+
+	if got := rec.calls.Load(); got != 1 {
+		t.Errorf("recompute calls = %d, want 1; the display row is stale either way", got)
+	}
+	if got := obs.count(); got != 0 {
+		t.Fatalf("observer calls = %d, want 0; ImplementingPlan -> ImplementingPlan is not a transition (saw %v)",
+			got, obs.seen())
+	}
+}
+
+// TestRecomputingSessionStore_RollbackFailedResurrectDoesNotNotify pins the
+// deliberate carve-out: the compensating write restores Merged, and
+// TriggerClassFor maps Merged to ClassCompleted, so notifying would re-fire
+// every standing completion subscription for a completion that never
+// re-happened. The recompute still runs.
+func TestRecomputingSessionStore_RollbackFailedResurrectDoesNotNotify(t *testing.T) {
+	store, obs, rec, id, archivedAt := newResurrectObservedStore(t, machine.Merged)
+	ctx := context.Background()
+
+	if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+		t.Fatalf("ResurrectToState: %v", err)
+	}
+	recBefore := rec.calls.Load()
+	obsBefore := obs.count()
+
+	restored, err := store.RollbackFailedResurrect(ctx, id, archivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("RollbackFailedResurrect: %v", err)
+	}
+	if !restored {
+		t.Fatal("RollbackFailedResurrect returned false, want true")
+	}
+
+	if got := rec.calls.Load(); got != recBefore+1 {
+		t.Errorf("recompute calls = %d, want %d", got, recBefore+1)
+	}
+	if got := obs.count(); got != obsBefore {
+		t.Fatalf("observer calls = %d, want %d (rollback must notify nothing)", got, obsBefore)
 	}
 }

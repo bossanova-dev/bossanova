@@ -50,6 +50,23 @@ func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) erro
 	return f(ctx, id)
 }
 
+// ArchiveWorkerTracker receives an archive worker's completion channel, and
+// the session it archives, so the daemon can join in-flight archives during
+// shutdown — and name the session in a log line if it ever declines to. A nil
+// tracker means the archive runs untracked (tests, and any caller with no
+// shutdown coordination).
+// Modelled on tccprobe.WorkerTracker, whose shape and nil semantics this
+// deliberately mirrors.
+//
+// Joining bounds an archive to the daemon's lifetime; it does not promise the
+// archive SUCCEEDS. The plugin host is closed before the shutdown wait, so a
+// late archive can still fail its notify leg. What the join does protect is the
+// archived_at write, because the database is closed by a defer that runs after
+// that wait. The guarantee is therefore "completed, or failed with a logged
+// error" rather than "silently truncated between removing the worktree and
+// recording the archive" (BOS-923).
+type ArchiveWorkerTracker func(sessionID string, done <-chan struct{})
+
 // BaseAdvanceNotifier is told, once a PR merges, that the session's base
 // branch has moved on. It backs the BOS-521 keep-current sweep, which rebases
 // the repo's other in-flight branches onto the new base.
@@ -87,6 +104,7 @@ type Dispatcher struct {
 	completionNotifier SessionCompletionNotifier
 	displayStatus      DisplayStatusSetter
 	archiver           SessionArchiver
+	archiveTracker     ArchiveWorkerTracker
 	baseAdvance        BaseAdvanceNotifier
 	logger             zerolog.Logger
 	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
@@ -124,12 +142,26 @@ func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
 }
 
 // SetArchiver wires the archiver invoked after a PR merges when the repo's
-// ShouldArchiveSessionsAfterMerge flag is on. Uses a setter (not a constructor param)
-// because the dispatcher is created before the archiver is wired in main.go.
-// nil-safe: leaving it unset disables the post-merge archive automation.
-func (d *Dispatcher) SetArchiver(a SessionArchiver) {
+// ShouldArchiveSessionsAfterMerge flag is on, together with the tracker that
+// joins the resulting archive goroutine to daemon shutdown. Uses a setter (not a
+// constructor param) because the dispatcher is created before the archiver is
+// wired in main.go. nil-safe in both arguments: a nil archiver disables the
+// post-merge archive automation, and a nil tracker leaves the archive untracked.
+//
+// track is a parameter of this setter rather than a separate SetArchiveTracker
+// method so an archiver cannot be wired without a tracker decision being made at
+// the same call site (BOS-923) — a seam a future launch point can forget is a
+// fix with an expiry date.
+func (d *Dispatcher) SetArchiver(a SessionArchiver, track ArchiveWorkerTracker) {
 	d.archiver = a
+	d.archiveTracker = track
 }
+
+// HasArchiveTracker reports whether an archive worker tracker is wired. It
+// exists so a startup wiring test can assert that the production archiver call
+// site supplied one: an omitted tracker has no shape at runtime, so it has to be
+// asserted rather than merely defaulted to nil.
+func (d *Dispatcher) HasArchiveTracker() bool { return d.archiveTracker != nil }
 
 // SetBaseAdvanceNotifier wires the hook invoked after a PR merges, when the
 // base branch it merged into has therefore advanced. Uses a setter (not a
@@ -513,7 +545,7 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 // archiveSessionAfterMergeIfEnabled, which the display poller and the reconcile
 // sweep share (BOS-697).
 func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *models.Session) {
-	archiveSessionAfterMergeIfEnabled(ctx, d.repos, d.archiver, d.logger, sess)
+	archiveSessionAfterMergeIfEnabled(ctx, d.repos, d.archiver, d.archiveTracker, d.logger, sess)
 }
 
 // archiveSessionAfterMergeIfEnabled archives a session that has just reached
@@ -523,7 +555,8 @@ func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *model
 // the worktree, none of which must block the dispatcher's single event
 // goroutine or a poll cycle — and is best-effort: the underlying archive is
 // idempotent, so re-archiving an already-archived session is a no-op success.
-// nil-safe: with no archiver wired the automation is off.
+// nil-safe: with no archiver wired the automation is off, and with no tracker
+// wired the archive runs without being joined to daemon shutdown.
 //
 // Package-level rather than a Dispatcher method because three paths can land a
 // session on Merged and every one of them must archive: the PR-merged webhook
@@ -547,6 +580,7 @@ func archiveSessionAfterMergeIfEnabled(
 	ctx context.Context,
 	repos db.RepoStore,
 	archiver SessionArchiver,
+	track ArchiveWorkerTracker,
 	logger zerolog.Logger,
 	sess *models.Session,
 ) {
@@ -564,13 +598,21 @@ func archiveSessionAfterMergeIfEnabled(
 	sessionID := sess.ID
 	// Detach from ctx: the archive must complete even if the caller's ctx is
 	// cancelled when its handler returns. safego.Go recovers panics.
-	safego.Go(logger, func() {
+	done := safego.Go(logger, func() {
 		if err := archiver.ArchiveSession(context.Background(), sessionID); err != nil {
 			logger.Warn().Err(err).Str("session", sessionID).Msg("archive-after-merge: archive failed")
 			return
 		}
 		logger.Info().Str("session", sessionID).Msg("archive-after-merge: session archived")
 	})
+	// Hand the completion channel to shutdown coordination instead of dropping
+	// it (BOS-923). The detachment above keeps the archive alive past its
+	// caller's handler; without this join the daemon could still exit — closing
+	// the database — between removing the worktree and writing archived_at,
+	// leaving an active-looking session whose worktree is gone.
+	if track != nil {
+		track(sessionID, done)
+	}
 }
 
 // clearBlockMetadata sets the UpdateSessionParams fields that OnExit(actionClearBlocked)

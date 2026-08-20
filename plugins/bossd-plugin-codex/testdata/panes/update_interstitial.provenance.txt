@@ -1,0 +1,9 @@
+# Written by capture-update-interstitial.sh. Do not hand-edit — re-run the
+# script instead. Describes the environment update_interstitial.txt was
+# captured on; see the script header for why the fixture is not byte-pinned to
+# this environment.
+codex-cli: codex-cli 0.147.0
+tmux: tmux 3.7b
+pane: 200x50
+os: darwin-arm64 (25.4.0)
+advertised-latest-version: 9.99.0

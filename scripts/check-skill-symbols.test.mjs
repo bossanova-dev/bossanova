@@ -84,7 +84,10 @@ test('form A: a configured role passes and an unconfigured one is named with its
   assert.equal(findings.length, 1)
   assert.equal(findings[0].line, 3)
   assert.equal(findings[0].kind, 'role-unconfigured')
-  assert.match(findings[0].detail, /'shipped' is not a configured trackerConfig\.states key/)
+  assert.match(
+    findings[0].detail,
+    /'shipped' is\s+not\s+a\s+configured\s+trackerConfig\.states\s+key/,
+  )
 })
 
 test('form B: every role in the enumerated run is cited, and the prose tail is not', () => {
@@ -104,8 +107,11 @@ test('form B: every role in the enumerated run is cited, and the prose tail is n
 
   const findings = checkRoleCitations(citations, roleKeys())
   assert.equal(findings.length, 1)
-  assert.match(findings[0].detail, /'shipped' is not a configured trackerConfig\.labels key/)
-  assert.match(findings[0].detail, /form B/)
+  assert.match(
+    findings[0].detail,
+    /'shipped' is\s+not\s+a\s+configured\s+trackerConfig\.labels\s+key/,
+  )
+  assert.match(findings[0].detail, /form\s+B/)
 })
 
 test('form B: a placeholder with no enumerated run yields no citations', () => {
@@ -131,7 +137,7 @@ test('direction 2: a content-taxonomy label is rejected even when the config def
   )
   assert.equal(improvement.length, 1)
   assert.equal(improvement[0].kind, 'role-taxonomy')
-  assert.match(improvement[0].detail, /content-taxonomy label applied literally/)
+  assert.match(improvement[0].detail, /content-taxonomy\s+label\s+applied\s+literally/)
 })
 
 test('the taxonomy split self-check fires when a content label becomes a configured role', () => {
@@ -143,7 +149,7 @@ test('the taxonomy split self-check fires when a content label becomes a configu
         states: new Set(),
         githubLabels: new Set(),
       }),
-    /CONTENT_LABELS overlaps configured trackerConfig label roles: docs/,
+    /CONTENT_LABELS\s+overlaps\s+configured\s+trackerConfig\s+label\s+roles: docs/,
   )
 })
 
@@ -168,7 +174,7 @@ test('parseExports handles every ESM form the repo uses', () => {
 test('parseExports refuses to silently miss an unclassifiable export form', () => {
   assert.throws(
     () => parseExports('export default helper', 'skills-toolbox/x.mjs'),
-    /unclassifiable export at skills-toolbox\/x\.mjs:1/,
+    /unclassifiable\s+export\s+at\s+skills-toolbox\/x\.mjs:1/,
   )
 })
 
@@ -259,7 +265,7 @@ test('a cited helper whose dispatch idiom changed is reported, not silently pass
   )
   assert.equal(findings.length, 1)
   assert.equal(findings[0].kind, 'verb-index-empty')
-  assert.match(findings[0].detail, /the dispatch idiom changed/)
+  assert.match(findings[0].detail, /the\s+dispatch\s+idiom\s+changed/)
 })
 
 // ---------------------------------------------------------------------------
@@ -415,7 +421,7 @@ test('checkSkillSymbols reports drift between the discovered owners and the pin'
     added.map((f) => f.kind),
     ['toolbox-owner-drift'],
   )
-  assert.match(added[0].detail, /newly vendoring a toolbox: brand-new-skill/)
+  assert.match(added[0].detail, /newly\s+vendoring\s+a\s+toolbox: brand-new-skill/)
 
   // The dangerous direction: the tree yields fewer owners than the pin names, so check 2
   // has silently narrowed. Only the pin notices.
@@ -427,7 +433,7 @@ test('checkSkillSymbols reports drift between the discovered owners and the pin'
     narrowed.map((f) => f.kind),
     ['toolbox-owner-drift'],
   )
-  assert.match(narrowed[0].detail, /no longer discovered: boss-build, boss-epic/)
+  assert.match(narrowed[0].detail, /no\s+longer\s+discovered: boss-build, boss-epic/)
 })
 
 test('checkSkillSymbols is clean on prose that names only real symbols', () => {

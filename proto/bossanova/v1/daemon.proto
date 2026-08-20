@@ -95,6 +95,15 @@ service DaemonService {
   // Auth change notification (CLI → daemon)
   rpc NotifyAuthChange(NotifyAuthChangeRequest) returns (NotifyAuthChangeResponse);
 
+  // GetAuthState reports the RUNNING daemon's live upstream auth state.
+  // Surfaced via `boss daemon doctor`. It exists because a locally readable
+  // credential record says nothing about whether this daemon can actually
+  // talk to the orchestrator: the BOS-942 incident had a present, parseable
+  // `workos-tokens-v1` record throughout while re-registration failed every
+  // 30s. Only the daemon itself is an authority on that, so a local re-read
+  // is architecturally incapable of catching it.
+  rpc GetAuthState(GetAuthStateRequest) returns (GetAuthStateResponse);
+
   // --- Cron jobs ---
 
   // CreateCronJob registers a new scheduled prompt for a repo.
@@ -967,7 +976,78 @@ message NotifyAuthChangeRequest {
   string action = 1; // "login" or "logout"
 }
 
-message NotifyAuthChangeResponse {}
+message NotifyAuthChangeResponse {
+  // Outcome is the daemon's verdict on the credentials it reloaded after a
+  // `boss login`. It is enumerated and non-secret; it never carries token
+  // material or a raw upstream payload.
+  //
+  // OUTCOME_UNSPECIFIED is load-bearing: it is the proto3 default, so a new
+  // CLI talking to an older daemon (or one with no orchestrator configured,
+  // or on the `logout` action) reads it and must render silence, never a
+  // false "OK".
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    // The reloaded record is usable and the auth gate was cleared.
+    OUTCOME_OK = 1;
+    // The reloaded record still carries a persisted re-login marker, so the
+    // auth gate was NOT cleared. relogin_reason names which marker.
+    OUTCOME_CREDENTIALS_FLAGGED = 2;
+    // The reloaded record carries no access token and no marker, so there is
+    // nothing to dial with and the auth gate was NOT cleared.
+    OUTCOME_CREDENTIALS_MISSING = 3;
+    // Credentials were clean and the auth gate WAS cleared, but the proactive
+    // re-register failed. The reactive path remains the backstop.
+    OUTCOME_REGISTER_FAILED = 4;
+  }
+  Outcome outcome = 1;
+  // relogin_reason is the enumerated persisted re-login reason observed by the
+  // reload — one of "refresh_outcome_unknown" or "refresh_token_rejected" —
+  // and is empty for every outcome other than OUTCOME_CREDENTIALS_FLAGGED.
+  // Never token material.
+  string relogin_reason = 2;
+}
+
+// --- Daemon Auth State ---
+
+message GetAuthStateRequest {}
+
+// GetAuthStateResponse carries only scalar, enumerated, non-secret facts.
+// It never carries an access token, a refresh token, an Authorization header
+// value, or a raw upstream response body — the CLI renders these fields
+// verbatim to an operator's terminal.
+message GetAuthStateResponse {
+  // Whether this daemon has an orchestrator client at all. False in
+  // local-only mode, where there is nothing to authenticate against and a
+  // doctor FAIL would be reporting a machine working exactly as configured.
+  bool upstream_configured = 1;
+  // The daemon's live AuthState.NeedsLogin(). NOT a fault signal on its own:
+  // a deliberate `boss logout` sets it with no reason and no failure clock.
+  bool needs_login = 2;
+  // The persisted, enumerated re-login marker ("refresh_outcome_unknown",
+  // "refresh_token_rejected"), or "" when the credentials are usable. The
+  // value is produced by the daemon's own reloginReason* constants in
+  // services/bossd/internal/upstream/tokens.go, which duplicate the
+  // vocabulary of services/boss/internal/auth's ReloginReason* constants
+  // across the module boundary. Readers must treat an unrecognized value as
+  // forward-compatible rather than failing.
+  string relogin_reason = 3;
+  // The last SUCCESSFUL upstream registration in THIS daemon process. Unset
+  // when this process has never completed one. This is context, not a
+  // liveness floor: registration is not periodic, so a healthy daemon
+  // connected for three days legitimately reports a three-day-old timestamp.
+  google.protobuf.Timestamp last_registered_at = 4;
+  // Whether the last DaemonStream handshake reached "snapshot accepted" and
+  // has not since been torn down. Deliberately coarse — it reads false during
+  // an ordinary reconnect gap on a perfectly healthy daemon, so it must never
+  // be the basis of a failure verdict on its own.
+  bool upstream_connected = 5;
+  // The instant the current unbroken run of unrecoverable auth failures
+  // began; unset when auth is not currently failing. This is the
+  // discriminating fact the BOS-942 incident needed and the same clock the
+  // daemon's periodic wedge WARN reads, so the log and the doctor agree by
+  // construction rather than by coincidence.
+  google.protobuf.Timestamp auth_failing_since = 6;
+}
 
 // --- Cron jobs ---
 

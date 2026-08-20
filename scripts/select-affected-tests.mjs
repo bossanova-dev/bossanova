@@ -322,6 +322,23 @@ export function selectTargets(files) {
       continue
     }
 
+    // The prettier pin-drift gate (scripts/prettier-pin-drift.test.mjs) compares the
+    // prettier range the root manifest declares against the one the standalone
+    // services/docs package declares, AND the version each tree's lockfile actually
+    // resolves (matching caret ranges still admit two different installed engines). A
+    // bump to any of those four files touches no scripts/** path, so without this rule
+    // the exact change class that gate exists to catch would select only test-smoke and
+    // merge with the gate never having run.
+    // Terminal on purpose for the three non-web inputs: they trade the whole-repo
+    // test-smoke fallback for the gate that actually reads them, the same trade the
+    // docs/build-and-ci.md and .boss-skills.json rules above already make.
+    if (PRETTIER_PIN_INPUTS.has(file)) {
+      selectWholeTarget(selections, 'test-scripts')
+      // Deliberately no `continue` for the root lockfile: isWebPath() claims it too, and
+      // swallowing it here would silently drop the web targets it has always selected.
+      if (file !== 'pnpm-lock.yaml') continue
+    }
+
     if (isSkillPath(file)) {
       selectWholeTarget(selections, 'test-manifest')
       selectWholeTarget(selections, 'test-no-inline-stop-hooks')
@@ -421,6 +438,15 @@ function selectPackageTarget(selections, target, packagePath) {
   selection.packages.add(packagePath === './' ? '.' : packagePath)
   selections.set(target, selection)
 }
+
+// Inputs to the prettier pin-drift gate: the two manifests it compares declared ranges
+// from, and the two lockfiles it compares resolved versions from.
+const PRETTIER_PIN_INPUTS = new Set([
+  'package.json',
+  'services/docs/package.json',
+  'pnpm-lock.yaml',
+  'services/docs/pnpm-lock.yaml',
+])
 
 function isManifestPath(file) {
   return (

@@ -16,6 +16,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { REPAIR_RESULTS, DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import {
@@ -26,8 +27,16 @@ import {
   extractUncoveredRows,
   extractCoverageRows,
 } from './bs-sweep-mutation-survivors.mjs'
+import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
+import {
+  NO_REFERENCE_REMEDY,
+  assertExactSize,
+  assertMirrorRegenerated,
+  measureFile,
+} from './size-ratchet-lib.mjs'
 
 const here = (rel) => new URL(rel, import.meta.url)
+const abs = (rel) => fileURLToPath(here(rel))
 const read = (rel) => readFileSync(here(rel), 'utf8')
 const SKILL = read('../.claude/skills/bs-sweep-mutation/SKILL.md')
 const CODEX = read('../.codex/skills/bs-sweep-mutation/SKILL.md')
@@ -140,12 +149,12 @@ test('per-survivor dispatches are awaited AND sequential (no test-file races)', 
   assert.match(SKILL, /sequential/i, 'per-survivor dispatches must be sequential')
   assert.match(
     SKILL,
-    /one awaited `general-purpose` subagent per killable survivor/i,
+    /one\s+awaited `general-purpose` subagent\s+per\s+killable\s+survivor/i,
     'one subagent per survivor',
   )
   assert.match(
     SKILL,
-    /no (parallel )?.{0,30}write race/i,
+    /no (parallel )?.{0,30}write\s+race/i,
     'must state no write races by construction',
   )
 })
@@ -189,15 +198,18 @@ test('the SKILL uses the byte-identical DISPATCH_FAILURE token', () => {
 })
 
 test('the orchestrator classifies from the run-file sentinel only', () => {
-  assert.match(SKILL, /run file only|run-file sentinel only|from the run file only/i)
+  assert.match(
+    SKILL,
+    /run\s+file\s+only|run-file\s+sentinel\s+only|from\s+the\s+run\s+file\s+only/i,
+  )
 })
 
 test('a missing/stale sentinel routes to the safe branch, never a false success', () => {
   assert.match(SKILL, /missing|stale/i)
   // The mutation-run dead-subagent branch must not fabricate a "no survivors".
-  assert.match(SKILL, /never a false .{0,20}no.?survivors/i)
+  assert.match(SKILL, /never\s+a\s+false .{0,20}no.?survivors/i)
   // The watch dead-subagent branch must never record green.
-  assert.match(SKILL, /never green|safe non-green/i)
+  assert.match(SKILL, /never\s+green|safe\s+non-green/i)
 })
 
 test('green is re-verified by one cheap gh call, never trusted from the sentinel alone', () => {
@@ -220,11 +232,15 @@ test('cron gate exists and uses shared open-PR suppression', () => {
     ],
   ]) {
     assert.match(gate, /cron-open-pr\.mjs/, `${label} gate must use shared cron-open-pr helper`)
-    assert.match(gate, /Bossanova sweep mutation/, `${label} gate must match the live cron name`)
-    assert.match(gate, /prior sweep PR still open/, `${label} skip reason must be loud`)
+    assert.match(
+      gate,
+      /Bossanova[ ]sweep[ ]mutation/,
+      `${label} gate must match the live cron name`,
+    )
+    assert.match(gate, /prior[ ]sweep[ ]PR[ ]still[ ]open/, `${label} skip reason must be loud`)
     assert.match(gate, /gateExit\(false/, `${label} gh errors must fail closed`)
     assert.match(skill, /GateCommand/, `${label}/SKILL.md must document the gate command`)
-    assert.doesNotMatch(skill, /Intentionally ungated/, `${label}/SKILL.md must not say ungated`)
+    assert.doesNotMatch(skill, /Intentionally\s+ungated/, `${label}/SKILL.md must not say ungated`)
     assert.doesNotMatch(
       skill,
       /Leave `GateCommand` empty/,
@@ -246,24 +262,28 @@ test('cron gate exists and uses shared open-PR suppression', () => {
 // ---------------------------------------------------------------------------
 
 test('the four raw views are never pasted inline; the payload is the compact list', () => {
-  assert.match(SKILL, /never.{0,40}four raw views|four raw views never/i)
-  assert.match(SKILL, /compact survivor list/i)
-  assert.match(SKILL, /compact uncovered list|uncoveredRows/i)
+  assert.match(SKILL, /never.{0,40}four\s+raw\s+views|four\s+raw\s+views\s+never/i)
+  assert.match(SKILL, /compact\s+survivor\s+list/i)
+  assert.match(SKILL, /compact\s+uncovered\s+list|uncoveredRows/i)
 })
 
 test('the PR body still lists ALL survivors', () => {
-  assert.match(SKILL, /lists ALL survivors|ALL survivors/i, 'PR body must list every survivor')
+  assert.match(
+    SKILL,
+    /lists\s+ALL\s+survivors|ALL\s+survivors/i,
+    'PR body must list every survivor',
+  )
 })
 
 test('Phase B batch planning happens inside the subagent from compact uncovered rows', () => {
   assert.match(
     SKILL,
-    /Phase-B subagent owns batch planning/i,
+    /Phase-B\s+subagent\s+owns\s+batch\s+planning/i,
     'the orchestrator must not plan batches from raw uncovered output',
   )
   assert.match(
     SKILL,
-    /\.mutate\/uncovered\.txt.{0,120}compact uncovered list from Step 2.{0,80}not the raw view/i,
+    /\.mutate\/uncovered\.txt.{0,120}compact\s+uncovered\s+list\s+from\s+Step\s+2.{0,80}not\s+the\s+raw\s+view/i,
     'Phase B must consume the compact uncovered list, not the raw view',
   )
 })
@@ -271,7 +291,7 @@ test('Phase B batch planning happens inside the subagent from compact uncovered 
 test('Phase B classifies from a concrete run-file sentinel', () => {
   assert.ok(SKILL.includes('sentinel `phase-b`'), 'must name the Phase-B sentinel')
   assert.ok(SKILL.includes('read "$RUN_DIR" "$RUN_ID" phase-b'), 'must read the Phase-B sentinel')
-  assert.match(SKILL, /missing\/stale `phase-b` sentinel is a `dispatch-failure`/i)
+  assert.match(SKILL, /missing\/stale `phase-b` sentinel\s+is\s+a `dispatch-failure`/i)
   for (const token of PHASE_B_RESULTS) {
     assert.ok(SKILL.includes(token), `SKILL.md must document Phase-B token "${token}"`)
   }
@@ -289,7 +309,11 @@ test('the completion + terminal contracts stay byte-identical', () => {
     'Phase A commit subject preserved',
   )
   assert.ok(SKILL.includes('test(mutate): raise coverage for'), 'Phase B commit subject preserved')
-  assert.match(SKILL, /never stage `\.mutate\/`|never.{0,20}`\.mutate\/`/i, '.mutate/ never staged')
+  assert.match(
+    SKILL,
+    /never\s+stage `\.mutate\/`|never.{0,20}`\.mutate\/`/i,
+    '.mutate/ never staged',
+  )
   assert.ok(SKILL.includes('gh pr checks'), 'gh pr checks watch preserved')
   assert.ok(
     SKILL.includes('node skills-toolbox/remove-bossd-stop-hooks.mjs'),
@@ -422,7 +446,7 @@ test('the PR-gate invocation passes this skill own body path and does not rm it'
   assert.ok(SKILL.includes('export PR_NUMBER'), 'the gate exports the PR number for later phases')
 })
 
-test('the resident body stays under the post-extraction ratchet', () => {
+test('the resident body is pinned at its exact post-extraction size', () => {
   // Measured post-extraction bodies: 29221 B (.claude) / 29301 B (.codex), down from the
   // 29845 B (.claude) / 29924 B (.codex) pre-extraction baseline. The ceiling is the larger
   // mirror + 64 B, so the 22-line PR-gate saving is actually banked and cannot be silently
@@ -430,16 +454,38 @@ test('the resident body stays under the post-extraction ratchet', () => {
   //
   // BOS-653 added `START_SHA="$START_SHA" ` to the gate invocation (+23 B, no bump): bodies are
   // 29244 B (.claude) / 29324 B (.codex), leaving 41 B.
-  const CEILING = 29365
-  assert.ok(CEILING < 29845, 'ceiling must stay below the pre-extraction baseline')
-  for (const [label, skill] of [
-    ['.claude/skills/bs-sweep-mutation', SKILL],
-    ['.codex/skills/bs-sweep-mutation', CODEX],
-  ]) {
-    const bytes = Buffer.byteLength(skill, 'utf8')
-    assert.ok(
-      bytes < CEILING,
-      `${label}/SKILL.md must stay under ${CEILING} bytes (post-extraction ratchet), got ${bytes} — move situational content into a reference`,
-    )
-  }
+  //
+  // BOS-768 replaces the ceiling with an exact pin on the AUTHORED source. "Larger mirror +
+  // 64 B" is slack by construction — 81 B of it by the time this landed — and a trim only
+  // widened it. The `.codex` copy leaves the byte loop: it is GENERATED, and is verified
+  // below by regenerating it and comparing exactly.
+  //
+  // The remedy is NOT "move situational content into a reference": bs-sweep-mutation has no
+  // references/ directory, only agents/, gate/ and toolbox/, so that advice named a
+  // destination that does not exist and left the reader with no next step.
+  const SOURCE_BYTES = 29284 // exact measured .claude body, re-measured 2026-08-19
+  assertExactSize({
+    below: { name: 'PRE_EXTRACTION_BASELINE', value: 29845 },
+    constFile: 'scripts/bs-sweep-mutation-skill.test.mjs',
+    constName: 'SOURCE_BYTES',
+    expected: SOURCE_BYTES,
+    label: 'bs-sweep-mutation resident body',
+    measured: measureFile(abs('../.claude/skills/bs-sweep-mutation/SKILL.md')),
+    path: '.claude/skills/bs-sweep-mutation/SKILL.md',
+    remedy: NO_REFERENCE_REMEDY,
+    residual:
+      'the gate/, agents/ and toolbox/ files this body invokes — a line moved out of the body ' +
+      'into one of those is invisible to this pin',
+  })
+})
+
+test('the codex mirror is exactly what regenerating it from the .claude source produces', () => {
+  // Replaces the old byte ceiling on the mirror. `make codex-skills` unconditionally prepends
+  // a generated-by header, so a healthy mirror is ALWAYS larger than its source — "larger than
+  // source" can never be the tell. Exact regeneration equality is, and it subsumes size.
+  assertMirrorRegenerated({
+    mirrorPath: abs('../.codex/skills/bs-sweep-mutation/SKILL.md'),
+    regenerate: rewriteClaudeSkillMarkdown,
+    sourcePath: abs('../.claude/skills/bs-sweep-mutation/SKILL.md'),
+  })
 })

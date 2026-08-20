@@ -56,8 +56,11 @@ func (m *mockSessionStoreLiveness) Update(_ context.Context, _ string, _ db.Upda
 	return nil, nil
 }
 func (m *mockSessionStoreLiveness) Archive(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStoreLiveness) Resurrect(_ context.Context, _ string) error {
-	return nil
+func (m *mockSessionStoreLiveness) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+	return false, nil
+}
+func (m *mockSessionStoreLiveness) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+	return false, nil
 }
 func (m *mockSessionStoreLiveness) Delete(_ context.Context, _ string) error { return nil }
 func (m *mockSessionStoreLiveness) AdvanceOrphanedSessions(_ context.Context) (int64, error) {

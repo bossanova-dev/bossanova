@@ -64,11 +64,58 @@ func chatUploadDir() string {
 // which succeeds only if it is now empty. That is deliberately narrower than
 // os.RemoveAll: this path is derived from a resolved app data dir, and a
 // mis-resolved one must not be able to take anything with it.
+//
+// The Lstat gate below is what makes that narrowing hold. os.ReadDir resolves
+// a symlink AT THIS PATH, and the os.Remove calls below then resolve through
+// it as a path component, so a symlink at the legacy path would redirect the
+// whole reclaim into its target and unlink every "upload-" file there — files
+// this daemon never wrote — silently, once per start. Scope that claim to the
+// directory path deliberately: os.Remove on a symlink ENTRY inside a real
+// legacy directory unlinks the link, never its target, so the loop below needs
+// no per-entry guard and must not grow one. Refusing a symlink outright is the
+// mitigation, mirroring the same Lstat/ModeSymlink/IsDir sequence
+// newManagerWithChmod runs on the live upload directory. Its third check, the
+// chmod-as-ownership-proof, is deliberately NOT copied: this is a delete-only
+// path and must not mutate a directory it is about to refuse.
+//
+// Scope of the guarantee, precisely: Lstat inspects the FINAL path component,
+// so this proves <appDataDir>/chat-uploads is itself a real directory — as of
+// the Lstat call, not for the duration of the walk below. Two things it does
+// not cover, both accepted rather than closed:
+//   - Ancestors are still resolved by the kernel, so a symlinked appDataDir or
+//     intermediate component still redirects the reclaim. They are trusted
+//     because they derive from the operator-configured database path
+//     (appDataDir := filepath.Dir(dbPath) in main.go).
+//   - The window between this Lstat and the ReadDir below is not closed. The
+//     persistent-symlink case is, and the residual race additionally requires
+//     a concurrent local writer inside the app data directory.
 func removeLegacyChatUploadDir(appDataDir string) error {
 	dir := filepath.Join(appDataDir, legacyChatUploadDirName)
+	info, statErr := os.Lstat(dir)
+	switch {
+	case statErr != nil:
+		// Already gone is the overwhelmingly common case, and is success.
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return nil
+		}
+		// Anything else is unexplained: fail closed, enumerating nothing.
+		return fmt.Errorf("stat legacy upload dir: %w", statErr)
+	case info.Mode()&fs.ModeSymlink != 0:
+		// The remediation is named because the caller logs this on EVERY
+		// start; without a way to end it the warning is permanent noise.
+		return fmt.Errorf("legacy upload path %q is a symlink and was not reclaimed; remove the stale symlink at that path", dir)
+	case !info.IsDir():
+		// Remediation named for the same reason as the symlink branch: the
+		// caller logs this on every start, so the operator needs a way to
+		// end it.
+		return fmt.Errorf("legacy upload path %q is not a directory and was not reclaimed; remove whatever is at that path", dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// Already gone is the overwhelmingly common case, and is success.
+		// The gate above already answered the common already-gone case. This
+		// branch survives as the race backstop: the directory can be removed
+		// between that Lstat and this ReadDir, and a vanished directory is
+		// still exactly the outcome this function wanted.
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}

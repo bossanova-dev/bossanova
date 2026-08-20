@@ -249,7 +249,10 @@ func (s *cleanupSessionStore) UpdateStateConditional(context.Context, string, in
 func (s *cleanupSessionStore) Archive(context.Context, string) error {
 	panic("not used")
 }
-func (s *cleanupSessionStore) Resurrect(context.Context, string) error {
+func (s *cleanupSessionStore) ResurrectToState(context.Context, string, int) (bool, error) {
+	panic("not used")
+}
+func (s *cleanupSessionStore) RollbackFailedResurrect(context.Context, string, time.Time, int, int) (bool, error) {
 	panic("not used")
 }
 func (s *cleanupSessionStore) Delete(_ context.Context, id string) error {

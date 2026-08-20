@@ -175,6 +175,7 @@ type Server struct {
 	keepCurrentSweepHook keepCurrentSweepHook // test-only: zero in production; see keep_current.go
 	completionNotifier   session.SessionCompletionNotifier
 	authNotifier         AuthNotifier
+	authStateReporter    AuthStateReporter
 	onSessionDeleted     func(context.Context, string)
 	onSessionUpdated     func(context.Context, *pb.Session)
 	logger               zerolog.Logger
@@ -351,6 +352,11 @@ type Config struct {
 	Tmux               *tmux.Client
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
 	AuthNotifier       AuthNotifier                      // optional, nil in local-only mode
+	// AuthStateReporter answers the GetAuthState diagnostic RPC. Optional and
+	// nil in local-only mode, where the handler reports
+	// upstream_configured=false rather than an error — "this daemon has no
+	// upstream" is a real answer, not a failure to produce one.
+	AuthStateReporter AuthStateReporter
 	// OnSessionDeleted, when non-nil, is invoked after a session row is
 	// removed from the local DB. cmd/main.go wires this to publish a
 	// SessionDelta_KIND_DELETED on the reverse stream so bosso's in-memory
@@ -395,8 +401,125 @@ type Config struct {
 // upstream package so the server doesn't need to import upstream just
 // to depend on this one interface.
 type AuthNotifier interface {
-	NotifyLogin(ctx context.Context, repoIDs []string) error
+	NotifyLogin(ctx context.Context, repoIDs []string) (LoginVerdict, error)
 	NotifyLogout()
+}
+
+// LoginOutcome enumerates what the daemon actually observed when it reloaded
+// credentials after a `boss login`. It is the non-secret half of LoginVerdict.
+//
+// It lives here, next to AuthNotifier and for the same reason in reverse: the
+// adapter in cmd/main.go produces these values, and keeping them out of the
+// generated proto package means cmd does not have to import pb just to answer
+// this one question. NotifyAuthChange maps them onto the wire enum.
+type LoginOutcome int
+
+const (
+	// LoginOutcomeUnspecified is the zero value: nothing was evaluated. It is
+	// what a logout, a nil notifier, or a daemon too old to have a verdict
+	// reports, and it must render as silence rather than as a false success.
+	LoginOutcomeUnspecified LoginOutcome = iota
+	// LoginOutcomeOK means the reloaded record was usable and the auth gate
+	// was cleared.
+	LoginOutcomeOK
+	// LoginOutcomeCredentialsFlagged means the reloaded record still carried a
+	// persisted re-login marker, so the auth gate was NOT cleared.
+	LoginOutcomeCredentialsFlagged
+	// LoginOutcomeCredentialsMissing means the reloaded record carried no
+	// access token and no marker, so the auth gate was NOT cleared. Distinct
+	// from Flagged because the two have opposite causes — a rejected refresh
+	// token versus a login whose credentials never reached this process — and
+	// therefore opposite remedies.
+	LoginOutcomeCredentialsMissing
+	// LoginOutcomeRegisterFailed means credentials were clean and the auth
+	// gate WAS cleared, but the proactive re-register failed. The reactive
+	// path remains the backstop, so this is reported, not fatal.
+	LoginOutcomeRegisterFailed
+)
+
+// LoginVerdict is the daemon's answer to "did that login actually leave me
+// able to talk upstream?". ReloginReason is one of the enumerated persisted
+// re-login reasons and is set only for LoginOutcomeCredentialsFlagged; it is
+// never token material.
+type LoginVerdict struct {
+	Outcome       LoginOutcome
+	ReloginReason string
+}
+
+// loginVerdictToProto maps a LoginVerdict onto the wire response. An outcome
+// this function does not recognise maps to OUTCOME_UNSPECIFIED rather than to
+// a guess, keeping "we do not know" distinguishable from "OK".
+func loginVerdictToProto(v LoginVerdict) *pb.NotifyAuthChangeResponse {
+	resp := &pb.NotifyAuthChangeResponse{}
+	switch v.Outcome {
+	case LoginOutcomeOK:
+		resp.Outcome = pb.NotifyAuthChangeResponse_OUTCOME_OK
+	case LoginOutcomeCredentialsFlagged:
+		resp.Outcome = pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_FLAGGED
+		// relogin_reason is documented as empty for every other outcome, and
+		// this mapper is the single wire boundary, so it is the only place
+		// that invariant can actually be enforced rather than merely relied on.
+		resp.ReloginReason = v.ReloginReason
+	case LoginOutcomeCredentialsMissing:
+		resp.Outcome = pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_MISSING
+	case LoginOutcomeRegisterFailed:
+		resp.Outcome = pb.NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED
+	default:
+		resp.Outcome = pb.NotifyAuthChangeResponse_OUTCOME_UNSPECIFIED
+	}
+	return resp
+}
+
+// AuthStateReporter is the read-only counterpart to AuthNotifier: it reports
+// what the RUNNING daemon currently knows about its own upstream auth, which
+// the GetAuthState RPC renders for `boss daemon doctor`.
+//
+// It is deliberately a second, separate interface rather than two more methods
+// on AuthNotifier. AuthNotifier is a command surface — a caller that holds it
+// can change the daemon's auth behaviour — and a diagnostic has no business
+// requiring that authority. Keeping them apart also means a build with no
+// reporter wired still compiles against every existing AuthNotifier
+// implementation.
+//
+// Like AuthNotifier it is nil in local-only mode, where there is no upstream to
+// report on. Implementations must be safe for concurrent use: the RPC handler
+// calls this from a request goroutine while the stream loop mutates the same
+// state.
+type AuthStateReporter interface {
+	// AuthState returns a snapshot of the daemon's live upstream auth state.
+	// It must never return token material: the caller renders these fields
+	// verbatim to an operator's terminal.
+	AuthState(ctx context.Context) DaemonAuthState
+}
+
+// DaemonAuthState is the scalar, non-secret snapshot AuthStateReporter returns.
+// It mirrors the wire message field for field, but is declared here so the
+// upstream package's adapter does not have to import the generated protobuf
+// types just to answer a diagnostic.
+type DaemonAuthState struct {
+	// NeedsLogin is the daemon's own "I have parked until someone runs
+	// `boss login`" flag. It is NOT a fault signal on its own — it is the
+	// correct, expected state right after a deliberate `boss logout`.
+	NeedsLogin bool
+	// ReloginReason is the enumerated, non-secret marker persisted alongside
+	// the credentials ("refresh_outcome_unknown", "refresh_token_rejected"),
+	// or "" when none. Treat an unrecognised value as forward-compatible:
+	// render it rather than mapping it to "unknown".
+	ReloginReason string
+	// LastRegisteredAt is when this daemon process last completed a successful
+	// upstream registration. Zero when it never has. It is context, not a
+	// liveness floor: a long-lived healthy daemon legitimately registers once
+	// and never again.
+	LastRegisteredAt time.Time
+	// Connected is the coarse "the last handshake reached snapshot-accepted"
+	// signal. False during any ordinary reconnect gap, so it is never a
+	// verdict by itself.
+	Connected bool
+	// AuthFailingSince is the discriminating BOS-942 fact: the start of the
+	// current unbroken run of unrecoverable auth failures, zero when auth is
+	// not currently failing. A daemon with NeedsLogin false and a non-zero
+	// AuthFailingSince is wedged, and nothing else in the system says so.
+	AuthFailingSince time.Time
 }
 
 // PRAssociationResolver refreshes local session-to-PR links.
@@ -512,6 +635,7 @@ func New(cfg Config) *Server {
 		repoMergeGates:     map[string]*repoMergeGate{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
+		authStateReporter:  cfg.AuthStateReporter,
 		onSessionDeleted:   cfg.OnSessionDeleted,
 		onSessionUpdated:   cfg.OnSessionUpdated,
 		logger:             cfg.Logger,
@@ -1345,6 +1469,16 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 func createSessionConnectError(err error) error {
 	if session.IsDuplicateActiveSessionError(err) || session.IsAlreadyShippedError(err) {
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	}
+	// A create that lost the race to write refs/remotes/origin/<base> is a
+	// timing failure, not a bad request: the same call, made again, is expected
+	// to succeed. Left in the CodeInternal bucket an unattended caller cannot
+	// tell it apart from a missing branch or a full disk and gives up.
+	// Unavailable rather than Aborted because Connect/gRPC clients and the MCP
+	// layer already read Unavailable as retry-the-same-call, which is exactly
+	// the caller behaviour this needs.
+	if errors.Is(err, gitpkg.ErrRefLockContended) {
+		return connect.NewError(connect.CodeUnavailable, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }
@@ -4482,14 +4616,21 @@ func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.N
 		for i, r := range repos {
 			repoIDs[i] = r.ID
 		}
-		if err := s.authNotifier.NotifyLogin(ctx, repoIDs); err != nil {
+		verdict, err := s.authNotifier.NotifyLogin(ctx, repoIDs)
+		if err != nil {
 			s.logger.Warn().Err(err).Msg("upstream connect after login failed")
-			// Non-fatal: daemon still works in local mode.
+			// Non-fatal for the RPC: the daemon still works in local mode, and
+			// the caller is `boss login`, which must not fail because a
+			// separate process is unhappy. The failure is no longer silent
+			// though — it rides back in the verdict below so the operator's
+			// terminal can say so.
 		}
+		return connect.NewResponse(loginVerdictToProto(verdict)), nil
 	case "logout":
 		s.authNotifier.NotifyLogout()
 	}
 
+	// Logout evaluated no credentials, so it has no verdict to report.
 	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
 }
 

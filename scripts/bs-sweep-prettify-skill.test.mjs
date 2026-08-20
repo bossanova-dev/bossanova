@@ -14,6 +14,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import {
   detectDrift,
@@ -23,8 +24,16 @@ import {
   prettierReportedDrift,
 } from './sweep-prettify-gate.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
+import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
+import {
+  NO_REFERENCE_REMEDY,
+  assertExactSize,
+  assertMirrorRegenerated,
+  measureFile,
+} from './size-ratchet-lib.mjs'
 
 const here = (rel) => new URL(rel, import.meta.url)
+const abs = (rel) => fileURLToPath(here(rel))
 const readSkill = (rel) => readFileSync(here(rel), 'utf8')
 const SKILL = readSkill('../.claude/skills/bs-sweep-prettify/SKILL.md')
 const CODEX = readSkill('../.codex/skills/bs-sweep-prettify/SKILL.md')
@@ -71,7 +80,7 @@ test('exactly two terminal states are documented', () => {
 })
 
 test('headless / cron-safe: no questions', () => {
-  assert.match(SKILL, /Do not ask the user questions/i, 'must forbid asking questions')
+  assert.match(SKILL, /Do\s+not\s+ask\s+the\s+user\s+questions/i, 'must forbid asking questions')
   assert.ok(SKILL.includes('BOSS_CRON'), 'must reference the headless cron env')
 })
 
@@ -81,7 +90,7 @@ test('headless / cron-safe: no questions', () => {
 
 test('the sweep is formatting-only and never hand-edits', () => {
   assert.match(SKILL, /formatting-only/i, 'must state the diff is formatting-only')
-  assert.match(SKILL, /never hand-edit/i, 'must forbid hand-editing files')
+  assert.match(SKILL, /never\s+hand-edit/i, 'must forbid hand-editing files')
 })
 
 test('commits are tagless with a style scope; PR number injected at finalize', () => {
@@ -138,7 +147,7 @@ test('NO_CHANGE gate and staging exclude bossd-managed dirty files', () => {
     assert.ok(SKILL.includes(p), `SKILL must account for managed path ${p}`)
   }
   assert.match(SKILL, /grep -Ev/, 'NO_CHANGE gate must filter managed paths from porcelain')
-  assert.match(SKILL, /git reset -q --/, 'staging must unstage managed files after git add -A')
+  assert.match(SKILL, /git[ ]reset -q --/, 'staging must unstage managed files after git add -A')
 })
 
 // ---------------------------------------------------------------------------
@@ -183,18 +192,22 @@ test('both gate mirrors suppress duplicate in-flight sweep PRs via cron-open-pr'
       `${label} gate must import the shared cron-open-pr helper`,
     )
     assert.match(gate, /hasOpenCronPR/, `${label} gate must call hasOpenCronPR`)
-    assert.match(gate, /Bossanova sweep prettify/, `${label} gate must match the live cron name`)
+    assert.match(
+      gate,
+      /Bossanova[ ]sweep[ ]prettify/,
+      `${label} gate must match the live cron name`,
+    )
     assert.match(gate, /'bs-sweep-prettify'/, `${label} gate must carry the legacy cron name`)
     assert.match(
       gate,
-      /bs-sweep-prettify gate: prior sweep PR still open/,
+      /bs-sweep-prettify[ ]gate: prior[ ]sweep[ ]PR[ ]still[ ]open/,
       `${label} skip reason must be loud`,
     )
   }
 })
 
 test('the gate CRON_NAMES pair drives hasOpenCronPR suppression', () => {
-  assert.match(GATE, /CRON_NAMES = \['Bossanova sweep prettify', 'bs-sweep-prettify'\]/)
+  assert.match(GATE, /CRON_NAMES = \['Bossanova[ ]sweep[ ]prettify', 'bs-sweep-prettify'\]/)
   assert.equal(
     hasOpenCronPR([{ headRefName: 'cron-bossanova-sweep-prettify-1780000000' }], GATE_CRON_NAMES),
     true,
@@ -223,11 +236,14 @@ test('the gate is node-builtins only (no bare third-party imports)', () => {
 // source grep) so a rename or a dropped guard is caught. Both failure shapes of a
 // broken `git ls-files` must throw; a clean result parses to a trimmed list.
 test('parseGoFiles: ENOENT spawn error throws (fail closed)', () => {
-  assert.throws(() => parseGoFiles({ error: new Error('no git') }), /git ls-files failed/)
+  assert.throws(() => parseGoFiles({ error: new Error('no git') }), /git[ ]ls-files[ ]failed/)
 })
 
 test('parseGoFiles: non-zero exit throws (fail closed), not an empty list', () => {
-  assert.throws(() => parseGoFiles({ status: 128, stdout: '' }), /git ls-files failed: exit 128/)
+  assert.throws(
+    () => parseGoFiles({ status: 128, stdout: '' }),
+    /git[ ]ls-files[ ]failed: exit[ ]128/,
+  )
 })
 
 test('parseGoFiles: clean result parses to a trimmed, blank-filtered list', () => {
@@ -294,14 +310,14 @@ test('lint-check-version environment probe failure fails closed (throws), not dr
           goFiles,
         },
       ),
-    /make lint-check-version environment probe failed \(exit 1\)/,
+    /make[ ]lint-check-version[ ]environment[ ]probe[ ]failed \(exit[ ]1\)/,
   )
 })
 
 test('lint-check-version probe spawn error fails closed (throws)', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, make: { error: new Error('no make') } }), { goFiles }),
-    /make lint-check-version environment probe failed to run/,
+    /make[ ]lint-check-version[ ]environment[ ]probe[ ]failed[ ]to[ ]run/,
   )
 })
 
@@ -333,7 +349,7 @@ test('pnpm/Corepack exit 1 without the drift marker fails closed (throws)', () =
   }
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, pnpm: toolingFail }), { goFiles }),
-    /prettier probe errored \(exit 1\)/,
+    /prettier\s+probe\s+errored \(exit\s+1\)/,
   )
 })
 
@@ -357,14 +373,14 @@ test('prettierReportedDrift matches the --check marker on either stream, else fa
 test('prettier error exit (2) fails closed (throws), not counted as drift', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { status: 2, stdout: '' } }), { goFiles }),
-    /prettier probe errored \(exit 2\)/,
+    /prettier\s+probe\s+errored \(exit\s+2\)/,
   )
 })
 
 test('prettier missing-binary exit (127) fails closed (throws)', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { status: 127, stdout: '' } }), { goFiles }),
-    /prettier probe errored \(exit 127\)/,
+    /prettier\s+probe\s+errored \(exit\s+127\)/,
   )
 })
 
@@ -394,7 +410,7 @@ test('goimports-only drift does NOT run, and `go` is never probed', () => {
 test('required prettier probe spawn error fails closed (throws)', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { error: new Error('no pnpm') } }), { goFiles }),
-    /prettier probe failed to run/,
+    /prettier\s+probe\s+failed\s+to\s+run/,
   )
 })
 
@@ -402,7 +418,7 @@ test('required gofmt probe spawn error fails closed (throws)', () => {
   assert.throws(
     () =>
       detectDrift(fakeRunner({ ...CLEAN, gofmt: { error: new Error('no gofmt') } }), { goFiles }),
-    /gofmt probe failed to run/,
+    /gofmt\s+probe\s+failed\s+to\s+run/,
   )
 })
 
@@ -411,7 +427,7 @@ test('required gofmt probe spawn error fails closed (throws)', () => {
 test('gofmt error exit (2) fails closed (throws), not read as clean', () => {
   assert.throws(
     () => detectDrift(fakeRunner({ ...CLEAN, gofmt: { status: 2, stdout: '' } }), { goFiles }),
-    /gofmt probe errored \(exit 2\)/,
+    /gofmt\s+probe\s+errored \(exit\s+2\)/,
   )
 })
 
@@ -453,7 +469,7 @@ test('BOS-653: Phase 1 runs the WHOLE-REPO formatter target, not the changed-fil
     assert.ok(skill.includes(FENCE), `${label}/SKILL.md Phase 1 must run: ${FENCE}`)
     // `make format` not followed by `-` — i.e. the changed-files target, never `format-all`
     // and never `format-affected` (which the body may legitimately contrast against).
-    const stale = skill.match(/make format(?![-\w])/g) ?? []
+    const stale = skill.match(/make\s+format(?![-\w])/g) ?? []
     assert.deepEqual(
       stale,
       [],
@@ -501,7 +517,7 @@ test('the extracted PR gate is referenced in both mirrors and exists on disk', (
   )
 })
 
-test('the resident body stays under the post-extraction ratchet', () => {
+test('the resident body is pinned at its exact post-extraction size', () => {
   // Measured post-extraction bodies: 16761 B (.claude) / 16843 B (.codex), down from the
   // 17365 B (.claude) / 17446 B (.codex) pre-extraction baseline. The ceiling is the larger
   // mirror + 64 B, so the 22-line PR-gate saving is actually banked and cannot be silently
@@ -523,16 +539,37 @@ test('the resident body stays under the post-extraction ratchet', () => {
   // two now-false prose claims (the golangci parenthetical, and the cron-gate sentence that
   // still said the sweep "could never reconcile" drift `format-all` in fact reconciles).
   // Bodies are 17195 B (.claude) / 17277 B (.codex) — 35 B of slack. Re-measure before editing.
-  const CEILING = 17312
-  assert.ok(CEILING < 17365, 'ceiling must stay below the pre-extraction baseline')
-  for (const [label, skill] of [
-    ['.claude/skills/bs-sweep-prettify', SKILL],
-    ['.codex/skills/bs-sweep-prettify', CODEX],
-  ]) {
-    const bytes = Buffer.byteLength(skill, 'utf8')
-    assert.ok(
-      bytes < CEILING,
-      `${label}/SKILL.md must stay under ${CEILING} bytes (post-extraction ratchet), got ${bytes} — move situational content into a reference`,
-    )
-  }
+  //
+  // BOS-768 replaces the ceiling with an exact pin on the AUTHORED source. The "re-measure
+  // before editing" instruction above is what a slack ceiling forces on every reader; an exact
+  // pin does the measuring itself and reds with the number. The `.codex` copy leaves the byte
+  // loop: it is GENERATED, and is verified below by regenerating it and comparing exactly.
+  //
+  // The remedy is NOT "move situational content into a reference": bs-sweep-prettify has no
+  // references/ directory, only gate/, so that advice named a destination that does not exist.
+  const SOURCE_BYTES = 17001 // exact measured .claude body, re-measured 2026-08-19
+  assertExactSize({
+    below: { name: 'PRE_EXTRACTION_BASELINE', value: 17365 },
+    constFile: 'scripts/bs-sweep-prettify-skill.test.mjs',
+    constName: 'SOURCE_BYTES',
+    expected: SOURCE_BYTES,
+    label: 'bs-sweep-prettify resident body',
+    measured: measureFile(abs('../.claude/skills/bs-sweep-prettify/SKILL.md')),
+    path: '.claude/skills/bs-sweep-prettify/SKILL.md',
+    remedy: NO_REFERENCE_REMEDY,
+    residual:
+      'gate/gate.mjs and the toolbox scripts this body invokes — a line moved out of the body ' +
+      'into one of those is invisible to this pin',
+  })
+})
+
+test('the codex mirror is exactly what regenerating it from the .claude source produces', () => {
+  // Replaces the old byte ceiling on the mirror. `make codex-skills` unconditionally prepends
+  // a generated-by header, so a healthy mirror is ALWAYS larger than its source — "larger than
+  // source" can never be the tell. Exact regeneration equality is, and it subsumes size.
+  assertMirrorRegenerated({
+    mirrorPath: abs('../.codex/skills/bs-sweep-prettify/SKILL.md'),
+    regenerate: rewriteClaudeSkillMarkdown,
+    sourcePath: abs('../.claude/skills/bs-sweep-prettify/SKILL.md'),
+  })
 })

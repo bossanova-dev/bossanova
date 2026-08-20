@@ -73,6 +73,7 @@ are configured via environment variables. See
 | `poll_interval_seconds`   | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                                         |
 | `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                 |
 | `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                     |
+| `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                       |
 | `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                          |
 | `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below. |
 
@@ -156,6 +157,65 @@ your shell's, which is exactly the check that passes while the daemon is broken.
 | `cooldown_minutes`       | int    | `1`           | Minimum gap between repair attempts on the same session. |
 | `poll_interval_seconds`  | int    | `5`           | Poll interval for repair status checks.                  |
 | `sweep_interval_minutes` | int    | `1`           | How often the plugin sweeps for sessions needing repair. |
+
+## `tmux_delivery` fields
+
+Before bossanova types into an agent's pane it waits for the composer prompt to
+appear. Delivery fails rather than typing into a pane that isn't ready, because
+keystrokes sent early are swallowed or land in the wrong widget.
+
+There are **two** deadlines because the two delivery paths have different
+ceilings, and each is configured independently — setting one never moves the
+other.
+
+| Field                                  | Type | Default | Description                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ---- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_start_ready_deadline_seconds` | int  | `45`    | How long **each attempt** of a **session start or resume** waits for the composer prompt. This covers tmux spawn, interactive login-shell init, agent exec, node boot, and first paint. The start path makes up to **two** attempts, so the value you write is half the worst-case wall clock. Not clamped — raise it as needed. |
+| `send_ready_deadline_seconds`          | int  | `5`     | How long a send into an **already-running** agent waits for the composer prompt. **Clamped to 20 seconds**, whatever you write.                                                                                                                                                                                                  |
+
+Values of zero or below are ignored and the default applies; a settings file
+written before this block existed keeps both defaults, so there is nothing to
+migrate.
+
+Raise `session_start_ready_deadline_seconds` when sessions fail to start on a
+host with a slow shell profile — measured login-shell init alone has ranged from
+under a second to twelve seconds on affected machines.
+
+It is a **per-attempt** budget, not a total. The start path retries the
+readiness wait once before giving up, so a start that is genuinely going to fail
+spends roughly twice this value — about 90 seconds at the default of 45. Size
+the knob against the boot you want to survive, then expect twice that before a
+doomed start reports failure. The send deadline is **not** retried: one attempt,
+always.
+
+An attempt can also be **shortened** — not by this setting, but by whatever
+context the start is running under. If the caller has less time left than a full
+attempt needs, the wait is trimmed to fit rather than skipped, and the timeout
+message says so: _shortened from 45s to stay inside the caller's context_. Read
+that clause as pointing somewhere other than this file. The number you configured
+was not the constraint, so raising it will not help; something above the start —
+a request deadline, a cancelled parent — is what ran out.
+
+The send deadline is clamped because that delivery runs inside a request the
+cloud relay bounds at 30 seconds. A readiness wait that outlives the relay
+returns an ambiguous result the caller **must not** retry: a retry would type the
+message into the composer a second time. The 20-second ceiling leaves the relay
+ten seconds of headroom.
+
+One case is served by the shorter deadline even though it is a cold start:
+sending to a chat that is asleep, with wake enabled. The wake only launches (or
+resumes) the agent — it delivers nothing and never waits for the composer — so
+the session-start deadline is not spent there. Your message is typed in
+afterwards, by the ordinary send path, which is therefore waiting on a pane that
+is still booting while holding only the **send** deadline. If that combination
+fails for you, wake the chat first and send once it is live: the wake itself
+does not time out on the composer, so the pane has as long as it needs, and the
+separate send then meets a pane that is already up.
+
+:::note Takes effect on the next daemon restart
+Both deadlines are read once, when the daemon builds its tmux client, so an edit
+here is inert until you run `boss daemon restart`.
+:::
 
 ## `subagent_dispatch_grant`
 

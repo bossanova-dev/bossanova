@@ -63,6 +63,16 @@ and any pre-existing `<` or `{` in that page's prose can start erroring once MDX
 takes the file seriously. `make build` (and so `make test`) is what catches
 this; run it after converting a page.
 
+## Linking between docs pages
+
+**Link to another docs page relatively (`./notes.md`), never by absolute
+`https://docs.bossanova.dev/...` URL** — `onBrokenLinks: 'throw'` only resolves
+relative links, so an absolute self-link is never checked and a dead one never
+reds the build. `scripts/check-docs-absolute-selflinks.mjs` (run by `make lint`)
+enforces this; a link that genuinely must be absolute opts out with
+`<!-- absolute-link: intentional -->` on that line or the line above it, which
+stays greppable so every exception can be audited in one command.
+
 ## Where things live
 
 - `docs/`: Markdown content (one file per page).

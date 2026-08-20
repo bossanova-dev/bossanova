@@ -32,7 +32,45 @@ func sortedKeys(m map[string]string) []string {
 
 // Default timing knobs for SendPlan. Tests bypass these by passing a
 // custom sendPlanOpts to the unexported sendPlan helper, so the production
-// 5s deadline never blocks a fast in-test stub.
+// deadlines never block a fast in-test stub.
+//
+// There are two readiness deadlines, not one, because the two delivery paths
+// answer to different ceilings (BOS-893). Session start and resume have to
+// cover tmux spawn, a full interactive login-shell init, exec of the agent,
+// node boot, and TUI first paint — measured shell init alone ranged 0.75s to
+// 12s on an affected host — and nothing downstream bounds them. An established
+// chat's send runs inside the SendChatMessage RPC, which bosso relays under a
+// fixed command deadline, so its budget stays short; letting it inherit the
+// generous start budget would produce an ambiguous delivery the caller must not
+// retry, because a retry double-types into the composer.
+//
+// Both are operator-tunable per host via settings.json (`tmux_delivery`), and
+// reach this package as WithSessionStartReadyDeadline / WithSendReadyDeadline
+// rather than by importing lib/bossalib/config: this package stays a thin tmux
+// CLI wrapper rather than gaining a config dependency to carry two integers.
+// The config accessors carry the same two defaults, and a drift guard in
+// tmux_delivery_deadline_test.go asserts the pairs stay equal.
+//
+// The session-start deadline is not the outermost limit on every path, so it
+// cannot be raised in isolation (BOS-896). On the repair-driven session-start
+// path this readiness wait runs *inside* a plugin→host unary RPC, StartChatRun,
+// which carries its own ceiling — hostclient.StartChatRunRPCTimeout in
+// lib/bossalib/plugin/hostclient/hostclient.go, currently 90s. This deadline
+// plus the in-RPC tails that follow it (the submit verifier here, and
+// freshProviderSessionIDResolveDeadline over in internal/session) must stay
+// under that ceiling with headroom, or the RPC is cut off first and the number
+// below silently stops taking effect on that path. Worse, a ceiling that fires
+// first costs the diagnostic: waitForReadyMarker honours ctx.Done(), so the
+// caller gets a bare context error instead of the pane capture that
+// distinguishes a slow boot from an auth prompt from an update interstitial.
+// TestSessionStartReadinessFitsStartChatRunBudget in tmux_budget_test.go
+// enforces the relationship and will fail if this value outgrows it. Two gaps
+// in that guard are worth knowing. It sees only the compiled default below, so
+// an operator-configured deadline — resolved at runtime — is not covered and
+// can still re-create the bug. And it sees only this deadline and the submit
+// verifier: freshProviderSessionIDResolveDeadline lives in internal/session and
+// is invisible from package tmux, so growing that constant would eat the same
+// budget with nothing firing.
 //
 // sendPlanReadyMarker is the prompt indicator Claude Code renders inside
 // its input box once the TUI is ready to accept input. We intentionally
@@ -41,9 +79,42 @@ func sortedKeys(m map[string]string) []string {
 // entirely, but the input-box prompt is part of Claude's core rendering
 // and survives statusline customisation.
 const (
-	sendPlanDefaultDeadline     = 5 * time.Second
+	// DefaultSessionStartReadyDeadline bounds the readiness wait on the
+	// session-start and resume path when the operator has configured nothing.
+	// It is sized against the measured 12s shell-init ceiling with roughly 33s
+	// — about 3x — left for exec, node boot, and TUI first paint.
+	DefaultSessionStartReadyDeadline = 45 * time.Second
+	// DefaultSendReadyDeadline bounds the readiness wait when delivering into
+	// an ALREADY-RUNNING agent's composer. It keeps the historical 5s budget on
+	// purpose: that agent is booted, so its composer is either there now or
+	// wedged, and this delivery has a relay deadline above it.
+	DefaultSendReadyDeadline    = 5 * time.Second
 	sendPlanDefaultPollInterval = 100 * time.Millisecond
 	sendPlanReadyMarker         = "❯"
+
+	// sendPlanDefaultReadyAttempts is the floor a delivery falls back to when
+	// its options name no attempt count — one attempt, i.e. exactly today's
+	// behaviour. It is deliberately the CONSERVATIVE value rather than the
+	// session-start one: an option struct built by hand (every pre-BOS-895 test
+	// does this) must not silently acquire a retry it never asked for, which
+	// would double the wall clock of every timeout assertion in the package.
+	sendPlanDefaultReadyAttempts = 1
+
+	// sessionStartReadyAttempts is how many times the session-start and resume
+	// path re-runs the readiness wait before giving up. The wait is confined to
+	// the phase BEFORE any keystroke reaches the pane, so re-running it cannot
+	// re-deliver a payload — that lexical confinement, not a judgement about
+	// idempotence, is what makes the retry safe (BOS-895). Two attempts covers
+	// the observed failure: an agent TUI that is still repainting when the
+	// first budget expires.
+	sessionStartReadyAttempts = 2
+
+	// sendReadyAttempts holds the ALREADY-RUNNING send path at one attempt.
+	// That delivery runs inside an RPC bosso relays under a 30s command
+	// deadline, so a second 5s wait buys little and risks overrunning the
+	// relay; and a live composer that is not ready within 5s is a different
+	// fault from a TUI that has not finished booting.
+	sendReadyAttempts = 1
 )
 
 // CommandFactory creates exec.Cmd instances. Allows injection for testing.
@@ -61,6 +132,26 @@ const DaemonIDEnvKey = "BOSS_DAEMON_ID"
 type Client struct {
 	cmdFunc  CommandFactory
 	daemonID string
+
+	// sessionStartReadyDeadline and sendReadyDeadline are the operator-tuned
+	// composer-readiness budgets for the two delivery paths (BOS-893). Zero
+	// means "unconfigured": each builder substitutes its OWN package default,
+	// so a client with only one of them set can never let the other path
+	// inherit the wrong number.
+	sessionStartReadyDeadline time.Duration
+	sendReadyDeadline         time.Duration
+
+	// sessionStartReadyAttempts is the injectable half of the session-start
+	// readiness COST, the other half being the budget above. Zero means
+	// "unconfigured", so the package const applies.
+	//
+	// It exists for out-of-package callers that pin timing — the test harness
+	// in particular. Before it, the budget was the only factor such a caller
+	// could reach, so pinning the cost meant halving the budget to compensate
+	// for an attempt count it could not see, and the pin silently stopped
+	// meaning what it said the moment either factor moved. Exposing both lets a
+	// caller state the product it wants.
+	sessionStartReadyAttempts int
 }
 
 // Option configures a Client.
@@ -84,6 +175,64 @@ func WithCommandFactory(f CommandFactory) Option {
 func WithDaemonID(id string) Option {
 	return func(c *Client) {
 		c.daemonID = id
+	}
+}
+
+// WithSessionStartReadyDeadline sets how long a session-start or resume
+// delivery waits for the agent's composer prompt before giving up. It exists so
+// a host whose interactive login shell is slow can buy the readiness wait more
+// room than DefaultSessionStartReadyDeadline without a rebuild.
+//
+// A non-positive duration is IGNORED rather than stored: zero would mean "no
+// wait" once it reached sendPlan, which is the failure the floor there exists
+// to prevent, and no configuration should be able to express it.
+func WithSessionStartReadyDeadline(d time.Duration) Option {
+	return func(c *Client) {
+		if d <= 0 {
+			return
+		}
+		c.sessionStartReadyDeadline = d
+	}
+}
+
+// WithSessionStartReadyAttempts sets how many times the session-start and
+// resume path runs the composer-readiness wait before failing. It is the
+// companion knob to WithSessionStartReadyDeadline: together they are the whole
+// of what a doomed session start costs, and a caller pinning that cost needs
+// both or it is pinning a product it can only half see.
+//
+// This is deliberately NOT surfaced as an operator setting. The attempt count
+// is a safety property — the retry is sound only because the wait is lexically
+// confined to the phase before the first keystroke (BOS-895) — and an operator
+// raising it past what that confinement covers would not be told. The seam is
+// for callers inside this codebase that construct a Client directly.
+//
+// A non-positive count is IGNORED rather than stored, matching the deadline
+// options: zero would mean "never wait at all" once resolveReadyAttemptsFloor
+// saw it, and no caller should be able to express that by accident.
+func WithSessionStartReadyAttempts(n int) Option {
+	return func(c *Client) {
+		if n <= 0 {
+			return
+		}
+		c.sessionStartReadyAttempts = n
+	}
+}
+
+// WithSendReadyDeadline sets how long a delivery into an ALREADY-RUNNING
+// agent's composer waits for the ready marker. Keep it short: this delivery
+// happens inside the SendChatMessage RPC, which bosso relays under its own
+// command deadline, and a readiness wait that outlives the relay leaves the
+// caller holding an ambiguous delivery it must not retry. The clamp that
+// enforces that ceiling lives with the setting, in config.TmuxDeliveryConfig.
+//
+// A non-positive duration is ignored, for the same reason as above.
+func WithSendReadyDeadline(d time.Duration) Option {
+	return func(c *Client) {
+		if d <= 0 {
+			return
+		}
+		c.sendReadyDeadline = d
 	}
 }
 
@@ -668,15 +817,38 @@ func (c *Client) CapturePane(ctx context.Context, sessionName string) (string, e
 	return string(out), nil
 }
 
-// sendPlanOpts customizes SendPlan timing. Production callers use the
-// no-arg SendPlan; tests inject aggressive timeouts so the 5s deadline
-// never gates them.
+// sendPlanOpts customizes SendPlan timing. Production callers never build one
+// by hand: they go through startDeliveryOpts or sendDeliveryOpts, which stamp
+// the readiness budget belonging to their delivery path. Tests inject
+// aggressive timeouts so neither production budget gates them, and an injected
+// positive deadline always wins over the client's configured one.
 type sendPlanOpts struct {
 	deadline         time.Duration
 	pollInterval     time.Duration
 	readyMarker      string
 	submitVerifyWait time.Duration
 	submitVerifyTick time.Duration
+
+	// readyAttempts is how many times the READINESS WAIT — and nothing else —
+	// may run before the delivery fails. It bounds only waitForReadyMarker,
+	// which finishes before the first keystroke is sent, so raising it can
+	// never cause a double delivery. Non-positive means
+	// sendPlanDefaultReadyAttempts (one attempt).
+	readyAttempts int
+
+	// retried marks the options of an attempt made by the readiness RETRY loop,
+	// as opposed to a delivery that gets exactly one wait. Only the retried path
+	// enriches a context-cut failure with capture accounting and a pane
+	// snapshot; a single-attempt wait keeps the message it returned before
+	// BOS-895, which the established-send path is required to preserve.
+	retried bool
+
+	// clampedFrom is the per-attempt budget this attempt WOULD have had if the
+	// caller's context had been long enough to fund it, set only when
+	// clampAttemptDeadline actually shortened deadline. Zero means the attempt
+	// got what it asked for. It exists so a timeout can say which of the two
+	// numbers the operator is looking at.
+	clampedFrom time.Duration
 
 	// prefillOnly delivers the payload into the composer but sends no Enter and
 	// runs no submission verification: the human (or composer owner) submits.
@@ -694,16 +866,55 @@ type sendPlanOpts struct {
 	modalDetector ModalDetector
 }
 
-// deliveryOpts builds the standard production timing for one delivery: the 5s
-// readiness deadline, the 100ms poll, the agent's ready marker, and either the
-// submit-verifier budget or the prefill (no-Enter) routing. The four public
-// Send*/Prefill* wrappers and SendMessage all share it so a timing change is
-// one edit rather than five drifting literals.
-func deliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendPlanOpts {
+// startDeliveryOpts builds the production timing for a SESSION-START (or
+// resume) delivery: this client's configured session-start readiness budget, or
+// DefaultSessionStartReadyDeadline when nothing is configured, plus the shared
+// poll/marker/submit settings below. The four public Send*/Prefill* wrappers
+// share it, so a timing change to that path is one edit rather than four
+// drifting literals.
+//
+// It takes a ModalDetector for the same reason sendDeliveryOpts does: since
+// BOS-894 this path has …WithModal siblings that can supply one, and a pane the
+// agent has only just drawn is the likeliest place to find a boot interstitial
+// rather than a composer. The plain …WithReadyMarker wrappers pass nil, which
+// disables the check exactly as before.
+func (c *Client) startDeliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendPlanOpts {
+	attempts := c.sessionStartReadyAttempts
+	if attempts <= 0 {
+		attempts = sessionStartReadyAttempts
+	}
+	return c.deliveryOpts(c.sessionStartReadyDeadline, DefaultSessionStartReadyDeadline, attempts, readyMarker, submit, detector)
+}
+
+// sendDeliveryOpts builds the production timing for a delivery into an
+// ESTABLISHED chat's live composer: this client's configured send readiness
+// budget, or DefaultSendReadyDeadline when nothing is configured.
+//
+// It substitutes its OWN default rather than sharing one with the start path.
+// That is the whole point of the split: this delivery runs inside an RPC bosso
+// relays under a fixed command deadline, so inheriting the generous
+// session-start budget would let the daemon keep waiting past the point the
+// relay has already returned CodeDeadlineExceeded — an ambiguous delivery the
+// caller must not retry, since a retry double-types into the composer.
+func (c *Client) sendDeliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendPlanOpts {
+	return c.deliveryOpts(c.sendReadyDeadline, DefaultSendReadyDeadline, sendReadyAttempts, readyMarker, submit, detector)
+}
+
+// deliveryOpts is the shared builder behind the two above: everything a
+// delivery needs except the readiness budget, which its caller supplies as a
+// (configured, fallback) pair so only that one value can differ between paths.
+// It sets the 100ms poll, the agent's ready marker, and either the
+// submit-verifier budget or the prefill (no-Enter) routing.
+func (c *Client) deliveryOpts(configured, fallback time.Duration, attempts int, readyMarker string, submit bool, detector ModalDetector) sendPlanOpts {
+	deadline := configured
+	if deadline <= 0 {
+		deadline = fallback
+	}
 	opts := sendPlanOpts{
-		deadline:      sendPlanDefaultDeadline,
+		deadline:      deadline,
 		pollInterval:  sendPlanDefaultPollInterval,
 		readyMarker:   readyMarker,
+		readyAttempts: attempts,
 		modalDetector: detector,
 	}
 	if submit {
@@ -713,6 +924,31 @@ func deliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendP
 		opts.prefillOnly = true
 	}
 	return opts
+}
+
+// resolveDeadlineFloor is the last line of defence for a hand-built
+// sendPlanOpts (every test constructs one directly). A non-positive deadline
+// must never reach the readiness wait, where it would mean "no wait at all";
+// it falls back to the SESSION-START default, the conservative of the two,
+// because a caller who supplied no budget has told us nothing about which path
+// they are on.
+func resolveDeadlineFloor(d time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return DefaultSessionStartReadyDeadline
+}
+
+// resolveReadyAttemptsFloor is the same last line of defence for the readiness
+// attempt count. It mirrors resolveDeadlineFloor deliberately, but falls back
+// the other way: an unspecified deadline takes the GENEROUS default because a
+// too-short wait is the dangerous direction, while an unspecified attempt count
+// takes the CONSERVATIVE one because an unasked-for retry is.
+func resolveReadyAttemptsFloor(n int) int {
+	if n > 0 {
+		return n
+	}
+	return sendPlanDefaultReadyAttempts
 }
 
 // SendPlan delivers a plan to a tmux-hosted agent session as a bracketed paste.
@@ -725,8 +961,9 @@ func deliveryOpts(readyMarker string, submit bool, detector ModalDetector) sendP
 //
 // Returns an error if the marker never appears within the deadline or if
 // any of the three tmux subcommands (load-buffer / paste-buffer /
-// send-keys) returns non-zero. The 5s deadline matches the existing
-// prefillClaudeInput marker wait in the boss attach view.
+// send-keys) returns non-zero. This is a session-start delivery, so the wait is
+// bounded by the client's session-start budget (DefaultSessionStartReadyDeadline
+// unless the operator raised it), not by the much shorter established-send one.
 func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 	return c.SendPlanWithReadyMarker(ctx, sessionName, plan, sendPlanReadyMarker)
 }
@@ -744,14 +981,14 @@ func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 // only shape skipped, since it matches any row. When the first Enter is
 // swallowed the verifier sends one more Enter and re-checks before erroring.
 func (c *Client) SendPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
-	return c.sendPlan(ctx, sessionName, plan, deliveryOpts(readyMarker, true, nil))
+	return c.SendPlanWithModal(ctx, sessionName, plan, readyMarker, nil)
 }
 
 // SendLineWithReadyMarker sends a short literal line and submits it with Enter.
 // Use this for command invocations where bracketed paste can leave some TUIs
 // with the command text loaded but not executed.
 func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
-	return c.sendLine(ctx, sessionName, line, deliveryOpts(readyMarker, true, nil))
+	return c.SendLineWithModal(ctx, sessionName, line, readyMarker, nil)
 }
 
 // PrefillPlanWithReadyMarker delivers a plan into the composer WITHOUT
@@ -760,14 +997,59 @@ func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line,
 // (a human, or a later explicit-submit step) will submit — the counterpart to
 // SendPlanWithReadyMarker's auto-submit-and-verify behaviour.
 func (c *Client) PrefillPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
-	return c.sendPlan(ctx, sessionName, plan, deliveryOpts(readyMarker, false, nil))
+	return c.PrefillPlanWithModal(ctx, sessionName, plan, readyMarker, nil)
 }
 
 // PrefillLineWithReadyMarker delivers a short literal line into the composer
 // WITHOUT submitting it (no Enter, no verification), mirroring
 // SendLineWithReadyMarker for the prefill case.
 func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
-	return c.sendLine(ctx, sessionName, line, deliveryOpts(readyMarker, false, nil))
+	return c.PrefillLineWithModal(ctx, sessionName, line, readyMarker, nil)
+}
+
+// The four …WithModal siblings are the wrappers above with the readiness gate's
+// modal check bound for one delivery, refusing with ErrBlockedByModal
+// (OutcomeBlockedByModal) when the pane turns out to be showing a menu rather
+// than a composer. A nil detector makes each behave exactly like its
+// …WithReadyMarker sibling, which is now literally how those are implemented:
+// the pair share one body so the gate cannot be wired into one arm and missed
+// in another.
+//
+// Four wrappers rather than one parameterised entry point because the four
+// existing spellings already encode two orthogonal choices — plan vs line
+// (bracketed paste vs literal keystrokes) and submit vs prefill (Enter and
+// verification, or neither) — and collapsing them here would force every
+// existing caller to restate a decision it has already made. SendMessage takes
+// the opposite shape (one entry, routing on submit intent) because its callers
+// carry a user's submit flag rather than a fixed delivery kind.
+//
+// These exist for the session-start path (BOS-894), which delivers the first
+// message into a pane the agent has only just drawn — the one moment an agent
+// is most likely to be showing a boot interstitial instead of a composer, and
+// the one path that reached sendPlan with the detector hard-coded nil.
+
+// SendPlanWithModal is SendPlanWithReadyMarker with the modal check bound.
+func (c *Client) SendPlanWithModal(ctx context.Context, sessionName, plan, readyMarker string, detector ModalDetector) error {
+	return c.sendPlan(ctx, sessionName, plan, c.startDeliveryOpts(readyMarker, true, detector))
+}
+
+// SendLineWithModal is SendLineWithReadyMarker with the modal check bound.
+func (c *Client) SendLineWithModal(ctx context.Context, sessionName, line, readyMarker string, detector ModalDetector) error {
+	return c.sendLine(ctx, sessionName, line, c.startDeliveryOpts(readyMarker, true, detector))
+}
+
+// PrefillPlanWithModal is PrefillPlanWithReadyMarker with the modal check
+// bound. The check applies to the prefill path exactly as it does to the submit
+// path: a prefill sends no Enter, but it still TYPES into whatever has the
+// keyboard, and on a menu those keystrokes are selection shortcuts.
+func (c *Client) PrefillPlanWithModal(ctx context.Context, sessionName, plan, readyMarker string, detector ModalDetector) error {
+	return c.sendPlan(ctx, sessionName, plan, c.startDeliveryOpts(readyMarker, false, detector))
+}
+
+// PrefillLineWithModal is PrefillLineWithReadyMarker with the modal check
+// bound; see PrefillPlanWithModal for why prefill is gated too.
+func (c *Client) PrefillLineWithModal(ctx context.Context, sessionName, line, readyMarker string, detector ModalDetector) error {
+	return c.sendLine(ctx, sessionName, line, c.startDeliveryOpts(readyMarker, false, detector))
 }
 
 // WillSubmit reports whether SendMessage would take the submit path (deliver +
@@ -797,9 +1079,11 @@ func WillSubmit(submit bool, text string) bool {
 //     for the composer owner (a human, or a later explicit-submit step) to
 //     submit.
 //
-// Both arms differ only in the options deliveryOpts builds; neither routes
+// Both arms differ only in the options sendDeliveryOpts builds; neither routes
 // through the Send/Prefill wrappers, so a reader chasing either path lands on
-// sendPlan with the modal detector already threaded in.
+// sendPlan with the modal detector already threaded in. Both are established
+// sends into a running agent, so both take the short send budget rather than the
+// session-start one.
 //
 // An empty/whitespace-only payload has nothing to submit, so it is always
 // treated as a prefill (no Enter, no verification) regardless of submit.
@@ -822,7 +1106,7 @@ func (c *Client) sendMessage(ctx context.Context, sessionName, text string, subm
 	// an agent working-state probe for it. Prefill (submit=false, or nothing
 	// meaningful to submit): deliver into the composer with no Enter and no
 	// verification.
-	return c.sendPlan(ctx, sessionName, text, deliveryOpts(readyMarker, WillSubmit(submit, text), detector))
+	return c.sendPlan(ctx, sessionName, text, c.sendDeliveryOpts(readyMarker, WillSubmit(submit, text), detector))
 }
 
 // SendMessageWithModal is SendMessage with the readiness gate's modal check
@@ -839,18 +1123,19 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	if sessionName == "" {
 		return fmt.Errorf("session name is required")
 	}
-	if opts.deadline <= 0 {
-		opts.deadline = sendPlanDefaultDeadline
-	}
+	opts.deadline = resolveDeadlineFloor(opts.deadline)
 	if opts.pollInterval <= 0 {
 		opts.pollInterval = sendPlanDefaultPollInterval
 	}
 	if opts.readyMarker == "" {
 		opts.readyMarker = sendPlanReadyMarker
 	}
+	opts.readyAttempts = resolveReadyAttemptsFloor(opts.readyAttempts)
 
-	// Step 1: poll capture-pane for the ready marker.
-	if err := c.waitForReadyMarker(ctx, sessionName, opts); err != nil {
+	// Step 1: poll capture-pane for the ready marker. This is the ONLY step the
+	// retry in waitForReadyMarkerWithAttempts covers; every line below it has
+	// already touched the pane.
+	if err := c.waitForReadyMarkerWithAttempts(ctx, sessionName, opts); err != nil {
 		return err
 	}
 
@@ -909,17 +1194,16 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 	if sessionName == "" {
 		return fmt.Errorf("session name is required")
 	}
-	if opts.deadline <= 0 {
-		opts.deadline = sendPlanDefaultDeadline
-	}
+	opts.deadline = resolveDeadlineFloor(opts.deadline)
 	if opts.pollInterval <= 0 {
 		opts.pollInterval = sendPlanDefaultPollInterval
 	}
 	if opts.readyMarker == "" {
 		opts.readyMarker = sendPlanReadyMarker
 	}
+	opts.readyAttempts = resolveReadyAttemptsFloor(opts.readyAttempts)
 
-	if err := c.waitForReadyMarker(ctx, sessionName, opts); err != nil {
+	if err := c.waitForReadyMarkerWithAttempts(ctx, sessionName, opts); err != nil {
 		return err
 	}
 
@@ -1063,179 +1347,4 @@ func escapeSendKeysLiteral(line string) string {
 		return line[:len(line)-1] + `\;`
 	}
 	return line
-}
-
-// waitForReadyMarker polls CapturePane until a live composer is observed or the
-// deadline elapses. The first poll is immediate so already-ready sessions return
-// without sleeping.
-//
-// Readiness is two conditions, checked against the same capture in this order,
-// so the gate adds no tmux calls:
-//
-//  1. A row whose leading glyph is the ready marker exists — a drawn input box,
-//     not the glyph occurring somewhere in the capture.
-//  2. That row is not part of a modal. A modal is refused — not waited out —
-//     with ErrBlockedByModal / OutcomeBlockedByModal, because the alternative is
-//     an Enter into a menu whose side effect is unbounded. One such Enter
-//     selected "Update now" on a codex update interstitial, and the reinstall
-//     killed the pane and destroyed the chat (BOS-600).
-//
-// The order is load-bearing, not cosmetic. Condition 2 is answered by the
-// agent's plugin over gRPC, so asking it first would cost one round-trip per
-// poll tick — up to ~50 per send — and would need a memoizer to claw that back.
-// Asking it only about a capture that already satisfies condition 1 makes the
-// probe at-most-once per wait BY CONSTRUCTION: either no marker row is drawn
-// (keep polling, no RPC at all) or one is, and the probe's answer ends the loop
-// in both directions. This costs nothing in coverage — every modal that draws a
-// marker-shaped row, which includes both captured fixtures, is still probed on
-// the tick it appears — and the deadline branch below probes once more so a
-// modal that draws no marker row at all is still NAMED rather than reported as
-// a bare timeout.
-//
-// Refusing is deliberately conservative: it fails loud rather than guessing, and
-// it never dismisses the modal (pressing Escape into an unknown TUI state is the
-// same gamble). A composer whose text happens to match an agent's menu grammar
-// would be refused too — a new, visible failure mode this trade accepts.
-//
-// On timeout, the error embeds the most recent successful pane capture
-// (truncated). This matters for the cron path: the caller kills the
-// tmux session as failure cleanup, so without this snapshot the operator
-// has no way to see what Claude was actually showing — auth prompt,
-// update banner, missing binary, or just slow startup.
-//
-// It also embeds how the capturing itself went — how many capture-pane calls
-// succeeded, how many failed, over what elapsed wait, and tmux's own words for
-// the last failure. Without that, a pane nothing ever read and a pane read and
-// found blank are the same string, and the operator cannot tell a slow boot from
-// a session that was never there to look at.
-func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opts sendPlanOpts) error {
-	start := time.Now()
-	deadline := start.Add(opts.deadline)
-	var lastPane string
-	// Capture accounting (BOS-892). Without it a pane that was never read and a
-	// pane that was read and found blank both leave lastPane == "" and render
-	// identically as `<empty>`, which is the difference between "the agent is
-	// still booting" and "we never successfully looked at the pane".
-	var capturesOK, capturesFailed int
-	var lastCaptureErr error
-	for {
-		out, err := c.CapturePane(ctx, sessionName)
-		if err == nil {
-			capturesOK++
-			lastPane = out
-			if composerRowIndex(out, opts.readyMarker) != -1 {
-				if paneShowsModal(ctx, opts.modalDetector, out) {
-					return blockedByModalErr(sessionName, out)
-				}
-				return nil
-			}
-		} else {
-			capturesFailed++
-			lastCaptureErr = err
-		}
-		if time.Now().After(deadline) {
-			// The loop above never probed this pane: nothing composer-shaped was
-			// ever drawn on it. Ask once here so a modal that renders no marker
-			// row still refuses under its own name instead of masquerading as a
-			// slow-starting agent.
-			if lastPane != "" && paneShowsModal(ctx, opts.modalDetector, lastPane) {
-				return blockedByModalErr(sessionName, lastPane)
-			}
-			// The accounting comes BEFORE the pane snapshot deliberately: the TUI
-			// renders this string through firstLine() (services/boss/internal/
-			// views/status.go), which cuts at the first newline, and a snapshot is
-			// multi-line. Anything ordered after it is invisible to the operator
-			// who most needs it.
-			//
-			// Branch on the successful-capture count, never on the emptiness of
-			// the snapshot: a successful capture can legitimately return an empty
-			// pane, which is exactly the case this diagnostic exists to keep
-			// distinguishable. Using emptiness would rebuild the original
-			// conflation one notch over.
-			elapsed := time.Since(start).Round(time.Millisecond)
-			if capturesOK == 0 {
-				return fmt.Errorf(
-					"ready marker %q not seen in pane %q within %s; capture-pane: 0 ok, %d failed in %s; no capture-pane call succeeded; last capture error: %s",
-					opts.readyMarker, sessionName, opts.deadline, capturesFailed, elapsed, captureErrText(lastCaptureErr))
-			}
-			return fmt.Errorf(
-				"ready marker %q not seen in pane %q within %s; capture-pane: %d ok, %d failed in %s%s; last pane (truncated): %s",
-				opts.readyMarker, sessionName, opts.deadline, capturesOK, capturesFailed, elapsed,
-				lastCaptureErrClause(capturesFailed, lastCaptureErr), truncatePaneForError(lastPane))
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for ready marker on %q: %w", sessionName, ctx.Err())
-		case <-time.After(opts.pollInterval):
-		}
-	}
-}
-
-// captureErrMaxBytes bounds the capture-error text folded into the readiness
-// timeout. tmux's own messages are short, but this clause sits ahead of the pane
-// snapshot in the first line, so a pathological stderr must not be able to push
-// the rest of the diagnostic out of the operator's view.
-const captureErrMaxBytes = 200
-
-// lastCaptureErrClause renders the optional cause clause. It keys on the FAILED
-// count, not on "no capture succeeded": the likeliest production shape of this
-// timeout is an agent that boots, draws a pane, then dies with its tmux session,
-// where early captures succeed and every later one fails. Gating the cause on
-// the success count would report the stale pre-crash snapshot and discard the
-// message that names why — in the very run where it names the cause.
-func lastCaptureErrClause(capturesFailed int, err error) string {
-	if capturesFailed == 0 || err == nil {
-		return ""
-	}
-	return "; last capture error: " + captureErrText(err)
-}
-
-// captureErrText renders a CapturePane failure using tmux's OWN words.
-//
-// CapturePane calls cmd.Output() without setting Stderr, which is precisely the
-// condition under which os/exec parks the child's stderr on
-// (*exec.ExitError).Stderr. Formatting the error alone prints only "exit status
-// 1"; errors.As reaches the real text ("can't find session: …"). Recovering it
-// here rather than inside CapturePane keeps that method's error string — shared
-// by the status poller and the submit verifier — byte-for-byte unchanged.
-//
-// The result is deliberately single-line: newlines here would push the pane
-// snapshot past the TUI's firstLine() cut.
-func captureErrText(err error) string {
-	if err == nil {
-		// Unreachable from the call sites above, which both require a recorded
-		// failure. Named as an observation rather than left blank so a future
-		// caller cannot render a dangling "last capture error: ".
-		return "<none recorded>"
-	}
-	text := err.Error()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
-			text += ": " + stderr
-		}
-	}
-	// strings.Fields splits on every kind of whitespace, so this collapses
-	// embedded newlines as well as runs of spaces.
-	text = strings.Join(strings.Fields(text), " ")
-	if len(text) > captureErrMaxBytes {
-		text = text[:captureErrMaxBytes] + " (truncated)"
-	}
-	return text
-}
-
-// truncatePaneForError trims the pane snapshot embedded in a SendPlan
-// timeout error. The raw capture can be ~80 cols × 1000 rows; we want
-// enough for diagnosis (the input-box area and any error banner) without
-// flooding logs or wrapping past usefulness.
-func truncatePaneForError(pane string) string {
-	const maxBytes = 800
-	pane = strings.TrimSpace(pane)
-	if pane == "" {
-		return "<empty>"
-	}
-	if len(pane) <= maxBytes {
-		return pane
-	}
-	return pane[len(pane)-maxBytes:] + " (head truncated)"
 }

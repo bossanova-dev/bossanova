@@ -44,6 +44,7 @@ function initRepo() {
   execFileSync('git', ['init', '-q', dir])
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'])
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'])
+  execFileSync('git', ['-C', dir, 'config', 'commit.gpgsign', 'false'])
   execFileSync('git', ['-C', dir, 'commit', '--allow-empty', '-q', '-m', 'init'])
   return dir
 }

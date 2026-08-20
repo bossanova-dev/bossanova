@@ -8,19 +8,23 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  BARE_POSITIONAL_PATTERN,
   FILE_URL_CONCAT_PATTERNS,
   SHELL_INFO_STRINGS,
   SKILL_ROOTS,
   checkSkillShellInRepo,
   extractFencedBlocks,
+  findBarePositionals,
   findUnsafeGhFileBodyWrites,
   findUnsafeGhBody,
   findInertGuards,
   findMultiGlobRemovals,
+  findUnquotedOptionGlobs,
   findSkillMarkdownFiles,
   findUnsafeNodeEval,
   findUnterminatedHeredoc,
   normalizePlaceholders,
+  startsComment,
 } from './check-skill-shell.mjs'
 
 const md = (...lines) => `${lines.join('\n')}\n`
@@ -2062,7 +2066,7 @@ test('an unterminated fence yields terminated:false and an unterminated finding'
     const unterminated = findings.filter((f) => f.kind === 'unterminated')
     assert.equal(unterminated.length, 1)
     assert.equal(unterminated[0].line, 2)
-    assert.match(unterminated[0].message, /UNTERMINATED fence/)
+    assert.match(unterminated[0].message, /UNTERMINATED[ ]fence/)
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true })
   }
@@ -3266,7 +3270,7 @@ test('a missing bash fails closed unless BOSS_SKILL_SHELL_OPTIONAL=1', async () 
   try {
     const closed = await checkSkillShellInRepo(repoRoot, { hasBash: () => false, env: {} })
     assert.ok(closed.length > 0, 'must fail closed when bash is absent')
-    assert.match(closed[0].message, /bash not found on PATH/)
+    assert.match(closed[0].message, /bash[ ]not[ ]found[ ]on[ ]PATH/)
 
     const warnings = []
     let skippedStats = null
@@ -3278,7 +3282,7 @@ test('a missing bash fails closed unless BOSS_SKILL_SHELL_OPTIONAL=1', async () 
     })
     assert.deepEqual(open, [])
     assert.equal(warnings.length, 1)
-    assert.match(warnings[0], /bash not found on PATH/)
+    assert.match(warnings[0], /bash[ ]not[ ]found[ ]on[ ]PATH/)
     // The opt-out returns no findings, so `skipped` is the ONLY thing standing between it and a
     // caller printing "N blocks parse clean via bash -n" for blocks bash never saw.
     assert.equal(skippedStats?.skipped, true, 'the opt-out must report stats.skipped')
@@ -4039,5 +4043,755 @@ test('no skill file builds a file:// specifier by concatenation, in a fence or i
     offenders,
     [],
     `resolve the specifier with pathToFileURL(<path>).href instead of concatenating 'file://' — a relative path concatenated this way resolves as a bare package, and an absolute one truncates at a '#':\n${offenders.join('\n')}`,
+  )
+})
+
+// 14bo. Option-glob rule — the attached `--include=*.md` form, the defect this rule exists for.
+test('findUnquotedOptionGlobs flags an unquoted glob attached to an option value', () => {
+  // Measured on fish 4.6.0: this exact line never runs grep. fish reports
+  // `No matches for wildcard '--include=*.md'` and exits 124, which reads as "no results".
+  const findings = findUnquotedOptionGlobs('grep -rn boss-build . --include=*.md')
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].option, '--include')
+  assert.equal(findings[0].lineOffset, 0)
+  assert.deepEqual(findings[0].globs, ['--include=*.md'])
+
+  // Any option carrying its value after `=` is recognised structurally — no allowlist involved.
+  assert.equal(findUnquotedOptionGlobs('rg --glob=*.go PATTERN').length, 1)
+  assert.equal(findUnquotedOptionGlobs('grep -rn x . --exclude-dir=build*').length, 1)
+})
+
+// 14bp. Option-glob rule — a QUOTED value is matched by the command, never by the shell.
+test('quoted option values are not flagged, in either quoting style', () => {
+  assert.deepEqual(findUnquotedOptionGlobs("grep -rn boss-build . --include='*.md'"), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn boss-build . --include="*.md"'), [])
+  assert.deepEqual(findUnquotedOptionGlobs("grep -rn boss-build . --include '*.md'"), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn boss-build . --include "*.md"'), [])
+  // The sanctioned `find` fix form from (f) must stay quiet here too, or the two rules would
+  // contradict each other one edit apart.
+  assert.deepEqual(findUnquotedOptionGlobs("find . -type f -name '*.yml' -delete"), [])
+})
+
+// 14bq. Option-glob rule — the space-separated form, and the allowlist that bounds it.
+test('a separated pattern value is flagged only after an option known to take one', () => {
+  const separated = findUnquotedOptionGlobs('grep -rn boss-build . --include *.md')
+  assert.equal(separated.length, 1)
+  assert.equal(separated[0].option, '--include')
+  assert.deepEqual(separated[0].globs, ['*.md'])
+
+  assert.equal(findUnquotedOptionGlobs('find . -name *.yml').length, 1)
+  assert.equal(findUnquotedOptionGlobs('rg -g *.go PATTERN').length, 1)
+
+  // `--stat` takes no value, so its argument is an ordinary word — and this one is a PLACEHOLDER
+  // whose brackets only look like a bracket expression. Treating "any long option" as
+  // value-taking rejects this correct line from the skill corpus, which is why the separated form
+  // is allowlisted rather than inferred.
+  assert.deepEqual(findUnquotedOptionGlobs('git diff --stat [BASE_SHA]..[HEAD_SHA]'), [])
+
+  // Membership is tested after quote removal, so a quoted option word still matches. The finding
+  // must report the same unquoted spelling, or the rendered fix hint reads `'--include'='<PATTERN>'`.
+  const quotedOption = findUnquotedOptionGlobs("grep -rn boss-build . '--include' *.md")
+  assert.equal(quotedOption.length, 1)
+  assert.equal(quotedOption[0].option, '--include')
+})
+
+// 14br. Option-glob rule — a value with no glob metacharacter is just a value.
+test('an option value carrying no glob metacharacter is not flagged', () => {
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn x . --exclude-dir=node_modules'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn x . --exclude-dir node_modules'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('find . -name Makefile'), [])
+})
+
+// 14bs. Option-glob rule — a bare argv glob is ordinary correct shell, and (f)'s business.
+test('a bare argv glob is not an option value and is never flagged by this rule', () => {
+  assert.deepEqual(findUnquotedOptionGlobs('ls *.md'), [])
+  // `-f` takes no value, so `*.log` is argv. Flagging it would reject the ordinary spelling of a
+  // removal — the case (f) deliberately allows until a SECOND pattern joins it.
+  assert.deepEqual(findUnquotedOptionGlobs('rm -f *.log'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('rm -rf -- *.log'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('cat build/*.log'), [])
+})
+
+// 14bt. Option-glob rule — the finding reaches the repo walker with an accurate file:line.
+test('checkSkillShellInRepo reports an option-glob finding at the offending line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('optglob')]: md(
+      'prose',
+      '```bash',
+      'echo scanning',
+      'grep -rn boss-build . --include=*.md',
+      '```',
+    ),
+    [claudeSkill('quoted')]: md('```bash', "grep -rn boss-build . --include='*.md'", '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'option-glob')
+    assert.match(findings[0].file, /optglob[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 4, 'points at the grep line, not the fence')
+    assert.match(findings[0].message, /--include=\*\.md/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 14bu. Option-glob rule — the two syntactic contexts where the shell expands nothing.
+test('a case pattern and a [[ ]] right-hand side are never option-value globs', () => {
+  // Measured: `zsh -c 'f=--include=zzz.md; case $f in --include=*) echo MATCHED;; *) echo NO;; esac'`
+  // prints MATCHED and exits 0 — the pattern is matched against the WORD, never the filesystem.
+  assert.deepEqual(findUnquotedOptionGlobs('case "$1" in --out=*) echo hi ;; esac'), [])
+  // The real-world spelling: the branch lives on its own logical line, several lines below the
+  // `case … in` keyword, so the exemption cannot be driven off the keyword being in scope.
+  assert.deepEqual(
+    findUnquotedOptionGlobs('case "$1" in\n  --file=*|--other=*)\n    echo hi\n    ;;\nesac'),
+    [],
+    'both alternatives of a multi-line pattern list are patterns, not option values',
+  )
+  // Measured: `bash -c 'x=--pat=abc; if [[ "$x" == --pat=* ]]; then echo MATCHED; fi'` prints
+  // MATCHED. `[[ ]]` is a keyword; bash and zsh parse its words and expand no pathnames inside.
+  assert.deepEqual(findUnquotedOptionGlobs('if [[ "$x" == --pat=* ]]; then echo hi; fi'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('[[ "$x" == --pat=* ]]'), [])
+  // POSIX `[` is an ORDINARY COMMAND, so its unquoted word IS expanded and stays reported. The two
+  // spellings differ by exactly this, which is why the exemption may not be widened to cover both.
+  assert.equal(findUnquotedOptionGlobs('[ "$x" = --pat=* ]').length, 1)
+  // A subshell also closes with `)`. The `(` before the glob is what tells the two apart — its
+  // first word is a COMMAND, which is never option-shaped and never a glob.
+  assert.equal(findUnquotedOptionGlobs('( cd x && grep -rn y . --include=*.md )').length, 1)
+  assert.equal(findUnquotedOptionGlobs('( grep -rn y . --include=*.md )').length, 1)
+})
+
+// 14bu2. Option-glob rule — `[[ ]]` is ONE test however many operands and parens it carries.
+test('every operand of a [[ ]] test keeps the exemption', () => {
+  // `||` and `&&` are operator tokens, so they split the line into segments. Reading the exemption
+  // off the segment's command word exempts only the first operand and rejects a correct line.
+  // Measured: `bash -c 'x=--a=1; y=--b=2; if [[ "$x" == --a=* || "$y" == --b=* ]]; then echo M; fi'`
+  // prints M and exits 0, identically under zsh.
+  assert.deepEqual(
+    findUnquotedOptionGlobs('if [[ "$x" == --a=* || "$y" == --b=* ]]; then echo hi; fi'),
+    [],
+  )
+  assert.deepEqual(findUnquotedOptionGlobs('[[ "$x" == --a=* && "$y" == --b=* ]]'), [])
+  // Grouping parens inside a test are operator tokens too, and are still inside the same `[[ … ]]`.
+  assert.deepEqual(findUnquotedOptionGlobs('[[ ( "$x" == --a=* ) ]]'), [])
+})
+
+// 14bu3. Option-glob rule — the POSIX-portable `case` branch opens with `(`, which is not a subshell.
+test('a case branch written with a leading paren is still a pattern list', () => {
+  // Measured: `bash -c 'x=--out=z; case $x in (--out=*) echo M ;; esac'` prints M and exits 0, and
+  // identically under zsh. The leading `(` is the portable branch spelling, not a subshell.
+  assert.deepEqual(findUnquotedOptionGlobs('case $x in (--out=*) echo hi ;; esac'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('case $x in (--a=*|--b=*) echo hi ;; esac'), [])
+  assert.deepEqual(
+    findUnquotedOptionGlobs('case "$1" in\n  (--file=*)\n    echo hi\n    ;;\nesac'),
+    [],
+    'the branch normally lives on its own logical line, below the case keyword',
+  )
+})
+
+// 14bv. Option-glob rule — the separated allowlist is keyed by COMMAND, not by option spelling.
+test('a separated pattern option is read only under a command that takes one', () => {
+  // `-g` is ripgrep's glob, but gcc's debug flag, ls's group flag and sort's general-numeric flag.
+  // Under those it takes no value at all, so the glob is ordinary argv and belongs to (f).
+  assert.deepEqual(findUnquotedOptionGlobs('gcc -g *.c'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('ls -g *.md'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('sort -g data*.txt'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('tar -g snapshot*.snar -cf a.tar x'), [])
+  // The same word under ripgrep is a pattern value, and still reported.
+  assert.equal(findUnquotedOptionGlobs('rg -g *.go PATTERN').length, 1)
+  // ripgrep does NOT accept grep's spelling — `rg --include '*.md' x .` fails with
+  // `unrecognized flag --include` — so under `rg` that word takes no value and its glob is argv.
+  assert.deepEqual(findUnquotedOptionGlobs('rg --include *.md PATTERN'), [])
+  assert.equal(findUnquotedOptionGlobs('tar --exclude *.log -cf a.tar x').length, 1)
+  // A command word this checker cannot resolve reports nothing — an accepted false NEGATIVE, the
+  // safe direction, exactly as (f) accepts for a wrapper that hides its command.
+  assert.deepEqual(findUnquotedOptionGlobs('git ls-files | xargs grep --include *.md x'), [])
+})
+
+// 14bw. Option-glob rule — the value reaches a nested command list and a continued line.
+test('an option glob inside a substitution is reported against the opening line', () => {
+  const nested = findUnquotedOptionGlobs('echo before\necho $(grep -rn x . --include=*.md)')
+  assert.equal(nested.length, 1)
+  assert.equal(nested[0].lineOffset, 1, 'reported against the line the substitution opens')
+  // A backslash continuation is joined by `joinContinuations` before tokenizing, so it never
+  // reaches the cross-newline `pending` accumulator. An UNCLOSED `$(` does: the tokenizer returns
+  // with `substDepth > 0`, and the option and its value are only analyzed together once it closes.
+  const spanning = findUnquotedOptionGlobs('RESULT=$(\n  grep -rn x . --include *.md\n)')
+  assert.equal(spanning.length, 1, 'the separated form is invisible unless the lines are held')
+  assert.equal(spanning[0].option, '--include')
+  // The joined-continuation spelling must keep working too.
+  const continued = findUnquotedOptionGlobs('grep -rn x . \\\n  --include *.md')
+  assert.equal(continued.length, 1)
+  assert.equal(continued[0].option, '--include')
+})
+
+// 14bx2. Option-glob rule — the cross-newline accumulator, falsified rather than assumed.
+test('an option and its value are analyzed together across a physical newline', () => {
+  // 14bw's `$( … )` case does NOT reach this branch — a substitution is ONE word, so that finding
+  // arrives through the `token.subs` recursion and stays green with the accumulator deleted.
+  // Only an OPEN QUOTE spanning the newline leaves the option on one physical line and its value
+  // on the next, which is what the accumulator exists for. Verified by deleting the accumulator on
+  // a copy: this assertion is the one that then returns [].
+  const spanning = findUnquotedOptionGlobs('grep -rn "some\ntext" . --include *.md')
+  assert.equal(spanning.length, 1, `expected one finding, got ${JSON.stringify(spanning)}`)
+  assert.equal(spanning[0].option, '--include')
+  assert.deepEqual(spanning[0].globs, ['*.md'])
+  // Reported against the line the invocation OPENS, the same place (f) reports a substitution.
+  assert.equal(spanning[0].lineOffset, 0)
+
+  // The accumulator must not invent a finding either: quoting the value across the same newline
+  // is correct shell.
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn "some\ntext" . --include \'*.md\''), [])
+})
+
+// 14by. Option-glob rule — the two forms must agree about a documentation PLACEHOLDER.
+test('an attached [UPPER_SNAKE] placeholder is documentation, not a glob to quote', () => {
+  // The separated form is already exempt from this word — 14bq pins `git diff --stat
+  // [BASE_SHA]..[HEAD_SHA]` as clean. The attached form is recognised structurally on ANY option,
+  // so without a guard the identical placeholder one space to the right is a false POSITIVE, the
+  // direction this gate must never fail in.
+  assert.deepEqual(findUnquotedOptionGlobs('boss chat send --session=[SESSION_ID] hi'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('node run.mjs --budget=[TIME_BUDGET_SECONDS]'), [])
+
+  // The exemption is the placeholder SPAN, not the whole value: a real glob beside one still
+  // expands, and a lowercase bracket expression is an ordinary bracket glob.
+  assert.equal(findUnquotedOptionGlobs('grep --include=[BASE_SHA]*.md x .').length, 1)
+  assert.equal(findUnquotedOptionGlobs('cmd --out=[abc].txt').length, 1)
+  assert.equal(findUnquotedOptionGlobs('cmd --out=[SESSION_ID]-*.log').length, 1)
+})
+
+// 14bx. Option-glob rule — the fix hint keeps the offending form's separator.
+test('the rendered fix hint is pasteable for both option forms', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('sepglob')]: md('```bash', 'find . -name *.yml', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'option-glob')
+    // `find . -name='<PATTERN>'` is not a quoted `-name` — find rejects it outright, and the broken
+    // line carries no unquoted glob, so it would then pass this very gate.
+    assert.match(findings[0].message, /-name '<PATTERN>'/)
+    assert.doesNotMatch(findings[0].message, /-name='<PATTERN>'/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 16. Bare `$1`-`$9` in a published skill body (header rule (j)), plus the
+//     `startsComment` predicate the six converged scanners now share.
+// ---------------------------------------------------------------------------
+
+// The predicate first, because every finding below depends on it deciding correctly which `#`
+// opens a real comment. Pinned directly rather than only through the rules, so a regression names
+// the predicate instead of surfacing as an unrelated rule going quiet.
+test('16a. startsComment: word boundary via the preceding byte', () => {
+  assert.equal(startsComment('#x', 0), true, 'start of text opens a comment')
+  assert.equal(startsComment('a #b', 2), true, 'after whitespace')
+  assert.equal(startsComment('a;#b', 2), true, 'after a separator')
+  assert.equal(startsComment('a#b', 1), false, 'mid-word `#` is an ordinary character')
+  assert.equal(startsComment('refs/heads/#1', 11), false, 'mid-word after a slash')
+  assert.equal(startsComment('a x', 2), false, 'not a `#` at all')
+})
+
+test('16b. startsComment: wordOpen is authoritative and ignores separators', () => {
+  assert.equal(startsComment('a #', 2, { wordOpen: false }), true)
+  assert.equal(startsComment('a #', 2, { wordOpen: true }), false, 'inside an open word')
+  // A tokenizer that knows a word is open overrules the preceding byte entirely.
+  assert.equal(startsComment('#x', 0, { wordOpen: true }), false)
+})
+
+test('16c. startsComment: escapedAt and inParam both refuse', () => {
+  // `\ #` is a literal space then a literal hash INSIDE a word, not a comment.
+  assert.equal(startsComment('a\\ #', 3, { escapedAt: 2 }), false)
+  assert.equal(
+    startsComment('a\\ #', 3, { escapedAt: null }),
+    true,
+    'same bytes, escape not tracked',
+  )
+  // `${#x}` / `${x#pat}`: an operator, never a comment.
+  assert.equal(startsComment('a #', 2, { inParam: true }), false)
+})
+
+test('16d. startsComment: the narrower heredoc separator set excludes braces', () => {
+  const heredoc = /[\s;&|(]/
+  assert.equal(startsComment('a #', 2, { separators: heredoc }), true)
+  assert.equal(
+    startsComment('a}#', 2, { separators: heredoc }),
+    false,
+    '`}` is a frame closer there',
+  )
+  assert.equal(startsComment('a}#', 2), true, 'the default set does treat `}` as a separator')
+  // `{` is the other half of the pair, and it is NOT redundant with `}`: the narrow set omits both
+  // for the same reason (the heredoc scanner runs its own frame stack, so a brace there is a frame
+  // token it has already consumed) but nothing in either regex ties the two together — a widening
+  // that added `{` alone would leave `}` still excluded and this assertion still green. Pin both.
+  assert.equal(
+    startsComment('a{#', 2, { separators: heredoc }),
+    false,
+    '`{` is a frame opener there',
+  )
+  assert.equal(startsComment('a{#', 2), true, 'the default set does treat `{` as a separator')
+})
+
+test('16e. BARE_POSITIONAL_PATTERN matches exactly the substituted token set', () => {
+  const matches = (text) => {
+    BARE_POSITIONAL_PATTERN.lastIndex = 0
+    return BARE_POSITIONAL_PATTERN.test(text)
+  }
+  // `$0` fires: the harness index is ZERO-based (`$0` is `$ARGUMENTS[0]`, the FIRST argument), so
+  // the first token an author can be handed is `$0`, not `$1`.
+  for (const fires of [
+    '$0',
+    '$1',
+    '$5',
+    '$9',
+    '${0}',
+    '${1}',
+    '${1:-x}',
+    '${9:?msg}',
+    'echo $2 done',
+  ]) {
+    assert.equal(matches(fires), true, `${fires} must be treated as a positional`)
+  }
+  for (const inert of ['$#', '$@', '$*', '$?', '$$', '$VAR', '${VAR}', '${11}', '${_1}', 'a#1']) {
+    assert.equal(matches(inert), false, `${inert} must NOT be treated as a positional`)
+  }
+})
+
+test('16f. quoting does not protect — single quotes are found too', () => {
+  // The whole point of the rule: substitution happens above the shell, so the strongest shell
+  // quoting there is changes nothing.
+  const single = findBarePositionals("awk 'NR == 1 {print $2}'")
+  assert.equal(single.length, 1)
+  assert.equal(single[0].token, '$2')
+  assert.equal(findBarePositionals('echo "$1"').length, 1, 'double quotes likewise')
+  assert.equal(findBarePositionals('echo $1').length, 1, 'and unquoted')
+})
+
+test('16g. exactly one finding per occurrence inside a command substitution', () => {
+  // The tokenizer hands the same bytes back twice — once as a word `raw`, once as a recorded
+  // `subs` body — so a token-driven scan double-reports. Scanning the source text cannot.
+  const found = findBarePositionals("X=$(awk '{print $2}')")
+  assert.equal(found.length, 1, `expected one finding, got ${JSON.stringify(found)}`)
+  assert.equal(found[0].lineOffset, 0)
+  assert.equal(found[0].token, '$2')
+})
+
+// The verbatim shape this rule was written for: a `$( … )` opened several lines above the offender.
+const REPAIR_FIXTURE = [
+  'BASE_BRANCH=$(',
+  "  git for-each-ref --format='%(refname:short)' refs/remotes/origin |",
+  "    sed 's#^origin/##' |",
+  '    while read -r branch; do',
+  '      printf \'%s %s\\n\' "$(git show -s --format=%ct "$base")" "$branch"',
+  '    done |',
+  '    sort -nr |',
+  "    awk 'NR == 1 {print $2}'",
+  ')',
+]
+
+test('16h. a multi-line substitution reports at the offender’s OWN line, once', () => {
+  const found = findBarePositionals(REPAIR_FIXTURE.join('\n'))
+  assert.equal(found.length, 1, `expected one finding, got ${JSON.stringify(found)}`)
+  // Index 7 is the awk line. Attributing to the closing `)` on index 8 would point a reader at
+  // the wrong line, which is how the multi-line case was previously mis-reported.
+  assert.equal(found[0].lineOffset, 7)
+})
+
+test('16i. an opt-out with a non-empty reason waives that line', () => {
+  const waived = findBarePositionals(
+    'BASE="${1:-main}" # skill-positional-ok: documented slash-command argument',
+  )
+  assert.deepEqual(waived, [])
+})
+
+test('16j. the opt-out is fail-closed: an empty reason waives nothing', () => {
+  assert.equal(findBarePositionals('echo $1 # skill-positional-ok:').length, 1)
+  assert.equal(findBarePositionals('echo $1 # skill-positional-ok:   ').length, 1)
+  assert.equal(
+    findBarePositionals('echo $1 # skill-positional-ok').length,
+    1,
+    'no colon, no waiver',
+  )
+  assert.equal(findBarePositionals('echo $1 # totally fine, honest').length, 1, 'wrong marker')
+})
+
+test('16k. the opt-out counts only in a REAL comment, quote-aware', () => {
+  // Same bytes inside a string literal.
+  assert.equal(
+    findBarePositionals('echo "$1 # skill-positional-ok: nope"').length,
+    1,
+    'a marker inside a double-quoted string waives nothing',
+  )
+  assert.equal(
+    findBarePositionals("echo '$1 # skill-positional-ok: nope'").length,
+    1,
+    'nor inside a single-quoted string',
+  )
+  // And the hard case the rule exists alongside: three `#` inside a `sed` expression, inside a
+  // command substitution, inside a parameter expansion — with a genuine trailing marker after it.
+  const reviewLine =
+    'BASE="${1:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s#^origin/##\')}"' +
+    ' # skill-positional-ok: the base ref is this skill’s one documented argument'
+  assert.deepEqual(
+    findBarePositionals(reviewLine),
+    [],
+    'the trailing marker is the only real comment on that line and must be recognised',
+  )
+  // Remove only the marker and the same line must fire — the annotation is load-bearing, not decor.
+  const unannotated = reviewLine.slice(0, reviewLine.indexOf(' # skill-positional-ok:'))
+  assert.equal(findBarePositionals(unannotated).length, 1)
+})
+
+// The verbatim shape that makes the scoping rule load-bearing: line 0 opens a single quote that
+// only closes many lines later, so line 0 CANNOT carry a trailing comment of its own — any `#`
+// appended to it is inside the quote. The only place a marker could be written is the closing
+// line, and it must not reach back.
+const EPIC_FIXTURE = [
+  'resolve_state() { ROLE="$1" node --input-type=module -e \'',
+  '  const x = 1',
+  "' 2>/dev/null; } # skill-positional-ok: this must NOT waive line 0",
+]
+
+test('16l. the opt-out window is the offender’s own physical line only', () => {
+  const found = findBarePositionals(EPIC_FIXTURE.join('\n'))
+  assert.equal(found.length, 1, 'a marker on the closing line must not waive the opening line')
+  assert.equal(found[0].lineOffset, 0)
+})
+
+test('16m. markers do not leak across lines in either direction', () => {
+  const forward = ['echo a # skill-positional-ok: unrelated', 'echo $1'].join('\n')
+  assert.equal(findBarePositionals(forward).length, 1, 'a marker must not carry forward')
+  const backward = ['echo $1', 'echo a # skill-positional-ok: unrelated'].join('\n')
+  assert.equal(findBarePositionals(backward).length, 1, 'nor backward')
+  const both = [
+    'echo $1 # skill-positional-ok: waived here',
+    'echo $2',
+    'echo $3 # skill-positional-ok: and here',
+  ].join('\n')
+  const found = findBarePositionals(both)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].lineOffset, 1)
+  assert.equal(found[0].token, '$2')
+})
+
+test('16n. a `#` that is not a comment does not truncate the scan', () => {
+  // `sed 's#^origin/##'` must not be read as a comment, or every positional after it on the line
+  // goes silently unreported.
+  const found = findBarePositionals("sed 's#^origin/##' && awk '{print $2}'")
+  assert.equal(found.length, 1)
+  assert.equal(found[0].token, '$2')
+})
+
+test('16o. checkSkillShellInRepo reports kind `bare-positional` at file:line', async () => {
+  const root = makeRepo({
+    [claudeSkill('demo')]: md(
+      '# demo',
+      '',
+      '```bash',
+      'echo hello',
+      "awk 'NR == 1 {print $2}'",
+      '```',
+    ),
+  })
+  const findings = await checkSkillShellInRepo(root)
+  const positional = findings.filter((f) => f.kind === 'bare-positional')
+  assert.equal(positional.length, 1, JSON.stringify(findings))
+  assert.equal(positional[0].file, claudeSkill('demo'))
+  // Fence opens on line 3, `echo hello` is 4, the awk is 5.
+  assert.equal(positional[0].line, 5)
+  assert.match(positional[0].message, /\$2/)
+  assert.match(positional[0].message, /skill-positional-ok/)
+})
+
+test('16p. the opt-out silences checkSkillShellInRepo end to end', async () => {
+  const root = makeRepo({
+    [claudeSkill('demo')]: md(
+      '# demo',
+      '',
+      '```bash',
+      'BASE="${1:-main}" # skill-positional-ok: documented slash-command argument',
+      '```',
+    ),
+  })
+  const findings = await checkSkillShellInRepo(root)
+  assert.deepEqual(
+    findings.filter((f) => f.kind === 'bare-positional'),
+    [],
+  )
+})
+
+test('16q. no published skill body carries an unwaived bare positional', () => {
+  // Payload-wide regression assertion, in the same spirit as the `file://` one above: the rule
+  // itself is the only source of truth, so this can never ban a narrower set than the rule catches.
+  // The plugin mirror is scanned directly because it is what actually ships. That makes this test
+  // deliberately STRICTER than `checkSkillShellInRepo`, which excludes generated mirrors so a
+  // finding is reported once, at the file an author can edit. The divergence is the safe direction
+  // — a positional that reaches users' installed skills is live whether or not the authoring root
+  // is clean — and the cost of the extra strictness is a failure mode with a different remedy,
+  // which the assertion message below distinguishes rather than papering over.
+  const rootDir = fileURLToPath(new URL('..', import.meta.url))
+  // The mirror is scanned alongside the authoring roots but is NOT one of them: it is a generated
+  // copy, so it is allowed to be absent (a checkout that has not run `make copy-skills` yet), and it
+  // is excluded from the per-root floor below for exactly that reason.
+  const MIRROR_ROOT = 'plugins/bossd-plugin-claude/skilldata/skills'
+  const roots = [...SKILL_ROOTS, MIRROR_ROOT]
+  const offenders = []
+  const mirrorOffenders = []
+  const perRoot = new Map()
+  let scanned = 0
+  for (const root of roots) {
+    const absRoot = path.join(rootDir, root)
+    perRoot.set(root, 0)
+    if (!fs.existsSync(absRoot)) continue
+    for (const file of findSkillMarkdownFiles(absRoot)) {
+      scanned += 1
+      perRoot.set(root, perRoot.get(root) + 1)
+      for (const block of extractFencedBlocks(fs.readFileSync(file, 'utf8'))) {
+        if (!block.terminated || !SHELL_INFO_STRINGS.has(block.info)) continue
+        for (const hit of findBarePositionals(block.body)) {
+          const where = `${path.relative(rootDir, file)}:${block.startLine + 1 + hit.lineOffset}: ${hit.token}`
+          offenders.push(where)
+          if (root === MIRROR_ROOT) mirrorOffenders.push(where)
+        }
+      }
+    }
+  }
+  // The aggregate floor alone is satisfiable by ONE populated root: `.claude/skills` carries enough
+  // files to clear 50 on its own, so a `SKILL_ROOTS` entry that silently resolved to nothing —
+  // renamed, moved, or mistyped — would leave this assertion green while its whole tree went
+  // unscanned. Require every authoring root to have contributed, so neither can mask the other.
+  for (const root of SKILL_ROOTS) {
+    assert.ok(
+      perRoot.get(root) > 0,
+      `skill root ${root} contributed no scanned files; the per-root floor exists so one populated root cannot mask an empty or missing one`,
+    )
+  }
+  assert.ok(
+    scanned > 50,
+    `expected the skill corpus to be walked, scanned only ${scanned} files (per root: ${[...perRoot].map(([r, n]) => `${r}=${n}`).join(', ')})`,
+  )
+  // Two different defects reach this assertion and they take OPPOSITE remedies, so the message has
+  // to say which one fired. An offender in an authoring root is a body to rewrite or waive. An
+  // offender that appears ONLY in the generated mirror is not a authoring defect at all — the
+  // authoring root is already clean — it is a stale copy, and telling that reader to "rewrite or
+  // waive" points them at a file `make copy-skills` is about to overwrite.
+  const mirrorOnly = offenders.length > 0 && mirrorOffenders.length === offenders.length
+  assert.deepEqual(
+    offenders,
+    [],
+    mirrorOnly
+      ? `the generated plugin mirror is stale: these lines are clean in the authoring roots and offend only in ${MIRROR_ROOT}. Re-run \`make copy-skills\` — do not edit the mirror:\n${offenders.join('\n')}`
+      : `a slash-command invocation rewrites these before any shell sees them; rewrite without a positional or waive the line with \`# skill-positional-ok: <reason>\`:\n${offenders.join('\n')}`,
+  )
+})
+
+test('16r. a BACKSLASH-joined group is still scoped per physical line', () => {
+  // Every other rule in the gate reads these three lines as ONE joined entry keyed to the group's
+  // opening line. For a rule with a per-line waiver that is wrong twice: the marker below reaches
+  // back and waives a line nobody annotated, and a positional written on a continuation line is
+  // reported at a line the reader would find nothing on. The physical-line walk owes the same
+  // answers here that the joined reading was supposed to give.
+  const leak = ['echo $1 \\', '  echo hi # skill-positional-ok: a DIFFERENT physical line'].join(
+    '\n',
+  )
+  const leaked = findBarePositionals(leak)
+  assert.equal(leaked.length, 1, 'a marker on a later physical line must not waive an earlier one')
+  assert.equal(leaked[0].lineOffset, 0)
+  assert.equal(leaked[0].token, '$1')
+
+  const attributed = findBarePositionals(['echo hi \\', '  echo $1'].join('\n'))
+  assert.equal(attributed.length, 1)
+  assert.equal(attributed[0].lineOffset, 1, 'report the continuation line, not the opening line')
+
+  const deep = findBarePositionals(['a \\', '  b \\', '  c $3'].join('\n'))
+  assert.equal(deep.length, 1)
+  assert.equal(deep[0].lineOffset, 2, 'the mapping holds past the first continuation')
+
+  // The legitimate case still waives: marker and offender on the SAME physical line of the group.
+  const waived = ['echo hi \\', '  echo $1 # skill-positional-ok: a real reason'].join('\n')
+  assert.deepEqual(findBarePositionals(waived), [])
+})
+
+test('16s. a comment ending in a backslash does not swallow the next line', () => {
+  // bash does not continue a line whose trailing backslash falls inside a comment — there the
+  // backslash is comment text like any other byte. A scan that joins first and then cuts at the `#`
+  // loses every line after it: no finding, no marker, nothing to grep for. This is the shape the
+  // physical-line walk exists to answer, and the reason joining is not merely a slower way to get
+  // the same result.
+  const swallowed = ['echo # note \\', 'echo $1'].join('\n')
+  const found = findBarePositionals(swallowed)
+  assert.equal(found.length, 1, 'the line after a backslash-terminated comment is live code')
+  assert.equal(found[0].lineOffset, 1)
+  assert.equal(found[0].token, '$1')
+
+  // Same shape with the marker grammar in play: a waiver that happens to end in a backslash waives
+  // its own line and nothing past it.
+  const marker = ['echo $1 # skill-positional-ok: waived here \\', 'echo $2'].join('\n')
+  const after = findBarePositionals(marker)
+  assert.equal(after.length, 1, 'the waiver does not extend over the continuation')
+  assert.equal(after[0].lineOffset, 1)
+  assert.equal(after[0].token, '$2')
+})
+
+test('16t. startsComment: `separators: null` is not the same as omitting it', () => {
+  // Omitting the option applies the default class, which rejects a mid-word `#`. Passing `null` says
+  // the caller has already settled word-boundedness by other means and the preceding byte is not
+  // the evidence — a distinct answer, which is why it is spelled out rather than inferred.
+  assert.equal(startsComment('a#b', 1), false, 'the default class rejects a mid-word `#`')
+  assert.equal(
+    startsComment('a#b', 1, { separators: null }),
+    true,
+    '`null` skips the preceding-byte test entirely',
+  )
+  assert.equal(startsComment('refs/heads/#1', 11, { separators: null }), true)
+
+  // `null` disables ONLY that test; every other suppressor still answers, and the byte must still
+  // be a `#`.
+  assert.equal(startsComment('a\\ #', 3, { separators: null, escapedAt: 2 }), false, 'escapedAt')
+  assert.equal(startsComment('a #', 2, { separators: null, inParam: true }), false, 'inParam')
+  assert.equal(startsComment('a #', 2, { separators: null, wordOpen: true }), false, 'wordOpen')
+  assert.equal(startsComment('ab', 1, { separators: null }), false, 'not a `#` at all')
+})
+
+test('16u. heredoc payload is scanned, because the harness rewrites bytes not commands', () => {
+  // Every sibling rule masks a heredoc body: their subject is what bash executes, and payload is
+  // data. This rule's subject is what the harness rewrote before bash was started, so payload is
+  // just more body. A quoted delimiter is the sharpest case — it stops the SHELL expanding, and
+  // stops nothing at all one level up.
+  const quoted = findBarePositionals(
+    ["cat > wrapper.sh <<'EOF'", 'exec real "$1"', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    quoted.map((finding) => [finding.lineOffset, finding.token]),
+    [[1, '$1']],
+    "a positional inside <<'EOF' is reported: the emitted wrapper would ship with it deleted",
+  )
+
+  const unquoted = findBarePositionals(['cat <<EOF', 'value $2', 'EOF'].join('\n'))
+  assert.deepEqual(
+    unquoted.map((finding) => finding.token),
+    ['$2'],
+  )
+})
+
+test('16v. a heredoc body cannot corrupt the quote state the rest of the block is read in', () => {
+  // The line is TOKENIZED masked and SCANNED raw, and the split is the whole point: an apostrophe in
+  // a commit-message heredoc is prose. Read as an opening quote it never closes, and every line
+  // after the terminator is then inside a string — where a `#` is not a comment, so the waiver on
+  // the line below would stop being recognised and the gate would report a line somebody annotated.
+  const findings = findBarePositionals(
+    [
+      "git commit -m \"$(cat <<'EOF'",
+      "don't merge this",
+      'EOF',
+      ')"',
+      'echo $1 # skill-positional-ok: intentional',
+      'echo $2',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    findings.map((finding) => [finding.lineOffset, finding.token]),
+    [[5, '$2']],
+    'the waiver after the heredoc still applies, so the apostrophe never opened a quote',
+  )
+
+  // And the escape hatch reaches inside, at the stated price: within a heredoc that `#` is payload,
+  // so the waiver is visible in whatever the heredoc emits.
+  assert.deepEqual(
+    findBarePositionals(
+      ["cat <<'EOF'", 'echo $1 # skill-positional-ok: intentional', 'EOF'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('16w. the message names the whole expansion, not a token that is not there', () => {
+  // The braced arm matches as `${1`; reporting that as `${1}` sends a reader searching for a
+  // string the line does not contain.
+  const tokens = findBarePositionals('echo ${1:-fallback} ${3} $10 ${11} $2').map((f) => f.token)
+  assert.deepEqual(tokens, ['${1:-fallback}', '${3}', '$1', '$2'])
+
+  // `$10` is a `$1` the shell reads as ${1}0, so reporting it is correct; `${11}` is a different
+  // parameter and is not this rule's business.
+  assert.equal(tokens.includes('${11}'), false)
+})
+
+test('16x. `$0` is in scope, because the harness index is ZERO-based', () => {
+  // The vendor docs are explicit: `$N` is shorthand for `$ARGUMENTS[N]` and the first argument is
+  // `$0`, not `$1`. A rule that started at `$1` would therefore have left the FIRST argument's
+  // token unmatched — and `$0` is the one an author is most likely to write without thinking,
+  // because in a shell it means "the program name" and in awk it means "the whole record".
+  assert.deepEqual(
+    findBarePositionals("awk '!seen[$0]++'").map((f) => f.token),
+    ['$0'],
+  )
+  assert.deepEqual(
+    findBarePositionals('echo ${0} ${0:-fallback}').map((f) => f.token),
+    ['${0}', '${0:-fallback}'],
+  )
+  // `$0` waives like any other, so a genuinely-safe use is still expressible.
+  assert.deepEqual(
+    findBarePositionals("awk '{print $0}' # skill-positional-ok: never reached via slash command"),
+    [],
+  )
+  // And the neighbours it must not swallow: `${10}` is a different parameter, `$#`/`$@`/`$*`/`$?`
+  // are not positional at all.
+  assert.deepEqual(findBarePositionals('echo ${10} $# $@ $* $? $$ $BASE'), [])
+})
+
+test('16y. the opt-out must OPEN its comment, not merely appear inside one', () => {
+  // Anchored at the start of the comment text. A comment that mentions the marker in passing is
+  // prose about the rule, not an exercise of it — accepting it would let any sentence quoting the
+  // waiver syntax silence a real finding, which is the fail-open this anchor closes.
+  assert.equal(
+    findBarePositionals('echo $1 # see the `# skill-positional-ok:` escape hatch for details')
+      .length,
+    1,
+    'a mention inside a comment is not a waiver',
+  )
+  assert.equal(
+    findBarePositionals('echo $1 # TODO waive this: # skill-positional-ok: later').length,
+    1,
+    'the marker must be the first thing in the comment',
+  )
+  // The waiving spelling, for contrast: marker first, reason non-empty.
+  assert.deepEqual(findBarePositionals('echo $1 # skill-positional-ok: real reason'), [])
+  // Leading whitespace between `#` and the marker is still the marker opening the comment.
+  assert.deepEqual(findBarePositionals('echo $1 #   skill-positional-ok: real reason'), [])
+})
+
+test('16z. inside heredoc payload the waiver must still open the line’s first `#`', () => {
+  // Payload has no comments — every `#` is data — so `heredocOptOut` has to impose the shape a
+  // tokenizer would have imposed outside. It keys on the line's FIRST `#` and requires the marker
+  // to open it. Anything looser would let a `#` anywhere in payload carry a waiver, which is the
+  // same fail-open the `^` anchor closes on ordinary lines, re-entered through the back door.
+  const mentioned = findBarePositionals(
+    ["cat <<'EOF'", 'exec real "$1" # docs mention # skill-positional-ok: here', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    mentioned.map((f) => f.token),
+    ['$1'],
+    'a marker that does not open the first `#` in payload waives nothing',
+  )
+
+  // A payload `#` that is not a waiver must not truncate the scan either — the tail is still bytes
+  // the harness rewrites, so an offender after it is still an offender.
+  const notAWaiver = findBarePositionals(
+    ["cat <<'EOF'", 'printf %s "# literal hash" && exec real "$2"', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    notAWaiver.map((f) => f.token),
+    ['$2'],
+    'a non-waiver `#` in payload does not cut the rest of the line from the scan',
+  )
+
+  // And the fail-closed reason rule reaches inside too: an empty reason waives nothing anywhere.
+  assert.equal(
+    findBarePositionals(["cat <<'EOF'", 'exec real "$1" # skill-positional-ok:', 'EOF'].join('\n'))
+      .length,
+    1,
   )
 })

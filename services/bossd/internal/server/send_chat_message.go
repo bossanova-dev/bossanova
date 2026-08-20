@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -12,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/chatdelivery"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -36,51 +36,25 @@ const queuedGuidance = chatdelivery.QueuedGuidance
 // modalDetectorFor returns the "is this pane showing a menu rather than a
 // composer?" check for one agent, or nil when it cannot be answered.
 //
-// It routes to the agent's plugin over AgentRunnerService.HasQuestionPrompt
-// rather than matching glyphs here, because each agent's modal grammar belongs
-// to that agent: codex's approval and request_user_input footers live in the
-// codex plugin, Claude's in bossalib/statusdetect. Recognising them here would
-// fork two grammars that already exist and drift from them silently — and
-// reaching into the plugin packages directly would cross a module boundary.
-// It reads blocks_input, NOT has_prompt. The two are different predicates with
-// opposite failure costs: has_prompt is the notify signal the status poller
-// uses, and it fires for a conversational "…?" asked with a live, empty
-// composer. Gating delivery on that would refuse to answer the very question
-// the agent just asked — the commonest reason anyone sends a chat message —
-// and broadcast fan-out and GitHub callbacks, which deliver through this same
-// RPC, would inherit the failure. blocks_input is the strict modal subset: the
-// composer is gone and a keystroke selects.
+// The check itself lives in internal/agent (agent.NewModalPaneChecker), which
+// is where its contract is documented: why it reads blocks_input rather than
+// has_prompt, why an unreachable plugin fails open, and why the grammar stays
+// in the plugins. Session start needs the same check over the same panes
+// (BOS-894), so keeping the body here would have meant two copies of it.
 //
-// A missing client returns nil, which disables the check. That is deliberate
-// fail-open, mirroring the poller: an unloaded plugin must never become a new
-// reason delivery fails. It costs at most one plugin round-trip per readiness
-// wait — the gate probes only the capture that resolved a composer row, or the
-// last capture on the deadline path — not one per poll tick.
+// What is left here is the only part that is this server's business: which
+// client answers for this agent. A missing entry returns nil, which disables
+// the check — deliberate fail-open, mirroring the poller.
+//
+// It costs at most one plugin round-trip per readiness wait — the gate probes
+// only the capture that resolved a composer row, or the last capture on the
+// deadline path — not one per poll tick.
 func (s *Server) modalDetectorFor(agentName string) tmux.ModalDetector {
 	client, ok := s.agentClients[agentName]
 	if !ok {
 		return nil
 	}
-	// The readiness gate treats a detector error as "not a modal", so a wedged or
-	// version-skewed plugin cannot become a new reason delivery stops. That
-	// fail-open is deliberate but it is also INVISIBLE: a permanently failing
-	// HasQuestionPrompt silently restores the pre-BOS-600 behaviour with no signal
-	// anywhere, and the next Enter into a menu would look like an unexplained
-	// regression. Report the first failure of each send — the detector is built
-	// once per SendChatMessage, so this is one line per degraded send even if the
-	// gate's probe budget is ever widened.
-	var reportOnce sync.Once
-	return func(ctx context.Context, pane []byte) (bool, error) {
-		resp, err := client.HasQuestionPrompt(ctx, &pb.HasQuestionPromptRequest{PaneContent: pane})
-		if err != nil {
-			reportOnce.Do(func() {
-				s.logger.Warn().Err(err).Str("agent", agentName).
-					Msg("modal check unavailable; delivering without the BOS-600 modal gate")
-			})
-			return false, err
-		}
-		return resp.GetBlocksInput(), nil
-	}
+	return agent.NewModalPaneChecker(client, agentName, s.logger)
 }
 
 // SendChatMessage delivers a user message into a chat's live agent, optionally

@@ -1211,3 +1211,211 @@ func TestClampInt32(t *testing.T) {
 		})
 	}
 }
+
+// newResurrectTestSession creates an archived session and returns its ID plus
+// the archived_at timestamp the row wore when it was archived — the value
+// ResurrectSession captures and later hands back to RollbackFailedResurrect.
+func newResurrectTestSession(t *testing.T, store *SQLiteSessionStore, repoID, title string) (string, time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repoID,
+		Title:        title,
+		WorktreePath: "/tmp/wt/" + title,
+		BranchName:   "feat/" + title,
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// Merged is the only pre-resurrect state that matters here: it is the
+	// terminal state ResurrectSession's rollback restores, and half of the
+	// {archived_at NULL, state Merged} shape the sweep selects on.
+	setSessionState(t, store, sess.ID, machine.Merged)
+	if err := store.Archive(ctx, sess.ID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get archived session: %v", err)
+	}
+	if got.ArchivedAt == nil {
+		t.Fatal("archived session has nil ArchivedAt")
+	}
+	return sess.ID, *got.ArchivedAt
+}
+
+// TestResurrectToState_UnarchivesAndSetsStateAtomically pins the [P1] contract:
+// one read-back must show BOTH archived_at cleared and the live state written.
+// Observing {archived_at NULL, state Merged} in that read-back is exactly the
+// window archiveMergedButUnarchived selects on.
+func TestResurrectToState_UnarchivesAndSetsStateAtomically(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	id, _ := newResurrectTestSession(t, store, repo.ID, "resurrect-atomic")
+
+	resurrected, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("ResurrectToState: %v", err)
+	}
+	if !resurrected {
+		t.Fatal("ResurrectToState on archived row returned false, want true")
+	}
+
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get after resurrect: %v", err)
+	}
+	if got.ArchivedAt != nil {
+		t.Fatalf("ArchivedAt after resurrect = %v, want nil", got.ArchivedAt)
+	}
+	if got.State != machine.ImplementingPlan {
+		t.Fatalf("state after resurrect = %v, want ImplementingPlan", got.State)
+	}
+}
+
+// TestResurrectToState_IgnoresLiveRow keeps the `archived_at IS NOT NULL` guard
+// inherited from the Resurrect method this replaces: without it the write would
+// silently overwrite a live session's state.
+func TestResurrectToState_IgnoresLiveRow(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "resurrect-live-row",
+		WorktreePath: "/tmp/wt/resurrect-live-row",
+		BranchName:   "feat/resurrect-live-row",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	setSessionState(t, store, sess.ID, machine.AwaitingChecks)
+
+	resurrected, err := store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("ResurrectToState on live row: %v", err)
+	}
+	if resurrected {
+		t.Fatal("ResurrectToState on live row returned true, want false")
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get after no-op resurrect: %v", err)
+	}
+	if got.ArchivedAt != nil {
+		t.Fatalf("ArchivedAt after no-op resurrect = %v, want nil", got.ArchivedAt)
+	}
+	if got.State != machine.AwaitingChecks {
+		t.Fatalf("state after no-op resurrect = %v, want AwaitingChecks (untouched)", got.State)
+	}
+}
+
+// TestRollbackFailedResurrect_RestoresOriginalArchivedAt pins the [P2] contract:
+// the row returns to the timestamp and state the failed attempt found it in, so
+// its trash age is not silently reset.
+func TestRollbackFailedResurrect_RestoresOriginalArchivedAt(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-restores")
+
+	if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+		t.Fatalf("ResurrectToState: %v", err)
+	}
+
+	restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+	if err != nil {
+		t.Fatalf("RollbackFailedResurrect: %v", err)
+	}
+	if !restored {
+		t.Fatal("RollbackFailedResurrect returned false, want true")
+	}
+
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get after rollback: %v", err)
+	}
+	if got.ArchivedAt == nil {
+		t.Fatal("ArchivedAt after rollback = nil, want the original timestamp")
+	}
+	if !got.ArchivedAt.Equal(originalArchivedAt) {
+		t.Fatalf("ArchivedAt after rollback = %v, want original %v", *got.ArchivedAt, originalArchivedAt)
+	}
+	if got.State != machine.Merged {
+		t.Fatalf("state after rollback = %v, want Merged", got.State)
+	}
+}
+
+// TestRollbackFailedResurrect_SkipsWhenRowMoved covers both losing shapes: a
+// concurrent writer moved the state off the one ResurrectToState wrote, and the
+// row is already archived. Either way the compensating write must not fire.
+func TestRollbackFailedResurrect_SkipsWhenRowMoved(t *testing.T) {
+	database := setupTestDB(t)
+	repoStore := NewRepoStore(database)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, repoStore)
+
+	t.Run("state moved off expectState", func(t *testing.T) {
+		id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-state-moved")
+		if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+			t.Fatalf("ResurrectToState: %v", err)
+		}
+		setSessionState(t, store, id, machine.AwaitingChecks)
+
+		restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+		if err != nil {
+			t.Fatalf("RollbackFailedResurrect: %v", err)
+		}
+		if restored {
+			t.Fatal("RollbackFailedResurrect on moved row returned true, want false")
+		}
+
+		got, err := store.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get after skipped rollback: %v", err)
+		}
+		if got.ArchivedAt != nil {
+			t.Fatalf("ArchivedAt after skipped rollback = %v, want nil (untouched)", got.ArchivedAt)
+		}
+		if got.State != machine.AwaitingChecks {
+			t.Fatalf("state after skipped rollback = %v, want AwaitingChecks (untouched)", got.State)
+		}
+	})
+
+	t.Run("row already archived", func(t *testing.T) {
+		id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-already-archived")
+
+		restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+		if err != nil {
+			t.Fatalf("RollbackFailedResurrect: %v", err)
+		}
+		if restored {
+			t.Fatal("RollbackFailedResurrect on archived row returned true, want false")
+		}
+
+		got, err := store.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get after skipped rollback: %v", err)
+		}
+		if got.ArchivedAt == nil || !got.ArchivedAt.Equal(originalArchivedAt) {
+			t.Fatalf("ArchivedAt after skipped rollback = %v, want original %v (untouched)", got.ArchivedAt, originalArchivedAt)
+		}
+		if got.State != machine.Merged {
+			t.Fatalf("state after skipped rollback = %v, want Merged (untouched)", got.State)
+		}
+	})
+}

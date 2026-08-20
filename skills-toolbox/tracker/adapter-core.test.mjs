@@ -107,6 +107,7 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'deletePlanAttachment',
     'extractImages',
     'createLabel',
+    'appendRelatedTo',
   ])
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
 

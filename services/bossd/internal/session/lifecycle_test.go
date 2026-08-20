@@ -82,14 +82,31 @@ type mockSessionStore struct {
 
 	updateHook                 func(id string, params db.UpdateSessionParams) error
 	updateStateConditionalHook func(id string)
-	orphanResumeCommitHook     func(id string)
-	orphanResumeCommitErr      error
-	orphanResumeReparkErr      error
+
+	// Resurrect knobs. afterResurrectToState runs while m.mu is held, right
+	// after a winning resurrect write, so a test can move the row the way a
+	// concurrent writer would and make the compensating write miss.
+	resurrectErr           error
+	resurrectLosesRace     bool
+	afterResurrectToState  func(s *models.Session)
+	resurrectToStateCalls  int
+	rollbackErr            error
+	rollbackCalls          []mockRollbackCall
+	orphanResumeCommitHook func(id string)
+	orphanResumeCommitErr  error
+	orphanResumeReparkErr  error
 }
 
 type mockSessionUpdate struct {
 	id     string
 	params db.UpdateSessionParams
+}
+
+type mockRollbackCall struct {
+	id           string
+	archivedAt   time.Time
+	restoreState int
+	expectState  int
 }
 
 func newMockSessionStore() *mockSessionStore {
@@ -264,17 +281,25 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	return s, nil
 }
 
-func (m *mockSessionStore) updatesFor(id, field string) []db.UpdateSessionParams {
+// mockSessionID is the only ID mockSessionStore.Create ever mints, so every
+// fixture in this file works against that one row.
+const mockSessionID = "sess-1"
+
+func (m *mockSessionStore) updatesFor(field string) []db.UpdateSessionParams {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var result []db.UpdateSessionParams
 	for _, update := range m.updates {
-		if update.id != id {
+		if update.id != mockSessionID {
 			continue
 		}
 		switch field {
 		case "worktree_path":
 			if update.params.WorktreePath != nil {
+				result = append(result, update.params)
+			}
+		case "state":
+			if update.params.State != nil {
 				result = append(result, update.params)
 			}
 		default:
@@ -293,13 +318,62 @@ func (m *mockSessionStore) Archive(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockSessionStore) Resurrect(_ context.Context, id string) error {
+// ResurrectToState mirrors the SQLite CAS: it moves the row only while it is
+// still archived, and writes archived_at and state together so no test can
+// observe the {archived_at NULL, state Merged} shape in between.
+func (m *mockSessionStore) ResurrectToState(_ context.Context, id string, newState int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resurrectErr != nil {
+		return false, m.resurrectErr
+	}
 	s, ok := m.sessions[id]
 	if !ok {
-		return fmt.Errorf("session %s not found", id)
+		return false, fmt.Errorf("session %s not found", id)
+	}
+	m.resurrectToStateCalls++
+	// resurrectLosesRace models the row being un-archived by a concurrent
+	// writer AFTER the lifecycle's read and BEFORE this CAS: the caller still
+	// sees an archived row going in, so it reaches the write, and the write
+	// still finds nothing to move. The call is counted first so a test can
+	// prove the CAS was actually reached rather than short-circuited earlier.
+	if m.resurrectLosesRace || s.ArchivedAt == nil {
+		return false, nil
 	}
 	s.ArchivedAt = nil
-	return nil
+	s.State = machine.State(newState)
+	if m.afterResurrectToState != nil {
+		m.afterResurrectToState(s)
+	}
+	return true, nil
+}
+
+// RollbackFailedResurrect mirrors the compensating CAS, including its guards:
+// the row must still be live and still wearing expectState, or the write is
+// skipped and the caller told it lost the race.
+func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rollbackCalls = append(m.rollbackCalls, mockRollbackCall{
+		id:           id,
+		archivedAt:   archivedAt,
+		restoreState: restoreState,
+		expectState:  expectState,
+	})
+	if m.rollbackErr != nil {
+		return false, m.rollbackErr
+	}
+	s, ok := m.sessions[id]
+	if !ok {
+		return false, fmt.Errorf("session %s not found", id)
+	}
+	if s.ArchivedAt != nil || s.State != machine.State(expectState) {
+		return false, nil
+	}
+	at := archivedAt
+	s.ArchivedAt = &at
+	s.State = machine.State(restoreState)
+	return true, nil
 }
 
 func (m *mockSessionStore) Delete(_ context.Context, id string) error {
@@ -503,6 +577,10 @@ type mockRepoStore struct {
 	// shared with the archive/poll goroutines some tests leave running, not
 	// because archiveSessionAfterMergeIfEnabled's own Get is detached (it runs
 	// on the caller's goroutine; only ArchiveSession is inside safego.Go).
+	// That safego.Go handle is no longer fire-and-forget: since BOS-923 it is
+	// handed to an ArchiveWorkerTracker so the daemon can join it at shutdown.
+	// The goroutine is still detached from the caller's ctx, so these tests must
+	// keep treating the store as concurrently read.
 	getCalls atomic.Int64
 }
 
@@ -1884,7 +1962,7 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 		if len(provider.createPRCalls) != 0 {
 			t.Fatalf("draft PR calls = %d, want 0", len(provider.createPRCalls))
 		}
-		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) != 0 {
+		if updates := sessions.updatesFor("worktree_path"); len(updates) != 0 {
 			t.Fatalf("worktree_path updates = %d, want 0", len(updates))
 		}
 		if len(sessions.updates) != 1 {
@@ -1932,7 +2010,7 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 		if got := runner.started[0].profile; got != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
 			t.Fatalf("claude headless start profile = %s, want unspecified", got)
 		}
-		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) == 0 {
+		if updates := sessions.updatesFor("worktree_path"); len(updates) == 0 {
 			t.Fatal("worktree_path update missing")
 		}
 	})
@@ -2048,7 +2126,7 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 		if len(provider.createPRCalls) != 0 {
 			t.Fatalf("draft PR calls = %d, want 0", len(provider.createPRCalls))
 		}
-		if updates := sessions.updatesFor("sess-1", "worktree_path"); len(updates) != 0 {
+		if updates := sessions.updatesFor("worktree_path"); len(updates) != 0 {
 			t.Fatalf("worktree_path updates = %d, want 0", len(updates))
 		}
 		if len(sessions.updates) != 1 {
@@ -3267,27 +3345,18 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 	}
 }
 
-// TestResurrectSessionClearsTerminalStateBeforeAgentStart pins the ordering the
-// BOS-697 merged-but-unarchived sweep depends on: ResurrectSession must leave
-// the terminal state in the same breath as clearing archived_at, before the
-// slow agent start.
-//
-// {archived_at NULL, state Merged} is exactly archiveMergedButUnarchived's
-// predicate, so a resurrect that left that shape standing across StartByAgent
-// would let the reconcile tick archive the session back out from under the
-// agent it is starting — and a StartByAgent failure would leave it wearing that
-// shape forever, so the sweep would undo the resurrect on the very next tick.
-//
-// The agent start is made to fail on purpose: that is what proves the state
-// write happened BEFORE it. With the write back in its old position (after the
-// start) this assertion goes red, because the row would still read Merged.
-func TestResurrectSessionClearsTerminalStateBeforeAgentStart(t *testing.T) {
-	ctx := context.Background()
+// newFailedResurrectFixture parks an archived, Merged session and a runner that
+// cannot start, which is the exact shape [P2] exists for: the un-archive has
+// landed, the agent start is about to fail, and nothing else will ever move the
+// row because a terminal state permits no lifecycle event.
+func newFailedResurrectFixture(t *testing.T) (*mockSessionStore, *mockRepoStore, *mockWorktreeManager, *mockAgentRunner, time.Time, error) {
+	t.Helper()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
-	cr.startErr = errors.New("agent start failed")
+	startErr := errors.New("agent start failed")
+	cr.startErr = startErr
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                              "repo-1",
@@ -3295,7 +3364,80 @@ func TestResurrectSessionClearsTerminalStateBeforeAgentStart(t *testing.T) {
 		ShouldArchiveSessionsAfterMerge: true,
 	}
 
-	archivedAt := time.Now()
+	archivedAt := time.Now().Add(-72 * time.Hour).UTC()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
+		BaseBranch:   "main",
+		State:        machine.Merged,
+		ArchivedAt:   &archivedAt,
+	}
+	return sessions, repos, wt, cr, archivedAt, startErr
+}
+
+// TestResurrectSessionRollsBackWhenAgentStartFails pins the [P2] contract.
+//
+// Before BOS-924 a failed start left the row live, agent-less and parked in
+// ImplementingPlan: the user saw an active session that was doing nothing, and
+// no retry was possible because ResurrectSession rejects a row that is no
+// longer archived. The compensating write must put the row back exactly where
+// the failed attempt found it — including the ORIGINAL archived_at, so the
+// session's trash age is not silently reset — and the start error must come
+// back unmasked.
+func TestResurrectSessionRollsBackWhenAgentStartFails(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr, archivedAt, startErr := newFailedResurrectFixture(t)
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	err := lc.ResurrectSession(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
+	}
+	if !errors.Is(err, startErr) {
+		t.Fatalf("error = %v, want it to wrap the start error unmasked", err)
+	}
+
+	got := sessions.sessions["sess-1"]
+	if got.ArchivedAt == nil {
+		t.Fatal("archived_at = nil after a failed resurrect, want the row re-archived")
+	}
+	if !got.ArchivedAt.Equal(archivedAt) {
+		t.Errorf("archived_at = %v, want the original %v; resetting it hides the session's trash age",
+			*got.ArchivedAt, archivedAt)
+	}
+	if got.State != machine.Merged {
+		t.Errorf("state = %v, want Merged (the pre-resurrect state)", got.State)
+	}
+
+	if len(sessions.rollbackCalls) != 1 {
+		t.Fatalf("rollback calls = %d, want exactly 1", len(sessions.rollbackCalls))
+	}
+	call := sessions.rollbackCalls[0]
+	if call.restoreState != int(machine.Merged) {
+		t.Errorf("restoreState = %d, want Merged (%d)", call.restoreState, int(machine.Merged))
+	}
+	if call.expectState != int(machine.ImplementingPlan) {
+		t.Errorf("expectState = %d, want ImplementingPlan (%d); swapping the two silently disables the rollback",
+			call.expectState, int(machine.ImplementingPlan))
+	}
+}
+
+// TestResurrectSessionWritesStateWithTheUnarchive proves the [P1] half: the
+// success path issues NO separate state Update. The agent-ID write still
+// happens after StartByAgent, so this asserts on the absence of a state write
+// rather than on a total update count.
+func TestResurrectSessionWritesStateWithTheUnarchive(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+	archivedAt := time.Now().UTC()
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:           "sess-1",
 		RepoID:       "repo-1",
@@ -3308,17 +3450,174 @@ func TestResurrectSessionClearsTerminalStateBeforeAgentStart(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 
-	if err := lc.ResurrectSession(ctx, "sess-1"); err == nil {
-		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
+	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("ResurrectSession: %v", err)
 	}
 
+	if stateWrites := sessions.updatesFor("state"); len(stateWrites) != 0 {
+		t.Fatalf("state Update calls = %d, want 0; the state must ride along with the un-archive",
+			len(stateWrites))
+	}
+	got := sessions.sessions["sess-1"]
+	if got.ArchivedAt != nil || got.State != machine.ImplementingPlan {
+		t.Fatalf("row = {archived_at %v, state %v}, want {nil, ImplementingPlan}", got.ArchivedAt, got.State)
+	}
+	if len(sessions.rollbackCalls) != 0 {
+		t.Fatalf("rollback calls = %d on the success path, want 0", len(sessions.rollbackCalls))
+	}
+}
+
+// TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace covers the ordering
+// hazard: if ResurrectToState itself returned false, this call never un-archived
+// anything, so compensating would re-archive a row some OTHER writer owns.
+func TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr, _, _ := newFailedResurrectFixture(t)
+
+	// The row is still archived when ResurrectSession reads it, so the
+	// top-of-function "not archived" guard passes and the call reaches the CAS
+	// — which is where the concurrent writer's un-archive is felt. This is the
+	// only way to reach the !resurrected branch: pre-clearing ArchivedAt would
+	// trip the earlier guard and never exercise it.
+	sessions.resurrectLosesRace = true
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	err := lc.ResurrectSession(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected ResurrectSession to fail when the resurrect CAS lost the race")
+	}
+	if !strings.Contains(err.Error(), "no longer archived") {
+		t.Fatalf("error = %v, want the lost-CAS error naming the un-archived row", err)
+	}
+	if sessions.resurrectToStateCalls != 1 {
+		t.Fatalf("ResurrectToState calls = %d, want 1; the test must reach the CAS, not an earlier guard",
+			sessions.resurrectToStateCalls)
+	}
+	if len(sessions.rollbackCalls) != 0 {
+		t.Fatalf("rollback calls = %d, want 0; nothing was un-archived to compensate for",
+			len(sessions.rollbackCalls))
+	}
+	if len(cr.started) != 0 {
+		t.Fatalf("agent starts = %d, want 0", len(cr.started))
+	}
+}
+
+// TestResurrectSessionLeavesRowAloneWhenRollbackMisses covers the CAS-miss
+// branch: a concurrent writer moved the row off ImplementingPlan before the
+// compensating write ran. The rollback must decline rather than stomp the
+// other writer's state, and the original start error must still surface.
+//
+// The Warn is asserted rather than assumed: leaving a live agent-less row
+// behind is only acceptable BECAUSE an operator can see which writer took it,
+// so the log line naming the observed state is part of the contract, not
+// decoration.
+func TestResurrectSessionLeavesRowAloneWhenRollbackMisses(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr, _, startErr := newFailedResurrectFixture(t)
+
+	// Move the row off ImplementingPlan the instant the resurrect lands, the
+	// way a concurrent writer would.
+	sessions.afterResurrectToState = func(s *models.Session) {
+		s.State = machine.AwaitingChecks
+	}
+
+	var logs bytes.Buffer
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.New(&logs))
+
+	err := lc.ResurrectSession(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
+	}
+	if !errors.Is(err, startErr) {
+		t.Fatalf("error = %v, want it to wrap the start error unmasked", err)
+	}
+	if len(sessions.rollbackCalls) != 1 {
+		t.Fatalf("rollback calls = %d, want exactly 1 (attempted and declined)", len(sessions.rollbackCalls))
+	}
 	got := sessions.sessions["sess-1"]
 	if got.ArchivedAt != nil {
-		t.Fatalf("archived_at = %v, want nil (the un-archive already landed)", got.ArchivedAt)
+		t.Errorf("archived_at = %v, want nil; a missed CAS must not stomp the other writer", got.ArchivedAt)
 	}
-	if got.State != machine.ImplementingPlan {
-		t.Fatalf("state = %v, want ImplementingPlan; a failed resurrect must not leave the "+
-			"merged-but-unarchived shape the reconcile sweep archives", got.State)
+	if got.State != machine.AwaitingChecks {
+		t.Errorf("state = %v, want AwaitingChecks (left untouched)", got.State)
+	}
+	line := logs.String()
+	if !strings.Contains(line, "rollback skipped") {
+		t.Errorf("logs = %q, want the skipped-rollback Warn", line)
+	}
+	if !strings.Contains(line, machine.AwaitingChecks.String()) {
+		t.Errorf("logs = %q, want it to name the observed state %v", line, machine.AwaitingChecks)
+	}
+}
+
+// TestResurrectSessionReturnsStartErrorWhenRollbackErrors pins the error
+// vocabulary: a rollback that itself fails is logged, not folded into the
+// returned error. Masking the start error with a rollback error would hide the
+// reason the resurrect failed in the first place.
+//
+// The Error line is asserted for the same reason its Warn sibling is, only more
+// so: this is the branch that leaves a live, agent-less row behind AND has a
+// database that is misbehaving, so swallowing the rollback error into a log
+// nobody wrote would make the worst outcome the quietest one.
+func TestResurrectSessionReturnsStartErrorWhenRollbackErrors(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr, _, startErr := newFailedResurrectFixture(t)
+	rollbackErr := errors.New("database is locked")
+	sessions.rollbackErr = rollbackErr
+
+	var logs bytes.Buffer
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.New(&logs))
+
+	err := lc.ResurrectSession(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
+	}
+	if !errors.Is(err, startErr) {
+		t.Fatalf("error = %v, want it to wrap the start error", err)
+	}
+	if errors.Is(err, rollbackErr) {
+		t.Fatalf("error = %v, want the start error unmasked by the rollback error", err)
+	}
+	line := logs.String()
+	if !strings.Contains(line, "rollback failed") {
+		t.Errorf("logs = %q, want the failed-rollback Error line", line)
+	}
+	if !strings.Contains(line, rollbackErr.Error()) {
+		t.Errorf("logs = %q, want it to carry the rollback error %v", line, rollbackErr)
+	}
+}
+
+// TestResurrectSessionReturnsResurrectError covers the remaining ResurrectToState
+// exit: the CAS did not merely lose, it failed. Nothing was un-archived, so no
+// agent may be started and nothing may be compensated -- the same shape as a lost
+// CAS, reached by a different door, and the store's error must come back wrapped
+// rather than flattened into the lost-race message.
+func TestResurrectSessionReturnsResurrectError(t *testing.T) {
+	ctx := context.Background()
+	sessions, repos, wt, cr, _, _ := newFailedResurrectFixture(t)
+	resurrectErr := errors.New("database is locked")
+	sessions.resurrectErr = resurrectErr
+
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+
+	err := lc.ResurrectSession(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected ResurrectSession to fail when the resurrect write errors")
+	}
+	if !errors.Is(err, resurrectErr) {
+		t.Fatalf("error = %v, want it to wrap the store error unmasked", err)
+	}
+	if len(sessions.rollbackCalls) != 0 {
+		t.Fatalf("rollback calls = %d, want 0; nothing was un-archived to compensate for",
+			len(sessions.rollbackCalls))
+	}
+	if len(cr.started) != 0 {
+		t.Fatalf("agent starts = %d, want 0", len(cr.started))
+	}
+	if got := sessions.sessions["sess-1"]; got.ArchivedAt == nil || got.State != machine.Merged {
+		t.Fatalf("row = {archived_at %v, state %v}, want it untouched at {set, Merged}",
+			got.ArchivedAt, got.State)
 	}
 }
 
@@ -6779,6 +7078,22 @@ func (f *fakeTmux) hasSubcommand(name string) bool {
 		}
 	}
 	return false
+}
+
+// subcommandCount reports how many times a tmux subcommand was invoked. Used
+// where presence is not enough and the exact count is the assertion — a
+// delivery that must happen exactly once, for instance, where a retry wrapped
+// around the wrong scope would show up as a second call.
+func (f *fakeTmux) subcommandCount(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c.subcommand == name {
+			n++
+		}
+	}
+	return n
 }
 
 // enterSendKeysCount reports how many recorded send-keys calls submit the

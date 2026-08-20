@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/99designs/keyring"
+	"github.com/rs/zerolog"
 )
 
 type testRefreshLock struct {
@@ -325,10 +327,18 @@ func TestKeychainTokenProviderRefreshRetainsRecordOnTerminalInvalidGrant(t *test
 	}
 }
 
-// TestKeychainTokenProviderRefreshMarksUnknownOutcome pins BOS-659's core
-// behavior: a refresh whose outcome could not be confirmed preserves the
-// identity, clears token material, records the ambiguous reason, and refuses
-// to retry even in an older binary that ignores the marker.
+// TestKeychainTokenProviderRefreshMarksUnknownOutcome pins what survives
+// BOS-941 of BOS-659's core behavior: once the replay budget is spent, a
+// refresh whose outcome could never be confirmed still preserves the identity,
+// clears token material, records the ambiguous reason, and refuses to dispatch
+// again even in an older binary that ignores the marker.
+//
+// The exchange counts here are maxAmbiguousDispatches rather than the 1 this
+// test asserted before BOS-941: the first unconfirmed dispatch is now replayed
+// inside WorkOS's grace window instead of flagging immediately. What the test
+// actually guards — that the DURABLE marker is final, across a later Refresh
+// and across a daemon restart — is unchanged, and both counts stay pinned so a
+// marked record replaying even once still fails here.
 func TestKeychainTokenProviderRefreshMarksUnknownOutcome(t *testing.T) {
 	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
 	var lockMu sync.Mutex
@@ -377,8 +387,8 @@ func TestKeychainTokenProviderRefreshMarksUnknownOutcome(t *testing.T) {
 	if !errors.Is(err, ErrRefreshOutcomeUnknown) {
 		t.Fatalf("second Refresh error = %v, want ErrRefreshOutcomeUnknown", err)
 	}
-	if got := atomic.LoadInt32(&exchanges); got != 1 {
-		t.Fatalf("WorkOS exchanges = %d, want exactly 1 (marked record must not be replayed)", got)
+	if got := atomic.LoadInt32(&exchanges); got != maxAmbiguousDispatches {
+		t.Fatalf("WorkOS exchanges = %d, want exactly %d (the spent replay budget, and not one more from the marked record)", got, maxAmbiguousDispatches)
 	}
 
 	// A daemon restart reloads the marked record: still no bearer token and
@@ -391,8 +401,340 @@ func TestKeychainTokenProviderRefreshMarksUnknownOutcome(t *testing.T) {
 	if _, err := restarted.Refresh(context.Background()); !errors.Is(err, ErrRefreshOutcomeUnknown) {
 		t.Fatalf("reloaded Refresh error = %v, want ErrRefreshOutcomeUnknown", err)
 	}
-	if got := atomic.LoadInt32(&exchanges); got != 1 {
-		t.Fatalf("WorkOS exchanges after reload = %d, want exactly 1", got)
+	if got := atomic.LoadInt32(&exchanges); got != maxAmbiguousDispatches {
+		t.Fatalf("WorkOS exchanges after reload = %d, want exactly %d", got, maxAmbiguousDispatches)
+	}
+}
+
+// TestKeychainTokenProviderRefreshGraceWindowRecovery pins BOS-941's core
+// reversal. WorkOS keeps a 30s replay grace window in which re-presenting the
+// SAME refresh token returns the tokens it already rotated, idempotently
+// (workOSReplayGraceWindow). So an unconfirmed dispatch is a stall to ride
+// out, not a sign-out: dispatch 1 never confirms, dispatch 2 replays the same
+// token and succeeds, and the daemon recovers with no marker, no pause and no
+// `boss login`. Before BOS-941 dispatch 1 flagged the record terminally and no
+// second dispatch ever happened.
+func TestKeychainTokenProviderRefreshGraceWindowRecovery(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int
+	refreshWorkOSTokenFn = func(_ context.Context, _, refreshTok string) (*keychainTokens, error) {
+		calls++
+		if refreshTok != "old-refresh" {
+			t.Fatalf("dispatch %d used %q, want the SAME old-refresh replayed", calls, refreshTok)
+		}
+		switch calls {
+		case 1:
+			return nil, fmt.Errorf("%w: %w", ErrRefreshOutcomeUnknown, context.DeadlineExceeded)
+		case 2:
+			// The documented idempotent replay: WorkOS hands back the tokens
+			// it had already rotated for the dispatch whose response we lost.
+			return &keychainTokens{
+				AccessToken:  "rotated-access",
+				RefreshToken: "rotated-refresh",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}, nil
+		}
+		t.Fatalf("unexpected exchange attempt %d", calls)
+		return nil, nil
+	}
+
+	p := testProvider(ring.snapshot())
+	tok, err := p.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh error = %v, want the in-window replay to recover", err)
+	}
+	if tok != "rotated-access" {
+		t.Fatalf("Refresh token = %q, want rotated-access", tok)
+	}
+	if calls != 2 {
+		t.Fatalf("WorkOS exchanges = %d, want exactly 2 (the original plus one replay)", calls)
+	}
+	saved := ring.snapshot()
+	if saved == nil {
+		t.Fatal("a recovered refresh removed the keychain record")
+	}
+	if saved.NeedsRelogin || saved.ReloginReason != "" {
+		t.Fatalf("saved marker = (%v, %q), want a clean record after recovery", saved.NeedsRelogin, saved.ReloginReason)
+	}
+	if saved.AccessToken != "rotated-access" || saved.RefreshToken != "rotated-refresh" {
+		t.Fatalf("saved record = %+v, want the rotated tokens persisted", saved)
+	}
+	if saved.Email != "dave@example.com" {
+		t.Fatalf("saved email = %q, want the retained identity", saved.Email)
+	}
+	if reason := p.ReloginReason(); reason != "" {
+		t.Fatalf("provider relogin reason = %q, want none", reason)
+	}
+}
+
+// TestWorkOSReplayBudgetFitsGraceWindow is the static half of BOS-941's
+// design: the replay budget is a COUNT with no wall-clock check, and it is
+// only safe because the worst-case elapsed time is an arithmetic property of
+// three constants. Pure arithmetic, no mocks — it exists so that raising
+// workOSRefreshTimeout back toward the old 30s, or raising the dispatch count,
+// fails here instead of silently pushing every replay outside the window where
+// WorkOS still answers idempotently.
+func TestWorkOSReplayBudgetFitsGraceWindow(t *testing.T) {
+	worst := time.Duration(maxAmbiguousDispatches) * workOSRefreshTimeout
+	if worst >= workOSReplayGraceWindow {
+		t.Fatalf("worst-case replay span = %v (%d x %v), want strictly less than the %v WorkOS grace window",
+			worst, maxAmbiguousDispatches, workOSRefreshTimeout, workOSReplayGraceWindow)
+	}
+}
+
+// TestKeychainTokenProviderRefreshReplayBudgetExhaustionIsTerminal pins the
+// other end of the budget from the grace-window recovery above: when every
+// dispatch goes unconfirmed the provider must stop at exactly
+// maxAmbiguousDispatches, replaying the SAME token each time, and then fail
+// closed once — one marker write, credentials cleared, identity retained.
+// Without the exact count an off-by-one either wastes a dispatch outside the
+// window or drops the recovery this ticket exists to add.
+func TestKeychainTokenProviderRefreshReplayBudgetExhaustionIsTerminal(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	loadKeychainTokensFn = ring.load
+	var saves int
+	saveKeychainTokensFn = func(tokens *keychainTokens) error {
+		saves++
+		return ring.save(tokens)
+	}
+
+	var calls int
+	refreshWorkOSTokenFn = func(_ context.Context, _, refreshTok string) (*keychainTokens, error) {
+		calls++
+		if refreshTok != "old-refresh" {
+			t.Fatalf("dispatch %d used %q, want the SAME old-refresh replayed", calls, refreshTok)
+		}
+		return nil, fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown)
+	}
+
+	p := testProvider(ring.snapshot())
+	if _, err := p.Refresh(context.Background()); !errors.Is(err, ErrRefreshOutcomeUnknown) {
+		t.Fatalf("Refresh error = %v, want ErrRefreshOutcomeUnknown once the budget is spent", err)
+	}
+	if calls != maxAmbiguousDispatches {
+		t.Fatalf("WorkOS exchanges = %d, want exactly %d", calls, maxAmbiguousDispatches)
+	}
+	if saves != 1 {
+		t.Fatalf("keychain saves = %d, want exactly 1 (one marker write, not one per replay)", saves)
+	}
+	saved := ring.snapshot()
+	if saved == nil {
+		t.Fatal("budget exhaustion deleted the keychain record")
+	}
+	if !saved.NeedsRelogin || saved.ReloginReason != reloginReasonRefreshOutcomeUnknown {
+		t.Fatalf("saved marker = (%v, %q), want (true, %q)", saved.NeedsRelogin, saved.ReloginReason, reloginReasonRefreshOutcomeUnknown)
+	}
+	if saved.AccessToken != "" || saved.RefreshToken != "" {
+		t.Fatalf("saved record = %+v, want cleared token material", saved)
+	}
+	if saved.Email != "dave@example.com" {
+		t.Fatalf("saved email = %q, want the retained identity", saved.Email)
+	}
+}
+
+// TestKeychainTokenProviderRefreshReplayEmitsWarnPerReplay pins the
+// observability half of BOS-941. The replay budget is invisible in production
+// unless each replay says so: a sign-out preceded by two replay lines is an
+// exhausted budget, one with none is an authoritative rejection, and a recovery
+// leaves the replay lines as the only trace that a stall was ridden out at all.
+//
+// It also guards the seam the warning rides on. logRefreshReplay reads the
+// logger off the CONTEXT (zerolog.Ctx), so a Refresh call site that forgets
+// Logger.WithContext degrades to zerolog's disabled logger and drops every
+// line with no error, no panic and no failing test. That is a silent
+// regression by construction, so assert the fields rather than the call.
+func TestKeychainTokenProviderRefreshReplayEmitsWarnPerReplay(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int
+	refreshWorkOSTokenFn = func(context.Context, string, string) (*keychainTokens, error) {
+		calls++
+		// A reused pooled connection that then timed out — the half-open
+		// signature the enumerated fields exist to make greppable.
+		return nil, withRefreshFailure(refreshFailureTimeout, true,
+			fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown))
+	}
+
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf)
+	ctx := logger.WithContext(context.Background())
+
+	p := testProvider(ring.snapshot())
+	if _, err := p.Refresh(ctx); !errors.Is(err, ErrRefreshOutcomeUnknown) {
+		t.Fatalf("Refresh error = %v, want ErrRefreshOutcomeUnknown", err)
+	}
+	if calls != maxAmbiguousDispatches {
+		t.Fatalf("WorkOS exchanges = %d, want exactly %d", calls, maxAmbiguousDispatches)
+	}
+
+	var replays []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q is not JSON: %v", line, err)
+		}
+		if _, ok := entry["refresh_replay"]; ok {
+			replays = append(replays, entry)
+		}
+	}
+
+	// One warn per REPLAY, not per dispatch: the terminal dispatch is not a
+	// replay about to happen, and logReloginPause already reports it.
+	if want := maxAmbiguousDispatches - 1; len(replays) != want {
+		t.Fatalf("replay warnings = %d, want exactly %d\nlog:\n%s", len(replays), want, buf.String())
+	}
+	for i, entry := range replays {
+		if entry["level"] != "warn" {
+			t.Errorf("replay %d level = %v, want warn", i+1, entry["level"])
+		}
+		if got, want := entry["refresh_replay"], float64(i+1); got != want {
+			t.Errorf("replay index = %v, want %v (indices must run 1..N in order)", got, want)
+		}
+		if got := entry["refresh_failure_class"]; got != string(refreshFailureTimeout) {
+			t.Errorf("replay %d refresh_failure_class = %v, want %q", i+1, got, refreshFailureTimeout)
+		}
+		if got := entry["conn_reused"]; got != true {
+			t.Errorf("replay %d conn_reused = %v, want true", i+1, got)
+		}
+	}
+}
+
+// TestKeychainTokenProviderRefreshPostGraceReplayIsTerminalAndLabelled covers
+// the outcome the grace window does not save: the replay lands after WorkOS
+// has already rotated the token out from under it, so WorkOS answers
+// authoritatively. That must be terminal at exactly 2 dispatches — the replay
+// is not retried against an answer — and it must persist
+// refresh_outcome_unknown rather than refresh_token_rejected, because the
+// unconfirmed dispatch we made is what consumed the token. Before BOS-941 that
+// labelling was reachable only through a cross-daemon race (see
+// TestKeychainTokenProviderRefreshKeepsPendingUnknownReason); now one daemon
+// reaches it on its own.
+func TestKeychainTokenProviderRefreshPostGraceReplayIsTerminalAndLabelled(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int
+	refreshWorkOSTokenFn = func(_ context.Context, _, refreshTok string) (*keychainTokens, error) {
+		calls++
+		if refreshTok != "old-refresh" {
+			t.Fatalf("dispatch %d used %q, want the SAME old-refresh replayed", calls, refreshTok)
+		}
+		switch calls {
+		case 1:
+			return nil, fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown)
+		case 2:
+			return nil, fmt.Errorf("refresh failed (HTTP 400): %w", ErrRefreshTokenAlreadyExchanged)
+		}
+		t.Fatalf("unexpected exchange attempt %d", calls)
+		return nil, nil
+	}
+
+	p := testProvider(ring.snapshot())
+	_, err := p.Refresh(context.Background())
+	if !errors.Is(err, ErrAuthExpired) {
+		t.Fatalf("Refresh error = %v, want a terminal ErrAuthExpired", err)
+	}
+	if calls != 2 {
+		t.Fatalf("WorkOS exchanges = %d, want exactly 2 — an authoritative answer ends the replay", calls)
+	}
+	saved := ring.snapshot()
+	if saved == nil {
+		t.Fatal("a post-grace replay deleted the keychain record")
+	}
+	if !saved.NeedsRelogin || saved.ReloginReason != reloginReasonRefreshOutcomeUnknown {
+		t.Fatalf("saved marker = (%v, %q), want (true, %q) — our own unconfirmed dispatch consumed the token",
+			saved.NeedsRelogin, saved.ReloginReason, reloginReasonRefreshOutcomeUnknown)
+	}
+	if saved.AccessToken != "" || saved.RefreshToken != "" {
+		t.Fatalf("saved record = %+v, want cleared token material", saved)
+	}
+}
+
+// TestKeychainTokenProviderRefreshRejectedTokenGetsNoReplayBudget is the
+// negative half of the reversal, and the reason the replay lives lexically
+// inside the ErrRefreshOutcomeUnknown branch. An authoritative rejection is an
+// ANSWER, not a lost response: WorkOS has said this token is unusable, so
+// re-presenting it buys nothing and only delays the sign-out the user has to
+// act on. Exactly 1 dispatch, zero replays.
+func TestKeychainTokenProviderRefreshRejectedTokenGetsNoReplayBudget(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int
+	refreshWorkOSTokenFn = func(context.Context, string, string) (*keychainTokens, error) {
+		calls++
+		return nil, fmt.Errorf("refresh failed (HTTP 400): %w", ErrRefreshTokenRejected)
+	}
+
+	p := testProvider(ring.snapshot())
+	if _, err := p.Refresh(context.Background()); !errors.Is(err, ErrRefreshTokenRejected) {
+		t.Fatalf("Refresh error = %v, want ErrRefreshTokenRejected", err)
+	}
+	if calls != 1 {
+		t.Fatalf("WorkOS exchanges = %d, want exactly 1 — an authoritative rejection must not inherit the replay budget", calls)
+	}
+	saved := ring.snapshot()
+	if saved == nil {
+		t.Fatal("an authoritative rejection deleted the keychain record")
+	}
+	if !saved.NeedsRelogin || saved.ReloginReason != reloginReasonRefreshTokenRejected {
+		t.Fatalf("saved marker = (%v, %q), want (true, %q)", saved.NeedsRelogin, saved.ReloginReason, reloginReasonRefreshTokenRejected)
 	}
 }
 
@@ -964,6 +1306,13 @@ func TestKeychainTokenProviderRefreshDoesNotMarkFresherKeychainRecord(t *testing
 // recovery `continue`, and markNeedsRelogin's re-read. This test pins the
 // PROPERTY, so it stays green with either one alone; the sibling below
 // isolates the first by making the re-read fail.
+//
+// BOS-941 extended the scripted exchange from 2 attempts to 4. The supersede
+// adoption and the replay budget are separate counters, so the ambiguous
+// outcome on the adopted token is now replayed to exhaustion (attempts 2-4)
+// before it flags — which is precisely the property that would be lost if the
+// two shared one counter, and the reason this test scripts every dispatch and
+// pins the total rather than assuming it.
 func TestKeychainTokenProviderRefreshAmbiguousAfterStaleRecoveryClearsNewerToken(t *testing.T) {
 	var lockMu sync.Mutex
 	withTokenRefreshHooks(t, &lockMu)
@@ -997,9 +1346,11 @@ func TestKeychainTokenProviderRefreshAmbiguousAfterStaleRecoveryClearsNewerToken
 				t.Fatalf("seed newer record: %v", err)
 			}
 			return nil, fmt.Errorf("refresh failed (HTTP 400): %w", ErrRefreshTokenRejected)
-		case 2:
+		case 2, 3, 4:
+			// The adopted token now gets the full replay budget: the same
+			// newer-refresh re-presented until maxAmbiguousDispatches is spent.
 			if refreshTok != "newer-refresh" {
-				t.Fatalf("attempt 2 used %q, want newer-refresh", refreshTok)
+				t.Fatalf("attempt %d used %q, want newer-refresh", calls, refreshTok)
 			}
 			return nil, fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown)
 		}
@@ -1010,6 +1361,10 @@ func TestKeychainTokenProviderRefreshAmbiguousAfterStaleRecoveryClearsNewerToken
 	p := testProvider(&keychainTokens{AccessToken: "stale-access", RefreshToken: "stale-refresh", ExpiresAt: past})
 	if _, err := p.Refresh(context.Background()); !errors.Is(err, ErrRefreshOutcomeUnknown) {
 		t.Fatalf("Refresh error = %v, want ErrRefreshOutcomeUnknown", err)
+	}
+
+	if want := 1 + maxAmbiguousDispatches; calls != want {
+		t.Fatalf("exchange attempts = %d, want exactly %d (one supersede adoption plus the replay budget)", calls, want)
 	}
 
 	got := ring.snapshot()
@@ -1687,5 +2042,259 @@ func TestRefreshWorkOSTokenClassifiesUndispatchedAsDial(t *testing.T) {
 	}
 	if errors.Is(err, ErrAuthExpired) {
 		t.Fatalf("an undispatched exchange must stay retryable, got terminal: %v", err)
+	}
+}
+
+// TestKeychainTokenProviderRefreshAdoptedTokenRejectionKeepsRejectedReason
+// pins the token-identity half of the re-login reason override. `replays` is
+// loop-global and deliberately survives a supersede adoption, but `refreshTok`
+// does not, so a count-only override ("we replayed something, and this answer
+// is already-exchanged") mislabels the ordering scripted here: token A goes
+// unconfirmed and is replayed, a supersede adopts token B, and WorkOS then
+// reports B as already exchanged. Nothing ever replayed B — another daemon
+// consumed it — so refresh_token_rejected is the accurate reason, and
+// persisting refresh_outcome_unknown would tell the next reader a transient
+// stall signed them out when a credential race did.
+func TestKeychainTokenProviderRefreshAdoptedTokenRejectionKeepsRejectedReason(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "a-access",
+		RefreshToken: "token-a",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int
+	refreshWorkOSTokenFn = func(_ context.Context, _, refreshTok string) (*keychainTokens, error) {
+		calls++
+		switch calls {
+		case 1:
+			if refreshTok != "token-a" {
+				t.Fatalf("dispatch 1 used %q, want token-a", refreshTok)
+			}
+			// Unconfirmed: this is the dispatch that arms the replay.
+			return nil, fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown)
+		case 2:
+			if refreshTok != "token-a" {
+				t.Fatalf("dispatch 2 (the replay) used %q, want token-a", refreshTok)
+			}
+			// Another daemon rotated the shared record while we replayed, so
+			// the recovery branch adopts token-b. Its access token is already
+			// expired, so the loop must exchange rather than adopt wholesale.
+			if err := ring.save(&keychainTokens{
+				AccessToken:  "b-access",
+				RefreshToken: "token-b",
+				ExpiresAt:    past,
+				Email:        "dave@example.com",
+			}); err != nil {
+				t.Fatalf("seed newer record: %v", err)
+			}
+			return nil, fmt.Errorf("refresh failed (HTTP 400): %w", ErrRefreshTokenRejected)
+		case 3:
+			if refreshTok != "token-b" {
+				t.Fatalf("dispatch 3 used %q, want the adopted token-b", refreshTok)
+			}
+			// The adopted token was consumed by whoever rotated it — an answer
+			// about token-b, not about the unconfirmed exchange on token-a.
+			return nil, fmt.Errorf("refresh failed (HTTP 400): %w", ErrRefreshTokenAlreadyExchanged)
+		}
+		t.Fatalf("unexpected exchange attempt %d", calls)
+		return nil, nil
+	}
+
+	p := testProvider(&keychainTokens{AccessToken: "a-access", RefreshToken: "token-a", ExpiresAt: past})
+	if _, err := p.Refresh(context.Background()); !errors.Is(err, ErrRefreshTokenAlreadyExchanged) {
+		t.Fatalf("Refresh error = %v, want ErrRefreshTokenAlreadyExchanged", err)
+	}
+	if calls != 3 {
+		t.Fatalf("exchange attempts = %d, want exactly 3 (one replay, one supersede adoption, one rejection)", calls)
+	}
+
+	got := ring.snapshot()
+	if got == nil {
+		t.Fatal("the keychain record was removed")
+	}
+	if !got.NeedsRelogin {
+		t.Fatalf("stored marker = %v, want the record flagged", got.NeedsRelogin)
+	}
+	if got.ReloginReason != reloginReasonRefreshTokenRejected {
+		t.Fatalf("stored reason = %q, want %q: the replay was spent on token-a, and token-b was never re-presented by this loop",
+			got.ReloginReason, reloginReasonRefreshTokenRejected)
+	}
+}
+
+// TestKeychainTokenProviderRefreshDeadContextDoesNotSpendReplayBudget pins the
+// guard that keeps the caller's deadline from manufacturing a sign-out. The
+// replay budget is sized in wall-clock terms — maxAmbiguousDispatches whole
+// workOSRefreshTimeouts inside WorkOS's grace window — but every requestCtx is
+// derived from the caller's ctx, so a cancelled or nearly-expired parent
+// collapses the remaining dispatches to microseconds. They still classify as
+// AMBIGUOUS rather than transient, because net/http reports GotConn from the
+// idle pool before roundTrip observes the dead context, so without this guard a
+// shutdown or the startup refresh's 10s cap would burn the whole budget
+// instantly and write the durable marker that only an exhausted WorkOS
+// conversation should ever justify.
+func TestKeychainTokenProviderRefreshDeadContextDoesNotSpendReplayBudget(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	past := time.Now().Add(-time.Hour)
+	ring := &fakeKeychain{record: &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    past,
+		Email:        "dave@example.com",
+	}}
+	ring.install(t)
+
+	var calls int32
+	refreshWorkOSTokenFn = func(context.Context, string, string) (*keychainTokens, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, withRefreshFailure(refreshFailureTimeout, true,
+			fmt.Errorf("%w: context deadline exceeded", ErrRefreshOutcomeUnknown))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p := testProvider(ring.snapshot())
+	_, err := p.Refresh(ctx)
+	if err == nil {
+		t.Fatal("Refresh error = nil, want a non-terminal error")
+	}
+	if errors.Is(err, ErrAuthExpired) {
+		t.Fatalf("Refresh error = %v, want an error that does NOT compose with ErrAuthExpired: a dead caller context must leave the tick-level retry free to try again", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Refresh error = %v, want it to wrap context.Canceled", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("WorkOS exchanges = %d, want exactly 1: a dead context must not spend replays", got)
+	}
+
+	got := ring.snapshot()
+	if got == nil {
+		t.Fatal("the keychain record was removed")
+	}
+	if got.NeedsRelogin || got.ReloginReason != "" {
+		t.Fatalf("stored marker = (%v, %q), want an unflagged record", got.NeedsRelogin, got.ReloginReason)
+	}
+	if got.RefreshToken != "old-refresh" || got.AccessToken != "old-access" {
+		t.Fatalf("stored tokens = (%q, %q), want the credentials untouched", got.AccessToken, got.RefreshToken)
+	}
+}
+
+// TestLogRefreshReplayFallsBackWhenContextCarriesNoLogger pins the structural
+// guarantee that replaces a test no call site can supply. The replay warning is
+// read off the context (zerolog.Ctx), and zerolog answers a context with no
+// logger with a DISABLED one — so a Refresh call site that forgets
+// Logger.WithContext drops every replay line with no error, no panic and no
+// failing test. That already happened once on this branch, and it will keep
+// being possible: a call site added tomorrow cannot be covered by a test
+// written today. So the seam is made non-silent instead of merely watched — a
+// missing context logger costs the caller's component field, never the line.
+func TestLogRefreshReplayFallsBackWhenContextCarriesNoLogger(t *testing.T) {
+	var fallback bytes.Buffer
+	orig := replayWarnFallback
+	replayWarnFallback = &fallback
+	t.Cleanup(func() { replayWarnFallback = orig })
+
+	err := withRefreshFailure(refreshFailureTimeout, true,
+		fmt.Errorf("%w: dial timeout", ErrRefreshOutcomeUnknown))
+
+	// A context with no logger attached: the exact shape of a forgotten
+	// WithContext at a call site.
+	logRefreshReplay(context.Background(), 2, err)
+
+	entry := map[string]any{}
+	line := strings.TrimSpace(fallback.String())
+	if line == "" {
+		t.Fatal("no replay warning reached the fallback writer: the seam still fails silently")
+	}
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("fallback line %q is not JSON: %v", line, err)
+	}
+	if entry["level"] != "warn" {
+		t.Errorf("level = %v, want warn", entry["level"])
+	}
+	if got, want := entry["refresh_replay"], float64(2); got != want {
+		t.Errorf("refresh_replay = %v, want %v", got, want)
+	}
+	if got := entry["refresh_failure_class"]; got != string(refreshFailureTimeout) {
+		t.Errorf("refresh_failure_class = %v, want %q", got, refreshFailureTimeout)
+	}
+	if entry["conn_reused"] != true {
+		t.Errorf("conn_reused = %v, want true", entry["conn_reused"])
+	}
+
+	// The fallback must not shadow a caller that DID attach a logger: that
+	// logger carries the component field the sign-out line is read against.
+	fallback.Reset()
+	var attached bytes.Buffer
+	logger := zerolog.New(&attached)
+	logRefreshReplay(logger.WithContext(context.Background()), 1, err)
+	if attached.Len() == 0 {
+		t.Error("the context logger received nothing")
+	}
+	if fallback.Len() != 0 {
+		t.Errorf("the fallback also fired: %s", fallback.String())
+	}
+}
+
+// TestKeychainTokenProviderReloadResultReportsTheRead pins the distinction the
+// post-login instrumentation depends on: the cache after a reload does not say
+// whether the reload actually read anything, so ReloadResult reports the read
+// itself, with an enumerated class that never carries the underlying error.
+func TestKeychainTokenProviderReloadResultReportsTheRead(t *testing.T) {
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	cached := &keychainTokens{
+		AccessToken:  "cached-access",
+		RefreshToken: "cached-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	ok := testProvider(cached)
+	loadKeychainTokensFn = func() (*keychainTokens, error) { return cached, nil }
+	if got := ok.ReloadResult(); !got.ReadOK || got.ErrorClass != "" {
+		t.Fatalf("successful reload = %+v, want ReadOK with no error class", got)
+	}
+
+	unreadable := testProvider(cached)
+	loadKeychainTokensFn = func() (*keychainTokens, error) { return nil, errors.New("keychain locked") }
+	got := unreadable.ReloadResult()
+	if got.ReadOK || got.ErrorClass != ReloadErrorReadFailed {
+		t.Fatalf("unreadable reload = %+v, want a read_failed classification", got)
+	}
+	// The cache is deliberately preserved — which is exactly why the caller
+	// cannot infer the read outcome from it.
+	if unreadable.Token() != "cached-access" {
+		t.Fatalf("provider token = %q, want the cache preserved across a failed read", unreadable.Token())
+	}
+
+	deleted := testProvider(cached)
+	loadKeychainTokensFn = func() (*keychainTokens, error) { return nil, keyring.ErrKeyNotFound }
+	if got := deleted.ReloadResult(); got.ReadOK || got.ErrorClass != ReloadErrorRecordDeleted {
+		t.Fatalf("deleted reload = %+v, want a record_deleted classification", got)
+	}
+}
+
+// KeyringBackend names configuration, never credentials, and reports the
+// platform default when nothing is pinned.
+func TestKeyringBackendNamesTheResolvedBackend(t *testing.T) {
+	t.Setenv("BOSS_KEYRING_BACKEND", "")
+	if got := KeyringBackend(); got != "platform-default" {
+		t.Fatalf("KeyringBackend() = %q with no override, want platform-default", got)
+	}
+	t.Setenv("BOSS_KEYRING_BACKEND", "file")
+	if got := KeyringBackend(); got != "file" {
+		t.Fatalf("KeyringBackend() = %q with the file override, want file", got)
 	}
 }

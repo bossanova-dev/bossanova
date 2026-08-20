@@ -105,7 +105,17 @@ BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
 if [ -z "$BASE_BRANCH" ]; then
   CURRENT_BRANCH=$(git branch --show-current)
   UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's#^origin/##' || true)
-  BASE_BRANCH=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -Fvx HEAD | grep -Fvx "$CURRENT_BRANCH" | { if [ -n "$UPSTREAM_BRANCH" ]; then grep -Fvx "$UPSTREAM_BRANCH"; else cat; fi; } | while read -r branch; do base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue; git merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null && continue; printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"; done | sort -nr | awk 'NR == 1 {print $2}')
+  # `head -1 | cut` and not an `awk` field reference: a slash-command invocation rewrites every
+  # positional parameter in this body — a dollar sign followed by one digit — before any shell
+  # runs it, replacing each with nothing when the command was invoked without arguments. An awk
+  # program that selects a field then arrives with an empty print list, prints the whole line,
+  # and hands back a wrong branch at exit 0. (This comment spells no positional itself, or the
+  # substitution would eat the example too.) The `test -n` guard below covers the unrelated
+  # case: no candidate branch at all. One behavioural difference the rewrite does introduce:
+  # `head -1` exits as soon as it has the first line where awk consumed all of the input. This
+  # block sets no `pipefail`, so the substitution's status is unchanged today — but under a future
+  # `set -o pipefail` a SIGPIPE'd `sort` would fail it.
+  BASE_BRANCH=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -Fvx HEAD | grep -Fvx "$CURRENT_BRANCH" | { if [ -n "$UPSTREAM_BRANCH" ]; then grep -Fvx "$UPSTREAM_BRANCH"; else cat; fi; } | while read -r branch; do base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue; git merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null && continue; printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"; done | sort -nr | head -1 | cut -d' ' -f2)
   if [ -n "$BASE_BRANCH" ]; then echo "Using inferred git base branch: $BASE_BRANCH"; fi
 fi
 test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }

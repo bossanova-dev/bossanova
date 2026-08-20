@@ -20,7 +20,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/mod v0.39.0
 	golang.org/x/term v0.45.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (

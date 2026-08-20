@@ -159,36 +159,161 @@ func runLogin(cmd *cobra.Command) error {
 
 	ctx := context.Background()
 
-	if err := mgr.Login(ctx); err != nil {
+	verdict, err := mgr.Login(ctx)
+	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
-	status := mgr.Status()
-	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "login", status.Email)
 
-	// Notify daemon so it can connect upstream immediately.
-	notifyDaemonAuthChange("login")
-
-	if cloudURL := cloudURL(cmd); cloudURL != "" {
-		cloudAccess := resolveE2ECloudAccessClient()
-		if cloudAccess == nil {
-			token, err := mgr.AccessToken(ctx)
-			if err != nil {
-				return fmt.Errorf("access token: %w", err)
+	// The cloud gate needs a usable access token, so it only runs once the
+	// write has been verified. A denied gate still counts as a successful
+	// login for telemetry and for the daemon, exactly as it did before.
+	if verdict.Verified() {
+		if cloudURL := cloudURL(cmd); cloudURL != "" {
+			cloudAccess := resolveE2ECloudAccessClient()
+			if cloudAccess == nil {
+				token, err := mgr.AccessToken(ctx)
+				if err != nil {
+					return fmt.Errorf("access token: %w", err)
+				}
+				cloudAccess = client.NewRemote(cloudURL, token)
 			}
-			cloudAccess = client.NewRemote(cloudURL, token)
-		}
-		active := checkLoginCloudGateWithTelemetry(ctx, cloudAccess, os.Stdout, commandTelemetryClient(cmd))
-		if !active {
-			return nil
+			active := checkLoginCloudGateWithTelemetry(ctx, cloudAccess, cmd.OutOrStdout(), commandTelemetryClient(cmd))
+			if !active {
+				daemonNote := announceLoginSuccess(cmd, verdict.Email, notifyDaemonAuthChange)
+				writeDaemonLoginNote(cmd, daemonNote)
+				return nil
+			}
 		}
 	}
 
-	if status.Email != "" {
-		fmt.Printf("Logged in as %s\n", status.Email)
-	} else {
-		fmt.Println("Login successful!")
+	return renderLoginVerdict(cmd, verdict, verdict.Email, notifyDaemonAuthChange)
+}
+
+// announceLoginSuccess records the login for telemetry and nudges the daemon
+// so it can connect upstream immediately. Both are best-effort side effects
+// that only fire once the credential write has been verified.
+//
+// It returns the operator-facing note for whatever the daemon reported about
+// the credentials it reloaded, or "" when there is nothing to say. The note is
+// returned rather than printed here so each caller can emit it AFTER its own
+// success line: the login did succeed, and a warning printed above "Logged in
+// as ..." would read as though it had not.
+func announceLoginSuccess(cmd *cobra.Command, email string, notify func(string) *pb.NotifyAuthChangeResponse) string {
+	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "login", email)
+	if notify == nil {
+		return ""
 	}
-	return nil
+	return renderDaemonLoginVerdict(notify("login"))
+}
+
+// renderDaemonLoginVerdict turns the daemon's post-login verdict into one line
+// of operator-facing text, or "" when there is nothing worth saying.
+//
+// It is deliberately pure and total. Silence is the answer for nil (no daemon
+// running, remote mode, or the RPC failed) and for OUTCOME_UNSPECIFIED (an
+// older daemon, or one with no orchestrator configured) — an unknown verdict
+// must never be rendered as a reassurance the daemon did not give. It is also
+// the answer for OUTCOME_OK, which needs no commentary beyond the success line
+// the caller already printed.
+//
+// Nothing here interpolates credential material: the only value that reaches
+// the output is reloginReason, an enumerated persisted marker, and it is
+// funnelled through auth.ReloginReasonDescription rather than printed raw.
+func renderDaemonLoginVerdict(resp *pb.NotifyAuthChangeResponse) string {
+	if resp == nil {
+		return ""
+	}
+	switch resp.GetOutcome() {
+	case pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_FLAGGED:
+		// The reason arrives over the wire from a daemon this CLI does not
+		// version-lock, so it is matched against the reasons THIS binary
+		// knows and anything else renders without a cause. Handing an
+		// unrecognised (or empty) value to auth.ReloginReasonDescription
+		// would print "the stored refresh token was rejected" for it: that
+		// helper is total by design for in-process callers, whose input is
+		// always one of the two constants, and it must stay that way for
+		// them — so the narrowing belongs here, at the trust boundary, not
+		// in the helper. Reporting a specific cause the daemon never named
+		// is exactly the "unknown verdict rendered as a claim" this
+		// function's contract forbids.
+		switch resp.GetReloginReason() {
+		case auth.ReloginReasonRefreshOutcomeUnknown, auth.ReloginReasonRefreshTokenRejected:
+			return fmt.Sprintf(
+				"Warning: the daemon reloaded your credentials but they are still marked for re-login (%s), so background sync stays paused. Run `boss auth-status` for detail.",
+				auth.ReloginReasonDescription(resp.GetReloginReason()),
+			)
+		default:
+			return "Warning: the daemon reloaded your credentials but they are still marked for re-login, so background sync stays paused. Run `boss auth-status` for detail."
+		}
+
+	case pb.NotifyAuthChangeResponse_OUTCOME_CREDENTIALS_MISSING:
+		return "Warning: the daemon found no usable credentials after this login, so background sync stays paused. This usually means the daemon reads a different keyring backend than this CLI wrote to."
+
+	case pb.NotifyAuthChangeResponse_OUTCOME_REGISTER_FAILED:
+		// Deliberately says nothing about the credentials. This outcome also
+		// arrives when the daemon could not re-read the record at all and then
+		// failed to register with the stale cache, and "the daemon accepted
+		// your credentials" would be an assertion nothing verified. What the
+		// operator needs either way is the same: the register failed, and it
+		// retries on its own.
+		return "Note: the daemon could not reach the orchestrator to re-register after this login; it will retry in the background."
+
+	default:
+		return ""
+	}
+}
+
+// writeDaemonLoginNote emits a non-empty daemon note on stderr, leaving stdout
+// to carry only the login result itself so a caller piping stdout still gets a
+// clean answer.
+func writeDaemonLoginNote(cmd *cobra.Command, note string) {
+	if note == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), note)
+}
+
+// renderLoginVerdict turns a verification verdict into operator-facing output
+// and an exit code. It is the single seam the CLI's login reporting is tested
+// through: `notify` is injected so a test can drive daemon notifications and
+// their verdicts without a daemon, the login result prints to
+// cmd.OutOrStdout(), and the daemon's note prints to cmd.ErrOrStderr() — both
+// capturable. Only the enumerated outcome and reason are rendered — the
+// verdict's Err is never printed, because it may wrap a keyring error whose
+// text embeds record bytes.
+func renderLoginVerdict(cmd *cobra.Command, verdict auth.LoginVerification, email string, notify func(string) *pb.NotifyAuthChangeResponse) error {
+	out := cmd.OutOrStdout()
+
+	switch verdict.Outcome {
+	case auth.LoginVerified:
+		daemonNote := announceLoginSuccess(cmd, email, notify)
+		if email != "" {
+			_, _ = fmt.Fprintf(out, "Logged in as %s\n", email)
+		} else {
+			_, _ = fmt.Fprintln(out, "Login successful!")
+		}
+		// After the success line: the credential write DID land, and the
+		// daemon's complaint is about what it could then do with it.
+		writeDaemonLoginNote(cmd, daemonNote)
+		return nil
+
+	case auth.LoginVerifyInconclusive:
+		// The write may well have landed, so this still counts as a login for
+		// telemetry — but nothing downstream may assume a usable credential,
+		// so the daemon is not notified and no success line is printed.
+		captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "login", email)
+		_, _ = fmt.Fprintf(out, "%s\n", verdict.Note())
+		return nil
+
+	case auth.LoginVerifyRecordNotUpdated:
+		// Nothing was stored. No telemetry, no daemon notification, non-zero exit.
+		return fmt.Errorf("login: %s", verdict.Note())
+
+	default:
+		// A verdict that was never filled in means verification did not run.
+		// Report it rather than reporting a success nobody checked.
+		return fmt.Errorf("login: %s", verdict.Note())
+	}
 }
 
 func cloudURL(cmd *cobra.Command) string {
@@ -478,25 +603,56 @@ func runLogout(cmd *cobra.Command) error {
 	}
 	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "logout", status.Email)
 
-	// Notify daemon so it can disconnect upstream.
-	notifyDaemonAuthChange("logout")
+	// Notify daemon so it can disconnect upstream. Logout evaluates no
+	// credentials, so the daemon has no verdict to report and there is nothing
+	// to render.
+	_ = notifyDaemonAuthChange("logout")
 
 	fmt.Println("Logged out.")
 	return nil
 }
 
-// notifyDaemonAuthChange is a best-effort notification to the daemon.
-// Failures are ignored because the daemon may not be running.
-func notifyDaemonAuthChange(action string) {
-	socketPath, err := client.DefaultSocketPath()
+// notifyDaemonAuthChange is a best-effort notification to the daemon. Failures
+// are ignored because the daemon may not be running — but the daemon's verdict
+// on the credentials it reloaded is now returned rather than discarded, so a
+// login that leaves the daemon unable to work can say so.
+//
+// Every failure path returns nil, which renderDaemonLoginVerdict renders as
+// silence. That is the only safe default: "we could not ask" and "the daemon
+// said it is fine" must not produce the same reassuring output.
+func notifyDaemonAuthChange(action string) *pb.NotifyAuthChangeResponse {
+	socketPath, err := daemonAuthSocketPath()
 	if err != nil {
-		return
+		return nil
 	}
-	c := client.NewLocal(socketPath)
+	c := newDaemonAuthNotifier(socketPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = c.NotifyAuthChange(ctx, action)
+	resp, err := c.NotifyAuthChange(ctx, action)
+	if err != nil {
+		return nil
+	}
+	return resp
 }
+
+// daemonAuthNotifier is the sliver of the daemon client notifyDaemonAuthChange
+// actually uses. It exists so the two failure paths above — no socket path and
+// a failing RPC — are testable without a daemon; both are load-bearing,
+// because `boss login` must stay successful and silent when no daemon is
+// listening.
+type daemonAuthNotifier interface {
+	NotifyAuthChange(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error)
+}
+
+// Indirections for tests only; production wiring is the local daemon client.
+// Tests mutating these must not call t.Parallel(): they are shared mutable
+// package state (same convention as the mcp.go seams, see saveMcpSeams).
+var (
+	daemonAuthSocketPath  = client.DefaultSocketPath
+	newDaemonAuthNotifier = func(socketPath string) daemonAuthNotifier {
+		return client.NewLocal(socketPath)
+	}
+)
 
 func runAuthStatus(cmd *cobra.Command) error {
 	mgr, err := newAuthManager(cmd)

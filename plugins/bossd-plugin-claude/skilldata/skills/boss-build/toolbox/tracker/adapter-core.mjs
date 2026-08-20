@@ -127,6 +127,11 @@ export const OPTIONAL_TRACKER_CAPABILITIES = ['states']
 //      documented best-effort, and createLabel has no caller at all. Requiring them at
 //      LOAD time rejected otherwise-usable adapters over capabilities nothing depends on
 //      at CALL time.
+//   3. appendRelatedTo, the non-blocking counterpart to appendDependency. It is optional
+//      rather than required because a tracker may model only blocking links; a caller
+//      that wants a related edge and finds this op absent degrades to a note instead of
+//      failing the run, so requiring it would reject adapters over a capability whose
+//      absence is already handled at CALL time.
 //
 // The invariant for every entry here: an ABSENT optional op conforms, while a DECLARED
 // one is validated exactly as strictly as a required op (non-empty tool and summary) —
@@ -140,6 +145,7 @@ export const OPTIONAL_TRACKER_OPERATIONS = [
   'deletePlanAttachment',
   'extractImages',
   'createLabel',
+  'appendRelatedTo',
 ]
 
 // The stable, tracker-agnostic state roles the skills consume by name: the state a

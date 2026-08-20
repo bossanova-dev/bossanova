@@ -8,7 +8,7 @@ Manage the bossd daemon
 
 ### `boss daemon doctor`
 
-Diagnose the bossd daemon install: staged binary, LaunchAgent path, and macOS folder permissions
+Diagnose the bossd daemon: staged binary, LaunchAgent path, macOS folder permissions, and live upstream auth/registration state
 
 ### `boss daemon install [flags]`
 

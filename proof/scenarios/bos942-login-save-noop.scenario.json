@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "title": "BOS-942 — a credential save that silently stores nothing fails the login instead of printing 'Logged in as'",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_AUTH_E2E_EMAIL": "",
+      "BOSS_AUTH_E2E_LOGIN_EMAIL": "dave@example.com",
+      "BOSS_AUTH_E2E_LOGIN_SAVE_NOOP": "1"
+    }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Home offers [l]ogin, the device-code exchange succeeds, and the post-save read-back turns the silent no-op into a visible failure",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "[l]ogin",
+            "match": "normalized",
+            "label": "the fixture starts with no credential record, so Home offers sign-in"
+          },
+          "timeoutMs": 15000,
+          "caption": "No stored record: the empty BOSS_AUTH_E2E_EMAIL leaves the e2e store unseeded, so this is a plain signed-out board."
+        },
+        { "key": "l", "caption": "Open the login view and start the device-code flow." },
+        {
+          "waitFor": {
+            "text": "Your authentication code",
+            "match": "normalized",
+            "label": "the device-code exchange itself succeeds — the failure being proved is on the save, not the sign-in"
+          },
+          "timeoutMs": 15000,
+          "caption": "The WorkOS side is fine. Before BOS-942 that alone was enough to print 'Logged in as dave@example.com'."
+        },
+        {
+          "waitFor": {
+            "text": "Login failed",
+            "match": "normalized",
+            "label": "the poll returned a token pair and the store reported a successful save — and login still fails, because the read-back found nothing"
+          },
+          "timeoutMs": 20000,
+          "caption": "BOSS_AUTH_E2E_LOGIN_SAVE_NOOP stages the production shape: Save() returns nil and stores nothing."
+        },
+        {
+          "expect": [
+            {
+              "text": "credentials were not saved",
+              "match": "normalized",
+              "label": "the verdict is stated in the operator's terms, not as a raw keyring error"
+            },
+            {
+              "text": "no credential record was found after saving",
+              "match": "normalized",
+              "label": "the enumerated record_absent reason is rendered as prose — never a token, never a raw error string"
+            },
+            {
+              "text": "boss auth-status",
+              "match": "normalized",
+              "label": "the remedy names the command that shows what is actually stored"
+            },
+            {
+              "text": "[esc] back",
+              "match": "normalized",
+              "label": "the login view is on its error phase, not its success phase"
+            }
+          ],
+          "caption": "Failure, enumerated reason, and remedy are all on one frame — and 'Logged in as' is not."
+        }
+      ]
+    }
+  ]
+}

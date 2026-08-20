@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 
 	"github.com/recurser/bossalib/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/chatupload"
 	"github.com/recurser/bossd/internal/server"
+	"github.com/recurser/bossd/internal/upstream"
 )
 
 type sendChatMessageStub struct {
@@ -698,5 +700,239 @@ func TestChatUploadSenderMapsUnconfirmedToTheSentinel(t *testing.T) {
 	}
 	if errors.Is(err, chatupload.ErrDeliveryUnconfirmed) {
 		t.Fatal("an unwired sender must not report an unconfirmed delivery; the file would be retained for 24h")
+	}
+}
+
+// --- Post-login credential reload instrumentation (BOS-942) ---
+
+// fakeTokenReloader stages the three post-reload states NotifyLogin has to be
+// able to tell apart: a good read, a read that failed and left a stale cache
+// behind, and a good read of a flagged, blanked record.
+type fakeTokenReloader struct {
+	outcome       upstream.ReloadOutcome
+	token         string
+	expiresAt     time.Time
+	reloginReason string
+	reloads       int
+}
+
+func (f *fakeTokenReloader) ReloadResult() upstream.ReloadOutcome {
+	f.reloads++
+	return f.outcome
+}
+func (f *fakeTokenReloader) Token() string         { return f.token }
+func (f *fakeTokenReloader) ExpiresAt() time.Time  { return f.expiresAt }
+func (f *fakeTokenReloader) ReloginReason() string { return f.reloginReason }
+
+// CredentialVerdict mirrors the real provider's rule so these log-shape tests
+// stay consistent with the gate they now run through: a record is usable only
+// when it carries a token and no persisted re-login marker.
+func (f *fakeTokenReloader) CredentialVerdict() (bool, string) {
+	return f.reloginReason == "" && f.token != "", f.reloginReason
+}
+
+func notifyLoginLog(t *testing.T, provider authTokenReloader) string {
+	t.Helper()
+	var buf strings.Builder
+	adapter := &streamAuthAdapter{
+		tokenProvider: provider,
+		authState:     upstream.NewAuthState(),
+		logger:        zerolog.New(&buf),
+	}
+	// The error is deliberately ignored: these cases assert the SHAPE of the
+	// reload log line, and several of them stage credentials the BOS-945 gate
+	// now (correctly) rejects. The gate's own behaviour is covered in
+	// login_reregister_test.go.
+	_, _ = adapter.NotifyLogin(context.Background(), nil)
+	return buf.String()
+}
+
+func TestNotifyLogin_LogsASuccessfulReload(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeTokenReloader{
+		outcome:   upstream.ReloadOutcome{ReadOK: true},
+		token:     "daemon-access-token-fixture",
+		expiresAt: time.Now().Add(time.Hour),
+	}
+	got := notifyLoginLog(t, provider)
+
+	for _, want := range []string{
+		`"component":"auth-reload"`,
+		`"reload_read_ok":true`,
+		`"reload_error_class":""`,
+		`"token_present":true`,
+		`"keyring_backend":`,
+		`"expires_at":`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log missing %s\ngot: %s", want, got)
+		}
+	}
+	if provider.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", provider.reloads)
+	}
+	if strings.Contains(got, provider.token) {
+		t.Fatalf("log leaked the access token: %s", got)
+	}
+}
+
+// The ambiguity this instrumentation exists to remove: a read that failed
+// leaves the previous cache in place, so the cached token must not be
+// presented as the product of a fresh read.
+func TestNotifyLogin_LogsAFailedKeychainRead(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeTokenReloader{
+		outcome:   upstream.ReloadOutcome{ErrorClass: upstream.ReloadErrorReadFailed},
+		token:     "stale-cached-token-fixture",
+		expiresAt: time.Now().Add(-time.Hour),
+	}
+	got := notifyLoginLog(t, provider)
+
+	if !strings.Contains(got, `"reload_read_ok":false`) {
+		t.Errorf("a failed read must not report reload_read_ok=true\ngot: %s", got)
+	}
+	if !strings.Contains(got, `"reload_error_class":"`+upstream.ReloadErrorReadFailed+`"`) {
+		t.Errorf("log missing the enumerated error class\ngot: %s", got)
+	}
+	if strings.Contains(got, provider.token) {
+		t.Fatalf("log leaked the stale cached token: %s", got)
+	}
+}
+
+// A successful read of a flagged record is a different diagnosis from a failed
+// read, and the pair of fields has to say so.
+func TestNotifyLogin_LogsAFlaggedRecordAfterAGoodRead(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeTokenReloader{
+		outcome:       upstream.ReloadOutcome{ReadOK: true},
+		token:         "",
+		reloginReason: "refresh_outcome_unknown",
+	}
+	got := notifyLoginLog(t, provider)
+
+	for _, want := range []string{
+		`"reload_read_ok":true`,
+		`"token_present":false`,
+		`"relogin_reason":"refresh_outcome_unknown"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log missing %s\ngot: %s", want, got)
+		}
+	}
+}
+
+// A record that was deleted outright reports its own class, not the generic
+// read failure.
+func TestNotifyLogin_LogsADeletedRecord(t *testing.T) {
+	t.Parallel()
+
+	provider := &fakeTokenReloader{
+		outcome: upstream.ReloadOutcome{ErrorClass: upstream.ReloadErrorRecordDeleted},
+	}
+	got := notifyLoginLog(t, provider)
+
+	if !strings.Contains(got, `"reload_error_class":"`+upstream.ReloadErrorRecordDeleted+`"`) {
+		t.Errorf("log missing the record_deleted class\ngot: %s", got)
+	}
+}
+
+// TestStreamAuthAdapterAuthStateToleratesNilReceiver pins the typed-nil trap on
+// the AuthStateReporter seam. A nil *streamAuthAdapter stored in the interface
+// field is non-nil AS an interface, so server.GetAuthState's `== nil` local-only
+// check waves it through and calls the method. Before the guard that call
+// dereferenced a nil pointer and panicked inside the very RPC `boss daemon
+// doctor` uses to diagnose a wedged daemon.
+func TestStreamAuthAdapterAuthStateToleratesNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	// A typed nil in an interface reads as non-nil, so this value survives
+	// server.GetAuthState's `== nil` local-only check and gets called. That is
+	// the trap; the assertion below is that the call answers instead of
+	// panicking. (The `reporter != nil` property itself is a Go language
+	// guarantee, not this package's behaviour, so it is stated here rather
+	// than asserted — staticcheck can prove such a comparison constant.)
+	var adapter *streamAuthAdapter
+	var reporter server.AuthStateReporter = adapter
+
+	state := reporter.AuthState(context.Background())
+
+	if state != (server.DaemonAuthState{}) {
+		t.Fatalf("AuthState on a nil adapter = %+v, want the zero state", state)
+	}
+}
+
+// TestStreamAuthAdapterAuthStateReadsLiveSources is the positive half: the
+// nil-receiver guard must not have turned the reporter into a stub that always
+// answers "nothing known".
+func TestStreamAuthAdapterAuthStateReadsLiveSources(t *testing.T) {
+	t.Parallel()
+
+	authState := upstream.NewAuthState()
+	authState.MarkNeedsLogin()
+	tokens := upstream.NewSessionTokenHolder("session-token-fixture")
+	adapter := &streamAuthAdapter{
+		authState:     authState,
+		tokenProvider: &fakeTokenReloader{reloginReason: "refresh_token_rejected"},
+		sessionTokens: tokens,
+	}
+
+	state := adapter.AuthState(context.Background())
+
+	if !state.NeedsLogin {
+		t.Error("NeedsLogin = false while the live AuthState is marked")
+	}
+	if state.ReloginReason != "refresh_token_rejected" {
+		t.Errorf("ReloginReason = %q, want the provider's enumerated reason", state.ReloginReason)
+	}
+	if state.LastRegisteredAt.IsZero() {
+		t.Error("LastRegisteredAt is zero while the holder carries a seeded token")
+	}
+}
+
+// fakeStreamAuthSnapshotter stands in for *upstream.StreamClient so the one
+// adapter hop that carries the wedge clock is exercised without a live stream.
+type fakeStreamAuthSnapshotter struct {
+	snap upstream.AuthSnapshot
+}
+
+func (f *fakeStreamAuthSnapshotter) AuthSnapshot() upstream.AuthSnapshot { return f.snap }
+
+// TestStreamAuthAdapterAuthStateReportsStreamSnapshot covers the seam the test
+// above cannot: streamAuth is the ONLY producer of Connected and
+// AuthFailingSince, and every other adapter construction in this package
+// leaves it nil. Without this test both fields are asserted at their Go zero
+// values everywhere, so deleting the streamAuth branch outright would leave
+// the suite green while `boss daemon doctor` reported "signed in" on a daemon
+// that has been unable to authenticate for hours — the exact BOS-942 reading
+// the RPC exists to make impossible.
+func TestStreamAuthAdapterAuthStateReportsStreamSnapshot(t *testing.T) {
+	t.Parallel()
+
+	failingSince := time.Now().Add(-97 * time.Minute)
+	adapter := &streamAuthAdapter{
+		authState: upstream.NewAuthState(),
+		streamAuth: &fakeStreamAuthSnapshotter{snap: upstream.AuthSnapshot{
+			Connected:        true,
+			AuthFailingSince: failingSince,
+		}},
+	}
+
+	state := adapter.AuthState(context.Background())
+
+	if !state.Connected {
+		t.Error("Connected = false while the stream snapshot reports an open stream")
+	}
+	if !state.AuthFailingSince.Equal(failingSince) {
+		t.Errorf("AuthFailingSince = %v, want the stream snapshot's %v", state.AuthFailingSince, failingSince)
+	}
+	// The wedge shape the doctor's FAIL verdict is built on: an open stream is
+	// not evidence the credentials work, so Connected and AuthFailingSince
+	// must be able to be true and non-zero at the same time rather than one
+	// overwriting the other.
+	if state.NeedsLogin {
+		t.Error("NeedsLogin = true while the live AuthState is unmarked")
 	}
 }

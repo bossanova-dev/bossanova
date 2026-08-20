@@ -14,7 +14,7 @@ const NOTES_TEARDOWN =
 
 function withoutGeneratedHeader(skill) {
   return skill.replace(
-    /<!-- Generated from \.claude\/skills by make codex-skills\. Do not edit directly\. -->\n\n/,
+    /<!-- Generated\s+from \.claude\/skills\s+by\s+make\s+codex-skills\. Do\s+not\s+edit\s+directly\. -->\n\n/,
     '',
   )
 }

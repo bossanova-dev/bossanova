@@ -278,8 +278,15 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "get_session",
-		Description: "Get a single session by id.",
+		Name: "get_session",
+		// `state` and `last_check_state` were read as a push signal on a real
+		// epic run and moved a driver onto merge rails against a branch that
+		// still held only its bootstrap commit. A tool description is the only
+		// contract an agent caller ever reads, so the caveat lives here — one
+		// sentence plus the oracle, because this text is per-turn rent.
+		Description: "Get a session by id. `state`/`last_check_state` carry no push information: they move when " +
+			"the daemon re-polls existing checks, while the remote branch is unchanged. Push " +
+			"oracle (fetch first): `git rev-list --count origin/<base>..origin/<branch>`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.GetSession(ctx, args.ID)
@@ -304,8 +311,15 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "get_chat_statuses",
-		Description: "Get the live status of every chat in a session.",
+		Name: "get_chat_statuses",
+		// `last_output_at` reads as agent liveness and is not one: it advances
+		// on ANY pane change, and every chat first seen in one poll tick is
+		// seeded with the same instant. Name the three fields that DO
+		// discriminate rather than only warning about this one.
+		Description: "Live status of a session's chats. `last_output_at` is a floor, not liveness: any pane change " +
+			"advances it (a spinner redraw keeps it fresh) and chats seeded in one poll tick share an instant, " +
+			"so it can be identical across chats. Gate on `spinner_present`, `last_substantive_output_at`, " +
+			"`last_output_seeded`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionIDArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.GetChatStatuses(ctx, args.SessionID)
@@ -317,8 +331,15 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "get_session_statuses",
-		Description: "Get the best live status across chats for each of the given sessions.",
+		Name: "get_session_statuses",
+		// Aggregate-only by construction: SessionStatusEntry carries no
+		// timestamps at all. Say so, repeat the floor caveat because this is the
+		// tool a driver polling many sessions reaches for first, and leave the
+		// three discriminating field names to get_chat_statuses, which is where
+		// this points and the only place they can actually be read.
+		Description: "Best status across a session's chats; aggregate only — no `last_output_at`, no liveness fields. " +
+			"In `get_chat_statuses`, `last_output_at` is a floor, not liveness: a spinner redraw advances it " +
+			"and it can be identical across chats — use the liveness fields it returns.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionIDsArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.GetSessionStatuses(ctx, args.SessionIDs)
@@ -495,8 +516,22 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "list_notes",
-		Description: "List notes — durable free-text recorded against a repository so a later run can harvest what earlier ones learned — optionally filtered by repo, provenance, tags, or a body substring. Bodies are returned IN FULL: a note is not a secret, it is the payload it exists to carry. Every filter is optional: omit a filter you do not want applied, and a blank value is treated as omitted here — this tool leaves an empty string unset rather than forwarding it, so a blank repo_id, session_id or chat_id is ignored and does not narrow the result. tags matches notes carrying ANY of the listed tags (OR, not all-of) and is compared against the trimmed, lowercased form stored on write. search is a literal substring match on the body (SQL wildcards are matched literally; case folding is ASCII-only); blank means no search. limit zero or negative means unlimited. Give repo_id the daemon-local repo id list_repos/resolve_context return, not a git origin URL. Against the hosted gateway an omitted repo_id fans the list out across your reachable daemons and SKIPS any that are offline or slow, so an empty or short result is not proof no further notes exist.",
+		Name: "list_notes",
+		// Everything this description used to restate about the individual
+		// filters — tags is OR-not-all-of and normalised, search is a literal
+		// substring, limit<=0 is unlimited, repo_id is the daemon-local id and
+		// not an origin URL — is already carried, per argument, by the
+		// ListNotesArgs jsonschema tags below, which the caller reads in the same
+		// tool definition. Saying it twice doubles the per-turn rent for nothing.
+		// What is kept here is only what no single field can say: the tool's
+		// purpose, that bodies come back unredacted, and that a short hosted
+		// result is not evidence of absence.
+		Description: "List notes — durable free-text later runs can harvest — optionally filtered by repo, provenance, " +
+			"tags, or a body substring. " +
+			"Bodies are returned IN FULL: a note is not a secret, it is the payload it exists to carry. Every " +
+			"filter is optional; a blank value is treated as omitted. Against the " +
+			"hosted gateway an omitted repo_id fans the list out across your reachable daemons and SKIPS any " +
+			"that are offline or slow, so an empty or short result is not proof no further notes exist.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListNotesArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.ListNotesRequest{Tags: args.Tags, Limit: args.Limit}
@@ -528,8 +563,9 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "get_note",
-		Description: "Get a single note by id, including its body and normalised tags. The body is returned in full: unlike a callback or broadcast message it is not a secret, it is the payload the note exists to carry. " + noteRepoIDRouting,
+		Name: "get_note",
+		Description: "Get a single note by id, including its body and normalised tags. The body is returned in " +
+			"full — it is the payload the note exists to carry, not a secret. " + noteRepoIDRouting,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args GetNoteArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.GetNote(ctx, args.RepoID, args.ID)

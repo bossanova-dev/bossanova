@@ -28,6 +28,10 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 		<-ctx.Done()
 		return nil
 	}
+	// Carry the refresher's logger into Refresh so the provider's in-window
+	// replay warning lands in the daemon log with the same component field as
+	// the sign-out line it is meant to be read against (see logRefreshReplay).
+	ctx = c.logger.WithContext(ctx)
 
 	for {
 		select {
@@ -38,8 +42,28 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 
 		expiresAt := c.tokenProvider.ExpiresAt()
 		if expiresAt.IsZero() {
-			// Unknown expiry — skip. Don't treat as error; the caller
-			// may simply be using a static token for dev.
+			// Two very different daemons arrive at this same `continue`, and
+			// before BOS-944 both left the log identical — empty.
+			//
+			//  1. A dev/static-token daemon that simply has no expiry to
+			//     reason about. Nothing is wrong; stay silent forever.
+			//  2. A daemon whose provider was reloaded from a re-login-marked
+			//     record. applyTokensLocked suppresses the access token in
+			//     that case, so ExpiresAt() is zero for the opposite reason:
+			//     there are no usable credentials at all, and the refresher
+			//     will now skip every tick for the life of the process
+			//     without ever saying so.
+			//
+			// A sentinel rendered for two opposite causes is not a
+			// diagnostic, so split them on the enumerated relogin reason and
+			// say so once for case 2. Once per transition, not per tick: the
+			// refresher wakes every refreshInterval and this condition is
+			// permanent until `boss login`.
+			if reason := providerReloginReason(c.tokenProvider); reason != "" && c.noteZeroExpiry() {
+				c.logger.Warn().
+					Str("relogin_reason", reason).
+					Msg("upstream token has no expiry and the stored credentials are marked for re-login; refresh is idle until `boss login`")
+			}
 			continue
 		}
 		remaining := expiresAt.Sub(c.clock.Now())
@@ -62,10 +86,17 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 			// Marking also cancels the live stream through the needs-login
 			// watcher, so the pause is immediate rather than one tick late.
 			//
-			// This branch is unchanged and deliberately final: a terminal
-			// state is never retried here, because the one state that could
-			// benefit from a retry (ErrRefreshOutcomeUnknown) is precisely
-			// the one where replaying the refresh token is unsafe.
+			// This branch is final by the time it is reached, but NOT because
+			// replaying an unconfirmed exchange is unsafe. Re-presenting the
+			// same refresh token inside WorkOS's 30s replay grace window is the
+			// documented recovery — see workOSReplayGraceWindow and
+			// https://workos.com/docs/authkit/session-resilience — and refresh()
+			// has already spent that budget before it composes ErrAuthExpired.
+			// So an ErrRefreshOutcomeUnknown arriving here means
+			// maxAmbiguousDispatches dispatches all went unconfirmed; another
+			// retry at this level could only replay outside the window, where
+			// WorkOS answers authoritatively anyway. The retry that still belongs
+			// at this level is the transient one below (BOS-941, BOS-659).
 			if errors.Is(err, ErrAuthExpired) {
 				if c.authState != nil && c.authState.MarkNeedsLogin() {
 					logReloginPause(&c.logger, "", err)

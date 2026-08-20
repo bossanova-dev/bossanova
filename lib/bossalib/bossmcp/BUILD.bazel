@@ -31,6 +31,7 @@ go_test(
         "manifest_test.go",
         "tools_account_test.go",
         "tools_broadcast_test.go",
+        "tools_descriptions_test.go",
         "tools_destructive_test.go",
         "tools_githubcallback_test.go",
         "tools_merge_session_test.go",

@@ -165,15 +165,15 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | Tool                           | Description                                                                                |
 | ------------------------------ | ------------------------------------------------------------------------------------------ |
 | `list_sessions`                | List sessions, optionally filtered by repo, states, or archived flag                       |
-| `get_session`                  | Get a single session by id                                                                 |
+| `get_session`                  | Get a single session by id — `state`/`last_check_state` carry no push info, see below      |
 | `list_repos`                   | List every registered repository                                                           |
 | `list_repo_prs`                | List open pull requests for a repository                                                   |
 | `list_tracker_issues`          | List issues from an external tracker (Linear, Sentry)                                      |
 | `resolve_context`              | Resolve repo + session for a working directory                                             |
 | `validate_repo_path`           | Validate a local path is a usable git repo                                                 |
 | `list_chats`                   | List agent chats for a session                                                             |
-| `get_chat_statuses`            | Get live chat status for a session                                                         |
-| `get_session_statuses`         | Get best live status across chats for multiple sessions                                    |
+| `get_chat_statuses`            | Get live chat status for a session — `last_output_at` is a floor, see below                |
+| `get_session_statuses`         | Get best live status across chats for multiple sessions — aggregate only, see below        |
 | `list_check_snapshots`         | List recent CI check snapshots for a session                                               |
 | `repair_doctor`                | Run daemon repair-doctor diagnostics                                                       |
 | `list_agents`                  | List loaded agent-runner plugins                                                           |
@@ -197,11 +197,11 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 `agent_session_id`; set `wake_if_asleep: true` to wake the agent before delivery.
 
 The callback, broadcast, and note tool families each have their own guide:
-[GitHub callbacks](https://docs.bossanova.dev/guides/github-callbacks) covers
+[GitHub callbacks](./github-callbacks.md) covers
 `register_github_callback` / `list_github_callbacks` / `delete_github_callback`,
-[Broadcasts](https://docs.bossanova.dev/guides/broadcasts) covers `send_broadcast`,
+[Broadcasts](./broadcasts.md) covers `send_broadcast`,
 `register_broadcast_subscription`, and their list/delete counterparts, and
-[Notes](https://docs.bossanova.dev/guides/notes) covers `create_note`,
+[Notes](./notes.md) covers `create_note`,
 `update_note`, `list_notes`, `get_note`, and `delete_note`.
 
 ### Destructive — require `confirm: true` (14)
@@ -231,6 +231,63 @@ branch on.
 `detail` is **always empty on the hosted gateway path**. The orchestrator response
 behind the hosted endpoint carries only the session, so the note cannot cross the
 remote boundary — only the local `bin/mcp` server reports it.
+
+## What the status values mean (and do not)
+
+Three values on the status tools have each been read, in a live run, as a signal
+they do not carry. The tool descriptions state this too — an agent caller never
+sees this page — but the reasoning only fits here.
+
+### `get_session`: `state` and `last_check_state` carry no push information
+
+A `state` transition, and a `last_check_state` appearing where there was none,
+both fire when the daemon re-polls CI checks that already exist. Neither says a
+commit reached the remote. On one epic run this fired once per child while every
+branch still held only its bootstrap commit, and the driver evaluated merge rails
+against an effectively empty branch.
+
+The push oracle is the remote itself:
+
+```bash
+git fetch --quiet origin
+git rev-list --count origin/<base>..origin/<branch> 2>/dev/null || echo 0   # 0 = nothing pushed
+```
+
+Keep the guard. Before the first push there is no `origin/<branch>` at all, and
+`git rev-list` then exits non-zero with empty output instead of printing `0` —
+that error is also "nothing pushed", not an unreadable oracle.
+
+### `last_output_at` is a floor, not liveness
+
+`get_chat_statuses.last_output_at` is the last time the captured pane **changed**
+— any change at all. A spinner's elapsed-time counter redrawing once a second
+keeps it perpetually fresh, so an advancing `last_output_at` is nearly as
+uninformative as a frozen one: it cannot tell productive work from a wedged loop,
+and it cannot tell either from an agent sitting inside an awaited subagent that
+emits nothing to the parent pane.
+
+It is also **not unique per chat**. Every chat first observed in one poll tick is
+seeded with that tick's single `now`, so the value can be identical to the
+nanosecond across every chat in every session for a dozen cycles before diverging.
+A staleness comparison written against it can therefore never pass.
+
+Use the fields that do discriminate, all on `ChatStatusEntry`:
+
+| Field                        | What it tells you                                                 |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `spinner_present`            | the pane is rendering a spinner right now — the agent is mid-turn |
+| `last_substantive_output_at` | last pane change that was **not** just a spinner redraw           |
+| `last_output_seeded`         | this timestamp is the poller's seed value, not an observed change |
+
+A chat is **settled** when its status is `IDLE` or `STOPPED` across two
+consecutive polls with `spinner_present` false — not when `last_output_at` looks
+stale.
+
+### `get_session_statuses` is aggregate only
+
+`SessionStatusEntry` carries `session_id`, `status` and `waiting_reason` and no
+timestamps at all, and the roll-up hides which chat won. Use `get_chat_statuses`
+for anything per-chat.
 
 ## Hosted MCP
 

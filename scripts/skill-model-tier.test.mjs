@@ -157,9 +157,11 @@ for (const site of ROUTED) {
       )
 
       // 5. an escalate/revert sentence naming Opus. The inter-word gaps are `\s+`, not literal
-      // spaces: these are prose paragraphs that prettier reflows on any neighbouring edit, so a
-      // literal-space pattern goes red the moment "revert to Opus" happens to wrap across a line
-      // — a false failure about formatting, not about the escalate contract being absent.
+      // spaces: these are prose paragraphs, and their line breaks move. Prettier is not the one
+      // moving them (`.prettierrc` leaves `proseWrap` at `preserve`) — an author or an agent
+      // rewrapping the paragraph is. Either way a literal-space pattern goes red the moment
+      // "revert to Opus" happens to wrap across a line — a false failure about formatting, not
+      // about the escalate contract being absent. See docs/skills/README.md for the rule.
       assert.match(
         body,
         /Escalate\s+contract/,

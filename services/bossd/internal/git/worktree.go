@@ -159,6 +159,238 @@ func isNonFastForwardGitOutput(err error) bool {
 	return false
 }
 
+// ErrRefLockContended is returned by a fetch that could not update a
+// remote-tracking ref because another git process moved the same ref while this
+// one was writing it. It is RETRYABLE and the request was never invalid: the
+// only reason the fetch failed is that a concurrent writer won the race, and
+// fetchWithRefLockRetry has already spent a bounded ladder losing it. A caller
+// that surfaces this should say "try again", not "this failed" — which is why
+// createSessionConnectError maps it to connect.CodeUnavailable rather than
+// leaving it in the CodeInternal bucket with genuine failures.
+var ErrRefLockContended = errors.New("concurrent git updated the same remote-tracking ref")
+
+// isRefLockContentionGitOutput reports whether a git error is the loss of a race
+// to write a remote-tracking ref: another git process — a second daemon profile,
+// a human shell, an agent worktree, or one of this package's own ungated
+// fetches — moved refs/remotes/origin/<base> between this fetch's read and its
+// write. git says:
+//
+//	error: cannot lock ref 'refs/remotes/origin/main': is at <sha> but expected <sha>
+//	 ! <old>..<new>  main -> origin/main  (unable to update local ref)
+//
+// Both halves are matched because which one surfaces depends on the refspec
+// form: git prints the first on stderr and the second in the ref-update summary,
+// and a fetch can carry either one alone.
+//
+// The needles are deliberately narrow, for the reason isNonFastForwardGitOutput
+// above spells out. A bare "lock" also names index.lock and shallow.lock
+// failures, which are a wedged repository rather than a lost race and must
+// surface immediately; a bare "rejected" names tag clobbers and hook refusals.
+// Matching either would spend two silent retries on a genuine failure and then
+// label it retryable at the RPC boundary — telling the caller to re-run
+// something that can never succeed.
+//
+// "cannot lock ref" is narrow but not narrow enough on its own: git reuses that
+// same prefix for ref-lock failures that are permanent, and those land in
+// exactly the wedged-repository class the paragraph above says must surface
+// immediately. refLockTerminalReasons subtracts them back out.
+//
+// This answers a question about TEXT, and text is not enough on its own: the
+// runners append git's raw stderr to a context-attributed error, so a fetch
+// killed mid-walk can carry a real contention line for a ref it really was
+// racing on. Ask ctx.Err() BEFORE asking this — fetchWithRefLockRetry does, and
+// any other caller must too.
+func isRefLockContentionGitOutput(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	matched := false
+	for _, needle := range []string{
+		"cannot lock ref",
+		"unable to update local ref",
+	} {
+		if strings.Contains(msg, needle) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	for _, reason := range refLockTerminalReasons {
+		if strings.Contains(msg, reason) {
+			return false
+		}
+	}
+	return true
+}
+
+// refLockTerminalReasons are the reasons git gives for a ref-lock failure that
+// no amount of retrying can clear. They are subtracted from the needle match
+// above because the cost of getting this wrong is not the 200ms of retries — it
+// is that createSessionConnectError then answers CodeUnavailable, telling the
+// caller to re-run a request that will fail identically every time, and burying
+// the operator action (delete the stale .lock, rename the conflicting branch,
+// fix the permissions) under a retry loop.
+//
+// Lowercase, because the message is lowercased before matching.
+//
+//   - "unable to create directory" — the refs/ tree cannot be extended, which is
+//     a permissions or disk problem rather than a busy neighbour.
+//   - "exists; cannot create" / "there are still refs under" / "non-empty
+//     directory" / "at the same time" — a directory/file conflict between ref
+//     names (refs/remotes/origin/foo against refs/remotes/origin/foo/bar), from
+//     the ref backend or from the transaction that spotted both in one fetch.
+//     Permanent until one of the two branches is renamed or pruned, which is why
+//     it is worth naming here: slash-bearing branch names make it reachable.
+//   - "permission denied" — an ownership or mode problem on the refs tree.
+//   - "unable to resolve reference" / "reference broken" — the ref file exists
+//     but cannot be read as a ref: corrupt content, or a symref loop. Cleared by
+//     `git update-ref -d` or a re-clone, never by a retry.
+//
+// Deliberately NOT on this list: EEXIST on the ref's own lockfile,
+//
+//	cannot lock ref 'refs/remotes/origin/main': Unable to create
+//	'.../refs/remotes/origin/main.lock': File exists.
+//
+// It reads like a wedged repository and it was on this list for one round, but
+// it is the OPPOSITE case. Losing at lock acquisition is a wider window than
+// losing at value verification, so this — not "is at X but expected Y" — is the
+// likeliest way two concurrent fetches for the same remote-tracking ref
+// actually collide, which is the collision this whole ladder exists to absorb.
+// git's own advice under that message is to try again. A lock genuinely left
+// behind by a crashed process is the rarer reading, and it costs 200ms of
+// retries before surfacing — as CodeUnavailable, which is still what git tells
+// the operator to do.
+//
+// None of these can appear inside a refname, so none can be triggered by a
+// branch that happens to be called something unfortunate: every entry contains a
+// space, and git refnames forbid spaces.
+//
+// One property worth knowing: the match runs over the WHOLE message, and `fetch
+// --prune origin` (SyncBaseBranch) reports every ref it touched at once. A
+// terminal failure on some unrelated branch in the same message therefore
+// suppresses the retry for a genuine race on refs/remotes/origin/<base>
+// reported alongside it. That direction is safe — it degrades to the
+// pre-BOS-747 behaviour of surfacing immediately as CodeInternal, never to a
+// wrong success. The four single-refspec sites are far less exposed, though not
+// immune: fetch still auto-follows tags, so their summaries can name more than
+// the one ref that was asked for.
+var refLockTerminalReasons = []string{
+	"unable to create directory",
+	"exists; cannot create",
+	"there are still refs under",
+	"non-empty directory",
+	"at the same time",
+	"permission denied",
+	"unable to resolve reference",
+	"reference broken",
+}
+
+// gitRunFn is the shape shared by runGit and runGitRemote.
+// fetchWithRefLockRetry takes one rather than hard-coding either, so every fetch
+// site keeps the runner it already had: the remote-transport ladder BOS-876
+// applied to FetchBase and CountMergeCommits stays exactly where it was applied,
+// and the sites deliberately left on plain runGit are not widened into it as a
+// side effect of this change.
+type gitRunFn func(ctx context.Context, dir string, args ...string) (string, error)
+
+// refLockRetryBackoff is the wait before each retry, and its LENGTH is the retry
+// budget: two entries, so at most two retries and three attempts in all.
+//
+// The sizing follows from what the failure means. The losing fetch failed
+// BECAUSE the winner already succeeded, so a retry is a re-read of a ref that
+// has just settled — not a wait for a long operation to finish. Tens of
+// milliseconds is the right order, and the whole ladder (200ms) stays far inside
+// GitCommandTimeout so it can never be the reason a caller's budget runs out.
+//
+// A var so a test can zero the waits instead of sleeping through them; keep two
+// entries when doing so, or the test quietly changes the retry count too.
+var refLockRetryBackoff = []time.Duration{50 * time.Millisecond, 150 * time.Millisecond}
+
+// fetchWithRefLockRetry runs a fetch through run, retrying only the lost-race
+// signature isRefLockContentionGitOutput classifies. Every other failure — a
+// missing branch, a bad repo, a full disk — is returned from the first attempt
+// untouched, so this can never turn a real error into a delay.
+//
+// # Nesting under runGitRemote is bounded and disjoint
+//
+// Two call sites pass runGitRemote, so this ladder wraps another one. Neither
+// ladder ever retries the other's failures, because their classifiers are
+// disjoint. gitremote's transient set is argued entirely about the REMOTE
+// (nothing was negotiated, or re-running converges); a ref-lock failure is local
+// contention over refs/remotes/origin/<base> with a perfectly healthy remote, so
+// gitremote classifies it terminal and returns after ONE attempt on exactly the
+// failures this ladder retries. The converse holds too: a transport failure is
+// not ref-lock contention, so this ladder returns it as soon as gitremote is
+// done, adding no attempts of its own.
+//
+// Disjointness does NOT bound the product, though, and it is worth being exact
+// about that rather than claiming a 3-attempt cap this code does not have. A
+// MIXED failure sequence compounds the two ladders today: an inner gitremote
+// ladder can spend two transport retries and then fail on ref-lock contention,
+// which is the one error the outer helper retries — into a fresh inner ladder.
+// The real worst case is 3 outer attempts x 3 inner ones = 9 git invocations.
+//
+// What makes that acceptable rather than a bug is the WAITS, which are the only
+// part these ladders add: ~4s per inner ladder (1s and 3s, +/-20% jitter) and
+// 200ms across the outer one, so under a minute of sleeping in the worst case.
+// The ATTEMPTS themselves are not bounded by anything this file computes — an
+// attempt that hangs costs GitCommandTimeout, so nine of them is a wall clock
+// measured in tens of minutes, exactly as runGitRemote's own doc says of its
+// three. What bounds the nest is the caller's context, which both ladders treat
+// as authoritative; do not read the multiplication above as a time budget.
+// Anything that raises either attempt count should re-run it first.
+//
+// On exhaustion the returned error wraps ErrRefLockContended AND the last git
+// failure, so errors.Is finds the sentinel while the raw git text a human needs
+// to read survives.
+func fetchWithRefLockRetry(ctx context.Context, dir string, run gitRunFn, args ...string) (string, error) {
+	for attempt := 0; ; attempt++ {
+		out, err := run(ctx, dir, args...)
+		if err == nil {
+			return out, nil
+		}
+		// A failure that arrived with the context already ended is NOT a lost
+		// race, whatever its stderr says, and asking the classifier first would
+		// be wrong twice over. runGitWithTimeout appends git's raw stderr to the
+		// context error, and `fetch --prune origin` walks refs one at a time and
+		// reports each as it goes — so a fetch killed mid-flight can already
+		// have printed "cannot lock ref" for some ref it genuinely was racing
+		// on. The needle then matches an error whose actual cause is the
+		// deadline. That would spend the whole ladder re-running git against a
+		// context that cancels every attempt instantly, and then hand the caller
+		// CodeUnavailable: retry a call your own context already ended. Return
+		// the runner's error untouched instead — both runners wrap the context
+		// error with %w, so errors.Is(err, context.DeadlineExceeded) still holds
+		// for whoever is deciding how loudly to log this.
+		if ctx.Err() != nil {
+			return "", err
+		}
+		if !isRefLockContentionGitOutput(err) {
+			return "", err
+		}
+		if attempt >= len(refLockRetryBackoff) {
+			return "", fmt.Errorf("%w: %w", ErrRefLockContended, err)
+		}
+		select {
+		case <-ctx.Done():
+			// Ended mid-backoff, after a genuine contention match. The race was
+			// real, but it is no longer the actionable fact: the caller is gone,
+			// and labelling this ErrRefLockContended would answer CodeUnavailable
+			// — "try again" — to something that ended because the caller stopped
+			// asking. Lead with the context error so errors.Is finds
+			// Canceled/DeadlineExceeded, and keep git's message behind it so the
+			// race is still legible in the log. context.Cause reports the
+			// cancellation reason where one was attached, and falls back to
+			// ctx.Err() where none was.
+			return "", fmt.Errorf("%w: %w", context.Cause(ctx), err)
+		case <-time.After(refLockRetryBackoff[attempt]):
+		}
+	}
+}
+
 // ErrMergeConflict is returned by MergeLocalBranch when the local merge
 // cannot proceed without conflict resolution. The caller should surface this
 // so the user can resolve the conflict by hand; boss never auto-resolves.
@@ -2895,7 +3127,10 @@ func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) er
 	// remote branches (e.g. the session branch `gh pr merge --delete-branch`
 	// just removed) are dropped, and refs/remotes/origin/<base> reflects the
 	// merged tip so new worktrees branch from it. Never touches the working tree.
-	if _, err := runGit(ctx, localPath, "fetch", "--prune", "origin"); err != nil {
+	// Routed through fetchWithRefLockRetry because this runs on the post-merge
+	// path — concurrently, by design, with a Create for a new session on the same
+	// clone — and both write refs/remotes/origin/<base>.
+	if _, err := fetchWithRefLockRetry(ctx, localPath, runGit, "fetch", "--prune", "origin"); err != nil {
 		return fmt.Errorf("fetch --prune origin: %w", err)
 	}
 
@@ -2911,6 +3146,14 @@ func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) er
 		// touching the working tree. `fetch origin <base>:<base>` refuses any
 		// non-fast-forward, so a diverged local base is rejected rather than
 		// rewritten.
+		//
+		// The ONE fetch in this file deliberately NOT routed through
+		// fetchWithRefLockRetry. It writes refs/heads/<base>, not the contended
+		// refs/remotes/origin/<base>, and its failure is already classified
+		// below by isNonFastForwardGitOutput into the deferred-sync state
+		// machine (warn, clear the pending sync, return nil). Adding a second
+		// classify-and-retry ahead of that would decide the branch's fate twice
+		// and could hold a fetch open across the deferral bookkeeping.
 		if _, ferr := runGit(ctx, localPath, "fetch", "origin", base+":"+base); ferr != nil {
 			if isNonFastForwardGitOutput(ferr) {
 				m.warnDivergedBase(localPath, base)
@@ -3052,7 +3295,7 @@ func (m *Manager) FetchBase(ctx context.Context, localPath, base string) error {
 		return fmt.Errorf("local path is required")
 	}
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
-	if _, err := runGitRemote(ctx, localPath, "fetch", "origin", refspec); err != nil {
+	if _, err := fetchWithRefLockRetry(ctx, localPath, runGitRemote, "fetch", "origin", refspec); err != nil {
 		return fmt.Errorf("fetch origin/%s: %w", base, err)
 	}
 	return nil
@@ -3082,7 +3325,7 @@ func (m *Manager) CountMergeCommits(ctx context.Context, localPath, base, head s
 
 	headRef := "refs/remotes/origin/" + head
 	headRefspec := "+refs/heads/" + head + ":" + headRef
-	if _, err := runGitRemote(ctx, localPath, "fetch", "origin", headRefspec); err != nil {
+	if _, err := fetchWithRefLockRetry(ctx, localPath, runGitRemote, "fetch", "origin", headRefspec); err != nil {
 		if !branchExists(ctx, localPath, head) {
 			return 0, fmt.Errorf("head branch %q not found locally or on origin: %w", head, err)
 		}
@@ -3703,7 +3946,7 @@ func (m *Manager) MergeLocalBranch(ctx context.Context, localPath, base, head, s
 	// origin is fine (local-only repo).
 	originURL, _ := m.DetectOriginURL(ctx, localPath)
 	if originURL != "" {
-		if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
+		if _, err := fetchWithRefLockRetry(ctx, localPath, runGit, "fetch", "origin", base); err != nil {
 			return fmt.Errorf("fetch origin/%s: %w", base, err)
 		}
 		if hasRef(ctx, localPath, "refs/remotes/origin/"+base) {
@@ -3869,7 +4112,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	// remote branch is missing, callers may fall back to creating from a local
 	// branch, so do not clear any existing path until this succeeds.
 	fetchStarted := time.Now()
-	if _, err := runGit(ctx, opts.RepoPath,
+	if _, err := fetchWithRefLockRetry(ctx, opts.RepoPath, runGit,
 		"fetch", "origin",
 		"+refs/heads/"+opts.BranchName+":refs/remotes/origin/"+opts.BranchName,
 	); err != nil {

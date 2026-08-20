@@ -18,6 +18,19 @@ import {
   findUndefinedDocumentedTargets,
 } from './check-doc-make-targets.mjs'
 
+// Run `check` with console.error captured, so a test can assert on the exact
+// failure text the guard prints rather than only on its boolean verdict.
+function captureStderr(run) {
+  const lines = []
+  const originalError = console.error
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    return { result: run(), stderr: lines.join('\n') }
+  } finally {
+    console.error = originalError
+  }
+}
+
 test('extractDocumentedTargets pulls targets from fenced code blocks', () => {
   const doc = ['```bash', 'make deps', 'make build   # comment', '```'].join('\n')
 
@@ -44,9 +57,9 @@ test('extractDocumentedMakeInvocations records -C directories for following targ
   )
 
   assert.deepEqual(extractDocumentedMakeInvocations(doc), [
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint' },
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test' },
-    { directory: 'docs', makefile: 'docs/Makefile', target: 'build' },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint', line: 2 },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test', line: 2 },
+    { directory: 'docs', makefile: 'docs/Makefile', target: 'build', line: 3 },
   ])
 })
 
@@ -59,8 +72,8 @@ test('extractDocumentedMakeInvocations records alternate makefiles for following
   ].join('\n')
 
   assert.deepEqual(extractDocumentedMakeInvocations(doc), [
-    { directory: '.', makefile: 'scripts/Makefile', target: 'lint' },
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test' },
+    { directory: '.', makefile: 'scripts/Makefile', target: 'lint', line: 2 },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test', line: 3 },
   ])
 })
 
@@ -68,8 +81,8 @@ test('extractDocumentedMakeInvocations records attached short option values', ()
   const doc = ['```bash', 'make -Cscripts lint', 'make -fscripts/Makefile test', '```'].join('\n')
 
   assert.deepEqual(extractDocumentedMakeInvocations(doc), [
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint' },
-    { directory: '.', makefile: 'scripts/Makefile', target: 'test' },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint', line: 2 },
+    { directory: '.', makefile: 'scripts/Makefile', target: 'test', line: 3 },
   ])
 })
 
@@ -83,9 +96,9 @@ test('extractDocumentedMakeInvocations preserves alternate makefiles when -C app
   ].join('\n')
 
   assert.deepEqual(extractDocumentedMakeInvocations(doc), [
-    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'alt' },
-    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'lint' },
-    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'test' },
+    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'alt', line: 2 },
+    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'lint', line: 3 },
+    { directory: 'scripts', makefile: 'scripts/Alt.mk', target: 'test', line: 4 },
   ])
 })
 
@@ -98,11 +111,40 @@ test('extractDocumentedMakeInvocations applies global make options to earlier ta
   ].join('\n')
 
   assert.deepEqual(extractDocumentedMakeInvocations(doc), [
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint' },
-    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test' },
-    { directory: '.', makefile: 'scripts/Makefile', target: 'lint' },
-    { directory: '.', makefile: 'scripts/Makefile', target: 'test' },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'lint', line: 2 },
+    { directory: 'scripts', makefile: 'scripts/Makefile', target: 'test', line: 2 },
+    { directory: '.', makefile: 'scripts/Makefile', target: 'lint', line: 3 },
+    { directory: '.', makefile: 'scripts/Makefile', target: 'test', line: 3 },
   ])
+})
+
+test('extractDocumentedMakeInvocations reports the 1-based source line of each target', () => {
+  const doc = [
+    '# Heading', // 1
+    '', // 2
+    'Prose mentioning `make lint` in an inline span.', // 3
+    '', // 4
+    '```bash', // 5
+    'make build', // 6
+    'make test-boss test-bossd', // 7
+    '```', // 8
+  ].join('\n')
+
+  assert.deepEqual(extractDocumentedMakeInvocations(doc), [
+    { directory: '.', makefile: 'Makefile', target: 'lint', line: 3 },
+    { directory: '.', makefile: 'Makefile', target: 'build', line: 6 },
+    { directory: '.', makefile: 'Makefile', target: 'test-boss', line: 7 },
+    { directory: '.', makefile: 'Makefile', target: 'test-bossd', line: 7 },
+  ])
+})
+
+test('extractDocumentedTargets still returns a bare Set of target names', () => {
+  const doc = ['```bash', 'make deps', '```', '', 'Then run `make lint`.'].join('\n')
+
+  const targets = extractDocumentedTargets(doc)
+
+  assert.ok(targets instanceof Set)
+  assert.deepEqual([...targets].sort(), ['deps', 'lint'])
 })
 
 test('extractDocumentedTargets pulls targets from inline code spans', () => {
@@ -338,7 +380,120 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
     'Run `make test`, then `make ghost`.\n',
   )
 
-  assert.equal(checkDocMakeTargets(repoRoot), false)
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.ok(
+    stderr.includes('services/boss/internal/skillinstall/skills/demo/SKILL.md:1: make ghost'),
+    `expected the offending doc and line in the failure message, got:\n${stderr}`,
+  )
+})
+
+test('checkDocMakeTargets names the offending doc and line for an undefined target', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  fs.mkdirSync(path.join(repoRoot, 'docs'))
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
+  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
+  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  fs.writeFileSync(
+    path.join(repoRoot, 'docs', 'build-and-ci.md'),
+    [
+      '# Build and CI', // 1
+      '', // 2
+      'Some prose.', // 3
+      '', // 4
+      '```bash', // 5
+      'make test', // 6
+      'make nope', // 7
+      '```', // 8
+      '',
+    ].join('\n'),
+  )
+
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.ok(
+    stderr.includes('docs/build-and-ci.md:7: make nope'),
+    `expected the offending doc and line in the failure message, got:\n${stderr}`,
+  )
+})
+
+test('checkDocMakeTargets sorts offenders by doc, then line numerically, then target', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  fs.mkdirSync(path.join(repoRoot, 'docs'))
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  fs.writeFileSync(
+    path.join(repoRoot, 'AGENTS.md'),
+    [
+      '# Agents', // 1
+      'Inline `make omega` here.', // 2
+      '',
+    ].join('\n'),
+  )
+  // Two offenders in one doc, on lines 2 and 10: a lexicographic sort of the
+  // rendered strings would put `:10:` before `:2:`, so this pair is what pins
+  // the numeric line comparison.
+  fs.writeFileSync(
+    path.join(repoRoot, 'CLAUDE.md'),
+    [
+      '# Claude', // 1
+      'Inline `make zeta` here.', // 2
+      '', // 3
+      'filler', // 4
+      'filler', // 5
+      'filler', // 6
+      'filler', // 7
+      'filler', // 8
+      '```bash', // 9
+      'make alpha', // 10
+      '```', // 11
+      '',
+    ].join('\n'),
+  )
+  // Two offenders sharing one line, emitted in the reverse of their sorted
+  // order, so the target tie-break is pinned too.
+  fs.writeFileSync(
+    path.join(repoRoot, 'README.md'),
+    [
+      '# Readme', // 1
+      '', // 2
+      '```bash', // 3
+      'make delta beta', // 4
+      '```', // 5
+      '',
+    ].join('\n'),
+  )
+  // Alphabetically last but scanned last as well, so this doc alone cannot
+  // distinguish sorted output from emission order — AGENTS.md above is the one
+  // that does, being scanned second and sorted first.
+  fs.writeFileSync(
+    path.join(repoRoot, 'docs', 'build-and-ci.md'),
+    [
+      '# Build and CI', // 1
+      '', // 2
+      'Inline `make gamma` here.', // 3
+      '',
+    ].join('\n'),
+  )
+
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.equal(
+    stderr,
+    [
+      'Docs reference make targets that the Makefile does not define:',
+      '  - AGENTS.md:2: make omega',
+      '  - CLAUDE.md:2: make zeta',
+      '  - CLAUDE.md:10: make alpha',
+      '  - README.md:4: make beta',
+      '  - README.md:4: make delta',
+      '  - docs/build-and-ci.md:3: make gamma',
+      'Update the docs or the Makefile so documented commands stay runnable.',
+    ].join('\n'),
+  )
 })
 
 test('checkDocMakeTargets passes when skill docs only use defined targets', () => {

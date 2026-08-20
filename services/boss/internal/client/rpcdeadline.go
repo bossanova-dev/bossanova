@@ -112,6 +112,16 @@ const slowDeadlineRatio = 4
 // direction — every member is still ceilinged by the daemon's own 120s
 // http.Server WriteTimeout — so when in doubt, add the RPC.
 //
+// Deliberately NOT a member: DaemonServiceGetAuthState (BOS-944). It reads
+// in-memory daemon state under a mutex — no network, no subprocess, no
+// keychain — so the 30s default is already orders of magnitude more than it
+// needs. Granting it the slow bound would be strictly worse than harmless
+// here: `boss daemon doctor` calls it precisely when the daemon is suspected
+// of being wedged, and the whole value of the check is that a non-answering
+// daemon fails fast enough to be reported as a finding rather than hanging the
+// doctor. The exclusion is recorded here because an omission from this map is
+// otherwise silent.
+//
 // This is a SET rather than a procedure→duration map on purpose: a map of
 // durations is populated once at package-var initialisation, so a later
 // reassignment of slowRPCDeadline (the e2e override, or a test) would leave

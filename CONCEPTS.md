@@ -68,6 +68,16 @@ The shared signal telling every reverse stream whether the daemon's credential i
 
 AuthState is edge-triggered in both directions: a logout cancels any in-flight stream immediately rather than at the next reconnect, and a later login wakes the paused streams. The two transitions are distinct observable signals — seeing "needs login" is what lets a clean logout be told apart from a stream failure, so an intentional pause is not logged or backed off as if it were an error.
 
+### LoginVerification
+
+The three-outcome verdict `boss login`'s save path returns after reading the credential record back inside the same lock it just wrote under, so a keychain that reports a successful write can no longer be trusted at face value. Outcomes are `LoginVerified` (the read-back matches the login just performed), `LoginVerifyRecordNotUpdated` (the read-back proves the record does not reflect it — absent, still flagged for re-login, missing a token, or holding a different access token), and `LoginVerifyInconclusive` (the read-back itself could not complete — a keychain that hung past the shared lock-acquisition timeout, an undecryptable record, or a cancelled context). The outcome enum's zero value is a deliberately invalid "verification never ran" sentinel, so a caller that forgets to set it cannot be mistaken for a verified login. Both the CLI and the TUI gate their "Logged in" success path on this one verdict rather than each deriving its own from the save call's error alone.
+
+### Login verdict
+
+The daemon's own answer to "did that login actually leave me able to talk upstream?", produced after it reloads credentials in response to a login notification and returned to the CLI so a login can no longer report an unqualified success while the daemon stays parked. Distinct from **LoginVerification**, which is the CLI-side read-back proving the record was written: the login verdict is about whether the credentials the daemon subsequently loaded are usable by the daemon.
+
+The verdict is an enumerated non-secret outcome plus, only when the record was flagged, the enumerated re-login reason — never token material. Its outcomes separate causes that have opposite remedies: usable credentials with the auth gate cleared; a record still carrying a persisted re-login marker; a record with neither a token nor a marker, meaning the login's credentials never reached this process; and clean credentials whose gate was cleared but whose proactive re-register failed, which is reported rather than fatal because the reactive path remains the backstop. The outcome's zero value means "nothing was evaluated" — what a logout, an absent notifier, or a daemon too old to have a verdict reports — and it must render as silence rather than as a false success, so a newer CLI against an older daemon degrades to saying nothing instead of claiming an OK the daemon never gave.
+
 ## Chat / session status
 
 ### Liveness signal
@@ -92,6 +102,20 @@ single predicate shared by every reader of a marker — liveness is consumed on 
 path, so a rule fixed on one path leaves the others asserting the old answer. For the same
 reason a terminator grammar is written for the lifecycle question specifically, never borrowed
 from a classifier built to answer a different one about the same lines.
+
+### Activity floor
+
+A status timestamp that records when a chat's captured surface last changed _at all_, rather than
+when the agent last did work. It is a lower bound and nothing more: a spinner repainting its elapsed
+counter advances it indefinitely, so it cannot separate a working chat from a stalled one, and a chat
+first observed during a poll tick is stamped with that tick's single instant, so a whole session's
+chats can carry an identical floor with no observation behind any of them.
+
+A floor answers "nothing has happened since" and never "something is happening now". A rail needing
+the latter reads a **Liveness signal**, together with the separate markers a poller keeps for
+substantive output and for a still-unobserved seed. Because the collision case makes a staleness
+comparison unsatisfiable rather than merely wrong, a rail built on a floor fails as a silent stall,
+which is indistinguishable from ordinary waiting.
 
 ### usage-limited
 
@@ -164,6 +188,52 @@ immediately before writing rather than trusting one it read earlier.
 The rule is scoped to title writes. It says nothing about deletion: a chat can still be reaped whole
 on other evidence, and a real name does not by itself protect the row.
 
+### Archive
+
+The terminal state of a session whose work has landed: its isolated workspace is released and the
+row is stamped as closed, so the session stops being offered as something to resume. Archiving is
+normally automatic — the daemon archives a session once its change is merged, without anyone asking
+— which means it is triggered by an external event rather than by a user action, and can begin at
+any moment, including while the daemon is shutting down.
+
+Archiving is destructive before it is durable: the workspace is released first and the closed stamp
+written last, so an archive cut off midway leaves a row that still reads as active pointing at a
+workspace that is gone. That is the same partial-failure ordering hazard the **Pane pointer** states,
+with the opposite resolution available — the steps cannot be reordered, so the archive is instead
+joined to shutdown and waited out as a **Drain**, on the far side of the wait that proves the things
+which start archives have stopped.
+
+An archive is also started by a periodic repair pass, for sessions whose change merged while the
+automatic trigger was unreachable. That pass selects on a _combination_ of fields rather than an
+explicit marker — no closed stamp, and a merged state — so the combination is a shape no other writer
+may be caught wearing, and one that is only safe to act on if the row is re-read immediately before
+the archive is dispatched rather than trusted from the list the pass began with.
+
+### Resurrect
+
+The reverse of an **Archive**: an archived session is brought back — its released workspace is
+recreated from the branch it left behind, the closed stamp is cleared, and a fresh agent process is
+started against it. Only an archived session can be resurrected; the operation refuses a row that is
+already live.
+
+Resurrecting records no durable intent. Clearing the closed stamp is all it leaves behind, so nothing
+downstream can tell a session someone deliberately resurrected from one the daemon has merely not
+archived yet. That is why a resurrect must also leave the terminal state in the _same_ write: a row
+that is un-archived while still wearing its terminal state is at once the shape the merged-but-
+unarchived repair pass exists to heal, and a row wedged on its own terms, since a terminal state
+permits no lifecycle event and so nothing else would ever move it. Written as two steps, the row is
+briefly readable in exactly that shape — the same partial-failure ordering hazard the **Pane pointer**
+states, on a database row rather than a runtime handle, but with the stronger resolution available:
+instead of ordering the steps so the reachable intermediate state is the harmless one, a single
+conditional write makes the intermediate state unobservable.
+
+A resurrect is not finished when that write commits, either. Recreating the workspace and starting
+the agent can still fail afterwards, and a failure that leaves the row un-archived strands the
+session: live, agent-less, refused on retry by the archived-only guard, and immovable by any
+lifecycle event. So a failed start compensates, with one atomic write that returns the row to the
+closed stamp and state it originally wore — not a fresh stamp, which would restate a long-archived
+session as newly archived and move it in the trash order.
+
 ## Chat panes and reaping
 
 ### Chat pane
@@ -196,12 +266,75 @@ by default. Both require a candidate to be seen eligible on more than one consec
 acting, and each reason carries its own confirmation marker so a sighting for one reason can never
 confirm the other.
 
-Because reaping is the daemon's only destructive sweep, its rule on evidence is inverted from the
-rest of the system: it must **under**-reap when unsure. A pane whose identity is ambiguous keeps, a
+Reaping is not the daemon's only destructive sweep — the merged-but-unarchived repair pass described
+under **Archive** dispatches archives, which release workspaces — but it is the one that destroys the
+only trace of live work, so its rule on evidence is inverted from the rest of the system: it must
+**under**-reap when unsure. A pane whose identity is ambiguous keeps, a
 chat with no current telemetry keeps (absence of evidence is unknown, never idle), and a chat that
 could not be resumed with its history intact keeps regardless of age — reaping that one would
 destroy context rather than reclaim memory. The idle clock is in-memory, so a daemon restart resets
 it; on a host restarted more often than the window, idle reaping simply never fires.
+
+## Input delivery
+
+### Composer
+
+The agent's text-entry row in its pane — the one place a keystroke becomes part of a message rather
+than a selection. It is a mode, not a widget: the same rows show a composer one moment and a
+selection UI the next, and nothing outside the pane is told which. Everything in this cluster exists
+because that question can only be answered by looking at what the pane currently renders.
+
+### Ready marker
+
+The per-agent glyph that marks a live composer row. Each agent declares its own, and the delivery
+gate resolves a composer by finding the bottom-most row whose own leading glyph is that agent's
+marker.
+
+A marker match is evidence, not proof. The agent picks its marker for looks rather than for
+uniqueness, and commonly reuses the same glyph as a selection cursor, so any state that draws the
+marker at the head of a row is indistinguishable from a composer to a rule that only asks whether a
+row starts with it. A match therefore establishes that a row _could_ be a composer, and must be
+corroborated by something else before anything is typed into it.
+
+### Boot interstitial
+
+A screen an agent draws at startup that takes the keyboard before any conversation exists — an
+update prompt, an onboarding picker. It is the hardest case for the **Delivery gate** for two
+reasons: it appears only on the start path, which is the path with no conversation to reason about,
+and it usually renders as a numbered menu led by the agent's own **Ready marker**, so the naive
+composer test matches it.
+
+An interstitial blocks input while asking nothing anyone needs to be told about, which is the
+counterexample that keeps the gate's two predicates independent. Recognising one is per-agent work —
+the grammar belongs to the agent's own plugin — so an agent with no clause for its boot screen is
+unprotected however complete the surrounding plumbing looks.
+
+### Delivery gate
+
+The check performed before typing into a pane: wait for a composer to appear, then confirm that what
+appeared is a composer rather than a menu. The two halves are separate and neither is redundant —
+the first answers "is anything ready", the second answers "is the ready-looking thing safe to type
+into".
+
+Two predicates about a pane are routinely confused, and neither may be inferred from the other:
+whether the pane **blocks input**, meaning a keystroke is consumed as a choice, and whether the agent
+is **asking** something a human should be notified about. A conversational question posed with a live
+composer is the second without the first; a **Boot interstitial** is the first without the second.
+Gating delivery on the asking predicate refuses to answer the very question that was asked; gating
+notification on the blocking one stays silent about real questions.
+
+The gate fails **open**: a check that is unavailable or errors delivers rather than refusing, because
+the check crosses a process boundary and that population of failures is dominated by causes carrying
+no evidence about the pane, while failing closed would turn any hiccup into a session that cannot
+start. Fail-open is defensible only while it is visible — a degraded gate must announce its
+degradation once per occurrence, since silent fail-open is a gate deleted without anyone deciding to
+delete it.
+
+Its two error directions are not comparable, and grammars are sized on that asymmetry rather than on
+symmetry. A wrong refusal is loud, names itself, and is retried; a wrong delivery presses a key in a
+menu whose selected row may be irreversible. Where the two conflict, over-refuse — and pin the
+accepted wrong refusals with tests that say so, so that a later reader who finds a way to narrow the
+grammar tightens it deliberately instead of reverting it as a bug.
 
 ## Session environment
 
@@ -290,6 +423,21 @@ The permanent-failure disposition for a child: leave the session and its
 work open for a human, mark the ticket failed inside the run, and skip its
 transitive dependents. Isolation never stops or deletes the session —
 evidence is preserved.
+
+### Push oracle
+
+The rule that whether a child's work has reached the remote is answered by the remote itself —
+counting the commits a pushed branch carries above its base — and never by a session's lifecycle or
+check state, which move when the daemon re-polls checks that already exist while the branch is
+unchanged. Reading such a transition as a push puts the **Driver** on merge rails against a branch
+still holding only its bootstrap commit.
+
+The reading is sound only after remote-tracking refs are refreshed, since those are local copies that
+go stale and will report no commits for work that was in fact pushed. It must also treat a missing
+remote branch as zero rather than as an error: absence is precisely the "nothing pushed" case the
+oracle exists to detect. Collapsing every unreadable case onto zero is safe here only because each
+of them must block a merge; a caller wanting to _report_ why nothing was pushed needs the failure
+itself, not the count.
 
 ### Serialized merge
 
@@ -418,7 +566,9 @@ The provider's usage endpoint refusing the daemon's own polling rate. It is evid
 
 ### Drain
 
-The shutdown phase in which a component stops taking new work but keeps serving what is already in flight, until that work finishes or a budget expires. Two properties separate a real drain from a decorative one: it runs _before_ whatever produces or consumes the in-flight work is torn down — stopping the producers first leaves nothing to drain and makes the drain report an empty set it emptied itself — and it holds a budget of its own rather than sharing a deadline sized for short requests.
+The shutdown phase in which a component stops taking new work but keeps serving what is already in flight, until that work finishes or a budget expires. Two properties separate a real drain from a decorative one: it is ordered so that the set it waits on is both complete and closed, and it holds a budget of its own rather than sharing a deadline sized for short requests.
+
+The ordering turns on which sense of _producer_ is in play, and the two senses point opposite ways. Where a producer's own in-flight work **is** the set — a relay waiting out streams its upstream is still writing — the drain must run _before_ that producer is torn down, or it reports an empty set it emptied itself. Where a producer instead **launches** work into the set — a poller or dispatcher spawning detached workers that outlive it — the drain must run _after_ it has stopped, or the set is still growing and the wait has no reason to terminate. One rule covers both: never drain a set that is still being added to, and never tear down what the set is made of before draining it.
 
 A drain reports which of its two endings occurred, finished or expired, because only that distinction tells an operator whether the budget needs changing. The report has to be earned rather than assumed: a graceful-shutdown primitive that abandons its wait on expiry typically leaves the in-flight work still running, so a drain that reports work as cut must perform the cut itself, and one that reports a clean finish must not be reading an unrelated teardown error as failure.
 
@@ -530,10 +680,27 @@ what they do not recognise.
 
 ### Byte ratchet
 
-A pinned upper bound on a published skill body's size, asserted in bytes so that prose added to a
-core has to be argued for against everything already there. A ratchet is a one-way mechanism: it may
-be tightened freely as a body shrinks, and loosened only by a deliberate re-baseline that records its
-reason next to the new number.
+A pinned bound on a published skill body's size, asserted in measured units — bytes, or lines where
+line count is the property that matters — so that prose added to a core has to be argued for against
+everything already there.
+
+A ratchet may be written **one-sided**, as a ceiling, or **two-sided**, as an exact pin, and the two
+are not equivalent. A ceiling catches growth and says nothing about shrinkage, so reclaimed budget is
+never banked and the prose beside the number drifts out of agreement with it unobserved. An exact pin
+fails in both directions: growth and shrinkage are each an event, each repinned to the measured value
+in the same commit as the edit that justified it. Two-sided is the house form; a one-sided ceiling is
+the exception that has to say why.
+
+An exact pin's number is _measured_, never derived — not from a plan document, a ticket, or a previous
+commit message, and never as the measurement plus a margin, which ships slack rather than recording a
+fact. Where a passing pin and the prose around it disagree, the pin is the truth and the prose is what
+drifted. Because a red pin does not say which of its two halves moved, its failure message is part of
+the mechanism rather than decoration: it states what the number covers and what it does not, names a
+remedy the artifact can actually perform, and says how to check the pin's own provenance before
+assuming the artifact changed.
+
+Size is not a **sync** check. Where a mirror is generated from a source, generation may add bytes
+unconditionally, so "larger than its source" is not evidence of drift; exact regeneration equality is.
 
 Two kinds of pin sit alongside a ratchet and are not interchangeable. A **rolling** bound tracks the
 ratchet at a documented margin, and moving it with the ratchet is its stated procedure. A **fixed
@@ -571,6 +738,25 @@ mixes fixed guidance with a variable fragment, the fragment is the half that giv
 is bounded in every unit that any cap on the render path measures, so no blunt truncation can reach
 the guidance.
 
+## Chat uploads
+
+### Chat upload
+
+A file boss materialises on disk on the user's behalf so that an agent can read it, delivered into
+the conversation as a _path_ rather than as content. The agent never receives the bytes through the
+chat; it opens the file itself, which is what lets an upload carry material too large or too binary
+to paste.
+
+An upload's directory is proved to be a real directory this daemon owns before anything is written
+into it — not merely found at the expected name — because the enclosing location is shared with
+other users on the host, and the same proof is owed by any code that later deletes inside it.
+Uploads are reclaimed by a janitor on a staleness clock rather than at the end of the conversation
+that named one, so a file deliberately outlives its message; the daemon's own sweep is the mechanism
+and the host's temp reaper is only a backstop, which is why an upload location must be one the host
+would eventually clean on its own if the daemon stopped sweeping. Deletion is conditional on
+delivery being _known_ to have failed: a delivery whose outcome could not be confirmed retains the
+file, because the path may already be in front of the agent.
+
 ## Review and verification
 
 ### Vacuous gate
@@ -580,13 +766,15 @@ while still reading as assurance. It is worse than an absent gate rather than eq
 absent gate leaves a risk everyone downstream still treats as unchecked, while a vacuous one converts
 that risk into a false assurance every consumer spends.
 
-A gate can become vacuous at any of five layers, and each has been observed independently: its
+A gate can become vacuous at any of six layers, and each has been observed independently: its
 **scan surface**, when the region it reads does not coincide with the corpus its criterion
 quantifies over — narrower, so a defect that is really there is never seen, or wider than the
 artifact it certifies, so a subject that artifact never carried is counted as shown;
 its parser, when it splits on a delimiter the operand may legally contain; its classifier, when the
 written form of a marker is not the form the test recognises, so the item silently leaves the
-contract with no detector anywhere; its own regression test, when that test borrows the definition
+contract with no detector anywhere; its **operand**, when the value it compares merely constrains
+the fact rather than being it — a declared version range, a configured default, a documented intent
+— so two subjects satisfy the comparison identically and still resolve to different behaviour; its own regression test, when that test borrows the definition
 it was supposed to check independently — normalising the very bytes it exists to pin, or measuring a
 bound in the same unit the guarded code counts in, so it can only ever confirm that the code agrees
 with itself; and its input discovery, when the set of subjects it scans comes back empty and that
@@ -594,15 +782,96 @@ emptiness is reported as a pass rather than as an inability to evaluate. The fai
 construction, because a gate's job is to be quiet when nothing is wrong.
 
 The first and last layers are the two a **Falsification** usually cannot reach, and so the ones that
-most need checking by hand: the other three mis-answer a value that arrives at the check, while a
-reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
+most need checking by hand: the other, mis-answering layers each mis-answer a value that arrives at
+the check, while a reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
 it. The widened surface is the exception that fixes the rule's shape — there the offending value
-does arrive and the check wrongly accepts it, so one constructed input settles it. Direction decides
+does arrive and the check wrongly accepts it, so one constructed input settles it. The operand layer
+is settled the same way, by a pair of subjects that agree on the declaration and disagree on the
+resolution. Direction decides
 the discipline: a narrowed surface is established by measurement, a widened one by construction. A
 gate therefore owes a floor on how many subjects it found, asserted inside the artifact that
 actually blocks a merge rather than only in its tests. Its cheapest tell is a single check that
 bails loudly on one missing input while returning an empty success on another: two opposite policies
 for one class of missing input means the quiet branch was never considered.
+
+A further way is not a layer inside the check at all: the check is correct, non-vacuous by every test
+it has, and simply is not **bound** on the path where the defect occurs. It belongs with the reach
+gaps rather than the mis-answers — no value arrives, so no adversarial input demonstrates it — but it
+hides one step further out, because the gate's own tests are green and its call sites are not where
+anyone looking at a gate looks. It is established by census rather than by construction: enumerate
+the entry points into the guarded operation and count how many build the check, rather than
+confirming the check is built somewhere. Its cheapest tell is a rationale written at an unbound site
+arguing that the check would refuse nothing there — a reasoned-through asymmetry is stronger evidence
+of a hole than an unexplained one, because someone saw its shape and talked themselves past it.
+
+Where the set of subjects is kept by hand — a list the check ranges over, maintained in step with the
+declarations it mirrors — that list is itself a coverage claim, and it decays. A subject whose author
+forgot the second edit is indistinguishable from one deliberately excluded, and it stays invisible
+because the subject's own assertions still run and still pass; only the check over the subject is
+missing. The structural remedy is to make enrolment a side effect of declaring the subject, so an
+unenrolled subject cannot be written, and to add a gate that reds on a declaration which bypassed the
+registration path. A floor on the count found is the weaker cousin: it catches a set that came back
+empty, not a non-empty set that is the wrong set.
+
+All six are properties of the check. The mirror case is a property of the **defect**: a check that is
+sound at every one of these layers, answering correctly the question it was built to answer, over a
+corpus that does contain the damaged artifact — and still green, because the defect does not violate
+the property that check tests. That is a **Laundered defect**, not a vacuous gate, and the two want
+opposite responses: one is repaired, the other needs a new detector.
+
+### Laundered defect
+
+A defect whose two independent detectors are destroyed by one mechanism: it leaves the artifact
+syntactically valid, so the automated check guarding that file set answers its own question correctly
+and stays green, and a formatter then normalises the wreckage into a shape that reads as an ordinary
+reformat, so the human reading the diff sees tidy formatting rather than damage. Both detectors
+report health, both report it truthfully, and their agreement carries no information about the
+property that was actually violated. The name is used here in the _evidence-destroying_ sense — the
+trace of the defect is washed out downstream — and not in the sense, used elsewhere in
+`docs/solutions/`, of a broken artifact being passed through a gate that should have refused it.
+
+It is not a **Vacuous gate**: the incumbent check is hollow at no layer, and no adversarial input
+would expose it, because the property the defect violates is not the property that check tests. The
+distinction decides what to build. A vacuous gate is repaired; a laundered defect needs a _new_
+detector reasoning about the violated property directly, and the argument for building one cannot be
+made from the incumbent's green runs. It is made by contrast: reintroduce the defect and show the
+incumbent passing it while the candidate refuses it — a **Falsification** run against two detectors
+at once, where the gap between them is the finding rather than either verdict alone. That contrast is
+also the only thing that distinguishes a needed gate from a redundant one, which no amount of testing
+the new gate in isolation can settle.
+
+The formatter is the half that makes review unavailable, so the tell is a defect class whose damaged
+form is _stable under formatting_: wherever a normaliser sits between the author and the reviewer,
+review has stopped being a backstop for that class whether or not anyone has noticed. The corollary
+runs the other way too — a formatter that rewrites the damaged shape can equally rewrite it past the
+new detector, so a lexical gate is only as good as its position in the format-then-lint ordering, and
+whether that ordering is enforced by a gate or merely by convention is worth establishing explicitly.
+
+### Unsatisfiable criterion
+
+An acceptance criterion no artifact can ever evidence, so ticking it reports something other than
+what was verified. Two causes produce it, and both are properties of the criterion rather than gaps
+in the work: the signal it measures does not exist yet, because the distinction it asks to split on
+is precisely the distinction the change introduces and no historical data was ever told about it;
+or the change itself closes the only window in which the measurement could be taken, so merging is
+what makes the criterion permanently unmeetable.
+
+It is not a **Vacuous gate**. A vacuous gate answers a satisfiable criterion wrongly — the criterion
+is true on the day it is ticked and the check simply does not establish it. An unsatisfiable
+criterion could never be true at all, so no repair to any gate reaches it; the defect is upstream, in
+the prose, and the repair is to rewrite the criterion. Both end in a tick that carries no
+information, which is why they are easy to confuse and why the distinction decides what to fix.
+
+The tell is a criterion whose satisfaction depends on ordering, on an operator action, or on a
+wall-clock window — none of which a diff can express. The remedy is to split it: what the branch owes
+becomes an artifact a reviewer can open, and the remainder moves into a runbook addressed to the
+party who can actually discharge it, with the criterion stating outright that merging does not close
+it. A measurement obligation honestly relocated is more enforceable than a merge gate that was never
+meetable, and the sentence about merging not discharging it is the clause that stops the obligation
+from being silently reclassified as done. The same three questions — does the property exist, does
+anything destroy it, what artifact enforces it — apply unchanged to any prose asserting a guarantee;
+an unenforced rule labelled as discipline is durable, while a structural claim the code does not
+provide is worse than silence.
 
 ### Falsification
 
@@ -616,10 +885,91 @@ Asserting only that a good input still passes is not a falsification — the ref
 whole record. A falsification that would stay green with its guard deleted is itself vacuous, one
 level up, which is why the mutation step is part of the definition rather than an optional check.
 
+A mutation that matched nothing is not a falsification either, and is the harder case to notice. A
+substitution that alters no bytes still exits successfully and leaves the suite green, and that
+green is byte-identical to the guard being vacuous — the very reading the probe was run to
+produce. So a falsification owes a changed-target check: evidence that the mutation actually
+altered the artifact, established before its exit code is read at all. The hazard is sharpest
+where the mutation is matched against text, since a pattern can fail to match for reasons that
+have nothing to do with the guard — see **Prose pin**.
+
+A guard that discovers its own corpus needs its matching logic extracted as a pure predicate,
+separate from the walk, or it offers no surface a falsification can reach: with the logic inlined,
+the only assertion available is that today's corpus is clean, and a clean corpus is indistinguishable
+from a predicate that has stopped matching anything. The extracted predicate is then pinned by a
+table of both directions — values it must flag and values it must clear — because a one-off probe
+against a mutated build shows the guard discriminated once, while the table is what makes it keep
+discriminating. Where any narrowing step is being pinned — a carve-out, a section scope, a filter, an
+exclusion — the row must be admissible to the un-narrowed matcher and must use a value the rest of
+the predicate would not have excused anyway, or it passes for the wrong reason and the narrowing
+goes unpinned. A fixture the matcher would have rejected with or without the narrowing tests
+nothing, and the only way to tell the two apart is to mutate the narrowing away and watch the row
+red. Where the live corpus holds no real counterexample — the narrowing being prospective — the
+fixture must synthesise an admissible one rather than treat the absence as proof the narrowing is
+unnecessary.
+
 A falsification proves the guard's **rule**, and a **Scan surface** only where that surface is too
 wide: it hands the value straight to the check, so it can show a check accepting what it should
 refuse, but never that the walker feeding the check fails to reach where the value is written. A
 guard can hold every falsification and still enforce nothing over most of its corpus.
+
+### Prose pin
+
+A gate assertion whose subject is a specific sentence or phrase of human-readable text in a tracked
+file — that a document still says a particular thing — as opposed to an assertion over a value, a
+structure, or the shape of a command. Its defining hazard is that the text it quotes has unstable
+line breaks: the wording is the contract and the wrapping is not, yet a pattern written with literal
+spaces binds both, and the agent that moves a line is usually a later author or agent rewrapping a
+neighbouring paragraph rather than any formatter.
+
+Its rule is owed to two consumers that fail in opposite directions, and documenting only one of them
+leaves the worse half uncovered. The pin itself fails **loud and false**: a rewrap that changes no
+word reds an assertion naming no defect. The **Falsification** aimed at the same phrase fails
+**silent and inverted**: it matches nothing, changes nothing, exits successfully, and its green is
+indistinguishable from the finding it exists to produce — that the pin is vacuous. Only the loud half
+is mechanically enforceable, because a pin is a committed literal some gate can read while a
+falsification pattern is typically a one-off command no gate ever sees; where that asymmetry holds it
+belongs in the written rule, or a reader infers coverage that does not exist.
+
+The remedy is a whitespace-tolerant gap, applied by subject rather than uniformly. A tolerant gap
+also matches a line break, so spelling every gap tolerantly is a **widening** rather than a
+normalisation: where the subject is prose an author may rewrap, absorbing the reflow is the whole
+point, but where it is a command, a fenced block, or a claim that two words share a line, the exact
+gap is the contract and tolerance quietly accepts text that could never occur or that the assertion
+existed to forbid. A negative assertion inverts the trade, since there the wider form forbids a
+superset and is the stronger one. A gate enforcing the rule therefore needs a marked, greppable
+exception for the deliberate exact gap, and the audit that reads those markers must match them the
+same way the gate does, or it reports a complete census that is not one.
+
+### Relational guard
+
+A test whose subject is a required relationship between two constants rather than the value of either
+one — that one budget stays under another, that a ceiling exceeds the clamp it exempts from — written
+because the relationship spans a boundary the type system cannot express. The usual cause is a
+one-way module dependency: the two values sit on opposite sides of an import edge that exists in only
+one direction, so neither can be derived from the other and the duplication is forced rather than
+careless.
+
+It differs from a value test in what it reads and in what it says. It reads both operands from the
+production sources that define them — through the real builder or accessor, not a literal restated in
+the test — so that either side moving is what changes the outcome; a relational guard that hard-codes
+the numbers it compares is a **Vacuous gate** one level up, able only to confirm that the test agrees
+with itself. It must also read them at the layer that determines behaviour rather than one that
+merely constrains it: where a declaration and a resolution both exist — a declared version range and
+the version a lockfile pins, a configured default and the value a run resolves — only the resolution
+is the fact, and two sides declaring the same constraint can still resolve differently while the
+guard stays green. Where the fact lives in a file that names the same operand for other reasons, the
+parse is scoped to the block that is authoritative for the question. It also owes a failure message naming both constants and the file each lives in, because
+whoever trips it usually knows one of the two and has no reason to suspect the other exists, and owes
+the remediation in both directions since either constant may be the one that should move.
+
+Two further obligations keep it honest. It must sanity-check its operands before comparing them, or a
+builder that quietly stops returning the value it once returned turns the comparison into a trivially
+satisfied assertion that passes forever. And it must separate the invariant it enforces from any
+policy margin it also encodes, saying which is which, so that a drift meaning "these two need
+re-deciding together" is not read as a correctness break — and, for the same reason, record the cases
+it cannot see at all, chiefly operator-configurable values that replace a compiled default at runtime,
+where someone about to trust it will read them.
 
 ### Scan surface
 
@@ -648,6 +998,18 @@ the artifact does not carry and watch the gate accept it. Where a reach gap is r
 second parser is not worth building, the standard cover is a whole-file assertion that imports the
 rule's own pattern rather than restating it, and that pins how many files it read before asserting it
 found nothing.
+
+Width is not the only way a surface can miss: it can also be too **coarse**, reading at a larger unit
+than the one its invariant is stated over. A guard whose invariant is per-fixture but whose surface is
+per-file passes as soon as one satisfying token appears anywhere in the file, so a genuinely defective
+fixture is immunised by an unrelated correct one hundreds of lines away — the surface is neither
+narrow nor wide, and every falsification still passes, because a value handed straight to the check is
+already at the right granularity. Coarseness is sometimes the right trade: refining the unit means
+guessing at the distance between a construct and the code that protects it, and where the prevailing
+idiom protects many constructs from one shared helper, a finer window rejects correct code. What the
+trade is not is invisible. A guard that reads at the wrong granularity records that limit in the
+artifact itself, in the terms a green run may be read in — every _file_ contains a disable, never
+every fixture — because the reader who over-trusts it is the one who added the next fixture.
 
 ### Silently-empty stub
 
@@ -687,7 +1049,59 @@ attempts succeeded, how many failed, and what the failing tool said in its own w
 failure clause names a cause, it is owed whenever any attempt failed rather than only when all did,
 since the common shape is a subject that is observable and then is not. A diagnostic also owes its
 ordering to whatever consumes it: where a surface truncates, the accounting belongs ahead of any
-multi-line payload, because a field rendered below the cut does not reach the person deciding.
+multi-line payload, because a field rendered below the cut does not reach the person deciding. The
+same family reaches past a zero value: where the two opposite causes share a _message_ rather than a
+value — see **Transient classification** — the honest discriminator is again something outside the
+value that was rendered.
+
+### Finding provenance
+
+The source location a gate carries alongside each value it rejects — which member of its scanned
+corpus produced that value, and where inside it — as distinct from the value itself. A report naming
+only the offending value hands its reader a search rather than an answer: the value says what is
+wrong, the provenance says where to go, and only the scan step holds both, so a collector that
+flattens matches into bare values destroys what nothing downstream can recover. It is the
+constructive counterpart to a **Diagnostic conflation** — not a signal that carries no information,
+but one that carries half of what it already had.
+
+Provenance is cheap to keep and expensive to reconstruct, and the asymmetry is what makes dropping it
+a defect rather than a terseness preference: the guard pays once to record where it looked, while
+every reader of every future failure pays again to re-derive it by hand — and re-derivation is often
+ambiguous, because the same offending value may legitimately appear in several members of the corpus
+and only one of them is the offender. The cost compounds where the reader is an automated agent
+rather than the author of the change, since neither has the context that would narrow the search.
+
+Carrying provenance creates two further obligations. A report of several findings must be sorted on
+the structured fields — corpus member, then position compared as a number, then value — _before_ the
+findings are rendered, because sorting the rendered strings compares an embedded position as text and
+places the tenth line ahead of the second, and a report whose order looks wrong makes a reader
+distrust the locations themselves. And the rendered text must be what the guard's own test asserts:
+a test that pins only the boolean verdict reports every possible regression identically, so the
+message that provenance exists to improve is the one part of the guard left unpinned.
+
+### Transient classification
+
+A fixed, argued set of failure signatures matched against a tool's own error output, whose verdict
+decides whether an operation is retried and which status a caller is handed to act on. It is
+distinct from an ordinary error check because its output is an instruction rather than a
+description: widening the match widens the action, so a signature that also covers a permanent
+fault instructs a retry loop to spend its budget and instructs the caller to re-issue a request
+that will fail identically forever.
+
+A classification is consulted only after the caller's own liveness, never before it. A run killed
+by a deadline or a cancellation still carries whatever the tool had already printed, and a tool
+that reports incrementally as it walks a set will have printed a genuine transient line for an item
+it really was contending on — so the text alone cannot separate "the work failed transiently" from
+"whoever asked stopped waiting", and asking it first spends a retry budget against a dead caller
+and then answers _try again_ to someone who already gave up. One message prefix commonly spans both
+retryable and permanent causes, so a signature set generally needs a subtraction list of terminal
+reasons beside it, and every entry on either list owes a stated argument for why it belongs; an
+unargued signature cannot be reviewed, narrowed, or safely inherited by the next reader. Where the
+retryable and the permanent readings of one message differ only in wording, decide by which reading
+the concurrency actually produces, not by which one the wording evokes. A classification is owned
+by the layer whose state it describes, which is what keeps nested retry ladders from retrying each
+other's failures — but that disjointness bounds recursion only, never the product of their attempt
+counts, which nothing but the caller's own deadline bounds.
 
 ## Proof capture
 
@@ -731,7 +1145,13 @@ question with no signal about which is authoritative.
 - "Gate" carries several unrelated senses and should never appear unqualified. A **Cron gate** is a
   command a scheduled job runs to decide whether it has work; a **Repo automation flag** gates what
   the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a
-  **Stamp** gates a build step on an input hash. Only the cron sense has a recorded **Gate outcome**.
+  **Stamp** gates a build step on an input hash; a **Delivery gate** decides whether a pane is safe
+  to type into. Only the cron sense has a recorded **Gate outcome**.
 - "Rate limited" had been used for both a **Limited** account, which has exhausted its own usage
   cap, and a **Probe throttle**, which is the usage endpoint refusing our polling rate — these are
   distinct, and only the former justifies a **Cooldown**.
+- "The agent is prompting" had been used for both halves of the **Delivery gate** — a pane that
+  blocks input and an agent that is asking a human something — and the two had at one point been
+  documented as though the first were a special case of the second. A **Boot interstitial** is the
+  counterexample: it blocks input and asks nothing. They are independent predicates, and a caller
+  must name which one it means.

@@ -116,11 +116,15 @@ export const SCAN_EXCLUSIONS = ['scripts/check-vacuous-regions.test.mjs']
  * an unquoted `//` so that a stray apostrophe in an earlier same-line comment ("don't") cannot
  * open a span that swallows a later genuine marker on that same line.
  *
+ * Exported for `scripts/check-raw-size-ratchets.mjs`, which needs the same opt-out
+ * discipline and must not fork a second copy of this scanner: the limits recorded in
+ * `OPT_OUT_SCOPE_LIMITS` are hard-won, and a duplicate would drift away from them.
+ *
  * @param {string} line Raw source line.
  * @param {number} at Index of the `//` on that line.
  * @returns {boolean}
  */
-function insideStringLiteral(line, at) {
+export function insideStringLiteral(line, at) {
   let quote = null
   for (let i = 0; i < at; i++) {
     const ch = line[i]

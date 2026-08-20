@@ -80,6 +80,72 @@ func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reas
 	return n == 1, nil
 }
 
+// ResurrectToState clears archived_at and installs the live state in ONE
+// conditional UPDATE: `SET archived_at = NULL, state = ? WHERE id = ? AND
+// archived_at IS NOT NULL`. ResurrectSession (session/lifecycle.go) is the only
+// caller.
+//
+// The single statement is the whole point. Clearing archived_at and writing the
+// state as two writes leaves the row wearing {archived_at NULL, state Merged}
+// in between — byte-for-byte the predicate archiveMergedButUnarchived
+// (session/reconcile.go) selects on — so a reconcile tick landing in that window
+// dispatches a detached archive that can delete the worktree the resurrect just
+// recreated. SQLite applies this UPDATE atomically, so that intermediate shape
+// is never observable.
+//
+// The `archived_at IS NOT NULL` guard is inherited from the Resurrect method
+// this replaces: without it the write would silently succeed against a live
+// session and overwrite its state. Returns true when exactly one row moved;
+// false means the row was no longer archived when this statement ran (a lost
+// race), which the caller must treat as a failed resurrect rather than
+// proceeding.
+func (s *SQLiteSessionStore) ResurrectToState(ctx context.Context, id string, newState int) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET archived_at = NULL, state = ?, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
+		newState, now, id)
+	if err != nil {
+		return false, fmt.Errorf("resurrect session to state: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+// RollbackFailedResurrect undoes a resurrect whose agent start failed, also in
+// one statement: `SET archived_at = ?, state = ? WHERE id = ? AND archived_at
+// IS NULL AND state = ?`. ResurrectSession is the only caller.
+//
+// archivedAt is the timestamp the row wore before the resurrect, so the row
+// returns exactly where the failed attempt found it instead of having its trash
+// age silently reset. restoreState is that same pre-resurrect state;
+// expectState is the state ResurrectToState wrote (ImplementingPlan) — the two
+// have opposite meanings and swapping them would silently disable the rollback.
+// Re-archiving in two writes would transiently recreate the {archived_at NULL,
+// state Merged} shape ResurrectToState exists to avoid, which is why this is one
+// statement too.
+//
+// Returns true when exactly one row was restored. A false return is NOT a
+// harmless no-op: it means a concurrent writer moved the row off the shape this
+// call wrote, leaving the session live, agent-less and un-retryable, so the
+// caller logs the state it actually observed rather than swallowing it.
+func (s *SQLiteSessionStore) RollbackFailedResurrect(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET archived_at = ?, state = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ?`,
+		sqlutil.FormatTime(archivedAt), restoreState, now, id, expectState)
+	if err != nil {
+		return false, fmt.Errorf("rollback failed resurrect: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 // CommitOrphanResume records a spawned replacement agent only while the
 // original orphan claim remains exclusively owned by this handoff. It does not
 // call Get after the UPDATE: an affected-row result is unambiguous even when a
@@ -492,20 +558,6 @@ func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
 		now, now, id)
 	if err != nil {
 		return fmt.Errorf("archive session: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-func (s *SQLiteSessionStore) Resurrect(ctx context.Context, id string) error {
-	now := sqlutil.TimeNow()
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
-		now, id)
-	if err != nil {
-		return fmt.Errorf("resurrect session: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows

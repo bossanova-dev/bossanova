@@ -741,8 +741,6 @@ var knownUnshippedScriptRefs = map[string]map[string]bool{
 	"boss-plan": {
 		// The boss-plan cron gate is owned by its dedicated vendoring ticket.
 		"scripts/cron-gates/boss-plan.mjs": true,
-		// Linear dependency traversal remains a repo-specific tracker seam.
-		"scripts/linear-deps-lib.mjs": true,
 		// Linear gate selection remains a repo-specific tracker seam.
 		"scripts/linear-gate-lib.mjs": true,
 		// boss-proof is excluded from publication and its recipes and storage are repo-supplied.
@@ -1190,6 +1188,41 @@ func TestPublishedCoresShipTheToolboxFilesTheyName(t *testing.T) {
 			if refsByCore[core] == 0 {
 				t.Errorf("%s: core %q ships a toolbox/ but names no $BOSS_*_TOOLBOX/<file> the classifier matches; the shipped-toolbox gate is vacuous for it — reference the helpers through the variable, or extend toolboxRefPattern to the spelling used", label, core)
 			}
+		}
+	}
+}
+
+// TestBossPlanNamesItsDependencyLibraryAdjacently closes a coverage hole in the gate above, not a
+// shipping defect. boss-plan's Phase 4 step 5 reaches `plan-deps-lib.mjs` — the module the whole
+// step's decision now lives in — through string concatenation, the one spelling toolboxRefPattern
+// structurally cannot match. So the helper was invisible to the shipped-toolbox gate: it could drop
+// out of the payload with every gate green, and the per-core vacuity guard stays quiet because the
+// core's other toolbox references keep its count non-zero. The fix is an ADJACENT mention in the
+// prose; this test pins that mention so a reword cannot silently take the coverage away again.
+func TestBossPlanNamesItsDependencyLibraryAdjacently(t *testing.T) {
+	const helper = "plan-deps-lib.mjs"
+	for label, fsys := range shippedPayloads(t) {
+		found := false
+		err := fs.WalkDir(fsys, "skills/boss-plan", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || found {
+				return err
+			}
+			data, readErr := fs.ReadFile(fsys, path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, ref := range toolboxRefs(string(data)) {
+				if ref[0] == "boss-plan" && ref[1] == helper {
+					found = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", label, err)
+		}
+		if !found {
+			t.Errorf("%s: no boss-plan file names $BOSS_PLAN_TOOLBOX/%s adjacently, so the shipped-toolbox gate does not cover the module Phase 4 step 5 depends on; keep the literal reference in the prose", label, helper)
 		}
 	}
 }

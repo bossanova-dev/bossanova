@@ -598,6 +598,52 @@ func TestSkillsCommandBypassesStartupInstaller(t *testing.T) {
 	}
 }
 
+// TestTailBypassesStartupSkillInstaller drives `boss tail` through the real
+// rootCmd() so PersistentPreRunE is the thing under test. Building tailCmd()
+// directly — the idiom every test in tail_test.go uses — never runs the root
+// pre-run at all, so a bypass test written that way would be vacuously green.
+//
+// tail joins fix-terminal's rationale family rather than gen-skill's: it is a
+// diagnostic, and on an interactive tty the startup installer writes a [Y/n]
+// prompt to stderr and then blocks in fmt.Scanln. That stalls the tail before a
+// single log line appears — and under `boss tail -f | head`, where stdout is the
+// pipe but stdin and stderr are still the terminal, head never receives a line
+// and the process simply sits there. See BOS-921.
+func TestTailBypassesStartupSkillInstaller(t *testing.T) {
+	setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"claude": true, "codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Error("boss tail must not trigger the startup skill prompt")
+		return ""
+	}
+	// An interactive tty with nothing installed yet. This is the only branch
+	// that can block: leave it non-TTY and the silent selfHealSkills path runs
+	// instead, which proves nothing about the reported hang.
+	skillInstallIsTerminal = func() bool { return true }
+
+	root := rootCmd()
+	var out bytes.Buffer
+	root.SetArgs([]string{"tail"})
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+
+	var err error
+	// The prompt goes to os.Stderr directly, not to cmd.ErrOrStderr(), so a
+	// cobra buffer could never hold it and asserting on one would be vacuous.
+	stderr := captureStderr(t, func() { err = root.Execute() })
+	if err != nil {
+		t.Fatalf("boss tail: %v", err)
+	}
+	if strings.Contains(stderr, "[Y/n]") {
+		t.Errorf("stderr = %q, want no installer prompt", stderr)
+	}
+	// XDG_STATE_HOME is an empty temp dir, so there are no logs to print — the
+	// same property TestTailNoLogsAndJSONOutput relies on.
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want no output with no logs present", out.String())
+	}
+}
+
 func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")

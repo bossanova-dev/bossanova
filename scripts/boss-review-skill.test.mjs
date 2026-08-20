@@ -67,7 +67,7 @@ for (const mirror of REVIEW_MIRRORS) {
     // override" and "pool" BEFORE this ticket, so matching either token alone
     // would gate nothing. Pin the sentence that actually ties the override to
     // the helper's returned `pool`.
-    assert.match(phase5, /Apply that override over the returned\s+`pool`/)
+    assert.match(phase5, /Apply\s+that\s+override\s+over\s+the\s+returned\s+`pool`/)
   })
 
   test(`[${mirror}] Phase 5 passes compact file-backed triage inputs instead of the full lens payload`, () => {
@@ -84,7 +84,7 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.match(phase5, /--expected-outputs-file/)
     assert.match(
       phase5,
-      /run is unread only when it never produces the\s+reviewer output that was ultimately required/,
+      /run\s+is\s+unread\s+only\s+when\s+it\s+never\s+produces\s+the\s+reviewer\s+output\s+that\s+was\s+ultimately\s+required/,
     )
   })
 
@@ -93,63 +93,108 @@ for (const mirror of REVIEW_MIRRORS) {
     // read as an array, not just malformed items. Prose that lumps the two
     // together tells the operator to under-react to a reviewer whose entire
     // output went unread, so the distinction is pinned here.
-    assert.match(phase5, /could not read as a list of findings/)
-    assert.match(phase5, /entire\s+output went\s+unread/)
-    assert.match(phase5, /not\s+partial ones/)
+    assert.match(phase5, /could\s+not\s+read\s+as\s+a\s+list\s+of\s+findings/)
+    assert.match(phase5, /entire\s+output\s+went\s+unread/)
+    assert.match(phase5, /not\s+partial\s+ones/)
     // A round whose reviewers' files never parsed yields zero must-fix. The
     // clean-exit rule must not read that as a clean round.
-    assert.match(phase5, /no\s+`invalid`\s+entry is still unrepaired/)
-    assert.match(phase5, /Every\s+unrepaired\s+`invalid` entry blocks a clean verdict/)
+    assert.match(phase5, /no\s+`invalid`\s+entry\s+is\s+still\s+unrepaired/)
+    assert.match(phase5, /Every\s+unrepaired\s+`invalid` entry\s+blocks\s+a\s+clean\s+verdict/)
   })
 
   test(`[${mirror}] Phase 5 qualifies convergence promotion on distinct reviewers`, () => {
     assert.match(phase5, /convergence/i)
-    assert.match(phase5, /distinct reviewers/i)
+    assert.match(phase5, /distinct\s+reviewers/i)
     // A rule worded merely "occurrences" would license same-lens double
     // counting (the same reviewer reporting the same finding twice). The
     // prose must tie the count to reviewers, never raw occurrences.
-    assert.match(phase5, /never occurrences/i)
+    assert.match(phase5, /never\s+occurrences/i)
   })
 
   test(`[${mirror}] Phase 6 adjudicates before fixing and requires evidence on a verified disposition`, () => {
-    assert.match(phase6, /adjudicate before you fix/i)
-    assert.match(phase6, /confirmed or falsified/i)
+    assert.match(phase6, /adjudicate\s+before\s+you\s+fix/i)
+    assert.match(phase6, /confirmed\s+or\s+falsified/i)
     assert.match(phase6, /\bverified\b/)
     // A bare /evidence/ matched this section BEFORE this ticket ("never
     // clobbers a prior round's evidence"), so it gates nothing. Pin the clause
     // that binds the evidence to the `verified` disposition itself.
-    assert.match(phase6, /the\s+`evidence`\s+that settled it/)
+    assert.match(phase6, /the\s+`evidence`\s+that\s+settled\s+it/)
+  })
+
+  // BOS-798: `proseWrap: preserve` means prettier does not reflow prose, so a hand-split or
+  // worker-inserted sentence leaves an orphan line mid-paragraph that `--check` calls correctly
+  // formatted. The formatter cannot be the orchestrator's only markdown check, so Phase 6 must
+  // say when the eyeball happens. The fix subagent commits its own work inside the dispatch, so
+  // the timing has two halves and both are pinned: the subagent's brief carries the pre-commit
+  // eyeball, and the orchestrator amends on return. A pin on "before the commit" alone would
+  // freeze a timing this flow cannot reach.
+  // Pins are `\s+`-tolerant: this paragraph rewraps whenever a neighbouring sentence is edited.
+  test(`[${mirror}] Phase 6 eyeballs a returned markdown hunk and routes the pre-commit half to the subagent`, () => {
+    assert.match(phase6, /returned\s+diff\s+touches\s+markdown/)
+    assert.match(phase6, /the\s+moment\s+the\s+dispatch\s+returns/)
+    assert.match(phase6, /delegating\s+the\s+edit\s+does\s+not\s+delegate\s+this/)
+    // The timing must name the subagent's own commit, or the rule prescribes a moment that has
+    // already passed by the time the orchestrator sees the hunk.
+    assert.match(phase6, /subagent\s+commits\s+its\s+own\s+work/)
+    assert.match(phase6, /put\s+the\s+eyeball\s+in\s+its\s+brief\s+too/)
+    assert.match(phase6, /check\s+the\s+hunk\s+before\s+you\s+commit/)
+    assert.match(phase6, /on\s+return\s+amend\s+its\s+commit/)
+    // The orchestrator's half must stay reachable: the subagent may have committed more than
+    // once, so an amend-only instruction is unperformable whenever its work is not the tip.
+    assert.match(phase6, /add\s+a\s+follow-up\s+one\s+when\s+it\s+is\s+no\s+longer\s+the\s+tip/)
+    // The *reason* must be resident, not just the instruction: a rule whose rationale is missing
+    // is the first one dropped when the round is behind.
+    assert.match(phase6, /`proseWrap: preserve`\s+does\s+not\s+reflow\s+prose/)
+    assert.match(
+      phase6,
+      /orphan\s+line\s+mid-paragraph\s+that\s+`--check`\s+reports\s+as\s+correctly\s+formatted/,
+    )
+    // The table-cell half of the rule.
+    assert.match(
+      phase6,
+      /run\s+the\s+formatter\s+immediately\s+after\s+editing\s+a\s+markdown\s+table\s+cell/,
+    )
+    assert.match(phase6, /churn\s+is\s+padding-only/)
   })
 
   test(`[${mirror}] Phase 6 hands '## Leave as-is' to the confirming round`, () => {
     // `## Leave as-is` and "confirming round" both appeared here pre-ticket;
     // the handoff sentence that joins them is the load-bearing addition.
-    assert.match(phase6, /Feed the confirming round the ledger's\s+`## Leave as-is`\s+entries/)
-    assert.match(phase6, /factually false/i)
-    assert.match(phase6, /re-opens the finding/i)
+    assert.match(
+      phase6,
+      /Feed\s+the\s+confirming\s+round\s+the\s+ledger's\s+`## Leave\s+as-is`\s+entries/,
+    )
+    assert.match(phase6, /factually\s+false/i)
+    assert.match(phase6, /re-opens\s+the\s+finding/i)
   })
 
   test(`[${mirror}] confirming rounds rebuild their indexed lens identity map`, () => {
     assert.match(phase5, /fresh\s+`LENSES_JSON`/)
-    assert.match(phase5, /full confirming surface/)
+    assert.match(phase5, /full\s+confirming\s+surface/)
     assert.match(
       phase5,
-      /union of newly changed files and the cited files of every verified finding/,
+      /union\s+of\s+newly\s+changed\s+files\s+and\s+the\s+cited\s+files\s+of\s+every\s+verified\s+finding/,
     )
     assert.match(phase5, /\$RUN_TMP\/round<N>\/lens-entries\.json/)
-    assert.match(phase5, /Do not reuse the\s+initial-round mapping/)
+    assert.match(phase5, /Do\s+not\s+reuse\s+the\s+initial-round\s+mapping/)
   })
 
   test(`[${mirror}] Phase 6 cannot finish clean with malformed reviewer findings`, () => {
-    assert.match(phase6, /zero must-fix\s+\*\*and zero unrepaired\s+`invalid` entries\*\*/)
+    assert.match(phase6, /zero\s+must-fix\s+\*\*and\s+zero\s+unrepaired\s+`invalid` entries\*\*/)
     assert.match(phase6, /report `capped`, never `clean`/)
   })
 
   test(`[${mirror}] invalid-only rounds repair their owning reviewer before dispatching a fixer`, () => {
-    assert.match(phase5, /repair every unrepaired `invalid` entry through its owning\s+reviewer/)
-    assert.match(phase5, /same round's original review surface/)
-    assert.match(phase5, /Do \*\*not\*\* dispatch\s+the Phase 6 fixer with an empty must-fix list/)
-    assert.match(phase5, /same cap and ledger history/)
+    assert.match(
+      phase5,
+      /repair\s+every\s+unrepaired `invalid` entry\s+through\s+its\s+owning\s+reviewer/,
+    )
+    assert.match(phase5, /same\s+round's\s+original\s+review\s+surface/)
+    assert.match(
+      phase5,
+      /Do \*\*not\*\* dispatch\s+the\s+Phase\s+6\s+fixer\s+with\s+an\s+empty\s+must-fix\s+list/,
+    )
+    assert.match(phase5, /same\s+cap\s+and\s+ledger\s+history/)
   })
 
   test(`[${mirror}] Phase 7 makes malformed payloads and verification evidence durable`, () => {
@@ -160,8 +205,11 @@ for (const mirror of REVIEW_MIRRORS) {
     // that names whose output it was — because retaining one without the other
     // leaves invalid evidence that cannot be routed back to a reviewer.
     assert.match(phase7, /retained\s+reviewer\/output\s+source,\s+and\s+malformed\s+payload/)
-    assert.match(phase7, /\"evidence\": \"<file:line read or command result that settled it>\"/)
-    assert.match(phase7, /including each verified finding's evidence/)
+    assert.match(
+      phase7,
+      /\"evidence\": \"<file:line[ ]read[ ]or[ ]command[ ]result[ ]that[ ]settled[ ]it>\"/,
+    )
+    assert.match(phase7, /including\s+each\s+verified\s+finding's\s+evidence/)
   })
 
   test(`[${mirror}] the Phase 0 ledger template's Leave as-is comment carries rationale: and evidence:`, () => {
@@ -171,8 +219,8 @@ for (const mirror of REVIEW_MIRRORS) {
   })
 
   test(`[${mirror}] core-methodology.md's severity policy states convergence promotion on distinct reviewers`, () => {
-    assert.match(severityPolicy, /convergence promotion/i)
-    assert.match(severityPolicy, /distinct reviewers/i)
+    assert.match(severityPolicy, /convergence\s+promotion/i)
+    assert.match(severityPolicy, /distinct\s+reviewers/i)
   })
 
   test(`[${mirror}] the added Phase 5/6 and severity-policy prose stays project-agnostic`, () => {
@@ -216,9 +264,12 @@ for (const skillDir of REVIEW_CE_EXTENSION_DIRS) {
     // Each trigger is asserted on its own. A single "unavailable" match would pass on the
     // absence-only wording this test exists to forbid.
     for (const [label, pattern] of [
-      ['skill unavailable on this harness', /unavailable on this harness/i],
-      ['nested reviewer dispatch cannot run or errors', /dispatch cannot run|dispatch errors/i],
-      ['CE returns skipped/empty/unparseable output', /skipped, empty, or unparseable/i],
+      ['skill unavailable on this harness', /unavailable\s+on\s+this\s+harness/i],
+      [
+        'nested reviewer dispatch cannot run or errors',
+        /dispatch\s+cannot\s+run|dispatch\s+errors/i,
+      ],
+      ['CE returns skipped/empty/unparseable output', /skipped, empty, or\s+unparseable/i],
     ]) {
       assert.match(rubric, pattern, `${skillDir}/SKILL.md must route "${label}" to the inline pass`)
     }
@@ -227,7 +278,7 @@ for (const skillDir of REVIEW_CE_EXTENSION_DIRS) {
     // this, a reader can still normalize a skipped CE result into a clean-looking round.
     assert.match(
       rubric,
-      /suppresses its own Tier 2\/3 review/i,
+      /suppresses\s+its\s+own\s+Tier\s+2\/3\s+review/i,
       `${skillDir}/SKILL.md must state that an empty envelope suppresses the core's own Tier 2/3 review`,
     )
   })

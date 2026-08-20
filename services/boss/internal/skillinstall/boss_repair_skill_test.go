@@ -1297,3 +1297,163 @@ func findRepoRoot(t *testing.T) string {
 		dir = parent
 	}
 }
+
+// BOS-798: the two rules that bound the blast radius of a review finding quoting skill prose,
+// plus the markdown-eyeball rule that governs the hunk such a fix produces.
+//
+// Both are here rather than in a reference because Strategy C's "required verifications before you
+// reply" list IS the run's pre-reply checklist, and a rule a run reads after replying is a rule it
+// did not use. They are pinned as whitespace-tolerant falsification pins for the reason the pin
+// shape exists at all: these bullets sit in a list that reflows whenever a neighbouring bullet is
+// edited, so a literal-space pattern would red on a rewrap while naming no defect — and, worse, a
+// literal-space MUTATION during falsification matches nothing, exits 0, and produces a green run
+// byte-identical to a genuinely vacuous pin.
+var bossRepairProseBlastRadiusPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "prose-finding-grep-upstream",
+		pattern:      `Grep\s+upstream\s+before\s+treating\s+a\s+skill-prose\s+finding\s+as\s+single-site`,
+		live:         "Grep upstream before treating a skill-prose finding as single-site",
+		tokenRemoved: "Grep before treating a skill-prose finding as single-site",
+	},
+	{
+		name:         "prose-finding-grep-scope",
+		pattern:      `across\s+the\s+whole\s+skills\s+tree\s+\*\*and\*\*\s+the\s+contract\s+docs\s+those\s+skills\s+are\s+copied\s+from`,
+		live:         "across the whole skills tree **and** the contract docs those skills are copied from",
+		tokenRemoved: "across the whole skills tree",
+	},
+	{
+		name:         "prose-finding-fix-upstream",
+		pattern:      `fix\s+the\s+upstream\s+contract\s+passage\s+in\s+the\s+same\s+commit`,
+		live:         "fix the upstream contract passage in the same commit",
+		tokenRemoved: "fix the cited line in the same commit",
+	},
+	{
+		name:         "prose-finding-sweep-rationale",
+		pattern:      `Sweep\s+the\s+rationale,\s+not\s+only\s+the\s+restatements`,
+		live:         "Sweep the rationale, not only the restatements",
+		tokenRemoved: "Sweep the restatements",
+	},
+	{
+		name:         "prose-finding-old-rule-as-reason",
+		pattern:      `cite\s+the\s+\*\*old\*\*\s+rule\s+as\s+their\s+\*\*reason\*\*`,
+		live:         "cite the **old** rule as their **reason**",
+		tokenRemoved: "cite the old rule as their reason",
+	},
+	{
+		name:         "prose-finding-rationale-not-greppable",
+		pattern:      `A\s+restatement\s+is\s+greppable\s+and\s+a\s+rationale\s+is\s+not`,
+		live:         "A restatement is greppable and a rationale is not",
+		tokenRemoved: "A restatement is greppable",
+	},
+	// The markdown-eyeball rule. Strategy C implements, gates, and commits in one pass, so the
+	// last reader of a markdown hunk before it lands is this skill — which is why the obligation
+	// is stated here and not only in the reviewing core.
+	{
+		name:         "markdown-hunk-read-before-commit",
+		pattern:      `read\s+the\s+rendered\s+hunk\s+before\s+you\s+commit`,
+		live:         "read the rendered hunk before you commit",
+		tokenRemoved: "read the rendered hunk",
+	},
+	{
+		name:         "markdown-hunk-covers-delegated-edits",
+		pattern:      `delegating\s+the\s+edit\s+does\s+not\s+delegate\s+this`,
+		live:         "delegating the edit does not delegate this",
+		tokenRemoved: "delegating the edit",
+	},
+	{
+		name:         "markdown-hunk-formatter-is-not-the-check",
+		pattern:      "`--check`\\s+reports\\s+as\\s+correctly\\s+formatted",
+		live:         "`--check` reports as correctly formatted",
+		tokenRemoved: "`--check` reports it",
+	},
+	// The hedge matters in a published core: a consumer repo may set proseWrap to "always", where
+	// the described failure mode does not arise. Both halves of the hedge are load-bearing, so both
+	// are falsified: the first pin below kills the word "default", the second kills the identity of
+	// the config value it hedges. The pattern names that value directly rather than stepping over it
+	// with a wildcard — a bounded `.{0,30}?` matched any replacement span, so the sentence could
+	// drift to a prettier option that has nothing to do with reflow and stay green. `\s*` inside the
+	// literal is the widest the no-literal-space rule allows; it cannot be a literal space, and
+	// `\s+` there would additionally match a line break prettier never writes inside a code span.
+	{
+		name:         "markdown-hunk-prettier-default-is-hedged",
+		pattern:      "Prettier's\\s+default\\s+`?proseWrap:\\s*preserve`?\\s+does\\s+not\\s+reflow\\s+prose",
+		live:         "Prettier's default `proseWrap: preserve` does not reflow prose",
+		tokenRemoved: "Prettier's `proseWrap: preserve` does not reflow prose",
+	},
+	{
+		name:         "markdown-hunk-prettier-names-the-preserve-default",
+		pattern:      "Prettier's\\s+default\\s+`?proseWrap:\\s*preserve`?\\s+does\\s+not\\s+reflow\\s+prose",
+		live:         "Prettier's default `proseWrap: preserve` does not reflow prose",
+		tokenRemoved: "Prettier's default `proseWrap: always` does not reflow prose",
+	},
+	// boss-review states this half of the rule and pins it; boss-repair carried only the symptom
+	// ("an edited table cell can re-pad every row around it") with no prescribed action. Two derived
+	// copies of one rule that have already diverged on their operational half is the exact defect
+	// the two rules above exist to prevent, so the remedy is restated here and pinned alongside.
+	{
+		name:         "markdown-hunk-table-cell-remedy",
+		pattern:      `run\s+the\s+formatter\s+immediately\s+after\s+editing\s+a\s+markdown\s+table\s+cell\s+and\s+confirm\s+the\s+churn\s+is\s+padding-only`,
+		live:         "run the formatter immediately after editing a markdown table cell and confirm the churn is padding-only",
+		tokenRemoved: "run the formatter after editing a markdown table cell",
+	},
+})
+
+// bossRepairOmissionHypothesisPins pins the triage rule that stops a repair trusting a comment
+// which justifies an omission. Its whole value is the judgement it demands, so the pin sits on
+// "actually forced": a rule that keeps its title but loses that token collapses into "trust the
+// comment" -- the exact over-conservative omission it exists to re-open.
+var bossRepairOmissionHypothesisPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "omission-comment-is-a-hypothesis",
+		pattern:      `Check\s+whether\s+the\s+trade-off\s+is\s+actually\s+forced\s+before\s+trusting\s+it`,
+		live:         "Check whether the trade-off is actually forced before trusting it",
+		tokenRemoved: "Check whether the comment is accurate before trusting it",
+	},
+})
+
+// bossRepairDocClaimReadOrderPins pins the read-cheapest-first half of the flagged-documentation-claim
+// verification. It deliberately lives on the REQUIRED verification in Strategy C rather than in the
+// Guidelines list: a Guidelines-tier copy would restate a step the skill explicitly calls "a required
+// step, not a guideline", and would license concluding "doc-only" from the comment alone when the
+// required form also demands the nearest test agree. The pin sits on "the package doc comment"
+// because that is the only read this rule adds; without it the sentence still reads as guidance
+// while licensing the multi-link implementation chain it exists to avoid.
+var bossRepairDocClaimReadOrderPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "read-adjacent-comment-first",
+		pattern:      `beside\s+the\s+implementation\s+—\s+and\s+the\s+package\s+doc\s+comment\s+—`,
+		live:         "beside the implementation — and the package doc comment — and the **name**",
+		tokenRemoved: "beside the implementation and the **name**",
+	},
+})
+
+// TestBossRepairSkillClaimTriageGuidelines asserts the omission-hypothesis rule against the real
+// payload, in the Guidelines window rather than the whole document: it is a triage rule, and a
+// triage rule that drifts out of the list a repair pass actually reads has stopped bounding
+// anything while still grepping green.
+func TestBossRepairSkillClaimTriageGuidelines(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			guidelines := sectionBetween(t, skill, "## Guidelines", "## Anti-Patterns")
+			assertFalsificationPins(t, guidelines, bossRepairOmissionHypothesisPins)
+		})
+	}
+}
+
+// TestBossRepairSkillProseFindingBlastRadius pins the two scope-of-fix rules for a review finding
+// that quotes skill prose, the markdown-eyeball rule that governs the hunk the fix produces, and the
+// read-order rule that bounds the verification budget before any of them. A quoted line is a
+// symptom: the same remedy is copied into every skill derived from the contract doc it came from, so
+// a fix applied only where the reviewer pointed leaves that contract re-seeding the identical prose
+// into the next copy. The second rule covers the half no grep hands you — passages that cite the OLD
+// rule as their reason rather than restating it, which is how a round ships a contradiction one
+// paragraph from the sentence it just corrected.
+func TestBossRepairSkillProseFindingBlastRadius(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertFalsificationPins(t, strategyC, bossRepairProseBlastRadiusPins)
+			assertFalsificationPins(t, strategyC, bossRepairDocClaimReadOrderPins)
+		})
+	}
+}

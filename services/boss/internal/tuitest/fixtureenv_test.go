@@ -67,13 +67,14 @@ func TestBaseHarnessEnvStripsSeedEnvCarrier(t *testing.T) {
 // e2e auth store reads is stripped from the ambient environ. The whitelist is a
 // prefix match, but BaseHarnessEnv strips by exact key: a var added to the store
 // and not to this list would be inherited from the developer's shell and could
-// never be overridden per scenario. BOS-659 added NEEDS_RELOGIN.
+// never be overridden per scenario. BOS-659 added NEEDS_RELOGIN; BOS-942 added LOGIN_SAVE_NOOP.
 func TestBaseHarnessEnvStripsAuthE2EFamily(t *testing.T) {
 	stripped := []string{
 		"BOSS_AUTH_E2E_EMAIL=ambient@example.com",
 		"BOSS_AUTH_E2E_LOGIN_EMAIL=ambient@example.com",
 		"BOSS_AUTH_E2E_NEEDS_RELOGIN=refresh_outcome_unknown",
 		"BOSS_AUTH_E2E_LOGOUT_ERROR=1",
+		"BOSS_AUTH_E2E_LOGIN_SAVE_NOOP=1",
 	}
 	got := BaseHarnessEnv(append([]string{"PATH=/bin"}, stripped...))
 	for _, want := range stripped {

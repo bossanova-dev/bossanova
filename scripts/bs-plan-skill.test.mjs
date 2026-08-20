@@ -30,8 +30,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { discoverExtensions } from '../skills-toolbox/skill-extensions.mjs'
+import { assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 const readIfExists = (rel) => {
   const url = new URL(rel, import.meta.url)
   return existsSync(url) ? readFileSync(url, 'utf8') : ''
@@ -122,17 +124,17 @@ test('the drafting dispatch is awaited, never backgrounded', () => {
 test('headless mode has no inline drafting fallback', () => {
   assert.match(
     HEADLESS_SECTION,
-    /Do \*\*not\*\* draft inline|Do not draft inline/i,
+    /Do \*\*not\*\* draft\s+inline|Do\s+not\s+draft\s+inline/i,
     'headless mode must explicitly forbid inline drafting',
   )
   assert.doesNotMatch(
     HEADLESS_SECTION,
-    /inline fallback/i,
+    /inline\s+fallback/i,
     'headless mode must not have an inline fallback',
   )
   assert.doesNotMatch(
     HEADLESS_SECTION,
-    /draft inline \*\*once\*\*/i,
+    /draft\s+inline \*\*once\*\*/i,
     'headless mode must not route dispatch-tool errors into inline drafting',
   )
 })
@@ -144,12 +146,12 @@ test('headless mode has no inline drafting fallback', () => {
 test('the return contract is path + bounded metadata, never the plan content', () => {
   assert.match(
     SKILL,
-    /only the plan-file path plus a bounded metadata object/i,
+    /only\s+the\s+plan-file\s+path\s+plus\s+a\s+bounded\s+metadata\s+object/i,
     'SKILL.md must state the subagent returns only the plan-file path + bounded metadata',
   )
   assert.match(
     SKILL,
-    /never the plan file's content/i,
+    /never\s+the\s+plan\s+file's\s+content/i,
     'SKILL.md must state the subagent never returns the plan file content',
   )
 })
@@ -170,7 +172,7 @@ test('the SKILL uses the byte-identical DISPATCH_FAILURE token from the shared h
 test('the drafting outcome is classified from the run-file sentinel only', () => {
   assert.match(
     SKILL,
-    /run-file sentinel only|from the (run-)?file only/i,
+    /run-file\s+sentinel\s+only|from\s+the (run-)?file\s+only/i,
     'SKILL.md must classify from the run-file sentinel only (never from returned prose)',
   )
 })
@@ -180,7 +182,7 @@ test('a missing/stale sentinel routes to the safe branch: no Linear write, non-z
   assert.match(SKILL, /stale/i, 'must handle a stale (foreign leftover) sentinel')
   assert.match(
     SKILL,
-    /no Linear write/i,
+    /no\s+Linear\s+write/i,
     'the dispatch-failure branch must make no Linear write (a half-planned issue is worse than none)',
   )
   assert.ok(SKILL.includes('exit 1'), 'the dispatch-failure branch must exit non-zero')
@@ -209,7 +211,7 @@ test('an ok sentinel accepts only a path that resolves to the expected non-empty
   )
   assert.match(
     HEADLESS_SECTION,
-    /metadata `planPath`\s+resolves to `PLAN_PATH`/,
+    /metadata `planPath`\s+resolves\s+to `PLAN_PATH`/,
     'the returned metadata planPath must resolve to the validated sentinel path',
   )
   assert.match(
@@ -219,26 +221,178 @@ test('an ok sentinel accepts only a path that resolves to the expected non-empty
   )
 })
 
+test('Phase 4 step 5 supplies the three inputs the library cannot derive for itself', () => {
+  // Each of these is a SILENT failure in the shipped glue rather than an error.
+  // A logical verdict with no direction lets the library orient a declared
+  // prerequisite by priority and write the edge backwards; `extractKeyChangeAreas`
+  // drops every slash-free area token when `moduleRoots` is absent, so a plan that
+  // names bare module names contributes no areas and every overlap is missed; and
+  // the expansion depth cap bounds ONE call, so a re-run loop that resets it can
+  // walk a malformed parent/child graph forever.
+  assert.match(
+    PHASE_4_SECTION,
+    /\*\*Direction\s+is\s+part\s+of\s+the\s+verdict\*\*/,
+    'step 5(b) must tell the caller a logical verdict carries its own direction',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /`blockedBy`\s+\(the\s+default[^)]*\)\s+or `blocks`/,
+    'step 5(b) must name both directions and say which one a bare verdict means',
+  )
+  assert.ok(
+    PHASE_4_SECTION.includes('moduleRoots'),
+    'step 5(c) must build moduleRoots into the classify payload',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /extractKeyChangeAreas\(g,x\.description,\{moduleRoots:/,
+    'the step 5(c) invocation must PASS moduleRoots through — naming it in prose while the runnable line drops it is the same silent miss',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /add\s+every\s+parent\s+id\s+you\s+have\s+already\s+expanded\s+to `excludeIds`/,
+    'step 5(d) must bound the documented epic re-run loop, which resets the library depth cap',
+  )
+})
+
+test('Phase 4 step 5 names its dependency library adjacent to the toolbox variable', () => {
+  // The shipped-toolbox gate (services/boss/internal/skillinstall/skills_manifest_test.go)
+  // keys on a literal `$BOSS_<CORE>_TOOLBOX/<file>` token. The step-5 invocation reaches
+  // the helper by concatenation (`T+"/plan-deps-lib.mjs"`), which that gate structurally
+  // cannot see — so without an adjacent mention the file this whole step depends on
+  // could drop out of the payload with every gate green.
+  assert.ok(
+    PHASE_4_SECTION.includes('$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs'),
+    'the dependency library must be named adjacent to $BOSS_PLAN_TOOLBOX so the shipped-toolbox gate covers it',
+  )
+})
+
 test('Phase 4 step 5 warns when an auto-linked blocker is itself transitively blocked (BOS-287)', () => {
   assert.ok(
     PHASE_4_SECTION.includes('Transitive-block warning'),
     'Phase 4 step 5 must document the transitive-block warning',
   )
+  // BOS-776 re-points the citation: the cleared-state rule moved out of the repo-specific
+  // `scripts/linear-deps-lib.mjs` (never shipped inside a published core) into the vendored
+  // `toolbox/plan-deps-lib.mjs`. A name-exact assertion alone is the failure mode the BOS-741 gate
+  // below records — it stays green while the surrounding prose stops saying what the citation is
+  // FOR — so pin the behaviour the name carries as well.
   assert.ok(
-    PHASE_4_SECTION.includes('scripts/linear-deps-lib.mjs'),
-    'the warning must reuse the scripts/linear-deps-lib.mjs cleared-state rule by name',
+    PHASE_4_SECTION.includes('toolbox/plan-deps-lib.mjs'),
+    'the warning must reuse the toolbox/plan-deps-lib.mjs cleared-state rule by name',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /`DEFAULT_CLEARED_STATE_TYPES` \/ `DEFAULT_CANCELED_STATE_TYPES` rule\s+in\s+`toolbox\/plan-deps-lib\.mjs`,\s+the\s+single\s+source/,
+    'the cleared definition must cite the library constants as its single source, not restate states in prose',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /treat\s+a\s+blocker's\s+blocker\s+as \*\*still\s+blocking\*\* unless\s+its\s+state\s+type\s+is\s+cleared\s+or\s+canceled/,
+    'the warning must keep the still-blocking-until-cleared rule it exists to apply',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /Detection\s+only — never\s+auto-prune/,
+    'the transitive-block warning must stay detection-only',
+  )
+})
+
+test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decision (BOS-776)', () => {
+  // Every bullet here is a defect that shipped while step 5 decided edges in prose. Assert the
+  // BEHAVIOUR, not just the module name: the six fixes are only real if the prose still says what
+  // each one requires of the caller. Match against a whitespace-normalized view so a re-wrap of the
+  // prose does not read as a removed requirement.
+  const flat = PHASE_4_SECTION.replace(/\s+/g, ' ')
+  assert.match(
+    flat,
+    /tracker\s+full-text\s+search\s+is \*\*fuzzy\s+and\s+must\s+never\s+decide\s+overlap\*\*/,
+    'step 5 must state that fuzzy tracker search never decides overlap (the ## Key changes section is the oracle)',
+  )
+  assert.match(
+    flat,
+    /\*\*explicit\s+field\s+list\*\*: `description, labels, priority, createdAt, state`/,
+    'the candidate fetch must name the explicit field list — the default field set omits them and yields a silent zero-link run',
+  )
+  assert.match(
+    flat,
+    /\*\*by\s+id, regardless\s+of\s+state\*\* — `selectPlanned` never\s+returns\s+a\s+cleared\s+ticket/,
+    'declared relations must be fetched by id regardless of state, or a cleared prerequisite is never reachable',
+  )
+  // Both appendRelatedTo branches, written as instructions rather than as an aside.
+  assert.match(
+    flat,
+    /if\s+the\s+adapter\s+does\s+not\s+declare `appendRelatedTo` \(it\s+is\s+optional\), record\s+the\s+relation\s+as\s+a `## Planning` note\s+instead; if\s+a\s+declared\s+one\s+fails, log\s+the\s+reason\s+and\s+continue/,
+    'step 5 must write BOTH appendRelatedTo branches (undeclared, and declared-but-failed) as instructions',
+  )
+  // Cycle safety after the downgrade, scoped to blocking edges. Ordering is the whole point: a
+  // 2-cycle check ahead of the downgrade skips the pair and eats the relatedTo edge with it.
+  const downgradeAt = PHASE_4_SECTION.indexOf("edge: 'relatedTo'")
+  const cycleAt = PHASE_4_SECTION.indexOf('Cycle safety')
+  assert.ok(
+    downgradeAt > 0 && cycleAt > 0,
+    'step 5 must carry both the downgrade branch and cycle safety',
+  )
+  assert.ok(
+    cycleAt > downgradeAt,
+    'cycle safety must run AFTER the started-side downgrade, not before it',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /`relatedTo` is\s+symmetric\s+and\s+non-blocking\s+and\s+cannot\s+form\s+a\s+cycle/,
+    'cycle safety must be scoped to blocking writes only',
+  )
+  // The library is invoked, not paraphrased — and through the CommonJS pathToFileURL spelling the
+  // byte budget already paid for at the Phase 0 preflight and the Phase 3 slug one-liner.
+  assert.match(
+    PHASE_4_SECTION,
+    /import\(u\.pathToFileURL\(T\+p\)\.href\)/,
+    'step 5 must resolve the toolbox module through require("node:url").pathToFileURL(...).href',
+  )
+  assert.match(
+    PHASE_4_SECTION,
+    /planDependencyEdges/,
+    'step 5 must call the library rather than re-deriving the ladder in prose',
+  )
+  // The payload's own state. The subject is the blocked side of every inbound edge and the blocker
+  // of every outbound one, so a subject assembled without a state resolves to the unknown role on
+  // BOTH sides of the ladder's last rung and downgrades the whole set to `relatedTo` — a run that
+  // linked nothing, for a reason no per-candidate note distinguishes from having found nothing.
+  assert.match(
+    flat,
+    /`subject` needs\s+the\s+SAME\s+fields\s+as\s+a\s+candidate, its\s+own `state` included/,
+    'step 5 must require the subject payload to carry its own state, or every edge downgrades',
+  )
+  // The prefilter is a context-scale measure. Read as an overlap filter it re-introduces the
+  // missed-prerequisite defect one layer above the oracle.
+  assert.match(
+    flat,
+    /prefilter\s+is\s+a \*\*context-scale\s+measure\s+only, never\s+an\s+overlap\s+decision\*\*/,
+    'the title+label prefilter must be bounded, or it silently decides overlap ahead of the oracle',
+  )
+  // The run's only post-dependency save. Gated on relations alone it discards every zero-relation
+  // outcome the library went to the trouble of raising.
+  assert.match(
+    flat,
+    /Record\s+what\s+step\s+5\s+found — \*\*whenever \(d\) produced ≥1\s+relation, note, or\s+question\*\*/,
+    'the recording save must fire on a note or a question too, not on relations alone',
+  )
+  assert.match(
+    flat,
+    /union\s+it\s+into\s+the\s+set\s+Step\s+4\s+saved, because `labels` \*\*replaces\*\* the\s+whole\s+set/,
+    'the agent-question write must state the union rule — a bare labels write clobbers Step 4 labels',
   )
 })
 
 test('Phase 4 permits required secret redaction without weakening attachment parity (BOS-702)', () => {
   assert.match(
     PHASE_4_SECTION,
-    /redact it in[\s\S]{0,20}every persisted artifact/i,
+    /redact\s+it\s+in[\s\S]{0,20}every\s+persisted\s+artifact/i,
     'the secret gate must cover both persisted artifacts, not only the attachment',
   )
   assert.match(
     PHASE_4_SECTION,
-    /attachment-guard-orig\.md[\s\S]{0,280}only.*mandatory secret\/PII redactions/i,
+    /attachment-guard-orig\.md[\s\S]{0,280}only.*mandatory\s+secret\/PII\s+redactions/i,
     'the safe source must be derived from Phase 1 notes, not a generated artifact',
   )
   assert.match(
@@ -268,7 +422,7 @@ test('Phase 4 carries a mandatory plan-contract STOP gate before the tracker wri
   // the surrounding prose has stopped saying the gate is mandatory or that failure means no write.
   assert.match(
     PHASE_4_SECTION,
-    /STOP — plan-contract gate \(mandatory, mechanical, do not skip\)/,
+    /STOP — plan-contract\s+gate \(mandatory, mechanical, do\s+not\s+skip\)/,
     'Phase 4 must carry the contract gate as a mandatory mechanical STOP',
   )
   assert.match(
@@ -289,13 +443,13 @@ test('Phase 4 carries a mandatory plan-contract STOP gate before the tracker wri
   const gateBlock = PHASE_4_SECTION.slice(gateAt)
   assert.match(
     gateBlock,
-    /SAFE branch[\s\S]{0,200}no Linear write/,
+    /SAFE\s+branch[\s\S]{0,200}no\s+Linear\s+write/,
     'the contract gate must name the SAFE branch and that it performs no tracker write',
   )
-  assert.match(gateBlock, /exit non-zero/, 'the SAFE branch must exit non-zero')
+  assert.match(gateBlock, /exit\s+non-zero/, 'the SAFE branch must exit non-zero')
   assert.match(
     gateBlock,
-    /zero\*\* extra tracker[\s>]+reads/,
+    /zero\*\* extra\s+tracker[\s>]+reads/,
     'the gate must state it adds no additional tracker read',
   )
   for (const code of [
@@ -319,7 +473,7 @@ test('the resident body documents the config-first validatePlanDescription signa
   )
   assert.match(
     SKILL,
-    /config-first\*\* order;[\s\S]{0,140}named\s+argument-order error/,
+    /config-first\*\* order;[\s\S]{0,140}named\s+argument-order\s+error/,
     'the resident body must say the swapped call throws a named argument-order error',
   )
 })
@@ -332,7 +486,7 @@ test('the drafting brief runs the contract guard before the ok sentinel (BOS-741
   )
   assert.match(
     BRIEF,
-    /non-zero exit means write no `ok` sentinel/,
+    /non-zero\s+exit\s+means\s+write\s+no `ok` sentinel/,
     'a contract violation must block the ok sentinel, not merely be reported',
   )
   const guardAt = BRIEF.indexOf('plan-contract-guard.mjs')
@@ -342,22 +496,22 @@ test('the drafting brief runs the contract guard before the ok sentinel (BOS-741
 test('the drafting brief pins the cased ## Open Questions heading and plan-body-only rule (BOS-741)', () => {
   assert.match(
     BRIEF,
-    /\*\*`## Open Questions`\*\*[\s\S]{0,160}exact casing, capital `Q`/,
+    /\*\*`## Open\s+Questions`\*\*[\s\S]{0,160}exact\s+casing, capital `Q`/,
     'the brief must state the exact cased heading so plan file and description agree',
   )
   assert.match(
     BRIEF,
-    /## Open questions/,
+    /## Open\s+questions/,
     'the brief must name the drifted lower-case spelling it is correcting',
   )
   assert.match(
     BRIEF,
-    /plan file must contain ONLY the plan body/,
+    /plan\s+file\s+must\s+contain\s+ONLY\s+the\s+plan\s+body/,
     'the brief must require the plan file to carry only the plan body',
   )
   assert.match(
     BRIEF,
-    /No tool-call scaffolding[\s\S]{0,120}transcript residue/,
+    /No\s+tool-call\s+scaffolding[\s\S]{0,120}transcript\s+residue/,
     'the plan-body-only rule must name the residue it excludes',
   )
 })
@@ -365,7 +519,7 @@ test('the drafting brief pins the cased ## Open Questions heading and plan-body-
 test('Phase 4 counts canonical upload identities for the image guard (BOS-702)', () => {
   assert.match(
     PHASE_4_SECTION,
-    /distinct canonical upload identities[\s\S]{0,140}origin plus pathname, ignoring query strings/i,
+    /distinct\s+canonical\s+upload\s+identities[\s\S]{0,140}origin\s+plus\s+pathname, ignoring\s+query\s+strings/i,
     'EXPECTED_IMAGES must use the same signed-URL-normalizing identity as the guard',
   )
   assert.ok(
@@ -383,14 +537,14 @@ test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', ()
     'the failed-gate cleanup must remove raw, safe, rewritten, and plan scratch files',
   )
   assert.equal(
-    (PHASE_4_SECTION.match(/cleanup_guard_scratch\n>   exit 1/g) ?? []).length,
+    (PHASE_4_SECTION.match(/cleanup_guard_scratch\n>   exit\s+1/g) ?? []).length,
     4,
     'each of the four image-guard failures must clean scratch before exiting',
   )
   // Counting one helper name cannot see a failed-gate exit that cleans up some OTHER way — which is
   // how the BOS-741 contract gate shipped leaking `$ORIG`/`$SAFE_ORIG`. Assert the property instead:
   // EVERY `exit 1` in Phase 4 must be preceded by a cleanup naming all four scratch paths.
-  const exits = PHASE_4_SECTION.split(/^>\s+exit 1$/m)
+  const exits = PHASE_4_SECTION.split(/^>\s+exit\s+1$/m)
   assert.ok(exits.length - 1 >= 5, 'Phase 4 must carry the image gates plus the contract gate')
   for (const [i, before] of exits.slice(0, -1).entries()) {
     const tail = before.slice(-400)
@@ -409,7 +563,7 @@ test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', ()
 test('the SKILL carries the bulk-output-discipline block', () => {
   assert.match(
     SKILL,
-    /Bulk-output discipline/i,
+    /Bulk-output\s+discipline/i,
     'SKILL.md must carry the bulk-output-discipline rule block',
   )
   assert.ok(
@@ -467,7 +621,7 @@ test('the interactive draft step resolves through discovery and the Fallback con
   )
   assert.match(
     `${INTERACTIVE}\n${BRIEF}`,
-    /helper is missing[\s\S]*"extensions":\[\][\s\S]*portable fallback tiers still run/,
+    /helper\s+is\s+missing[\s\S]*"extensions":\[\][\s\S]*portable\s+fallback\s+tiers\s+still\s+run/,
     'draft discovery must treat a missing public helper as no extensions',
   )
   // BOS-663: the dispatch must read the descriptor's `skillPath` from disk. Loading by the bare
@@ -481,7 +635,7 @@ test('the interactive draft step resolves through discovery and the Fallback con
   )
   assert.doesNotMatch(
     `${INTERACTIVE}\n${BRIEF}`,
-    /load each discovered extension by its returned\s+descriptor\s+`name`\s+via the Skill tool/i,
+    /load\s+each\s+discovered\s+extension\s+by\s+its\s+returned\s+descriptor\s+`name`\s+via\s+the\s+Skill\s+tool/i,
     'draft dispatch must not load a discovered extension by name via the Skill tool',
   )
   for (const marker of ['Tier 1', 'Tier 2', 'Tier 3']) {
@@ -594,7 +748,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   // drafting layer could be silently dropped with no plan on disk and no skip recorded.
   assert.match(
     INTERACTIVE,
-    /draft success predicate/i,
+    /draft\s+success\s+predicate/i,
     'interactive-mode.md must name one draft success predicate for the Tier-1 gate',
   )
   // (a) valid result AND (b) the requested non-empty plan actually produced at `planPath`.
@@ -605,7 +759,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   )
   assert.match(
     INTERACTIVE,
-    /valid envelope\s+that wrote no plan/i,
+    /valid\s+envelope\s+that\s+wrote\s+no\s+plan/i,
     'interactive-mode.md must state that a valid envelope without the plan is not a success',
   )
   // Every failed dispatch is recorded as it is classified — a succeeding sibling does not excuse
@@ -617,7 +771,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   )
   assert.match(
     INTERACTIVE,
-    /including when a sibling succeeded/i,
+    /including\s+when\s+a\s+sibling\s+succeeded/i,
     'a failed draft dispatch must still be recorded when a sibling extension succeeds',
   )
   // The SAME predicate gates both "suppress tiers 2/3" and "enter Tier 2/Tier 3", so the two can
@@ -631,17 +785,17 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   // to today's break reds on a reflow that changed no meaning.
   assert.match(
     INTERACTIVE.replace(/\s+/g, ' '),
-    /fall through to Tier 2, then Tier 3/,
+    /fall\s+through\s+to\s+Tier\s+2, then\s+Tier\s+3/,
     'interactive-mode.md must keep the Tier-2/Tier-3 fall-through',
   )
   assert.doesNotMatch(
     INTERACTIVE,
-    /If at least one extension ran successfully/i,
+    /If\s+at\s+least\s+one\s+extension\s+ran\s+successfully/i,
     'the suppression gate must not use the undefined "ran successfully" criterion',
   )
   assert.doesNotMatch(
     INTERACTIVE,
-    /if no extension ran successfully/i,
+    /if\s+no\s+extension\s+ran\s+successfully/i,
     'the Tier-2/Tier-3 entry gates must not use the undefined "ran successfully" criterion',
   )
 
@@ -672,7 +826,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
     )
     assert.match(
       BRIEF.replace(/\s+/g, ' '),
-      /Remove it with `rm -rf`[^.]*promoted the winning plan[^.]*failure paths too/i,
+      /Remove\s+it\s+with `rm -rf`[^.]*promoted\s+the\s+winning\s+plan[^.]*failure\s+paths\s+too/i,
       'the headless brief must remove the run scratch it created, on the failure paths too',
     )
   }
@@ -682,7 +836,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   // verbatim, so fixing only interactive-mode.md would leave the shared spec contradicting it.
   assert.match(
     BRIEF,
-    /draft success predicate/i,
+    /draft\s+success\s+predicate/i,
     'headless-drafting-brief.md Step 5 must carry the same draft success predicate',
   )
   assert.match(
@@ -692,7 +846,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   )
   assert.match(
     BRIEF,
-    /including when a sibling succeeded/i,
+    /including\s+when\s+a\s+sibling\s+succeeded/i,
     'the shared drafting spec must record a failed dispatch even when a sibling succeeds',
   )
   assert.ok(
@@ -701,7 +855,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   )
   assert.doesNotMatch(
     `${BRIEF}\n${SKILL}`,
-    /(?:If at least one|if no) extension ran successfully/i,
+    /(?:If\s+at\s+least\s+one|if\s+no) extension\s+ran\s+successfully/i,
     'no boss-plan draft site may keep the undefined "ran successfully" criterion',
   )
 
@@ -709,17 +863,17 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   // not state a looser definition of "succeeded" than the references do.
   assert.match(
     SKILL,
-    /succeeded\*\* only when its\s+result is valid \*\*AND\*\* the requested non-empty plan exists/i,
+    /succeeded\*\* only\s+when\s+its\s+result\s+is\s+valid \*\*AND\*\* the\s+requested\s+non-empty\s+plan\s+exists/i,
     'SKILL.md must define a Tier-1 draft success as a valid result AND the produced plan',
   )
   assert.match(
     SKILL,
-    /for every failed dispatch, including when a sibling\s+succeeded/i,
+    /for\s+every\s+failed\s+dispatch, including\s+when\s+a\s+sibling\s+succeeded/i,
     'SKILL.md must record every failed draft dispatch, not only the all-failed case',
   )
   assert.doesNotMatch(
     SKILL,
-    /If every discovered extension failed,\s+record/i,
+    /If\s+every\s+discovered\s+extension\s+failed,\s+record/i,
     'SKILL.md must not scope draft skip recording to the all-extensions-failed branch',
   )
 
@@ -736,7 +890,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
   ]) {
     assert.match(
       text.replace(/\s+/g, ' '),
-      /written by (\*\*)?th(is|at)(\*\*)? dispatch/i,
+      /written\s+by (\*\*)?th(is|at)(\*\*)? dispatch/i,
       `${name} must attribute the produced plan to the dispatch being classified, not merely to the shared plan path`,
     )
   }
@@ -747,7 +901,7 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
     const flat = text.replace(/\s+/g, ' ')
     assert.match(
       flat,
-      /is a test of shared state, not of this extension/i,
+      /is\s+a\s+test\s+of\s+shared\s+state, not\s+of\s+this\s+extension/i,
       `${name} must say why the bare existence check is insufficient`,
     )
     // …and the remedy has to be the dispatch TARGET, not a before/after comparison of one shared
@@ -759,64 +913,64 @@ test('BOS-693: one draft-success predicate governs skip recording and tier fall-
     // its own path and the existence check attributes by construction, whatever the bytes say.
     assert.match(
       flat,
-      /Per-dispatch plan target/i,
+      /Per-dispatch\s+plan\s+target/i,
       `${name} must hand each draft dispatch its own plan target`,
     )
     assert.match(
       flat,
-      /unique to the dispatch you are about to classify/i,
+      /unique\s+to\s+the\s+dispatch\s+you\s+are\s+about\s+to\s+classify/i,
       `${name} must state that the per-dispatch target is unique to the dispatch being classified`,
     )
     assert.match(
       flat,
-      /copy the file produced by the \*\*first\*\* dispatch that succeeded under the predicate below/i,
+      /copy\s+the\s+file\s+produced\s+by\s+the \*\*first\*\* dispatch\s+that\s+succeeded\s+under\s+the\s+predicate\s+below/i,
       `${name} must promote the winning per-dispatch plan onto the real plan target`,
     )
     assert.doesNotMatch(
       flat,
-      /modification time to have moved/i,
+      /modification\s+time\s+to\s+have\s+moved/i,
       `${name} must not use timestamp inequality as proof that this dispatch wrote the plan`,
     )
     assert.match(
       flat,
-      /modification time need not advance/i,
+      /modification\s+time\s+need\s+not\s+advance/i,
       `${name} must say why an mtime comparison cannot carry the attribution`,
     )
     assert.match(
       flat,
-      /timestamp\s*resolution is coarser than the rewrite/i,
+      /timestamp\s*resolution\s+is\s+coarser\s+than\s+the\s+rewrite/i,
       `${name} must name the coarse-timestamp filesystem that defeats an mtime comparison`,
     )
     assert.match(
       flat,
-      /Identical bytes are the ordinary output of a deterministic redraft/i,
+      /Identical\s+bytes\s+are\s+the\s+ordinary\s+output\s+of\s+a\s+deterministic\s+redraft/i,
       `${name} must say why a byte comparison cannot carry the attribution either`,
     )
   }
   assert.match(
     SKILL.replace(/\s+/g, ' '),
-    /per-dispatch plan path that dispatch alone was given[\s\S]{0,120}never at a path a peer could have written/i,
+    /per-dispatch\s+plan\s+path\s+that\s+dispatch\s+alone\s+was\s+given[\s\S]{0,120}never\s+at\s+a\s+path\s+a\s+peer\s+could\s+have\s+written/i,
     'the always-resident Fallback contract must not state a looser attribution rule than the references',
   )
 })
 
 test('the resident body states the draft Fallback contract', () => {
-  assert.match(SKILL, /Fallback contract/, 'SKILL.md must name the Fallback contract')
+  assert.match(SKILL, /Fallback\s+contract/, 'SKILL.md must name the Fallback contract')
   assert.match(
     SKILL,
-    /extension.*host built-in.*inline prompt/is,
+    /extension.*host\s+built-in.*inline\s+prompt/is,
     'SKILL.md must state the extension -> host built-in -> inline prompt order',
   )
   // BOS-663: suppression keys on a Tier-1 dispatch SUCCEEDING, not on an extension merely being
   // present. Gating on presence made a failed dispatch silently drop the whole drafting layer.
   assert.match(
     SKILL,
-    /tiers 2\/3 suppressed only when a Tier-1 dispatch\s+\*\*succeeded\*\*/i,
+    /tiers\s+2\/3\s+suppressed\s+only\s+when\s+a\s+Tier-1\s+dispatch\s+\*\*succeeded\*\*/i,
     'SKILL.md must state that lower fallback tiers are suppressed only when a Tier-1 dispatch succeeded',
   )
   assert.match(
     SKILL,
-    /fall through to tier 2, then tier 3/i,
+    /fall\s+through\s+to\s+tier\s+2, then\s+tier\s+3/i,
     'SKILL.md must state the fall-through when every discovered extension failed',
   )
 })
@@ -896,7 +1050,7 @@ test('BOS-813: the CE draft extension drives CE natively in both modes', () => {
   )
   assert.match(
     headless,
-    /runs `ce-doc-review` in headless mode itself/i,
+    /runs `ce-doc-review` in\s+headless\s+mode\s+itself/i,
     'the headless path must say why it does not re-invoke: CE runs the review pass itself',
   )
   assert.match(
@@ -912,27 +1066,27 @@ test('BOS-813: the CE draft extension drives CE natively in both modes', () => {
   // implementing mid-plan. The interactive path must stop at CE's plan file instead.
   assert.doesNotMatch(
     interactive,
-    /do not shortcut its menus/i,
+    /do\s+not\s+shortcut\s+its\s+menus/i,
     'the interactive path must not hand CE’s post-generation menu blanket authority',
   )
   assert.match(
     interactive,
-    /never a CE menu action/i,
+    /never\s+a\s+CE\s+menu\s+action/i,
     'the interactive path must name CE’s plan file — not a menu action — as the deliverable',
   )
   assert.match(
     interactive.replace(/\s+/g, ' '),
-    /decline every menu branch that leaves the plan file/i,
+    /decline\s+every\s+menu\s+branch\s+that\s+leaves\s+the\s+plan\s+file/i,
     'the interactive path must decline the menu branches that leave the plan file',
   )
   assert.match(
     interactive.replace(/\s+/g, ' '),
-    /the core owns the tracker write/i,
+    /the\s+core\s+owns\s+the\s+tracker\s+write/i,
     'the interactive path must say why: the core, not CE, owns the tracker write',
   )
   assert.match(
     interactive.replace(/\s+/g, ' '),
-    /already been created[\s\S]{0,60}before you could decline[\s\S]{0,400}failure envelope/i,
+    /already\s+been\s+created[\s\S]{0,60}before\s+you\s+could\s+decline[\s\S]{0,400}failure\s+envelope/i,
     'an already-fired tracker-issue branch must route to the failure envelope, not be papered over',
   )
 })
@@ -1091,15 +1245,15 @@ test('the references split is wired: SKILL points at both references', () => {
 })
 
 test('the shared drafting spec (plan-body requirements + template) lives in the brief', () => {
-  assert.match(BRIEF, /## Acceptance criteria/, 'the brief carries the plan-body requirements')
+  assert.match(BRIEF, /## Acceptance\s+criteria/, 'the brief carries the plan-body requirements')
   assert.match(
     BRIEF,
-    /## Original notes/,
+    /## Original\s+notes/,
     'the brief carries the fill-in description-summary template',
   )
   assert.match(
     INTERACTIVE,
-    /references\/headless-drafting-brief\.md` \*\*Step 5\*\* and\s+\*\*Step 7\*\*/,
+    /references\/headless-drafting-brief\.md` \*\*Step\s+5\*\* and\s+\*\*Step\s+7\*\*/,
     'interactive drafting must point at the shared Step 5/Step 7 sections that actually contain the moved template',
   )
   assert.doesNotMatch(
@@ -1141,12 +1295,12 @@ test('the brief no longer claims boss-proof is screenshot-only (stills AND video
   )
   assert.doesNotMatch(
     BRIEF,
-    /future proof type/i,
+    /future\s+proof\s+type/i,
     'the brief must not describe video as a "future" proof type — it is captured today',
   )
   assert.match(
     BRIEF,
-    /stills and video/i,
+    /stills\s+and\s+video/i,
     'the brief must state boss-proof captures stills and video',
   )
 })
@@ -1163,22 +1317,22 @@ test('the brief Step 5 instructs a proof-harness readiness analysis + criterion�
   )
   assert.match(
     BRIEF,
-    /proof\.mjs plan/,
+    /proof\.mjs\s+plan/,
     'the readiness pass must use the same `proof.mjs plan` gate the implementer uses',
   )
   assert.match(
     BRIEF,
-    /map each acceptance criterion to a concrete proof artifact/i,
+    /map\s+each\s+acceptance\s+criterion\s+to\s+a\s+concrete\s+proof\s+artifact/i,
     'the readiness pass must map each acceptance criterion to a concrete proof artifact',
   )
   assert.match(
     BRIEF,
-    /missing but buildable[\s\S]{0,200}IN-PR work/i,
+    /missing\s+but\s+buildable[\s\S]{0,200}IN-PR\s+work/i,
     'the readiness pass must schedule buildable-but-missing affordances as in-PR work',
   )
   assert.match(
     BRIEF,
-    /never call `AskUserQuestion`/,
+    /never\s+call `AskUserQuestion`/,
     'the readiness pass must stay headless-safe (never AskUserQuestion)',
   )
 })
@@ -1229,28 +1383,28 @@ const EPIC_PHASE = sectionBetween(
 test('the SKILL documents the EPIC decomposition phase and its plan-epic-lib core', () => {
   assert.match(
     EPIC_PHASE,
-    /multiple independently-shippable\s+PRs/,
+    /multiple\s+independently-shippable\s+PRs/,
     'the phase must define EPIC as multi-PR work',
   )
   assert.match(
     EPIC_PHASE,
-    /≥ 2\*\*\s+genuinely separable/,
+    /≥ 2\*\*\s+genuinely\s+separable/,
     'the phase must require >=2 separable children',
   )
   // The estimate-as-forcing-function trigger: honest >=5 auto-triages EPIC.
   assert.match(
     EPIC_PHASE,
-    /honest estimate is \*\*≥ 5\*\*/,
+    /honest\s+estimate\s+is \*\*≥ 5\*\*/,
     'the phase must make an honest >=5 estimate auto-trigger EPIC',
   )
   assert.match(
     EPIC_PHASE,
-    /Estimate is the forcing function/,
+    /Estimate\s+is\s+the\s+forcing\s+function/,
     'the phase must name estimate as the forcing function',
   )
   assert.match(
     EPIC_PHASE,
-    /`8` is never a single-ticket estimate/,
+    /`8` is\s+never\s+a\s+single-ticket\s+estimate/,
     'the phase must state that 8 is never a single-ticket estimate',
   )
   for (const sym of [
@@ -1325,12 +1479,12 @@ test('BOS-652: the emitted write plan carries BOTH of its execution qualifiers',
   ]) {
     assert.match(
       text,
-      /minus any stage the\s+preconditions below skip/,
+      /minus\s+any\s+stage\s+the\s+preconditions\s+below\s+skip/,
       `${name} must qualify the emitted order with the stage-level skip`,
     )
     assert.match(
       text,
-      /minus every child `reconcileEpicChildren` does NOT\s+report `missing`/,
+      /minus\s+every\s+child `reconcileEpicChildren` does\s+NOT\s+report `missing`/,
       `${name} must qualify the emitted order with the resume's missing-set filter`,
     )
   }
@@ -1348,32 +1502,32 @@ test('the SKILL documents every load-bearing epic guard', () => {
   )
   assert.match(
     EPIC_PHASE,
-    /never\*\*\s*a single oversized ticket|needs-human/i,
+    /never\*\*\s*a\s+single\s+oversized\s+ticket|needs-human/i,
     'over the child cap must fall to needs-human, never a single oversized ticket',
   )
   // recursion guard
   assert.match(EPIC_PHASE, /allowEpic: false/, 'must state the allowEpic:false recursion guard')
   assert.match(
     EPIC_PHASE,
-    /no child recursion|never itself decomposed/i,
+    /no\s+child\s+recursion|never\s+itself\s+decomposed/i,
     'must forbid child recursion',
   )
   // cycle safety
-  assert.match(EPIC_PHASE, /cycle safety|blockedByKeys` cycle/i, 'must state cycle safety')
+  assert.match(EPIC_PHASE, /cycle\s+safety|blockedByKeys` cycle/i, 'must state cycle safety')
   // validate-before-write atomicity
   assert.match(
     EPIC_PHASE,
-    /validate everything locally BEFORE the first Linear write|validate-before-write/i,
+    /validate\s+everything\s+locally\s+BEFORE\s+the\s+first\s+Linear\s+write|validate-before-write/i,
     'must state the validate-before-write atomicity guard',
   )
-  assert.match(EPIC_PHASE, /zero\s+Linear writes/i, 'must state zero writes on failure')
+  assert.match(EPIC_PHASE, /zero\s+Linear\s+writes/i, 'must state zero writes on failure')
   // idempotent resume
-  assert.match(EPIC_PHASE, /idempotent resume/i, 'must state idempotent resume')
+  assert.match(EPIC_PHASE, /idempotent\s+resume/i, 'must state idempotent resume')
   assert.match(EPIC_PHASE, /adopts/i, 'must state that re-runs adopt existing children')
-  assert.match(EPIC_PHASE, /clean no-op/i, 'must state a fully-built epic re-run is a no-op')
+  assert.match(EPIC_PHASE, /clean\s+no-op/i, 'must state a fully-built epic re-run is a no-op')
   // original-becomes-parent + parent-label exception
   assert.match(EPIC_PHASE, /original-becomes-parent/i, 'must state original-becomes-parent')
-  assert.match(EPIC_PHASE, /Parent-label exception/, 'must state the parent-label exception')
+  assert.match(EPIC_PHASE, /Parent-label\s+exception/, 'must state the parent-label exception')
   assert.match(
     EPIC_PHASE,
     /neither\*\*\s*`agent-friendly`\s*\*\*nor\*\*\s*`needs-human`/,
@@ -1381,7 +1535,7 @@ test('the SKILL documents every load-bearing epic guard', () => {
   )
   // per-child planContract-v1 + intra-epic DAG + external links
   assert.match(EPIC_PHASE, /planContract-v1/, 'children must be full planContract-v1 plans')
-  assert.match(EPIC_PHASE, /external conflict links/i, 'must wire external conflict links')
+  assert.match(EPIC_PHASE, /external\s+conflict\s+links/i, 'must wire external conflict links')
   // reconcileEpicChildren's ambiguous-drift branch must be pinned SAFE (report, no writes, no
   // guessing) and a refusal must never degrade to "no children exist" — the whole-epic-duplication
   // hazard reconcileEpicChildren's own refuse() guards against.
@@ -1397,7 +1551,7 @@ test('the SKILL documents every load-bearing epic guard', () => {
   // green. That is the same failure mode the brief's outcome assertions already guard against.
   assert.match(
     EPIC_PHASE,
-    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never by eye,\s*never\s*\n?by title/,
+    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never\s+by\s+eye,\s*never\s*\n?by\s+title/,
     'the phase must mandate reconcileEpicChildren as the idempotent-resume join, not an eyeball or title match',
   )
   // The unambiguous-rename repair must be aimed at the CHILD's marker, never at the spec key:
@@ -1405,7 +1559,7 @@ test('the SKILL documents every load-bearing epic guard', () => {
   // resolve through, so re-pointing the spec at `liveKey` strands those refs and throws mid-wire.
   assert.match(
     EPIC_PHASE,
-    /rewrite\s+\*\*its own\*\*\s+description marker to `epicChildMarker\(specKey\)`[\s\S]*?never the spec key/,
+    /rewrite\s+\*\*its\s+own\*\*\s+description\s+marker\s+to `epicChildMarker\(specKey\)`[\s\S]*?never\s+the\s+spec\s+key/,
     'the unambiguous rename must repair the child marker, never re-point the spec key',
   )
   // The repair is a description WRITE, and the tracker save replaces the description (the same
@@ -1414,7 +1568,7 @@ test('the SKILL documents every load-bearing epic guard', () => {
   // wipes the child's gated plan body while the child still reads as adopted — a silent loss.
   assert.match(
     EPIC_PHASE,
-    /replacing\s*\n?only the marker substring and \*\*preserving the rest of that description's bytes verbatim\*\*/,
+    /replacing\s*\n?only\s+the\s+marker\s+substring\s+and \*\*preserving\s+the\s+rest\s+of\s+that\s+description's\s+bytes\s+verbatim\*\*/,
     'the rename repair must preserve the rest of the child description, since the save replaces it',
   )
 })
@@ -1424,17 +1578,17 @@ test('both references carry the EPIC triage tier and flow', () => {
   assert.match(INTERACTIVE, /\*\*EPIC\*\*/, 'interactive-mode must add the EPIC triage tier')
   assert.match(
     INTERACTIVE,
-    /Epic decomposition \(interactive: propose → confirm → create\)/,
+    /Epic\s+decomposition \(interactive: propose → confirm → create\)/,
     'interactive-mode must carry the propose-confirm-create flow',
   )
   assert.match(
     INTERACTIVE,
-    /create this epic/i,
+    /create\s+this\s+epic/i,
     'interactive AskUserQuestion must offer create-this-epic',
   )
   assert.match(
     INTERACTIVE,
-    /plan as one ticket/i,
+    /plan\s+as\s+one\s+ticket/i,
     'interactive must offer the single-ticket option',
   )
   assert.match(
@@ -1446,7 +1600,7 @@ test('both references carry the EPIC triage tier and flow', () => {
   assert.match(BRIEF, /\*\*EPIC\*\*/, 'the brief must add the EPIC triage tier')
   assert.match(
     BRIEF,
-    /Epic decompose-and-auto-create/,
+    /Epic\s+decompose-and-auto-create/,
     'the brief must carry the headless auto-create flow',
   )
   assert.match(
@@ -1456,12 +1610,12 @@ test('both references carry the EPIC triage tier and flow', () => {
   )
   assert.match(
     BRIEF,
-    /fall back to a single-ticket plan and record the reason/i,
+    /fall\s+back\s+to\s+a\s+single-ticket\s+plan\s+and\s+record\s+the\s+reason/i,
     'the brief must document the single-ticket fallback on guard failure',
   )
   assert.match(
     BRIEF,
-    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never adopt by eye,\s*never by title/,
+    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never\s+adopt\s+by\s+eye,\s*never\s+by\s+title/,
     'the brief must mandate reconcileEpicChildren as the idempotent-resume join, not an eyeball match',
   )
   // Pin the three reconcileEpicChildren outcomes by their actual wording, not just the symbol's
@@ -1469,17 +1623,17 @@ test('both references carry the EPIC triage tier and flow', () => {
   // elsewhere in the file (e.g. only in the return-shape doc) must not stay green.
   assert.match(
     BRIEF,
-    /\*\*\(1\)\s+aligned\*\*\s*\(no orphans\)\s*—\s*create exactly the spec keys `missing` names/,
+    /\*\*\(1\)\s+aligned\*\*\s*\(no\s+orphans\)\s*—\s*create\s+exactly\s+the\s+spec\s+keys `missing` names/,
     'the brief must document outcome (1) aligned: create exactly the missing spec keys',
   )
   assert.match(
     BRIEF,
-    /\*\*\(2\)\s+unambiguous rename\*\*\s*\(`repairs` holds exactly one `\{specKey,\s*liveKey,\s*id\}`/,
+    /\*\*\(2\)\s+unambiguous\s+rename\*\*\s*\(`repairs` holds\s+exactly\s+one `\{specKey,\s*liveKey,\s*id\}`/,
     'the brief must document outcome (2) unambiguous rename: repairs holds exactly one entry',
   )
   assert.match(
     BRIEF,
-    /\*\*\(3\)\s+ambiguous drift\*\*\s*\(`ok:false`\s*—\s*multiple orphans,\s*an unmarked child,\s*duplicate live marker\s+keys,\s*or a non-array `liveChildren`\)\s*—\s*take the SAFE branch:\s*report `errors`,\s*write nothing,\s*create\s+nothing,\s*never guess/,
+    /\*\*\(3\)\s+ambiguous\s+drift\*\*\s*\(`ok:false`\s*—\s*multiple\s+orphans,\s*an\s+unmarked\s+child,\s*duplicate\s+live\s+marker\s+keys,\s*or\s+a\s+non-array `liveChildren`\)\s*—\s*take\s+the\s+SAFE\s+branch:\s*report `errors`,\s*write\s+nothing,\s*create\s+nothing,\s*never\s+guess/,
     'the brief must document outcome (3) ambiguous drift taking the SAFE branch refusal',
   )
   // Same repair-direction pin as the SKILL phase carries: the rename repair rewrites the CHILD's
@@ -1487,14 +1641,14 @@ test('both references carry the EPIC triage tier and flow', () => {
   // ref and the `adopted` entry (both keyed by `specKey`) and throw inside `epicWiringPlan`.
   assert.match(
     BRIEF,
-    /rewrite\s+\*\*its own\*\*\s+description marker to `epicChildMarker\(specKey\)`[\s\S]*?never the spec key/,
+    /rewrite\s+\*\*its\s+own\*\*\s+description\s+marker\s+to `epicChildMarker\(specKey\)`[\s\S]*?never\s+the\s+spec\s+key/,
     'the brief must repair the child marker on an unambiguous rename, never re-point the spec key',
   )
   // Same preserve-the-bytes clause as the SKILL phase carries: the repair is a description write and
   // the save replaces the description, so a marker-only save wipes the child's plan body.
   assert.match(
     BRIEF,
-    /preserving the rest of that description's bytes verbatim\*\*[\s\S]*?save\s*\n?\s*replaces the description/,
+    /preserving\s+the\s+rest\s+of\s+that\s+description's\s+bytes\s+verbatim\*\*[\s\S]*?save\s*\n?\s*replaces\s+the\s+description/,
     'the brief must preserve the rest of the child description on the rename repair',
   )
 })
@@ -1508,7 +1662,7 @@ test('BOS-475: epic parents carry configured label, summed estimate, and backlog
   assert.match(SKILL, /epicParentEstimate\(spec\)/, 'the parent estimate must sum child complexity')
   assert.match(
     SKILL,
-    /estimate.*rejected[\s\S]{0,180}retry without.*estimate/i,
+    /estimate.*rejected[\s\S]{0,180}retry\s+without.*estimate/i,
     'a rejected summed estimate must retain the existing fallback',
   )
   assert.match(
@@ -1523,7 +1677,7 @@ test('BOS-475: epic parents carry configured label, summed estimate, and backlog
   )
   assert.match(
     SKILL,
-    /every planned ticket.{0,80}non-null estimate/i,
+    /every\s+planned\s+ticket.{0,80}non-null\s+estimate/i,
     'all planned tickets must carry an estimate',
   )
   assert.match(
@@ -1533,7 +1687,7 @@ test('BOS-475: epic parents carry configured label, summed estimate, and backlog
   )
   assert.match(
     BRIEF,
-    /sum of its children.?s estimates/i,
+    /sum\s+of\s+its\s+children.?s\s+estimates/i,
     'the brief must specify the summed parent estimate',
   )
   assert.match(
@@ -1604,7 +1758,7 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
   for (const line of globCleanupLines) {
     assert.match(
       line.trim(),
-      /^if \[ -d \.linear-plans \]; then find \.linear-plans -maxdepth 1 -type f -name '[^']+' -delete \|\| CLEANUP_RC=1; fi$/,
+      /^if \[ -d \.linear-plans \]; then\s+find \.linear-plans -maxdepth\s+1 -type\s+f -name '[^']+' -delete \|\| CLEANUP_RC=1; fi$/,
       `a glob cleanup line must use the one-pattern-per-line find form: ${line.trim()}`,
     )
   }
@@ -1651,13 +1805,19 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
 // Size-ratchet — the resident body stays below the pre-split baseline.
 // ---------------------------------------------------------------------------
 
-test('the resident SKILL.md body stays under the ratchet, below the pre-split baseline', () => {
+test('the resident SKILL.md body is pinned exactly, below the pre-split baseline', () => {
   // PRE_SPLIT_BASELINE is a rolling upper bound kept a small margin above RATCHET, NOT the
   // literal pre-split body size: it began at 25548 (the hand-written body before the BOS-204
   // references split) and is re-baselined upward as Phase-4 prose legitimately grows. The
   // RATCHET < PRE_SPLIT_BASELINE invariant preserves that explicit margin so an accidental
   // bulk regrow in one edit trips the guard instead of sliding both constants up together.
-  const PRE_SPLIT_BASELINE = 88867
+  //
+  // BOS-768 kept it (rather than deleting a decorative constant) precisely because it is NOT
+  // decorative: it is the only thing that reds when a single edit slides both numbers up
+  // together, which is the failure the exact pin below cannot see. It is passed as `below`, so
+  // a violation now names both readings — pin raised toward the baseline, or baseline overdue
+  // for re-derivation — instead of prescribing one cause.
+  const PRE_SPLIT_BASELINE = 93143
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -1672,16 +1832,77 @@ test('the resident SKILL.md body stays under the ratchet, below the pre-split ba
   // never opens `references/extension-reviewers.md` infers `--role review` from the phase name and
   // rejects every correctly-installed extension into `skipped`, and a discover site whose skips go
   // unrecorded reports its fallback tier as though it had always been the intended tier.
-  const RATCHET = 88851 // exact measured resident body
-  assert.ok(
-    RATCHET < PRE_SPLIT_BASELINE,
-    'the ratchet ceiling must sit below the pre-split baseline',
-  )
-  const bytes = Buffer.byteLength(SKILL, 'utf8')
-  assert.ok(
-    bytes <= RATCHET,
-    `resident SKILL.md is ${bytes} bytes; must stay <= ${RATCHET} (below the ${PRE_SPLIT_BASELINE} baseline)`,
-  )
+  // Re-baselined a further +826 (88851 → 89677) for BOS-776, carrying PRE_SPLIT_BASELINE with it
+  // to keep the 16-byte guard margin. Phase 4 step 5 stopped deciding dependency edges in prose and
+  // became I/O glue over `toolbox/plan-deps-lib.mjs`. The narrative it replaced was larger than the
+  // caller that replaced it, but step 5 simultaneously gained four requirements that did not exist
+  // before and are resident by necessity: the explicit candidate field list (without it the fetch
+  // returns empty descriptions and the run reports zero links with no error — indistinguishable
+  // from a clean result), fetching declared relations BY ID regardless of state (the only path by
+  // which a cleared prerequisite is ever considered, since selectPlanned never returns one), cycle
+  // safety relocated AFTER the started-side downgrade and scoped to blocking writes, and both
+  // `appendRelatedTo` branches written as instructions. The invocation itself is CommonJS
+  // `pathToFileURL` for the same byte reason as the two lines above. Net growth is the new
+  // requirements, not regrown narrative: the decision ladder itself now lives in the library.
+  // Re-baselined a further +905 (89677 → 90582) for BOS-776 review round 1, carrying
+  // PRE_SPLIT_BASELINE with it to keep the 16-byte guard margin. Step 5(c)'s block was
+  // unrunnable and its payload underspecified, both silently: it read an empty `mktemp` file
+  // (`JSON.parse("")` throws, and `check-skill-shell.mjs` only `bash -n`s, so the gate was
+  // green on a block that could never execute), it named `stateRoles` with no accessor —
+  // omitting it resolves every state to unknown, downgrades every blocking edge to
+  // `relatedTo` under an `info` note, and renders a run that linked nothing
+  // indistinguishable from one that found nothing to link — and it neither re-derived
+  // `BOSS_PLAN_TOOLBOX` (shell env does not persist across tool invocations, so `T` can be
+  // undefined) nor carried the `.catch` every sibling invocation in this file carries. All
+  // four are resident by necessity: this is the single invocation the whole extraction hangs
+  // on, and an agent that hits a raw throw here re-decides the edges in prose, which is the
+  // defect BOS-776 exists to remove.
+  // Re-baselined a further +1129 (90582 -> 91711) for BOS-776 review round 2, carrying
+  // PRE_SPLIT_BASELINE with it to keep the 16-byte guard margin. Two step-5 instructions were
+  // wrong in the direction of silence. (a)'s new title+label prefilter is a context-scale
+  // measure, but read as an overlap filter it drops a candidate whose title looks unrelated and
+  // whose `## Key changes` names your files -- the missed-prerequisite defect re-entering through
+  // the filter rather than through fuzzy search, so the prose now bounds what the prefilter is
+  // allowed to decide. And (f), the run's only post-dependency tracker save, was gated on
+  // `>=1 relation was written`: an arealess subject, an unresolved declared relation, an ambiguous
+  // orientation and a canceled prerequisite each write no edge and each raise a warning or a
+  // question, so every one of those outcomes -- and the `agent-question` label with them -- was
+  // computed, rendered into the description, and then never saved. Both are instruction bytes the
+  // caller must execute, not narrative.
+  // Re-baselined a further +335 (91711 -> 92046) for BOS-776 review round 3, carrying
+  // PRE_SPLIT_BASELINE with it to keep the 16-byte guard margin. Two instruction bytes the caller
+  // must execute. 5(c) named the `subject` payload without saying it needs a state of its own, and
+  // the ladder's last rung reads BOTH sides' roles -- so a subject assembled from the fields (a)
+  // lists for candidates downgraded every edge, not some. And 5(f)'s new `labels` write was the one
+  // label write in this file that did not restate the union rule the file states three times
+  // elsewhere; `labels` replaces the whole set, so executed literally it strips the labels Step 4
+  // had just merged and saved.
+  // Re-baselined a further +1081 (92046 -> 93127) for BOS-776 review round 4, carrying
+  // PRE_SPLIT_BASELINE with it to keep the 16-byte guard margin. Three step-5 inputs the library
+  // cannot derive and the caller was never told to supply, each silent in the shipped glue. A
+  // logical verdict carried no direction, so the library oriented a declared prerequisite by
+  // priority and could write the edge backwards -- the wrong-edge class this branch exists to
+  // remove, produced by the fix. `extractKeyChangeAreas` drops every slash-free token without
+  // `moduleRoots`, so a plan naming bare module names contributed no areas at all and every
+  // overlap was missed. And the documented epic re-run loop reset the library's one-call depth
+  // cap, so a malformed parent/child graph could be walked forever; the loop is now bounded and
+  // carries expanded parents in `excludeIds`. The +11 remainder renames the step's own citation
+  // to `$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs`: the shipped-toolbox gate keys on that adjacency,
+  // and the concatenated invocation it had instead left the file this step depends on able to
+  // drop out of the payload with every gate green.
+  const RATCHET = 93127 // exact measured resident body, re-measured 2026-08-19 (BOS-768)
+  assertExactSize({
+    below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
+    constFile: 'scripts/bs-plan-skill.test.mjs',
+    constName: 'RATCHET',
+    expected: RATCHET,
+    label: 'boss-plan resident SKILL.md',
+    measured: measureFile(abs(`${CORE}/SKILL.md`)),
+    path: 'services/boss/internal/skillinstall/skills/boss-plan/SKILL.md',
+    residual:
+      'the references/ files the body routes to, and whether the resident prose is worth its ' +
+      'bytes — this pin only knows how many there are',
+  })
 })
 
 test('the resident body cross-references how to dispatch a zero-change planning session', () => {

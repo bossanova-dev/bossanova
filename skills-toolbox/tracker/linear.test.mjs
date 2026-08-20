@@ -112,6 +112,12 @@ test('buildLinearOperationMap derives agent-driven MCP tools from the configured
   assert.equal(operationMap.createLabel.tool, 'mcp__acme-tracker__create_issue_label')
   assert.equal(operationMap.setPriorityEstimate.tool, 'mcp__acme-tracker__save_issue')
   assert.equal(operationMap.appendDependency.tool, 'mcp__acme-tracker__save_issue')
+  assert.equal(operationMap.appendRelatedTo.tool, 'mcp__acme-tracker__save_issue')
+  assert.match(
+    operationMap.appendRelatedTo.summary,
+    /relatedTo/,
+    'appendRelatedTo must document the relatedTo payload — it shares save_issue with appendDependency, so the summary is the only thing distinguishing a non-blocking edge from a blocking one',
+  )
   assert.equal(
     operationMap.preparePlanAttachment.tool,
     'mcp__acme-tracker__prepare_attachment_upload',

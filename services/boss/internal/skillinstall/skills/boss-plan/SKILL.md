@@ -55,9 +55,9 @@ names generically everywhere else:
   literal would submit a label its tracker does not have.
 - Tracker priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - Dependency links use the tracker's `blocks`/`blocked by` relations. A blocker is "cleared" only
-  when its state is `Done` or `Canceled` (PR merged / work dropped); the
-  blocking-aware logic is unit-tested in `scripts/linear-deps-lib.mjs`. boss-build
-  will not start a ticket blocked by an uncleared blocker.
+  when its state type is completed or canceled (PR merged / work dropped) — the
+  `DEFAULT_CLEARED_STATE_TYPES` / `DEFAULT_CANCELED_STATE_TYPES` rule in
+  `toolbox/plan-deps-lib.mjs`. boss-build will not start a ticket blocked by an uncleared blocker.
 - Proof publishing remains independent of implementation-plan storage. Its configured publish
   adapter and `publishConfig` continue to govern proof artifacts only.
 
@@ -871,70 +871,110 @@ subagent → validate its envelope → fold or skip), against
    If the tracker save rejects `estimate` (Linear needs Fibonacci enabled), retry without
    `estimate`, complete the rest, and warn the user.
 
-5. **Link conflicting dependencies (conservative, priority-oriented, cycle-safe).**
-   Now that this ticket carries a `## Key changes` module/area list, link the tracker's
-   blocking relations so two agents never work overlapping areas concurrently and
-   churn on rebase (per the dependency-linking convention: build the sprint from the
-   highest-priority unblocked tasks without over-serializing the backlog).
+5. **Link conflicting dependencies (library-decided, cycle-safe).**
+   Every decision comes from `$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs`; this step is I/O only. Never
+   re-decide an edge in prose.
 
-   a. Fetch the active, not-yet-merged comparison set with op `selectPlanned` (the tracker adapter
-   lists the team's issues in the planned state — `trackerConfigFor(config).team`, `limit=250` — then
-   the in-progress and in-review states). These tickets' PRs
-   could still collide with this one. Exclude `Done`/`Canceled`/unplanned and this ticket itself.
+   a. **Fetch.** Op `selectPlanned` (planned — `trackerConfigFor(config).team`, `limit=250` — then
+   in-progress and in-review) with an **explicit field list**: `description, labels, priority,
+createdAt, state`. The default field set omits those, and an all-empty-description run returns
+   zero links with no error, indistinguishable from a clean result. Prefilter on title + labels
+   before reading 250 descriptions — but that prefilter is a **context-scale measure only, never an
+   overlap decision**. Keep it inclusive: a candidate whose title and labels look unrelated can still
+   list your files under `## Key changes`, and dropping it here is the missed-prerequisite defect
+   re-entering through the filter instead of through fuzzy search. When a candidate is arguable, read
+   its description and let the library decide. Then read this ticket's declared relations (op
+   `getIssue` with relations) and fetch each related id **by id, regardless of state** — `selectPlanned` never
+   returns a cleared ticket, so that is the only path by which a completed or canceled prerequisite
+   is considered at all.
 
-   b. For each candidate, read its `## Key changes` section from its description
-   (boss-plan writes one for every planned ticket). Extract the module/area tokens
-   (e.g. `services/bossd`, `scripts`, `services/web`, a specific file). If a
-   candidate has no `## Key changes` (e.g. an older ticket), fall back to its
-   title + description text. Compare against THIS ticket's `## Key changes`.
+   b. **Judge logical dependency** per candidate (does either ticket need the other's feature? the
+   one call no function can make) and pass it as `logicalDependencies[<candidate id>] = {direction,
+note}`. **Direction is part of the verdict**, not something the library re-derives: `blockedBy`
+   (the default, and what a bare `true` means — the candidate is the prerequisite THIS ticket needs)
+   or `blocks` (the candidate needs this ticket). A logical basis is oriented by that verdict alone,
+   because priority and creation order know nothing about it — so a mis-stated direction writes a
+   real inverted edge, and an omitted one asserts the candidate is the prerequisite. Overlap is
+   computed for you by `extractKeyChangeAreas` + `areasOverlap`: tracker full-text search is **fuzzy
+   and must never decide overlap** — the oracle is each candidate's `## Key changes` section, or its
+   whole description when it has none.
 
-   c. Decide whether to link. Add a relation only when there is **clear overlap**
-   (a shared module/area or file that would realistically conflict on rebase)
-   OR a **genuine logical dependency** (this ticket needs the other's feature, or
-   vice versa). Do NOT link on speculative or whole-repo-wide overlap (e.g. both
-   touch `docs/`); err toward fewer links.
+   c. **Classify once.** Build `subject`, `candidates`, `declaredRelatedIds`, `logicalDependencies`,
+   `epicLabel` (`labelName(config, 'epic')`), `moduleRoots` and `stateRoles`. `moduleRoots` is this
+   repo's top-level module/package directory names: area extraction drops every slash-free token
+   without it, so a plan whose `## Key changes` names bare module names contributes no areas and its
+   overlaps are missed in silence — the missed-prerequisite defect re-entering through the glue.
+   `subject` needs the SAME fields as a candidate, its own `state` included: the subject is the
+   blocked side of every inbound edge and the blocker of every outbound one, so a subject built
+   without a state downgrades **every** edge rather than some. `stateRoles` has no accessor: invert
+   `stateName(config, role)` over `planned`/`inProgress`/`inReview`/`unplanned` into
+   `{[stateName(config,'planned')]: 'planned', …}`. Omitting it is SILENT, not loud: every state
+   resolves to unknown, every blocking edge downgrades to `relatedTo` under an `info` note, and a
+   run that linked nothing reads exactly like one that found nothing to link. **Write that payload
+   to a scratch JSON file yourself** and name it below — the block does not create it, because an
+   empty `mktemp` file parses as nothing and throws.
 
-   d. Orient the edge by priority, writing it with op `appendDependency` (Linear: `save_issue
-blockedBy`). The **higher-priority** ticket is the blocker; on equal priority, the **older
-   `createdAt`** is the blocker. So:
-   - if THIS ticket outranks the candidate → save candidate blocked by THIS;
-   - if the candidate outranks THIS ticket → save THIS blocked by candidate.
-     Never block a higher-priority ticket behind a lower-priority one. Given **stable**
-     priorities, priority+`createdAt` is a total order, so orienting edges this way cannot
-     create a cycle (a later priority flip could in principle form a transitive cycle; v1
-     accepts that low risk — see (e)).
+   ```bash
+   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
+   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+   export BOSS_PLAN_TOOLBOX
+   DEPS_IN="<the scratch JSON file you just wrote>"
+   node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]}).areas;i.subjectAreas=a(i.subject);i.candidates=i.candidates.map(x=>({...x,areas:a(x)}));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
+   rm -f "$DEPS_IN"
+   ```
 
-   e. Cycle safety. Before adding an edge, use op `getIssue` with relations on both tickets (Linear:
-   `get_issue includeRelations=true`). Skip if the opposite relation already exists (a 2-cycle) or the
-   proposed blocker is already blocked by the proposed blocked ticket. `blocks`/`blockedBy`
-   are **append-only** — only add, never clobber; v1 does not auto-prune stale relations.
+   d. **Act on `{ edges, skipped, notes, questions, compared }`** — imperative branches, no implicit
+   fallthrough:
+   - edge with `write` non-null → save exactly that `{id, blockedBy}` with op `appendDependency`.
+     Relations are **append-only**: only add, never clobber; v1 does not auto-prune.
+   - edge with `edge: 'relatedTo'` → save it with op `appendRelatedTo`. Best-effort on BOTH branches,
+     neither a stop condition: if the adapter does not declare `appendRelatedTo` (it is optional),
+     record the relation as a `## Planning` note instead; if a declared one fails, log the reason and
+     continue.
+   - `notes[]` → `destination: 'planning'` under `## Planning`, `'risks'` under `## Risks / unknowns`.
+     Never drop a `severity: 'warning'` note.
+   - `questions[]` → record under `## Open Questions` and add `agent-question`. Headless never asks;
+     interactive mode may ask via AskUserQuestion.
+   - `skipped[]` `expandChildren: true` → an epic parent, which never produces a PR of its own: fetch
+     its active children and re-run (c) with those as candidates. Re-run at most twice, and add every
+     parent id you have already expanded to `excludeIds`: the library's depth cap bounds ONE call, so
+     a re-run loop that resets it walks a malformed parent/child graph forever.
+   - `skipped[]` `reason: 'declared-related-unresolved'` → fetch that id and re-run (c), or record an
+     Open Question. Never drop it silently.
+   - `compared === 0` → nothing was evaluated. Report _could not evaluate_, never _no dependencies_.
 
-   e2. Transitive-block warning (only when (d) placed THIS ticket on the **blocked** side —
-   candidate outranks THIS → THIS blocked by candidate). Reuse the step-e
-   `get_issue includeRelations=true` on the candidate to inspect its own inverse `blocks` relations:
-   treat a blocker's blocker as **still blocking** unless its state is `Done`/`Canceled` — the exact
-   `isUnblocked` / `BLOCKER_CLEARED_STATE_TYPES` rule in `scripts/linear-deps-lib.mjs`, the single
-   source of the "cleared" definition (so prose and gate never diverge). If that payload lacks a
-   nested blocker's own state, fetch that blocker by id with `get_issue`. When the
-   candidate is itself open (not `Done`/`Canceled`) **AND** has ≥1 uncleared blocker, record a
-   transitive-block warning naming the just-linked blocker (`<BLOCKER-ID>`) and the immediate open
-   ticket(s) blocking it (e.g. `<BLOCKER-ID> is itself open and blocked by <UPSTREAM-BLOCKER-ID>`).
-   Detection only — never auto-prune.
+   e. **Cycle safety — after (d)'s downgrade, over blocking writes only.** For each surviving
+   `write`, op `getIssue` with relations on both ids; skip that write when the opposite relation
+   already exists (a 2-cycle) or the proposed blocker is already blocked by the proposed blocked
+   ticket. `relatedTo` is symmetric and non-blocking and cannot form a cycle — never gate it here,
+   and never run this ahead of (d): a 2-cycle check before the downgrade skips the pair outright and
+   silently suppresses the `relatedTo` edge and note the downgrade would have produced.
 
-   f. Record what you linked — **only when ≥1 link was added** (else skip). Step 4 saved the
-   description first, so send a second tracker save with only `id` + `description`: re-send Step 4's
-   description plus `- Dependencies: blocks <BLOCKED-ID>; blocked by <BLOCKER-ID>` under
-   `## Planning`. When (e2) found ≥1 transitive-block warning, add a sibling conditional line next to
+   e2. **Transitive-block warning** — only where a surviving `write` puts THIS ticket on the blocked
+   side. Reuse (e)'s relations read on the blocker to inspect its own inverse `blocks` relations, and
+   treat a blocker's blocker as **still blocking** unless its state type is cleared or canceled — the
+   `DEFAULT_CLEARED_STATE_TYPES` / `DEFAULT_CANCELED_STATE_TYPES` rule in
+   `toolbox/plan-deps-lib.mjs`, the single source of that definition (so prose and gate never
+   diverge). If that payload lacks a nested blocker's own state, fetch it by id. When the blocker is
+   itself open **AND** has ≥1 uncleared blocker, record a Transitive-block warning naming it and the
+   immediate open ticket(s) blocking it. Detection only — never auto-prune, never via AskUserQuestion.
+
+   f. Record what step 5 found — **whenever (d) produced ≥1 relation, note, or question**; skip only
+   when it produced none of the three. A zero-relation run is not a quiet run: an arealess subject, an
+   unresolved declared relation, an ambiguous orientation and a canceled prerequisite each write no
+   edge and each raise a warning or a question, so gating this save on the relations alone throws away
+   exactly the outcomes the plan's reader most needs — and `agent-question` never reaches the ticket.
+   Step 4 saved the description first, so send a second tracker save with `id` + `description`
+   (adding `labels` only to carry `agent-question`, when (d) produced a question — union it into the
+   set Step 4 saved, because `labels` **replaces** the whole set; this is the run's last save, so a
+   label deferred past it is a label never applied): re-send Step 4's
+   description, including (d)'s notes and questions under the sections (d) named, plus — only when ≥1
+   relation was written — `- Dependencies: blocks <BLOCKED-ID>; blocked by <BLOCKER-ID>` under
+   `## Planning`. When (e2) found ≥1 warning, add a sibling conditional line next to
    `- Dependencies:` (omit it otherwise, mirroring how `- Dependencies:` is conditional):
    `- Transitive-block warning: blocked by <BLOCKER-ID>, which is itself open and blocked by <UPSTREAM-BLOCKER-ID>`. This
    line is orchestrator-owned — keep it out of the drafting subagent's returned template. This keeps
-   Step 4's other fields and the (d) relations intact.
-
-   **Headless note:** a genuinely balanced link direction (equal priority + age + partial
-   overlap) is recorded as an Open Question per the headless rules; interactive mode asks
-   via AskUserQuestion. Any (e2) transitive-block warning is recorded in prose (the `## Planning`
-   line above and the Phase 6 report) exactly as interactive mode would print it — never via
-   AskUserQuestion.
+   Step 4's other fields and (d)'s relations intact.
 
 ## Phase 5 — Discard local artifacts
 

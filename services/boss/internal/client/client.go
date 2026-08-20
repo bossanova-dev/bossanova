@@ -116,8 +116,10 @@ type BossClient interface {
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
 
-	// Auth change notification
-	NotifyAuthChange(ctx context.Context, action string) error
+	// Auth change notification. The response carries the daemon's non-secret
+	// verdict on the credentials it reloaded (see NotifyAuthChangeResponse.Outcome);
+	// it is nil for transports that never reach a daemon.
+	NotifyAuthChange(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error)
 
 	// Cron jobs
 	CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error)
@@ -179,6 +181,13 @@ type BossClient interface {
 
 	// Repair diagnostics — surfaced via `boss repair doctor`.
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
+
+	// GetAuthState reports the RUNNING daemon's live upstream auth state —
+	// surfaced via `boss daemon doctor`. It has to be an RPC rather than a
+	// local credential read because a present, parseable credential record
+	// says nothing about whether the daemon can actually authenticate: that
+	// was true for the entire BOS-942 incident.
+	GetAuthState(ctx context.Context) (*pb.GetAuthStateResponse, error)
 
 	// StartRepairWorkflow (re-)arms the auto-repair workflow — surfaced via
 	// `boss repair start`.

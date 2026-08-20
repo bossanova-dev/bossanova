@@ -46,7 +46,9 @@ test('generated Codex skill mirrors source with only the documented path rewrite
 })
 
 test('complete argv resolution makes either explicit write-flag order write mode', () => {
-  const match = SKILL.match(/Resolve the flags before reading anything:\n\n```bash\n([\s\S]*?)```/)
+  const match = SKILL.match(
+    /Resolve\s+the\s+flags\s+before\s+reading\s+anything:\n\n```bash\n([\s\S]*?)```/,
+  )
   assert.ok(match, 'source skill must contain an executable flag resolver')
   const resolve = (...args) =>
     spawnSync('bash', ['-c', `${match[1]}\nprintf '%s' "$WRITE"`, '--', ...args], {
@@ -63,7 +65,7 @@ test('complete argv resolution makes either explicit write-flag order write mode
 
 test('snapshot validation rejects malformed notes and duplicate deletion IDs', () => {
   const match = SKILL.match(
-    /boss notes ls --tag improvement --json --limit 0 >"\$RUN_DIR\/notes\.json"\nnode -e '([^']+)'/,
+    /boss[ ]notes[ ]ls --tag[ ]improvement --json --limit[ ]0 >"\$RUN_DIR\/notes\.json"\nnode -e '([^']+)'/,
   )
   assert.ok(match, 'source skill must contain executable snapshot validation')
   const dir = mkdtempSync(join(tmpdir(), 'bs-sweep-notes-snapshot-'))
@@ -109,7 +111,7 @@ test('weekly cron registration records the no-gate cadence branch and names the 
     assert.ok(skill.includes(command), `${label} must document its local gate probe`)
     assert.match(
       skill,
-      /GateCommand.*empty|no-gate weekly cadence|without a gate/i,
+      /GateCommand.*empty|no-gate\s+weekly\s+cadence|without\s+a\s+gate/i,
       `${label} must state the no-gate branch actually selected`,
     )
   }
@@ -127,82 +129,103 @@ test('production triage pins Linear injection and the full gate pipeline', () =>
   // The cap must NOT be passed as a shell expansion: the parent shell would
   // expand it before a VAR=n prefix reaches the gate, silently yielding the default.
   assert.doesNotMatch(SKILL, /select[^\n]*BS_SWEEP_NOTES_MAX_ISSUES/)
-  assert.match(SKILL, /read from `BS_SWEEP_NOTES_MAX_ISSUES` inside the gate process/)
-  assert.match(SKILL, /[Ee]very mechanical cluster key\s+must appear exactly once/)
-  assert.match(SKILL, /If either dispatch errors, stop with no writes, deletions or retags/)
-  assert.doesNotMatch(SKILL, /dispatch.*inline fallback/i)
+  assert.match(SKILL, /read\s+from `BS_SWEEP_NOTES_MAX_ISSUES` inside\s+the\s+gate\s+process/)
+  assert.match(SKILL, /[Ee]very\s+mechanical\s+cluster\s+key\s+must\s+appear\s+exactly\s+once/)
+  assert.match(
+    SKILL,
+    /If\s+either\s+dispatch\s+errors, stop\s+with\s+no\s+writes, deletions\s+or\s+retags/,
+  )
+  assert.doesNotMatch(SKILL, /dispatch.*inline\s+fallback/i)
 })
 
 test('theming allows a cross-target merge and bounds the one authored field', () => {
-  assert.match(SKILL, /Group by shared problem, not shared file/)
-  assert.match(SKILL, /members may span different `Where:` targets/)
-  assert.match(SKILL, /is the \*\*only\*\* field the subagent\s+may author/)
-  assert.match(SKILL, /≤200 characters/)
-  assert.match(SKILL, /must not invent or edit keys, re-rank, summarize fields, or drop\s+fields/)
+  assert.match(SKILL, /Group\s+by\s+shared\s+problem, not\s+shared\s+file/)
+  assert.match(SKILL, /members\s+may\s+span\s+different `Where:` targets/)
+  assert.match(SKILL, /is\s+the \*\*only\*\* field\s+the\s+subagent\s+may\s+author/)
+  assert.match(SKILL, /≤200\s+characters/)
+  assert.match(
+    SKILL,
+    /must\s+not\s+invent\s+or\s+edit\s+keys, re-rank, summarize\s+fields, or\s+drop\s+fields/,
+  )
   // Selection must be ranked, not alphabetical by problem statement.
-  assert.match(SKILL, /ranking by note count, then by oldest note, then by key/)
+  assert.match(SKILL, /ranking\s+by\s+note\s+count, then\s+by\s+oldest\s+note, then\s+by\s+key/)
 })
 
 test('the currency pass covers every theme and defaults to live', () => {
-  assert.match(SKILL, /over \*\*every\*\* theme, not only those that\s+would fit under the cap/)
+  assert.match(
+    SKILL,
+    /over \*\*every\*\* theme, not\s+only\s+those\s+that\s+would\s+fit\s+under\s+the\s+cap/,
+  )
   for (const verdict of ['live', 'fixed', 'unverifiable']) {
     assert.ok(SKILL.includes(`\`${verdict}\``), `verdict ${verdict} must be documented`)
   }
-  assert.match(SKILL, /Requires `evidence` naming the file and line/)
-  assert.match(SKILL, /`live` is the safe default/)
+  assert.match(SKILL, /Requires `evidence` naming\s+the\s+file\s+and\s+line/)
+  assert.match(SKILL, /`live` is\s+the\s+safe\s+default/)
   // Signals must never be readable as a verdict on their own.
-  assert.match(SKILL, /Read `missing` and `changedSince`[\s\S]{0,40}as leads, never as answers/)
-  assert.match(SKILL, /\*\*Signals are not verdicts\.\*\*/)
+  assert.match(
+    SKILL,
+    /Read `missing` and `changedSince`[\s\S]{0,40}as\s+leads, never\s+as\s+answers/,
+  )
+  assert.match(SKILL, /\*\*Signals\s+are\s+not\s+verdicts\.\*\*/)
 })
 
 test('write mode files one epic parent before any child', () => {
-  assert.match(SKILL, /create the epic parent \*\*first\*\*/)
+  assert.match(SKILL, /create\s+the\s+epic\s+parent \*\*first\*\*/)
   assert.ok(SKILL.includes('`labels: ["epic"]`'))
   assert.match(SKILL, /deliberately \*\*not\*\* `agent-plan`/)
-  assert.match(SKILL, /If the parent create\s+fails or is ambiguous, create no children/)
-  assert.match(SKILL, /`EPIC_MAX_CHILDREN` is not in this code path/)
+  assert.match(
+    SKILL,
+    /If\s+the\s+parent\s+create\s+fails\s+or\s+is\s+ambiguous, create\s+no\s+children/,
+  )
+  assert.match(SKILL, /`EPIC_MAX_CHILDREN` is\s+not\s+in\s+this\s+code\s+path/)
   assert.ok(SKILL.includes('`parentId`: the epic parent'))
   assert.ok(SKILL.includes('`team: "Bossanova"`'))
   assert.ok(SKILL.includes('`state: "Unplanned"`'))
   assert.ok(SKILL.includes('`labels: ["agent-plan"]`'))
   assert.ok(SKILL.includes('`title`: `cluster.title`'))
-  assert.match(SKILL, /failed or ambiguous create stops further\s+writes/)
+  assert.match(SKILL, /failed\s+or\s+ambiguous\s+create\s+stops\s+further\s+writes/)
   // The pre-create recheck must be a complete snapshot scanned locally, never a
   // fuzzy list_issues query: that query returns unmarked issues AND truncated
   // descriptions, which makes the exact line-anchored match impossible to evaluate.
   assert.ok(SKILL.includes('>"$RECHECK_JSON"'))
-  assert.match(SKILL, /re-fetch the \*\*complete\*\* marker snapshot once/)
-  assert.match(SKILL, /Do \*\*not\*\* use `mcp__bossanova-linear__list_issues` for this/)
-  assert.match(SKILL, /returns each `description` \*\*truncated\*\*/)
+  assert.match(SKILL, /re-fetch\s+the \*\*complete\*\* marker\s+snapshot\s+once/)
+  assert.match(SKILL, /Do \*\*not\*\* use `mcp__bossanova-linear__list_issues` for\s+this/)
+  assert.match(SKILL, /returns\s+each `description` \*\*truncated\*\*/)
   assert.match(SKILL, /every `cluster\.sourceKeys` alias/)
-  assert.match(SKILL, /If the re-fetch fails, create nothing at all/)
+  assert.match(SKILL, /If\s+the\s+re-fetch\s+fails, create\s+nothing\s+at\s+all/)
   // The tool is no longer used anywhere, so it must not stay in allowed-tools.
   assert.doesNotMatch(SKILL, /allowed-tools:.*list_issues/)
 })
 
 test('a live theme can still retire individually fixed member notes', () => {
   assert.ok(SKILL.includes('"fixedNotes": ["<note-id>"]'))
-  assert.match(SKILL, /optional on \*\*any\*\* verdict/)
-  assert.match(SKILL, /A broad theme is almost never wholly `fixed`,\s+because one live sibling/)
-  assert.match(SKILL, /ids must belong to this theme/)
-  assert.match(SKILL, /a non-empty list\s+requires `evidence`/)
+  assert.match(SKILL, /optional\s+on \*\*any\*\* verdict/)
+  assert.match(
+    SKILL,
+    /A\s+broad\s+theme\s+is\s+almost\s+never\s+wholly `fixed`,\s+because\s+one\s+live\s+sibling/,
+  )
+  assert.match(SKILL, /ids\s+must\s+belong\s+to\s+this\s+theme/)
+  assert.match(SKILL, /a\s+non-empty\s+list\s+requires `evidence`/)
   // The retirement set must come from the gate, not from prose unioning buckets.
   assert.ok(SKILL.includes('node "$GATE" retired "$BUCKETS_JSON"'))
-  assert.match(SKILL, /rather than unioning buckets by hand/)
-  assert.match(SKILL, /can be both filed as a child and have some of its notes retired/)
+  assert.match(SKILL, /rather\s+than\s+unioning\s+buckets\s+by\s+hand/)
+  assert.match(
+    SKILL,
+    /can\s+be\s+both\s+filed\s+as\s+a\s+child\s+and\s+have\s+some\s+of\s+its\s+notes\s+retired/,
+  )
 })
 
 test('every child carries its verbatim source notes, and deletion depends on it', () => {
   assert.ok(SKILL.includes('`title`: exactly `Source notes (<issue-id>)`'))
-  assert.match(SKILL, /every member note's \*\*unmodified\*\* `body`/)
+  assert.match(SKILL, /every\s+member\s+note's \*\*unmodified\*\* `body`/)
   // Deleting the notes is only safe once the evidence exists on the ticket.
-  assert.match(SKILL, /\*\*The attachment is the precondition for deletion\.\*\*/)
-  assert.match(SKILL, /a theme whose\s+attachment failed keeps its notes/)
-  assert.match(SKILL, /Never infer the attachment from the create response/)
+  assert.match(SKILL, /\*\*The\s+attachment\s+is\s+the\s+precondition\s+for\s+deletion\.\*\*/)
+  assert.match(SKILL, /a\s+theme\s+whose\s+attachment\s+failed\s+keeps\s+its\s+notes/)
+  assert.match(SKILL, /Never\s+infer\s+the\s+attachment\s+from\s+the\s+create\s+response/)
   // attachmentCreate mints a new row per call, so a resume must not duplicate.
-  assert.match(SKILL, /`attachmentCreate` is \*\*not idempotent\*\*/)
+  assert.match(SKILL, /`attachmentCreate` is \*\*not\s+idempotent\*\*/)
   // A bare note id in a filed description is a dead reference after Phase 4.
-  assert.match(SKILL, /Never\s+cite a bare note id as if it were a lookup/)
+  assert.match(SKILL, /Never\s+cite\s+a\s+bare\s+note\s+id\s+as\s+if\s+it\s+were\s+a\s+lookup/)
   // The tools must be declared.
   assert.match(SKILL, /allowed-tools:.*prepare_attachment_upload/)
   assert.match(SKILL, /allowed-tools:.*create_attachment_from_upload/)
@@ -210,16 +233,22 @@ test('every child carries its verbatim source notes, and deletion depends on it'
 
 test('fixed themes are retagged rather than deleted, and nothing else is touched', () => {
   assert.ok(SKILL.includes('boss notes edit <id> --tag stale'))
-  assert.match(SKILL, /`--tag` REPLACES the whole tag set/)
-  assert.match(SKILL, /Deletion is not used here/)
-  assert.match(SKILL, /`boss notes rm` is\s+permanent/)
-  assert.match(SKILL, /Every id must appear in `snapshot-ids`/)
-  assert.match(SKILL, /every initial `dropped` theme whose reason is `already-tracked`/)
+  assert.match(SKILL, /`--tag` REPLACES\s+the\s+whole\s+tag\s+set/)
+  assert.match(SKILL, /Deletion\s+is\s+not\s+used\s+here/)
+  assert.match(SKILL, /`boss\s+notes\s+rm` is\s+permanent/)
+  assert.match(SKILL, /Every\s+id\s+must\s+appear\s+in `snapshot-ids`/)
+  assert.match(SKILL, /every\s+initial `dropped` theme\s+whose\s+reason\s+is `already-tracked`/)
   // Deliberately narrower than the old blanket rule: an `unverifiable` theme may
   // still retire a member the gate named, so the guard is per-note, not per-bucket.
-  assert.match(SKILL, /Never touch a `deferred` theme, nor any note the gate did not name/)
+  assert.match(
+    SKILL,
+    /Never\s+touch\s+a `deferred` theme, nor\s+any\s+note\s+the\s+gate\s+did\s+not\s+name/,
+  )
   // Delete and retag sets overlap heavily; precedence must be stated, not left to loop order.
-  assert.match(SKILL, /\*\*Deletion wins\*\*: subtract the delete set above before retagging/)
+  assert.match(
+    SKILL,
+    /\*\*Deletion\s+wins\*\*: subtract\s+the\s+delete\s+set\s+above\s+before\s+retagging/,
+  )
 })
 
 test('both gate mirrors carry the same cron name and fixture-capable fail-closed probe', () => {
@@ -333,7 +362,7 @@ test('live gate reports the resolver reason when no boss binary resolves at all'
     assert.notEqual(result.status, 0)
     // The resolver's own `reason`, not a bare spawn failure: a run that reads
     // ENOENT as "capability unavailable" is the bug this test pins.
-    assert.match(result.stderr, /no usable boss executable/)
+    assert.match(result.stderr, /no\s+usable\s+boss\s+executable/)
     assert.ok(result.stderr.includes(stale), `reason must name BOSS_BIN: ${result.stderr}`)
     assert.doesNotMatch(result.stderr, /ENOENT|spawnSync/)
   } finally {

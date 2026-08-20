@@ -562,6 +562,16 @@ message ProxyListAccountsResponse {
 // ("" = all). should_refresh asks the daemon to run its live usage probe over each
 // returned account before responding; false/omitted is the passive read the
 // 30-second poll uses and is byte-for-byte the pre-refresh request.
+//
+// bosso reads should_refresh as a proxy for user intent: it gates the
+// cloud_action_invoked telemetry event on this flag so the passive poll stays
+// out of action counts (see docs/analytics/events.md). That reading is a
+// CONVENTION held by the one production caller — the web Accounts page, which
+// sets it true only from the Refresh control — and NOT an invariant this schema
+// enforces. Any automated or background caller that sets should_refresh true
+// would reintroduce exactly the polling noise the gate removes, and would do so
+// silently. A new caller that needs the daemon's live usage probe without
+// claiming user intent needs a separate signal, not this flag.
 message ProxyManageListAccountsRequest {
   string daemon_id = 1;
   string provider = 2;

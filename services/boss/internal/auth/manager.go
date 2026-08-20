@@ -8,6 +8,9 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/recurser/bossalib/safego"
+	zlog "github.com/rs/zerolog/log"
 )
 
 // migrationHintOnce ensures the "run 'boss login' to reset" hint is printed
@@ -46,6 +49,14 @@ type Manager struct {
 	config     Config
 	startLogin func(context.Context) (*DeviceCodeResponse, error)
 	pollLogin  func(context.Context, string, int) error
+	// lastE2ETokens is what the e2e login seam last persisted from inside its
+	// own callback. The seam saves without handing the Manager the record, so
+	// without this the seam branch could not run the equality leg of
+	// verification and a silently no-oped save over an unflagged record would
+	// render as a successful login — precisely the class this verification
+	// exists to catch. It is always nil in production builds, where
+	// SetE2ELogin is a no-op.
+	lastE2ETokens *Tokens
 }
 
 // NewManager creates a Manager with the given store and WorkOS config.
@@ -86,23 +97,198 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	return refreshed.AccessToken, nil
 }
 
-// Login performs the WorkOS device code flow and stores the resulting tokens.
-// A successful login always writes a clean record, clearing any retained
-// re-login marker.
+// Login performs the WorkOS device code flow and stores the resulting tokens,
+// then proves the write against the store before returning. A successful login
+// always writes a clean record, clearing any retained re-login marker.
+//
+// The returned LoginVerification is only meaningful when err is nil; on an
+// error it is the zero value, whose Outcome is the invalid "never ran"
+// sentinel. A non-verified verdict with a nil error is not a failed command —
+// it is a command that finished and found the credentials are not what the
+// caller was about to announce.
 //
 // The clearReloginMarker call below is DEFENSIVE, not load-bearing: the
 // device-code exchange constructs a fresh Tokens, so there is never a marker
 // on it today. What actually drops a retained marker is that Save REPLACES
 // the whole record — which is the property the tests assert.
-func (m *Manager) Login(ctx context.Context) error {
+func (m *Manager) Login(ctx context.Context) (LoginVerification, error) {
 	result, err := Login(ctx, m.config)
 	if err != nil {
-		return err
+		return LoginVerification{}, err
 	}
 	result.Tokens.clearReloginMarker()
-	return m.withCredentialLock(ctx, func() error {
+	return m.commitLogin(ctx, result.Tokens, func() error {
 		return m.store.Save(result.Tokens)
 	})
+}
+
+// commitLogin performs a login's keychain write and its read-back proof under a
+// SINGLE acquisition of the cross-process credential lock. Verifying inside the
+// same critical section is the point: releasing and re-acquiring would let a
+// concurrent daemon refresh land between the write and the read, and the check
+// would then be reporting on somebody else's record.
+//
+// The re-read runs only when save() reported success — a failed save has
+// nothing to prove and its error is returned unchanged.
+//
+// expect is the record the caller believes it just wrote, used for the equality
+// leg. Callers that persist through a seam rather than through the Manager pass
+// nil and let the seam's recorded tokens stand in.
+func (m *Manager) commitLogin(ctx context.Context, expect *Tokens, save func() error) (LoginVerification, error) {
+	var verdict LoginVerification
+	err := m.withCredentialLock(ctx, func() error {
+		// Never let a previous run's seam record satisfy this run's equality
+		// leg.
+		m.lastE2ETokens = nil
+		if saveErr := save(); saveErr != nil {
+			return saveErr
+		}
+		want := expect
+		if want == nil {
+			want = m.lastE2ETokens
+		}
+		logCredentialSave(want)
+		verdict = m.verifyPersistedLocked(ctx, want)
+		logCredentialVerdict(verdict)
+		return nil
+	})
+	if err != nil {
+		return LoginVerification{}, err
+	}
+	return verdict, nil
+}
+
+// logCredentialSave records that a login write reported success, and what it
+// claimed to have written. Pair it with logCredentialVerdict: together they say
+// whether the boss side believed it saved credentials and whether the store
+// agreed, which is the first fork the next occurrence of this incident has to
+// take.
+//
+// The record's email is deliberately on this line — it is what correlates the
+// boss line with bossd's, and it is already the retained identity the re-login
+// UI displays. Nothing else about the tokens may join it: no access token, no
+// refresh token, and no substring of either.
+func logCredentialSave(saved *Tokens) {
+	event := zlog.Info().Str("component", "auth-store")
+	if saved == nil {
+		event.Msg("credential save reported success with no record to describe")
+		return
+	}
+	event.
+		Str("email", saved.Email).
+		Time("expires_at", saved.ExpiresAt).
+		Bool("needs_relogin", saved.NeedsRelogin).
+		Str("relogin_reason", saved.ReloginReasonOrEmpty()).
+		Msg("credential save reported success")
+}
+
+// logCredentialVerdict records what the store actually held afterwards. Only
+// the enumerated outcome and reason are logged; LoginVerification.Err is
+// deliberately absent, because a keyring error can embed record bytes.
+func logCredentialVerdict(verdict LoginVerification) {
+	zlog.Info().
+		Str("component", "auth-store").
+		Str("email", verdict.Email).
+		Str("outcome", verdict.Outcome.String()).
+		Str("reason", verdict.Reason).
+		Msg("credential save verified")
+}
+
+// verifyPersistedLocked reads the credential record back and judges whether it
+// reflects the login that just happened. It MUST be called with the credential
+// lock held.
+//
+// It checks persistence and usability, never freshness: an access token that is
+// already expired is still a correctly persisted login, because the daemon can
+// refresh it. Deliberately absent is any call to Tokens.Valid(), which folds
+// expiry into its answer and would report a perfectly good save as a failure.
+//
+// The read carries its own bound — the same refreshLockTimeout budget the lock
+// acquisition uses — so a keychain that hangs cannot pin the credential lock
+// against every other process. Blowing the bound is inconclusive, not a
+// failure: the record may be fine, we simply could not look.
+func (m *Manager) verifyPersistedLocked(ctx context.Context, expect *Tokens) LoginVerification {
+	readCtx, cancel := context.WithTimeout(ctx, refreshLockTimeout)
+	defer cancel()
+
+	type loadResult struct {
+		tokens *Tokens
+		err    error
+	}
+	// store.Load() cannot be cancelled, so run it alongside the bound and
+	// abandon it on timeout. The channel is buffered: a late send must not
+	// block the goroutine forever.
+	done := make(chan loadResult, 1)
+	safego.Go(zlog.Logger, func() {
+		tokens, err := m.store.Load()
+		done <- loadResult{tokens: tokens, err: err}
+	})
+
+	var res loadResult
+	select {
+	case res = <-done:
+	case <-readCtx.Done():
+		return LoginVerification{
+			Outcome: LoginVerifyInconclusive,
+			Reason:  LoginVerifyReasonLockTimeout,
+			Err:     readCtx.Err(),
+		}
+	}
+
+	if res.err != nil {
+		// A record that is simply absent is a verdict, not a mystery: the save
+		// reported success and left nothing behind. Anything else — an
+		// undecryptable record, a backend that errored — leaves the question
+		// open.
+		if tokenKeyMissing(res.err) {
+			return LoginVerification{
+				Outcome: LoginVerifyRecordNotUpdated,
+				Reason:  LoginVerifyReasonRecordAbsent,
+			}
+		}
+		return LoginVerification{
+			Outcome: LoginVerifyInconclusive,
+			Reason:  LoginVerifyReasonReadFailed,
+			Err:     res.err,
+		}
+	}
+
+	tokens := res.tokens
+	if tokens == nil {
+		return LoginVerification{
+			Outcome: LoginVerifyRecordNotUpdated,
+			Reason:  LoginVerifyReasonRecordAbsent,
+		}
+	}
+	if reason := tokens.ReloginReasonOrEmpty(); reason != "" {
+		return LoginVerification{
+			Outcome: LoginVerifyRecordNotUpdated,
+			Reason:  reason,
+			Email:   tokens.Email,
+		}
+	}
+	if tokens.AccessToken == "" {
+		return LoginVerification{
+			Outcome: LoginVerifyRecordNotUpdated,
+			Reason:  LoginVerifyReasonNoAccessToken,
+			Email:   tokens.Email,
+		}
+	}
+	if tokens.RefreshToken == "" {
+		return LoginVerification{
+			Outcome: LoginVerifyRecordNotUpdated,
+			Reason:  LoginVerifyReasonNoRefreshToken,
+			Email:   tokens.Email,
+		}
+	}
+	if expect != nil && tokens.AccessToken != expect.AccessToken {
+		return LoginVerification{
+			Outcome: LoginVerifyRecordNotUpdated,
+			Reason:  LoginVerifyReasonAccessTokenMismatch,
+			Email:   tokens.Email,
+		}
+	}
+	return LoginVerification{Outcome: LoginVerified, Email: tokens.Email}
 }
 
 // Refresh refreshes stored credentials using the saved refresh token.
@@ -123,21 +309,27 @@ func (m *Manager) StartLogin(ctx context.Context) (*DeviceCodeResponse, error) {
 	return RequestDeviceCode(ctx, m.config)
 }
 
-// PollLogin polls for token completion and saves the resulting tokens.
-func (m *Manager) PollLogin(ctx context.Context, deviceCode string, interval int) error {
+// PollLogin polls for token completion, saves the resulting tokens, and proves
+// the write against the store before returning.
+//
+// As with Login, the returned LoginVerification is only meaningful when err is
+// nil; on an error it is the zero value and must not be read.
+func (m *Manager) PollLogin(ctx context.Context, deviceCode string, interval int) (LoginVerification, error) {
 	if m.pollLogin != nil {
 		// The e2e login seam persists from inside its callback. Keep that
-		// mutation serialized with refresh marker writes too.
-		return m.withCredentialLock(ctx, func() error {
+		// mutation serialized with refresh marker writes too — and verify it
+		// on exactly the same terms as the production branch, using the record
+		// the seam recorded on the Manager as the expectation.
+		return m.commitLogin(ctx, nil, func() error {
 			return m.pollLogin(ctx, deviceCode, interval)
 		})
 	}
 	result, err := PollForToken(ctx, m.config, deviceCode, interval)
 	if err != nil {
-		return err
+		return LoginVerification{}, err
 	}
 	result.Tokens.clearReloginMarker()
-	return m.withCredentialLock(ctx, func() error {
+	return m.commitLogin(ctx, result.Tokens, func() error {
 		return m.store.Save(result.Tokens)
 	})
 }

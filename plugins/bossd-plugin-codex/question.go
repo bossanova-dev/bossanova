@@ -161,14 +161,199 @@ const codexModalTailLines = 30
 // what proves the card still owns the bottom of the pane.
 var codexRequestUserInputFooter = regexp.MustCompile(`(?m)` + codexQuestionCardFooterPattern)
 
+// codexBootDecoration is the run of leading glyphs a *drawn* boot interstitial
+// row may carry before its text: indentation, the TUI's box borders, and the
+// header's decorative emoji. Letters and digits are excluded so the matchers
+// below anchor on a row codex drew rather than on the same words quoted
+// mid-sentence in agent prose.
+//
+// U+2022 "•" is excluded for the reason the question-card header states: "•"
+// prefixes codex's activity bullets, which is replayed text, not live UI.
+// U+203A "›" is excluded HERE but deliberately allowed on menu rows below —
+// see codexBootInterstitialOptionRow for why the two differ.
+//
+// Excluding \p{N} is also a silent dependency on how the pane is captured:
+// tmux.Client.CapturePane runs capture-pane WITHOUT -e, so no ANSI escapes
+// reach these matchers. An -e capture would prefix the header row with
+// "\x1b[0m", whose digits this class rejects, and BOTH alternations would stop
+// matching a screen they match today — a false negative, the direction that
+// costs a pane. Anyone adding an escape-preserving capture must re-test this
+// grammar against it rather than assume it is escape-agnostic.
+const codexBootDecoration = `[^\p{L}\p{N}\x{203A}\x{2022}]*`
+
+// codexBootInterstitialHeader is the first of the two independent alternations
+// that recognise codex's "Update available!" boot interstitial — the screen
+// codex opens ON, instead of a composer, when it finds a newer release.
+//
+// It anchors on the words plus the version arrow ("0.147.0 -> 9.99.0"), never
+// on the ✨ that precedes them. The emoji is separated from the word by U+200A
+// HAIR SPACE, which codexUnicodeSpace normalises to an ASCII space before this
+// runs, and a decorative glyph is exactly the part of a TUI most likely to be
+// restyled between releases. Requiring the arrow, rather than the words alone,
+// is what keeps a release note or a changelog line that merely says "update
+// available" from blocking a send.
+var codexBootInterstitialHeader = regexp.MustCompile(
+	`(?m)^` + codexBootDecoration + `Update\s+available!\s+v?[0-9]+(?:\.[0-9]+)+\s*(?:->|=>|\x{2192})\s*v?[0-9]+(?:\.[0-9]+)+`)
+
+// codexBootInterstitialFooter is the interstitial's closing instruction. On its
+// own it proves nothing: "Press enter to continue" is ordinary English and
+// appears in agent prose, installer output and pasted logs. It only counts
+// alongside the menu shape below — see hasCodexBootInterstitial.
+var codexBootInterstitialFooter = regexp.MustCompile(
+	`(?m)^` + codexBootDecoration + `Press\s+enter\s+to\s+continue\b`)
+
+// codexBootInterstitialOptionRow matches ONE numbered menu row ("2. Skip").
+//
+// Unlike the two matchers above this one ALLOWS a leading U+203A "›", because
+// on this screen "›" is the menu's own selection cursor: codex draws row 1 as
+// "› 1. Update now". That is the whole reason the interstitial is dangerous —
+// the cursor makes row 1 indistinguishable from a composer row to
+// composerRowIndex — so a matcher that refused it would miss the row the gate
+// is being fooled by. The looseness is paid for structurally rather than
+// lexically: a lone "› 1. Yes" replayed from user history cannot satisfy
+// hasCodexBootInterstitial, which requires a RUN of these rows.
+var codexBootInterstitialOptionRow = regexp.MustCompile(
+	`^[^\p{L}\p{N}\x{2022}]*[0-9]+\.\s+\S`)
+
+// codexBootInterstitialSelectedRow matches an option row carrying the menu's
+// own selection cursor: "› 1. Update now".
+//
+// This is the one signal on the screen that ordinary agent output does not
+// produce. A run of numbered rows is not enough by itself — an agent that
+// writes "1. Install dependencies / 2. Run tests" and then, anywhere in the
+// same 30 lines, the words "press enter to continue" satisfies both halves of
+// the structural alternation while its composer is perfectly live, and the
+// refusal that follows wedges an ordinary send until the text scrolls away.
+// Proximity does not separate those two cases; a drawn cursor does, because
+// codex renders the highlighted row and prose does not.
+//
+// It costs sensitivity, and the cost is stated rather than hidden: a codex
+// release that both rewords the header AND draws its menu without a cursor
+// stops matching. That is a compound restyle, alternation 1 covers the far
+// likelier half of it, and the alternative was a structural pair loose enough
+// to fire on prose the agent writes about this very screen.
+var codexBootInterstitialSelectedRow = regexp.MustCompile(
+	`^[^\p{L}\p{N}\x{2022}]*\x{203A}[^\p{L}\p{N}\x{2022}]*[0-9]+\.\s+\S`)
+
+// codexBootInterstitialMinOptions is how many consecutive numbered rows make a
+// menu. Two, not three: the count has to survive codex dropping an option
+// (the "Skip until next version" row only exists once a version has been
+// seen), and one row is not a shape — it is a sentence that starts with "1.".
+const codexBootInterstitialMinOptions = 2
+
+// codexBootInterstitialMenu reports whether the window contains a *run* of at
+// least codexBootInterstitialMinOptions consecutive numbered option rows, at
+// least one of which carries the selection cursor.
+//
+// Consecutive is load-bearing. Numbered lines are common in agent output —
+// every ordered list the agent writes is a sequence of them — but a prose list
+// is broken up by blank lines and continuation text, whereas a menu is a solid
+// block. Any line that is not itself an option row ends the run, including a
+// blank one, so scattered "1." and "2." lines separated by prose never
+// accumulate into a menu.
+//
+// The cursor is load-bearing for the same reason in the other direction: a
+// solid block of numbered rows is exactly what an agent writing a short
+// ordered list produces, and consecutiveness alone does not tell the two
+// apart. Both the run and the cursor reset together, so a cursor drawn on some
+// unrelated earlier row cannot vouch for a later block.
+func codexBootInterstitialMenu(tail []byte) bool {
+	run, selected := 0, false
+	for _, line := range bytes.Split(tail, []byte{'\n'}) {
+		if codexBootInterstitialOptionRow.Match(line) {
+			run++
+			if codexBootInterstitialSelectedRow.Match(line) {
+				selected = true
+			}
+			if run >= codexBootInterstitialMinOptions && selected {
+				return true
+			}
+			continue
+		}
+		run, selected = 0, false
+	}
+	return false
+}
+
+// hasCodexBootInterstitial reports whether the modal window is showing codex's
+// update-available boot screen.
+//
+// Two independent alternations, either of which is sufficient:
+//
+//  1. the header, with its version arrow; or
+//  2. the menu shape — a run of numbered rows with the selection cursor drawn
+//     on one of them — AND the "press enter to continue" footer together.
+//
+// Independent on purpose. The header is the most specific evidence but the most
+// likely to be restyled; the structural pair survives a reworded header but
+// needs both halves, because each alone is something ordinary output produces.
+// A capture that loses the header to a redraw still refuses, and so does one
+// whose footer wording changed.
+//
+// Why this screen needs its own clause at all: it is not a question and it is
+// not an approval, so neither codexApproval nor codexRequestUserInput sees it —
+// and hasCodexQuestionPrompt is structurally unable to, because its "›"
+// stripper deletes "› 1. Update now", the only row that carries the menu's
+// distinctive text. Meanwhile the readiness gate's composerRowIndex accepts
+// that same "›" row as a live composer. So the pane looks ready, delivery types
+// its message, and the Enter that follows lands on "Update now": codex runs
+// `npm install -g @openai/codex` over its own running binary, the pane dies and
+// the chat is destroyed. The fixture in testdata/panes/update_interstitial.txt
+// is a real capture of it.
+//
+// Bounded by the modal window, in the direction that costs a chat: the clause
+// only sees the last codexModalTailLines RENDERED lines, and the committed
+// capture qualifies partly because the interstitial is the last thing drawn on
+// that pane — its blank rows 11-50 are trailing whitespace, so the trim removes
+// them. Draw one line at the bottom of that same 50-row pane and the banner is
+// more than 30 rendered lines up: this returns false and delivery proceeds into
+// the Enter. That is deliberate — BOS-600 narrowed the window precisely so a
+// banner sitting in scrollback cannot wedge delivery forever — but it means the
+// protection covers "the interstitial is what the pane is currently showing",
+// not "the interstitial is somewhere on the pane".
+// TestBootInterstitialWindowStopsAtDrawnContent asserts both sides of that
+// boundary so it cannot move without a test moving with it.
+//
+// UNVERIFIED, recorded rather than assumed (the BOS-894 plan's "post-dismissal
+// persistence" risk): what codex leaves on screen once the user answers this
+// menu has never been captured. If a dismissed banner keeps its header inside
+// the modal window, alternation 1 fires ALONE — it needs no footer — and every
+// session start into that pane refuses until 30 rendered lines push the header
+// out, which for a pane that never receives a delivery is never. The plan
+// offered the footer requirement as the mitigation; it is not one, for exactly
+// that reason. The failure is loud rather than the silent Enter this clause
+// exists to prevent, which is the right direction to fail in, but treat it as
+// open: capture a post-dismissal pane and add it as a negative fixture before
+// widening either anchor.
+func hasCodexBootInterstitial(tail []byte) bool {
+	if codexBootInterstitialHeader.Match(tail) {
+		return true
+	}
+	return codexBootInterstitialFooter.Match(tail) && codexBootInterstitialMenu(tail)
+}
+
 // hasCodexModalPrompt reports whether the pane is showing a codex selection UI
-// that has taken the composer *now*. Same grammar as hasCodexQuestionPrompt,
-// bounded to the tail; see codexModalTailLines for why the two differ.
+// that has taken the composer *now*: the hasCodexQuestionPrompt grammar bounded
+// to the tail (see codexModalTailLines for why the two differ), PLUS the boot
+// interstitial, which hasCodexQuestionPrompt deliberately does not match. That
+// screen owns the composer without asking anything, so this predicate is not a
+// superset or a subset of the notify one — do not infer either from the other.
+//
+// The boot interstitial is checked BEFORE the working-spinner early return
+// below. That ordering is deliberate: the spinner return exists to stop a slow
+// turn being read as a menu, but this screen is drawn by codex at process start,
+// before any turn exists, so a spinner in the same window can only be scrollback
+// from a previous process in a reused pane. Letting that stale spinner suppress
+// the interstitial would hand back exactly the failure this clause exists to
+// prevent.
 func hasCodexModalPrompt(data []byte) bool {
 	data = codexUnicodeSpace.ReplaceAll(data, []byte(" "))
 	trimmed := bytes.TrimRight(data, " \t\r\n")
 	tail := codexModalTail(trimmed)
 	if hasCodexQuestionPrompt(tail) {
+		return true
+	}
+	if hasCodexBootInterstitial(tail) {
 		return true
 	}
 	// The working spinner is read HERE, over the window, not pane-wide: a

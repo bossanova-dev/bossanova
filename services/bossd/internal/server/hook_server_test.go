@@ -91,9 +91,14 @@ func (m *hookMockSessionStore) Update(context.Context, string, db.UpdateSessionP
 func (m *hookMockSessionStore) UpdateStateConditional(context.Context, string, int, int) (bool, error) {
 	panic("not used")
 }
-func (m *hookMockSessionStore) Archive(context.Context, string) error   { panic("not used") }
-func (m *hookMockSessionStore) Resurrect(context.Context, string) error { panic("not used") }
-func (m *hookMockSessionStore) Delete(context.Context, string) error    { panic("not used") }
+func (m *hookMockSessionStore) Archive(context.Context, string) error { panic("not used") }
+func (m *hookMockSessionStore) ResurrectToState(context.Context, string, int) (bool, error) {
+	panic("not used")
+}
+func (m *hookMockSessionStore) RollbackFailedResurrect(context.Context, string, time.Time, int, int) (bool, error) {
+	panic("not used")
+}
+func (m *hookMockSessionStore) Delete(context.Context, string) error { panic("not used") }
 func (m *hookMockSessionStore) AdvanceOrphanedSessions(context.Context) (int64, error) {
 	panic("not used")
 }

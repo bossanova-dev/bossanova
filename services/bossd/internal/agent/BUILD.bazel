@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "dispatcher.go",
         "log_tailer.go",
+        "modal_detector.go",
         "noop_runner.go",
         "plugin_runner.go",
         "poll_fallback.go",
@@ -27,6 +28,7 @@ go_test(
         "capability_profile_test.go",
         "dispatcher_test.go",
         "log_tailer_test.go",
+        "modal_detector_test.go",
         "plugin_runner_test.go",
         "poll_fallback_test.go",
         "registry_error_test.go",

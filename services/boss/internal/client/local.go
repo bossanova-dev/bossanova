@@ -570,11 +570,14 @@ func (c *LocalClient) GetSessionStatuses(ctx context.Context, sessionIDs []strin
 
 // --- Auth Change Notification ---
 
-func (c *LocalClient) NotifyAuthChange(ctx context.Context, action string) error {
-	_, err := c.rpc.NotifyAuthChange(ctx, connect.NewRequest(&pb.NotifyAuthChangeRequest{
+func (c *LocalClient) NotifyAuthChange(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
+	resp, err := c.rpc.NotifyAuthChange(ctx, connect.NewRequest(&pb.NotifyAuthChangeRequest{
 		Action: action,
 	}))
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 // --- Cloud Billing (remote only) ---
@@ -824,6 +827,14 @@ func (c *LocalClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSe
 
 func (c *LocalClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error) {
 	resp, err := c.rpc.RepairDoctor(ctx, connect.NewRequest(&pb.RepairDoctorRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *LocalClient) GetAuthState(ctx context.Context) (*pb.GetAuthStateResponse, error) {
+	resp, err := c.rpc.GetAuthState(ctx, connect.NewRequest(&pb.GetAuthStateRequest{}))
 	if err != nil {
 		return nil, err
 	}

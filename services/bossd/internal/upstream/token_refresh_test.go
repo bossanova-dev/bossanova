@@ -578,3 +578,237 @@ func TestTokenRefresh_RotatedTokenWithErrorClosesStream(t *testing.T) {
 		t.Fatal("refresher retried in place and stranded the rotated token")
 	}
 }
+
+// --- BOS-944: the zero-expiry `continue` is two different daemons ---
+
+// advanceRefresherTicks drives n refresher ticks on the fake clock and leaves
+// the refresher re-armed, so everything the last tick logged is already in the
+// buffer when the caller reads it.
+func advanceRefresherTicks(clock *fakeClock, n int) {
+	for i := 0; i < n; i++ {
+		waitForTimer(clock, 2*time.Second)
+		clock.Advance(100 * time.Millisecond)
+	}
+	waitForTimer(clock, 2*time.Second)
+}
+
+// TestTokenRefresh_ZeroExpiryWithReloginReasonWarnsOnce covers the daemon that
+// reloaded a marked record: the refresher skips every tick forever, and before
+// BOS-944 it did so in total silence. It must say so — once, because the
+// condition is permanent until `boss login`, not once per tick.
+func TestTokenRefresh_ZeroExpiryWithReloginReasonWarnsOnce(t *testing.T) {
+	var logs lockedBuffer
+	clock := newFakeClock()
+	tp := &markedTokenProvider{reason: reloginReasonRefreshTokenRejected}
+	client := NewStreamClient(StreamClientConfig{
+		TokenProvider:   tp,
+		Logger:          zerolog.New(&logs),
+		Clock:           clock,
+		RefreshInterval: 50 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.runTokenRefresher(ctx, make(chan *pb.DaemonEvent, 4)) }()
+
+	advanceRefresherTicks(clock, 1)
+	const msg = "upstream token has no expiry and the stored credentials are marked for re-login"
+	if got := strings.Count(logs.String(), msg); got != 1 {
+		t.Fatalf("warn count after one tick = %d, want 1; logs=%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), `"relogin_reason":"`+reloginReasonRefreshTokenRejected+`"`) {
+		t.Fatalf("warn dropped the enumerated reason: %s", logs.String())
+	}
+
+	advanceRefresherTicks(clock, 5)
+	if got := strings.Count(logs.String(), msg); got != 1 {
+		t.Fatalf("warn count after six ticks = %d, want still 1; a permanent condition must not log on a cadence", got)
+	}
+
+	cancel()
+	<-errCh
+}
+
+// TestTokenRefresh_ZeroExpiryWithoutReloginReasonStaysSilent is the opposite
+// cause arriving at the same `continue`: a dev/static-token daemon with no
+// expiry to reason about. Nothing is wrong, so the buffer must stay empty —
+// the silence is the specified behaviour, not an accident.
+func TestTokenRefresh_ZeroExpiryWithoutReloginReasonStaysSilent(t *testing.T) {
+	var logs lockedBuffer
+	clock := newFakeClock()
+	tp := &fakeTokenProvider{token: "static-dev-token"} // expiresAt stays zero
+	client := NewStreamClient(StreamClientConfig{
+		TokenProvider:   tp,
+		Logger:          zerolog.New(&logs).Level(zerolog.DebugLevel),
+		Clock:           clock,
+		RefreshInterval: 50 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.runTokenRefresher(ctx, make(chan *pb.DaemonEvent, 4)) }()
+
+	advanceRefresherTicks(clock, 6)
+	if got := logs.String(); got != "" {
+		t.Fatalf("static-token daemon logged %q, want nothing at all", got)
+	}
+
+	cancel()
+	<-errCh
+}
+
+// --- BOS-944: applyTokensLocked announces the transition, not the state ---
+
+// flaggedRecord builds a retained-but-unusable keychain record: identity kept,
+// token material present on disk, marked so no exchange may replay it.
+func flaggedRecord(reason string) *keychainTokens {
+	return &keychainTokens{
+		AccessToken:   "access-token-fixture-do-not-log",
+		RefreshToken:  "refresh-token-fixture-do-not-log",
+		ExpiresAt:     time.Now().Add(time.Hour),
+		Email:         "someone@example.com",
+		NeedsRelogin:  true,
+		ReloginReason: reason,
+	}
+}
+
+func usableRecord() *keychainTokens {
+	return &keychainTokens{
+		AccessToken:  "access-token-fixture-do-not-log",
+		RefreshToken: "refresh-token-fixture-do-not-log",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		Email:        "someone@example.com",
+	}
+}
+
+func TestApplyTokensLockedAnnouncesTheWedgeTransitionOnce(t *testing.T) {
+	const msg = "upstream credentials are marked for re-login"
+
+	t.Run("unflagged to flagged logs once", func(t *testing.T) {
+		var logs lockedBuffer
+		logger := zerolog.New(&logs)
+		p := &KeychainTokenProvider{logger: &logger}
+
+		p.applyTokensLocked(usableRecord())
+		if got := logs.String(); got != "" {
+			t.Fatalf("a usable record logged %q, want nothing", got)
+		}
+
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshOutcomeUnknown))
+		out := logs.String()
+		if got := strings.Count(out, msg); got != 1 {
+			t.Fatalf("wedge announcements = %d, want 1; logs=%s", got, out)
+		}
+		if !strings.Contains(out, `"relogin_reason":"`+reloginReasonRefreshOutcomeUnknown+`"`) {
+			t.Fatalf("announcement dropped the enumerated reason: %s", out)
+		}
+		// Applying a flagged record must clear the in-memory bearer token.
+		if p.accessToken != "" || p.refreshToken != "" {
+			t.Error("a flagged record left token material in the provider")
+		}
+	})
+
+	t.Run("a second flagged apply logs nothing", func(t *testing.T) {
+		var logs lockedBuffer
+		logger := zerolog.New(&logs)
+		p := &KeychainTokenProvider{logger: &logger}
+
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+		if got := strings.Count(logs.String(), msg); got != 1 {
+			t.Fatalf("wedge announcements = %d, want 1; applyTokensLocked runs on every keychain read", got)
+		}
+	})
+
+	t.Run("flagged to unflagged to flagged logs again", func(t *testing.T) {
+		var logs lockedBuffer
+		logger := zerolog.New(&logs)
+		p := &KeychainTokenProvider{logger: &logger}
+
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+		p.applyTokensLocked(usableRecord())
+		if p.ReloginReason() != "" {
+			t.Fatal("a usable record left the relogin reason set")
+		}
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+		if got := strings.Count(logs.String(), msg); got != 2 {
+			t.Fatalf("wedge announcements = %d, want 2; a re-wedge after recovery is a new transition", got)
+		}
+	})
+
+	t.Run("a changed reason is announced again", func(t *testing.T) {
+		var logs lockedBuffer
+		logger := zerolog.New(&logs)
+		p := &KeychainTokenProvider{logger: &logger}
+
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshOutcomeUnknown))
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+
+		out := logs.String()
+		if got := strings.Count(out, msg); got != 2 {
+			t.Fatalf("wedge announcements = %d, want 2; a hardened diagnosis is a new transition, and the reason is the operator's only cause line", got)
+		}
+		if !strings.Contains(out, `"relogin_reason":"`+reloginReasonRefreshTokenRejected+`"`) {
+			t.Fatalf("the second announcement did not carry the NEW reason: %s", out)
+		}
+	})
+
+	t.Run("a nil logger cannot panic", func(t *testing.T) {
+		p := &KeychainTokenProvider{}
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshTokenRejected))
+		if p.ReloginReason() != reloginReasonRefreshTokenRejected {
+			t.Fatal("a logger-less provider did not record the reason")
+		}
+	})
+
+	t.Run("no announcement carries token material", func(t *testing.T) {
+		var logs lockedBuffer
+		logger := zerolog.New(&logs)
+		p := &KeychainTokenProvider{logger: &logger}
+		p.applyTokensLocked(flaggedRecord(reloginReasonRefreshOutcomeUnknown))
+
+		out := logs.String()
+		for _, secret := range []string{"access-token-fixture-do-not-log", "refresh-token-fixture-do-not-log"} {
+			if strings.Contains(out, secret) {
+				t.Errorf("announcement leaked %q: %s", secret, out)
+			}
+		}
+	})
+}
+
+// TestKeychainProviderSetLoggerReplaysAStartupWedge is the ordering guard.
+// NewKeychainTokenProvider reads the keychain inside the constructor, so the
+// BOS-942 startup apply — the one that matters most — happens before any
+// logger can be attached. SetLogger must replay it or the daemon stays silent
+// for exactly the case this ticket exists for.
+func TestKeychainProviderSetLoggerReplaysAStartupWedge(t *testing.T) {
+	var logs lockedBuffer
+	p := &KeychainTokenProvider{}
+	p.applyTokensLocked(flaggedRecord(reloginReasonRefreshOutcomeUnknown)) // silent: no logger yet
+
+	p.SetLogger(zerolog.New(&logs))
+
+	out := logs.String()
+	if !strings.Contains(out, "upstream credentials are marked for re-login") {
+		t.Fatalf("SetLogger did not replay the startup wedge: %q", out)
+	}
+	if !strings.Contains(out, `"relogin_reason":"`+reloginReasonRefreshOutcomeUnknown+`"`) {
+		t.Fatalf("replayed line dropped the enumerated reason: %q", out)
+	}
+}
+
+// TestKeychainProviderSetLoggerStaysQuietWhenHealthy keeps the replay honest:
+// attaching a logger to a healthy provider must not manufacture a wedge.
+func TestKeychainProviderSetLoggerStaysQuietWhenHealthy(t *testing.T) {
+	var logs lockedBuffer
+	p := &KeychainTokenProvider{}
+	p.applyTokensLocked(usableRecord())
+
+	p.SetLogger(zerolog.New(&logs))
+
+	if got := logs.String(); got != "" {
+		t.Fatalf("attaching a logger to a healthy provider logged %q", got)
+	}
+}

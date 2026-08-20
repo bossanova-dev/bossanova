@@ -25,9 +25,17 @@ import (
 // PROVENANCE: both are REAL captures of real agent panes, not reconstructions.
 // codex_approval_menu.txt is a codex-cli approval prompt ("Would you like to run
 // the following command?"); claude_question_modal.txt is a Claude weekly-limit
-// decision modal. Nothing in this file is a guessed fixture — see the PR body for
-// the one modal (codex's update interstitial) that could NOT be captured and is
-// therefore deliberately left uncovered rather than invented.
+// decision modal. Nothing in this file is a guessed fixture.
+//
+// BOS-600 disclosed one modal it had left uncovered because it had not been
+// captured: codex's "Update available!" boot interstitial. BOS-894 captured it —
+// plugins/bossd-plugin-codex/testdata/panes/capture-update-interstitial.sh and
+// the update_interstitial.txt it writes — so that gap is closed and the earlier
+// "could not be captured" disclosure no longer holds. Its argv-level refusal is
+// covered in this package by TestModalWrappersRefuseBootInterstitial
+// (tmux_modal_wrappers_test.go), which writes the shape out inline instead of
+// reading the fixture on purpose: that test proves an argv property and is
+// deliberately incurious about which bytes produced the modal verdict.
 const (
 	codexApprovalMenuFixture = "codex_approval_menu.txt"
 	claudeQuestionFixture    = "claude_question_modal.txt"
@@ -465,7 +473,14 @@ func TestModalProbeTimeoutFailsOpen(t *testing.T) {
 	// The caller's context expires well before modalProbeTimeout, so the blocked
 	// probe unblocks via cancellation and the run stays fast; what is under test
 	// is the verdict, which must be "not a modal" rather than a refusal.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	//
+	// The budget has to clear one capture-pane, which is a real subprocess spawn
+	// here, or the wait ends on the context before the pane is ever read and the
+	// probe under test never runs — a failure that reads exactly like the
+	// regression this guards against. A budget this far below modalProbeTimeout
+	// still tests what the name says while leaving a loaded machine room to
+	// fork; the earlier 20ms did not, and lost this test to a parallel run.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
 	if err := c.waitForReadyMarker(ctx, "boss-test-sess", sendPlanOpts{

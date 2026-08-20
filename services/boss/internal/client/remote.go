@@ -590,8 +590,11 @@ func (c *RemoteClient) GetSessionStatuses(ctx context.Context, sessionIDs []stri
 
 // --- Auth Change Notification (local only) ---
 
-func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) error {
-	return nil // no-op in remote mode
+// NotifyAuthChange is a no-op in remote mode: there is no local daemon holding
+// credentials to reload, so there is no verdict to report either. A nil response
+// is the honest answer and renders as silence, never as a false "OK".
+func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) (*pb.NotifyAuthChangeResponse, error) {
+	return nil, nil
 }
 
 // --- Cloud Billing ---
@@ -975,6 +978,15 @@ func (c *RemoteClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorRespon
 
 func (c *RemoteClient) StartRepairWorkflow(_ context.Context) (*pb.StartRepairWorkflowResponse, error) {
 	return nil, errLocalOnly("StartRepairWorkflow")
+}
+
+// GetAuthState is local-only by construction. The question it answers is "can
+// THIS daemon reach the orchestrator", and a remote client's answer is already
+// implied by the fact that it is talking to the orchestrator at all. There is
+// no orchestrator proxy for it, and inventing one would report some other
+// daemon's auth state under the local daemon's name.
+func (c *RemoteClient) GetAuthState(_ context.Context) (*pb.GetAuthStateResponse, error) {
+	return nil, errLocalOnly("daemon auth state")
 }
 
 // ListCheckSnapshots proxies a session's CI check-snapshot history through the

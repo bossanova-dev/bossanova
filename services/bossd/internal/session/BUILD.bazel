@@ -82,6 +82,7 @@ go_test(
         "adopt_pane_proxy_test.go",
         "already_shipped_test.go",
         "apikey_approval_test.go",
+        "archive_tracker_test.go",
         "auto_rotate_notice_test.go",
         "bootstrap_runner_test.go",
         "boss_control_test.go",
@@ -119,9 +120,10 @@ go_test(
         "start_lock_test.go",
         "switch_account_test.go",
         "testhelpers_test.go",
+        "tmux_chat_modal_test.go",
         "tmux_chat_test.go",
     ],
-    data = [
+    data = glob(["testdata/**"]) + [
         "//services/bossd/migrations:sql",  # keep: testharness reads migrations/*.sql from disk via runtime.Caller
     ],
     embed = [":session"],

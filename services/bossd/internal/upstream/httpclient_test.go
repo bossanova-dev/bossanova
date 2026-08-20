@@ -54,7 +54,8 @@ func TestBuildUpstreamHTTPClient_HTTPSKeepalive(t *testing.T) {
 }
 
 // TestWorkOSRefreshHTTPClientHasHalfOpenDetection guards the client used for
-// the one exchange whose failure cannot be retried. It previously used
+// the refresh exchange — the one whose failure signs the machine out once its
+// replay budget is spent (BOS-941). It previously used
 // http.DefaultTransport, which has no HTTP/2 keepalive: a pooled connection to
 // api.workos.com that had gone half-open (laptop sleep, Wi-Fi or VPN path
 // change) was handed straight back out, the request was written into a dead
@@ -78,11 +79,31 @@ func TestWorkOSRefreshHTTPClientHasHalfOpenDetection(t *testing.T) {
 	if c.Timeout != workOSRefreshTimeout {
 		t.Errorf("Timeout = %s, want %s", c.Timeout, workOSRefreshTimeout)
 	}
-	// The budget must cover a cold DNS lookup, TCP connect, TLS handshake and
-	// the round trip on a machine whose network has just woken up. The old 10s
-	// could not, and overrunning it produces an unrecoverable sign-out.
-	if workOSRefreshTimeout <= 10*time.Second {
-		t.Errorf("workOSRefreshTimeout = %s, want more than the 10s budget that caused overnight sign-outs",
+	// This assertion used to be a FLOOR (">10s"), on the theory that an
+	// overrun was unrecoverable so the budget had to cover a cold DNS lookup,
+	// TCP connect, TLS handshake and round trip on a just-woken machine.
+	// BOS-941 inverted it: WorkOS's replay grace window makes an overrun
+	// recoverable, and makes a long timeout the thing that breaks recovery,
+	// because a replay issued after the window closed lands on an answer
+	// instead of on the documented idempotent repeat. The full budget
+	// arithmetic is pinned by TestWorkOSReplayBudgetFitsGraceWindow; the
+	// property that belongs here is the single exchange's own: it must not be
+	// able to spend the whole window by itself.
+	if workOSRefreshTimeout >= workOSReplayGraceWindow {
+		t.Errorf("workOSRefreshTimeout = %s, want less than the %s WorkOS replay grace window",
+			workOSRefreshTimeout, workOSReplayGraceWindow)
+	}
+	// Inverting the old assertion removed the only FLOOR in the package, and
+	// the ceiling above cannot supply one: workOSRefreshTimeout = 100ms would
+	// satisfy every other test here while timing out on healthy exchanges and
+	// spending the whole replay budget before a cold DNS lookup finished. The
+	// cold-wake reasoning that justified raising the budget from 10s did not
+	// become wrong when BOS-941 capped it — it stopped being the ONLY
+	// consideration. So keep a floor, well under the 8s the budget is sized
+	// for, that still fails loudly if someone shrinks the exchange to
+	// something no real network round trip can complete in.
+	if workOSRefreshTimeout < 5*time.Second {
+		t.Errorf("workOSRefreshTimeout = %s, want at least 5s so a cold DNS lookup, TCP connect, TLS handshake and round trip can finish",
 			workOSRefreshTimeout)
 	}
 }

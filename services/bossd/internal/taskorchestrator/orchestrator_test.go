@@ -1688,7 +1688,7 @@ func TestSetSessionArchiver_StoresArchiver(t *testing.T) {
 		return nil
 	})
 
-	o.SetSessionArchiver(stub)
+	o.SetSessionArchiver(stub, nil)
 	if err := o.archiver.ArchiveSession(ctx, "s"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1733,6 +1733,79 @@ func TestHandleSessionCompleted_ArchivesDependabotOnMerge(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for archiver to be called")
+	}
+}
+
+// TestHandleSessionCompleted_TracksArchiveWorkerHandle pins the BOS-923 fix at
+// the fourth archive launch point. The dependabot auto-archive runs on a
+// detached context.Background(), so discarding safego.Go's completion channel
+// left it outside shutdownWG exactly like the three session-package sites. The
+// handle must reach the tracker, stay open while the archive is in flight, and
+// close when it finishes.
+func TestHandleSessionCompleted_TracksArchiveWorkerHandle(t *testing.T) {
+	sessionID := "sess-dep-tracked"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	handles := make(chan (<-chan struct{}), 4)
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-dep",
+					ExternalID: "dep:pr:repo:10",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+					PluginName: "dependabot",
+					SessionID:  &sessionID,
+				},
+			},
+		}
+		o.SetSessionArchiver(SessionArchiverFunc(func(_ context.Context, _ string) error {
+			close(entered)
+			<-release
+			return nil
+		}), func(id string, done <-chan struct{}) {
+			if id != sessionID {
+				t.Errorf("tracker got session %q, want %q", id, sessionID)
+			}
+			handles <- done
+		})
+	})
+
+	if !orch.HasArchiveTracker() {
+		t.Fatal("HasArchiveTracker() = false after SetSessionArchiver with a tracker")
+	}
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archiver was never entered")
+	}
+
+	var done <-chan struct{}
+	select {
+	case done = <-handles:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive worker handle was never handed to the tracker")
+	}
+
+	// Open while the archive is blocked: this is what proves the handle
+	// represents the archive rather than the launch.
+	select {
+	case <-done:
+		t.Fatal("tracked handle closed while the archive was still blocked")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tracked handle never closed after the archive completed")
 	}
 }
 

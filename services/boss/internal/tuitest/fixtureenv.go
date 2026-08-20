@@ -120,6 +120,10 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGOUT_ERROR=") ||
+			// BOS-942: the silently-no-op credential save seam. Stripped with
+			// the rest of the family — an ambient developer value would make
+			// every unrelated proof run's login store nothing at all.
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_SAVE_NOOP=") ||
 			// BOS-659: the retained-re-login seed. Stripped here like every other
 			// BOSS_AUTH_E2E_* var so an ambient developer value can never flag the
 			// subprocess's credentials; the bridge re-adds it only when a scenario

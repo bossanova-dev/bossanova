@@ -741,11 +741,24 @@ REMOTE_HAS_HEAD=no
 # does the tag injection on the other arm, which is only reached when the guard did not fire. Keep
 # the ASK's status apart from its answer. "Origin advertises nothing" licenses the injection below to
 # rewrite freely; "could not ask origin" must not, and `2>/dev/null` renders the two identical. A
-# pipeline's status is awk's, not git's, so capture the raw output first and parse it afterwards.
+# pipeline's status is the LAST stage's, not git's, so capture the raw output first and parse it
+# afterwards. The awk reads the record into a NAMED VARIABLE and splits that, instead of reading
+# `$2`: this file belongs to a skill whose SKILL.md body is reachable as a slash command, and the
+# harness rewrites `$0`-`$9` in that body before any shell runs it. A reference file is read rather
+# than substituted, so the hazard is latent here — but this block exists to be lifted verbatim into
+# a body, so it is written to survive the move. Substituted, `'$2 == ref { print $1 }'` arrives as
+# `'== ref { print }'`. That does not fail loudly — it is an awk syntax error, the capture takes the
+# `|| REMOTE_SHA=` tail, and REMOTE_SHA lands EMPTY, which this route reads as "origin advertises
+# nothing" and treats as a licence to rewrite unguarded. `getline line` plus `f[1]`/`f[2]` say the
+# same thing in bytes the harness does not touch. `$0` is NOT one of them: the index is zero-based,
+# so `$0` is substituted like any other, which is the whole reason the record goes into `line`.
+# Keep the tail's line ending in `|` above it: a capture whose
+# `|| VAR=` sits past a line that does not end in an operator reads as bare to a continuation-joining
+# reader, and under errexit a bare capture aborts this block before the push.
 REMOTE_LS_OK=yes
 REMOTE_LS=$(git ls-remote origin "refs/heads/$SESSION_BRANCH" 2>/dev/null) || REMOTE_LS_OK=no
 REMOTE_SHA=$(printf '%s\n' "$REMOTE_LS" |
-  awk -v ref="refs/heads/$SESSION_BRANCH" '$2 == ref { print $1; exit }') || REMOTE_SHA=
+  awk -v ref="refs/heads/$SESSION_BRANCH" 'BEGIN { while ((getline line) > 0) { n = split(line, f, "\t"); if (n >= 2 && f[2] == ref) { print f[1]; exit } } }') || REMOTE_SHA=
 if [ "$UNPUSHED" = "0" ]; then
   HEAD_SHA=$(git rev-parse HEAD 2>/dev/null) || HEAD_SHA=
   # Both non-empty first: an empty advertised SHA must never compare equal to an empty HEAD.

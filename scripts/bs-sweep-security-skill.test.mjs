@@ -172,7 +172,7 @@ test('the SKILL uses the byte-identical DISPATCH_FAILURE token', () => {
 })
 
 test('repair is classified from the run-file sentinel, never from returned prose', () => {
-  assert.match(SKILL, /run-file sentinel (only|only\b)|FROM THE (RUN )?FILE ONLY/i)
+  assert.match(SKILL, /run-file\s+sentinel (only|only\b)|FROM\s+THE (RUN )?FILE\s+ONLY/i)
   assert.ok(SKILL.includes('bs-run-sentinel.mjs'), 'must resolve the sentinel helper')
 })
 
@@ -180,8 +180,12 @@ test('a missing/stale sentinel routes to the safe non-green branch, never green'
   // The dead-subagent branch: a missing sentinel is a distinct dispatch-failure that is
   // never recorded as green.
   assert.match(SKILL, /missing|stale/i)
-  assert.match(SKILL, /safe non-green/i, 'must route dispatch-failure to the safe non-green branch')
-  assert.match(SKILL, /never green|never .{0,20}green/i, 'must state it is never recorded green')
+  assert.match(
+    SKILL,
+    /safe\s+non-green/i,
+    'must route dispatch-failure to the safe non-green branch',
+  )
+  assert.match(SKILL, /never\s+green|never .{0,20}green/i, 'must state it is never recorded green')
 })
 
 test('green is re-verified by a cheap gh call, never trusted from the sentinel alone', () => {
@@ -215,7 +219,7 @@ test('classify CLI outcome is decoded before shell branching', () => {
 
 test('the --dry-run contract is byte-identical: zero GitHub writes, clean tree', () => {
   assert.ok(SKILL.includes('--dry-run'), 'dry-run flag documented')
-  assert.match(SKILL, /zero.{0,40}GitHub writes/i, 'dry-run makes zero GitHub writes')
+  assert.match(SKILL, /zero.{0,40}GitHub\s+writes/i, 'dry-run makes zero GitHub writes')
   assert.ok(SKILL.includes('git status --porcelain'), 'clean-tree contract documented')
 })
 
@@ -245,48 +249,48 @@ test('untagged commits after the injector take the BLOCKED branch (both mirrors)
     )
     assert.doesNotMatch(
       skill,
-      /git log "origin\/\$BASE_BRANCH"\.\.HEAD --oneline \| grep -qv/,
+      /git\s+log "origin\/\$BASE_BRANCH"\.\.HEAD --oneline \| grep -qv/,
       `${label} must not scan HEAD, which is detached during a stranded rebase`,
     )
     assert.doesNotMatch(
       skill,
-      /if git log "origin\/\$BASE_BRANCH"\.\."refs\/heads\/\$SESSION_BRANCH" --oneline \| grep -qv/,
+      /if\s+git\s+log "origin\/\$BASE_BRANCH"\.\."refs\/heads\/\$SESSION_BRANCH" --oneline \| grep -qv/,
       `${label} must not hide git log failures inside an if-condition pipeline`,
     )
     assert.match(
       skill,
-      /if \[ -n "\$UNTAGGED" \]; then[\s\S]{0,80}?BLOCKED: commits remain untagged[\s\S]{0,60}?teardown[\s\S]{0,40}?exit 1/,
+      /if \[ -n "\$UNTAGGED" \]; then[\s\S]{0,80}?BLOCKED: commits[ ]remain[ ]untagged[\s\S]{0,60}?teardown[\s\S]{0,40}?exit[ ]1/,
       `${label} must take the BLOCKED teardown branch when commits remain untagged`,
     )
     // The injector rewrites history, so the guard only proves a LOCAL property unless the
     // branch is re-pushed. Without this the PR still carries the untagged commits.
     assert.match(
       skill,
-      /BLOCKED: commits remain untagged[\s\S]{0,400}?git push --force-with-lease origin "\$SESSION_BRANCH"[\s\S]{0,40}?BLOCKED: failed to push the tagged/,
+      /BLOCKED: commits[ ]remain[ ]untagged[\s\S]{0,400}?git[ ]push --force-with-lease[ ]origin "\$SESSION_BRANCH"[\s\S]{0,40}?BLOCKED: failed[ ]to[ ]push[ ]the[ ]tagged/,
       `${label} must force-push the rewritten branch after the untagged guard passes`,
     )
     assert.match(
       skill,
-      /git push --force-with-lease origin "\$SESSION_BRANCH"[\s\S]{0,800}?CURRENT_SHA="\$\(git rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"/,
+      /git[ ]push --force-with-lease[ ]origin "\$SESSION_BRANCH"[\s\S]{0,800}?CURRENT_SHA="\$\(git[ ]rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"/,
       `${label} must persist the tagged branch SHA after the history-rewriting push`,
     )
     assert.match(
       skill,
-      /CURRENT_SHA="\$\(git rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"[\s\S]{0,160}?DECISION="\$\(node "\$GATE" decide-action "\$STATE_FILE" "\$CURRENT_SHA" 3\)"[\s\S]{0,160}?PRIOR_ATTEMPTS="\$\(printf '%s' "\$DECISION" \| jq -r '\.priorAttempts'\)"/,
+      /CURRENT_SHA="\$\(git[ ]rev-parse "refs\/heads\/\$SESSION_BRANCH"\)"[\s\S]{0,160}?DECISION="\$\(node "\$GATE" decide-action "\$STATE_FILE" "\$CURRENT_SHA" 3\)"[\s\S]{0,160}?PRIOR_ATTEMPTS="\$\(printf '%s' "\$DECISION" \| jq -r '\.priorAttempts'\)"/,
       `${label} must reset the retry decision from the tagged branch SHA`,
     )
     // …and must BLOCK if that push fails. A softened `|| true` would restore the exact bug
     // the guard exists to prevent: a local verdict of "all tagged" over an untagged remote.
     assert.doesNotMatch(
       skill,
-      /git push --force-with-lease origin "\$SESSION_BRANCH"\s*\|\|\s*true/,
+      /git\s+push --force-with-lease\s+origin "\$SESSION_BRANCH"\s*\|\|\s*true/,
       `${label} must not soften the force-push failure to a no-op`,
     )
   }
 })
 
 test('the 3-attempt poison-pill budget is preserved', () => {
-  assert.match(SKILL, /\b3\b.{0,40}no-progress|3 no-progress|at most \*\*3\*\*/i)
+  assert.match(SKILL, /\b3\b.{0,40}no-progress|3\s+no-progress|at\s+most \*\*3\*\*/i)
 })
 
 // ---------------------------------------------------------------------------
@@ -323,7 +327,7 @@ const prsFixture = fileURLToPath(
 // ---------------------------------------------------------------------------
 
 test('the main-gate health probe (Phase 1.5) is documented', () => {
-  assert.match(SKILL, /Main-gate health probe/i, 'Phase 1.5 probe section must be present')
+  assert.match(SKILL, /Main-gate\s+health\s+probe/i, 'Phase 1.5 probe section must be present')
   assert.ok(
     SKILL.includes('scripts/sweep-maingate-gate.mjs'),
     'must resolve the pure-core gate helper',
@@ -369,18 +373,18 @@ test('the probe uses the exact CI gosec flags from security.yml', () => {
 })
 
 test('the probe files at most one gated, deduped Linear stub', () => {
-  assert.match(SKILL, /would file stub/i, 'dry-run must print the would-file preview')
+  assert.match(SKILL, /would\s+file\s+stub/i, 'dry-run must print the would-file preview')
   assert.ok(SKILL.includes('main-gate:'), 'a main-gate: report line must be present')
   assert.match(SKILL, /origin\/staging/, 'gosec scope is changed modules vs origin/staging')
   assert.match(
     SKILL,
-    /all.{0,6}go.work modules|ALL go.work modules/i,
+    /all.{0,6}go.work[ ]modules|ALL[ ]go.work[ ]modules/i,
     'base-ref-absent fallback documented',
   )
 })
 
 test('the .codex mirror carries the main-gate probe tokens (parity)', () => {
-  assert.match(CODEX, /Main-gate health probe/i, 'codex mirror must carry the probe section')
+  assert.match(CODEX, /Main-gate\s+health\s+probe/i, 'codex mirror must carry the probe section')
   assert.ok(CODEX.includes('MainGate:'), 'codex mirror must carry the MainGate: marker token')
   assert.ok(
     CODEX.includes('scripts/sweep-maingate-gate.mjs') || CODEX.includes('sweep-maingate-gate.mjs'),

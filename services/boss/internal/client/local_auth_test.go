@@ -16,6 +16,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/socketauth"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // authTestDaemon is a minimal DaemonService that answers ListRepos (the RPC
@@ -289,5 +290,127 @@ func TestNewLocalWithToken_TokenNeverAppearsInRPCError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secretToken) {
 		t.Fatalf("error leaked the explicit token: %v", err)
+	}
+}
+
+// --- GetAuthState (BOS-944) ---
+
+// authStateDaemon answers GetAuthState with a canned response or a canned
+// error. Everything else stays Unimplemented, so the test exercises exactly
+// the one procedure.
+type authStateDaemon struct {
+	bossanovav1connect.UnimplementedDaemonServiceHandler
+	resp *pb.GetAuthStateResponse
+	err  error
+}
+
+func (d *authStateDaemon) GetAuthState(context.Context, *connect.Request[pb.GetAuthStateRequest]) (*connect.Response[pb.GetAuthStateResponse], error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	return connect.NewResponse(d.resp), nil
+}
+
+// startAuthStateDaemon serves the supplied handler over a token-gated Unix
+// socket, the same shape a real bossd presents, and returns the socket path.
+func startAuthStateDaemon(t *testing.T, daemon *authStateDaemon) string {
+	t.Helper()
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("boss-client-authstate-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	_ = os.Remove(socketPath)
+
+	token, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	mux := http.NewServeMux()
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(
+		daemon,
+		connect.WithInterceptors(socketauth.NewServerInterceptor(token)),
+	)
+	mux.Handle(path, handler)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = os.Remove(socketPath)
+		_ = os.Remove(socketauth.TokenPath(socketPath))
+	})
+	return socketPath
+}
+
+// TestLocalClient_GetAuthStateRoundTrips proves every field survives the wire
+// unchanged. The doctor renders these verbatim, so a dropped field is a wrong
+// diagnosis rather than a missing one.
+func TestLocalClient_GetAuthStateRoundTrips(t *testing.T) {
+	failingSince := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	registeredAt := time.Date(2026, 8, 19, 9, 15, 0, 0, time.UTC)
+	socketPath := startAuthStateDaemon(t, &authStateDaemon{resp: &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		NeedsLogin:         true,
+		ReloginReason:      "refresh_outcome_unknown",
+		LastRegisteredAt:   timestamppb.New(registeredAt),
+		UpstreamConnected:  false,
+		AuthFailingSince:   timestamppb.New(failingSince),
+	}})
+
+	resp, err := NewLocal(socketPath).GetAuthState(context.Background())
+	if err != nil {
+		t.Fatalf("GetAuthState() error = %v", err)
+	}
+	if !resp.GetUpstreamConfigured() || !resp.GetNeedsLogin() {
+		t.Errorf("upstream_configured=%t needs_login=%t, want true/true", resp.GetUpstreamConfigured(), resp.GetNeedsLogin())
+	}
+	if got := resp.GetReloginReason(); got != "refresh_outcome_unknown" {
+		t.Errorf("relogin_reason = %q, want %q", got, "refresh_outcome_unknown")
+	}
+	if resp.GetUpstreamConnected() {
+		t.Error("upstream_connected = true, want false")
+	}
+	if got := resp.GetLastRegisteredAt().AsTime(); !got.Equal(registeredAt) {
+		t.Errorf("last_registered_at = %v, want %v", got, registeredAt)
+	}
+	if got := resp.GetAuthFailingSince().AsTime(); !got.Equal(failingSince) {
+		t.Errorf("auth_failing_since = %v, want %v", got, failingSince)
+	}
+}
+
+// A local-only daemon answers with upstream_configured=false and no error.
+func TestLocalClient_GetAuthStateUnconfiguredDaemon(t *testing.T) {
+	socketPath := startAuthStateDaemon(t, &authStateDaemon{resp: &pb.GetAuthStateResponse{}})
+
+	resp, err := NewLocal(socketPath).GetAuthState(context.Background())
+	if err != nil {
+		t.Fatalf("GetAuthState() error = %v", err)
+	}
+	if resp.GetUpstreamConfigured() {
+		t.Error("upstream_configured = true, want false")
+	}
+	if resp.GetAuthFailingSince() != nil {
+		t.Errorf("auth_failing_since = %v, want unset", resp.GetAuthFailingSince())
+	}
+}
+
+// A daemon predating this RPC answers CodeUnimplemented. The code must survive
+// the client's error mapping intact, because `boss daemon doctor` classifies on
+// exactly that code to say "upgrade the daemon" rather than "auth is broken".
+func TestLocalClient_GetAuthStateOlderDaemonSurfacesUnimplemented(t *testing.T) {
+	// The canned error is exactly what the embedded Unimplemented handler
+	// would return, which is what an older daemon binary answers. It is stated
+	// explicitly rather than left to the embedding so the assertion below
+	// cannot start passing for some other reason.
+	socketPath := startAuthStateDaemon(t, &authStateDaemon{
+		err: connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented")),
+	})
+
+	_, err := NewLocal(socketPath).GetAuthState(context.Background())
+	if err == nil {
+		t.Fatal("GetAuthState() error = nil, want CodeUnimplemented")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
 	}
 }

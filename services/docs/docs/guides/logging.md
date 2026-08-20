@@ -38,7 +38,8 @@ the message:
 
 ### Sources
 
-`boss tail` takes any number of positional sources. Three name a service log:
+`boss tail` takes any number of positional sources. Three name a service log,
+and only these three carry service logs:
 
 | Source  | Contents                                                                                                                          |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -210,8 +211,10 @@ cli="boss tail --all -n 20000 --json > /tmp/bossanova-logs.ndjson"
 
 ## Agent and chat logs are a different surface
 
-The three service logs record what Bossanova did. They do **not** record what
-the coding agent printed. Agent output is captured separately:
+`bossd`, `boss` and `bosso` carry **service logs only**. They record what
+Bossanova did, never what the coding agent printed — so a service log that looks
+silent is not evidence that the agent is idle, only that the data lives in a
+different file. Agent output is captured separately:
 
 - The format depends on how the chat runs. An **interactive** chat is a raw
   terminal capture of the agent's tmux pane, mirrored with `tmux pipe-pane`: not
@@ -228,8 +231,9 @@ the coding agent printed. Agent output is captured separately:
   `repair-<session-id>.log` for the repair plugin's own runs — note that those
   are keyed by _session_ id, not agent-session id.
 - The files live in an `agent-logs` directory next to your worktree base
-  directory — the sibling of `worktree_base_dir` from your settings. With the
-  default `worktree_base_dir` of `~/.bossanova/worktrees`, that is
+  directory — the sibling of `worktree_base_dir` from your settings. The full
+  path form is `<worktree_base_dir>/../agent-logs/<agent-session-id>.log`; with
+  the default `worktree_base_dir` of `~/.bossanova/worktrees`, that directory is
   `~/.bossanova/agent-logs`.
 - **`boss tail` reads them too**, by agent-session id — see [Agent
   logs](#agent-logs) below.

@@ -122,8 +122,31 @@ func rootCmd() *cobra.Command {
 			// [Y/n] prompt into the very terminal being repaired and then block in
 			// fmt.Scanln — hanging the remedy exactly when the user can least type.
 			// See BOS-650.
+			//
+			// tail joins fix-terminal's family, not gen-skill's: it is a
+			// diagnostic, and a [Y/n] on stderr blocking in fmt.Scanln stalls it
+			// before a single log line appears. `boss tail -f | head` is the
+			// reported symptom — stdout is the pipe but stdin and stderr are
+			// still the terminal, so head never receives a line and the process
+			// just sits there.
+			//
+			// Returning here skips maybeInstallSkills outright, so tail also
+			// forgoes the silent non-TTY selfHealSkills path — the same wider
+			// trade fix-terminal and the skills subtree already make. That is a
+			// real, if minor, reduction in self-heal coverage; `boss skills
+			// sync` stays the explicit remedy. See BOS-921.
+			//
+			// Each entry is keyed to the exact command path (the `skills` prefix
+			// clause covers that subtree only). tail declares no aliases and adds
+			// no subcommands today, so equality is exhaustive for it; a future
+			// `boss tail <sub>` would NOT inherit this exemption and must be
+			// added here deliberately. Note this is cobra's resolved
+			// cmd.CommandPath(), deliberately distinct from the loose pre-cobra
+			// argv scanner isTailInvocation() used by setupCommandLogging before
+			// the command tree exists.
 			path := cmd.CommandPath()
 			if path == "boss gen-skill" || path == "boss fix-terminal" ||
+				path == "boss tail" ||
 				path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}
@@ -790,7 +813,7 @@ func daemonCmd() *cobra.Command {
 		install,
 		&cobra.Command{
 			Use:   "doctor",
-			Short: "Diagnose the bossd daemon install: staged binary, LaunchAgent path, and macOS folder permissions",
+			Short: "Diagnose the bossd daemon: staged binary, LaunchAgent path, macOS folder permissions, and live upstream auth/registration state",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return runDaemonDoctor(cmd)
 			},

@@ -24,6 +24,7 @@ function initRepo() {
   git(dir, 'init', '-q', '-b', 'main')
   git(dir, 'config', 'user.email', 'test@example.com')
   git(dir, 'config', 'user.name', 'Test')
+  git(dir, 'config', 'commit.gpgsign', 'false')
   git(dir, 'commit', '-q', '--allow-empty', '-m', 'base')
   return { dir, base: git(dir, 'rev-parse', 'HEAD').trim() }
 }

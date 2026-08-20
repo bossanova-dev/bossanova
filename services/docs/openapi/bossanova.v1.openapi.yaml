@@ -6233,6 +6233,69 @@ components:
           description: New state after firing the event.
       title: FireSessionEventResponse
       additionalProperties: false
+    bossanova.v1.GetAuthStateRequest:
+      type: object
+      title: GetAuthStateRequest
+      additionalProperties: false
+    bossanova.v1.GetAuthStateResponse:
+      type: object
+      properties:
+        upstreamConfigured:
+          type: boolean
+          title: upstream_configured
+          description: |-
+            Whether this daemon has an orchestrator client at all. False in
+             local-only mode, where there is nothing to authenticate against and a
+             doctor FAIL would be reporting a machine working exactly as configured.
+        needsLogin:
+          type: boolean
+          title: needs_login
+          description: |-
+            The daemon's live AuthState.NeedsLogin(). NOT a fault signal on its own:
+             a deliberate `boss logout` sets it with no reason and no failure clock.
+        reloginReason:
+          type: string
+          title: relogin_reason
+          description: |-
+            The persisted, enumerated re-login marker ("refresh_outcome_unknown",
+             "refresh_token_rejected"), or "" when the credentials are usable. The
+             value is produced by the daemon's own reloginReason* constants in
+             services/bossd/internal/upstream/tokens.go, which duplicate the
+             vocabulary of services/boss/internal/auth's ReloginReason* constants
+             across the module boundary. Readers must treat an unrecognized value as
+             forward-compatible rather than failing.
+        lastRegisteredAt:
+          title: last_registered_at
+          description: |-
+            The last SUCCESSFUL upstream registration in THIS daemon process. Unset
+             when this process has never completed one. This is context, not a
+             liveness floor: registration is not periodic, so a healthy daemon
+             connected for three days legitimately reports a three-day-old timestamp.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        upstreamConnected:
+          type: boolean
+          title: upstream_connected
+          description: |-
+            Whether the last DaemonStream handshake reached "snapshot accepted" and
+             has not since been torn down. Deliberately coarse — it reads false during
+             an ordinary reconnect gap on a perfectly healthy daemon, so it must never
+             be the basis of a failure verdict on its own.
+        authFailingSince:
+          title: auth_failing_since
+          description: |-
+            The instant the current unbroken run of unrecoverable auth failures
+             began; unset when auth is not currently failing. This is the
+             discriminating fact the BOS-942 incident needed and the same clock the
+             daemon's periodic wedge WARN reads, so the log and the doctor agree by
+             construction rather than by coincidence.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: GetAuthStateResponse
+      additionalProperties: false
+      description: |-
+        GetAuthStateResponse carries only scalar, enumerated, non-secret facts.
+         It never carries an access token, a refresh token, an Authorization header
+         value, or a raw upstream response body — the CLI renders these fields
+         verbatim to an operator's terminal.
     bossanova.v1.GetChatStatusesCommand:
       type: object
       properties:
@@ -6823,8 +6886,12 @@ components:
           title: blocks_input
           description: |-
             The prompt is MODAL: a selection UI has taken over the composer, so a
-             keystroke is consumed as a choice rather than typed as text. Strict subset
-             of has_prompt. Callers gating whether it is safe to DELIVER input must read
+             keystroke is consumed as a choice rather than typed as text. NOT a subset
+             of has_prompt, in either direction: a boot-time interstitial that seizes
+             the composer before any conversation exists answers blocks_input=true with
+             has_prompt=false, because it owns the keystrokes but asks nothing a human
+             needs to be notified about (BOS-894). Neither field may be inferred from
+             the other. Callers gating whether it is safe to DELIVER input must read
              this field, never has_prompt -- a conversational question sets has_prompt
              with the composer live, and refusing there would drop the answer (BOS-600).
              Plugins predating this field leave it false, which fails open to the
@@ -7085,7 +7152,9 @@ components:
          only — never credentials). Replies with CommandResult carrying a
          ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
          live usage probe over each account first; false/omitted keeps the passive read
-         an older bosso would have sent.
+         an older bosso would have sent. This field carries the caller's should_refresh
+         through unchanged, including the user-intent convention bosso's telemetry gate
+         depends on — see ProxyManageListAccountsRequest in orchestrator.proto.
     bossanova.v1.ListAccountsRequest:
       type: object
       properties:
@@ -8152,8 +8221,38 @@ components:
       additionalProperties: false
     bossanova.v1.NotifyAuthChangeResponse:
       type: object
+      properties:
+        outcome:
+          title: outcome
+          $ref: '#/components/schemas/bossanova.v1.NotifyAuthChangeResponse.Outcome'
+        reloginReason:
+          type: string
+          title: relogin_reason
+          description: |-
+            relogin_reason is the enumerated persisted re-login reason observed by the
+             reload — one of "refresh_outcome_unknown" or "refresh_token_rejected" —
+             and is empty for every outcome other than OUTCOME_CREDENTIALS_FLAGGED.
+             Never token material.
       title: NotifyAuthChangeResponse
       additionalProperties: false
+    bossanova.v1.NotifyAuthChangeResponse.Outcome:
+      type: string
+      title: Outcome
+      enum:
+        - OUTCOME_UNSPECIFIED
+        - OUTCOME_OK
+        - OUTCOME_CREDENTIALS_FLAGGED
+        - OUTCOME_CREDENTIALS_MISSING
+        - OUTCOME_REGISTER_FAILED
+      description: |-
+        Outcome is the daemon's verdict on the credentials it reloaded after a
+         `boss login`. It is enumerated and non-secret; it never carries token
+         material or a raw upstream payload.
+
+         OUTCOME_UNSPECIFIED is load-bearing: it is the proto3 default, so a new
+         CLI talking to an older daemon (or one with no orchestrator configured,
+         or on the `logout` action) reads it and must render silence, never a
+         false "OK".
     bossanova.v1.NotifyStatusChangeRequest:
       type: object
       properties:
@@ -10234,6 +10333,16 @@ components:
          ("" = all). should_refresh asks the daemon to run its live usage probe over each
          returned account before responding; false/omitted is the passive read the
          30-second poll uses and is byte-for-byte the pre-refresh request.
+
+         bosso reads should_refresh as a proxy for user intent: it gates the
+         cloud_action_invoked telemetry event on this flag so the passive poll stays
+         out of action counts (see docs/analytics/events.md). That reading is a
+         CONVENTION held by the one production caller — the web Accounts page, which
+         sets it true only from the Refresh control — and NOT an invariant this schema
+         enforces. Any automated or background caller that sets should_refresh true
+         would reintroduce exactly the polling noise the gate removes, and would do so
+         silently. A new caller that needs the daemon's live usage probe without
+         claiming user intent needs a separate signal, not this flag.
     bossanova.v1.ProxyManageListAccountsResponse:
       type: object
       properties:

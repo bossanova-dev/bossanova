@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
@@ -231,5 +232,90 @@ func TestTimeoutErrorIsDeadlineExceeded(t *testing.T) {
 		!strings.Contains(err.Error(), "DeadlineExceeded") &&
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+}
+
+// TestStartChatRunIgnoresClientDefaultTimeout proves the exemption: StartChatRun
+// is bounded by StartChatRunRPCTimeout, not by whatever default the client was
+// constructed with. An 80ms client default would cut the call off almost
+// immediately if StartChatRun still funnelled through the shared clamp.
+func TestStartChatRunIgnoresClientDefaultTimeout(t *testing.T) {
+	t.Parallel()
+	c, cleanup := newBufconnDirectClient(t, WithTimeout(80*time.Millisecond))
+	defer cleanup()
+
+	// The caller's deadline is what actually ends this test: waiting out the
+	// real 90s ceiling is not a thing a unit test may do.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v: the client's 80ms configured default is still clamping it. "+
+			"StartChatRun must be bounded by StartChatRunRPCTimeout instead.", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected the caller's 250ms deadline to end the call, elapsed %v", elapsed)
+	}
+}
+
+// TestStartChatRunHonorsShorterCallerDeadline proves the exemption is a ceiling
+// and not a floor: context.WithTimeout never extends a parent, so a caller that
+// supplies a tighter deadline still wins.
+func TestStartChatRunHonorsShorterCallerDeadline(t *testing.T) {
+	t.Parallel()
+	c, cleanup := newBufconnDirectClient(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	// Lower bound so the test cannot pass vacuously: a connection that failed
+	// instantly would also produce a non-nil err with elapsed ~0, proving
+	// nothing about deadline propagation.
+	if elapsed < 50*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v, well before the caller's 100ms deadline: "+
+			"the call failed for some reason other than the deadline, so this test proved nothing", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected the caller's 100ms deadline to win over StartChatRunRPCTimeout, elapsed %v", elapsed)
+	}
+}
+
+func TestStartChatRunRPCTimeoutDefault(t *testing.T) {
+	t.Parallel()
+	// Pins the production ceiling. It is not free to move downward: the guard
+	// test TestSessionStartReadinessFitsStartChatRunBudget in
+	// services/bossd/internal/tmux/tmux_budget_test.go sizes the daemon-side
+	// composer-readiness deadline against this value, and lowering it here
+	// would silently re-cap that deadline on the repair-driven session-start
+	// path — the exact bug this constant exists to prevent.
+	//
+	// Moving it *upward* is legitimate — that guard test's own remediation
+	// advice says to do exactly that when the readiness deadline rises. This
+	// assertion is an equality pin, so such a change must update the literal
+	// below in the same commit; a raise that skips this file fails here, not in
+	// the guard.
+	if StartChatRunRPCTimeout != 90*time.Second {
+		t.Fatalf("StartChatRunRPCTimeout = %v, want 90s", StartChatRunRPCTimeout)
+	}
+	// Sanity: the exemption has to actually be looser than what it exempts from.
+	if StartChatRunRPCTimeout <= DefaultRPCTimeout {
+		t.Fatalf("StartChatRunRPCTimeout (%v) must exceed DefaultRPCTimeout (%v), "+
+			"otherwise exempting StartChatRun from the shared clamp buys nothing",
+			StartChatRunRPCTimeout, DefaultRPCTimeout)
 	}
 }

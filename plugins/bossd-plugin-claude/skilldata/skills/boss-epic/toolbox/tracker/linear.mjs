@@ -75,6 +75,10 @@ export function buildLinearOperationMap(mcpServer) {
       tool: `mcp__${mcpServer}__save_issue`,
       summary: '{id, blockedBy: [ids]} -> add a dependency edge (cycle-checked by caller)',
     },
+    appendRelatedTo: {
+      tool: `mcp__${mcpServer}__save_issue`,
+      summary: '{id, relatedTo: [ids]} -> add a non-blocking related edge',
+    },
     preparePlanAttachment: {
       tool: `mcp__${mcpServer}__prepare_attachment_upload`,
       summary:

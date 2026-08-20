@@ -1598,7 +1598,7 @@ func TestDisplayPollerReconcileArchivesOnMergedOnly(t *testing.T) {
 
 			arch := newFakeArchiver()
 			poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, zerolog.Nop())
-			poller.SetArchiver(arch)
+			poller.SetArchiver(arch, nil)
 
 			if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
 				t.Fatalf("RefreshPR returned error: %v", err)

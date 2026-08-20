@@ -191,7 +191,7 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 			Examples: []Example{
 				{Command: "boss chat wait <session-id|chat-id>"},
 				{Command: "boss chat wait <session-id|chat-id> --timeout 10m"},
-				{Command: "CHAT=$(boss new --agent codex --repo my-repo --prompt \"second opinion on PR #42\" --detach | awk '/^chat-id/{print $2}') && boss chat wait $CHAT", Explanation: "Full cross-agent second-opinion recipe"},
+				{Command: "CHAT=$(boss new --agent codex --repo my-repo --prompt \"second opinion on PR #42\" --detach | sed -n 's/^chat-id:[[:space:]]*//p') && boss chat wait $CHAT", Explanation: "Full cross-agent second-opinion recipe"},
 			},
 		},
 	}

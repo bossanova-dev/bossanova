@@ -102,6 +102,7 @@ go_test(
         "account_switch_test.go",
         "agents_test.go",
         "auth_status_test.go",
+        "auth_test.go",
         "broadcast_test.go",
         "callback_test.go",
         "chat_test.go",

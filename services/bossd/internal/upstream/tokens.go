@@ -59,8 +59,19 @@ var ErrRefreshTokenAlreadyExchanged = fmt.Errorf("refresh token already exchange
 // ErrRefreshOutcomeUnknown means the refresh request was dispatched but its
 // result never came back (transport failure, or a response body that could not
 // be read). WorkOS may or may not have consumed and rotated the one-shot
-// refresh token, so replaying it is unsafe — the provider fails closed,
-// persists the reason, and waits for a new login instead. See BOS-659.
+// refresh token — but that ambiguity does not have to be resolved to act on
+// it. WorkOS keeps a 30-second replay grace window (workOSReplayGraceWindow)
+// in which re-presenting the SAME refresh token returns the tokens it already
+// rotated, idempotently, rather than an error; its session-resilience guidance
+// is explicitly "retry the same refresh token" and "never destroy a session on
+// a transient failure" (https://workos.com/docs/authkit/session-resilience).
+// So refresh() replays this error immediately, inside that window, and only
+// fails closed — persisting the reason and waiting for a new login — once the
+// replay budget (maxAmbiguousDispatches) is spent. BOS-941 reversed BOS-659's
+// fail-on-the-first-dispatch behaviour on the strength of that documented
+// window: a replay that lands after it is answered authoritatively, which is
+// the same terminal state failing closed produced immediately, only reached
+// after the recoverable case has been given its chance.
 var ErrRefreshOutcomeUnknown = fmt.Errorf("refresh outcome could not be confirmed: %w", ErrAuthExpired)
 
 // refreshFailureClass is the enumerated, non-secret shape of a failed refresh
@@ -239,8 +250,10 @@ func reloginPauseMessage(reason string) string {
 // errReloginMarkerNotPersisted means the re-login marker could NOT be written
 // to the shared keychain record. It is worth surfacing on its own: the
 // in-memory cache is disabled either way, but a daemon restart reloads an
-// unflagged record and will replay the very refresh token this run decided was
-// unsafe. Callers match it with errors.Is to log the distinction.
+// unflagged record and will re-present the very refresh token whose replay
+// budget this run had already spent — long outside the grace window that made
+// those replays idempotent. Callers match it with errors.Is to log the
+// distinction.
 var errReloginMarkerNotPersisted = errors.New("persist re-login marker")
 
 // logReloginPause emits the single sanitized warning the daemon and terminal
@@ -276,6 +289,74 @@ func logReloginPause(logger *zerolog.Logger, prefix string, err error) {
 		event = event.Bool("relogin_marker_persisted", false)
 	}
 	event.Msg(prefix + reloginPauseMessage(reason))
+}
+
+// logAuthWedge announces the moment a provider's in-memory credentials go from
+// usable to disabled. It is deliberately separate from logReloginPause: that
+// line is emitted by whoever *decided* to pause and carries the failure that
+// caused it, whereas this one fires inside the provider on the state
+// transition itself and carries only the enumerated reason.
+//
+// It exists because the BOS-942 incident had a daemon whose provider had been
+// reloaded from an already-marked record at startup. Nothing decided to pause
+// in that process — there was no failing exchange to report — so no
+// logReloginPause line was ever written, and the log showed a healthy daemon
+// while every registration attempt failed. Only enumerated, non-secret fields
+// are attached; never a token, an Authorization header, or a response body.
+func logAuthWedge(logger *zerolog.Logger, reason string) {
+	event := logger.Warn()
+	if reason != "" {
+		event = event.Str("relogin_reason", reason)
+	}
+	event.Msg("upstream credentials are marked for re-login; this daemon cannot authenticate until `boss login` runs")
+}
+
+// replayWarnFallback is where logRefreshReplay writes when the caller's context
+// carries no logger. It is os.Stderr because that is where bossalog.Setup points
+// the daemon's global logger, so a dropped-context warning lands in the same
+// bossd.stderr.log as every other line — just without the caller's component
+// field. A var, not a const, only so the test can capture it.
+var replayWarnFallback io.Writer = os.Stderr
+
+// logRefreshReplay emits the one warning per in-window replay of an exchange
+// whose outcome could not be confirmed. Same sanitization rule as
+// logReloginPause: the enumerated class and the pooled-connection flag, never
+// the wrapped error, which carries transport detail. The replay index is what
+// makes the two outcomes legible in the log after the fact — a sign-out
+// preceded by replay 1 and replay 2 is an exhausted budget, whereas one with no
+// replay lines at all is an authoritative rejection that never had a budget.
+//
+// The logger rides on ctx (Logger.WithContext at each Refresh call site) rather
+// than on the provider. Not because no logger exists yet — bossalog.Setup runs
+// long before NewKeychainTokenProvider — but because the CALLER's logger is the
+// right one: this line is meant to be read against the sign-out line that
+// logReloginPause emits, and that sibling takes the caller's *zerolog.Logger as
+// a parameter for exactly that reason, so both carry the same component field.
+// refresh() is several frames below Refresh, and ctx is the only thing already
+// threaded that far; a provider field would need one logger for callers that
+// have different ones, and a parameter would change four internal signatures.
+//
+// Read off the context that seam WOULD fail silently — zerolog.Ctx returns a
+// disabled logger when nothing was attached, so a Refresh call site that
+// forgets WithContext drops every replay line with no error and no panic, which
+// already happened once on this branch. replayWarnFallback closes that: a
+// missing context logger costs the caller's component field, not the line. The
+// degradation is therefore visible in the log rather than invisible, and
+// TestLogRefreshReplayFallsBackWhenContextCarriesNoLogger pins it; the
+// structural guarantee is what makes the four call sites safe to add to, since
+// no test can reach a call site that does not exist yet.
+func logRefreshReplay(ctx context.Context, replay int, err error) {
+	logger := zerolog.Ctx(ctx)
+	if logger.GetLevel() == zerolog.Disabled {
+		fallback := zerolog.New(replayWarnFallback).With().Timestamp().Logger()
+		logger = &fallback
+	}
+	event := logger.Warn().Int("refresh_replay", replay)
+	if failure, ok := refreshFailureOf(err); ok {
+		event = event.Str("refresh_failure_class", string(failure.class)).
+			Bool("conn_reused", failure.connReused)
+	}
+	event.Msg("upstream token refresh outcome unconfirmed; replaying the refresh token inside WorkOS's grace window")
 }
 
 // reloginReporter is an optional capability on TokenProvider implementations:
@@ -316,19 +397,56 @@ const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
 // workOSRefreshTimeout bounds one WorkOS refresh exchange end to end (dial,
 // TLS handshake, request, response).
 //
-// It is deliberately generous. This is the ONE exchange in the daemon whose
-// failure is unrecoverable without human action: a post-dispatch failure is
-// ambiguous by construction (ErrRefreshOutcomeUnknown), which fails closed and
-// waits for `boss login`. The previous 10s budget had to cover a cold DNS
-// lookup, a TCP connect, a TLS handshake AND the round trip, so a laptop that
-// had just gone idle — where the first packet after a Wi-Fi power-save or VPN
-// re-handshake routinely costs several seconds — could burn most of the budget
-// before the request was even written and then time out waiting for the
-// response, converting a transient stall into a permanent sign-out. Spending
-// 30s here costs nothing when the network is healthy (the exchange takes
-// milliseconds) and is the difference between riding out a hiccup and logging
-// the user out.
-const workOSRefreshTimeout = 30 * time.Second
+// It is deliberately SHORT, and that is a reversal of the reasoning that once
+// raised it from 10s to 30s (buy enough budget for a cold DNS lookup, TCP
+// connect, TLS handshake and round trip on a just-woken laptop). Under WorkOS's
+// replay grace window that reasoning inverts. The window
+// (workOSReplayGraceWindow) opens when WorkOS processes the exchange — near
+// enough to when we dispatch it — so a timeout as long as the window guarantees
+// the replay lands OUTSIDE the only interval in which recovery is possible, and
+// rescues only the case where WorkOS never saw the request at all. With a replay
+// budget in place the asymmetry runs the other way: a too-short timeout costs
+// one extra dispatch, while a too-long timeout costs a sign-out. 8s leaves room
+// for maxAmbiguousDispatches whole dispatches inside the window.
+const workOSRefreshTimeout = 8 * time.Second
+
+// maxAmbiguousDispatches and workOSReplayGraceWindow are a PAIR, and so is
+// workOSRefreshTimeout above: they are only correct together, and changing any
+// one of them without re-checking the invariant below silently removes the
+// recovery this budget exists to provide.
+//
+// workOSReplayGraceWindow is WorkOS's documented refresh-token replay grace
+// period: for 30 seconds after a refresh token is exchanged, replaying that
+// same token returns the same rotated tokens instead of an error
+// (https://workos.com/docs/authkit/session-resilience). It is WorkOS's number,
+// not a knob — it is declared here so the arithmetic can be checked against it,
+// and nothing reads it at run time.
+//
+// maxAmbiguousDispatches is how many times refresh() may dispatch the SAME
+// refresh token while the outcome stays unconfirmed (the original plus two
+// replays). The bound is a count, with no wall-clock check and no backoff, on
+// purpose: KeychainTokenProvider has no injectable clock, and every second of
+// backoff would spend the very window that makes the replay idempotent. A count
+// is sufficient because the worst case is a static arithmetic property of these
+// three constants rather than a runtime measurement:
+//
+//	maxAmbiguousDispatches * workOSRefreshTimeout < workOSReplayGraceWindow
+//	                    3 *                  8s  <                     30s
+//
+// TestWorkOSReplayBudgetFitsGraceWindow asserts exactly that, so raising the
+// timeout back toward 30s — or raising the dispatch count — fails the build
+// instead of quietly pushing replays outside the window.
+const (
+	maxAmbiguousDispatches  = 3
+	workOSReplayGraceWindow = 30 * time.Second
+)
+
+// maxSupersedeAttempts bounds the exchange loop's OTHER budget: the two
+// supersede-adoption paths, which retry with NEWER credentials another writer
+// stored while our exchange was failing. It stays at the 2 dispatches it has
+// always been. It is named, and counted separately from the replay budget,
+// because the two must not share a counter — see the loop in refresh().
+const maxSupersedeAttempts = 2
 
 // newWorkOSRefreshHTTPClient builds the client used for the refresh exchange.
 //
@@ -541,7 +659,10 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 
 	// From the moment a connection is in hand, a failure leaves the refresh
 	// token's fate unknown: WorkOS may already have consumed and rotated it.
-	// Fail closed rather than replaying it.
+	// Report that ambiguity as ErrRefreshOutcomeUnknown and let refresh()
+	// decide — it replays the same token inside WorkOS's grace window
+	// (maxAmbiguousDispatches) and only fails closed once that budget is
+	// spent. This function stays a pure classifier and holds no policy.
 	resp, err := workOSRefreshHTTPClient.Do(req)
 	if err != nil {
 		if !gotConn.Load() {
@@ -597,10 +718,16 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 		// HTTP 200 means WorkOS answered successfully and therefore rotated
 		// the one-shot refresh token — and we just failed to read the
 		// replacement out of the response. That is strictly less recoverable
-		// than the read failure above, so it is ambiguous too: retrying the
-		// old token here is exactly the replay this ticket forbids. The
-		// unmarshal error is not wrapped, because it embeds the response
-		// bytes it choked on and those can echo token material.
+		// than the read failure above, so it is ambiguous too — and BOS-941
+		// replays it like any other unconfirmed outcome. Only one of the two
+		// sub-cases can actually be recovered that way: a body corrupted in
+		// transit decodes on the replay, while a deterministically malformed
+		// 200 fails identically every time and simply spends the budget before
+		// reaching the terminal state it would have reached at once. Spending
+		// it is the right trade — the two are indistinguishable from here, and
+		// only the recoverable one is worth being wrong about. The unmarshal
+		// error is not wrapped, because it embeds the response bytes it choked
+		// on and those can echo token material.
 		return nil, withRefreshFailure(refreshFailureResponseDecode, connReused.Load(),
 			fmt.Errorf("%w: refresh response could not be decoded", ErrRefreshOutcomeUnknown))
 	}
@@ -640,6 +767,12 @@ type KeychainTokenProvider struct {
 	// out so tests can point at a fake without touching the real env.
 	clientIDEnv string
 
+	// logger is where the credential-state transition warning goes. A pointer
+	// (not a value) so a provider built as a bare struct literal — which
+	// several tests do — is safely silent instead of panicking on zerolog's
+	// nil writer. Nil means "no logger set"; see logOrNop.
+	logger *zerolog.Logger
+
 	// refreshGroup coalesces concurrent Refresh calls into a single WorkOS
 	// exchange. The StreamClient opens two streams (DaemonStream and
 	// TerminalStream) that each carry their own refresher; when an access
@@ -669,30 +802,109 @@ func NewKeychainTokenProvider() *KeychainTokenProvider {
 	return p
 }
 
+// nopLogger backs logOrNop. Package-level so every unlogged provider shares
+// one instead of allocating per call.
+var nopLogger = zerolog.Nop()
+
+// SetLogger points the provider's credential-state warnings at a real logger.
+// Separate from the constructor so NewKeychainTokenProvider keeps its existing
+// zero-argument signature and every current caller compiles unchanged; a
+// provider that is never given one stays silent.
+func (p *KeychainTokenProvider) SetLogger(logger zerolog.Logger) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.logger = &logger
+	// NewKeychainTokenProvider reads the keychain inside the constructor, so
+	// the startup load — the one that discovers an already-marked record and
+	// the single most important one to hear about — has always already
+	// happened by the time a logger can be attached. Replay it here rather
+	// than losing exactly the case this warning exists for. Still one line:
+	// applyTokensLocked will not re-announce a reason that is already set.
+	if p.reloginReason != "" {
+		logAuthWedge(p.logOrNop(), p.reloginReason)
+	}
+}
+
+// logOrNop returns the provider's logger, or a no-op one when unset. Caller
+// holds p.mu (read or write).
+func (p *KeychainTokenProvider) logOrNop() *zerolog.Logger {
+	if p.logger == nil {
+		return &nopLogger
+	}
+	return p.logger
+}
+
 // Reload re-reads the keychain entry into the in-memory cache. Used by
 // the auth-change notifier so a fresh `boss login` (which writes new
 // tokens to the keychain) is observable to the running daemon without a
 // restart — calling Refresh here would fail because the cached refresh
 // token has been superseded by the new login.
 func (p *KeychainTokenProvider) Reload() {
-	p.loadFromKeychain()
+	_ = p.ReloadResult()
+}
+
+// Enumerated, non-secret classes for a reload that did not read the record.
+// They never carry the underlying error text, which can embed record bytes.
+const (
+	// ReloadErrorRecordDeleted means the shared record is gone — an
+	// authoritative answer, and the only one that clears the cache.
+	ReloadErrorRecordDeleted = "record_deleted"
+	// ReloadErrorReadFailed means the record could not be read right now. It
+	// may be perfectly intact; the cache is deliberately left alone.
+	ReloadErrorReadFailed = "read_failed"
+)
+
+// ReloadOutcome reports what a reload actually observed, as opposed to what
+// the cache happens to hold afterwards.
+//
+// The distinction is the whole point. loadFromKeychain preserves the cache on
+// any read failure that is not "record deleted", so reading Token() or
+// ReloginReason() after a Reload describes the CACHE. Without this, an empty
+// token after a login would mean either "the record really is still flagged"
+// or "the reload could not read the record at all" — the exact ambiguity that
+// made the original incident undiagnosable.
+type ReloadOutcome struct {
+	// ReadOK reports whether the keychain read itself succeeded.
+	ReadOK bool
+	// ErrorClass is one of the ReloadError* constants, empty when ReadOK.
+	ErrorClass string
+}
+
+// ReloadResult re-reads the keychain entry like Reload and reports whether the
+// read succeeded. Reload keeps its bare signature because callers reach it
+// through a `reloader` interface.
+func (p *KeychainTokenProvider) ReloadResult() ReloadOutcome {
+	return p.loadFromKeychain()
 }
 
 // loadFromKeychain snapshots the keychain entry into the in-memory cache.
 // Safe to call repeatedly. A DELETED entry clears the cache, so an explicit
 // `boss logout` de-authorises a daemon that is already running; any other read
 // failure leaves the cache alone, because the record may still be there.
-func (p *KeychainTokenProvider) loadFromKeychain() {
+func (p *KeychainTokenProvider) loadFromKeychain() ReloadOutcome {
 	tokens, err := loadKeychainTokensFn()
 	if err != nil {
 		if keychainRecordDeleted(err) {
 			p.clearCache()
+			return ReloadOutcome{ErrorClass: ReloadErrorRecordDeleted}
 		}
-		return
+		return ReloadOutcome{ErrorClass: ReloadErrorReadFailed}
 	}
 	p.mu.Lock()
 	p.applyTokensLocked(tokens)
 	p.mu.Unlock()
+	return ReloadOutcome{ReadOK: true}
+}
+
+// KeyringBackend names the credential backend this process resolved, so a
+// reload that read nothing can be told apart from one that read a different
+// store than the CLI wrote to. It is configuration, never credentials.
+func KeyringBackend() string {
+	backends := keyringutil.Backends()
+	if len(backends) == 0 {
+		return "platform-default"
+	}
+	return string(backends[0])
 }
 
 // Token implements TokenProvider.Token.
@@ -795,18 +1007,87 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 		refreshTok = latest.RefreshToken
 	}
 
-	for attempts := 0; attempts < 2; attempts++ {
+	// Two budgets, deliberately on two counters. `attempts` bounds the
+	// supersede-adoption paths below, whose `continue`s retry with NEWER
+	// credentials; `replays` bounds the ambiguous-outcome path, whose `continue`
+	// retries the SAME token inside WorkOS's grace window. Sharing one counter
+	// — as this loop did when supersede was its only retry — would let a
+	// supersede race spend the replay budget and vice versa.
+	//
+	// Only the supersede budget appears in the loop condition, and that is the
+	// point: each budget is enforced in exactly ONE place. Replay exhaustion is
+	// enforced inside the ErrRefreshOutcomeUnknown branch below, which returns
+	// flagRetainedRecord rather than falling out of the loop — so a
+	// `replays < maxAmbiguousDispatches` conjunct here could never fire, and
+	// stating the same invariant twice invites an editor to trust the condition
+	// and drop the branch's `return`, which would silently turn a spent replay
+	// budget into the non-terminal errRefreshSuperseded below. The overall
+	// bound is still at most maxSupersedeAttempts + maxAmbiguousDispatches - 1
+	// dispatches, which
+	// TestKeychainTokenProviderRefreshAmbiguousAfterStaleRecoveryClearsNewerToken
+	// pins by scripting every dispatch of a mixed supersede-plus-replay run.
+	//
+	// The separation is of the BUDGETS, not of the tokens: `replays` is not
+	// reset when a supersede adopts a newer token, so a token adopted after the
+	// replay budget is partly spent inherits what is left of it rather than a
+	// fresh three. That is deliberate. It keeps the window invariant trivially
+	// true (per-token dispatches stay at or below maxAmbiguousDispatches, and
+	// the overall bound stays legible above), and it is strictly better than
+	// the pre-BOS-941 behaviour, where an adopted token got no replay at all.
+	// Resetting would give each token its own budget at the cost of 6
+	// dispatches and 48s of single-flight blocking, which is the trade this
+	// declines.
+	//
+	// unconfirmedTok is the identity half that `replays` cannot carry: the
+	// token whose dispatch actually went unconfirmed. `replays` survives a
+	// supersede adoption but `refreshTok` does not, so the count alone cannot
+	// answer "was THIS token the one we replayed?" — which is exactly what the
+	// re-login reason override below has to know.
+	attempts, replays := 0, 0
+	var unconfirmedTok string
+	for attempts < maxSupersedeAttempts {
 		requestCtx, requestCancel := context.WithTimeout(ctx, workOSRefreshTimeout)
 		refreshed, err := refreshWorkOSTokenFn(requestCtx, clientID, refreshTok)
 		requestCancel()
 		if err != nil {
 			// Ambiguous outcome: the exchange was dispatched but never
-			// confirmed. Keep the credentials exactly as stored, record why
-			// re-login is needed, and do not retry — a second attempt could
-			// replay a token WorkOS already consumed. Checked before the
-			// terminal branch because both compose with ErrAuthExpired.
+			// confirmed. WorkOS's replay grace window makes re-presenting the
+			// SAME token the documented recovery — inside the window it returns
+			// the tokens already rotated for the lost response — so replay
+			// immediately: no backoff and no keychain re-read, both of which
+			// spend the window this depends on. Only an exhausted budget keeps
+			// the credentials as stored and records why re-login is needed,
+			// exactly as before. Checked before the terminal branch because both
+			// compose with ErrAuthExpired, and the replay lives lexically INSIDE
+			// this branch so an authoritative ErrRefreshTokenRejected below
+			// cannot inherit the budget — replaying a token WorkOS has
+			// definitively refused is waste, not safety.
 			if errors.Is(err, ErrRefreshOutcomeUnknown) {
-				return p.flagRetainedRecord(refreshTok, reloginReasonRefreshOutcomeUnknown, err)
+				// A dead parent context makes both halves of this branch
+				// wrong. The budget is sized in wall-clock terms
+				// (maxAmbiguousDispatches whole workOSRefreshTimeouts inside
+				// the grace window), but a cancelled or nearly-expired ctx
+				// truncates every requestCtx below it, so the remaining
+				// dispatches fail in microseconds — and they fail AMBIGUOUSLY,
+				// because net/http reports GotConn from the idle pool before
+				// roundTrip observes the dead context. Spending the budget that
+				// way and then writing the durable sign-out marker would turn a
+				// caller-side deadline (a shutdown, or the startup refresh's
+				// 10s cap in cmd/main.go) into a permanent sign-out that no
+				// WorkOS exchange ever justified. Return a plain error instead:
+				// it does not compose with ErrAuthExpired, so the tick-level
+				// retry in runTokenRefresher picks the exchange back up with a
+				// live context.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return "", fmt.Errorf("refresh outcome unconfirmed and the caller's context ended before a replay could be spent: %w", ctxErr)
+				}
+				replays++
+				if replays >= maxAmbiguousDispatches {
+					return p.flagRetainedRecord(refreshTok, reloginReasonRefreshOutcomeUnknown, err)
+				}
+				unconfirmedTok = refreshTok
+				logRefreshReplay(ctx, replays, err)
+				continue
 			}
 			if errors.Is(err, ErrAuthExpired) {
 				reloaded, loadErr := loadKeychainTokensFn()
@@ -827,6 +1108,7 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 					// over the newer one this branch just adopted.
 					latest = reloaded
 					refreshTok = reloaded.RefreshToken
+					attempts++
 					continue
 				}
 				// Authoritative rejection with nothing newer to adopt: retain
@@ -836,6 +1118,27 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 					preserved = reloaded
 				}
 				reason := preservedReloginReason(preserved, refreshTok, err)
+				if unconfirmedTok != "" && refreshTok == unconfirmedTok &&
+					errors.Is(err, ErrRefreshTokenAlreadyExchanged) {
+					// Our own replay of THIS token produced this answer, so the
+					// token was consumed by the dispatch whose response we lost:
+					// the unconfirmed exchange is why re-login is needed, not a
+					// bad credential. Same precision rule as
+					// preservedReloginReason's cross-daemon case, sourced from
+					// this loop's own history instead of from a marker another
+					// daemon left on the record.
+					//
+					// The token-identity conjunct is load-bearing, not
+					// belt-and-braces: `replays` is loop-global and survives a
+					// supersede adoption, so `replays > 0` alone would persist
+					// refresh_outcome_unknown for the ordering "unknown on token
+					// A, adopt token B, already-exchanged on token B" — a token
+					// this loop never replayed, and one for which
+					// refresh_token_rejected is the accurate reason.
+					// preservedReloginReason makes the same identity check for
+					// the same reason.
+					reason = reloginReasonRefreshOutcomeUnknown
+				}
 				return p.flagRetainedRecord(refreshTok, reason, err)
 			}
 			return "", err
@@ -875,6 +1178,7 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 			}
 			latest = current
 			refreshTok = current.RefreshToken
+			attempts++
 			continue
 		}
 		p.mu.Lock()
@@ -886,15 +1190,17 @@ func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr
 		return refreshed.AccessToken, nil
 	}
 
-	// Both `continue` paths above adopted newer, UNFLAGGED credentials, so
-	// exhausting the loop means we kept being superseded — not that the user
-	// must sign in again. Returning ErrAuthExpired here would park both stream
+	// Only the supersede budget can bring us here: the replay branch flags from
+	// inside itself. Both supersede `continue` paths adopted newer, UNFLAGGED
+	// credentials, so exhausting that budget means we kept being superseded —
+	// not that the user must sign in again. Returning ErrAuthExpired here would park both stream
 	// loops behind AuthState with a clean record on disk and nothing left to
 	// call MarkOK, the same stranding flagRetainedRecord exists to avoid.
 	return "", errRefreshSuperseded
 }
 
 func (p *KeychainTokenProvider) applyTokensLocked(tokens *keychainTokens) {
+	previous := p.reloginReason
 	if reason := tokens.reloginReason(); reason != "" {
 		// The record is retained on disk for its identity, but a provider
 		// loaded from it must expose no bearer token and must never replay the
@@ -903,6 +1209,33 @@ func (p *KeychainTokenProvider) applyTokensLocked(tokens *keychainTokens) {
 		p.refreshToken = ""
 		p.expiresAt = time.Time{}
 		p.reloginReason = reason
+		// Announce the TRANSITION only. applyTokensLocked runs on every
+		// keychain read — startup, Reload, and each refresh — so warning
+		// unconditionally would emit the same line on a cadence for a
+		// condition that is permanent until `boss login`. Gating on a CHANGE
+		// makes it one line per time the diagnosis actually moves, including
+		// the startup read that loads an already-marked record (previous is ""
+		// on a fresh provider), which is exactly the BOS-942 case that
+		// otherwise logged nothing at all.
+		//
+		// It gates on previous != reason rather than previous == "" because
+		// the reason is the operator's only cause line, and it does change —
+		// refresh_outcome_unknown hardening into refresh_token_rejected, say.
+		// Announcing only the first one left that line naming a superseded
+		// diagnosis for the rest of the process lifetime. The anti-spam
+		// property is unchanged: an unchanged reason still logs exactly once.
+		//
+		// "Once per change" is bounded rather than merely finite only because
+		// the marker does not oscillate: it is written by the refresh paths in
+		// this process, and each transition is a hardening (unset ->
+		// refresh_outcome_unknown -> refresh_token_rejected) that no path
+		// walks back without a `boss login` clearing the record outright. If a
+		// second writer against the same record is ever introduced, alternating
+		// markers would announce at the refresh cadence — gate on a monotone
+		// severity order at that point, not on inequality.
+		if previous != reason {
+			logAuthWedge(p.logOrNop(), reason)
+		}
 		return
 	}
 	p.accessToken = tokens.AccessToken
@@ -917,6 +1250,29 @@ func (p *KeychainTokenProvider) ReloginReason() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.reloginReason
+}
+
+// CredentialVerdict reports whether the cached credentials are usable, and the
+// persisted re-login reason when they are not.
+//
+// It exists so callers can ask that question under a SINGLE lock. Composing it
+// from separate ReloginReason() and Token() calls takes two RLocks, and a
+// concurrent Refresh/applyTokensLocked can commit between them — the composed
+// answer would then describe a state that never existed (a token from before
+// the flag, or a flag from after the token). applyTokensLocked already writes
+// both fields together under the write lock; reading them together is the
+// matching half.
+//
+// usable is deliberately the conjunction of both fields rather than either
+// alone. A non-empty reloginReason means the record is disabled even if a
+// stale accessToken were still cached, and an empty accessToken means there is
+// nothing to dial with even when no marker was ever written — the two failures
+// have different causes and must stay distinguishable to the caller, which is
+// why the reason is returned alongside rather than folded into a single string.
+func (p *KeychainTokenProvider) CredentialVerdict() (usable bool, reloginReason string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.reloginReason == "" && p.accessToken != "", p.reloginReason
 }
 
 // markNeedsRelogin persists the non-secret re-login marker and retained

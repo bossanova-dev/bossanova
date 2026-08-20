@@ -60,10 +60,18 @@ func (q *authChangeQueue) notify(ctx context.Context, c client.BossClient, actio
 	}
 }
 
+// notifyAuthChange nudges the daemon and deliberately drops both return values.
+//
+// The daemon's post-login verdict is rendered by `boss login`, which owns the
+// terminal at the moment of the login and can print a warning the operator will
+// actually read. This path is the TUI's own logout/login bookkeeping, running as
+// a background tea.Cmd with no output surface of its own; surfacing the verdict
+// here would mean routing it into the view's message loop, which is out of scope
+// for BOS-945. Dropping it keeps today's behaviour rather than half-reporting it.
 func notifyAuthChange(ctx context.Context, c client.BossClient, action string, timeout time.Duration) {
 	notifyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	_ = c.NotifyAuthChange(notifyCtx, action)
+	_, _ = c.NotifyAuthChange(notifyCtx, action)
 }
 
 // handleKey walks the same precedence the inline switch had: the logout

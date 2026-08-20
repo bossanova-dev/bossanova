@@ -16,9 +16,55 @@ import (
 
 // DefaultRPCTimeout is the default per-call timeout applied to unary host
 // service RPCs. It bounds how long a plugin will wait for a hung daemon
-// before returning an error. Streaming RPCs (StreamAttemptOutput) are
-// exempt — their lifetime is controlled by the caller's context.
+// before returning an error.
+//
+// HostService is entirely unary — the proto declares no streaming RPC — and
+// three of those unary RPCs are exempt from this value, in two different
+// ways.
+//
+// The long-poll waits (WaitAgentRun, WaitChatRun) take no timeout at all:
+// they block for as long as the run they are waiting on, which can be many
+// minutes, so their lifetime is the caller's ctx. StartChatRun takes its own,
+// looser ceiling instead (StartChatRunRPCTimeout below), because it spans a
+// whole session start rather than a single daemon round-trip. Everything else
+// funnels through invokeUnary and takes this value.
+//
+// A plugin that needs a different budget across its unary calls constructs
+// its client with WithTimeout, which replaces this default for that client —
+// but only for the calls that consult the default at all, i.e. not for the
+// three named above. Note that neither lever ever extends a caller's context:
+// both are ceilings, so the shorter of the two always wins.
 const DefaultRPCTimeout = 30 * time.Second
+
+// StartChatRunRPCTimeout is the per-call ceiling for StartChatRun, which is
+// exempt from DefaultRPCTimeout. It is a property of the RPC, not of the
+// client, so it does not consult the client's configured default.
+//
+// StartChatRun spans a whole session start on the host side, not a single
+// daemon round-trip. Its worst case is the repair path's replace branch: a
+// cheap first StartTmuxChat that returns AlreadyExists, the replacement and
+// cleanup of the blocking chat, then a full fresh launch — spawn, DB row,
+// finalize-hook wiring, the composer-readiness wait
+// (tmux.DefaultSessionStartReadyDeadline, 45s), the submit verifier (+2s) and
+// the fresh-provider-session-ID resolve (+2s). That is roughly 49s of hard
+// tail before overhead, which the shared 30s guard cannot cover — it would cut
+// the call off mid-readiness and return a bare context error instead of the
+// host's readiness diagnostic with its pane capture.
+//
+// 90s clears that tail with headroom, and matches the value this repo already
+// uses for its one legitimately-long unary RPC in the mirror direction
+// (pollTasksRPCTimeout, services/bossd/internal/plugin/grpc_plugins.go).
+// The relationship to the readiness deadline is pinned from the other end by
+// TestSessionStartReadinessFitsStartChatRunBudget in
+// services/bossd/internal/tmux/tmux_budget_test.go, so this value is not free
+// to move downward on its own.
+//
+// StartChatRun has exactly one caller today: the repair plugin's
+// (*repairMonitor).runRepairAttempt (plugins/bossd-plugin-repair/server.go,
+// declared at :1523), which issues the RPC at :1631 and, if that returns
+// AlreadyExists and the stale chat is reclaimed, again at :1661. Each call
+// gets its own ceiling; the plugin wraps neither in an outer deadline.
+const StartChatRunRPCTimeout = 90 * time.Second
 
 // brokerDialTimeout bounds how long NewEagerClient waits for broker.Dial(1)
 // to return before abandoning the wait with an error. The go-plugin broker's
@@ -38,6 +84,12 @@ type clientOptions struct {
 // methods. Callers that need a longer timeout for a specific call can
 // construct a dedicated client with WithTimeout, or pass a context with a
 // later deadline (which will still be clamped by the default).
+//
+// It does not reach every RPC. StartChatRun ignores the client's configured
+// value and always takes StartChatRunRPCTimeout, because its budget is a
+// property of the RPC rather than of the client; WaitAgentRun and WaitChatRun
+// take no client-side timeout at all. Tightening the budget here therefore
+// leaves those three unaffected.
 func WithTimeout(d time.Duration) ClientOption {
 	return func(o *clientOptions) { o.rpcTimeout = d }
 }
@@ -273,11 +325,30 @@ func (c *EagerClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.
 // --- DirectClient methods (gRPC calls) ---
 
 // invokeUnary applies the client's default RPC timeout and forwards to
-// grpc.ClientConn.Invoke. All unary HostService calls funnel through here so
-// the timeout is enforced in one place. Streaming RPCs do not use this helper
-// because their lifetime is controlled by the caller's context.
+// grpc.ClientConn.Invoke. Every unary HostService call funnels through here so
+// the timeout is enforced in one place, except for StartChatRun — which calls
+// invokeUnaryWithTimeout directly with StartChatRunRPCTimeout, because it spans
+// a whole session start rather than a single daemon round-trip — and the
+// long-poll waits (WaitAgentRun, WaitChatRun), which call conn.Invoke directly
+// with no timeout at all. HostService has no streaming RPC today; one added
+// later would bypass both helpers, its lifetime being the caller's context.
 func (c *DirectClient) invokeUnary(ctx context.Context, method string, req, resp any) error {
-	ctx, cancel := context.WithTimeout(ctx, c.defaultRPCTimeout)
+	return c.invokeUnaryWithTimeout(ctx, c.defaultRPCTimeout, method, req, resp)
+}
+
+// invokeUnaryWithTimeout is invokeUnary with a caller-supplied ceiling, for the
+// one RPC whose budget is a property of the RPC rather than of the client
+// (StartChatRun, see StartChatRunRPCTimeout). Separated out so that exemption
+// does not have to duplicate the invoke mechanics, and so tests can exercise a
+// timeout path without waiting out a production value. Mirrors
+// invokePluginUnary / invokePluginUnaryWithTimeout in
+// services/bossd/internal/plugin/grpc_plugins.go, which solves the same problem
+// in the daemon → plugin direction.
+//
+// The timeout is applied on top of ctx, so a caller with a shorter deadline
+// still wins — context.WithTimeout never extends a parent.
+func (c *DirectClient) invokeUnaryWithTimeout(ctx context.Context, timeout time.Duration, method string, req, resp any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return c.conn.Invoke(ctx, method, req, resp)
 }
@@ -334,9 +405,13 @@ func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAg
 	return resp, nil
 }
 
+// StartChatRun takes StartChatRunRPCTimeout rather than the client's configured
+// default: it spans a whole session start on the host side, so the shared
+// hung-daemon guard is too tight for it. See StartChatRunRPCTimeout for the
+// sizing and for the guard test that pins it against the readiness deadline.
 func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
 	resp := &bossanovav1.StartChatRunHostResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
+	if err := c.invokeUnaryWithTimeout(ctx, StartChatRunRPCTimeout, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

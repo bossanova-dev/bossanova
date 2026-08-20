@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "attach.go",
         "intconv.go",
+        "ready_marker.go",
         "tmux.go",
         "tmux_modal.go",
         "tmux_submit_verify.go",
@@ -25,8 +26,12 @@ go_test(
         "attach_test.go",
         "intconv_test.go",
         "list_sessions_test.go",
+        "tmux_budget_test.go",
+        "tmux_delivery_deadline_test.go",
         "tmux_e2e_test.go",
         "tmux_modal_test.go",
+        "tmux_modal_wrappers_test.go",
+        "tmux_ready_retry_test.go",
         "tmux_submit_verify_codex_test.go",
         "tmux_submit_verify_queued_test.go",
         "tmux_test.go",
@@ -34,7 +39,9 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":tmux"],
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/plugin/hostclient",
         "//lib/bossalib/statusdetect",
     ],
 )

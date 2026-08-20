@@ -44,8 +44,8 @@ function fencedBlocks(body, lang) {
 function stagingBlocks(body) {
   const blocks = fencedBlocks(body, 'bash')
   assert.ok(blocks.length >= 2, 'the extension must document a staging snapshot AND its cleanup')
-  const snapshot = blocks.filter((b) => /^# boss-plan-ce: staging snapshot$/m.test(b))
-  const cleanup = blocks.filter((b) => /^# boss-plan-ce: staging cleanup$/m.test(b))
+  const snapshot = blocks.filter((b) => /^# boss-plan-ce: staging[ ]snapshot$/m.test(b))
+  const cleanup = blocks.filter((b) => /^# boss-plan-ce: staging[ ]cleanup$/m.test(b))
   assert.equal(snapshot.length, 1, 'exactly one labelled staging snapshot block')
   assert.equal(cleanup.length, 1, 'exactly one labelled staging cleanup block')
   return [snapshot[0], cleanup[0]]
@@ -183,12 +183,12 @@ test('BOS-813 fixtures: headless CE-unavailable gates the tracker attachment shu
     const body = draftBody()
     assert.match(
       body,
-      /records this\s+dispatch as skipped/i,
+      /records\s+this\s+dispatch\s+as\s+skipped/i,
       'the failure path must be recorded as a skip',
     )
     assert.match(
       body,
-      /Tier 2[\s\S]{0,80}Tier 3/,
+      /Tier\s+2[\s\S]{0,80}Tier\s+3/,
       'the failure path must fall through to the core tiers',
     )
   })
@@ -371,15 +371,15 @@ test('BOS-813 fixtures: the documented staging recipe enumerates exactly what CE
 
 test('BOS-813 fixtures: cleanup is documented as unconditional across the failure paths', () => {
   const body = draftBody()
-  assert.match(body, /Cleanup is unconditional/i, 'cleanup must be stated as unconditional')
+  assert.match(body, /Cleanup\s+is\s+unconditional/i, 'cleanup must be stated as unconditional')
   assert.match(
     body,
-    /runs on the failure paths too/i,
+    /runs\s+on\s+the\s+failure\s+paths\s+too/i,
     'a dispatch that fails after CE wrote its plan must still restore the worktree',
   )
   assert.match(
     body,
-    /Nothing CE wrote \*\*outside\*\* `runTmp` may survive/,
+    /Nothing\s+CE\s+wrote \*\*outside\*\* `runTmp` may\s+survive/,
     'the cleanup boundary must stay at runTmp',
   )
 
@@ -394,7 +394,7 @@ test('BOS-813 fixtures: cleanup is documented as unconditional across the failur
   )
   assert.match(
     body,
-    /empty directories/i,
+    /empty\s+directories/i,
     'the doc must name the empty-directory limit rather than promising to reach it',
   )
   // Restore, not checkout: `checkout --` sources the INDEX, so a CE `git add` defeats cleanup.
@@ -428,7 +428,7 @@ test('BOS-813 fixtures: an unsubstituted runTmp aborts both blocks instead of si
   ]) {
     assert.match(
       block,
-      /^set -euo pipefail$/m,
+      /^set -euo[ ]pipefail$/m,
       `the ${name} block must declare its own shell flags, not inherit the fixture's`,
     )
   }
@@ -767,7 +767,7 @@ test('BOS-813 fixtures: CE is invoked under its plugin-qualified skill name', ()
   }
   assert.match(
     body.replace(/\s+/g, ' '),
-    /CE ships as a Claude Code \*\*plugin\*\*[^.]*plugin-qualified names/,
+    /CE\s+ships\s+as\s+a\s+Claude\s+Code \*\*plugin\*\*[^.]*plugin-qualified\s+names/,
     'the preflight must say why the qualified name is required',
   )
 })
@@ -792,18 +792,18 @@ test('BOS-813 fixtures: each mode states its own mode to CE instead of relying o
   }
   assert.match(
     section('Interactive'),
-    /this dispatch is interactive[^.]*native interview[^.]*do not take the pipeline path/i,
+    /this\s+dispatch\s+is\s+interactive[^.]*native\s+interview[^.]*do\s+not\s+take\s+the\s+pipeline\s+path/i,
     'the interactive dispatch must tell CE to run its interview, not the pipeline path',
   )
   assert.match(
     section('Headless'),
-    /this is a pipeline run[^.]*take the non-interactive path/i,
+    /this\s+is\s+a\s+pipeline\s+run[^.]*take\s+the\s+non-interactive\s+path/i,
     'the headless dispatch must tell CE it is a pipeline run',
   )
   for (const heading of ['Interactive', 'Headless']) {
     assert.match(
       section(heading),
-      /ambient `disable-model-invocation`|`disable-model-invocation` context CE also keys off/i,
+      /ambient `disable-model-invocation`|`disable-model-invocation` context\s+CE\s+also\s+keys\s+off/i,
       `the ${heading} section must record why the ambient flag is not the signal`,
     )
   }

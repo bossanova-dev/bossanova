@@ -1,6 +1,7 @@
 package skillinstall
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -15,8 +16,35 @@ type falsificationProsePin struct {
 	pattern      string
 	live         string
 	tokenRemoved string
+	// Additional single-anchor mutations, each of which must ALSO fail the pattern. A pin whose
+	// `tokenRemoved` mutates several anchors at once proves only that the pattern rejects the
+	// combination — it cannot tell a pattern that requires every anchor from one that requires just
+	// the first. Listing the mutations separately makes each anchor independently load-bearing.
+	alsoRemoved []string
 }
 
+// allProsePins is the enrolment registry TestFalsificationProsePinsAreNonVacuous ranges over.
+// Declaring a pin through regProsePin/regProsePins is what enrols it, so the harness can no longer
+// learn about pins from a list somebody has to remember to extend. BOS-798: the previous literal
+// enumeration had silently omitted three declared pins, and one of them —
+// falsificationHostNativeHandoffPin — carried a `live` fixture that could not match its own
+// pattern. It was still asserted against real prose, so nothing was red; its pattern was simply
+// never checked for self-consistency. An unvalidated pin is the vacuous pin this harness exists to
+// catch, so enrolment must be structural rather than remembered.
+var allProsePins []falsificationProsePin
+
+func regProsePin(pin falsificationProsePin) falsificationProsePin {
+	allProsePins = append(allProsePins, pin)
+	return pin
+}
+
+func regProsePins(pins []falsificationProsePin) []falsificationProsePin {
+	allProsePins = append(allProsePins, pins...)
+	return pins
+}
+
+// falsificationStepPins is deliberately NOT registered on its own: falsificationReferencePins
+// clones it wholesale, so enrolling both would run every step pin twice.
 var falsificationStepPins = []falsificationProsePin{
 	{
 		name:         "name-property",
@@ -50,7 +78,7 @@ var falsificationStepPins = []falsificationProsePin{
 	},
 }
 
-var falsificationReferencePins = append(slicesClone(falsificationStepPins), []falsificationProsePin{
+var falsificationReferencePins = regProsePins(append(slicesClone(falsificationStepPins), []falsificationProsePin{
 	{
 		name:         "one-sided-unbounded-direction",
 		pattern:      `one-sided\s+bound.*direction\s+it\s+does\s+not\s+bound`,
@@ -142,10 +170,44 @@ var falsificationReferencePins = append(slicesClone(falsificationStepPins), []fa
 		tokenRemoved: "A relative $TMPDIR can be used as a scratch root",
 	},
 	{
-		name:         "tier-a-cleans-up-on-cancellation",
-		pattern:      `PROBE_DIR=\s*;?\s*cleanup_probe_dir\(\).*trap\s+'cleanup_probe_dir\s+\$\?'\s+EXIT.*trap\s+'cleanup_probe_dir\s+143'\s+TERM.*PROBE_DIR\s*=\s*\$\(mktemp\s+-d\s+"\$TMP_ROOT/boss-review-tier-a\.XXXXXX"\)`,
-		live:         "PROBE_DIR=; cleanup_probe_dir(); trap 'cleanup_probe_dir $?' EXIT; trap 'cleanup_probe_dir 143' TERM; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
-		tokenRemoved: "PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+		name: "tier-a-cleans-up-on-cancellation",
+		// The status travels in PROBE_STATUS rather than as `cleanup_probe_dir $?`: this recipe ships
+		// inside a skill that is also reachable as a slash command, and the harness rewrites `$1`-`$9`
+		// in a skill body before any shell runs it, so the handler's `probe_status=$1` arrived blank.
+		// The assignment must stay FIRST in the trap string — anything before it clobbers `$?` — which
+		// is what tokenRemoved below now falsifies.
+		// `PROBE_STATUS=0` is pinned between the two anchors, not skipped over — but NOT because a
+		// live path would otherwise read it unset. `exit "$PROBE_STATUS"` sits inside
+		// `cleanup_probe_dir`, which nothing calls directly, and every trap string assigns before it
+		// calls. The initialisation is what keeps that true under a later edit: a direct call, or one
+		// more trap added without the assignment, would reach the exit with the variable unset, and
+		// under `set -u` that aborts the cleanup it was supposed to complete. Pinning it keeps the
+		// belt from being removed on the grounds that the braces are holding.
+		pattern: `PROBE_DIR=.*PROBE_STATUS=0.*cleanup_probe_dir\(\).*exit\s+"\$PROBE_STATUS".*trap\s+'PROBE_STATUS=\$\?;\s*cleanup_probe_dir'\s+EXIT.*trap\s+'PROBE_STATUS=143;\s*cleanup_probe_dir'\s+TERM.*PROBE_DIR\s*=\s*\$\(mktemp\s+-d\s+"\$TMP_ROOT/boss-review-tier-a\.XXXXXX"\)`,
+		live:    "PROBE_DIR=; PROBE_STATUS=0; cleanup_probe_dir() { exit \"$PROBE_STATUS\" }; trap 'PROBE_STATUS=$?; cleanup_probe_dir' EXIT; trap 'PROBE_STATUS=143; cleanup_probe_dir' TERM; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+		// One mutation per anchor, never a compound one: reordering the EXIT trap AND replacing
+		// `exit "$PROBE_STATUS"` in the same string would prove only that the pattern rejects both
+		// together, leaving either one free to stop being required.
+		tokenRemoved: "PROBE_DIR=; PROBE_STATUS=0; cleanup_probe_dir() { exit \"$PROBE_STATUS\" }; trap 'cleanup_probe_dir; PROBE_STATUS=$?' EXIT; trap 'PROBE_STATUS=143; cleanup_probe_dir' TERM; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+		alsoRemoved: []string{
+			// the exit anchor alone: trap order left intact
+			"PROBE_DIR=; PROBE_STATUS=0; cleanup_probe_dir() { exit 0 }; trap 'PROBE_STATUS=$?; cleanup_probe_dir' EXIT; trap 'PROBE_STATUS=143; cleanup_probe_dir' TERM; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+			// the initialisation alone, the belt the comment above refuses to remove
+			"PROBE_DIR=; cleanup_probe_dir() { exit \"$PROBE_STATUS\" }; trap 'PROBE_STATUS=$?; cleanup_probe_dir' EXIT; trap 'PROBE_STATUS=143; cleanup_probe_dir' TERM; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+			// the TERM trap alone: a pin on EXIT says nothing about cancellation
+			"PROBE_DIR=; PROBE_STATUS=0; cleanup_probe_dir() { exit \"$PROBE_STATUS\" }; trap 'PROBE_STATUS=$?; cleanup_probe_dir' EXIT; PROBE_DIR=$(mktemp -d \"$TMP_ROOT/boss-review-tier-a.XXXXXX\")",
+		},
+	},
+	{
+		name: "tier-b-cleans-up-on-cancellation",
+		// Tier B carries its own copy of the status-in-a-variable contract, and a pin on Tier A says
+		// nothing about it. Same three parts, same reason: a slash-command invocation blanks a
+		// positional in a published body, so `cleanup_probe $?` would have run with no argument.
+		// `MUTATION_ACTIVE=0` leads, because it is the first anchor that is unique to Tier B —
+		// without it the greedy scan would satisfy the rest from Tier A's recipe above.
+		pattern:      `MUTATION_ACTIVE=0.*PROBE_STATUS=0.*cleanup_probe\(\).*exit\s+"\$PROBE_STATUS".*trap\s+'PROBE_STATUS=\$\?;\s*cleanup_probe'\s+EXIT.*trap\s+'PROBE_STATUS=143;\s*cleanup_probe'\s+TERM`,
+		live:         "MUTATION_ACTIVE=0; PROBE_STATUS=0; cleanup_probe() { exit \"$PROBE_STATUS\" }; trap 'PROBE_STATUS=$?; cleanup_probe' EXIT; trap 'PROBE_STATUS=143; cleanup_probe' TERM",
+		tokenRemoved: "MUTATION_ACTIVE=0; cleanup_probe() { exit \"$PROBE_STATUS\" }; trap 'PROBE_STATUS=$?; cleanup_probe' EXIT; trap 'PROBE_STATUS=143; cleanup_probe' TERM",
 	},
 	{
 		name:         "tier-a-checkout-root-preserves-trailing-newline",
@@ -310,10 +372,13 @@ var falsificationReferencePins = append(slicesClone(falsificationStepPins), []fa
 		tokenRemoved: "cleanup_probe() checks MUTATION_ACTIVE, then rm -rf -- \"$PROBE_DIR\"",
 	},
 	{
-		name:         "private-backup-trap-restores-on-posix-signals",
-		pattern:      `trap\s+'cleanup_probe\s+\$\?'\s+EXIT.*trap\s+'cleanup_probe\s+129'\s+HUP.*trap\s+'cleanup_probe\s+130'\s+INT.*trap\s+'cleanup_probe\s+143'\s+TERM.*MUTATION_ACTIVE=1`,
-		live:         "trap 'cleanup_probe $?' EXIT; trap 'cleanup_probe 129' HUP; trap 'cleanup_probe 130' INT; trap 'cleanup_probe 143' TERM; MUTATION_ACTIVE=1",
-		tokenRemoved: "trap 'cleanup_probe $?' EXIT; MUTATION_ACTIVE=1",
+		name: "private-backup-trap-restores-on-posix-signals",
+		// Same PROBE_STATUS reshape as tier A, and the same ordering constraint: tokenRemoved keeps all
+		// four traps and moves only the assignment behind the call, which is the one mutation that
+		// still looks right and silently reports 0 for every signal.
+		pattern:      `trap\s+'PROBE_STATUS=\$\?;\s*cleanup_probe'\s+EXIT.*trap\s+'PROBE_STATUS=129;\s*cleanup_probe'\s+HUP.*trap\s+'PROBE_STATUS=130;\s*cleanup_probe'\s+INT.*trap\s+'PROBE_STATUS=143;\s*cleanup_probe'\s+TERM.*MUTATION_ACTIVE=1`,
+		live:         "trap 'PROBE_STATUS=$?; cleanup_probe' EXIT; trap 'PROBE_STATUS=129; cleanup_probe' HUP; trap 'PROBE_STATUS=130; cleanup_probe' INT; trap 'PROBE_STATUS=143; cleanup_probe' TERM; MUTATION_ACTIVE=1",
+		tokenRemoved: "trap 'cleanup_probe; PROBE_STATUS=$?' EXIT; trap 'PROBE_STATUS=129; cleanup_probe' HUP; trap 'PROBE_STATUS=130; cleanup_probe' INT; trap 'PROBE_STATUS=143; cleanup_probe' TERM; MUTATION_ACTIVE=1",
 	},
 	{
 		name:         "private-probe-exact-cleanup",
@@ -351,94 +416,203 @@ var falsificationReferencePins = append(slicesClone(falsificationStepPins), []fa
 		live:         "derivation covers the widening direction only; keep a pinned list as a narrowing tripwire and compare both directions",
 		tokenRemoved: "derivation covers widening; keep a list and compare it",
 	},
-}...)
+}...))
 
-var falsificationCitationPin = falsificationProsePin{
+var falsificationCitationPin = regProsePin(falsificationProsePin{
 	name:         "falsification-reference",
 	pattern:      `Use\s+references/falsification\.md\s+for\s+the\s+probe`,
 	live:         "Use references/falsification.md for the probe",
 	tokenRemoved: "Use references/non-vacuity.md for the probe",
-}
+})
 
-var falsificationResolvedCitationPin = falsificationProsePin{
+var falsificationResolvedCitationPin = regProsePin(falsificationProsePin{
 	name:         "falsification-resolved-subagent-reference",
 	pattern:      `<FALSIFICATION_REFERENCE>.*resolved\s+absolute\s+installed\s+path`,
 	live:         "Read <FALSIFICATION_REFERENCE>, a resolved absolute installed path, before the probe",
 	tokenRemoved: "Read $BOSS_SKILLS_HOME/boss-review/references/falsification.md before the probe",
-}
+})
 
-var falsificationTierAOnlyPin = falsificationProsePin{
+var falsificationTierAOnlyPin = regProsePin(falsificationProsePin{
 	name:         "falsification-tier-a-only",
 	pattern:      `<FALSIFICATION_REFERENCE>.*Tier\s+A\s+only`,
 	live:         "<FALSIFICATION_REFERENCE> — then use Tier A only",
 	tokenRemoved: "<FALSIFICATION_REFERENCE> — then use Tier B only",
-}
+})
 
-var falsificationTierBAfterCommitPin = falsificationProsePin{
+var falsificationTierBAfterCommitPin = regProsePin(falsificationProsePin{
 	name:         "falsification-tier-b-after-commit",
 	pattern:      `<FALSIFICATION_REFERENCE>.*Follow\s+Tier\s+B\s+after\s+committing\s+the\s+work`,
 	live:         "<FALSIFICATION_REFERENCE> for the probe. Follow Tier B after committing the work",
 	tokenRemoved: "<FALSIFICATION_REFERENCE> for the probe. Follow Tier A before committing the work",
-}
+})
 
-var falsificationTierOneEnvelopePin = falsificationProsePin{
+var falsificationTierOneEnvelopePin = regProsePin(falsificationProsePin{
 	name:         "falsification-tier-one-envelope-reference",
 	pattern:      `"falsificationReference"\s*:\s*"<FALSIFICATION_REFERENCE>"`,
 	live:         `"falsificationReference": "<FALSIFICATION_REFERENCE>"`,
 	tokenRemoved: `"falsificationReference": "references/falsification.md"`,
-}
+})
 
-var falsificationTierOneHandoffPin = falsificationProsePin{
+var falsificationTierOneHandoffPin = regProsePin(falsificationProsePin{
 	name:         "falsification-tier-one-nested-reviewer-handoff",
 	pattern:      `context\.falsificationReference.*nested\s+reviewer.*same\s+Tier-A-only\s+rule`,
 	live:         "context.falsificationReference must reach a nested reviewer under the same Tier-A-only rule",
 	tokenRemoved: "context.falsificationReference may be omitted for nested reviewers",
-}
+})
 
-var falsificationHostNativeHandoffPin = falsificationProsePin{
+var falsificationHostNativeHandoffPin = regProsePin(falsificationProsePin{
 	name:         "falsification-host-native-round-handoff",
 	pattern:      "Pass\\s+it\\s+`?<FALSIFICATION_REFERENCE>`?.*read\\s+that\\s+recipe\\s+and\\s+use\\s+Tier\\s+A\\s+only",
-	live:         "Pass host-native review <FALSIFICATION_REFERENCE> and require Tier A only",
-	tokenRemoved: "Run host-native review without the falsification recipe",
-}
+	live:         "Pass it `<FALSIFICATION_REFERENCE>`, the resolved absolute installed path from Phase 0, and require it to read that recipe and use Tier A only",
+	tokenRemoved: "Pass it `<FALSIFICATION_REFERENCE>`, the resolved absolute installed path from Phase 0, and require it to review the diff",
+})
 
-var falsificationAcceptanceMutationPin = falsificationProsePin{
+var falsificationAcceptanceMutationPin = regProsePin(falsificationProsePin{
 	name:         "falsification-acceptance-production-feed-mutation",
 	pattern:      `require\s+evidence\s+that\s+the\s+named\s+property\s+was\s+killed\s+by\s+its\s+production-feed\s+mutation`,
 	live:         "require evidence that the named property was killed by its production-feed mutation",
 	tokenRemoved: "require evidence that the named property was reasoned from its literal",
-}
+})
 
-var bossRepairZeroWriteBeforeCommitPin = falsificationProsePin{
+var bossRepairZeroWriteBeforeCommitPin = regProsePin(falsificationProsePin{
 	name:         "boss-repair-zero-write-before-commit",
 	pattern:      `checklist\s+runs\s+before\s+commit,\s+use\s+only\s+a\s+zero-write\s+scratch\s+copy\.\s+Do\s+not\s+mutate\s+the\s+checkout`,
 	live:         "checklist runs before commit, use only a zero-write scratch copy. Do not mutate the checkout",
 	tokenRemoved: "checklist runs before commit, mutate the checkout when necessary",
-}
+})
 
-var bossRepairScratchMutationPin = falsificationProsePin{
+var bossRepairScratchMutationPin = regProsePin(falsificationProsePin{
 	name:         "boss-repair-scratch-mutation",
 	pattern:      `Mutate\s+the\s+production\s+feed,\s+never\s+the\s+assertion\*+,\s+using\s+the\s+zero-write\s+scratch\s+copy`,
 	live:         "**Mutate the production feed, never the assertion**, using the zero-write scratch copy",
 	tokenRemoved: "**Mutate the production feed, never the assertion**, using a scratch copy when possible",
-}
+})
 
-var bossRepairScratchConfinementPin = falsificationProsePin{
+var bossRepairScratchConfinementPin = regProsePin(falsificationProsePin{
 	name:         "boss-repair-scratch-confinement",
 	pattern:      `shell,\s+interpreted-source,\s+or\s+test-gate\s+invocation.*filesystem\s+sandbox.*only\s+writable\s+path.*\x60?"\$PROBE_DIR"\x60?.*explicit\s+read-only\s+allowlist.*cleared\s+environment.*deny\s+writes\s+outside.*network.*disabled.*loopback.*link-local.*metadata.*filesystem\s+or\s+network\s+confinement\s+is\s+unavailable.*reject\s+the\s+probe`,
 	live:         "A shell, interpreted-source, or test-gate invocation needs a filesystem sandbox whose only writable path is \"$PROBE_DIR\", an explicit read-only allowlist, a cleared environment, and must deny writes outside. Network access is disabled, including loopback, link-local, and metadata endpoints. If filesystem or network confinement is unavailable, reject the probe",
 	tokenRemoved: "A shell, interpreted-source, or test-gate invocation can run from a scratch copy without filesystem or network confinement",
-}
+})
 
-var coreMethodologyTierPin = falsificationProsePin{
+var coreMethodologyTierPin = regProsePin(falsificationProsePin{
 	name:         "core-methodology-tier-a-only",
 	pattern:      `read-only\s+reviewer.*Tier\s+A\s+only`,
 	live:         "A read-only reviewer may use Tier A only",
 	tokenRemoved: "A read-only reviewer may use either tier",
+})
+
+// bossReviewClaimVerificationPins pins the six rules that require a claim to be VERIFIED before it
+// is written into prose or a comment. Each rule's teeth is one checkable action -- a grep, a proof
+// against the callee, an enumeration -- and the sentences around it are restatable motivation. So
+// each pin sits on the action, and each tokenRemoved fixture kills precisely the token that makes
+// the action checkable rather than merely rewording the rule: "grep the symbol" without "paste the
+// result" still reads as a rule and licenses an unpasted guess, which is the shape that shipped the
+// false no-caller comment these rules exist to prevent.
+var bossReviewClaimVerificationPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "claim-grep-repo-wide-fact",
+		pattern:      `grep\s+the\s+symbol\s+and\s+paste\s+the\s+result`,
+		live:         "grep the symbol and paste the result",
+		tokenRemoved: "grep the symbol and move on",
+	},
+	{
+		name:         "claim-equivalence-against-callee",
+		pattern:      `prove\s+it\s+against\s+the\s+callee's\s+actual\s+argument\s+handling`,
+		live:         "prove it against the callee's actual argument handling",
+		tokenRemoved: "prove it against the callee's signature",
+	},
+	{
+		name:         "claim-subtotal-states-total",
+		pattern:      `must\s+also\s+state\s+the\s+total\s+it\s+partitions`,
+		live:         "must also state the total it partitions",
+		tokenRemoved: "must also state its derivation",
+	},
+	{
+		name:         "claim-list-ratchet-covers-lists-only",
+		pattern:      `separate\s+reading\s+pass,\s+or\s+a\s+claim-level\s+assertion,\s+over\s+the\s+rationale\s+prose`,
+		live:         "separate reading pass, or a claim-level assertion, over the rationale prose",
+		tokenRemoved: "separate reading pass over the lists themselves",
+	},
+	{
+		// The pin sits on "superseded" rather than on the breadth of the grep: a rule that keeps
+		// "the whole documentation and skills trees" but names the CORRECTED term still reads as a
+		// completeness rule while returning only the sites already fixed -- a green grep over the
+		// exact set that needed no fixing.
+		name:         "claim-grep-whole-tree-for-superseded-term",
+		pattern:      `grep\s+the\s+whole\s+documentation\s+and\s+skills\s+trees\s+for\s+the\s+\*\*superseded\*\*\s+wording`,
+		live:         "grep the whole documentation and skills trees for the **superseded** wording",
+		tokenRemoved: "grep the whole documentation and skills trees for the corrected wording",
+	},
+	{
+		name:         "claim-scope-self-referential-universal",
+		pattern:      `enumerate\s+every\s+element\s+it\s+quantifies\s+over`,
+		live:         "enumerate every element it quantifies over",
+		tokenRemoved: "enumerate the elements nearby",
+	},
+})
+
+// TestFalsificationProsePinsAreEnrolledStructurally is the tripwire on that registry. A pin
+// declared as a plain composite literal is still asserted against real prose by
+// assertFalsificationPins, so it goes green while its own pattern/live/tokenRemoved agreement is
+// never checked — precisely the shape that let falsificationHostNativeHandoffPin ship a `live`
+// fixture that could not match its own pattern. Enrolment through regProsePin/regProsePins is
+// therefore mandatory, and this gate reads the package's own sources to enforce it rather than
+// trusting the convention to be remembered. Grepping the source is the only available check: Go
+// offers no hook that fires on a composite literal nobody passed to a registrar.
+func TestFalsificationProsePinsAreEnrolledStructurally(t *testing.T) {
+	// falsificationStepPins is cloned wholesale into falsificationReferencePins, which IS
+	// registered; enrolling it too would run every step pin twice under a duplicate subtest name.
+	exempt := map[string]string{
+		"falsificationStepPins": "cloned wholesale into falsificationReferencePins, which is registered",
+	}
+	// Only the first line of a declaration is inspected, which is where every form this package
+	// uses puts the type name: `= falsificationProsePin{`, `= []falsificationProsePin{`, and
+	// `= append(slicesClone(...), []falsificationProsePin{`.
+	decl := regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*(.*)$`)
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	registered := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(entry.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		for _, m := range decl.FindAllStringSubmatch(string(src), -1) {
+			name, rhs := m[1], m[2]
+			if !strings.Contains(rhs, "falsificationProsePin{") {
+				continue
+			}
+			if strings.Contains(rhs, "regProsePin") {
+				registered++
+				continue
+			}
+			if why, ok := exempt[name]; ok {
+				t.Logf("%s: %s is exempt (%s)", entry.Name(), name, why)
+				continue
+			}
+			t.Errorf("%s declares %s as a bare falsificationProsePin literal — wrap it in regProsePin/regProsePins so TestFalsificationProsePinsAreNonVacuous ranges over it; an unenrolled pin asserts against real prose while its own fixtures go unchecked", entry.Name(), name)
+		}
+	}
+	// A source scan that matched nothing would pass while enforcing nothing.
+	if registered < 3 {
+		t.Fatalf("found only %d registered pin declaration(s) by source scan — the declaration regexp no longer matches this package's pin vars, so this gate is inert", registered)
+	}
+	if len(allProsePins) < registered {
+		t.Fatalf("registry holds %d pins but %d declarations call regProsePin — a registrar is being called without its result reaching allProsePins", len(allProsePins), registered)
+	}
 }
 
 func TestFalsificationProsePinsAreNonVacuous(t *testing.T) {
-	pins := append(slicesClone(falsificationReferencePins), falsificationCitationPin, falsificationResolvedCitationPin, falsificationTierAOnlyPin, falsificationTierBAfterCommitPin, falsificationAcceptanceMutationPin, bossRepairZeroWriteBeforeCommitPin, bossRepairScratchMutationPin, bossRepairScratchConfinementPin, coreMethodologyTierPin)
+	pins := slicesClone(allProsePins)
+	if len(pins) == 0 {
+		t.Fatal("the prose-pin registry is empty — every pin must be declared through regProsePin/regProsePins, and a harness with nothing to range over passes vacuously")
+	}
 	for _, pin := range pins {
 		pin := pin
 		t.Run(pin.name, func(t *testing.T) {
@@ -454,6 +628,13 @@ func TestFalsificationProsePinsAreNonVacuous(t *testing.T) {
 				{name: "live-match", input: pin.live, wantMatch: true},
 				{name: "line-wrapped-match", input: wrapProsePin(t, pin.live), wantMatch: true},
 				{name: "token-removed-no-match", input: pin.tokenRemoved, wantMatch: false},
+			}
+			for i, mutated := range pin.alsoRemoved {
+				cases = append(cases, struct {
+					name      string
+					input     string
+					wantMatch bool
+				}{name: fmt.Sprintf("also-removed-%d-no-match", i), input: mutated, wantMatch: false})
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
@@ -632,6 +813,7 @@ set -eu
 PROBE_TARGET=$1
 PROBE_DIR=$2
 MUTATION_ACTIVE=0
+PROBE_STATUS=0
 backup_probe_target() {
   cp -pP "$PROBE_TARGET" "$PROBE_DIR/probe.bak"
 }
@@ -639,19 +821,18 @@ restore_probe_backup() {
   cp -pP "$PROBE_DIR/probe.bak" "$PROBE_TARGET"
 }
 cleanup_probe() {
-  probe_status=$1
   trap - EXIT HUP INT TERM
   if [ "${MUTATION_ACTIVE:-0}" = 1 ]; then
     rm -rf -- "$PROBE_TARGET"
     restore_probe_backup
   fi
   rm -rf -- "$PROBE_DIR"
-  exit "$probe_status"
+  exit "$PROBE_STATUS"
 }
-trap 'cleanup_probe $?' EXIT
-trap 'cleanup_probe 129' HUP
-trap 'cleanup_probe 130' INT
-trap 'cleanup_probe 143' TERM
+trap 'PROBE_STATUS=$?; cleanup_probe' EXIT
+trap 'PROBE_STATUS=129; cleanup_probe' HUP
+trap 'PROBE_STATUS=130; cleanup_probe' INT
+trap 'PROBE_STATUS=143; cleanup_probe' TERM
 backup_probe_target
 MUTATION_ACTIVE=1
 printf 'corrupted\n' >"$PROBE_TARGET"
@@ -670,6 +851,80 @@ kill -TERM $$
 	}
 	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
 		t.Fatalf("signal cleanup did not remove backup directory: %v", err)
+	}
+}
+
+func TestTierBExitTrapPropagatesFailureStatusUnderDash(t *testing.T) {
+	// The signal test above exercises `kill -TERM $$`, which reaches `cleanup_probe` through a trap
+	// whose status is a LITERAL (`PROBE_STATUS=143`). That proves nothing about the EXIT trap, whose
+	// status is captured from `$?` — and `PROBE_STATUS=$?` being FIRST in the trap string is the one
+	// ordering the pins assert but no execution test covered. Ordinary failure is also the common
+	// case: a probe that restores its target but reports 0 is a probe that silently passes.
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash is unavailable")
+	}
+
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(root, "backup")
+	if err := os.Mkdir(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	script := `
+set -eu
+PROBE_TARGET=$1
+PROBE_DIR=$2
+MUTATION_ACTIVE=0
+PROBE_STATUS=0
+backup_probe_target() {
+  cp -pP "$PROBE_TARGET" "$PROBE_DIR/probe.bak"
+}
+restore_probe_backup() {
+  cp -pP "$PROBE_DIR/probe.bak" "$PROBE_TARGET"
+}
+cleanup_probe() {
+  trap - EXIT HUP INT TERM
+  if [ "${MUTATION_ACTIVE:-0}" = 1 ]; then
+    rm -rf -- "$PROBE_TARGET"
+    restore_probe_backup
+  fi
+  rm -rf -- "$PROBE_DIR"
+  exit "$PROBE_STATUS"
+}
+trap 'PROBE_STATUS=$?; cleanup_probe' EXIT
+trap 'PROBE_STATUS=129; cleanup_probe' HUP
+trap 'PROBE_STATUS=130; cleanup_probe' INT
+trap 'PROBE_STATUS=143; cleanup_probe' TERM
+backup_probe_target
+MUTATION_ACTIVE=1
+printf 'corrupted\n' >"$PROBE_TARGET"
+exit 7
+`
+	cmd := exec.Command(dash, "-c", script, "dash", target, backupDir)
+	err = cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("dash probe did not fail: err=%v", err)
+	}
+	// 7, not 0 and not 143: the EXIT trap must carry the script's OWN status through, which is only
+	// true while `PROBE_STATUS=$?` runs before anything else in that trap string.
+	if got := exitErr.ExitCode(); got != 7 {
+		t.Fatalf("EXIT trap did not propagate the failing status: got %d, want 7", got)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("EXIT path left target mutated: got %q", got)
+	}
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Fatalf("EXIT cleanup did not remove backup directory: %v", err)
 	}
 }
 
@@ -872,4 +1127,23 @@ func readEmbeddedBossReviewSkill(t *testing.T) string {
 		t.Fatalf("read embedded boss-review skill: %v", err)
 	}
 	return string(skillBytes)
+}
+
+// TestBossReviewSkillClaimVerificationRules asserts the claim-verification rules against the real
+// payload. They are pure prose obligations: nothing downstream reds when one is dropped or softened
+// into an exhortation, and the defect they prevent -- a confidently false statement in a comment --
+// is only ever caught by a human reader. The window is Operating rules specifically, so a rule
+// quietly relocated out of the section every reviewer reads fails here rather than passing as a
+// move; sectionBetween refuses a window that would silently span an intervening section.
+func TestBossReviewSkillClaimVerificationRules(t *testing.T) {
+	const skillPath = "skills/boss-review/SKILL.md"
+
+	for payloadName, payload := range shippedPayloads(t) {
+		payloadName, payload := payloadName, payload
+		t.Run(payloadName, func(t *testing.T) {
+			skill := readPayloadFile(t, payload, skillPath)
+			operatingRules := sectionBetween(t, skill, "## Operating rules", "## Caller deadline (wall-clock cap)")
+			assertFalsificationPins(t, operatingRules, bossReviewClaimVerificationPins)
+		})
+	}
 }

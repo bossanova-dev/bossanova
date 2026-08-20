@@ -352,3 +352,23 @@ func TestRemoteClient_MergeSession_ProxiesToOrchestrator(t *testing.T) {
 		t.Fatalf("ProxyMergeSession id = %q, want sess-1", got)
 	}
 }
+
+// TestRemoteClient_GetAuthStateIsLocalOnly pins that a remote client refuses
+// the question rather than answering it about some other daemon. The code has
+// to be CodeUnimplemented so callers classify it as "this transport cannot
+// answer" rather than as an auth failure.
+func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	resp, err := c.GetAuthState(context.Background())
+	if err == nil {
+		t.Fatal("GetAuthState() error = nil, want CodeUnimplemented")
+	}
+	if resp != nil {
+		t.Errorf("GetAuthState() resp = %v, want nil", resp)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
+	}
+}

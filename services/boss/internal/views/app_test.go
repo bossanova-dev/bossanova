@@ -315,16 +315,16 @@ func TestAppDeliversQueuedLoginNotificationAfterLoginIsDismissed(t *testing.T) {
 	logoutStarted := make(chan struct{})
 	releaseLogout := make(chan struct{})
 	received := make(chan string, 2)
-	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) error {
+	c := &stubClient{notifyAuthChange: func(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if action == "logout" {
 			close(logoutStarted)
 			<-releaseLogout
 		}
 		received <- action
-		return nil
+		return nil, nil
 	}}
 	a := NewApp(c, auth.NewManager(&countingLogoutTokenStore{}, auth.Config{}))
 	a.home.sessions = []*pb.Session{}
@@ -355,7 +355,10 @@ func TestAppDeliversQueuedLoginNotificationAfterLoginIsDismissed(t *testing.T) {
 
 	updated, _ = a.Update(switchViewMsg{view: ViewLogin})
 	a = updated.(App)
-	updated, loginCmd := a.Update(loginCompleteMsg{email: "new@example.com"})
+	updated, loginCmd := a.Update(loginCompleteMsg{
+		email:        "new@example.com",
+		verification: auth.LoginVerification{Outcome: auth.LoginVerified, Email: "new@example.com"},
+	})
 	a = updated.(App)
 	loginMsg := loginCmd()
 	batch, ok := loginMsg.(tea.BatchMsg)

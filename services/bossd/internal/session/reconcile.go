@@ -61,7 +61,10 @@ type PRAssociationResolver struct {
 	branches LiveBranchResolver
 	cronJobs db.CronJobStore
 	archiver SessionArchiver
-	notify   func(context.Context, *models.Session)
+	// archiveTracker joins each archive this sweep launches to daemon shutdown.
+	// Optional; nil leaves them untracked.
+	archiveTracker ArchiveWorkerTracker
+	notify         func(context.Context, *models.Session)
 
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -120,10 +123,20 @@ func (r *PRAssociationResolver) WithCronJobs(cronJobs db.CronJobStore) *PRAssoci
 // (the server's ListSessions path goes through ReconcileSessions, which does
 // not run the sweep). main.go calls this during single-threaded startup wiring,
 // after the Server exists but well before that goroutine starts.
-func (r *PRAssociationResolver) WithArchiver(archiver SessionArchiver) *PRAssociationResolver {
+//
+// track joins each archive the sweep launches to daemon shutdown (BOS-923); nil
+// leaves them untracked. It rides along on this option rather than getting its
+// own so an archiver cannot be attached without a tracker decision being made at
+// the same call site.
+func (r *PRAssociationResolver) WithArchiver(archiver SessionArchiver, track ArchiveWorkerTracker) *PRAssociationResolver {
 	r.archiver = archiver
+	r.archiveTracker = track
 	return r
 }
+
+// HasArchiveTracker reports whether an archive worker tracker is wired, for the
+// startup wiring assertion. See Dispatcher.HasArchiveTracker.
+func (r *PRAssociationResolver) HasArchiveTracker() bool { return r.archiveTracker != nil }
 
 // WithUpdateNotifier attaches a callback invoked once per session the
 // reconciler updates (PR association + rename to the PR title). It exists so
@@ -293,10 +306,14 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 //   - The predicate cannot distinguish a row this pass exists to heal from a
 //     session someone deliberately resurrected on a flag-on repo, because a
 //     resurrect is not durably recorded anywhere — clearing archived_at is all
-//     it writes. ResurrectSession now also clears the terminal state in the same
-//     breath (see the note there), which removes the mid-resurrect race and the
-//     failed-resurrect row that would otherwise sit in this set forever. It does
-//     not make the resurrect a durable override: once the display poller sees
+//     it writes. ResurrectSession writes archived_at and the live state in ONE
+//     conditional statement (BOS-924), so the {archived_at NULL, state Merged}
+//     shape this predicate matches is never observable mid-resurrect, and a
+//     failed resurrect rolls itself back rather than sitting in this set
+//     forever. That closes the write-side window; it does NOT close the
+//     read-side one, which is why the loop below re-reads each candidate — the
+//     snapshot it is handed was taken by ListActive an unbounded time ago. It
+//     does not make the resurrect a durable override: once the display poller sees
 //     the still-merged PR on a cold tracker it reconciles the row back to Merged
 //     and archives it right there (reconcileNonTerminalToResolved), so that path
 //     — not this sweep — is what re-archives a resurrected session. On a repo
@@ -315,7 +332,38 @@ func (r *PRAssociationResolver) archiveMergedButUnarchived(ctx context.Context, 
 		if sess == nil || sess.ArchivedAt != nil || sess.State != machine.Merged {
 			continue
 		}
-		archiveSessionAfterMergeIfEnabled(ctx, r.repos, r.archiver, r.logger, sess)
+		// Re-read immediately before dispatching. `sessions` is a snapshot from
+		// the top of the tick and the archive it launches is detached and slow,
+		// so a row that matched the predicate when the list was built may have
+		// been archived by another path, or resurrected out from under this
+		// sweep, in between. Archiving on the stale copy would delete the
+		// worktree a live session is using. A read error is treated as "cannot
+		// prove this row still needs healing" and skipped: the shape is durable,
+		// so the next tick retries it.
+		//
+		// This narrows the window to scheduling latency; it does not close it.
+		// The dispatch below hands the archive to a detached goroutine, and
+		// ArchiveSession re-reads the row but does not re-check archived_at or
+		// state, so a resurrect landing between this Get and that goroutine's
+		// first statement is still archived. Closing it outright means guarding
+		// ArchiveSession itself, which BOS-924 weighed as OQ-2 and declined: it
+		// costs a Get on every archive and changes behaviour for the callers
+		// that legitimately archive a non-Merged session.
+		current, err := r.sessions.Get(ctx, sess.ID)
+		if err != nil || current == nil {
+			r.logger.Warn().
+				Err(err).
+				Str("session", sess.ID).
+				Msg("archive-merged sweep: skipping candidate whose row could not be re-read")
+			continue
+		}
+		if current.ArchivedAt != nil || current.State != machine.Merged {
+			continue
+		}
+		// One tracked handle per merged-but-unarchived session, not one per
+		// tick: this is the only archive launch point with multiplicity, so the
+		// tracker must tolerate many handles from a single call.
+		archiveSessionAfterMergeIfEnabled(ctx, r.repos, r.archiver, r.archiveTracker, r.logger, current)
 	}
 }
 

@@ -25,8 +25,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 
 const CLAUDE = read('../services/boss/internal/skillinstall/skills/boss-epic/SKILL.md')
 
@@ -40,7 +44,11 @@ const EPIC_MIRRORS = [
 ]
 
 test('size ratchet', () => {
-  // Ratchet = committed size rounded up to the next KiB. Never raise this
+  // Exact pin, not a ceiling (BOS-768). This used to be the committed size rounded
+  // up to the next KiB, compared one-sidedly — which left 67 bytes of slack the body
+  // could regrow into with nothing going red, and meant a genuine trim bought nothing
+  // because it only widened the slack. `assertExactSize` reds in BOTH directions, so
+  // a reduction is only cleared by banking it in RATCHET. Never raise this
   // casually — a growing SKILL.md erodes the headless context budget; split
   // situational sections into references/ (boss-plan-skill precedent) before
   // bumping. Bumped 19456 → 24576 for BOS-179, the "make boss-epic work
@@ -174,9 +182,40 @@ test('size ratchet', () => {
   // reference: this is Phase 0 preflight and every later call-site depends on `"$BOSS"`, and
   // the unavailable branch is only obeyed if the agent reads it at the rail. Re-baselined
   // 53248 → 55296.
-  const RATCHET = 55296
-  const bytes = Buffer.byteLength(CLAUDE, 'utf8')
-  assert.ok(bytes <= RATCHET, `CLAUDE SKILL.md is ${bytes} bytes; must stay <= ${RATCHET}`)
+  // BOS-800 repairs the two Phase 3 rails that were built on a misread status value
+  // (+799 bytes). Phase 3b previously had NO push oracle at all and the driver inferred a
+  // push from a `get_session` state transition — which fires when the daemon re-polls checks
+  // that already exist, so on one run it fired once per child while every branch still held
+  // only its bootstrap commit. Phase 3c defined settled as `last_output_at` staleness, and
+  // that value collided to the nanosecond across every chat for a dozen cycles, so the test
+  // as written could never pass and a green child would be held forever. Both replacements
+  // are resident for the same reason condition (5) is: the driver decides push-vs-not and
+  // settled-vs-not AT the poll rail, and a rail it has to leave the file to read is a rail it
+  // does not apply. Re-baselined 55296 → 56320.
+  // BOS-768 re-pins 56320 → 56253, the exact measured body: the old rounded ceiling
+  // carried 67 bytes of unbanked slack. Re-measured 2026-08-19.
+  // Rebased onto main at 5978bd850: #2090 rewrote shell positionals out of the published
+  // bodies, growing this one by 13 B. That is a correctness rewrite of code the body must
+  // carry, not new prose, so the pin absorbs exactly it. Re-pinned 56253 → 56266, the exact
+  // measured body, re-measured 2026-08-19 (BOS-768).
+  const RATCHET = 56266
+
+  // Seven separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
+  // would leave every one of them asserting against a single mirror with nothing going red
+  // to say the other stopped being checked — the vacuity assertArtifactSet exists for.
+  assertArtifactSet(EPIC_MIRRORS, 2, 'EPIC_MIRRORS')
+
+  assertExactSize({
+    constFile: 'scripts/bs-epic-skill.test.mjs',
+    constName: 'RATCHET',
+    expected: RATCHET,
+    label: 'boss-epic resident SKILL.md',
+    measured: measureFile(abs('../services/boss/internal/skillinstall/skills/boss-epic/SKILL.md')),
+    path: 'services/boss/internal/skillinstall/skills/boss-epic/SKILL.md',
+    residual:
+      'the references/ files the body routes to, and the plugin mirror — this pin measures the ' +
+      'canonical skillinstall copy only',
+  })
 })
 
 test('frontmatter identifies the skill', () => {
@@ -245,19 +284,19 @@ test('Phase 3 adopts one-shot callbacks with authoritative reconciliation (BOS-4
   }
   assert.match(
     CLAUDE,
-    /callback wake[\s\S]*reconcil/i,
+    /callback\s+wake[\s\S]*reconcil/i,
     'a callback wake must route through authoritative reconciliation, not act on the trigger name',
   )
   // The two at-least-once safeguards must survive verbatim: a duplicate delivery is a
   // no-op (dedup by id) and a consumed one-shot watch is re-armed while work continues.
   assert.match(
     CLAUDE,
-    /dedup by callback id/i,
+    /dedup\s+by\s+callback\s+id/i,
     'boss-epic must dedup callback deliveries by id (at-least-once delivery)',
   )
   assert.match(
     CLAUDE,
-    /re-arm the child's group while it\s+is still in flight/i,
+    /re-arm\s+the\s+child's\s+group\s+while\s+it\s+is\s+still\s+in\s+flight/i,
     'boss-epic must re-arm the consumed one-shot watch while the child is still in flight',
   )
 })
@@ -273,7 +312,7 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate + own referenc
     // Up-front reflex: prefer a callback over blind polling, gated on callbacksAvailable.
     assert.match(
       skill,
-      /Prefer a callback over blind polling/i,
+      /Prefer\s+a\s+callback\s+over\s+blind\s+polling/i,
       `${dir}/SKILL.md must carry the up-front "prefer a callback over blind polling" reflex`,
     )
     assert.ok(
@@ -303,12 +342,12 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate + own referenc
     )
     assert.match(
       ref,
-      /Graceful degradation gated on `callbacksAvailable`/,
+      /Graceful\s+degradation\s+gated\s+on `callbacksAvailable`/,
       `${dir}/references/callback-watches.md must frame degradation around the gate`,
     )
     assert.match(
       ref,
-      /gh pr checks .*--watch --fail-fast/,
+      /gh\s+pr\s+checks .*--watch --fail-fast/,
       `${dir}/references/callback-watches.md must keep the bounded fallback poll`,
     )
     // Published-core invariant: no host-specific tracker/MCP identity leaks in.
@@ -351,22 +390,22 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
     )
     assert.match(
       prose,
-      /matching orchestrator.*otherwise.*matching child/i,
+      /matching\s+orchestrator.*otherwise.*matching\s+child/i,
       `${dir} must prefer a matching orchestrator and fall back to a matching child`,
     )
     assert.match(
       prose,
-      /repository.*exactly.*child PR repository/i,
+      /repository.*exactly.*child\s+PR\s+repository/i,
       `${dir} must reject a cross-repository orchestrator target`,
     )
     assert.match(
       prose,
-      /no verified target.*skip.*registration.*re-arm.*list.*cleanup/i,
+      /no\s+verified\s+target.*skip.*registration.*re-arm.*list.*cleanup/i,
       `${dir} must skip every callback operation when no target is verified`,
     )
     assert.match(
       prose,
-      /cron\/poll reconciliation/i,
+      /cron\/poll\s+reconciliation/i,
       `${dir} must retain cron/poll reconciliation when callbacks are skipped`,
     )
 
@@ -380,7 +419,7 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
     )
     assert.match(
       ref,
-      /const \{ selectEpicCallbackTarget \} = await import\(`\$\{process\.env\.BOSS_EPIC_TOOLBOX\}\/callback\/epic-target\.mjs`\)/,
+      /const \{ selectEpicCallbackTarget \} = await[ ]import\(`\$\{process\.env\.BOSS_EPIC_TOOLBOX\}\/callback\/epic-target\.mjs`\)/,
       `${dir} bridge must dynamically import the installed selector`,
     )
     for (const envName of [
@@ -412,12 +451,12 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
     )
     assert.match(
       ref,
-      /process\.stdout\.write\(typeof target\?\.chatId === "string" \? target\.chatId : ""\)/,
+      /process\.stdout\.write\(typeof[ ]target\?\.chatId === "string" \? target\.chatId : ""\)/,
       `${dir} bridge must emit the selected chat or empty output`,
     )
     assert.match(
       ref,
-      /if \[ -z "\$CALLBACK_CHAT" \]; then\s+echo "No verified callback target; retain cron\/poll reconciliation\. Continue to Phase 3b reconciliation and the bounded poll\/session cron\."/,
+      /if \[ -z "\$CALLBACK_CHAT" \]; then\s+echo "No\s+verified\s+callback\s+target; retain\s+cron\/poll\s+reconciliation\. Continue\s+to\s+Phase\s+3b\s+reconciliation\s+and\s+the\s+bounded\s+poll\/session\s+cron\."/,
       `${dir} bridge must make the no-target cron/poll fallback explicit`,
     )
     assert.doesNotMatch(
@@ -427,19 +466,19 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
     )
     assert.match(
       ref,
-      /No verified callback target; retain cron\/poll reconciliation\. Continue to Phase 3b reconciliation and the bounded poll\/session cron\./,
+      /No[ ]verified[ ]callback[ ]target; retain[ ]cron\/poll[ ]reconciliation\. Continue[ ]to[ ]Phase[ ]3b[ ]reconciliation[ ]and[ ]the[ ]bounded[ ]poll\/session[ ]cron\./,
       `${dir} no-target branch must retain mandatory reconciliation and fallback polling`,
     )
 
     // Register, re-arm, and reconciliation list calls carry both scopes.
     assert.match(
       ref,
-      /boss callback add[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
+      /boss[ ]callback[ ]add[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
       `${dir} register example must scope --chat and --repo`,
     )
     assert.match(
       ref,
-      /boss callback list[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
+      /boss[ ]callback[ ]list[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
       `${dir} list/re-arm example must scope --chat and --repo`,
     )
     for (const command of ['add', 'list', 'remove']) {
@@ -456,12 +495,12 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
     // Cleanup must discover ids via the prior scoped list, then remove by id.
     assert.match(
       ref,
-      /boss callback remove "\$CALLBACK_ID" --chat "\$CALLBACK_CHAT"/,
+      /boss[ ]callback[ ]remove "\$CALLBACK_ID" --chat "\$CALLBACK_CHAT"/,
       `${dir} cleanup must remove each returned id with --chat`,
     )
     assert.doesNotMatch(
       ref,
-      /boss callback remove[^\n]*--repo/,
+      /boss\s+callback\s+remove[^\n]*--repo/,
       `${dir} cleanup must not invent unsupported callback remove --repo`,
     )
   }
@@ -483,7 +522,7 @@ test('BOS-524: Phase 0 resolves states ADAPTER-FIRST with the config as fallback
     assert.ok(probe > -1, `${dir}/SKILL.md must probe the tracker adapter's states capability`)
     assert.match(
       skill,
-      /cli\.mjs" states 2>\/dev\/null \|\| true/,
+      /cli\.mjs" states[ ]2>\/dev\/null \|\| true/,
       `${dir}/SKILL.md must tolerate an adapter with no states capability (exit 2 ⇒ empty probe)`,
     )
 
@@ -500,16 +539,23 @@ test('BOS-524: Phase 0 resolves states ADAPTER-FIRST with the config as fallback
       skill.includes('resolveStateRole'),
       `${dir}/SKILL.md must resolve states through the toolbox helper, not an inline read`,
     )
+    // The role travels as an env-assignment PREFIX, not a positional: a slash-command invocation
+    // rewrites `$1` in a published skill body before any shell runs it (check-skill-shell header
+    // rule (j)), which would have handed the helper an empty role at exit 0.
     for (const role of ['planned', 'inReview']) {
       assert.ok(
-        skill.includes(`resolve_state ${role}`),
+        skill.includes(`ROLE=${role} resolve_state`),
         `${dir}/SKILL.md must resolve the ${role} role through the shared helper`,
       )
     }
+    assert.ok(
+      !/ROLE="\$1"/.test(skill),
+      `${dir}/SKILL.md must not take the role as a shell positional`,
+    )
 
     // 4. Fail closed only when NEITHER source answers, naming BOTH probed sources
     //    so the operator knows which of the two to populate.
-    const block = skill.match(/BLOCKED: no planned state resolved[^"]*/)
+    const block = skill.match(/BLOCKED: no[ ]planned[ ]state[ ]resolved[^"]*/)
     assert.ok(block, `${dir}/SKILL.md must BLOCK with a "no planned state resolved" message`)
     assert.match(
       block[0],
@@ -535,17 +581,17 @@ test('zero-launch no-ready run has an explicit single-comment branch (BOS-302)',
   )
   assert.match(
     CLAUDE,
-    /no sessions spawned/,
+    /no\s+sessions\s+spawned/,
     'the zero-launch branch must report `no sessions spawned`',
   )
   assert.match(
     CLAUDE,
-    /upsert exactly one/i,
+    /upsert\s+exactly\s+one/i,
     'the zero-launch branch must upsert exactly one progress comment',
   )
   assert.match(
     CLAUDE,
-    /stop success/i,
+    /stop\s+success/i,
     'the zero-launch branch must stop successfully (clean no-op, not an error)',
   )
   // Resume idempotence for the zero-launch comment still keys off the marker.
@@ -558,7 +604,7 @@ test('zero-launch no-ready run has an explicit single-comment branch (BOS-302)',
   // shape for the zero-launch case.
   assert.match(
     CLAUDE,
-    /never\s+create-then-edits|no separate initial-then-final edit/i,
+    /never\s+create-then-edits|no\s+separate\s+initial-then-final\s+edit/i,
     'the zero-launch branch must forbid create-then-edit of two comments',
   )
 })
@@ -568,17 +614,17 @@ test('passing greens require settled child chat before merge eligibility', () =>
     CLAUDE,
     // BOS-522 narrowed this transition to READY_FOR_REVIEW only — a GREEN_DRAFT
     // is now a hold (pinned below, in the merge-gate test).
-    /READY_FOR_REVIEW \+ DisplayStatus Passing \+ chat SETTLED/,
+    /READY_FOR_REVIEW \+ DisplayStatus\s+Passing \+ chat\s+SETTLED/,
     'passing greens must require a settled child chat',
   )
   assert.match(
     CLAUDE,
-    /Passing but chat still WORKING\/QUESTION\/LIMITED[^\n]*hold/i,
+    /Passing\s+but\s+chat\s+still\s+WORKING\/QUESTION\/LIMITED[^\n]*hold/i,
     'unsettled passing children must be held, not merged or repaired',
   )
   assert.match(
     CLAUDE,
-    /treat the\s+child as \*\*not settled\*\* and re-poll; never assume settled on an unreadable status/,
+    /treat\s+the\s+child\s+as \*\*not\s+settled\*\* and\s+re-poll; never\s+assume\s+settled\s+on\s+an\s+unreadable\s+status/,
     'unreadable chat status must block merge eligibility',
   )
   assert.match(
@@ -588,7 +634,7 @@ test('passing greens require settled child chat before merge eligibility', () =>
   )
   assert.doesNotMatch(
     CLAUDE,
-    /GREEN_DRAFT or READY_FOR_REVIEW \+ DisplayStatus Passing\*\*?[^+\n]*→ add to the\s+\*\*greens\*\*/,
+    /GREEN_DRAFT\s+or\s+READY_FOR_REVIEW \+ DisplayStatus\s+Passing\*\*?[^+\n]*→ add\s+to\s+the\s+\*\*greens\*\*/,
     'the old Passing-only green transition must not return',
   )
 })
@@ -607,7 +653,7 @@ test('planning-only work is routed away from PR-backed sessions', () => {
   )
   assert.match(
     CLAUDE,
-    /must not use\s+`?create_session`?.*tmux_unattended/i,
+    /must\s+not\s+use\s+`?create_session`?.*tmux_unattended/i,
     'planning-only work must not use PR-backed tmux_unattended sessions',
   )
 })
@@ -620,7 +666,7 @@ test('planning-only routing names concrete capability boundaries', () => {
   // discriminating field co-located).
   assert.match(
     CLAUDE,
-    /implementation work uses[^\n]*createSession[^\n]*tmux_unattended/i,
+    /implementation\s+work\s+uses[^\n]*createSession[^\n]*tmux_unattended/i,
     'implementation work must name the createSession capability + tmux_unattended',
   )
   assert.match(
@@ -630,7 +676,7 @@ test('planning-only routing names concrete capability boundaries', () => {
   )
   assert.match(
     CLAUDE,
-    /visible planning chat uses[^\n]*createPlanningChat/i,
+    /visible\s+planning\s+chat\s+uses[^\n]*createPlanningChat/i,
     'visible planning chat must name the createPlanningChat capability',
   )
   assert.doesNotMatch(
@@ -643,12 +689,12 @@ test('planning-only routing names concrete capability boundaries', () => {
 test('non-claude runners never fall back to merging without settlement', () => {
   assert.doesNotMatch(
     CLAUDE,
-    /still schedules\/merges greens/,
+    /still\s+schedules\/merges\s+greens/,
     'runner fallback must not claim it can merge greens without chat settlement',
   )
   assert.match(
     CLAUDE,
-    /runner without\s+readable chat status must\s+hold or fail-isolate/i,
+    /runner\s+without\s+readable\s+chat\s+status\s+must\s+hold\s+or\s+fail-isolate/i,
     'non-claude fallback must preserve the settled-green gate',
   )
 })
@@ -661,21 +707,21 @@ test('default agent is claude', () => {
 
 test('safety pins', () => {
   // at most one merge in flight at a time (serialized merges)
-  assert.match(CLAUDE, /at most one merge in flight/i)
+  assert.match(CLAUDE, /at\s+most\s+one\s+merge\s+in\s+flight/i)
   // repair/dispatch does not tear down an in-progress session
-  assert.match(CLAUDE, /leave the session open/i)
+  assert.match(CLAUDE, /leave\s+the\s+session\s+open/i)
   // the epic set boundary is a hard guarantee, never crossed
-  assert.match(CLAUDE, /outside the epic set are NEVER mutated/i)
+  assert.match(CLAUDE, /outside\s+the\s+epic\s+set\s+are\s+NEVER\s+mutated/i)
   // headless unattended discipline: no interactive prompts past preflight
-  assert.match(CLAUDE, /never call AskUserQuestion after Phase 0/i)
+  assert.match(CLAUDE, /never\s+call\s+AskUserQuestion\s+after\s+Phase\s+0/i)
   // wiring contract: done siblings clear via externallyCleared, never merged
-  assert.match(CLAUDE, /`done` ids are folded into\s+`externallyCleared`/)
+  assert.match(CLAUDE, /`done` ids\s+are\s+folded\s+into\s+`externallyCleared`/)
   // negative pin: the done-bucket-into-merged misstatement must never return
   // (backticked `done` = the classifyTickets bucket; the plain-prose "Done"
   // state name legitimately appears near `merged` on the 3d success path)
   assert.doesNotMatch(CLAUDE, /`done`[^\n]*into `merged`/)
   // loop termination: greens keep their concurrency slot until merged
-  assert.match(CLAUDE, /`greens` is a \*\*subset\*\*\s+of `inFlight`/)
+  assert.match(CLAUDE, /`greens` is\s+a \*\*subset\*\*\s+of `inFlight`/)
 })
 
 test('no stub or placeholder prose in the claude source', () => {
@@ -705,17 +751,17 @@ test('empty draft PR placeholder is adopt-and-continue, not completion (BOS-303)
   // and distinct from the settled BOS-179 no-op that fail-isolates.
   assert.match(
     CLAUDE,
-    /empty draft PR placeholder/,
+    /empty\s+draft\s+PR\s+placeholder/,
     'skill must name the empty draft PR placeholder case',
   )
   assert.match(
     CLAUDE,
-    /adopt(?:s)? the existing branch\/session/i,
+    /adopt(?:s)? the\s+existing\s+branch\/session/i,
     'the placeholder case must adopt the existing branch/session and continue',
   )
   assert.match(
     CLAUDE,
-    /a PR number alone is (?:never|not)[^\n]*(?:completion|merge)/i,
+    /a\s+PR\s+number\s+alone\s+is (?:never|not)[^\n]*(?:completion|merge)/i,
     'skill must state a PR number alone is not completion/merge-readiness',
   )
 })
@@ -740,10 +786,14 @@ test('phase 0 runs a deterministic boss MCP tool-discovery preflight (BOS-301)',
   )
   assert.match(
     CLAUDE,
-    /no complete boss transport/i,
+    /no\s+complete\s+boss\s+transport/i,
     'neither transport complete must produce a concise diagnostic naming what is missing',
   )
-  assert.match(CLAUDE, /before scheduling/i, 'the tool-discovery preflight runs before scheduling')
+  assert.match(
+    CLAUDE,
+    /before\s+scheduling/i,
+    'the tool-discovery preflight runs before scheduling',
+  )
 })
 
 test('BOS-458: the published core carries no hard-coded ${TRACKER:-…} shell default', () => {
@@ -788,19 +838,19 @@ test('BOS-520: Phase 3c has a TERMINATING frozen-repair-lease escape (both mirro
     // cap the ticket is fail-isolated with a named note — never re-polled.
     assert.match(
       skill,
-      /frozen repair lease/,
+      /frozen\s+repair\s+lease/,
       `${dir}/SKILL.md must name the frozen repair lease fail-isolate note`,
     )
     // The human-readable diagnosis cheat: the three-signal shape of a dead lease,
     // so an operator reading a stuck run recognises it without the classifier.
     assert.match(
       prose,
-      /`last_repair_head_sha` unchanged and repair-chat output stale across ≥2\s?polls/,
+      /`last_repair_head_sha` unchanged\s+and\s+repair-chat\s+output\s+stale\s+across ≥2\s?polls/,
       `${dir}/SKILL.md must cross-reference the dead-lease diagnosis cheat`,
     )
     assert.match(
       prose,
-      /Never re-poll a lease already classified `stalled`/,
+      /Never\s+re-poll\s+a\s+lease\s+already\s+classified `stalled`/,
       `${dir}/SKILL.md must forbid re-polling a lease already classified stalled`,
     )
     assert.match(
@@ -839,30 +889,30 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     // asserted separately so dropping one cannot hide behind the others.
     assert.match(
       prose,
-      /merge-eligible only when all five hold/i,
+      /merge-eligible\s+only\s+when\s+all\s+five\s+hold/i,
       `${dir}/SKILL.md must state the five-condition merge gate`,
     )
     for (const [label, re] of [
       [
         'daemon gate authoritative',
-        /`gate 1` \/ DisplayStatus `Passing` — the daemon gate is authoritative/,
+        /`gate\s+1` \/ DisplayStatus `Passing` — the\s+daemon\s+gate\s+is\s+authoritative/,
       ],
-      ['settled chat', /the build chat has SETTLED/],
-      ['non-draft PR', /the PR is \*\*not a draft\*\*/],
+      ['settled chat', /the\s+build\s+chat\s+has\s+SETTLED/],
+      ['non-draft PR', /the\s+PR\s+is \*\*not\s+a\s+draft\*\*/],
       // Resolved from the configured state ROLE — a literal state name here would
       // be workspace-specific and fail the published-core project-agnostic gate.
       [
         'ticket in the review state',
-        /\*\*review\*\* state \(resolved from[\s\S]*?`states\.inReview`/,
+        /\*\*review\*\* state \(resolved\s+from[\s\S]*?`states\.inReview`/,
       ],
-      ['no do-not-merge marker', /no\*\* partial-slice or `do not merge` marker/],
+      ['no do-not-merge marker', /no\*\* partial-slice\s+or `do\s+not\s+merge` marker/],
     ]) {
       assert.match(prose, re, `${dir}/SKILL.md merge gate must require: ${label}`)
     }
     // The burn in one sentence: green on a draft is CI noise, not eligibility.
     assert.match(
       prose,
-      /Green on a _draft_ PR is expected CI noise, not merge-eligibility/,
+      /Green\s+on\s+a\s+_draft_\s+PR\s+is\s+expected\s+CI\s+noise, not\s+merge-eligibility/,
       `${dir}/SKILL.md must state that green-on-draft is not merge-eligible`,
     )
     // …and the Phase 3c transition must agree with the rail: a GREEN_DRAFT is a
@@ -870,24 +920,24 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     // operative transition still permits is the burn all over again.
     assert.match(
       prose,
-      /\*\*GREEN_DRAFT\*\* \(Passing \+ settled, but the PR is still a \*\*draft\*\*\) → \*\*hold\*\*,\s*never green/,
+      /\*\*GREEN_DRAFT\*\* \(Passing \+ settled, but\s+the\s+PR\s+is\s+still\s+a \*\*draft\*\*\) → \*\*hold\*\*,\s*never\s+green/,
       `${dir}/SKILL.md Phase 3c must hold a GREEN_DRAFT instead of queueing it`,
     )
     assert.doesNotMatch(
       prose,
-      /GREEN_DRAFT or READY_FOR_REVIEW/,
+      /GREEN_DRAFT\s+or\s+READY_FOR_REVIEW/,
       `${dir}/SKILL.md must not admit GREEN_DRAFT to the greens queue`,
     )
 
     // (b) The deadlock is diagnosable from the branch shape, not the check state.
     assert.match(
       prose,
-      /git rev-list --merges --count origin\/<base>\.\.<branch>/,
+      /git\s+rev-list --merges --count\s+origin\/<base>\.\.<branch>/,
       `${dir}/SKILL.md must carry the merge-commit-deadlock diagnosis command`,
     )
     assert.match(
       prose,
-      /auto-squashes when the repo allows squash, so re-invoke `merge_session` \*\*once\*\*/,
+      /auto-squashes\s+when\s+the\s+repo\s+allows\s+squash, so\s+re-invoke `merge_session` \*\*once\*\*/,
       `${dir}/SKILL.md must carry the squash recovery (retry merge_session once)`,
     )
     assert.match(
@@ -895,24 +945,24 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
       // Stated WITHOUT emitting a copyable base-merge command — the cross-core
       // linear-history gate (TestPublishedCoresNeverInstructBaseMerge) rejects the
       // directive spelled out, even inside a prohibition.
-      /a `git merge` of the base ref is forbidden/,
+      /a `git\s+merge` of\s+the\s+base\s+ref\s+is\s+forbidden/,
       `${dir}/SKILL.md must carry the linear-history prevention invariant`,
     )
 
     // (c) Any merge error is re-read against the provider before it is believed.
     assert.match(
       prose,
-      /on \*\*any\*\* `merge_session` error, re-read the PR's actual provider state/i,
+      /on \*\*any\*\* `merge_session` error, re-read\s+the\s+PR's\s+actual\s+provider\s+state/i,
       `${dir}/SKILL.md must require re-reading provider state on any merge error`,
     )
     assert.match(
       prose,
-      /\*\*never re-merge or fail-isolate\*\*/i,
+      /\*\*never\s+re-merge\s+or\s+fail-isolate\*\*/i,
       `${dir}/SKILL.md must forbid re-merging or fail-isolating an already-merged PR`,
     )
     assert.match(
       prose,
-      /`merge_session` is idempotent, so the safe generic move is re-read, then retry once/,
+      /`merge_session` is\s+idempotent, so\s+the\s+safe\s+generic\s+move\s+is\s+re-read, then\s+retry\s+once/,
       `${dir}/SKILL.md must state the idempotent re-read-then-retry-once move`,
     )
 
@@ -920,12 +970,12 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     // carved out of the BLOCKED-nudge ban, which stays in force for BLOCKED.
     assert.match(
       prose,
-      /\*\*Infra-death\*\* — a state distinct from BLOCKED/,
+      /\*\*Infra-death\*\* — a\s+state\s+distinct\s+from\s+BLOCKED/,
       `${dir}/SKILL.md Phase 3c must name infra-death as distinct from BLOCKED`,
     )
     assert.match(
       prose,
-      /transient API\/5xx error/,
+      /transient\s+API\/5xx\s+error/,
       `${dir}/SKILL.md must diagnose infra-death from a transient API\\/5xx error`,
     )
     assert.match(
@@ -935,18 +985,18 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     )
     assert.match(
       prose,
-      /within one poll cycle → fail-isolate/,
+      /within\s+one\s+poll\s+cycle → fail-isolate/,
       `${dir}/SKILL.md must fail-isolate when the wake does not take`,
     )
     assert.match(
       prose,
-      /This is \*\*not\*\* the forbidden BLOCKED-nudge/,
+      /This\s+is \*\*not\*\* the\s+forbidden\s+BLOCKED-nudge/,
       `${dir}/SKILL.md must state the wake is not the forbidden BLOCKED-nudge`,
     )
     // The ban itself must survive this carve-out.
     assert.match(
       prose,
-      /A BLOCKED run gets a capped repair round or is fail-isolated — never a nudge into the original chat/,
+      /A\s+BLOCKED\s+run\s+gets\s+a\s+capped\s+repair\s+round\s+or\s+is\s+fail-isolated — never\s+a\s+nudge\s+into\s+the\s+original\s+chat/,
       `${dir}/SKILL.md must keep the BLOCKED-nudge ban intact`,
     )
 
@@ -964,12 +1014,12 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     const refProse = ref.replace(/\s+/g, ' ')
     assert.match(
       refProse,
-      /continue from committed state; do not restart completed work/,
+      /continue[ ]from[ ]committed[ ]state; do[ ]not[ ]restart[ ]completed[ ]work/,
       `${dir}/references/merge-recovery.md must carry the wake-to-resume message`,
     )
     assert.match(
       refProse,
-      /gh pr view <n> --json state,mergedAt/,
+      /gh[ ]pr[ ]view <n> --json[ ]state,mergedAt/,
       `${dir}/references/merge-recovery.md must carry the provider-state re-read`,
     )
     assert.match(
@@ -1019,17 +1069,17 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // (a) The prohibition and the replacement trigger, both resident.
     assert.match(
       prose,
-      /\*\*Never arm bare `checks_passed` on a child PR\.\*\*/,
+      /\*\*Never\s+arm\s+bare `checks_passed` on\s+a\s+child\s+PR\.\*\*/,
       `${dir}/SKILL.md must forbid bare checks_passed on a child (draft) PR`,
     )
     assert.match(
       prose,
-      /each premature fire consumes the one-shot watch/,
+      /each\s+premature\s+fire\s+consumes\s+the\s+one-shot\s+watch/,
       `${dir}/SKILL.md must say why: a premature fire consumes the one-shot watch`,
     )
     assert.match(
       prose,
-      /Arm \*\*`checks_passed_ready`\*\* \(green \*\*and\*\* not a draft/,
+      /Arm \*\*`checks_passed_ready`\*\* \(green \*\*and\*\* not\s+a\s+draft/,
       `${dir}/SKILL.md must prescribe checks_passed_ready as the green trigger`,
     )
     assert.match(
@@ -1040,7 +1090,7 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // A wake still proves nothing — the BOS-522 merge gate stays authoritative.
     assert.match(
       prose,
-      /merge gate stays authoritative — a wake is a signal, not proof/,
+      /merge\s+gate\s+stays\s+authoritative — a\s+wake\s+is\s+a\s+signal, not\s+proof/,
       `${dir}/SKILL.md must keep the merge gate authoritative over any wake`,
     )
 
@@ -1048,17 +1098,17 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // backgrounded-watcher anti-pattern — the failure that stalls silently.
     assert.match(
       prose,
-      /Callbacks are primary; a \*\*session cron\*\*/,
+      /Callbacks\s+are\s+primary; a \*\*session\s+cron\*\*/,
       `${dir}/SKILL.md must name callbacks primary with a session cron fallback`,
     )
     assert.match(
       prose,
-      /\*\*Never\*\* rely on backgrounded shell watchers or sleep loops to hold the wait/,
+      /\*\*Never\*\* rely\s+on\s+backgrounded\s+shell\s+watchers\s+or\s+sleep\s+loops\s+to\s+hold\s+the\s+wait/,
       `${dir}/SKILL.md must forbid backgrounded watchers/sleep loops as the wait`,
     )
     assert.match(
       prose,
-      /session hosts may kill them within the turn/,
+      /session\s+hosts\s+may\s+kill\s+them\s+within\s+the\s+turn/,
       `${dir}/SKILL.md must say why: the host may kill a backgrounded watcher`,
     )
     // Published core: the wait recipe must not name a host's concrete scheduling
@@ -1073,22 +1123,22 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // enable — a driver that thinks it must act on drift is the failure mode.
     assert.match(
       prose,
-      /\*\*Expect drift, and budget for it\.\*\*/,
+      /\*\*Expect\s+drift, and\s+budget\s+for\s+it\.\*\*/,
       `${dir}/SKILL.md must carry the drift note`,
     )
     assert.match(
       prose,
-      /\*\*opt-in proactive rebase\*\* \(a per-repo setting\)/,
+      /\*\*opt-in\s+proactive\s+rebase\*\* \(a\s+per-repo\s+setting\)/,
       `${dir}/SKILL.md drift note must name the daemon's opt-in proactive rebase`,
     )
     assert.match(
       prose,
-      /\*\*linear-history invariant\*\* — every child rebases onto the base and never merges the base back in/,
+      /\*\*linear-history\s+invariant\*\* — every\s+child\s+rebases\s+onto\s+the\s+base\s+and\s+never\s+merges\s+the\s+base\s+back\s+in/,
       `${dir}/SKILL.md drift note must name the linear-history invariant`,
     )
     assert.match(
       prose,
-      /Treat a late drift conflict as a normal repair round/,
+      /Treat\s+a\s+late\s+drift\s+conflict\s+as\s+a\s+normal\s+repair\s+round/,
       `${dir}/SKILL.md drift note must route drift to a repair round, not a failure`,
     )
 
@@ -1096,7 +1146,7 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // driver hand-rolls the renderer or the create-vs-update decision.
     assert.match(
       prose,
-      /\*\*Do not hand-roll the renderer or the create-vs-update decision\*\*/,
+      /\*\*Do\s+not\s+hand-roll\s+the\s+renderer\s+or\s+the\s+create-vs-update\s+decision\*\*/,
       `${dir}/SKILL.md reporting contract must forbid hand-rolling the renderer`,
     )
     // The body's own legend vocabulary is wider than the helper's six statuses,
@@ -1104,7 +1154,7 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     // legend writes a state file `validateProgressState` rejects.
     assert.match(
       prose,
-      /queued → `pending` and in-flight or repairing → `building`/,
+      /queued → `pending` and\s+in-flight\s+or\s+repairing → `building`/,
       `${dir}/SKILL.md must map its legend vocabulary onto PROGRESS_STATUSES`,
     )
     for (const symbol of [
@@ -1129,53 +1179,53 @@ test('BOS-523: draft-aware trigger policy + session-hosted wait recipe (both mir
     const refProse = ref.replace(/\s+/g, ' ')
     assert.match(
       refProse,
-      /## Trigger policy: draft-aware, never bare `checks_passed`/,
+      /## Trigger\s+policy: draft-aware, never\s+bare `checks_passed`/,
       `${dir}/references/callback-watches.md must carry the trigger policy section`,
     )
     assert.match(
       refProse,
-      /Green on a draft PR is expected CI noise, not merge-eligibility/,
+      /Green\s+on\s+a\s+draft\s+PR\s+is\s+expected\s+CI\s+noise, not\s+merge-eligibility/,
       `${dir}/references/callback-watches.md must state green-on-draft is CI noise`,
     )
     // The armed set in the copyable snippet must match the policy above it — a
     // snippet that still loops over bare `checks_passed` is the burn shipped.
     assert.match(
       refProse,
-      /for T in checks_passed_ready checks_failed merged; do/,
+      /for[ ]T[ ]in[ ]checks_passed_ready[ ]checks_failed[ ]merged; do/,
       `${dir}/references/callback-watches.md arm snippet must use checks_passed_ready`,
     )
     // Cron caveats: `*/N` step syntax may be rejected → enumerate the minutes, and
     // never on the herd minutes. Both were learned from a rejected schedule.
     assert.match(
       refProse,
-      /\*\*enumerate the minutes\*\* instead: `4,11,18,25,32,39,46,53 \* \* \* \*`/,
+      /\*\*enumerate\s+the\s+minutes\*\* instead: `4,11,18,25,32,39,46,53 \* \* \* \*`/,
       `${dir}/references/callback-watches.md must carry the enumerated-minutes caveat`,
     )
     assert.match(
       refProse,
-      /Do not schedule on `:00` or `:30`/,
+      /Do\s+not\s+schedule\s+on `:00` or `:30`/,
       `${dir}/references/callback-watches.md must carry the herd-minutes caveat`,
     )
     assert.match(
       refProse,
-      /\*\*3\. Anti-pattern — backgrounded watchers\.\*\*/,
+      /\*\*3\. Anti-pattern — backgrounded\s+watchers\.\*\*/,
       `${dir}/references/callback-watches.md must carry the backgrounded-watcher anti-pattern`,
     )
     assert.match(
       refProse,
-      /the failure is \*\*silent\*\*/,
+      /the\s+failure\s+is \*\*silent\*\*/,
       `${dir}/references/callback-watches.md must say the watcher failure is silent`,
     )
     // Both new rules are also invariants, so a future edit that trims the prose
     // still has to delete an explicitly-listed invariant to lose them.
     assert.match(
       refProse,
-      /\*\*Draft-aware green only\.\*\*/,
+      /\*\*Draft-aware\s+green\s+only\.\*\*/,
       `${dir}/references/callback-watches.md must list the draft-aware-green invariant`,
     )
     assert.match(
       refProse,
-      /\*\*The wait survives the turn\.\*\*/,
+      /\*\*The\s+wait\s+survives\s+the\s+turn\.\*\*/,
       `${dir}/references/callback-watches.md must list the wait-survives-the-turn invariant`,
     )
   }

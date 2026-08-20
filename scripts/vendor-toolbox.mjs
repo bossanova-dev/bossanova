@@ -144,7 +144,11 @@ export const VENDOR_MAP = {
   // image-parity STOP gate), plan-contract-guard.mjs (BOS-741: the producer-side plan-contract
   // STOP gate — missing/unknown/out-of-order sections, placeholder residue, a description that is
   // not the plan, and tool-call residue in the plan file; it imports skill-config.mjs and
-  // main-module.mjs, both already vendored here) and plan-slug.mjs (the plan-path slug) are boss-plan's
+  // main-module.mjs, both already vendored here), plan-deps-lib.mjs (BOS-776: the entire Phase 4
+  // step 5 dependency decision — key-change area extraction, the overlap predicate and the
+  // seven-rung edge ladder — lifted out of prose an agent could skip; it imports skill-config.mjs
+  // and nothing else, which is what keeps this published payload's import closure inside
+  // itself) and plan-slug.mjs (the plan-path slug) are boss-plan's
   // deterministic planning core: pure, node-builtin-only helpers the SKILL invokes by
   // path. They ship in the toolbox so a consuming repo never has to re-derive them.
   // Their *.test.mjs / *.demo.mjs siblings are never vendored.
@@ -157,6 +161,7 @@ export const VENDOR_MAP = {
     'plan-epic-phase25.mjs',
     'plan-image-guard.mjs',
     'plan-contract-guard.mjs',
+    'plan-deps-lib.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree

@@ -7,6 +7,7 @@ import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 
 import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
+import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
 
@@ -97,6 +98,7 @@ test('BOS-711: ownership ranges use the resolved remote base, not a stale local 
     git('init', '--initial-branch=main')
     git('config', 'user.email', 'boss-build-test@example.test')
     git('config', 'user.name', 'boss-build test')
+    git('config', 'commit.gpgsign', 'false')
     fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'base\n')
     git('add', 'fixture.txt')
     git('commit', '-m', 'base')
@@ -136,18 +138,18 @@ test('BOS-711: ownership ranges use the resolved remote base, not a stale local 
 
     assert.match(
       skill,
-      /BASE_UPSTREAM="\$\(git rev-parse --abbrev-ref "\$SESSION_BRANCH@\{upstream\}" 2>\/dev\/null\)"/,
+      /BASE_UPSTREAM="\$\(git[ ]rev-parse --abbrev-ref "\$SESSION_BRANCH@\{upstream\}" 2>\/dev\/null\)"/,
     )
     assert.match(skill, /BASE_REMOTE="\$\{BASE_UPSTREAM%%\/\*\}"/)
     assert.match(skill, /BASE_BRANCH="\$\{BASE_UPSTREAM#\*\/\}"/)
     assert.match(skill, /BASE_REF="refs\/remotes\/\$BASE_REMOTE\/\$BASE_BRANCH"/)
-    assert.match(skill, /git fetch "\$BASE_REMOTE" "\+refs\/heads\/\$BASE_BRANCH:\$BASE_REF"/)
-    assert.match(skill, /git log --oneline "\$BASE_REF\.\.HEAD"/)
+    assert.match(skill, /git[ ]fetch "\$BASE_REMOTE" "\+refs\/heads\/\$BASE_BRANCH:\$BASE_REF"/)
+    assert.match(skill, /git\s+log --oneline "\$BASE_REF\.\.HEAD"/)
     assert.match(skill, /REVIEW_BASE="\$BASE_REF"/)
     assert.match(resume, /git (?:diff --stat|log --oneline) "\$BASE_REF(?:\.\.\.|\.\.)HEAD"/)
-    assert.match(standalone, /git switch -c "\$SESSION_BRANCH" "\$BASE_REF"/)
+    assert.match(standalone, /git[ ]switch -c "\$SESSION_BRANCH" "\$BASE_REF"/)
     assert.match(review, /resume →\s*`\$BASE_REF`/)
-    assert.match(skill, /gh pr create --base "\$BASE_BRANCH"/)
+    assert.match(skill, /gh[ ]pr[ ]create --base "\$BASE_BRANCH"/)
     assert.doesNotMatch(
       `${skill}\n${resume}\n${review}`,
       /\$BASE_BRANCH(?:\.\.\.|\.\.)HEAD|REVIEW_BASE="\$BASE_BRANCH"/,
@@ -162,18 +164,18 @@ test('headless mode + mode-aware proof are present', () => {
     assert.match(skill, /BS_HEADLESS/)
   }
   // Mode-aware proof is Step 11, which lives in the finalize-and-stop reference.
-  assert.match(finalizeAndStop(), /proof\.mjs plan/)
+  assert.match(finalizeAndStop(), /proof\.mjs\s+plan/)
 })
 
 test('BOS-840: Preflight allows approximately four hours, not the retired three-hour or 45-minute caps', () => {
   const skill = fs.readFileSync(path.join(rootDir, `${CORE}/SKILL.md`), 'utf8')
   const preflight = region(skill, '## Preflight', '## Step 1:')
 
-  assert.match(preflight, /~4 hours/i)
+  assert.match(preflight, /~4\s+hours/i)
   // Both retired caps stay named, so a prose-only revert to either cannot pass while the
   // arithmetic below still reads four hours.
-  assert.doesNotMatch(preflight, /~3 hours/i)
-  assert.doesNotMatch(preflight, /~45 min/i)
+  assert.doesNotMatch(preflight, /~3\s+hours/i)
+  assert.doesNotMatch(preflight, /~45\s+min/i)
 })
 
 test('every moved reference is reachable: a body pointer plus an existing file', () => {
@@ -210,7 +212,7 @@ test('every moved reference is reachable: a body pointer plus an existing file',
   }
 })
 
-test('the resident body stays under the post-extraction ratchet (BOS-674)', () => {
+test('the resident body is pinned at its exact post-extraction size (BOS-674)', () => {
   // boss-build's SKILL.md is injected whole at turn 0 of every run, so every byte here is
   // paid on every invocation. BOS-674 extracted Steps 8-12 into
   // `references/finalize-and-stop.md` and folded the standalone `## Troubleshooting` section
@@ -220,12 +222,13 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // records 69433 B, but that number had already rotted by the time this landed — the real
   // pre-extraction body measured **80817 B**.
   //
-  // DOWNWARD RATCHET. `RATCHET` is the EXACT measured body size and the comparison is inclusive,
-  // so there is zero headroom: any byte added to the resident body turns this red rather than
-  // quietly re-spending part of the ~11.8 KB this extraction banked. A slack allowance ("measured
-  // + N") is precisely the leak this shape exists to close. The pin may only ever move DOWN,
-  // except when a deliberate body edit re-baselines it — and then only to the newly measured
-  // size, with the reason recorded here.
+  // TWO-SIDED PIN (BOS-768). This used to claim "zero headroom" while comparing inclusively
+  // against a rounded pin, which is not the same thing: the pin sat 8 B above the measured
+  // body, and that gap was invisible slack the body could grow into with nothing going red.
+  // Worse, the one-sided shape meant a genuine trim bought nothing — it just widened the gap.
+  // `assertExactSize` compares for equality, so BOTH directions red and the only way to clear
+  // a shrink is to bank it in `RATCHET`. A slack allowance ("measured + N") is precisely the
+  // leak this shape exists to close.
   const PRE_EXTRACTION_BASELINE = 80817
   // Re-baselined +271 from the post-extraction 69058 for the per-step reference pointers: the
   // Steps 8-12 block carried one preamble link for five summary bullets, so a reader working the
@@ -439,22 +442,27 @@ test('the resident body stays under the post-extraction ratchet (BOS-674)', () =
   // relative path. Written as `import{pathToFileURL as u}from"node:url"` + `u(…)` rather than the
   // spaced form, which measured 80833 and would have breached the 80817 pre-extraction baseline —
   // the aliasing is what buys the 12 B of headroom back, not decoration.
-  const RATCHET = 80805 // exact measured resident body
-  // Headroom to the pre-extraction baseline is now 12 bytes (80817 - 80805) — read that as the
-  // real budget before writing ANY resident prose, because this assertion is the only thing
-  // standing between the extraction's ~11.8 KB and it being quietly re-spent. When it reds, the fix
+  const RATCHET = 80797 // exact measured resident body, re-measured 2026-08-19 (BOS-768)
+  // Headroom to the pre-extraction baseline is 20 bytes (80817 - 80797) — read that as the real
+  // budget before writing ANY resident prose, because this assertion is the only thing standing
+  // between the extraction's ~11.8 KB and it being quietly re-spent. When it reds upward, the fix
   // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
-  // to put the new prose in a reference and leave the resident body a pointer.
-  assert.ok(
-    RATCHET < PRE_EXTRACTION_BASELINE,
-    `ratchet ${RATCHET} must stay below the pre-extraction baseline ${PRE_EXTRACTION_BASELINE} — trim resident prose or move it into a reference`,
-  )
+  // to put the new prose in a reference and leave the resident body a pointer. When it reds
+  // downward, you trimmed something: bank the new number here in the same commit.
+  assertArtifactSet(RESIDENT_BODY_SKILLS, 1, 'RESIDENT_BODY_SKILLS')
   for (const skillPath of RESIDENT_BODY_SKILLS) {
-    const bytes = Buffer.byteLength(fs.readFileSync(path.join(rootDir, skillPath)))
-    assert.ok(
-      bytes <= RATCHET,
-      `${skillPath} is ${bytes} bytes; must stay <= ${RATCHET} (post-extraction ratchet) — move situational content into a reference`,
-    )
+    assertExactSize({
+      below: { name: 'PRE_EXTRACTION_BASELINE', value: PRE_EXTRACTION_BASELINE },
+      constFile: 'scripts/boss-build-skill.test.mjs',
+      constName: 'RATCHET',
+      expected: RATCHET,
+      label: 'boss-build resident body',
+      measured: measureFile(path.join(rootDir, skillPath)),
+      path: skillPath,
+      residual:
+        'the references/ files this body points at — content moved out of the resident body ' +
+        'leaves this pin entirely, so a trim here is not by itself proof the run got cheaper',
+    })
   }
 })
 
@@ -488,20 +496,24 @@ test('BOS-851: the knowledge phase is resident and sits between Step 6 and Step 
     assert.ok(cleanArm, `${dir}: Step 6 must carry a \`clean\` verdict arm`)
     assert.match(
       cleanArm,
-      /Step 6\.5/,
+      /Step\s+6\.5/,
       `${dir}: the \`clean\` arm must route through Step 6.5, not straight to Step 7 — otherwise the knowledge phase is unreachable`,
     )
 
     const section = body.slice(phase, step7)
     // The resident section is a router: it must name the role it discovers, link the full spec, and
     // carry the two facts a reader cannot get anywhere else on this path.
-    assert.match(section, /--role knowledge/, `${dir}: the phase must name the knowledge role`)
+    assert.match(section, /--role\s+knowledge/, `${dir}: the phase must name the knowledge role`)
     assert.match(
       section,
       /references\/knowledge-extensions\.md/,
       `${dir}: the phase must link its reference`,
     )
-    assert.match(section, /never produce `BLOCKED`/, `${dir}: the phase must state it is non-fatal`)
+    assert.match(
+      section,
+      /never\s+produce `BLOCKED`/,
+      `${dir}: the phase must state it is non-fatal`,
+    )
     assert.equal(
       fs.existsSync(path.join(rootDir, dir, 'references/knowledge-extensions.md')),
       true,
@@ -563,7 +575,7 @@ test('BOS-674: every extracted step names the reference on its OWN resident line
     // for the instruction. Without this the per-step links are navigable but not mandatory.
     assert.match(
       body.slice(start, end),
-      /Each bullet is a summary, never the instruction/,
+      /Each\s+bullet\s+is\s+a\s+summary, never\s+the\s+instruction/,
       `${dir}/SKILL.md must state the Steps 8-12 bullets are summaries, not the instructions`,
     )
   }
@@ -593,7 +605,7 @@ test('methodology extension dispatches ce-work under the caller-owned boundary i
     // Boss keeps ownership of the steps ce-work would otherwise take itself.
     assert.match(
       flat,
-      /Boss owns worktree lifecycle, commits, verification,?\s*and shipping/i,
+      /Boss\s+owns\s+worktree\s+lifecycle, commits, verification,?\s*and\s+shipping/i,
       `${skillDir}/SKILL.md must state Boss owns worktree lifecycle, commits, verification, and shipping`,
     )
     // The concrete prohibitions. Without these the boundary is a slogan: ce-work's own shipping
@@ -605,16 +617,18 @@ test('methodology extension dispatches ce-work under the caller-owned boundary i
     // the file is polarity-blind: a bullet rewritten to ALLOW `git checkout` / `git switch` would
     // still satisfy it, leaving the Boss-owned worktree boundary ungated by a test that claims to
     // gate it.
-    const stopBullet = flat.match(/\*\*Stop before the shipping workflow\.\*\*(.+?)(?=- \*\*|$)/i)
+    const stopBullet = flat.match(
+      /\*\*Stop\s+before\s+the\s+shipping\s+workflow\.\*\*(.+?)(?=- \*\*|$)/i,
+    )
     assert.ok(
       stopBullet,
       `${skillDir}/SKILL.md must carry the "Stop before the shipping workflow" boundary bullet`,
     )
     const prohibitions = stopBullet[1]
     for (const [label, pattern] of [
-      ['no push', /\bno\s+`?git push`?/i],
-      ['no PR create/edit', /\bno\s+PR create/i],
-      ['no branch create/switch', /\bno\s+`?git checkout`?\s*\/\s*`?git switch`?/i],
+      ['no push', /\bno\s+`?git\s+push`?/i],
+      ['no PR create/edit', /\bno\s+PR\s+create/i],
+      ['no branch create/switch', /\bno\s+`?git\s+checkout`?\s*\/\s*`?git\s+switch`?/i],
       ['no plan-doc status flip', /\bno\s+plan-doc\s+`?status`?\s+flip/i],
     ]) {
       assert.match(
@@ -627,13 +641,13 @@ test('methodology extension dispatches ce-work under the caller-owned boundary i
     // it and can mutate the tree outside the core's ownership snapshot.
     assert.match(
       flat,
-      /not escalate to `?ce-code-review`?/i,
+      /not\s+escalate\s+to `?ce-code-review`?/i,
       `${skillDir}/SKILL.md must forbid escalating to ce-code-review from inside ce-work`,
     )
     // Headless: ce-work's Phase 1 says "ask clarifying questions now"; this extension must not.
     assert.match(
       flat,
-      /[Nn]ever ask clarifying questions/,
+      /[Nn]ever\s+ask\s+clarifying\s+questions/,
       `${skillDir}/SKILL.md must override ce-work's clarifying-question step for headless runs`,
     )
   }
@@ -653,7 +667,7 @@ test('methodology extension falls back to the core when Compound Engineering is 
     )
     assert.match(
       flat,
-      /return without landing work/i,
+      /return\s+without\s+landing\s+work/i,
       `${skillDir}/SKILL.md must say the extension returns without landing work when CE is absent`,
     )
     assert.match(
@@ -663,7 +677,7 @@ test('methodology extension falls back to the core when Compound Engineering is 
     )
     assert.match(
       flat,
-      /must not\b[^.]*reintroduce/i,
+      /must\s+not\b[^.]*reintroduce/i,
       `${skillDir}/SKILL.md must forbid reintroducing the retired vendored methodology`,
     )
   }
@@ -690,12 +704,12 @@ test('methodology extension returns the commits the tier-1 gate checks for', () 
     // last-task-only list would under-report commits that did land.
     assert.match(
       skill.replace(/\s+/g, ' '),
-      /aggregate\*\*: one `<short SHA> <subject>` entry for every commit this dispatch landed/i,
+      /aggregate\*\*: one `<short\s+SHA> <subject>` entry\s+for\s+every\s+commit\s+this\s+dispatch\s+landed/i,
       `${skillDir}/SKILL.md must state commitsMade aggregates every commit the dispatch landed`,
     )
     assert.match(
       skill.replace(/\s+/g, ' '),
-      /no commit — verification only/i,
+      /no\s+commit — verification\s+only/i,
       `${skillDir}/SKILL.md must keep the no-commit note as the per-task carve-out`,
     )
   }
@@ -726,7 +740,7 @@ test('Step 6 routes the review verdict from a run-file sentinel, not returned pr
     // The verdict is read from the file, never from the returned prose.
     assert.match(
       skill,
-      /from the (run )?file only|never from (returned |the )?(reply|prose)/i,
+      /from\s+the (run )?file\s+only|never\s+from (returned |the )?(reply|prose)/i,
       `${skillPath} must state the verdict is routed from the run file, not returned prose`,
     )
   }
@@ -740,17 +754,17 @@ test('Step 6c boss-review sentinel is advisory and cannot drive the run-file ver
     )
     assert.match(
       reviewStack,
-      /Step 6c.*advisory.*does not drive the run-file verdict/is,
+      /Step\s+6c.*advisory.*does\s+not\s+drive\s+the\s+run-file\s+verdict/is,
       `${skillDir}/references/review-stack.md must keep Step 6c advisory and non-routing`,
     )
     assert.doesNotMatch(
       reviewStack,
-      /bs-review capped:[\s\S]{0,160}proceed to Step 7\s+anyway/i,
+      /bs-review\s+capped:[\s\S]{0,160}proceed\s+to\s+Step\s+7\s+anyway/i,
       `${skillDir}/references/review-stack.md must not let bs-review capped look like the run-file capped/BLOCKED verdict`,
     )
     assert.doesNotMatch(
       reviewStack,
-      /bs-review capped:[\s\S]{0,220}not[\s\S]{0,40}BLOCKED condition/i,
+      /bs-review\s+capped:[\s\S]{0,220}not[\s\S]{0,40}BLOCKED\s+condition/i,
       `${skillDir}/references/review-stack.md must not describe bs-review capped as a competing terminal-state route`,
     )
   }
@@ -1424,12 +1438,12 @@ test('Step 11 names proof.mjs run as the single proof channel (BOS-138)', () => 
     const step11 = finalizeAndStop(skillDir)
     assert.match(
       step11,
-      /is the only proof channel/i,
+      /is\s+the\s+only\s+proof\s+channel/i,
       `${skillDir}/${FINALIZE_REF} Step 11 must name proof.mjs run's note as the only proof channel`,
     )
     assert.match(
       step11,
-      /proof\.mjs doctor/,
+      /proof\.mjs\s+doctor/,
       `${skillDir}/${FINALIZE_REF} Step 11 must point at proof.mjs doctor for a missing env, not sourcing .env`,
     )
     assert.doesNotMatch(
@@ -1494,22 +1508,22 @@ test('Step 5 directs a TUI PR to author + commit a proof scenario before finaliz
     )
     assert.match(
       proofCapture,
-      /must commit a `proof\/scenarios\/\*\.scenario\.json`/,
+      /must\s+commit\s+a `proof\/scenarios\/\*\.scenario\.json`/,
       `${skillDir}/references/proof-capture.md must mandate committing a scenario for a TUI PR`,
     )
     assert.match(
       proofCapture,
-      /scenario validate/,
+      /scenario\s+validate/,
       `${skillDir}/references/proof-capture.md must document the scenario validate authoring loop`,
     )
     assert.match(
       proofCapture,
-      /scenario run [^\n]*--dry-run/,
+      /scenario\s+run [^\n]*--dry-run/,
       `${skillDir}/references/proof-capture.md must document the scenario run --dry-run iterate loop`,
     )
     assert.match(
       proofCapture,
-      /gates \*\*only its own PR\*\*|only its own PR/,
+      /gates \*\*only\s+its\s+own\s+PR\*\*|only\s+its\s+own\s+PR/,
       `${skillDir}/references/proof-capture.md must state a scenario gates only its own PR (no path rules)`,
     )
   }
@@ -1567,7 +1581,7 @@ test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)',
   const skill = finalizeAndStop() // BOS-674: Step 8 moved out of the resident body
   const step8 = region(skill, '## Step 8:', '## Step 9:')
   const tagIdx = step8.indexOf('inject-pr-tag')
-  const gateIdx = step8.search(/Then run \*\*boss-repair\*\*/)
+  const gateIdx = step8.search(/Then\s+run \*\*boss-repair\*\*/)
   assert.ok(
     tagIdx !== -1,
     'Step 8 must inject the tag via the finalize adapter inject-pr-tag capability',
@@ -1584,9 +1598,9 @@ test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
   const step9 = region(skill, '## Step 9:', '## Step 10:')
   assert.match(step9, /idempotent/i, 'Step 9 must document the idempotent guard')
   // Guarded re-inject: conditional on commits still lacking the tag, not an unconditional rewrite.
-  assert.match(step9, /if git log[^\n]*grep -qv/, 'Step 9 re-inject must be conditional')
+  assert.match(step9, /if[ ]git[ ]log[^\n]*grep -qv/, 'Step 9 re-inject must be conditional')
   assert.match(step9, /inject-pr-tag/, 'Step 9 must keep the re-inject capability')
-  assert.match(step9, /gh pr ready/, 'Step 9 must ready the PR')
+  assert.match(step9, /gh\s+pr\s+ready/, 'Step 9 must ready the PR')
 })
 
 test('Step 7 always posts the boss-review comment, unconditionally (BOS-181)', () => {
@@ -1598,10 +1612,10 @@ test('Step 7 always posts the boss-review comment, unconditionally (BOS-181)', (
   // bound the sibling Step 7 assertions already use.
   const step7 = region(skill, '## Step 7:', '## Steps 8-12:')
   // The old conditional-skip clause is gone.
-  assert.doesNotMatch(step7, /Skip this when Step 6c was skipped/i)
+  assert.doesNotMatch(step7, /Skip\s+this\s+when\s+Step\s+6c\s+was\s+skipped/i)
   // Always upsert one marker comment, with an honest fallback when there is no report.
-  assert.match(step7, /Post the boss-review comment \(always\)/)
-  assert.match(step7, /fallback note/i)
+  assert.match(step7, /Post\s+the\s+boss-review\s+comment \(always\)/)
+  assert.match(step7, /fallback\s+note/i)
 })
 
 // BOS-240: boss-build must finalize BLOCKED (not REVIEW_READY) when it defers a *required*
@@ -1629,12 +1643,16 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     )
     assert.match(
       body,
-      /BLOCKED, never REVIEW_READY/,
+      /BLOCKED, never\s+REVIEW_READY/,
       `${mirror}: body must state required-deferred ⇒ BLOCKED, never REVIEW_READY`,
     )
     // Required = API-version bump for an observable bossanova.v1 change + open must-fix findings.
-    assert.match(body, /API-version bump/, `${mirror}: required must name the API-version bump`)
-    assert.match(body, /must-fix findings/, `${mirror}: required must name open must-fix findings`)
+    assert.match(body, /API-version\s+bump/, `${mirror}: required must name the API-version bump`)
+    assert.match(
+      body,
+      /must-fix\s+findings/,
+      `${mirror}: required must name open must-fix findings`,
+    )
     assert.match(
       body,
       /bossanova\.v1/,
@@ -1643,13 +1661,13 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     // Optional stays non-fatal (Minor findings + best-effort proof).
     assert.match(
       body,
-      /_?optional_?[^\n]*Minor findings[^\n]*best-effort proof[^\n]*non-fatal/i,
+      /_?optional_?[^\n]*Minor\s+findings[^\n]*best-effort\s+proof[^\n]*non-fatal/i,
       `${mirror}: optional (Minor findings + best-effort proof) must stay non-fatal`,
     )
     // The wall-clock breaker no longer grants "usually BLOCKED" latitude.
     assert.doesNotMatch(
       body,
-      /usually BLOCKED/,
+      /usually\s+BLOCKED/,
       `${mirror}: wall-clock breaker must not permit REVIEW_READY with an unaddressed required item`,
     )
     // BOS-674: Steps 9 and 12 moved to references/finalize-and-stop.md, but the invariant is
@@ -1658,12 +1676,12 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     const pointers = region(body, '## Steps 8-12:', '## Cron gate')
     assert.match(
       pointers,
-      /no required item was deferred/,
+      /no\s+required\s+item\s+was\s+deferred/,
       `${mirror}: the resident Steps 8-12 pointer block must keep the Step 9 deferral gate`,
     )
     assert.match(
       pointers,
-      /REVIEW_READY only with no deferred required item/,
+      /REVIEW_READY\s+only\s+with\s+no\s+deferred\s+required\s+item/,
       `${mirror}: the resident Steps 8-12 pointer block must keep the Step 12 terminal-state gate`,
     )
 
@@ -1672,13 +1690,13 @@ test('BOS-240: resident body pins the required-deferred → BLOCKED finalize inv
     const step9 = region(ref, '## Step 9:', '## Step 10:')
     assert.match(
       step9,
-      /no required item was deferred/,
+      /no\s+required\s+item\s+was\s+deferred/,
       `${mirror}: Step 9 must assert no required item was deferred before readying`,
     )
     const step12 = region(ref, '## Step 12:')
     assert.match(
       step12,
-      /REVIEW_READY only with no deferred required item/,
+      /REVIEW_READY\s+only\s+with\s+no\s+deferred\s+required\s+item/,
       `${mirror}: Step 12 must pick REVIEW_READY only with no deferred required item`,
     )
   }
@@ -1711,34 +1729,34 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     // The five genuinely-unsafe conditions, one assertion each, so a deletion names itself.
     assert.match(
       abortList,
-      /destructive or data migrations; schema drops\/rewrites/,
+      /destructive\s+or\s+data\s+migrations; schema\s+drops\/rewrites/,
       `${dir}/SKILL.md: the hard-ABORT list must still name destructive/data migrations and schema drops/rewrites`,
     )
     assert.match(
       abortList,
-      /auth, secrets, credential, or keyring changes/,
+      /auth, secrets, credential, or\s+keyring\s+changes/,
       `${dir}/SKILL.md: the hard-ABORT list must still name auth/secrets/credential/keyring changes`,
     )
     assert.match(
       abortList,
-      /production config or deploy changes/,
+      /production\s+config\s+or\s+deploy\s+changes/,
       `${dir}/SKILL.md: the hard-ABORT list must still name production config or deploy changes`,
     )
     assert.match(
       abortList,
-      /dependency upgrades\/additions not already specified by the plan/,
+      /dependency\s+upgrades\/additions\s+not\s+already\s+specified\s+by\s+the\s+plan/,
       `${dir}/SKILL.md: the hard-ABORT list must still name unspecified dependency upgrades/additions`,
     )
     assert.match(
       abortList,
-      /anything the Trust rules name/,
+      /anything\s+the\s+Trust\s+rules\s+name/,
       `${dir}/SKILL.md: the hard-ABORT list must still defer to the Trust rules`,
     )
 
     // A.2 — the acceptance-criteria half stays a hard ABORT; only the decisions half moved.
     assert.match(
       abortList,
-      /empty\/contradictory acceptance criteria/,
+      /empty\/contradictory\s+acceptance\s+criteria/,
       `${dir}/SKILL.md: the hard-ABORT list must still name empty/contradictory acceptance criteria`,
     )
 
@@ -1760,7 +1778,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     // over the ABORT bullets.
     assert.doesNotMatch(
       abortList,
-      /unresolved decisions/,
+      /unresolved\s+decisions/,
       `${dir}/SKILL.md: a plan with unresolved decisions must not remain in the hard-ABORT list`,
     )
 
@@ -1771,7 +1789,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     // The sentence hard-wraps as `— this list\nis exhaustive:`, so span the wrap with \s+.
     assert.match(
       abortList,
-      /this list\s+is exhaustive/,
+      /this\s+list\s+is\s+exhaustive/,
       `${dir}/SKILL.md: Decide vs ABORT must declare the hard-ABORT list exhaustive`,
     )
 
@@ -1790,7 +1808,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     )
     assert.match(
       recordGroup,
-      /a plan with unresolved decisions/,
+      /a\s+plan\s+with\s+unresolved\s+decisions/,
       `${dir}/SKILL.md: the decide-and-record group must name a plan with unresolved decisions`,
     )
     assert.match(
@@ -1800,7 +1818,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     )
     assert.match(
       recordGroup,
-      /`## Autonomous decisions`/,
+      /`## Autonomous\s+decisions`/,
       `${dir}/SKILL.md: the decide-and-record group must name \`## Autonomous decisions\` as the recording home`,
     )
     assert.match(
@@ -1817,12 +1835,12 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     const hardRules = region(body, '## Hard rules', '## Trust rules', `${dir}/SKILL.md`)
     assert.match(
       hardRules,
-      /any in-scope acceptance criterion left unsatisfied/,
+      /any\s+in-scope\s+acceptance\s+criterion\s+left\s+unsatisfied/,
       `${dir}/SKILL.md: the Hard-rules required-deferred bullet must keep the acceptance-criterion clause`,
     )
     assert.match(
       hardRules,
-      /partial implementation is not complete/,
+      /partial\s+implementation\s+is\s+not\s+complete/,
       `${dir}/SKILL.md: the Hard-rules required-deferred bullet must keep "partial implementation is not complete"`,
     )
 
@@ -1841,7 +1859,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
     // being read by the subagent this assertion protects.
     assert.doesNotMatch(
       body.replace(/\s+/g, ' '),
-      /Decide-vs-ABORT condition/,
+      /Decide-vs-ABORT\s+condition/,
       `${dir}/SKILL.md: stop-and-report instructions must name a hard-ABORT condition, not the two-list section`,
     )
     // The references are read by the same dispatched subagents, and `core-spine.md` restates the
@@ -1852,7 +1870,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
       const flat = fs.readFileSync(path.join(refDir, ref), 'utf8').replace(/\s+/g, ' ')
       assert.doesNotMatch(
         flat,
-        /Decide-vs-ABORT condition/,
+        /Decide-vs-ABORT\s+condition/,
         `${dir}/references/${ref}: stop-and-report instructions must name a hard-ABORT condition, not the two-list section`,
       )
     }
@@ -1863,7 +1881,7 @@ test('BOS-841: Decide vs ABORT separates genuinely-unsafe from decide-and-record
         '## Step 6: Whole-branch review',
         `${dir}/SKILL.md`,
       ),
-      /If a hard-ABORT condition appears,\s+stop and report it/,
+      /If\s+a\s+hard-ABORT\s+condition\s+appears,\s+stop\s+and\s+report\s+it/,
       `${dir}/SKILL.md: the tier-3 dispatch brief must tell the subagent to report hard-ABORT conditions`,
     )
   }
@@ -1893,10 +1911,11 @@ test('BOS-841: dispatched extensions name the hard-ABORT list, not the two-list 
     const flat = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8').replace(/\s+/g, ' ')
     assert.doesNotMatch(
       flat,
-      /Decide-vs-ABORT condition/,
+      /Decide-vs-ABORT\s+condition/,
       `${skillDir}/SKILL.md: a dispatched brief must tell the subagent to report a hard-ABORT condition, not the two-list section`,
     )
-    const instructions = flat.match(/hard-ABORT condition (instead of|rather than) guessing/g) ?? []
+    const instructions =
+      flat.match(/hard-ABORT\s+condition (instead\s+of|rather\s+than) guessing/g) ?? []
     assert.strictEqual(
       instructions.length,
       expected,
@@ -1933,12 +1952,12 @@ test('BOS-841: the tier-1 return schema carries the decisions element', () => {
     // empty array in a schema has no reason to populate it.
     assert.match(
       skill.replace(/\s+/g, ' '),
-      /`decisionsRecorded` is every ordinary ambiguity this dispatch decided instead of asking/,
+      /`decisionsRecorded` is\s+every\s+ordinary\s+ambiguity\s+this\s+dispatch\s+decided\s+instead\s+of\s+asking/,
       `${skillDir}/SKILL.md must say what decisionsRecorded holds`,
     )
     assert.match(
       skill.replace(/\s+/g, ' '),
-      /collects the field from every task contract into the PR body's `## Autonomous decisions` section/,
+      /collects\s+the\s+field\s+from\s+every\s+task\s+contract\s+into\s+the\s+PR\s+body's `## Autonomous\s+decisions` section/,
       `${skillDir}/SKILL.md must say decisionsRecorded is what reaches the PR body`,
     )
   }
@@ -1991,7 +2010,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
     const step7 = region(body, '## Step 7: PR gate', '## Steps 8-12:', `${dir}/SKILL.md`)
     assert.match(
       step7,
-      /^## Autonomous decisions\n- <decision \+ rationale>$/m,
+      /^## Autonomous[ ]decisions\n- <decision \+ rationale>$/m,
       `${dir}/SKILL.md: the Step 7 PR-body template must still carry the ## Autonomous decisions section and its decision + rationale placeholder`,
     )
 
@@ -2002,7 +2021,7 @@ test('BOS-841: a decision made inside a dispatch reaches the PR body (both mirro
     // task contract's decisions element, not only the orchestrator's own.
     assert.match(
       step7,
-      /collects the decisions-recorded element of \*\*every\*\*\s+task\s+contract/,
+      /collects\s+the\s+decisions-recorded\s+element\s+of \*\*every\*\*\s+task\s+contract/,
       `${dir}/SKILL.md: Step 7 must say ## Autonomous decisions collects every task contract's decisions element`,
     )
   }
@@ -2013,7 +2032,7 @@ test('BOS-240: review-stack adds a conditional API-surface required check (both 
     const reviewStack = readRef(mirror, 'review-stack.md')
     assert.match(
       reviewStack,
-      /API-surface check/,
+      /API-surface\s+check/,
       `${mirror}: review-stack must add the conditional API-surface check`,
     )
     assert.match(
@@ -2034,7 +2053,7 @@ test('BOS-240: review-stack adds a conditional API-surface required check (both 
     )
     assert.match(
       reviewStack,
-      /BLOCKED[^\n]*never REVIEW_READY/,
+      /BLOCKED[^\n]*never\s+REVIEW_READY/,
       `${mirror}: a deferred required version bump routes to BLOCKED, never REVIEW_READY`,
     )
   }
@@ -2049,18 +2068,18 @@ test('BOS-303: an empty/bootstrap draft PR placeholder is adopted and resumed, n
   const skill = claudeBody()
   assert.match(
     skill,
-    /bossd's bootstrap draft, an empty PR[^\n]*is \*\*adopted and\s*\n?resumed\*\*, not a stop condition/,
+    /bossd's\s+bootstrap\s+draft, an\s+empty\s+PR[^\n]*is \*\*adopted\s+and\s*\n?resumed\*\*, not\s+a\s+stop\s+condition/,
     'boss-build must state an existing empty/bootstrap draft PR is adopted and resumed, not a stop condition',
   )
   const step25 = region(skill, '## Step 2.5:', '## Step 3:')
   assert.match(
     step25,
-    /empty bootstrap PR is adoptable, never foreign/,
+    /empty\s+bootstrap\s+PR\s+is\s+adoptable, never\s+foreign/,
     'Step 2.5 must classify an empty bootstrap PR as adoptable, never foreign',
   )
   assert.match(
     step25,
-    /the bootstrap PR \(no create\)/,
+    /the\s+bootstrap\s+PR \(no\s+create\)/,
     'Step 2.5 must route a bootstrap-only PR to fresh-reuse (adopt), not restart',
   )
 })
@@ -2076,7 +2095,7 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirror
     const hardRules = region(skill, '## Hard rules', '## Trust rules')
     assert.match(
       hardRules,
-      /Prefer a callback over blind polling/i,
+      /Prefer\s+a\s+callback\s+over\s+blind\s+polling/i,
       `${dir}/SKILL.md Hard rules must carry the up-front "prefer a callback over blind polling" reflex`,
     )
     assert.ok(
@@ -2097,7 +2116,7 @@ test('BOS-495: up-front callback reflex + callbacksAvailable gate in both mirror
     )
     assert.match(
       ref,
-      /Graceful degradation gated on `callbacksAvailable`/,
+      /Graceful\s+degradation\s+gated\s+on `callbacksAvailable`/,
       `${dir}/references/callback-watches.md must frame degradation around the gate`,
     )
   }
@@ -2168,20 +2187,20 @@ test('BOS-470: CI/PR waits adopt one-shot callbacks with authoritative reconcili
     /checks_passed[\s\S]*checks_failed[\s\S]*merged/,
     'reference must name the grouped triggers',
   )
-  assert.match(ref, /Reconcile before act/i, 'reference must state reconcile-before-act')
+  assert.match(ref, /Reconcile\s+before\s+act/i, 'reference must state reconcile-before-act')
   assert.match(
     ref,
-    /Idempotent under duplicate/i,
+    /Idempotent\s+under\s+duplicate/i,
     'reference must state idempotent-under-duplicate delivery',
   )
   assert.match(
     ref,
-    /Graceful degradation/i,
+    /Graceful\s+degradation/i,
     'reference must state graceful degradation to the poll',
   )
   assert.match(
     ref,
-    /gh pr checks .*--watch --fail-fast/,
+    /gh\s+pr\s+checks .*--watch --fail-fast/,
     'reference must keep the bounded fallback poll',
   )
   // Published-core invariant: no host-specific tracker/MCP identity leaks into the reference.
@@ -2198,19 +2217,19 @@ test('BOS-240: troubleshooting adds the required-deferred rows without weakening
     // New status-rollback row: required item deferred at cap → In Progress / draft / names the item.
     assert.match(
       troubleshooting,
-      /Required item deferred at cap/,
+      /Required\s+item\s+deferred\s+at\s+cap/,
       `${mirror}: status-rollback table must cover the required-deferred-at-cap case`,
     )
     // New red-flag row: skipping the API version as optional past the cap is wrong.
     assert.match(
       troubleshooting,
-      /skip the API version as optional/,
+      /skip\s+the\s+API\s+version\s+as\s+optional/,
       `${mirror}: red-flags must catch "skip the API version as optional past the cap"`,
     )
     // The existing optional-proof red-flag must NOT be weakened: proof stays non-fatal.
     assert.match(
       troubleshooting,
-      /Proof is optional and non-fatal/,
+      /Proof\s+is\s+optional\s+and\s+non-fatal/,
       `${mirror}: the optional-proof red-flag must remain (proof stays non-fatal)`,
     )
   }
@@ -2257,7 +2276,7 @@ test('BOS-514: the finalize-adjacent base sync points at the linear-history inva
     const steps = finalizeAndStop(dir)
     assert.match(
       steps,
-      /Linear history:/,
+      /Linear\s+history:/,
       `${dir}/${FINALIZE_REF} must point at the linear-history invariant where it syncs with the base`,
     )
     assert.match(
@@ -2325,29 +2344,29 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     )
     assert.match(
       skill,
-      /for \*\*every\*\* extension that failed to load or returned no valid result/i,
+      /for \*\*every\*\* extension\s+that\s+failed\s+to\s+load\s+or\s+returned\s+no\s+valid\s+result/i,
       `${dir}/SKILL.md must record a skip for every failed Tier-1 extension, not only in the all-failed branch`,
     )
     assert.match(
       skill,
-      /including when a sibling succeeded/i,
+      /including\s+when\s+a\s+sibling\s+succeeded/i,
       `${dir}/SKILL.md must record a failed Tier-1 extension even when a sibling succeeds`,
     )
     assert.match(
       skill,
-      /tiers 2 and 3 are \*\*suppressed\*\*/,
+      /tiers\s+2\s+and\s+3\s+are \*\*suppressed\*\*/,
       `${dir}/SKILL.md must keep successful-extension suppression of the lower tiers`,
     )
     assert.match(
       skill,
-      /fall through to tier 2, then tier 3/i,
+      /fall\s+through\s+to\s+tier\s+2, then\s+tier\s+3/i,
       `${dir}/SKILL.md must keep the all-failed fall-through`,
     )
     // The all-failed case must read as an instance of the same per-extension accounting rule, not
     // as the only branch that records anything.
     assert.doesNotMatch(
       skill,
-      /extension failed to load or returned no valid result, record\s+`extension <name>: skipped \(<reason>\)` for each/i,
+      /extension\s+failed\s+to\s+load\s+or\s+returned\s+no\s+valid\s+result, record\s+`extension <name>: skipped \(<reason>\)` for\s+each/i,
       `${dir}/SKILL.md must not scope skip recording to the all-extensions-failed branch`,
     )
 
@@ -2390,22 +2409,22 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     const tier3Loop = step5.slice(tier3LoopStart).replace(/\s+/g, ' ')
     assert.match(
       tier1,
-      /\*\*ran successfully\*\* only when/i,
+      /\*\*ran\s+successfully\*\* only\s+when/i,
       `${dir}/SKILL.md Tier 1 must define "ran successfully" rather than leaving the gate's own term undefined`,
     )
     assert.match(
       tier1,
-      /\*\*Orchestrator verification\*\*/,
+      /\*\*Orchestrator\s+verification\*\*/,
       `${dir}/SKILL.md Tier 1's success definition must fold in the orchestrator verification — the output check that proves the extension's work actually landed`,
     )
     assert.match(
       tier1,
-      /did \*\*not\*\* run successfully/i,
+      /did \*\*not\*\* run\s+successfully/i,
       `${dir}/SKILL.md Tier 1 must state that a valid result whose work never landed is not a success`,
     )
     assert.match(
       tier1,
-      /one definition on both sides of the gate/i,
+      /one\s+definition\s+on\s+both\s+sides\s+of\s+the\s+gate/i,
       `${dir}/SKILL.md Tier 1 must require the same definition for suppression and fall-through`,
     )
     // Two ways this definition can be right in form and wrong in substance, both pinned:
@@ -2415,7 +2434,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // produced nothing" shape the sentence beside it calls a failure.
     assert.match(
       tier1,
-      /per-task carve-out inside an extension's own loop, never a whole-dispatch outcome/i,
+      /per-task\s+carve-out\s+inside\s+an\s+extension's\s+own\s+loop, never\s+a\s+whole-dispatch\s+outcome/i,
       `${dir}/SKILL.md Tier 1 must scope the verification-only carve-out to a task inside an extension, never to the whole dispatch`,
     )
     // (b) the verification block owns remedies for the states this gate classifies (re-dispatch on
@@ -2424,12 +2443,12 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // fall-through and keeps dispatching on top of uncaptured residue.
     assert.match(
       tier1,
-      /remedies first and classify only on what they leave/i,
+      /remedies\s+first\s+and\s+classify\s+only\s+on\s+what\s+they\s+leave/i,
       `${dir}/SKILL.md Tier 1 must classify only after the orchestrator verification's own remedies have run`,
     )
     assert.match(
       tier1,
-      /the tier gate below is never reached/i,
+      /the\s+tier\s+gate\s+below\s+is\s+never\s+reached/i,
       `${dir}/SKILL.md Tier 1 must state that a verification-driven BLOCKED stop pre-empts the tier gate`,
     )
     // (c) the tempting over-correction in the other direction is an exit for a dispatch that found
@@ -2442,7 +2461,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // suppressed the lower tiers nothing re-runs at all. Step 9 verifies the criteria either way.
     assert.match(
       tier1,
-      /A dispatch that found its whole scope already satisfied is classified the same way/i,
+      /A\s+dispatch\s+that\s+found\s+its\s+whole\s+scope\s+already\s+satisfied\s+is\s+classified\s+the\s+same\s+way/i,
       `${dir}/SKILL.md Tier 1 must classify an already-satisfied dispatch as produced-nothing rather than inventing a third outcome`,
     )
     // Stated as a positive pin, not an `assert.doesNotMatch` on the wording an exit would use:
@@ -2450,7 +2469,7 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // exit re-added in the exact words this branch happened to remove.
     assert.match(
       tier1,
-      /would be a third outcome the accounting below, both lower-tier gates, and the extension contract all resolve as failure/i,
+      /would\s+be\s+a\s+third\s+outcome\s+the\s+accounting\s+below, both\s+lower-tier\s+gates, and\s+the\s+extension\s+contract\s+all\s+resolve\s+as\s+failure/i,
       `${dir}/SKILL.md Tier 1 must record WHY no third outcome exists — the accounting below and both tier gates resolve every non-success as fall-through`,
     )
     // (c.i) classifying the no-op as produced-nothing is only cheap if the produced-nothing path
@@ -2461,12 +2480,12 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // paragraph must not claim the cost is bounded by the classification alone.
     assert.match(
       tier1,
-      /withholds its deferred required item once you confirm the scope already holds/i,
+      /withholds\s+its\s+deferred\s+required\s+item\s+once\s+you\s+confirm\s+the\s+scope\s+already\s+holds/i,
       `${dir}/SKILL.md Tier 1 must tie the already-satisfied dispatch's bounded cost to the withheld deferred required item, not to the classification alone`,
     )
     assert.match(
       step5.replace(/\s+/g, ' '),
-      /where \*\*you\*\* confirm every one already holds[\s\S]{0,200}neither a re-dispatch nor a deferred required item/i,
+      /where \*\*you\*\* confirm\s+every\s+one\s+already\s+holds[\s\S]{0,200}neither\s+a\s+re-dispatch\s+nor\s+a\s+deferred\s+required\s+item/i,
       `${dir}/SKILL.md Step 5 must withhold the empty-range remedy's deferred required item for a scope you confirmed already satisfied`,
     )
     // (c.ii) the same gate read from the other side: a dispatch that committed PART of its scope and
@@ -2476,17 +2495,17 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // One check settles both edges: the scope's criteria against the branch, never the commit count.
     assert.match(
       tier1,
-      /a result that stops on a hard-ABORT condition, or that otherwise reports scope it did not finish, is not one however many commits it landed/i,
+      /a\s+result\s+that\s+stops\s+on\s+a\s+hard-ABORT\s+condition, or\s+that\s+otherwise\s+reports\s+scope\s+it\s+did\s+not\s+finish, is\s+not\s+one\s+however\s+many\s+commits\s+it\s+landed/i,
       `${dir}/SKILL.md Tier 1 must refuse an aborted or unfinished result as a valid dispatch result even when commits landed`,
     )
     assert.match(
       tier1,
-      /left part of its scope unimplemented did \*\*not\*\* run successfully/i,
+      /left\s+part\s+of\s+its\s+scope\s+unimplemented\s+did \*\*not\*\* run\s+successfully/i,
       `${dir}/SKILL.md Tier 1 must classify a partially-implemented scope as a failed dispatch so the lower tiers finish the remainder`,
     )
     assert.match(
       tier1,
-      /Both edges of this gate turn on that same check — the scope's criteria against the branch, never the commit count/i,
+      /Both\s+edges\s+of\s+this\s+gate\s+turn\s+on\s+that\s+same\s+check — the\s+scope's\s+criteria\s+against\s+the\s+branch, never\s+the\s+commit\s+count/i,
       `${dir}/SKILL.md Tier 1 must reconcile both edges on one check rather than two commit-count rules`,
     )
     // (c.iii) the cheapest form of the already-satisfied case is the one never dispatched: a later
@@ -2499,27 +2518,27 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // Pin one owner and the three applications, so a fourth path cannot be added without one.
     assert.match(
       preamble,
-      /recompute the Step-5 scope immediately before each dispatch\*\* — before each Tier-1 sibling, and again before tier 2 and before tier 3/i,
+      /recompute\s+the\s+Step-5\s+scope\s+immediately\s+before\s+each\s+dispatch\*\* — before\s+each\s+Tier-1\s+sibling, and\s+again\s+before\s+tier\s+2\s+and\s+before\s+tier\s+3/i,
       `${dir}/SKILL.md Step 5 must own the scope recompute once, for every dispatch it makes, rather than per tier`,
     )
     assert.match(
       preamble,
-      /a dispatch that did \*\*not\*\*, which still committed whatever part of its scope it got through before falling short/i,
+      /a\s+dispatch\s+that\s+did \*\*not\*\*, which\s+still\s+committed\s+whatever\s+part\s+of\s+its\s+scope\s+it\s+got\s+through\s+before\s+falling\s+short/i,
       `${dir}/SKILL.md Step 5's recompute rule must cover the FAILED dispatch's partial commits, not just a successful sibling's`,
     )
     assert.match(
       preamble,
-      /the lower tiers exist to finish the remainder, and re-implementing work already on the branch is how they produce conflicts and duplicate changes/i,
+      /the\s+lower\s+tiers\s+exist\s+to\s+finish\s+the\s+remainder, and\s+re-implementing\s+work\s+already\s+on\s+the\s+branch\s+is\s+how\s+they\s+produce\s+conflicts\s+and\s+duplicate\s+changes/i,
       `${dir}/SKILL.md Step 5 must say what a stale scope costs on the tier fall-through specifically`,
     )
     assert.match(
       tier1,
-      /Apply the recompute rule above \*\*per sibling\*\*/i,
+      /Apply\s+the\s+recompute\s+rule\s+above \*\*per\s+sibling\*\*/i,
       `${dir}/SKILL.md Tier 1 must apply the shared recompute rule per sibling rather than restating it`,
     )
     assert.match(
       tier1,
-      /extension <name>: not dispatched \(scope already satisfied\)/,
+      /extension <name>: not\s+dispatched \(scope\s+already\s+satisfied\)/,
       `${dir}/SKILL.md Tier 1 must give an undispatched already-satisfied sibling its own ledger entry`,
     )
     // Both fallback tiers must take the recomputed remainder. Tier 3 is the one the reviewer's
@@ -2527,32 +2546,32 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // every task including the ones the failed Tier-1 dispatch committed.
     assert.match(
       tier2,
-      /Hand it the scope the recompute rule above leaves open, not the one the failed Tier-1 dispatch was handed/i,
+      /Hand\s+it\s+the\s+scope\s+the\s+recompute\s+rule\s+above\s+leaves\s+open, not\s+the\s+one\s+the\s+failed\s+Tier-1\s+dispatch\s+was\s+handed/i,
       `${dir}/SKILL.md Tier 2 must receive the recomputed remainder, not the failed dispatch's original scope`,
     )
     assert.match(
       tier2,
-      /tier 2: not dispatched \(scope already satisfied\)/,
+      /tier\s+2: not\s+dispatched \(scope\s+already\s+satisfied\)/,
       `${dir}/SKILL.md Tier 2 must have a ledger entry for the case where the recompute leaves nothing`,
     )
     assert.match(
       tier3Entry,
-      /against the scope the recompute rule above leaves open/i,
+      /against\s+the\s+scope\s+the\s+recompute\s+rule\s+above\s+leaves\s+open/i,
       `${dir}/SKILL.md Tier 3's entry must scope the inline loop to the recomputed remainder`,
     )
     assert.match(
       tier3Entry,
-      /tier 3: not dispatched \(scope already satisfied\)/,
+      /tier\s+3: not\s+dispatched \(scope\s+already\s+satisfied\)/,
       `${dir}/SKILL.md Tier 3 must have a ledger entry for the case where the recompute leaves nothing`,
     )
     assert.match(
       tier3Loop,
-      /For each \*\*remaining\*\* task from the copied plan — the recompute rule above, not the plan as Step 4\.5 handed it, decides which/i,
+      /For\s+each \*\*remaining\*\* task\s+from\s+the\s+copied\s+plan — the\s+recompute\s+rule\s+above, not\s+the\s+plan\s+as\s+Step\s+4\.5\s+handed\s+it, decides\s+which/i,
       `${dir}/SKILL.md tier 3's loop must iterate the remaining tasks, not every task in the copied plan`,
     )
     assert.match(
       tier3Loop,
-      /carrying _continue from committed state; do not redo committed tasks_/i,
+      /carrying\s+_continue\s+from\s+committed\s+state; do\s+not\s+redo\s+committed\s+tasks_/i,
       `${dir}/SKILL.md tier 3's loop must carry the do-not-redo instruction into each implementation pass`,
     )
     // (d) the snapshot's second field is a `task-N` in the per-task form, and this tier's dispatch
@@ -2562,24 +2581,24 @@ test('BOS-693: Tier-1 methodology skips are recorded per extension, even when a 
     // already passed while the interrupted one stays half-done. The label has to name the dispatch.
     assert.match(
       tier1,
-      /Label that snapshot for the dispatch, not for a task inside it/i,
+      /Label\s+that\s+snapshot\s+for\s+the\s+dispatch, not\s+for\s+a\s+task\s+inside\s+it/i,
       `${dir}/SKILL.md Tier 1 must label the snapshot for the whole-extension dispatch, not for a task nested inside it`,
     )
     assert.match(
       tier1,
-      /write `ext-<name>` in the second field where the per-task form writes `task-N`/i,
+      /write `ext-<name>` in\s+the\s+second\s+field\s+where\s+the\s+per-task\s+form\s+writes `task-N`/i,
       `${dir}/SKILL.md Tier 1 must give the whole-extension snapshot label its concrete form`,
     )
     assert.match(
       tier1,
-      /Recovery under an `ext-<name>` label is extension-wide/i,
+      /Recovery\s+under\s+an `ext-<name>` label\s+is\s+extension-wide/i,
       `${dir}/SKILL.md Tier 1 must say what recovery under the extension-wide label re-assesses`,
     )
     // The generic procedure above must not still call the unit a task, or the two read as a
     // contradiction and a reader following the earlier text labels a multi-task dispatch `task-N`.
     assert.match(
       step5,
-      /snapshot-and-check procedure once per \*\*dispatch\*\*/i,
+      /snapshot-and-check\s+procedure\s+once\s+per \*\*dispatch\*\*/i,
       `${dir}/SKILL.md Step 5 must state the snapshot's unit as the dispatch, which Tier 1 widens past a single task`,
     )
   }
@@ -2609,17 +2628,17 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // Path 1 — the boss-build overlay contract paragraph every brief carries.
     assert.match(
       step5,
-      /\*\*Commit-before-return contract\.\*\*/,
+      /\*\*Commit-before-return\s+contract\.\*\*/,
       `${dir}/SKILL.md Step 5 must name the commit-before-return contract`,
     )
     assert.match(
       step5,
-      /Never batch the whole assignment into one end-of-run commit/i,
+      /Never\s+batch\s+the\s+whole\s+assignment\s+into\s+one\s+end-of-run\s+commit/i,
       `${dir}/SKILL.md Step 5 must forbid one end-of-run commit for the whole assignment`,
     )
     assert.match(
       step5,
-      /\*\*Never return with uncommitted work\.\*\*/,
+      /\*\*Never\s+return\s+with\s+uncommitted\s+work\.\*\*/,
       `${dir}/SKILL.md Step 5 must forbid returning with uncommitted work`,
     )
     // The subagent-facing check is bounded to the subagent's OWN changes. A bare "status must
@@ -2632,18 +2651,18 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     ]) {
       assert.match(
         section,
-        /`git status --porcelain` → nothing left from[\s\S]{0,12}(\*\*)?your own(\*\*)? changes/,
+        /`git\s+status --porcelain` → nothing\s+left\s+from[\s\S]{0,12}(\*\*)?your\s+own(\*\*)? changes/,
         `${dir}/SKILL.md ${name} must bound the return-time status check to the subagent's own changes`,
       )
       assert.match(
         section,
-        /staging only[\s\S]{0,20}the paths you touched[\s\S]{0,20}never `git add -A`/,
+        /staging\s+only[\s\S]{0,20}the\s+paths\s+you\s+touched[\s\S]{0,20}never `git\s+add -A`/,
         `${dir}/SKILL.md ${name} must stage only the paths the subagent touched, never git add -A`,
       )
     }
     assert.match(
       step5,
-      /not\s+yours to commit[\s\S]{0,200}belong to the orchestrator/,
+      /not\s+yours\s+to\s+commit[\s\S]{0,200}belong\s+to\s+the\s+orchestrator/,
       `${dir}/SKILL.md Step 5 must tell the subagent the plan deliverable and host artifacts are not its to commit`,
     )
     // A failing hook is a surfaced task failure, not a licence to return dirty — but only
@@ -2651,12 +2670,12 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // PR tag, say) does not turn every task of a resume into a reported failure.
     assert.match(
       step5,
-      /commit hook rejects the message[\s\S]{0,200}retry once/i,
+      /commit\s+hook\s+rejects\s+the\s+message[\s\S]{0,200}retry\s+once/i,
       `${dir}/SKILL.md Step 5 must let a subagent adapt to the hook's own error and retry once`,
     )
     assert.match(
       step5,
-      /never a value you invented/,
+      /never\s+a\s+value\s+you\s+invented/,
       `${dir}/SKILL.md Step 5 hook-retry must not license inventing a tag`,
     )
     // "never return dirty" + "a failed commit is a task failure" with no third branch is a
@@ -2664,39 +2683,39 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // the exception explicitly, and make it hand the residue to the orchestrator.
     assert.match(
       step5,
-      /\*\*leave the work in the tree and never revert it\*\*/,
+      /\*\*leave\s+the\s+work\s+in\s+the\s+tree\s+and\s+never\s+revert\s+it\*\*/,
       `${dir}/SKILL.md Step 5 must forbid reverting work that cannot be committed`,
     )
     assert.match(
       step5,
-      /name the uncommitted paths[\s\S]{0,120}residue recovery/i,
+      /name\s+the\s+uncommitted\s+paths[\s\S]{0,120}residue\s+recovery/i,
       `${dir}/SKILL.md Step 5 must hand the uncommitted paths to the orchestrator's recovery`,
     )
     assert.match(
       step5,
-      /reported task\s*\n?\s*failure — never a silent one/,
+      /reported\s+task\s*\n?\s*failure — never\s+a\s+silent\s+one/,
       `${dir}/SKILL.md Step 5 must keep an uncommittable change a reported task failure`,
     )
     // Rationale survives in the text (kept project-agnostic: no ticket ids in a published core).
     assert.match(
       step5,
-      /inject-PR-tag rebase fail/i,
+      /inject-PR-tag\s+rebase\s+fail/i,
       `${dir}/SKILL.md Step 5 must record why uncommitted subagent edits are fatal`,
     )
     assert.match(
       step5,
-      /bound the blast radius[^.]*one task/i,
+      /bound\s+the\s+blast\s+radius[^.]*one\s+task/i,
       `${dir}/SKILL.md Step 5 must record the blast-radius rationale for per-task commits`,
     )
     // Subagents must not guess a tag, and must keep subjects short.
     assert.match(
       step5,
-      /need \*\*no\*\* PR tag/,
+      /need \*\*no\*\* PR\s+tag/,
       `${dir}/SKILL.md Step 5 must say task commits need no PR tag`,
     )
     assert.match(
       step5,
-      /over 100 characters is[\s\S]{0,8}skipped by the tag injector/,
+      /over\s+100\s+characters\s+is[\s\S]{0,8}skipped\s+by\s+the\s+tag\s+injector/,
       `${dir}/SKILL.md Step 5 must warn that an over-long tagged subject is skipped`,
     )
 
@@ -2710,19 +2729,19 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     ]) {
       assert.match(
         section,
-        /commits made[\s\S]{0,20}\(short SHA \+[\s\S]{0,12}subject/i,
+        /commits\s+made[\s\S]{0,20}\(short\s+SHA \+[\s\S]{0,12}subject/i,
         `${dir}/SKILL.md ${name} fixed short contract must include the commits-made field`,
       )
       assert.match(
         section,
-        /no commit —[\s\S]{0,12}verification only/i,
+        /no\s+commit —[\s\S]{0,12}verification\s+only/i,
         `${dir}/SKILL.md ${name} fixed short contract must define the no-commit note`,
       )
     }
     const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
     assert.match(
       spine,
-      /commits it made[\s\S]{0,20}\(short SHA \+[\s\S]{0,12}subject/i,
+      /commits\s+it\s+made[\s\S]{0,20}\(short\s+SHA \+[\s\S]{0,12}subject/i,
       `${dir}/references/core-spine.md must carry the commits-made field in the fixed short contract`,
     )
     // BOS-841: `core-spine.md` §2 is the portable shape of the very step SKILL.md cites it for, so
@@ -2730,7 +2749,7 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // orchestrator the decisions element is not part of the contract.
     assert.match(
       spine,
-      /decisions it recorded \(decision \+[\s\S]{0,12}rationale\)/i,
+      /decisions\s+it\s+recorded \(decision \+[\s\S]{0,12}rationale\)/i,
       `${dir}/references/core-spine.md must carry the decisions-recorded field in the fixed short contract`,
     )
     // The troubleshooting catalog enumerates the contract's fields; a stale five-field list
@@ -2743,12 +2762,12 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     )
     assert.match(
       troubles,
-      /residual risks, decisions recorded, commits made/,
+      /residual\s+risks, decisions\s+recorded, commits\s+made/,
       `${dir}/references/troubleshooting.md fixed-short-contract row must list the decisions-recorded and commits-made fields`,
     )
     assert.match(
       troubles,
-      /commit everything once the whole assignment is done/,
+      /commit\s+everything\s+once\s+the\s+whole\s+assignment\s+is\s+done/,
       `${dir}/references/troubleshooting.md must red-flag batching the run into one end-of-run commit`,
     )
 
@@ -2760,12 +2779,12 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     )
     assert.match(
       tier1,
-      /\*\*commit-before-return contract\*\*/,
+      /\*\*commit-before-return\s+contract\*\*/,
       `${dir}/SKILL.md tier 1 must pass the commit-before-return contract to each extension`,
     )
     assert.match(
       tier1,
-      /pass it down to its own implementation subagents/,
+      /pass\s+it\s+down\s+to\s+its\s+own\s+implementation\s+subagents/,
       `${dir}/SKILL.md tier 1 must require extensions to pass the contract down`,
     )
 
@@ -2775,19 +2794,19 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     const tier2 = region(step5, 'Tier 2 — host built-in', 'Tier 3 — inline TDD methodology')
     assert.match(
       tier2,
-      /\*\*commit-before-return contract\*\*/,
+      /\*\*commit-before-return\s+contract\*\*/,
       `${dir}/SKILL.md tier 2 must hand the commit-before-return contract to the host affordance`,
     )
     assert.match(
       tier2,
-      /not an\s*\n?\s*exemption from committing per\s*\n?\s*task/i,
+      /not\s+an\s*\n?\s*exemption\s+from\s+committing\s+per\s*\n?\s*task/i,
       `${dir}/SKILL.md tier 2 must deny a host-native path any exemption from per-task commits`,
     )
     // The verification stays with the orchestrator: telling tier 2 to "verify it the same way"
     // would put a second writer on the fixed snapshot path.
     assert.match(
       tier2,
-      /run\s*\n?\s*the same after-return check yourself once the affordance returns/i,
+      /run\s*\n?\s*the\s+same\s+after-return\s+check\s+yourself\s+once\s+the\s+affordance\s+returns/i,
       `${dir}/SKILL.md tier 2 must keep the after-return check with the orchestrator`,
     )
 
@@ -2795,12 +2814,12 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     const tier3 = tier3Section()
     assert.match(
       tier3,
-      /\*\*commit-before-return contract\*\*/,
+      /\*\*commit-before-return\s+contract\*\*/,
       `${dir}/SKILL.md tier 3 must honour the commit-before-return contract`,
     )
     assert.match(
       tier3,
-      /never return with uncommitted work/i,
+      /never\s+return\s+with\s+uncommitted\s+work/i,
       `${dir}/SKILL.md tier 3 must forbid returning with uncommitted work`,
     )
 
@@ -2809,12 +2828,12 @@ test('BOS-519: commit-before-return contract reaches all three dispatch paths (b
     // deliverable, a host artifact) — invisible to the subagent and not its to commit.
     assert.match(
       overlay(),
-      /git commit --only -m "…" -- <files>/,
+      /git\s+commit --only -m "…" -- <files>/,
       `${dir}/SKILL.md overlay must path-scope each task commit`,
     )
     assert.match(
       overlay(),
-      /plain\s*\n?\s*`git commit` commits the whole index/,
+      /plain\s*\n?\s*`git\s+commit` commits\s+the\s+whole\s+index/,
       `${dir}/SKILL.md overlay must say why the task commit is path-scoped`,
     )
   }
@@ -2827,7 +2846,7 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
 
     assert.match(
       step5,
-      /\*\*Orchestrator verification\.\*\*/,
+      /\*\*Orchestrator\s+verification\.\*\*/,
       `${dir}/SKILL.md Step 5 must define the orchestrator verification step`,
     )
     // The cadence is the property this ticket buys: verifying after EACH subagent bounds a
@@ -2860,23 +2879,23 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /concurrent runs in sibling worktrees cannot overwrite/,
+      /concurrent\s+runs\s+in\s+sibling\s+worktrees\s+cannot\s+overwrite/,
       `${dir}/SKILL.md Step 5 must explain why the HEAD file is worktree-local`,
     )
     // Recording HEAD before the cleanup commit would make a task that landed nothing read as done.
     assert.match(
       step5,
-      /re-run this whole block afterwards\*\*[\s\S]{0,240}reads as done/,
+      /re-run\s+this\s+whole\s+block\s+afterwards\*\*[\s\S]{0,240}reads\s+as\s+done/,
       `${dir}/SKILL.md Step 5 must re-record the pre-dispatch HEAD after resolving pre-existing dirt`,
     )
     assert.match(
       step5,
-      /cannot be attributed to one, do \*\*not\*\* dispatch on top of it[\s\S]{0,120}BLOCKED/,
+      /cannot\s+be\s+attributed\s+to\s+one, do \*\*not\*\* dispatch\s+on\s+top\s+of\s+it[\s\S]{0,120}BLOCKED/,
       `${dir}/SKILL.md Step 5 must block rather than dispatch onto un-attributable dirt`,
     )
     assert.match(
       step5,
-      /nothing set in the first block survives into the second/,
+      /nothing\s+set\s+in\s+the\s+first\s+block\s+survives\s+into\s+the\s+second/,
       `${dir}/SKILL.md Step 5 must state that the pre- and post-dispatch blocks are separate shells`,
     )
     // The clean-tree check must be SCOPED. A bare `git status --porcelain` is non-empty on
@@ -2891,7 +2910,7 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // the pathspec were dropped and the comment moved back onto an unscoped status.
     assert.match(
       step5,
-      /':\(exclude\)\.claude\/settings\.local\.json'\n# must be empty/,
+      /':\(exclude\)\.claude\/settings\.local\.json'\n# must[ ]be[ ]empty/,
       `${dir}/SKILL.md Step 5 must state the expected empty result of the after-return status`,
     )
     for (const excluded of [
@@ -2930,59 +2949,59 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /excludes _everything_[\s\S]{0,80}silent\s*\n?\s*pass/i,
+      /excludes\s+_everything_[\s\S]{0,80}silent\s*\n?\s*pass/i,
       `${dir}/SKILL.md Step 5 must explain why an unset PLAN_DOC must abort`,
     )
     // Residue is what the subagent ADDED, not everything dirty: pre-existing dirt belongs to
     // nobody's task and must not be swept into a recovery commit.
     assert.match(
       step5,
-      /pre-dispatch status must already be empty/i,
+      /pre-dispatch\s+status\s+must\s+already\s+be\s+empty/i,
       `${dir}/SKILL.md Step 5 must require a clean tree before dispatching a task`,
     )
     assert.match(
       step5,
-      /no way to tell pre-existing dirt[\s\S]{0,200}subagent's own residue/i,
+      /no\s+way\s+to\s+tell\s+pre-existing\s+dirt[\s\S]{0,200}subagent's\s+own\s+residue/i,
       `${dir}/SKILL.md Step 5 must explain why dispatching onto dirt destroys residue attribution`,
     )
     assert.match(
       step5,
-      /tree was clean at dispatch, everything this status lists is \*\*this\*\*\s*\n?\s*subagent's residue/i,
+      /tree\s+was\s+clean\s+at\s+dispatch, everything\s+this\s+status\s+lists\s+is \*\*this\*\*\s*\n?\s*subagent's\s+residue/i,
       `${dir}/SKILL.md Step 5 must attribute post-dispatch dirt to the returning subagent`,
     )
     // The recovery commit hits the same hooks the subagent's did — it needs the same escape.
     assert.match(
       step5,
-      /recovery commit goes through the same hooks[\s\S]{0,400}BLOCKED/,
+      /recovery\s+commit\s+goes\s+through\s+the\s+same\s+hooks[\s\S]{0,400}BLOCKED/,
       `${dir}/SKILL.md Step 5 must handle a hook rejecting the residue-recovery commit`,
     )
     assert.match(
       step5,
-      /stays untracked until Step 6 commits it/,
+      /stays\s+untracked\s+until\s+Step\s+6\s+commits\s+it/,
       `${dir}/SKILL.md Step 5 must explain why the plan deliverable is not residue`,
     )
     // `--untracked-files=all` is load-bearing, not decoration: at the default `-unormal` git
     // collapses `.claude/` to one directory entry that no per-file exclusion matches.
     assert.match(
       step5,
-      /Keep\s+`--untracked-files=all`[\s\S]{0,200}collapses an untracked directory/,
+      /Keep\s+`--untracked-files=all`[\s\S]{0,200}collapses\s+an\s+untracked\s+directory/,
       `${dir}/SKILL.md Step 5 must explain why --untracked-files=all is load-bearing`,
     )
     assert.match(
       step5,
-      /never the whole `docs\/plans`\s*\n?\s*directory/,
+      /never\s+the\s+whole `docs\/plans`\s*\n?\s*directory/,
       `${dir}/SKILL.md Step 5 must forbid a directory-wide docs/plans exclusion`,
     )
     // A no-commit task is recorded, not failed — via the commits-made field that exists for it.
     assert.match(
       step5,
-      /legitimately produces no commit[\s\S]{0,120}commits\n?\s*made\*\* field/,
+      /legitimately\s+produces\s+no\s+commit[\s\S]{0,120}commits\n?\s*made\*\* field/,
       `${dir}/SKILL.md Step 5 must route a no-commit task through the commits-made field`,
     )
     // Violation ⇒ recovery, not hard failure.
     assert.match(
       step5,
-      /\*\*recover rather than[\s\S]{0,4}hard-fail\*\*/,
+      /\*\*recover\s+rather\s+than[\s\S]{0,4}hard-fail\*\*/,
       `${dir}/SKILL.md Step 5 must recover from a contract violation instead of hard-failing`,
     )
     // `--only` is load-bearing: a plain `git commit` commits the whole index, so a path the
@@ -2995,24 +3014,24 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.doesNotMatch(
       step5,
-      /\n\s*git commit -m "chore\(task-N\)/,
+      /\n\s*git\s+commit -m "chore\(task-N\)/,
       `${dir}/SKILL.md Step 5 must not use a whole-index git commit for residue recovery`,
     )
     assert.match(
       step5,
-      /whole index[\s\S]{0,200}swept in silently/i,
+      /whole[ ]index[\s\S]{0,200}swept[ ]in[ ]silently/i,
       `${dir}/SKILL.md Step 5 must say why the recovery commit is path-scoped`,
     )
     // `task-N` is a template, not a literal: the substitution must be spelled out.
     assert.match(
       step5,
-      /substitute the task's number for `?N/,
+      /substitute[ ]the[ ]task's[ ]number[ ]for `?N/,
       `${dir}/SKILL.md Step 5 must tell the orchestrator to substitute the real task number`,
     )
     // Recovery must not contradict Step 6's "never a blanket git add -A" rule.
     assert.match(
       step5,
-      /\*\*not\*\*\s+a\s*\n?\s*licence for a[\s\S]{0,20}blanket `git add -A`/,
+      /\*\*not\*\*\s+a\s*\n?\s*licence\s+for\s+a[\s\S]{0,20}blanket `git\s+add -A`/,
       `${dir}/SKILL.md Step 5 residue recovery must not license a blanket git add -A`,
     )
     // Recovery preserves the work but proves nothing about completeness: a subagent that died
@@ -3020,19 +3039,19 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // way the resume reference already does, or a half-done task advances as if finished.
     assert.match(
       step5,
-      /does not prove the task is \*\*done\*\*/i,
+      /does\s+not\s+prove\s+the\s+task\s+is \*\*done\*\*/i,
       `${dir}/SKILL.md must not treat a recovery commit as proof the task is complete`,
     )
     assert.match(
       step5,
-      /re-assess the recovered task against its acceptance criteria[\s\S]{0,200}re-dispatch it/i,
+      /re-assess\s+the\s+recovered\s+task\s+against\s+its\s+acceptance\s+criteria[\s\S]{0,200}re-dispatch\s+it/i,
       `${dir}/SKILL.md must re-assess and re-dispatch a recovered task that falls short`,
     )
     // Guard every spelling of the blanket stage, not just `-A`: `git add .` and `git add --all`
     // sweep daemon artifacts and unrelated scratch onto the branch exactly the same way.
     assert.doesNotMatch(
       step5,
-      /^\s*git add\s+(-A\b|--all\b|\.\s*$)/m,
+      /^\s*git\s+add\s+(-A\b|--all\b|\.\s*$)/m,
       `${dir}/SKILL.md Step 5 must not issue a blanket stage-everything command`,
     )
     // The verification has two halves, so it needs two remedies. An empty log range with a
@@ -3040,19 +3059,19 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // orchestrator that follows it silently drops the task.
     assert.match(
       step5,
-      /empty log range[\s\S]{0,400}re-dispatch that task/i,
+      /empty\s+log\s+range[\s\S]{0,400}re-dispatch\s+that\s+task/i,
       `${dir}/SKILL.md Step 5 must give the empty-log-range half its own re-dispatch remedy`,
     )
     // The snapshot path is fixed, so it is only safe with a single writer: a nested layer that ran
     // the same procedure would clobber and then delete the outer orchestrator's baseline.
     assert.match(
       step5,
-      /nothing you dispatch runs it again[\s\S]{0,320}never this verification/i,
+      /nothing\s+you\s+dispatch\s+runs\s+it\s+again[\s\S]{0,320}never\s+this\s+verification/i,
       `${dir}/SKILL.md must keep the snapshot procedure with the orchestrator, not hand it down`,
     )
     assert.match(
       step5,
-      /overwrite and then delete the file you wrote[\s\S]{0,160}no\s*\n?\s*baseline to read/i,
+      /overwrite\s+and\s+then\s+delete\s+the\s+file\s+you\s+wrote[\s\S]{0,160}no\s*\n?\s*baseline\s+to\s+read/i,
       `${dir}/SKILL.md must name the nested-snapshot failure the single-writer rule prevents`,
     )
     // A clean pre-dispatch tree only excludes dirt that predates the dispatch. When the subagent
@@ -3060,12 +3079,12 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // write from being committed under this task's `chore(task-N)`.
     assert.match(
       step5,
-      /clean start only rules out dirt that predates the dispatch/i,
+      /clean\s+start\s+only\s+rules\s+out\s+dirt\s+that\s+predates\s+the\s+dispatch/i,
       `${dir}/SKILL.md must bound what the clean-tree precondition actually proves`,
     )
     assert.match(
       step5,
-      /\*\*files touched\*\* field[\s\S]{0,240}does _not_ name as\s*\n?\s*unattributed/i,
+      /\*\*files\s+touched\*\* field[\s\S]{0,240}does\s+_not_\s+name\s+as\s*\n?\s*unattributed/i,
       `${dir}/SKILL.md must cross-check residue against the returned contract's files-touched field`,
     )
     // …and the recovery command must stage that attributed subset, not every status path, or the
@@ -3076,14 +3095,14 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /could \*\*not\*\* attribute stays out of that commit[\s\S]{0,200}BLOCKED naming those\s*\n?\s*paths/i,
+      /could \*\*not\*\* attribute\s+stays\s+out\s+of\s+that\s+commit[\s\S]{0,200}BLOCKED\s+naming\s+those\s*\n?\s*paths/i,
       `${dir}/SKILL.md must block on un-attributable residue rather than committing it under the task`,
     )
     // A subagent that dies without returning never trips the after-return check at all, and on
     // a fresh run Step 4.5 never executed — so Step 5 must carry the inventory rule itself.
     assert.match(
       step5,
-      /never returns[\s\S]{0,400}fresh[\s\S]{0,600}continue from committed\s+state; do not redo committed tasks/i,
+      /never\s+returns[\s\S]{0,400}fresh[\s\S]{0,600}continue\s+from\s+committed\s+state; do\s+not\s+redo\s+committed\s+tasks/i,
       `${dir}/SKILL.md Step 5 must cover a subagent that dies without returning, including on a fresh run`,
     )
     // A non-empty log range alone proves nothing: any commit reaching HEAD lands in it, so the
@@ -3091,14 +3110,14 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // read as done.
     assert.match(
       step5,
-      /necessary but not sufficient[\s\S]{0,200}commits\s+made\*\* field actually appear in it/i,
+      /necessary\s+but\s+not\s+sufficient[\s\S]{0,200}commits\s+made\*\* field\s+actually\s+appear\s+in\s+it/i,
       `${dir}/SKILL.md must cross-check the reported commits against the post-dispatch log range`,
     )
     // Detecting the mismatch is useless without a remedy: a cross-check that only says "look" lets
     // the orchestrator note the discrepancy and advance anyway.
     assert.match(
       step5,
-      /empty-log-range case wearing a disguise[\s\S]{0,160}re-dispatch the task/i,
+      /empty-log-range\s+case\s+wearing\s+a\s+disguise[\s\S]{0,160}re-dispatch\s+the\s+task/i,
       `${dir}/SKILL.md must give the reported-SHA mismatch the empty-range re-dispatch remedy`,
     )
     // The snapshot is consumed on success, so its presence means "a dispatch is in flight" rather
@@ -3109,24 +3128,24 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /\*\*any\*\* resolved outcome[\s\S]{0,220}not\s*\n?\s*only on the clean path/i,
+      /\*\*any\*\* resolved\s+outcome[\s\S]{0,220}not\s*\n?\s*only\s+on\s+the\s+clean\s+path/i,
       `${dir}/SKILL.md must consume the snapshot on every resolved outcome, not just the clean one`,
     )
     // Consuming it *before* the recovery commit lands would discard the clean-tree guarantee that
     // made the residue attributable, exactly when a crash needs it most.
     assert.match(
       step5,
-      /\*\*after\*\* the recovery commit lands, never before you start it/i,
+      /\*\*after\*\* the\s+recovery\s+commit\s+lands, never\s+before\s+you\s+start\s+it/i,
       `${dir}/SKILL.md must order the snapshot deletion after the recovery commit`,
     )
     assert.match(
       step5,
-      /left behind on the no-commit or recovery\s*\n?\s*paths would make a finished task look interrupted/i,
+      /left\s+behind\s+on\s+the\s+no-commit\s+or\s+recovery\s*\n?\s*paths\s+would\s+make\s+a\s+finished\s+task\s+look\s+interrupted/i,
       `${dir}/SKILL.md must name the stale-snapshot failure the deletion prevents`,
     )
     assert.match(
       step5,
-      /exists \*\*only\*\* while a dispatch is in\s*\n?\s*flight/i,
+      /exists \*\*only\*\* while\s+a\s+dispatch\s+is\s+in\s*\n?\s*flight/i,
       `${dir}/SKILL.md must state the consumed snapshot's invariant`,
     )
     // The blanket recovery command is only safe because the tree was verified clean at dispatch.
@@ -3134,17 +3153,17 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // per-path attribution instead of sweeping every dirty path into a recovery commit.
     assert.match(
       step5,
-      /the snapshot, not on whether your process restarted\*\*/i,
+      /the\s+snapshot, not\s+on\s+whether\s+your\s+process\s+restarted\*\*/i,
       `${dir}/SKILL.md must branch residue recovery on the snapshot, not on a process restart`,
     )
     assert.match(
       step5,
-      /is present[\s\S]{0,260}recover it with the command\s*\n?\s*above/i,
+      /is\s+present[\s\S]{0,260}recover\s+it\s+with\s+the\s+command\s*\n?\s*above/i,
       `${dir}/SKILL.md must gate the blanket residue recovery on the surviving pre-dispatch snapshot`,
     )
     assert.match(
       step5,
-      /file is \*\*absent\*\*[\s\S]{0,240}attribute each dirty path[\s\S]{0,160}cannot attribute/i,
+      /file\s+is \*\*absent\*\*[\s\S]{0,240}attribute\s+each\s+dirty\s+path[\s\S]{0,160}cannot\s+attribute/i,
       `${dir}/SKILL.md must require per-path attribution when the pre-dispatch snapshot is gone`,
     )
     // A SHA alone does not say which task was in flight, and the log only shows the tasks that
@@ -3157,7 +3176,7 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     )
     assert.match(
       step5,
-      /second field names \*\*which dispatch\*\*[\s\S]{0,600}Read that field from the file rather than guessing/i,
+      /second\s+field\s+names \*\*which\s+dispatch\*\*[\s\S]{0,600}Read\s+that\s+field\s+from\s+the\s+file\s+rather\s+than\s+guessing/i,
       `${dir}/SKILL.md must make the restarted orchestrator read the interrupted dispatch id, not guess it`,
     )
     // BOS-693 review: Tier 1 labels the snapshot `ext-<name>` for a whole-extension dispatch, but
@@ -3168,22 +3187,22 @@ test('BOS-519: orchestrator verifies clean tree + advanced log and recovers resi
     // branch on both label forms and give each its own commit scope and re-assessment unit.
     assert.match(
       step5,
-      /\*\*branch on which of its two forms\*\*/i,
+      /\*\*branch\s+on\s+which\s+of\s+its\s+two\s+forms\*\*/i,
       `${dir}/SKILL.md's restart path must branch on the snapshot label form, not assume one`,
     )
     assert.match(
       step5,
-      /`task-N` — a per-task dispatch\. Commit the residue as `chore\(task-N\)` and re-assess task `N`\./,
+      /`task-N` — a\s+per-task\s+dispatch\. Commit\s+the\s+residue\s+as `chore\(task-N\)` and\s+re-assess\s+task `N`\./,
       `${dir}/SKILL.md's restart path must give the per-task label its commit scope and re-assessment unit`,
     )
     assert.match(
       step5,
-      /`ext-<name>` — one whole Tier-1 methodology extension[\s\S]{0,200}`chore\(ext-<name>\)`[\s\S]{0,120}entire Step-5 scope/i,
+      /`ext-<name>` — one\s+whole\s+Tier-1\s+methodology\s+extension[\s\S]{0,200}`chore\(ext-<name>\)`[\s\S]{0,120}entire\s+Step-5\s+scope/i,
       `${dir}/SKILL.md's restart path must give the extension label its extension-wide commit scope and re-assessment unit`,
     )
     assert.match(
       step5,
-      /Never assume the per-task form/i,
+      /Never\s+assume\s+the\s+per-task\s+form/i,
       `${dir}/SKILL.md's restart path must forbid defaulting to the per-task label`,
     )
   }
@@ -3197,17 +3216,17 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
     // The resident sentence lives in Step 4.5 so a resume can't miss it.
     assert.match(
       step45,
-      /inventory committed state/i,
+      /inventory\s+committed\s+state/i,
       `${dir}/SKILL.md Step 4.5 must inventory committed state on a resume`,
     )
     assert.match(
       step45,
-      /continue from committed\s+state; do not redo committed tasks/,
+      /continue\s+from\s+committed\s+state; do\s+not\s+redo\s+committed\s+tasks/,
       `${dir}/SKILL.md Step 4.5 must carry the continue-from-committed-state instruction`,
     )
     assert.match(
       step45,
-      /dispatch \*\*only\*\* the remainder/,
+      /dispatch \*\*only\*\* the\s+remainder/,
       `${dir}/SKILL.md Step 4.5 must dispatch only the remaining tasks`,
     )
 
@@ -3215,12 +3234,12 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
     const ref = fs.readFileSync(path.join(rootDir, dir, 'references/resume-assessment.md'), 'utf8')
     assert.match(
       ref,
-      /## Continue from committed state/,
+      /## Continue\s+from\s+committed\s+state/,
       `${dir}/references/resume-assessment.md must document the continue-from-committed-state procedure`,
     )
     assert.match(
       ref,
-      /continue from committed\s+state; do not redo committed tasks/,
+      /continue\s+from\s+committed\s+state; do\s+not\s+redo\s+committed\s+tasks/,
       `${dir}/references/resume-assessment.md must carry the standing instruction verbatim`,
     )
     assert.ok(
@@ -3229,12 +3248,12 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
     )
     assert.match(
       ref,
-      /chore\(task-N\): recover uncommitted subagent work/,
+      /chore\(task-N\): recover\s+uncommitted\s+subagent\s+work/,
       `${dir}/references/resume-assessment.md must recover residue left by a dead subagent`,
     )
     assert.match(
       ref,
-      /never a blanket `git add -A`/,
+      /never\s+a\s+blanket `git\s+add -A`/,
       `${dir}/references/resume-assessment.md residue recovery must not license a blanket git add -A`,
     )
     // The resume residue probe must be scoped exactly like the Step 5 check — an unscoped
@@ -3277,26 +3296,26 @@ test('BOS-519: resume dispatches only the remainder from committed state (both m
     )
     assert.match(
       ref,
-      /\*\*Present\*\*[\s\S]{0,160}recover it the way Step 5 does/,
+      /\*\*Present\*\*[\s\S]{0,160}recover\s+it\s+the\s+way\s+Step\s+5\s+does/,
       `${dir}/references/resume-assessment.md must recover residue Step 5's way when the snapshot survives`,
     )
     assert.match(
       ref,
-      /`task-N`[\s\S]{0,160}second field rather than guessing which task was in flight/,
+      /`task-N`[\s\S]{0,160}second\s+field\s+rather\s+than\s+guessing\s+which\s+task\s+was\s+in\s+flight/,
       `${dir}/references/resume-assessment.md must read the interrupted task id from the snapshot`,
     )
     // Only the absent branch may fall back to per-path attribution — blind recovery without the
     // clean-tree guarantee would sweep a human's in-flight edits into a `chore(task-N)` commit.
     assert.match(
       ref,
-      /it\s+is\s*\n?\s*\*\*absent\*\*[\s\S]{0,280}Attribute each path before\s*\n?\s*staging it/,
+      /it\s+is\s*\n?\s*\*\*absent\*\*[\s\S]{0,280}Attribute\s+each\s+path\s+before\s*\n?\s*staging\s+it/,
       `${dir}/references/resume-assessment.md must attribute dirt only when the snapshot is absent`,
     )
     // Must agree with Step 5's clean-tree precondition: un-attributable dirt blocks, it does not
     // get dispatched on top of.
     assert.match(
       ref,
-      /cannot be attributed with confidence blocks the run[\s\S]{0,200}BLOCKED/,
+      /cannot\s+be\s+attributed\s+with\s+confidence\s+blocks\s+the\s+run[\s\S]{0,200}BLOCKED/,
       `${dir}/references/resume-assessment.md must block on un-attributable dirt like Step 5 does`,
     )
   }
@@ -3341,7 +3360,7 @@ test('BOS-742: Step 6b confirms or falsifies an outside-voice finding before any
 
     assert.match(
       flat,
-      /empirically confirmed or falsified against the code it cites before any fix is authored/i,
+      /empirically\s+confirmed\s+or\s+falsified\s+against\s+the\s+code\s+it\s+cites\s+before\s+any\s+fix\s+is\s+authored/i,
       `${dir}/references/review-stack.md Step 6b must require confirm-or-falsify before any fix is authored`,
     )
     assert.match(
@@ -3351,22 +3370,22 @@ test('BOS-742: Step 6b confirms or falsifies an outside-voice finding before any
     )
     assert.match(
       flat,
-      /Open the FILE, not the diff hunk/,
+      /Open\s+the\s+FILE, not\s+the\s+diff\s+hunk/,
       `${dir}/references/review-stack.md Step 6b must state the open-the-file-not-the-diff-hunk lever`,
     )
     assert.match(
       flat,
-      /Re-derive any claimed set/,
+      /Re-derive\s+any\s+claimed\s+set/,
       `${dir}/references/review-stack.md Step 6b must state the re-derive-any-claimed-set lever`,
     )
     assert.match(
       flat,
-      /code claim.*would block the build.*gets full falsification/i,
+      /code\s+claim.*would\s+block\s+the\s+build.*gets\s+full\s+falsification/i,
       `${dir}/references/review-stack.md Step 6b must scale a build-blocking code claim to full falsification`,
     )
     assert.match(
       flat,
-      /doc-vs-code overclaim.*is verified once and expected to confirm/i,
+      /doc-vs-code\s+overclaim.*is\s+verified\s+once\s+and\s+expected\s+to\s+confirm/i,
       `${dir}/references/review-stack.md Step 6b must scale a doc-vs-code overclaim to a single verification pass`,
     )
   }
@@ -3414,12 +3433,12 @@ test('BOS-742: Step 6 keeps "never re-litigates settled items" and adds the rati
     const flat = step6.replace(/\s+/g, ' ')
     assert.match(
       flat,
-      /never re-litigates settled items/,
+      /never\s+re-litigates\s+settled\s+items/,
       `${dir}/references/review-stack.md Step 6 must keep "never re-litigates settled items"`,
     )
     assert.match(
       flat,
-      /a declined finding's rationale is itself reviewable/i,
+      /a\s+declined\s+finding's\s+rationale\s+is\s+itself\s+reviewable/i,
       `${dir}/references/review-stack.md Step 6 must add the rationale-is-reviewable clause alongside it`,
     )
   }
@@ -3463,12 +3482,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // overrun-only fallback discovered mid-loop.
     assert.match(
       reviewStack,
-      /^#{2,3} Step 6 entry — review tier selection\s*$/m,
+      /^#{2,3} Step\s+6\s+entry — review\s+tier\s+selection\s*$/m,
       `${dir}/references/review-stack.md must carry a Step 6 entry tier-selection section`,
     )
     assert.match(
       reviewStack,
-      /Step 6 entry[\s\S]{0,900}remaining wall clock/i,
+      /Step\s+6\s+entry[\s\S]{0,900}remaining\s+wall\s+clock/i,
       `${dir}: the tier must be chosen at Step 6 entry from the remaining wall clock`,
     )
     // The threshold must be ARITHMETIC an autonomous runner can evaluate, not a judgement call.
@@ -3492,7 +3511,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
         // subagent-has-no-deadline → reference-never-names-the-input → inline-reader-has-no-brief.
         // The last of those is closed only by these six lines, and reverting them alone left every
         // other assertion green. Pin the inline reader's instruction, not just the dispatched one's.
-        /\*\*inline fallback\*\*[\s\S]{0,240}compute `REMAINING_MINUTES` yourself/i,
+        /\*\*inline\s+fallback\*\*[\s\S]{0,240}compute `REMAINING_MINUTES` yourself/i,
         'the inline fallback reader IS the orchestrator and must compute the budget, not take the absent-input fail-safe',
       ],
       [
@@ -3513,14 +3532,14 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
         'below the reserved threshold (but above the floor) must select the degraded tier',
       ],
       [
-        /was not supplied[\s\S]{0,200}full\s+tier/i,
+        /was\s+not\s+supplied[\s\S]{0,200}full\s+tier/i,
         'an absent budget input must fail safe to the full tier — ambiguity resolves toward more coverage',
       ],
       [
         // The fail-safe must be scoped to the ABSENT INPUT, never to the subagent's own inability
         // to see a clock — that is true on every run by construction, so the looser reading fires
         // always and makes the degraded tier unreachable.
-        /Two readings are \*\*wrong\*\*[\s\S]{0,320}cannot see a clock[\s\S]{0,220}inline fallback/i,
+        /Two\s+readings\s+are \*\*wrong\*\*[\s\S]{0,320}cannot\s+see\s+a\s+clock[\s\S]{0,220}inline\s+fallback/i,
         'the fail-safe must rule out BOTH always-true misreadings: "the subagent has no clock", and "no brief on the inline path, so the input is absent"',
       ],
     ]) {
@@ -3587,7 +3606,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // Order is load bearing. The absent-input fail-safe must resolve BEFORE the floor: a missing
     // value is not a small one, and a floor evaluated first would block every run whose
     // orchestrator forgot to pass the number instead of reviewing it at the full tier.
-    const absentIdx = tierSelection.search(/was not supplied/)
+    const absentIdx = tierSelection.search(/was\s+not\s+supplied/)
     const floorIdx = tierSelection.search(
       /DEGRADED_TIER_MINUTES\s*\+\s*POST_REVIEW_RESERVE_MINUTES/,
     )
@@ -3660,7 +3679,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     )
     assert.match(
       reviewStack,
-      /^#{3,4} Degraded tier \(minimal\)\s*$/m,
+      /^#{3,4} Degraded\s+tier \(minimal\)\s*$/m,
       `${dir}: the degraded tier must be a named subsection, not improvised prose`,
     )
 
@@ -3717,7 +3736,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     )
     assert.match(
       degraded,
-      /Step 6b[\s\S]{0,200}Step 6c[\s\S]{0,200}skipped by policy/i,
+      /Step\s+6b[\s\S]{0,200}Step\s+6c[\s\S]{0,200}skipped\s+by\s+policy/i,
       `${dir}: the degraded tier must name Steps 6b and 6c as skipped by policy`,
     )
     // Skipping Step 6b does not excuse the OTHER never-omit PR-body section. Step 7 makes
@@ -3728,12 +3747,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // close.
     assert.match(
       reviewStack,
-      /`## Cross-model review`[\s\S]{0,400}`skipped: degraded tier`/i,
+      /`## Cross-model\s+review`[\s\S]{0,400}`skipped: degraded\s+tier`/i,
       `${dir}: a degraded run must be told which \`## Cross-model review\` token to emit`,
     )
     assert.match(
       reviewStack,
-      /`skipped: <reason>`[\s\S]{0,200}`degraded tier`/i,
+      /`skipped: <reason>`[\s\S]{0,200}`degraded\s+tier`/i,
       `${dir}: Step 6b's outcome-token list must recognise the degraded-tier skip reason`,
     )
     // The `dispatch-failure` route runs NO tier at all, so neither `full` nor `degraded:` is an
@@ -3742,7 +3761,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // happened. Pin the token in the reference AND its use on the routing branch in the body.
     assert.match(
       reviewStack,
-      /`none: review stack did not run \(<reason>\)`/,
+      /`none: review\s+stack\s+did\s+not\s+run \(<reason>\)`/,
       `${dir}: the coverage-token list must cover the dispatch-failure route, where no tier ran`,
     )
     // The tier rule is evaluated by the SUBAGENT, but only the orchestrator holds the Preflight
@@ -3758,7 +3777,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     )
     assert.match(
       readSkill(`${dir}/SKILL.md`),
-      /REMAINING_MINUTES[\s\S]{0,400}Preflight deadline/i,
+      /REMAINING_MINUTES[\s\S]{0,400}Preflight\s+deadline/i,
       `${dir}/SKILL.md: the brief must define REMAINING_MINUTES against the Preflight deadline`,
     )
     // The token text lives in the reference (the resident body carries the routing decision and a
@@ -3766,12 +3785,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // distinguished, since collapsing them publishes "did not run" over a review that did.
     assert.match(
       readSkill(`${dir}/SKILL.md`),
-      /`dispatch-failure`[\s\S]{0,400}do \*\*not\*\*\s*\n?\s*share a coverage token/i,
+      /`dispatch-failure`[\s\S]{0,400}do \*\*not\*\*\s*\n?\s*share\s+a\s+coverage\s+token/i,
       `${dir}/SKILL.md: the dispatch-failure branch must say its two sub-cases take different coverage tokens`,
     )
     assert.match(
       reviewStack,
-      /present but unmatchable[\s\S]{0,600}`none: review verdict unreadable \(<reason>\)`/i,
+      /present\s+but\s+unmatchable[\s\S]{0,600}`none: review\s+verdict\s+unreadable \(<reason>\)`/i,
       `${dir}: a present-but-unmatchable sentinel must not publish "review stack did not run"`,
     )
     // …and the OTHER sub-case had the same defect. The sentinel write is the subagent's LAST
@@ -3789,17 +3808,17 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     const missingBullet = reviewStack.slice(missingIdx, unmatchableIdx)
     assert.match(
       missingBullet,
-      /`none: review coverage unknown \(<reason>\)`/,
+      /`none: review\s+coverage\s+unknown \(<reason>\)`/,
       `${dir}: a missing/stale sentinel must publish the unknown-coverage token`,
     )
     assert.match(
       missingBullet,
-      /Do \*\*not\*\*\s+write\s+`did not run`/i,
+      /Do \*\*not\*\*\s+write\s+`did\s+not\s+run`/i,
       `${dir}: the missing/stale branch must forbid the "did not run" token by name`,
     )
     assert.doesNotMatch(
       missingBullet,
-      /=\s*`none: review stack did not run/,
+      /=\s*`none: review\s+stack\s+did\s+not\s+run/,
       `${dir}: a missing/stale sentinel must not be told to publish "review stack did not run"`,
     )
     // The token itself is therefore re-scoped to the only route that can honestly claim it — and
@@ -3829,12 +3848,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // and would reach for the nearest bullet. Name the third route where the reader is standing.
     assert.match(
       reviewStack,
-      /`none: review stack did not run \(<reason>\)` belongs to neither bullet[\s\S]{0,320}never\s+entered/i,
+      /`none: review\s+stack\s+did\s+not\s+run \(<reason>\)` belongs\s+to\s+neither\s+bullet[\s\S]{0,320}never\s+entered/i,
       `${dir}: the BLOCKED-route publication section must name the never-entered route that owns "did not run"`,
     )
     assert.match(
       reviewStack,
-      /BLOCKED-route publication[\s\S]{0,700}gh pr edit --body-file/i,
+      /BLOCKED-route\s+publication[\s\S]{0,700}gh\s+pr\s+edit --body-file/i,
       `${dir}: the BLOCKED routes must publish the coverage token themselves — they never reach Step 7`,
     )
     // …and the no-PR branch has to publish BOTH mandatory sections, not just coverage. Its own
@@ -3853,7 +3872,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     )
     assert.match(
       noPrClause,
-      /`## Review coverage`\s+and\s+`## Cross-model review`/,
+      /`## Review\s+coverage`\s+and\s+`## Cross-model\s+review`/,
       `${dir}: the no-PR comment must label both sections exactly as the PR-body path does`,
     )
     assert.doesNotMatch(
@@ -3871,7 +3890,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     const thirdRoute = reviewStack.slice(thirdRouteIdx, thirdRouteIdx + 900)
     assert.match(
       thirdRoute,
-      /`## Cross-model review`\s*=\s*`skipped: <reason>`/,
+      /`## Cross-model\s+review`\s*=\s*`skipped: <reason>`/,
       `${dir}: the never-entered route must name a cross-model token, not just a coverage one`,
     )
     assert.match(
@@ -3893,7 +3912,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
       readSkill(`${dir}/SKILL.md`),
       // Not `[^>]*` — the enumeration itself contains `<pass list>` and `<reason>` placeholders,
       // so a negated-`>` class stops at the first one and never reaches the token being pinned.
-      /<review-coverage token:[\s\S]{0,300}none: review stack did not run[\s\S]{0,120}none: review verdict unreadable/i,
+      /<review-coverage[ ]token:[\s\S]{0,300}none: review[ ]stack[ ]did[ ]not[ ]run[\s\S]{0,120}none: review[ ]verdict[ ]unreadable/i,
       `${dir}/SKILL.md: Step 7's coverage-token template must enumerate the \`none:\` form too`,
     )
     // The missing/stale-sentinel branch needs a sanctioned value in the template it copies from,
@@ -3901,7 +3920,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // back to the false `did not run`.
     assert.match(
       readSkill(`${dir}/SKILL.md`),
-      /<review-coverage token:[\s\S]{0,400}none: review coverage unknown \(<reason>\)/i,
+      /<review-coverage[ ]token:[\s\S]{0,400}none: review[ ]coverage[ ]unknown \(<reason>\)/i,
       `${dir}/SKILL.md: Step 7's coverage-token template must enumerate the unknown-coverage form`,
     )
     // …and the resident routing bullet must not point either dispatch-failure sub-case at
@@ -3916,7 +3935,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // sentinel to BLOCKED. Without this the cheap tier becomes a coverage-laundering path.
     assert.match(
       degraded,
-      /bs-review capped:/,
+      /bs-review\s+capped:/,
       `${dir}: degraded must-fix findings must route through the same run-file sentinel`,
     )
     assert.match(
@@ -3968,14 +3987,14 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     )
     assert.match(
       degraded,
-      /\*\*any\*\* must-fix finding is recorded[\s\S]{0,240}`bs-review capped:` → \*\*BLOCKED\*\*/i,
+      /\*\*any\*\* must-fix\s+finding\s+is\s+recorded[\s\S]{0,240}`bs-review\s+capped:` → \*\*BLOCKED\*\*/i,
       `${dir}: ANY degraded-tier must-fix must route to BLOCKED, not just one left open after a fix`,
     )
     // `\s+` between words, not a literal space: prettier reflows this prose at 100 columns, so any
     // inter-word gap in the shipped markdown may be a newline.
     assert.match(
       degraded,
-      /ran\s+to\s*\n?\s*completion\s+and\s+found\s+zero\*\*\s+must-fix\s+writes\s+`bs-review clean:`/i,
+      /ran\s+to\s*\n?\s*completion\s+and\s+found\s+zero\*\*\s+must-fix\s+writes\s+`bs-review\s+clean:`/i,
       `${dir}: only a zero-must-fix degraded pass may write the clean sentinel`,
     )
     assert.match(
@@ -3988,7 +4007,7 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // cannot fund the full one — while the missing/stale-sentinel route is untouched.
     assert.match(
       reviewStack,
-      /if that\s+dispatch fails \(a tool error\)[\s\S]{0,400}degraded/i,
+      /if\s+that\s+dispatch\s+fails \(a\s+tool\s+error\)[\s\S]{0,400}degraded/i,
       `${dir}: the inline dispatch-error fallback must be able to run the degraded tier`,
     )
     assert.match(
@@ -4000,12 +4019,12 @@ test('BOS-758: review-stack names a degraded tier picked at Step 6 entry (both m
     // (e) The returned outcome token, so the orchestrator can publish the tier.
     assert.match(
       reviewStack,
-      /`## Review coverage`/,
+      /`## Review\s+coverage`/,
       `${dir}: the subagent's return contract must carry a \`## Review coverage\` token`,
     )
     assert.match(
       reviewStack,
-      /`full`[\s\S]{0,400}`degraded: <reason> \(skipped: <pass list>\)`/,
+      /`full`[\s\S]{0,400}`degraded: <reason> \(skipped: <pass\s+list>\)`/,
       `${dir}: the coverage token must distinguish full from degraded plus its skipped passes`,
     )
   }
@@ -4353,7 +4372,7 @@ test('BOS-859: the tier lead bullet scopes "exactly one" to detection, not to it
     // Slice to the NEXT bullet, not a character window: a distance window starts failing when the
     // prose it spans grows, which reds for a prose-growth reason rather than a defect one.
     const afterHeading = reviewStack.slice(at)
-    const nextBullet = afterHeading.search(/\n- \*\*Detection is a single round\.\*\*/)
+    const nextBullet = afterHeading.search(/\n- \*\*Detection\s+is\s+a\s+single\s+round\.\*\*/)
     const lead = nextBullet === -1 ? afterHeading.slice(0, 1200) : afterHeading.slice(0, nextBullet)
 
     // "Exactly one" must be bound to DETECTION, not left as a bare reviewer count.
@@ -4540,19 +4559,19 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
     const step7 = region(body, '## Step 7:', '## Steps 8-12:')
     assert.match(
       step7,
-      /^## Review coverage$/m,
+      /^## Review[ ]coverage$/m,
       `${dir}/SKILL.md Step 7 PR-body template must carry a \`## Review coverage\` section`,
     )
     // Same never-omit rule the `## Cross-model review` section carries: silence must not read as
     // full coverage.
     assert.match(
       step7,
-      /`## Review coverage`[\s\S]{0,400}never omit it/i,
+      /`## Review\s+coverage`[\s\S]{0,400}never\s+omit\s+it/i,
       `${dir}: the \`## Review coverage\` section must carry the never-omit rule`,
     )
     assert.match(
       step7,
-      /`## Review coverage`[\s\S]{0,400}missing section[\s\S]{0,120}full coverage/i,
+      /`## Review\s+coverage`[\s\S]{0,400}missing\s+section[\s\S]{0,120}full\s+coverage/i,
       `${dir}: a missing \`## Review coverage\` section must not read as full coverage`,
     )
     // Pin `**replace** both`, not a bare `**replace**`: the resume rule is shared prose covering
@@ -4562,7 +4581,7 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
     // satisfied by text instructing the exact behaviour it exists to forbid.
     assert.match(
       step7,
-      /`## Review coverage`[\s\S]{0,500}\*\*replace\*\* both/i,
+      /`## Review\s+coverage`[\s\S]{0,500}\*\*replace\*\* both/i,
       `${dir}: \`## Review coverage\` must be replaced, not appended, on a resume`,
     )
     // …and no *positive* instruction to append it. Rejecting a bare /append/ would fire on the
@@ -4573,7 +4592,7 @@ test('BOS-758: Step 7 PR body requires a `## Review coverage` section (both mirr
     // post-replacement string, and every sanctioned phrase removed ahead of the heading would drag
     // the window start forward and silently eat the head of the coverage section.
     const step7Appends = region(step7, '## Review coverage').replace(
-      /(?:rather than|instead of|never|not)\s+append(?:ing|s|ed)?/gi,
+      /(?:rather\s+than|instead\s+of|never|not)\s+append(?:ing|s|ed)?/gi,
       '',
     )
     assert.doesNotMatch(
@@ -4599,7 +4618,7 @@ test('BOS-758 P1: the pre-dispatch floor completes the reference push procedure 
     const floor = skill.slice(fallbackStart, floorEnd)
     assert.match(
       floor,
-      /references\/review-stack\.md[\s\S]{0,160}BLOCKED-route publication[\s\S]{0,220}retry\/rebase\/rescue procedure must yield `PUSHED=yes` before[\s\S]{0,120}`capped 1` sentinel/i,
+      /references\/review-stack\.md[\s\S]{0,160}BLOCKED-route\s+publication[\s\S]{0,220}retry\/rebase\/rescue\s+procedure\s+must\s+yield `PUSHED=yes` before[\s\S]{0,120}`capped\s+1` sentinel/i,
       `${dir}/SKILL.md: the below-floor route must complete the reference retry/rebase/rescue procedure with PUSHED=yes before its generated capped 1 sentinel`,
     )
     assert.doesNotMatch(
@@ -4609,12 +4628,12 @@ test('BOS-758 P1: the pre-dispatch floor completes the reference push procedure 
     )
     assert.match(
       floor,
-      /do\s+(?:\*\*)?not(?:\*\*)?\s+fall\s+through[\s\S]{0,180}(?:generic|classifier|Step 7)/i,
+      /do\s+(?:\*\*)?not(?:\*\*)?\s+fall\s+through[\s\S]{0,180}(?:generic|classifier|Step\s+7)/i,
       `${dir}/SKILL.md: the below-floor route must stop before generic sentinel classification`,
     )
     assert.match(
       floor,
-      /publish both tokens, then exit cleanly BLOCKED/i,
+      /publish\s+both\s+tokens, then\s+exit\s+cleanly\s+BLOCKED/i,
       `${dir}/SKILL.md: the below-floor route must explicitly exit after publication, not merely describe a terminal state`,
     )
   }
@@ -4647,14 +4666,14 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
 
     assert.match(
       section,
-      /git\s+push\s+-u\s+origin\s+"\$SESSION_BRANCH"/,
+      /git[ ]push[ ]-u[ ]origin[ ]"\$SESSION_BRANCH"/,
       `${dir}: the BLOCKED-route section must push the session branch before the terminal exit`,
     )
     // It must cover ALL THREE routes, not just the one the review flagged — the rationale
     // ("Step 7 is the only step that pushes") applies verbatim to the other two.
     assert.match(
       section,
-      /all\s+three[\s\S]{0,300}budget floor[\s\S]{0,140}`capped`[\s\S]{0,140}`dispatch-failure`/i,
+      /all\s+three[\s\S]{0,300}budget\s+floor[\s\S]{0,140}`capped`[\s\S]{0,140}`dispatch-failure`/i,
       `${dir}: the push rule must apply to the budget-floor, capped, and dispatch-failure routes alike`,
     )
     // A bare `git push || echo` turns a failed push into a SUCCESSFUL command and walks on to
@@ -4663,12 +4682,12 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     // merge) between attempts, and the echo may only fire after the retries are exhausted.
     assert.match(
       section,
-      /while \[ "\$attempts" -lt \d+ \][\s\S]{0,900}git rebase --no-fork-point FETCH_HEAD/,
+      /while \[ "\$attempts" -lt \d+ \][\s\S]{0,900}git[ ]rebase --no-fork-point[ ]FETCH_HEAD/,
       `${dir}: the BLOCKED-route push must retry and reconcile, not swallow the failure`,
     )
     assert.match(
       section,
-      /last resort \*\*after\*\* the retries, never a substitute for them/i,
+      /last\s+resort \*\*after\*\* the\s+retries, never\s+a\s+substitute\s+for\s+them/i,
       `${dir}: the section must forbid treating the failure echo as the push itself`,
     )
     // `git pull --rebase … || break` is the same defect one level down: a transient reconcile
@@ -4680,7 +4699,7 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     // over the whole section would fire on its own documentation.
     const pushBlock = [...section.matchAll(/```bash\n([\s\S]*?)```/g)]
       .map((m) => m[1])
-      .find((b) => /git push -u origin/.test(b))
+      .find((b) => /git[ ]push -u[ ]origin/.test(b))
     assert.ok(pushBlock, `${dir}: the push rule must ship a runnable bash block`)
     // Matched against whichever reconcile form ships, so the rule survives a change of idiom —
     // the defect is `|| break` after the reconcile, not the particular git invocation.
@@ -4691,19 +4710,19 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     )
     assert.match(
       pushBlock,
-      /git rebase --no-fork-point FETCH_HEAD \|\|\s*git rebase --abort/,
+      /git[ ]rebase --no-fork-point[ ]FETCH_HEAD \|\|\s*git[ ]rebase --abort/,
       `${dir}: a failed reconcile must abort any half-finished rebase and let the loop continue`,
     )
     // The reported attempt count must come from a counter, never a literal that can drift from
     // the number of attempts actually made.
     assert.doesNotMatch(
       pushBlock,
-      /FAILED after \d+ attempt/,
+      /FAILED\s+after \d+ attempt/,
       `${dir}: the failure message must not hard-code an attempt count it cannot verify`,
     )
     assert.match(
       pushBlock,
-      /FAILED after \$\{?attempts\}? attempt/,
+      /FAILED[ ]after \$\{?attempts\}? attempt/,
       `${dir}: the failure message must report the counter's value`,
     )
     // The retry must span a real WINDOW, not three back-to-back failures: an outage that clears
@@ -4718,12 +4737,12 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     // the commits dying with the worktree, and it is why the loop may be bounded at all.
     assert.match(
       pushBlock,
-      /git push origin "HEAD:refs\/heads\/\$RESCUE"/,
+      /git[ ]push[ ]origin "HEAD:refs\/heads\/\$RESCUE"/,
       `${dir}: an unpushable session branch must fall back to a rescue ref, not to a local-SHA report`,
     )
     assert.match(
       section,
-      /Locally-recorded SHAs are a poor terminal outcome/i,
+      /Locally-recorded\s+SHAs\s+are\s+a\s+poor\s+terminal\s+outcome/i,
       `${dir}: the section must push rather than settle for local SHAs`,
     )
     // The rule must NOT justify itself with "the worktree is about to be deleted" — Stop cleanly
@@ -4732,12 +4751,12 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     // would hold the lock open forever and starve the very component that retries the push.
     assert.match(
       section,
-      /Stop cleanly does not delete the worktree/i,
+      /Stop\s+cleanly\s+does\s+not\s+delete\s+the\s+worktree/i,
       `${dir}: the section must state that Stop cleanly does not delete the worktree`,
     )
     assert.match(
       section,
-      /Do \*\*not\*\* refuse to reach Step 12/i,
+      /Do \*\*not\*\* refuse\s+to\s+reach\s+Step\s+12/i,
       `${dir}: an unpushable remote must not block terminal cleanup`,
     )
     // None of these routes rewrote history, so a force-push here would clobber a commit this run
@@ -4755,7 +4774,7 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     assert.ok(floorIdx >= 0, `${dir}: review-stack.md must carry the budget-floor branch`)
     assert.match(
       reviewStack.slice(floorIdx, floorIdx + 900),
-      /push the branch first|push the session branch/i,
+      /push\s+the\s+branch\s+first|push\s+the\s+session\s+branch/i,
       `${dir}: the budget-floor branch must tell its reader to push before exiting`,
     )
 
@@ -4767,7 +4786,7 @@ test('BOS-758 P1: every pre-Step-7 BLOCKED route pushes before it exits (both mi
     const floorGate = skill.slice(gateAt, gateAt + 900)
     assert.match(
       floorGate,
-      /references\/review-stack\.md[\s\S]{0,160}BLOCKED-route publication[\s\S]{0,220}retry\/rebase\/rescue procedure must yield `PUSHED=yes` before[\s\S]{0,120}`capped 1` sentinel/i,
+      /references\/review-stack\.md[\s\S]{0,160}BLOCKED-route\s+publication[\s\S]{0,220}retry\/rebase\/rescue\s+procedure\s+must\s+yield `PUSHED=yes` before[\s\S]{0,120}`capped\s+1` sentinel/i,
       `${dir}/SKILL.md: the Step 6 floor gate must complete the reference-backed push procedure before emitting capped/BLOCKED`,
     )
     assert.doesNotMatch(
@@ -4850,7 +4869,7 @@ test('BOS-758 P2: untimed fallback dispatches carry an execution bound, not just
     // The bound is only real if it reaches the worker.
     assert.match(
       reviewSkill,
-      /HARD TIME BUDGET: <LEG_TIMEOUT_SECONDS> seconds[\s\S]{0,400}return/i,
+      /HARD[ ]TIME[ ]BUDGET: <LEG_TIMEOUT_SECONDS> seconds[\s\S]{0,400}return/i,
       `${dir}: the reviewer template must state the budget to the worker as a hard return-by`,
     )
   }
@@ -4880,12 +4899,12 @@ test('BOS-758 P1b: the degraded reviewer is bounded on the wall clock, not just 
     // Expiry must land on the documented non-clean outcome, never a clean exit.
     assert.match(
       section,
-      /on expiry[\s\S]{0,220}`bs-review capped:`[\s\S]{0,60}BLOCKED/i,
+      /on\s+expiry[\s\S]{0,220}`bs-review\s+capped:`[\s\S]{0,60}BLOCKED/i,
       `${dir}: a degraded reviewer stopped by its budget must route to capped/BLOCKED, never clean`,
     )
     assert.match(
       section,
-      /`DEGRADED_API_CHECK_MINUTES`\s*\(5\)[\s\S]{0,420}15-minute degraded-tier price[\s\S]{0,220}re-measure[\s\S]{0,220}`PREFLIGHT_DEADLINE`[\s\S]{0,260}non-positive clamp[\s\S]{0,120}BLOCKED/i,
+      /`DEGRADED_API_CHECK_MINUTES`\s*\(5\)[\s\S]{0,420}15-minute\s+degraded-tier\s+price[\s\S]{0,220}re-measure[\s\S]{0,220}`PREFLIGHT_DEADLINE`[\s\S]{0,260}non-positive\s+clamp[\s\S]{0,120}BLOCKED/i,
       `${dir}: the conditional degraded API check must be priced, deadline-clamped, and fail closed`,
     )
 
@@ -4912,7 +4931,7 @@ test('BOS-758 P1b: the degraded reviewer is bounded on the wall clock, not just 
     )
     assert.match(
       apiGate,
-      /only while `API_CHECK_SECONDS` is positive[\s\S]{0,220}capped sentinel and BLOCKED route/i,
+      /only\s+while `API_CHECK_SECONDS` is\s+positive[\s\S]{0,220}capped\s+sentinel\s+and\s+BLOCKED\s+route/i,
       `${dir}: an expired required API gate must fail closed through capped/BLOCKED`,
     )
   }
@@ -4935,12 +4954,12 @@ test('BOS-758 P2b: the fallback bound is described as cooperative, not as a hard
     )
     assert.match(
       reviewSkill,
-      /do not try to "strengthen" this with an external\s+watchdog/i,
+      /do\s+not\s+try\s+to "strengthen" this\s+with\s+an\s+external\s+watchdog/i,
       `${dir}: boss-review must rule out a watchdog an awaited dispatch cannot host`,
     )
     assert.match(
       reviewSkill,
-      /admission gate[\s\S]{0,320}clamp/i,
+      /admission\s+gate[\s\S]{0,320}clamp/i,
       `${dir}: boss-review must name the two controls that ARE enforceable`,
     )
   }
@@ -5140,7 +5159,7 @@ test('BOS-758 P2: the BLOCKED handoff reports the rescue branch, not a fixed "un
     )
     const pushBlock = [...section.matchAll(/```bash\n([\s\S]*?)```/g)]
       .map((m) => m[1])
-      .find((b) => /git push -u origin/.test(b))
+      .find((b) => /git[ ]push -u[ ]origin/.test(b))
     assert.ok(pushBlock, `${dir}: the push rule must ship a runnable bash block`)
 
     // The count the prose may quote is whatever the loop actually runs — derive it, never pin a
@@ -5250,12 +5269,12 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
     // re-measure gates unrunnable.
     assert.match(
       reviewStack,
-      /PREFLIGHT_DEADLINE[\s\S]{0,400}absolute Unix time in seconds/i,
+      /PREFLIGHT_DEADLINE[\s\S]{0,400}absolute\s+Unix\s+time\s+in\s+seconds/i,
       `${dir}: the reference must state the deadline's unit, or a minutes value is compared to a clock`,
     )
     assert.doesNotMatch(
       reviewStack,
-      /do not try to derive one yourself/i,
+      /do\s+not\s+try\s+to\s+derive\s+one\s+yourself/i,
       `${dir}: the worker may no longer be forbidden a clock — Step 6b/6c both re-measure against one`,
     )
 
@@ -5265,7 +5284,7 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
     const preflight = region(skill, '## Preflight', '## Step 1:')
     assert.match(
       preflight,
-      /PREFLIGHT_STARTED_AT="\$\(date \+%s\)"[\s\S]{0,160}PREFLIGHT_DEADLINE=\$\(\( PREFLIGHT_STARTED_AT \+ 4 \* 60 \* 60 \)\)[\s\S]{0,80}export PREFLIGHT_DEADLINE/,
+      /PREFLIGHT_STARTED_AT="\$\(date \+%s\)"[\s\S]{0,160}PREFLIGHT_DEADLINE=\$\(\( PREFLIGHT_STARTED_AT \+ 4 \* 60 \* 60 \)\)[\s\S]{0,80}export[ ]PREFLIGHT_DEADLINE/,
       `${dir}: Preflight must stamp and export one absolute four-hour deadline`,
     )
     const remainingSnapshot = bashBlocksOf(skill).find((b) => /^NOW="\$\(date \+%s\)"/m.test(b))
@@ -5287,7 +5306,7 @@ test('BOS-758 P1: the ABSOLUTE Preflight deadline reaches the review worker, not
     )
     assert.match(
       reviewStack,
-      /Never reconstruct the deadline from `REMAINING_MINUTES`[\s\S]{0,360}extend the cap/i,
+      /Never\s+reconstruct\s+the\s+deadline\s+from `REMAINING_MINUTES`[\s\S]{0,360}extend\s+the\s+cap/i,
       `${dir}: the worker must reject a stale-snapshot deadline reconstruction`,
     )
     assert.doesNotMatch(
@@ -5418,7 +5437,7 @@ test('BOS-758 P2: the Step 6b fallback reviewer carries the ten minutes the form
     )
     assert.match(
       step6bSection,
-      /HARD TIME BUDGET: FALLBACK_SECONDS seconds[\s\S]{0,160}rather\s+than\s+run\s+past\s+it/i,
+      /HARD\s+TIME\s+BUDGET: FALLBACK_SECONDS\s+seconds[\s\S]{0,160}rather\s+than\s+run\s+past\s+it/i,
       `${dir}: the fallback brief must state its budget to the worker as a hard return-by`,
     )
     assert.match(
@@ -5462,7 +5481,7 @@ test('BOS-758 P2: the Step 6b fallback reviewer carries the ten minutes the form
     )
     const reserve = Number(tierSelection.match(/#\s*=\s*(\d+)\s+minutes/)[1])
     const fallbackMinutes = Number(
-      tierSelection.match(/\+\s*(\d+)\s+#\s*AND the fallback reviewer/)[1],
+      tierSelection.match(/\+\s*(\d+)\s+#\s*AND\s+the\s+fallback\s+reviewer/)[1],
     )
     for (const [, literal] of reviewStack.matchAll(/POST_REVIEW_RESERVE_MINUTES=(\d+)/g)) {
       assert.equal(
@@ -5644,7 +5663,7 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
     )
     assert.match(
       loopSection,
-      /HARD TIME BUDGET: <N> seconds[\s\S]{0,120}rather\s+than\s+run\s+past\s+it/i,
+      /HARD\s+TIME\s+BUDGET: <N> seconds[\s\S]{0,120}rather\s+than\s+run\s+past\s+it/i,
       `${dir}: each round leg must state its budget to the worker as a hard return-by`,
     )
     assert.match(
@@ -5682,7 +5701,7 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
     )
     assert.match(
       template,
-      /HARD TIME BUDGET: \[TIME_BUDGET_SECONDS\] seconds[\s\S]{0,400}return/i,
+      /HARD[ ]TIME[ ]BUDGET: \[TIME_BUDGET_SECONDS\] seconds[\s\S]{0,400}return/i,
       `${dir}: the reviewer template must carry a hard return-by slot for its caller to fill`,
     )
     assert.match(
@@ -5692,7 +5711,7 @@ test('BOS-758 P2: the full-tier BLOCKING review legs are bounded, not merely pri
     )
     assert.match(
       template,
-      /degraded whole-branch\s+reviewer['’]s\s+`DEGRADED_REVIEWER_MINUTES`\s*\(10\)\s+in seconds[\s\S]{0,240}separately priced API\s+classification[\s\S]{0,160}`DEGRADED_API_CHECK_MINUTES`\s*\(5\)\s+in seconds/i,
+      /degraded\s+whole-branch\s+reviewer['’]s\s+`DEGRADED_REVIEWER_MINUTES`\s*\(10\)\s+in\s+seconds[\s\S]{0,240}separately\s+priced\s+API\s+classification[\s\S]{0,160}`DEGRADED_API_CHECK_MINUTES`\s*\(5\)\s+in\s+seconds/i,
       `${dir}: the template must give the degraded reviewer its 10-minute budget and reserve the API check's separate allowance`,
     )
     // And the loop must actually fill it. A template slot no dispatch site names is the same inert
@@ -5771,7 +5790,7 @@ test('BOS-758 P2: boss-review Phase 8 notes dispatches are gated on the caller d
     const phase8 = region(reviewSkill, '## Phase 8 — Cleanup')
     assert.match(
       phase8,
-      /`extension <name>: skipped \(caller deadline\)`/,
+      /`extension <name>: skipped \(caller\s+deadline\)`/,
       `${dir}: a refused notes dispatch must land on a named ledger token, not silence`,
     )
     assert.match(
@@ -6005,7 +6024,7 @@ test('BOS-758 P2: both timeout normalizers share one idiom, stated in shipped pr
 // ---------------------------------------------------------------------------
 
 const pushBlockOf = (md) => {
-  const block = bashBlocksOf(md).find((b) => /git push -u origin "\$SESSION_BRANCH"/.test(b))
+  const block = bashBlocksOf(md).find((b) => /git[ ]push -u[ ]origin "\$SESSION_BRANCH"/.test(b))
   assert.ok(block, 'the BLOCKED-route section must ship a runnable push block')
   return block
 }
@@ -6375,7 +6394,7 @@ const runPushBlock = (
     // it is observable even when the push itself fails. `null` when no rescue push was attempted;
     // the empty-suffix defect surfaces here as the trailing-hyphen ref `feat-blocked-`.
     rescueRef: (gitLog
-      .map((l) => /^push origin HEAD:refs\/heads\/(\S*)$/.exec(l))
+      .map((l) => /^push\s+origin\s+HEAD:refs\/heads\/(\S*)$/.exec(l))
       .find(Boolean) ?? [, null])[1],
     // Argv the injection step handed the finalize CLI, verbatim.
     injectArgv: tagLog,
@@ -6548,12 +6567,12 @@ test('BOS-758 P2: the push block leaves no route with PUSHED unset (both mirrors
       .join('\n')
     assert.doesNotMatch(
       runnable,
-      /git pull --rebase/,
+      /git\s+pull --rebase/,
       `${dir}: the retry loop must not reconcile with git pull --rebase — fork-point drops this run's commits after a server-side force-push`,
     )
     assert.match(
       runnable,
-      /git rebase --no-fork-point FETCH_HEAD/,
+      /git[ ]rebase --no-fork-point[ ]FETCH_HEAD/,
       `${dir}: the retry loop must reconcile by rebasing onto the ref it just fetched`,
     )
     assert.match(
@@ -6884,7 +6903,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     // reading the SHA straight out of `git ls-remote | awk` throws git's status away and makes "the
     // remote said nothing" and "the remote could not be asked" the same value — and one of those two
     // licenses a rewrite. Assert the raw read is captured on its own, with its status recorded.
-    const lsReadAt = runnable.search(/^REMOTE_LS=\$\(git ls-remote[^\n]*\|\| REMOTE_LS_OK=no$/m)
+    const lsReadAt = runnable.search(/^REMOTE_LS=\$\(git[ ]ls-remote[^\n]*\|\| REMOTE_LS_OK=no$/m)
     assert.ok(
       lsReadAt >= 0 && lsReadAt < remoteShaAt,
       `${dir}: git ls-remote's own exit status must be captured before the SHA is parsed out of its output (read at ${lsReadAt})`,
@@ -6896,7 +6915,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     )
     assert.match(
       runnable,
-      /git reset --hard "\$PRE_INJECT_SHA"/,
+      /git[ ]reset --hard "\$PRE_INJECT_SHA"/,
       `${dir}: an injection that would rewrite a commit origin advertises must be rolled back`,
     )
     // The published outcome must be DERIVED after the loop settles, not remembered from before it:
@@ -6912,7 +6931,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     // branch still holds the untagged original is the shape the re-attach above can fail into.
     assert.match(
       runnable,
-      /git rev-parse "refs\/heads\/\$SESSION_BRANCH"/,
+      /git[ ]rev-parse "refs\/heads\/\$SESSION_BRANCH"/,
       `${dir}: the re-derivation must confirm HEAD is still the branch before reading a tag state off it`,
     )
     // The subject read's STATUS must be kept apart from its answer: piped into `grep -qv`, the
@@ -6921,12 +6940,12 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     // `ls-remote` a few lines above.
     assert.doesNotMatch(
       runnable,
-      /git log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"[^\n]*\|[^|]/,
+      /git\s+log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"[^\n]*\|[^|]/,
       `${dir}: a pipeline's status is grep's, so the subject read must be captured before it is parsed`,
     )
     assert.match(
       runnable,
-      /TAG_SUBJECTS=\$\(git log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"/,
+      /TAG_SUBJECTS=\$\(git[ ]log --format=%s "\$TAG_RANGE_BASE\.\.HEAD"/,
       `${dir}: capture the branch's subjects, then parse them, so an unreadable range is not read as tagged`,
     )
     // Nothing between the injection and the retry loop may end the run: an `exit`/`break`/`return`
@@ -7118,7 +7137,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     )
     assert.match(
       noPreSha.tagNote,
-      /pre-injection HEAD/i,
+      /pre-injection[ ]HEAD/i,
       `${dir}: the skip must name the unreadable pre-injection HEAD (note: ${noPreSha.tagNote})`,
     )
     assert.equal(noPreSha.pushed, 'yes', `${dir}: an unrollbackable rewrite must not cost the push`)
@@ -7248,12 +7267,12 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     )
     assert.match(
       diagnosed.tagNote,
-      /commits on this branch still carry no \[#7\]/,
+      /commits\s+on\s+this\s+branch\s+still\s+carry\s+no \[#7\]/,
       `${dir}: the note must carry the re-derivation's own observation (note: ${diagnosed.tagNote})`,
     )
     assert.match(
       diagnosed.tagInjectNote,
-      /injector exited non-zero/,
+      /injector[ ]exited[ ]non-zero/,
       `${dir}: the injector's diagnostic must survive the re-derivation, not be overwritten by it (inject note: ${diagnosed.tagInjectNote})`,
     )
     // …and it must survive as its OWN field. Joined onto `TAG_NOTE`, neither clause is attributable
@@ -7261,7 +7280,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     // free form, so no separator a join might pick is reserved against it.
     assert.doesNotMatch(
       diagnosed.tagNote,
-      /injector exited non-zero/,
+      /injector\s+exited\s+non-zero/,
       `${dir}: the injector diagnostic is a separate field, never appended onto TAG_NOTE (note: ${diagnosed.tagNote})`,
     )
     // …and it carries the CAUSE only. A non-zero injector exit does not imply an untagged commit,
@@ -7360,7 +7379,7 @@ test('BOS-860: the BLOCKED route tags its commits before pushing, and tagging ne
     )
     assert.match(
       reviewStack,
-      /§PARTIAL-route publication borrows this same push procedure/i,
+      /§PARTIAL-route\s+publication\s+borrows\s+this\s+same\s+push\s+procedure/i,
       `${dir}: the routes-that-share-this-block walk must include PARTIAL, whose T3 conjunct reads the tagging outcome`,
     )
     assert.match(
@@ -7545,7 +7564,7 @@ test('BOS-860 ext2: an emptied range is reported as vacuous, not as an observed 
     )
     assert.match(
       dropped.tagNote,
-      /no commits in the range/i,
+      /no[ ]commits[ ]in[ ]the[ ]range/i,
       `${dir}: an emptied range must SAY so in TAG_NOTE — otherwise the report asserts a tag on commits that are no longer there (got: ${dropped.tagNote})`,
     )
     // The control the note is meant to be distinguishable FROM: commits really rewritten, really
@@ -7728,12 +7747,12 @@ test('BOS-758 repair P1: Step 7 confirms the pushed tip is the tip that was revi
 
     assert.match(
       section,
-      /REVIEWED_HEAD=\$\(git rev-parse HEAD\)/,
+      /REVIEWED_HEAD=\$\(git[ ]rev-parse[ ]HEAD\)/,
       `${dir}: the reviewed tip must be captured BEFORE the push procedure runs`,
     )
     assert.match(
       section,
-      /PR_TIP=\$\(git rev-parse FETCH_HEAD[\s\S]{0,60}echo unknown\)/,
+      /PR_TIP=\$\(git[ ]rev-parse[ ]FETCH_HEAD[\s\S]{0,60}echo[ ]unknown\)/,
       `${dir}: the shipped tip must be read back from the remote, not from local HEAD`,
     )
     assert.match(
@@ -7830,7 +7849,7 @@ test('BOS-758 repair P2e: the degraded reviewer is clamped against the live dead
     )
     assert.match(
       section,
-      /non-positive clamp[\s\S]{0,200}`bs-review capped:`[\s\S]{0,60}BLOCKED/i,
+      /non-positive\s+clamp[\s\S]{0,200}`bs-review\s+capped:`[\s\S]{0,60}BLOCKED/i,
       `${dir}: a non-positive reviewer clamp must fail closed through capped/BLOCKED`,
     )
   }
@@ -7871,7 +7890,7 @@ test('BOS-842: the resident state list declares four states and names PARTIAL’
     )
     assert.doesNotMatch(
       body,
-      /Three terminal states/,
+      /Three\s+terminal\s+states/,
       `${dir}: the body must not still declare three terminal states`,
     )
     for (const state of ['REVIEW_READY', 'BLOCKED', 'PARTIAL', 'NO_CHANGE']) {
@@ -7903,7 +7922,7 @@ test('BOS-842: the resident state list declares four states and names PARTIAL’
     // …and the two facts that distinguish it from REVIEW_READY at a glance.
     assert.match(
       partial,
-      /stays\s+\*\*In Progress\*\*/,
+      /stays\s+\*\*In\s+Progress\*\*/,
       `${dir}: the PARTIAL bullet must say the ticket stays In Progress`,
     )
     assert.match(
@@ -7929,7 +7948,7 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     )
     assert.match(
       rule,
-      /BLOCKED, never REVIEW_READY/,
+      /BLOCKED, never\s+REVIEW_READY/,
       `${dir}: the required-deferred rule must keep its BOS-240 phrasing verbatim`,
     )
     assert.match(
@@ -7977,7 +7996,7 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     const pointers = region(body, '## Steps 8-12:', '## Cron gate', `${dir}/SKILL.md`)
     assert.match(
       pointers,
-      /REVIEW_READY only with no deferred required item/,
+      /REVIEW_READY\s+only\s+with\s+no\s+deferred\s+required\s+item/,
       `${dir}: the Steps 8-12 pointer must still forbid REVIEW_READY with any deferred required item`,
     )
     assert.match(
@@ -8000,7 +8019,7 @@ test('BOS-842: the required-deferred carve-out is SCOPED to unsatisfied criteria
     // That is round 1's inertness defect reappearing on the OTHER route, from the resident summary.
     assert.match(
       pointers,
-      /no required item was deferred\*\*[\s\S]{0,60}`PARTIAL`[\s\S]{0,60}ready/,
+      /no\s+required\s+item\s+was\s+deferred\*\*[\s\S]{0,60}`PARTIAL`[\s\S]{0,60}ready/,
       `${dir}: the Step 9 pointer must carve PARTIAL out of its no-deferred-item assert and still ready the PR`,
     )
     // ...and it must point at PARTIAL's GATE, not name PARTIAL as the automatic else. A bare
@@ -8049,7 +8068,7 @@ test('BOS-842: finalize-and-stop keeps PARTIAL out of the review role, the label
     const step9 = region(ref, '## Step 9:', '## Step 10:', `${dir}/${FINALIZE_REF}`)
     assert.match(
       step9,
-      /no required item was deferred/,
+      /no\s+required\s+item\s+was\s+deferred/,
       `${dir}: Step 9 must keep the BOS-240 deferral gate`,
     )
     // Anchor each conjunct on its OPERATIVE phrase, the way T3 already is. A window regex ending on
@@ -8181,12 +8200,12 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     )
     assert.match(
       fences,
-      /gh pr edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$PR_BODY"/,
+      /gh\s+pr\s+edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$PR_BODY"/,
       `${dir}: the PARTIAL route must write the PR body itself, in a real command — it never reaches Step 7`,
     )
     assert.match(
       section,
-      /`Partial: <satisfied>\/<total> acceptance criteria`/,
+      /`Partial: <satisfied>\/<total> acceptance\s+criteria`/,
       `${dir}: the PARTIAL body must carry the <satisfied>/<total> count line`,
     )
     assert.match(
@@ -8201,7 +8220,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     )
     assert.match(
       section,
-      /`## Cross-model review`\s+and\s+`## Review coverage`\s+sections/,
+      /`## Cross-model\s+review`\s+and\s+`## Review\s+coverage`\s+sections/,
       `${dir}: the PARTIAL body must retain both mandatory review sections — an absent one reads as full coverage`,
     )
     assert.match(
@@ -8216,12 +8235,12 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     // that never readies leaves T2 unreadable on a draft whose CI is expected to be partial.
     assert.match(
       section,
-      /gh pr create --base/,
+      /gh[ ]pr[ ]create --base/,
       `${dir}: the PARTIAL route must create the PR when none exists — Step 7's create arm never ran`,
     )
     assert.match(
       section,
-      /gh pr ready\s+"?\$PR_NUMBER"?/,
+      /gh\s+pr\s+ready\s+"?\$PR_NUMBER"?/,
       `${dir}: the PARTIAL route must ready the PR itself — a draft cannot supply T2's green reading`,
     )
     // Ordering, not mere presence. `gh pr create --body-file "$PR_BODY"` with `$PR_BODY` assembled
@@ -8252,7 +8271,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     )
     assert.match(
       section,
-      /gh pr edit[\s\S]{0,200}--title[\s\S]{0,120}\(partial <satisfied>\/<total>\)/,
+      /gh[ ]pr[ ]edit[\s\S]{0,200}--title[\s\S]{0,120}\(partial <satisfied>\/<total>\)/,
       `${dir}: the title suffix needs a named mechanism — a body-only write halves boss-epic condition (5)`,
     )
     assert.match(
@@ -8260,13 +8279,13 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
       // Both flags and the PR it reads, without pinning argument ORDER: `gh pr checks --watch
       // --fail-fast "$PR_NUMBER"` is the same command, and reddening on a reorder catches no
       // regression. What must not drift is that the reading is taken, on THIS PR, and fails fast.
-      /gh pr checks(?=[\s\S]{0,60}\$PR_NUMBER)[\s\S]{0,60}--watch\s+--fail-fast/,
+      /gh\s+pr\s+checks(?=[\s\S]{0,60}\$PR_NUMBER)[\s\S]{0,60}--watch\s+--fail-fast/,
       `${dir}: T2 must be MEASURED on this route — Step 9's green gate never ran`,
     )
     // The gate itself, restated where the route fires. All three conjuncts, plus the explicit
     // refusal of the 0-of-N soft landing.
     for (const [label, re] of [
-      ['T1', /\*\*T1[\s\S]{0,240}independently certified/],
+      ['T1', /\*\*T1[\s\S]{0,240}independently\s+certified/],
       ['T2', /\*\*T2[\s\S]{0,200}green/],
       // Emphasis marker is `_only_` here and `**only**` in finalize-and-stop — nested inside an
       // already-bold T3 lead the marker has to differ, so match either rather than pin the styling.
@@ -8286,7 +8305,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     // both change the TERMINAL STATE, not merely the report.
     assert.match(
       section,
-      /§BLOCKED-route publication[\s\S]{0,120}`BLOCKED`\s+as\s+the\s+terminal\s+state/,
+      /§BLOCKED-route\s+publication[\s\S]{0,120}`BLOCKED`\s+as\s+the\s+terminal\s+state/,
       `${dir}: a failed conjunct must fall back to the BLOCKED route with BLOCKED as the terminal state`,
     )
     assert.match(
@@ -8337,7 +8356,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     )
     assert.match(
       fences,
-      /gh pr edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$BLOCKED_BODY"/,
+      /gh\s+pr\s+edit\s+"\$PR_NUMBER"(?:[^\n]|\\\n)*?--body-file\s+"\$BLOCKED_BODY"/,
       `${dir}: the unwind needs a real command that rewrites title and body, not a described intent`,
     )
     // ...and `$BLOCKED_BODY` must be ASSEMBLED, before the write that consumes it. Naming a file in
@@ -8403,7 +8422,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     // Step 9's "do not ready" and leaving boss-epic condition (4) as the sole remaining hold.
     assert.match(
       fences,
-      /gh pr ready\s+--undo\s+"?\$PR_NUMBER"?|gh pr ready\s+"?\$PR_NUMBER"?\s+--undo/,
+      /gh\s+pr\s+ready\s+--undo\s+"?\$PR_NUMBER"?|gh\s+pr\s+ready\s+"?\$PR_NUMBER"?\s+--undo/,
       `${dir}: the unwind must un-ready the PR — every other BLOCKED path leaves a draft`,
     )
     // T3's required set is Step 9's. A locally restated, shorter copy is the weakest of the three
@@ -8424,7 +8443,7 @@ test('BOS-842: review-stack owns the PARTIAL publication route and writes the bo
     // a from-scratch re-specification here silently drops the elements every other route guarantees.
     assert.match(
       section,
-      /body\s+is\s+Step\s+7's\s+PR\s+body\s+plus\s+a\s+delta[\s\S]{0,1200}`## Autonomous decisions`/,
+      /body\s+is\s+Step\s+7's\s+PR\s+body\s+plus\s+a\s+delta[\s\S]{0,1200}`## Autonomous\s+decisions`/,
       `${dir}: the PARTIAL body must inherit Step 7's body — including the elements only Step 7 lists`,
     )
   }
@@ -8445,7 +8464,7 @@ test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publicatio
     const capped = region(routes, '- `capped` →', '- `dispatch-failure`', `${dir}/SKILL.md`)
     assert.match(
       capped,
-      /§PARTIAL-route publication/,
+      /§PARTIAL-route\s+publication/,
       `${dir}: the capped arm must name §PARTIAL-route publication — without it PARTIAL has no producer`,
     )
     assert.match(
@@ -8468,7 +8487,7 @@ test('BOS-842: the review loop’s `capped` arm routes to the PARTIAL publicatio
     // …and the default is unchanged: every other capped run is still BLOCKED.
     assert.match(
       capped,
-      /\*\*Stop cleanly\*\*\s+`BLOCKED`/,
+      /\*\*Stop\s+cleanly\*\*\s+`BLOCKED`/,
       `${dir}: every other capped run must still stop cleanly BLOCKED`,
     )
   }
@@ -8493,7 +8512,7 @@ test('BOS-842: the do-not-merge marker is byte-identical across boss-build and b
     // Anchored on "exactly this literal:" plus the fence, not on the full sentence: the sentence's
     // wording is not the contract, the quoted bytes are. `[a-z]*` tolerates a language tag, and the
     // fence must be the FIRST one after the phrase so an added example block cannot be picked up.
-    const quoted = section.match(/exactly this literal:\s*\n+```[a-z]*\n([^\n]+)\n```/)
+    const quoted = section.match(/exactly\s+this\s+literal:\s*\n+```[a-z]*\n([^\n]+)\n```/)
     assert.ok(
       quoted,
       `${buildDir}: §PARTIAL-route publication must quote the do-not-merge marker in a fenced block`,
@@ -8501,7 +8520,7 @@ test('BOS-842: the do-not-merge marker is byte-identical across boss-build and b
     const marker = quoted[1]
     assert.match(
       marker,
-      /^do not merge/,
+      /^do\s+not\s+merge/,
       `${buildDir}: the extracted literal must be the do-not-merge marker`,
     )
     const mergeRecovery = fs.readFileSync(
@@ -8617,8 +8636,132 @@ test('BOS-842: all three user-facing docs enumerate PARTIAL alongside the other 
     )
     assert.doesNotMatch(
       doc,
-      /three terminal states/i,
+      /three\s+terminal\s+states/i,
       `${rel} must not still describe three terminal states`,
+    )
+  }
+})
+
+// BOS-798: the blast-radius rules for prose edits. Each one exists because a prose change was
+// scoped to the line someone quoted and the real site was elsewhere — a reader the plan never
+// enumerated, a fixture directory nobody grepped, a corrected sentence that shipped unpinned.
+//
+// These live in `references/core-spine.md` §2 rather than in the resident Step 5 body, and that is
+// forced, not preference: the binding constraint is `bytes <= RATCHET`, and the live SKILL.md sits
+// single-digit bytes under it, so ~1.5 KB of resident prose is not spendable at any wording. (The
+// RATCHET-to-baseline gap is a different, larger number; it is not the one that stops you.) §2 is
+// the portable shape of Step 5 and the section that describes what a task brief carries, so it is
+// where a run composing a brief is standing.
+//
+// A reference is only read when its trigger fires, so the two places that route a run there are
+// pinned below: Step 5's first paragraph, and the reference table's own "read it when" cell. Both
+// are prose that rewraps — the table cell is re-padded by prettier whenever a sibling row changes
+// width — so both pins are `\s+`-tolerant.
+//
+// The pins are whitespace-tolerant (`\s+`, never a literal space) because these sentences sit in
+// paragraphs that rewrap whenever a neighbouring one is edited, and a literal-space pin would red
+// on the rewrap while naming no real defect.
+test('BOS-798: core-spine §2 carries the three blast-radius rules for prose edits (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const spine = fs.readFileSync(path.join(rootDir, dir, 'references/core-spine.md'), 'utf8')
+    const rules = region(
+      spine,
+      // Short, rewrap-stable fragments. A full-sentence literal marker is itself a literal-space
+      // prose pin: it reds loudly and falsely the first time the sentence rewraps, which is the
+      // shape rule 5 forbids. `region()` names the marker it could not find, so a genuine removal
+      // still fails loudly.
+      "**A prose task's blast radius",
+      'Discovery itself reports',
+      `${dir}/references/core-spine.md`,
+    )
+
+    assert.match(
+      rules,
+      /the\s+brief\s+carries\s+these\s+three\s+rules/,
+      `${dir}: the rules must be addressed to the implementation brief, not left as free-floating advice`,
+    )
+
+    // Rule 2 — enumerate every reader before moving a prose span.
+    assert.match(
+      rules,
+      /Before\s+extracting\s+or\s+relocating\s+a\s+passage\s+out\s+of\s+a\s+skill\s+body/,
+      `${dir}: the enumerate-every-reader rule must be present`,
+    )
+    assert.match(
+      rules,
+      /grep\s+for\s+every\s+file\s+that\s+reads\s+that\s+exact\s+path/,
+      `${dir}: the enumerate-every-reader rule must prescribe the grep, not merely warn`,
+    )
+    assert.match(
+      rules,
+      /the\s+plan\s+will\s+not\s+have\s+named\s+them/,
+      `${dir}: the enumerate-every-reader rule must say why the plan is not the source of the reader list`,
+    )
+
+    // Rule 4 — a glyph or format change is a whole-directory grep, not the cited file.
+    assert.match(
+      rules,
+      /When\s+the\s+change\s+is\s+a\s+glyph\s+or\s+a\s+formatting\s+convention/,
+      `${dir}: the glyph/format rule must be present`,
+    )
+    assert.match(
+      rules,
+      /grep\s+whole\s+directories/,
+      `${dir}: the glyph/format rule must prescribe whole directories`,
+    )
+    assert.match(
+      rules,
+      /cannot\s+cover\s+the\s+copy\s+nobody\s+thought\s+to\s+enumerate/,
+      `${dir}: the glyph/format rule must say why an enumerated file list is insufficient`,
+    )
+
+    // Rule 5 — a corrected sentence is pinned in the same commit, whitespace-tolerantly, and the
+    // pin is falsified before the subagent returns.
+    assert.match(
+      rules,
+      /When\s+the\s+deliverable\s+is\s+a\s+corrected\s+sentence/,
+      `${dir}: the pin-the-sentence rule must be present`,
+    )
+    assert.match(
+      rules,
+      /`\\s\+`\s+between\s+words,\s+never\s+a\s+literal\s+space/,
+      `${dir}: the pin rule must state the whitespace contract, not merely say "add a pin"`,
+    )
+    assert.match(
+      rules,
+      /see\s+the\s+gate\s+go\s+red,\s+restore,\s+see\s+it\s+go\s+green/,
+      `${dir}: the pin rule must require the pin be FALSIFIED, not merely added`,
+    )
+    assert.match(
+      rules,
+      /equally\s+whitespace-tolerant\s+substitution/,
+      `${dir}: the mutation used to falsify must itself be whitespace-tolerant — a literal-space substitution matches nothing and passes as green`,
+    )
+    // The upstream contract this rule derives from runs both ways: `\s+` matches a newline, so it
+    // is a widening, and a pin over a command or a code shape must keep the literal space. Dropping
+    // that half is the derived-copy defect rule 1 exists to catch, so the derived copy pins it.
+    assert.match(
+      rules,
+      /`\\s\+`\s+also\s+matches\s+a\s+newline/,
+      `${dir}: the pin rule must carry the widening caveat, not only the "never a literal space" half`,
+    )
+    assert.match(
+      rules,
+      /a\s+pin\s+over\s+a\s+command\s+or\s+a\s+code\s+shape\s+keeps\s+the\s+literal\s+space/,
+      `${dir}: the widening caveat must name the case it exempts`,
+    )
+
+    // The rules are only reachable if something routes a run into this reference. Pin both routes.
+    const skill = fs.readFileSync(path.join(rootDir, dir, 'SKILL.md'), 'utf8')
+    assert.match(
+      skill,
+      /its\s+portable\s+shape\s+is\s+\[`references\/core-spine\.md`\]/,
+      `${dir}: Step 5 must keep pointing at core-spine.md, or the rules above are unreachable from the step that needs them`,
+    )
+    assert.match(
+      skill,
+      /`references\/core-spine\.md`\s*\|\s*Orienting[^|]*before\s+any\s+skill-body\s+or\s+contract\s+prose\s+edit/,
+      `${dir}: the reference table's cell must name a CONDITION that fires, not just describe what §2 contains — every other row in that table names a step`,
     )
   }
 })

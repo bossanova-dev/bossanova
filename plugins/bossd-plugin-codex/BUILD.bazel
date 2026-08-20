@@ -66,6 +66,7 @@ go_test(
         "probe_test.go",
         "process_inspector_test.go",
         "progress_test.go",
+        "question_boot_interstitial_test.go",
         "question_test.go",
         "rotation_test.go",
         "runner_test.go",

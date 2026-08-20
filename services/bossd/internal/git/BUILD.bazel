@@ -23,6 +23,7 @@ go_test(
         "worktree_bootstrap_test.go",
         "worktree_gitremote_test.go",
         "worktree_perms_test.go",
+        "worktree_reflock_test.go",
         "worktree_sshmultiplex_test.go",
         "worktree_test.go",
     ],

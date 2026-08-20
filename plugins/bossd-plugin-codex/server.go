@@ -439,15 +439,19 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // and activity-bullet lines, refuses to fire while the working spinner is
 // visible, and matches against the codex approval-menu grammar captured in
 // the Lane 0 spike.
-// blocks_input runs the SAME grammar over the tail of the pane rather than all
-// of it (hasCodexModalPrompt). Codex has no conversational-question pattern, so
-// unlike claude there is no shape here that is a question without being a
-// selection UI — the two answers differ only in WHERE they look, and that is the
-// whole difference. has_prompt asks "has this chat asked something?", which is
-// worth surfacing wherever in the buffer it appears; blocks_input asks "is the
+// blocks_input (hasCodexModalPrompt) runs that same question grammar over the
+// TAIL of the pane rather than all of it, and adds one clause has_prompt does
+// not have. has_prompt asks "has this chat asked something?", which is worth
+// surfacing wherever in the buffer it appears; blocks_input asks "is the
 // composer taken right now?", and a capture carries up to 1000 lines of
 // scrollback in which a long-answered approval footer still sits. Reading that
 // pane-wide would wedge delivery to an idle chat forever (BOS-600).
+//
+// The extra clause is the boot interstitial (BOS-894): codex's "Update
+// available!" screen owns the composer but asks nothing, so it must block
+// delivery WITHOUT notifying — it answers blocks_input=true, has_prompt=false.
+// blocks_input is therefore NOT a subset of has_prompt, and neither answer may
+// be inferred from the other.
 func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{
 		HasPrompt:   hasCodexQuestionPrompt(req.PaneContent),

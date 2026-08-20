@@ -254,7 +254,29 @@ type SessionStore interface {
 	// (BOS-333); an empty expectedStates slice is a no-op returning false.
 	UpdateStateConditionalFrom(ctx context.Context, id string, newState int, expectedStates []int) (bool, error)
 	Archive(ctx context.Context, id string) error
-	Resurrect(ctx context.Context, id string) error
+	// ResurrectToState runs the conditional `UPDATE sessions SET
+	// archived_at = NULL, state = newState WHERE id = ? AND archived_at IS
+	// NOT NULL` that un-archives a session and installs its live state in a
+	// single write. It replaces the old two-write Resurrect + Update pair:
+	// between those writes the row wore {archived_at NULL, state Merged},
+	// which is exactly the predicate archiveMergedButUnarchived
+	// (session/reconcile.go) selects on, so a reconcile tick landing in that
+	// window could archive the session back out from under the agent
+	// ResurrectSession was starting. Returns true if exactly one row moved;
+	// false means the row was not archived any more (a lost race).
+	ResurrectToState(ctx context.Context, id string, newState int) (bool, error)
+	// RollbackFailedResurrect compensates a resurrect whose agent start
+	// failed, with the conditional `UPDATE sessions SET archived_at = ?,
+	// state = restoreState WHERE id = ? AND archived_at IS NULL AND state =
+	// expectState`. archivedAt is the timestamp read before the resurrect
+	// (the caller dereferences session.ArchivedAt, which its ArchivedAt ==
+	// nil guard proves non-nil), restoreState is the pre-resurrect state, and
+	// expectState is the state THIS resurrect wrote (ImplementingPlan) — the
+	// two int parameters have opposite meanings and a swap would silently
+	// disable the rollback. Returns true if exactly one row was restored;
+	// false means a concurrent writer moved the row off the shape this call
+	// wrote, which the caller surfaces rather than treating as a no-op.
+	RollbackFailedResurrect(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error)
 	Delete(ctx context.Context, id string) error
 	AdvanceOrphanedSessions(ctx context.Context) (int64, error)
 

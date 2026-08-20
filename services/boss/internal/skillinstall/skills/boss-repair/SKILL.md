@@ -260,6 +260,16 @@ push this round did not make. They are not interchangeable.
    BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
    if [ -z "$BASE_BRANCH" ]; then
      CURRENT_BRANCH=$(git branch --show-current)
+     # `head -1 | cut` and not an `awk` field reference: this file is also reachable as a slash
+     # command, and the harness rewrites every positional parameter in the body — a dollar sign
+     # followed by one digit — before any shell runs it. Invoked without arguments each becomes
+     # nothing, so an awk program that selects a field arrives with an empty print list, which
+     # awk accepts: it prints the whole line and hands back a wrong branch at exit 0. (This
+     # comment spells no positional itself, or the substitution would eat the example too.) The
+     # `test -n` guard below covers the unrelated case: no candidate branch at all. One behavioural
+     # difference the rewrite does introduce: `head -1` exits as soon as it has the first line where
+     # awk consumed all of the input. This block sets no `pipefail`, so the substitution's status is
+     # unchanged today — but under a future `set -o pipefail` a SIGPIPE'd `sort` would fail it.
      BASE_BRANCH=$(
        git for-each-ref --format='%(refname:short)' refs/remotes/origin |
          sed 's#^origin/##' |
@@ -271,7 +281,8 @@ push this round did not make. They are not interchangeable.
            printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"
          done |
          sort -nr |
-         awk 'NR == 1 {print $2}'
+         head -1 |
+         cut -d' ' -f2
      )
      if [ -n "$BASE_BRANCH" ]; then echo "Using inferred git base branch: $BASE_BRANCH"; fi
    fi
@@ -592,8 +603,10 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    **Required verifications before you reply.** Each costs a grep or two, and each is a required step, not a guideline. Run the ones that apply before the triage above is final, and state the result in the reply:
 
    - **Verify each link of a multi-step causal claim separately.** When a finding asserts a chain — this call does X, so Y follows, therefore Z is broken — check each link independently against the code instead of grading the comment as a whole. The reply must state which links held and which were restated or corrected. Answering wholesale goes wrong in both directions: a blanket accept commits the run to a false statement in the PR record, and a blanket reject discards the real defect the chain was built around.
-   - **Settle a flagged documentation claim against the adjacent code comment and the nearest test.** When a finding says a documented claim is wrong, read the code comment beside the implementation and the **name** of the nearest test before treating it as a code defect. When those two agree with each other and contradict the doc, the fix is prose-only and **no code change is in scope** — this is what stops a round "fixing" behaviour that was already correct.
+   - **Settle a flagged documentation claim against the adjacent code comment and the nearest test.** When a finding says a documented claim is wrong, read the code comment beside the implementation — and the package doc comment — and the **name** of the nearest test before re-deriving the behaviour from the implementation or treating it as a code defect. When those two agree with each other and contradict the doc, the fix is prose-only and **no code change is in scope** — this is what stops a round "fixing" behaviour that was already correct.
    - **Find the sibling constant before designing a tunable-constant fix.** Before implementing a timeout, deadline, retry count, limit, or any other tunable constant in response to an open-ended suggestion, grep the containing package for sibling constants and follow the naming and test-seam shape already established there. An open-ended suggestion invites an invented mechanism; a sibling turns the fix into a mechanical, reviewable change with a ready-made test shape.
+   - **Grep upstream before treating a skill-prose finding as single-site.** Before accepting that a finding quoting one line of skill prose is fixable at that line, grep the quoted remedy across the whole skills tree **and** the contract docs those skills are copied from. Treat the cited line as the symptom and fix the upstream contract passage in the same commit — it costs one grep, and a quoted-line-only fix leaves the contract re-seeding the identical prose into the next skill copied from it.
+   - **Sweep the rationale, not only the restatements.** When the fix edits a prose contract rule, re-read the passages around it before you reply and correct any that cite the **old** rule as their **reason**, not only the ones that restate it. A restatement is greppable and a rationale is not, so the half that rots is the half no grep hands you — a fix scoped to the flagged sentence ships a contradiction one paragraph away.
 
    **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline as premise-false and resolve with an explanation, affirm-and-record a declined remedy and resolve, or ask for clarification. Fixed, declined, and affirmed-but-declined threads must all be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
 
@@ -620,6 +633,13 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      4. **Require red for the right reason** and require the failure to name the property. A compile
         or harness error is not evidence that the gate detected the mutation.
      5. **Restore exactly, then prove the restore** and re-run the gate green.
+   - **When the diff touches markdown, read the rendered hunk before you commit** — including a
+     hunk a dispatched worker handed back, because delegating the edit does not delegate this.
+     Prettier's default `proseWrap: preserve` does not reflow prose, so a hand-split or inserted
+     sentence leaves an orphan line mid-paragraph that `--check` reports as correctly formatted.
+     Same class: run the formatter immediately after editing a markdown table cell and confirm the
+     churn is padding-only, because an edited cell can re-pad every row around it. The formatter
+     cannot be the only markdown check.
    - Run the repo's formatting and test gates:
      ```bash
      # Examples only; use the commands discovered for this repo
@@ -839,6 +859,10 @@ If the repair requires information not available (e.g., design decisions, extern
    inline, filter to the few relevant lines (`gh pr checks --json name,state,bucket`,
    `gh run view <run-id> --log-failed | tail`, `node scripts/review-feedback-probe.js`'s compact
    summary) instead of dumping.
+8. **Treat an Omission-Justifying Comment as a Hypothesis**: A comment explaining why something
+   was deliberately left undone may be over-conservative — the stated premise can be true while the
+   conclusion is not forced. Check whether the trade-off is actually forced before trusting it; if
+   it is not, report that rather than widening the fix.
 
 ---
 

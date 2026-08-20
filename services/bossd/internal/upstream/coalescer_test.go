@@ -101,6 +101,41 @@ func waitForTimer(clock *fakeClock, timeout time.Duration) {
 	}
 }
 
+// hasPendingTimerAtLeast reports whether the clock holds a pending timer whose
+// deadline is at least d ahead of virtual now.
+func (f *fakeClock) hasPendingTimerAtLeast(d time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	floor := f.now.Add(d)
+	for _, t := range f.timers {
+		if !t.fired && !t.stopped && !t.deadline.Before(floor) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForTimerAtLeast polls until the clock holds a pending timer at least
+// minDur ahead of virtual now, reporting whether one appeared.
+//
+// waitForTimer's "any pending timer" test is too weak whenever the code under
+// test puts more than one timer on the same clock. StreamClient is such a
+// case: its coalescer holds a 100ms window timer alongside the Run loop's
+// multi-second reconnect backoff, so a bare wait returns while the loop is
+// still short of its backoff select. Advancing there registers the backoff
+// timer with a deadline past the virtual now the test just moved to, leaving a
+// timer nothing can fire and a Run loop parked until the test times out.
+func waitForTimerAtLeast(clock *fakeClock, minDur, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if clock.hasPendingTimerAtLeast(minDur) {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return false
+}
+
 // Advance moves virtual time forward by d and fires any callbacks
 // whose deadline now lies in the past. Callbacks run synchronously
 // under the clock's own mutex dropped temporarily — this matches the

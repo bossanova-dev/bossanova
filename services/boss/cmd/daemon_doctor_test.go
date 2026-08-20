@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,11 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/termreset"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -567,7 +572,7 @@ func TestWarnIfDaemonBinaryStaleWritesExactlyOneStderrLine(t *testing.T) {
 // fix-terminal is the subcommand because it dials no daemon, mutates no global
 // state, touches no network, and is not one of the four remedy paths the
 // warning deliberately skips. rootCmd's PersistentPreRunE calls
-// warnIfDaemonBinaryStale BEFORE the gen-skill / fix-terminal / skills bypass
+// warnIfDaemonBinaryStale BEFORE the gen-skill / fix-terminal / tail / skills bypass
 // returns, so the bypass does not suppress the warning — and fix-terminal
 // writes a fixed sequence to cmd.OutOrStdout(), which makes the stdout
 // assertion below a real stream separation rather than an empty buffer nobody
@@ -1135,4 +1140,569 @@ func TestRunDaemonDoctorStaleServicePathIsUnhealthyOnNonDarwin(t *testing.T) {
 	if !strings.Contains(output.String(), "run 'boss daemon restart'") {
 		t.Errorf("output does not offer the restart remedy:\n%s", output.String())
 	}
+}
+
+// --- BOS-944: the live daemon-auth check -------------------------------------
+//
+// Every test below injects through the daemonAuthStateProbe package var rather
+// than standing a daemon up, for the same reason findDaemonProcess and
+// daemonDoctorGOOS are seams: the rendering is what is under test, and a real
+// daemon would make the answer depend on the developer's own login state.
+
+// stubDaemonAuthStateProbe pins the live-auth probe's answer and returns a
+// pointer to the number of times doctor asked for it. The count matters: the
+// probe must run exactly once per doctor invocation, and it must run at all —
+// a check that silently stops calling its probe still prints a clean section.
+func stubDaemonAuthStateProbe(t *testing.T, resp *pb.GetAuthStateResponse, probeErr error) *int {
+	t.Helper()
+	calls := 0
+	previous := daemonAuthStateProbe
+	daemonAuthStateProbe = func(context.Context) (*pb.GetAuthStateResponse, error) {
+		calls++
+		return resp, probeErr
+	}
+	t.Cleanup(func() { daemonAuthStateProbe = previous })
+	return &calls
+}
+
+// newDaemonDoctorAuthEnv isolates HOME (so no LaunchAgent plist is readable and
+// the service-PATH check cannot report stale) and forces the non-darwin path,
+// so the only verdict left in the run is the auth one. That keeps these tests
+// runnable on every platform instead of skipping on the CI runner.
+func newDaemonDoctorAuthEnv(t *testing.T) {
+	t.Helper()
+	prepareDaemonDoctorPaths(t)
+	previous := daemonDoctorGOOS
+	daemonDoctorGOOS = "linux"
+	t.Cleanup(func() { daemonDoctorGOOS = previous })
+}
+
+func runDaemonDoctorCapturing(t *testing.T) (string, error) {
+	t.Helper()
+	var output bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&output)
+	err := runDaemonDoctor(cmd)
+	return output.String(), err
+}
+
+func daemonDoctorAgo(d time.Duration) *timestamppb.Timestamp {
+	return timestamppb.New(time.Now().Add(-d))
+}
+
+// TestRunDaemonDoctorFailsWedgedDaemonAuth is the headline BOS-944 behaviour:
+// a daemon whose upstream authentication has been failing for over an hour must
+// come out of the doctor as a FAIL naming the duration and the enumerated
+// reason, with `boss login` as the remedy.
+func TestRunDaemonDoctorFailsWedgedDaemonAuth(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		NeedsLogin:         true,
+		ReloginReason:      "refresh_outcome_unknown",
+		AuthFailingSince:   daemonDoctorAgo(70 * time.Minute),
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a wedged daemon must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	for _, want := range []string{
+		"FAIL daemon auth: upstream authentication has been failing for 1h",
+		"(reason: refresh_outcome_unknown)",
+		// `never` and `unknown` are different sentences: the daemon has been
+		// up and has never once registered, which is not the same as a
+		// timestamp we could not read.
+		"last successful registration: never",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	remediation := strings.Index(got, "\nRemediation:")
+	login := strings.Index(got, "run 'boss login'")
+	if remediation < 0 || login < remediation {
+		t.Errorf("the login remedy must appear under Remediation:\n%s", got)
+	}
+}
+
+func TestRunDaemonDoctorReportsSignedInDaemonAuth(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		UpstreamConnected:  true,
+		LastRegisteredAt:   daemonDoctorAgo(2 * time.Minute),
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if err != nil {
+		t.Fatalf("a healthy daemon must not be unhealthy: %v\n%s", err, got)
+	}
+	for _, want := range []string{
+		"daemon auth: signed in — last successful registration: 2m",
+		"(stream connected: true)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"FAIL daemon auth", "boss login"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a healthy daemon emitted %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorFailsSignedInButUnregisteredDaemon pins the actual BOS-942
+// incident shape: the daemon does NOT think it needs a login, so nothing in the
+// system prompts for one, while its re-registration has failed for 45 minutes.
+// A suite that only exercised needs_login=true would have stayed green through
+// the entire outage.
+func TestRunDaemonDoctorFailsSignedInButUnregisteredDaemon(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		NeedsLogin:         false,
+		UpstreamConnected:  false,
+		AuthFailingSince:   daemonDoctorAgo(45 * time.Minute),
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("the BOS-942 shape must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	for _, want := range []string{
+		"FAIL daemon auth: upstream authentication has been failing for 45m",
+		"(reason: not reported)",
+		"the daemon has not flagged itself as needing a login",
+		"run 'boss login'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunDaemonDoctorReportsAuthStateUnknownWhenDaemonUnreachable(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, nil, errors.New("dial unix /tmp/bossd.sock: connect: connection refused"))
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if err != nil {
+		t.Fatalf("an unreachable daemon is diagnosed by the install/start checks, not this one: %v\n%s", err, got)
+	}
+	if !strings.Contains(got, "daemon auth: unknown — could not reach the daemon") {
+		t.Errorf("output missing the unreachable verdict:\n%s", got)
+	}
+	for _, unwanted := range []string{"FAIL daemon auth", "boss login"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("could-not-evaluate was reported as %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorReportsAuthStateUnknownOnOlderDaemon covers the normal
+// state for the minutes between a CLI upgrade and the daemon restart that
+// follows it. It asserts BOTH texts in one test on purpose: the two unknowns
+// have different remedies, and collapsing them into one string is exactly the
+// edit this pins against.
+func TestRunDaemonDoctorReportsAuthStateUnknownOnOlderDaemon(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, nil, connect.NewError(connect.CodeUnimplemented, errors.New("unknown method GetAuthState")))
+
+	older, err := runDaemonDoctorCapturing(t)
+	if err != nil {
+		t.Fatalf("an older daemon must not be reported unhealthy: %v\n%s", err, older)
+	}
+	for _, want := range []string{
+		"daemon auth: unknown — this daemon predates the check",
+		"run 'boss daemon restart'",
+	} {
+		if !strings.Contains(older, want) {
+			t.Errorf("output missing %q:\n%s", want, older)
+		}
+	}
+	if strings.Contains(older, "could not reach the daemon") {
+		t.Errorf("an older daemon was reported as unreachable:\n%s", older)
+	}
+
+	stubDaemonAuthStateProbe(t, nil, errors.New("connection refused"))
+	unreachable, err := runDaemonDoctorCapturing(t)
+	if err != nil {
+		t.Fatalf("an unreachable daemon must not be reported unhealthy: %v\n%s", err, unreachable)
+	}
+	if !strings.Contains(unreachable, "could not reach the daemon") {
+		t.Errorf("output missing the unreachable verdict:\n%s", unreachable)
+	}
+	if strings.Contains(unreachable, "predates the check") {
+		t.Errorf("an unreachable daemon was reported as an old one:\n%s", unreachable)
+	}
+}
+
+// TestRunDaemonDoctorReportsDeliberateSignOutWithoutFailing is the
+// teardown-vs-failure discriminator. `boss logout` leaves needs_login=true on a
+// perfectly healthy daemon; reporting that as FAIL would fire this check on
+// every deliberate sign-out and teach operators to ignore it.
+func TestRunDaemonDoctorReportsDeliberateSignOutWithoutFailing(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		NeedsLogin:         true,
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if err != nil {
+		t.Fatalf("a deliberate sign-out is not an unhealthy daemon: %v\n%s", err, got)
+	}
+	if !strings.Contains(got, "daemon auth: signed out — run 'boss login' to sign in again") {
+		t.Errorf("output missing the signed-out line:\n%s", got)
+	}
+	if strings.Contains(got, "FAIL daemon auth") {
+		t.Errorf("a deliberate sign-out was reported as a failure:\n%s", got)
+	}
+	// With no enumerated reason there is nothing to put in parentheses, and an
+	// empty "(reason: )" reads as a bug in the daemon rather than an absence.
+	if strings.Contains(got, "(reason:") {
+		t.Errorf("an empty relogin reason was rendered:\n%s", got)
+	}
+	if strings.Contains(got, "\nRemediation:") {
+		t.Errorf("a healthy sign-out opened the remediation block:\n%s", got)
+	}
+}
+
+func TestRunDaemonDoctorReportsLocalOnlyDaemonAuthAsHealthy(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{UpstreamConfigured: false}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if err != nil {
+		t.Fatalf("a local-only daemon is a supported configuration: %v\n%s", err, got)
+	}
+	if !strings.Contains(got, "daemon auth: not configured (local-only daemon)") {
+		t.Errorf("output missing the local-only line:\n%s", got)
+	}
+	if strings.Contains(got, "FAIL") {
+		t.Errorf("a local-only daemon was reported as failing:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorAuthCheckRunsOnNonDarwin: an upstream credential wedge has
+// nothing to do with launchd, so the check must run ahead of the macOS-only
+// early return and its verdict must survive it. Mirrors
+// TestRunDaemonDoctorStaleServicePathIsUnhealthyOnNonDarwin.
+func TestRunDaemonDoctorAuthCheckRunsOnNonDarwin(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	calls := stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		ReloginReason:      "refresh_token_rejected",
+		AuthFailingSince:   daemonDoctorAgo(30 * time.Minute),
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if !strings.Contains(got, "not applicable on linux") {
+		t.Fatalf("the fixture did not take the non-darwin path:\n%s", got)
+	}
+	if *calls != 1 {
+		t.Errorf("auth probe called %d times on the non-darwin path, want 1", *calls)
+	}
+	// The LINE itself, not just its consequences. A verdict that reached the
+	// exit status and the remediation block while the section stayed silent
+	// would satisfy every other assertion here and still leave an operator
+	// staring at a failing command with nothing on screen explaining why.
+	for _, want := range []string{
+		"FAIL daemon auth: upstream authentication has been failing for 30m",
+		"(reason: refresh_token_rejected)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the non-darwin path dropped %q from the auth line:\n%s", want, got)
+		}
+	}
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Errorf("a wedged daemon must stay unhealthy through the early return, got err=%v:\n%s", err, got)
+	}
+	if !strings.Contains(got, "run 'boss login'") {
+		t.Errorf("the non-darwin early return dropped the login remedy:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorWedgedAuthAloneDoesNotSuggestRestart: a restart cannot fix
+// dead credentials — they are still dead afterwards — so an auth wedge must not
+// be folded into the flag that prints the restart remedy.
+func TestRunDaemonDoctorWedgedAuthAloneDoesNotSuggestRestart(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		// Exercise the full macOS path, where the non-auth unhealthy flag that
+		// owns the restart remedy actually exists.
+		home, _, stagedPath := prepareDaemonDoctorInstall(t)
+		writeDaemonDoctorPlist(t, home, stagedPath)
+		writeDaemonDoctorState(t, stagedPath, true, nil)
+	} else {
+		newDaemonDoctorAuthEnv(t)
+	}
+	stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+		UpstreamConfigured: true,
+		ReloginReason:      "refresh_outcome_unknown",
+		AuthFailingSince:   daemonDoctorAgo(90 * time.Minute),
+	}, nil)
+
+	got, err := runDaemonDoctorCapturing(t)
+
+	if !errors.Is(err, errDaemonDoctorUnhealthy) {
+		t.Fatalf("a wedged daemon must be unhealthy, got err=%v:\n%s", err, got)
+	}
+	if !strings.Contains(got, "run 'boss login'") {
+		t.Errorf("output missing the login remedy:\n%s", got)
+	}
+	if strings.Contains(got, "run 'boss daemon restart'") {
+		t.Errorf("an auth wedge offered a restart, which cannot fix it:\n%s", got)
+	}
+}
+
+// TestRunDaemonDoctorAuthProbeDoesNotStartDaemon: doctor is a diagnostic. If
+// the auth probe travelled through the autostart path it would launch the very
+// daemon whose absence it was about to report, and the "could not reach the
+// daemon" branch would become unreachable.
+func TestRunDaemonDoctorAuthProbeDoesNotStartDaemon(t *testing.T) {
+	newDaemonDoctorAuthEnv(t)
+	previous := daemonEnsureRunning
+	daemonEnsureRunning = func(string) error {
+		t.Error("daemon doctor started the daemon it was diagnosing")
+		return nil
+	}
+	t.Cleanup(func() { daemonEnsureRunning = previous })
+
+	calls := stubDaemonAuthStateProbe(t, nil, errors.New("connection refused"))
+
+	if _, err := runDaemonDoctorCapturing(t); err != nil {
+		t.Fatalf("runDaemonDoctor: %v", err)
+	}
+	if *calls != 1 {
+		t.Errorf("auth probe called %d times, want 1", *calls)
+	}
+}
+
+// TestRunDaemonDoctorAuthVerdictDiscriminator walks all four combinations of
+// (relogin_reason present/absent) x (auth_failing_since present/absent) with
+// needs_login=true throughout, because that is where the two states that must
+// NOT be conflated live.
+//
+// A reason with no failure clock is the case this table exists for: it used to
+// print the benign signed-out line and exit zero, so a daemon whose refresh
+// token had been rejected looked exactly like one somebody had deliberately
+// logged out of.
+func TestRunDaemonDoctorAuthVerdictDiscriminator(t *testing.T) {
+	cases := []struct {
+		name         string
+		reason       string
+		failingSince *timestamppb.Timestamp
+		wantFail     bool
+		wantLines    []string
+		unwanted     []string
+	}{
+		{
+			name:         "reason and clock",
+			reason:       "refresh_token_rejected",
+			failingSince: daemonDoctorAgo(20 * time.Minute),
+			wantFail:     true,
+			wantLines: []string{
+				"FAIL daemon auth: upstream authentication has been failing for 20m",
+				"(reason: refresh_token_rejected)",
+			},
+			unwanted: []string{"signed out"},
+		},
+		{
+			name:         "clock only",
+			failingSince: daemonDoctorAgo(20 * time.Minute),
+			wantFail:     true,
+			wantLines: []string{
+				"FAIL daemon auth: upstream authentication has been failing for 20m",
+				"(reason: not reported)",
+			},
+			unwanted: []string{"signed out"},
+		},
+		{
+			name:     "reason only",
+			reason:   "refresh_token_rejected",
+			wantFail: true,
+			wantLines: []string{
+				"FAIL daemon auth: upstream authentication has been failing for an unknown duration",
+				"(reason: refresh_token_rejected)",
+			},
+			// The whole point: an enumerated reason is a fault, never the
+			// reassuring line, and never a zero exit.
+			unwanted: []string{"signed out"},
+		},
+		{
+			name:      "neither — the deliberate logout",
+			wantFail:  false,
+			wantLines: []string{"daemon auth: signed out — run 'boss login' to sign in again"},
+			unwanted:  []string{"FAIL daemon auth", "\nRemediation:"},
+		},
+		{
+			// The discriminator branches on the RAW reason, not the
+			// rendered one, and this is the only case that can tell the
+			// difference: a reason made entirely of runes the sanitizer
+			// drops renders as the empty string, so a discriminator reading
+			// the sanitized value would fall through to the benign
+			// signed-out line — a daemon whose credentials were rejected
+			// reported as one somebody logged out of. The clock is
+			// deliberately absent so the `failingSince != nil` disjunct
+			// cannot carry the case.
+			name:     "reason only, and every rune of it is unprintable",
+			reason:   "\n\u202E\u2028",
+			wantFail: true,
+			wantLines: []string{
+				"FAIL daemon auth: upstream authentication has been failing for an unknown duration",
+				"(reason: not reported)",
+			},
+			unwanted: []string{"signed out"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			newDaemonDoctorAuthEnv(t)
+			stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+				UpstreamConfigured: true,
+				NeedsLogin:         true,
+				ReloginReason:      tc.reason,
+				AuthFailingSince:   tc.failingSince,
+			}, nil)
+
+			got, err := runDaemonDoctorCapturing(t)
+
+			if tc.wantFail && !errors.Is(err, errDaemonDoctorUnhealthy) {
+				t.Fatalf("want unhealthy, got err=%v:\n%s", err, got)
+			}
+			if !tc.wantFail && err != nil {
+				t.Fatalf("want healthy, got err=%v:\n%s", err, got)
+			}
+			for _, want := range tc.wantLines {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tc.unwanted {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("output contains %q:\n%s", unwanted, got)
+				}
+			}
+			if tc.wantFail {
+				remediation := strings.Index(got, "\nRemediation:")
+				login := strings.Index(got, "run 'boss login'")
+				if remediation < 0 || login < remediation {
+					t.Errorf("the login remedy must appear under Remediation:\n%s", got)
+				}
+			}
+		})
+	}
+}
+
+// TestRunDaemonDoctorBoundsDaemonSuppliedStrings: the reason and the transport
+// error come from another process and land verbatim in an operator's terminal.
+// Both are bounded and stripped of control characters, so a multi-line or
+// screen-length value cannot scroll the verdict away or repaint the terminal
+// around it. Sanitising only ever removes material — AC #15's negative
+// assertion is about what must never reach this output in the first place.
+func TestRunDaemonDoctorBoundsDaemonSuppliedStrings(t *testing.T) {
+	t.Run("relogin reason", func(t *testing.T) {
+		newDaemonDoctorAuthEnv(t)
+		stubDaemonAuthStateProbe(t, &pb.GetAuthStateResponse{
+			UpstreamConfigured: true,
+			ReloginReason:      "refresh_token_rejected\nHTTP/1.1 401\r\n\tbody: " + strings.Repeat("x", 400),
+			AuthFailingSince:   daemonDoctorAgo(time.Minute),
+		}, nil)
+
+		got, _ := runDaemonDoctorCapturing(t)
+
+		authLine := ""
+		for _, line := range strings.Split(got, "\n") {
+			if strings.Contains(line, "FAIL daemon auth") {
+				authLine = line
+			}
+		}
+		if authLine == "" {
+			t.Fatalf("no FAIL auth line to inspect:\n%s", got)
+		}
+		if strings.Contains(authLine, "\r") {
+			t.Errorf("the rendered reason kept a carriage return: %q", authLine)
+		}
+		if strings.Contains(got, strings.Repeat("x", daemonDoctorMaxFieldLen+1)) {
+			t.Errorf("the reason was not truncated:\n%s", got)
+		}
+		if !strings.Contains(authLine, "refresh_token_rejected") {
+			t.Errorf("sanitising dropped the enumerated reason itself: %q", authLine)
+		}
+	})
+
+	t.Run("transport error", func(t *testing.T) {
+		newDaemonDoctorAuthEnv(t)
+		stubDaemonAuthStateProbe(t, nil, errors.New("dial unix: connection refused\n"+strings.Repeat("y", 400)))
+
+		got, _ := runDaemonDoctorCapturing(t)
+
+		unknown := ""
+		for _, line := range strings.Split(got, "\n") {
+			if strings.Contains(line, "daemon auth: unknown") {
+				unknown = line
+			}
+		}
+		if unknown == "" {
+			t.Fatalf("no unknown auth line to inspect:\n%s", got)
+		}
+		if strings.Contains(got, strings.Repeat("y", daemonDoctorMaxFieldLen+1)) {
+			t.Errorf("the transport error was not truncated:\n%s", got)
+		}
+		if !strings.Contains(unknown, "connection refused") {
+			t.Errorf("sanitising dropped the cause: %q", unknown)
+		}
+	})
+}
+
+// TestSanitizeDaemonDoctorField pins the transformation itself: control
+// characters collapse to single spaces, and the result is bounded.
+func TestSanitizeDaemonDoctorField(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty stays empty", in: "", want: ""},
+		{name: "plain reason is untouched", in: "refresh_token_rejected", want: "refresh_token_rejected"},
+		{name: "newlines collapse", in: "a\nb", want: "a b"},
+		{name: "runs collapse to one space", in: "a\r\n\t   b", want: "a b"},
+		{name: "escape sequences are stripped", in: "a\x1b[31mred", want: "a [31mred"},
+		{name: "surrounding whitespace is trimmed", in: "\n  reason  \n", want: "reason"},
+		// The classes that reorder or hide a terminal line WITHOUT being
+		// control characters (Cc). unicode.IsControl does not see any of
+		// these, so they are what distinguishes the printable-rune predicate
+		// from the control-character one it replaced.
+		{name: "bidi override is removed", in: "a\u202Eb", want: "a b"},
+		{name: "zero-width joiner is removed", in: "a\u200Db", want: "a b"},
+		{name: "line separator is removed", in: "a\u2028b", want: "a b"},
+		{name: "non-breaking space collapses", in: "a\u00A0b", want: "a b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeDaemonDoctorField(tc.in); got != tc.want {
+				t.Errorf("sanitizeDaemonDoctorField(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("length is bounded", func(t *testing.T) {
+		got := sanitizeDaemonDoctorField(strings.Repeat("z", 500))
+		if len([]rune(got)) != daemonDoctorMaxFieldLen+1 {
+			t.Fatalf("truncated length = %d runes, want %d plus the ellipsis", len([]rune(got)), daemonDoctorMaxFieldLen)
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("truncation is unmarked, so a cut value reads as the whole value: %q", got)
+		}
+	})
 }

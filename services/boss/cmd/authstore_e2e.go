@@ -4,6 +4,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"sync"
@@ -16,7 +18,12 @@ import (
 // present. Using a distinct error avoids the "run 'boss login' to reset"
 // migration warning that maybeWarnCredentialsUnreadable would otherwise
 // print to stderr during tests.
-var errE2ENoTokens = errors.New("e2e memory store: no tokens")
+// It wraps fs.ErrNotExist so the manager's missing-record discrimination
+// (tokenKeyMissing) classifies it the same way it classifies a real keychain
+// with no item — as "no record", not as an unreadable one. Without that the
+// e2e store would push every absent-record path onto the inconclusive branch
+// and the seam would prove something the real backend never does.
+var errE2ENoTokens = fmt.Errorf("e2e memory store: no tokens: %w", fs.ErrNotExist)
 
 // errE2ELogoutFailed is a deterministic, non-secret failed-delete seam for
 // TUI proof scenarios. The failure retains the seeded record.
@@ -47,7 +54,7 @@ func resolveE2ETokenStore() auth.TokenStore {
 	reloginReason := resolveE2EReloginReason()
 	if email == "" {
 		if reloginReason == "" {
-			return &memoryTokenStore{}
+			return &memoryTokenStore{saveNoop: e2eLoginSaveNoopEnabled()}
 		}
 		email = e2eReloginEmail
 	}
@@ -56,7 +63,24 @@ func resolveE2ETokenStore() auth.TokenStore {
 		tokens.NeedsRelogin = true
 		tokens.ReloginReason = reloginReason
 	}
-	return &memoryTokenStore{tokens: tokens, failDelete: e2eLogoutFailureEnabled()}
+	return &memoryTokenStore{
+		tokens:     tokens,
+		failDelete: e2eLogoutFailureEnabled(),
+		saveNoop:   e2eLoginSaveNoopEnabled(),
+	}
+}
+
+// e2eLoginSaveNoopEnabled stages the failure class BOS-659 shipped blind: a
+// credential write that reports success and stores nothing. Falsey values are
+// off for the same reason resolveE2EReloginReason treats them as off — an
+// operator who exports "0" plainly means off.
+func e2eLoginSaveNoopEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BOSS_AUTH_E2E_LOGIN_SAVE_NOOP"))) {
+	case "", "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func e2eLogoutFailureEnabled() bool {
@@ -105,11 +129,17 @@ type memoryTokenStore struct {
 	mu         sync.Mutex
 	tokens     *auth.Tokens
 	failDelete bool
+	// saveNoop makes Save report success without storing anything, which is
+	// exactly the shape of the production bug this seam exists to reproduce.
+	saveNoop bool
 }
 
 func (m *memoryTokenStore) Save(tokens *auth.Tokens) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.saveNoop {
+		return nil
+	}
 	m.tokens = tokens
 	return nil
 }

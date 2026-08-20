@@ -70,7 +70,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
 
 | Reference                              | Read it when…                                                                 |
 | -------------------------------------- | ----------------------------------------------------------------------------- |
-| `references/core-spine.md`             | Orienting — the portable terminal-state/review/finalize spine                 |
+| `references/core-spine.md`             | Orienting — the portable spine; before any skill-body or contract prose edit  |
 | `references/code-reviewer-template.md` | Step 6 — the reviewer prompt template                                         |
 | `references/receiving-code-review.md`  | Step 6 — the fix discipline                                                   |
 | `references/review-stack.md`           | Step 6 — full review protocol (6b/6c)                                         |

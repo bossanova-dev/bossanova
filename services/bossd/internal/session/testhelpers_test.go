@@ -53,7 +53,12 @@ type fakeAgentForLifecycle struct {
 	OnConfigureHook                 func()
 	ResolveInteractiveSessionIDFunc func(*bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	SuggestPRTitleFunc              func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
-	IgnoredDirtyFiles               []string
+	// HasQuestionPromptFunc overrides the modal probe the BOS-600/BOS-894
+	// delivery gate makes through this client. Left nil the fake answers "not a
+	// modal", which is what every pre-gate test expects; a test that wants a
+	// refusal — or a degraded gate — supplies one.
+	HasQuestionPromptFunc func(*bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
+	IgnoredDirtyFiles     []string
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -146,7 +151,10 @@ func (f *fakeAgentForLifecycle) GetChatTitle(_ context.Context, _ *bossanovav1.G
 	return &bossanovav1.GetChatTitleResponse{}, nil
 }
 
-func (f *fakeAgentForLifecycle) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+func (f *fakeAgentForLifecycle) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	if f.HasQuestionPromptFunc != nil {
+		return f.HasQuestionPromptFunc(req)
+	}
 	return &bossanovav1.HasQuestionPromptResponse{}, nil
 }
 

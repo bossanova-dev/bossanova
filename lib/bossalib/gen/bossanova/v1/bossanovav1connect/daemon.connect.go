@@ -154,6 +154,9 @@ const (
 	// DaemonServiceNotifyAuthChangeProcedure is the fully-qualified name of the DaemonService's
 	// NotifyAuthChange RPC.
 	DaemonServiceNotifyAuthChangeProcedure = "/bossanova.v1.DaemonService/NotifyAuthChange"
+	// DaemonServiceGetAuthStateProcedure is the fully-qualified name of the DaemonService's
+	// GetAuthState RPC.
+	DaemonServiceGetAuthStateProcedure = "/bossanova.v1.DaemonService/GetAuthState"
 	// DaemonServiceCreateCronJobProcedure is the fully-qualified name of the DaemonService's
 	// CreateCronJob RPC.
 	DaemonServiceCreateCronJobProcedure = "/bossanova.v1.DaemonService/CreateCronJob"
@@ -328,6 +331,14 @@ type DaemonServiceClient interface {
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
+	// GetAuthState reports the RUNNING daemon's live upstream auth state.
+	// Surfaced via `boss daemon doctor`. It exists because a locally readable
+	// credential record says nothing about whether this daemon can actually
+	// talk to the orchestrator: the BOS-942 incident had a present, parseable
+	// `workos-tokens-v1` record throughout while re-registration failed every
+	// 30s. Only the daemon itself is an authority on that, so a local re-read
+	// is architecturally incapable of catching it.
+	GetAuthState(context.Context, *connect.Request[v1.GetAuthStateRequest]) (*connect.Response[v1.GetAuthStateResponse], error)
 	// CreateCronJob registers a new scheduled prompt for a repo.
 	CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error)
 	// ListCronJobs returns cron jobs, optionally filtered by repo.
@@ -735,6 +746,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
 			connect.WithClientOptions(opts...),
 		),
+		getAuthState: connect.NewClient[v1.GetAuthStateRequest, v1.GetAuthStateResponse](
+			httpClient,
+			baseURL+DaemonServiceGetAuthStateProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetAuthState")),
+			connect.WithClientOptions(opts...),
+		),
 		createCronJob: connect.NewClient[v1.CreateCronJobRequest, v1.CreateCronJobResponse](
 			httpClient,
 			baseURL+DaemonServiceCreateCronJobProcedure,
@@ -979,6 +996,7 @@ type daemonServiceClient struct {
 	getSessionStatuses          *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
 	deliverVCSEvent             *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 	notifyAuthChange            *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
+	getAuthState                *connect.Client[v1.GetAuthStateRequest, v1.GetAuthStateResponse]
 	createCronJob               *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
 	listCronJobs                *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
 	getCronJob                  *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
@@ -1217,6 +1235,11 @@ func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.
 // NotifyAuthChange calls bossanova.v1.DaemonService.NotifyAuthChange.
 func (c *daemonServiceClient) NotifyAuthChange(ctx context.Context, req *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error) {
 	return c.notifyAuthChange.CallUnary(ctx, req)
+}
+
+// GetAuthState calls bossanova.v1.DaemonService.GetAuthState.
+func (c *daemonServiceClient) GetAuthState(ctx context.Context, req *connect.Request[v1.GetAuthStateRequest]) (*connect.Response[v1.GetAuthStateResponse], error) {
+	return c.getAuthState.CallUnary(ctx, req)
 }
 
 // CreateCronJob calls bossanova.v1.DaemonService.CreateCronJob.
@@ -1459,6 +1482,14 @@ type DaemonServiceHandler interface {
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
+	// GetAuthState reports the RUNNING daemon's live upstream auth state.
+	// Surfaced via `boss daemon doctor`. It exists because a locally readable
+	// credential record says nothing about whether this daemon can actually
+	// talk to the orchestrator: the BOS-942 incident had a present, parseable
+	// `workos-tokens-v1` record throughout while re-registration failed every
+	// 30s. Only the daemon itself is an authority on that, so a local re-read
+	// is architecturally incapable of catching it.
+	GetAuthState(context.Context, *connect.Request[v1.GetAuthStateRequest]) (*connect.Response[v1.GetAuthStateResponse], error)
 	// CreateCronJob registers a new scheduled prompt for a repo.
 	CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error)
 	// ListCronJobs returns cron jobs, optionally filtered by repo.
@@ -1862,6 +1893,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetAuthStateHandler := connect.NewUnaryHandler(
+		DaemonServiceGetAuthStateProcedure,
+		svc.GetAuthState,
+		connect.WithSchema(daemonServiceMethods.ByName("GetAuthState")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceCreateCronJobHandler := connect.NewUnaryHandler(
 		DaemonServiceCreateCronJobProcedure,
 		svc.CreateCronJob,
@@ -2144,6 +2181,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
 		case DaemonServiceNotifyAuthChangeProcedure:
 			daemonServiceNotifyAuthChangeHandler.ServeHTTP(w, r)
+		case DaemonServiceGetAuthStateProcedure:
+			daemonServiceGetAuthStateHandler.ServeHTTP(w, r)
 		case DaemonServiceCreateCronJobProcedure:
 			daemonServiceCreateCronJobHandler.ServeHTTP(w, r)
 		case DaemonServiceListCronJobsProcedure:
@@ -2381,6 +2420,10 @@ func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *conne
 
 func (UnimplementedDaemonServiceHandler) NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.NotifyAuthChange is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetAuthState(context.Context, *connect.Request[v1.GetAuthStateRequest]) (*connect.Response[v1.GetAuthStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetAuthState is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error) {

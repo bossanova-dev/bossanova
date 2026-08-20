@@ -258,8 +258,12 @@ func TestManagerLogin_ClearsMarker(t *testing.T) {
 	}}
 	mgr := NewManager(store, Config{ClientID: "test-client"})
 
-	if err := mgr.PollLogin(context.Background(), "device", 0); err != nil {
+	verdict, err := mgr.PollLogin(context.Background(), "device", 0)
+	if err != nil {
 		t.Fatalf("PollLogin returned error: %v", err)
+	}
+	if verdict.Outcome != LoginVerified {
+		t.Fatalf("verdict = %s/%s, want verified", verdict.Outcome, verdict.Reason)
 	}
 	if store.tokens.NeedsRelogin || store.tokens.ReloginReason != "" {
 		t.Fatalf("login saved a flagged record: %+v", store.tokens)

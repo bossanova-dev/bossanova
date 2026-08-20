@@ -27,13 +27,25 @@ func tailCmd() *cobra.Command {
 	var filter logtail.Filter
 	cmd := &cobra.Command{
 		Use: "tail [source...]", Short: "Tail daemon and agent logs",
+		// Two surfaces, one command. Reaching for `boss tail` to debug an agent
+		// run and getting bossd records back reads as "the agent went silent"
+		// when the data simply lives in a different file, so the help states
+		// which sources hold which and names the agent-log path outright.
 		Long: "Show recent log lines without needing to know where the log files live.\n\n" +
-			"Sources: " + strings.Join(bossalog.Services(), ", ") + " (default bossd), or an\n" +
-			"agent-session id to read that agent's log — the raw tmux capture an interactive\n" +
-			"chat writes, or the JSON lines a headless run writes, detected per file. Pass\n" +
-			"several sources to interleave them by timestamp; --all merges the service logs.\n" +
-			"Agent output has no level, so it always passes --level, --repo and --plugin.\n" +
-			"-n counts physical lines read from each source before filtering. Non-JSON lines always pass filters.",
+			"Two separate surfaces:\n" +
+			"  SERVICE logs — " + strings.Join(bossalog.Services(), ", ") + " (default bossd) — carry service\n" +
+			"  records ONLY. No agent or chat output ever appears in them, however silent\n" +
+			"  they look.\n\n" +
+			"  AGENT/CHAT output is the other surface, read by passing an agent-session id\n" +
+			"  in place of a service name. It lives at\n" +
+			"  <worktree_base_dir>/../agent-logs/<agent-session-id>.log and holds either the\n" +
+			"  raw tmux capture an interactive chat writes or the {\"ts\",\"text\"} JSON lines a\n" +
+			"  headless run writes (stdout AND stderr, [runner] diagnostics interleaved),\n" +
+			"  detected per file.\n\n" +
+			"Pass several sources to interleave them by timestamp; --all merges the service logs\n" +
+			"only, never the agent logs. Agent output has no level, so it always passes --level,\n" +
+			"--repo and --plugin. -n counts physical lines read from each source before\n" +
+			"filtering. Non-JSON lines always pass filters.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Go otherwise exits with SIGPIPE before a stdout write can return
 			// EPIPE, which makes `boss tail -f | head` report status 141 instead

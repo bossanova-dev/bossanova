@@ -86,9 +86,12 @@ describe('sync-codex-skills', () => {
     () => {
       const skill = fs.readFileSync(privateDebtSkillPath, 'utf8')
       assert.match(skill, /^name: bs-sweep-debt/m)
-      assert.match(skill, /Push at most one PR-worthy session-branch commit per run/)
-      assert.match(skill, /Windows WSL/)
-      assert.match(skill, /macOS, Linux, and Windows WSL/)
+      assert.match(
+        skill,
+        /Push\s+at\s+most\s+one\s+PR-worthy\s+session-branch\s+commit\s+per\s+run/,
+      )
+      assert.match(skill, /Windows\s+WSL/)
+      assert.match(skill, /macOS, Linux, and\s+Windows\s+WSL/)
       assert.match(skill, /`\/boss-finalize`/)
       assert.match(skill, /READY_GREEN_PR/)
       assert.match(skill, /NO_CHANGE/)
@@ -99,14 +102,14 @@ describe('sync-codex-skills', () => {
       // so would survive deleting the fenced call outright.
       assert.match(
         skill,
-        /bash "\$\(git rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
+        /bash "\$\(git[ ]rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
       )
-      assert.match(skill, /gh pr checks/)
+      assert.match(skill, /gh\s+pr\s+checks/)
       assert.match(skill, /isDraft=false/)
       assert.doesNotMatch(skill, /NO_PR/)
       assert.doesNotMatch(skill, /BRANCH_PUSHED/)
       assert.doesNotMatch(skill, /BLOCKED/)
-      assert.match(skill, /Platform Portability Scan/)
+      assert.match(skill, /Platform\s+Portability\s+Scan/)
     },
   )
 
@@ -119,7 +122,7 @@ describe('sync-codex-skills', () => {
       const skill = fs.readFileSync(privateMutationSkillPath, 'utf8')
 
       assert.match(skill, /^name: bs-sweep-mutation/m)
-      assert.match(skill, /current session branch/)
+      assert.match(skill, /current\s+session\s+branch/)
       assert.match(skill, /READY_GREEN_PR/)
       assert.match(skill, /NO_CHANGE/)
       // BOS-640: `gh pr create` / `gh pr ready` moved into skills-toolbox/sweep-pr-gate.sh
@@ -128,11 +131,11 @@ describe('sync-codex-skills', () => {
       // would also be satisfied by the resident "executed, not read" prose sentence.
       assert.match(
         skill,
-        /bash "\$\(git rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
+        /bash "\$\(git[ ]rev-parse --show-toplevel\)\/skills-toolbox\/sweep-pr-gate\.sh"\)"/,
       )
-      assert.match(skill, /gh pr checks/)
+      assert.match(skill, /gh\s+pr\s+checks/)
       assert.match(skill, /isDraft=false/)
-      assert.doesNotMatch(skill, /git switch -c "\$BRANCH"/)
+      assert.doesNotMatch(skill, /git\s+switch -c "\$BRANCH"/)
       assert.doesNotMatch(skill, /NO_PR/)
       assert.doesNotMatch(skill, /BRANCH_PUSHED/)
       assert.doesNotMatch(skill, /BLOCKED/)
@@ -150,15 +153,15 @@ describe('sync-codex-skills', () => {
       assert.match(skill, /^name: boss-plan/m)
       // Both labels are documented as workspace facts and mutually exclusive.
       assert.match(skill, /`agent-friendly`, `needs-human`/)
-      assert.match(skill, /mutually exclusive/)
+      assert.match(skill, /mutually\s+exclusive/)
       // Agent-friendly is the default, applied to every plan unless blocked.
-      assert.match(skill, /Agent-friendly is the default/)
+      assert.match(skill, /Agent-friendly\s+is\s+the\s+default/)
       // needs-human is the exception and requires the explanation section.
       assert.match(skill, /`needs-human`/)
-      assert.match(skill, /never both/)
-      assert.match(skill, /## Why this needs a human/)
+      assert.match(skill, /never\s+both/)
+      assert.match(skill, /## Why\s+this\s+needs\s+a\s+human/)
       // Complexity alone must never downgrade a plan to needs-human.
-      assert.match(skill, /[Cc]omplexity alone is\s+\*?\*?not\*?\*? a reason/)
+      assert.match(skill, /[Cc]omplexity\s+alone\s+is\s+\*?\*?not\*?\*? a\s+reason/)
     },
   )
 
@@ -186,7 +189,7 @@ Body
     writeFile(path.join(sourceRoot, 'first', 'SKILL.md'), skillMarkdown('same-name'))
     writeFile(path.join(sourceRoot, 'second', 'SKILL.md'), skillMarkdown('same-name'))
 
-    assert.throws(() => collectSkillSources(sourceRoot), /Duplicate skill name/)
+    assert.throws(() => collectSkillSources(sourceRoot), /Duplicate\s+skill\s+name/)
   })
 
   it('normalizes lowercase skill.md to SKILL.md and adds a generated header', () => {
@@ -277,15 +280,15 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
 \`AGENTS.md\`, \`CLAUDE.md\`
 `)
 
-    assert.match(rewritten, /Codex should update AGENTS\.md/)
+    assert.match(rewritten, /Codex\s+should\s+update\s+AGENTS\.md/)
     assert.match(rewritten, /~\/\.codex\/skills\/bossanova\/boss-finalize\/add-pr-numbers\.sh/)
     assert.match(rewritten, /`AGENTS\.md`, `CLAUDE\.md`/)
     assert.match(rewritten, /update_plan/)
-    assert.match(rewritten, /file-reading tool/)
+    assert.match(rewritten, /file-reading\s+tool/)
     assert.match(rewritten, /apply_patch/)
-    assert.match(rewritten, /A `write`\/`apply_patch` "modified since read" warning/)
+    assert.match(rewritten, /A `write`\/`apply_patch` "modified\s+since\s+read" warning/)
     assert.doesNotMatch(rewritten, /`apply_patch`\/`apply_patch`/)
-    assert.match(rewritten, /Codex browser automation/)
+    assert.match(rewritten, /Codex\s+browser\s+automation/)
   })
 
   it('rewrites copied reference markdown for Codex', () => {
@@ -308,7 +311,7 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
     assert.match(reference, /node \.codex\/skills\/current\/gate\/gate\.mjs/)
     assert.match(reference, /Codex/)
     assert.doesNotMatch(reference, /\.claude\/skills/)
-    assert.doesNotMatch(reference, /Claude Code/)
+    assert.doesNotMatch(reference, /Claude\s+Code/)
   })
 
   it('does not apply slash-command rewrites to copied reference markdown', () => {
@@ -329,7 +332,7 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
       'utf8',
     )
     assert.match(reference, /WORKDIR \/app/)
-    assert.match(reference, /Score is \/20/)
+    assert.match(reference, /Score\s+is \/20/)
     assert.doesNotMatch(reference, /\$app/)
     assert.doesNotMatch(reference, /\$20/)
   })
@@ -376,8 +379,8 @@ Also run /boss-proof now and use /compound-engineering:ce-plan for plans.
 
     assert.match(rewritten, /`\$boss-plan`/)
     assert.match(rewritten, /\*\*\$boss-finalize\*\*/)
-    assert.match(rewritten, /run \$boss-proof now/)
-    assert.match(rewritten, /use \$compound-engineering:ce-plan for plans/)
+    assert.match(rewritten, /run \$boss-proof\s+now/)
+    assert.match(rewritten, /use \$compound-engineering:ce-plan\s+for\s+plans/)
     assert.doesNotMatch(rewritten, /\/boss-plan/)
     assert.doesNotMatch(rewritten, /\/boss-finalize/)
   })
@@ -396,11 +399,11 @@ Score is /20 then /5 out of 5.
     assert.match(rewritten, /\/Users\/dave\/x/)
     assert.match(rewritten, /docs\/plans\/a\.md/)
     assert.match(rewritten, /https:\/\/proof\.bossanova\.dev\/x/)
-    assert.match(rewritten, /`gh`\/network checks/)
+    assert.match(rewritten, /`gh`\/network\s+checks/)
     assert.match(rewritten, /2>\/dev\/null/)
     assert.match(rewritten, /\[y\/enter\]/)
     assert.match(rewritten, /and\/or/)
-    assert.match(rewritten, /Score is \/20 then \/5 out of 5/)
+    assert.match(rewritten, /Score\s+is \/20\s+then \/5\s+out\s+of\s+5/)
     assert.doesNotMatch(rewritten, /\$Users/)
     assert.doesNotMatch(rewritten, /\$network/)
     assert.doesNotMatch(rewritten, /\$dev/)
@@ -443,7 +446,7 @@ Score is /20 then /5 out of 5.
       encoding: 'utf8',
     })
 
-    assert.match(output, /Skipped Codex skills check/)
+    assert.match(output, /Skipped\s+Codex\s+skills\s+check/)
   })
 
   it('skips underscore-prefixed directories in collectSkillSources', () => {

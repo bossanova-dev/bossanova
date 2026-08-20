@@ -1408,6 +1408,17 @@ func (m *MockDaemon) UpdateSettings(context.Context, *connect.Request[pb.UpdateS
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+// GetAuthState is reached only from `boss daemon doctor`
+// (services/boss/cmd/daemon_doctor.go), which is a CLI command, not a TUI
+// view. It belongs in category 2 above for a sharper reason than the others:
+// an empty success here decodes as upstream_configured=false — "this daemon
+// has no upstream" — which is a specific, plausible, WRONG diagnosis rather
+// than an obviously missing one. A test driving it would read as covering the
+// local-only branch while covering nothing.
+func (m *MockDaemon) GetAuthState(context.Context, *connect.Request[pb.GetAuthStateRequest]) (*connect.Response[pb.GetAuthStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 // SetCreateSessionScript makes CreateSession stream the given frames, pausing
 // frameDelay between consecutive ones, instead of returning Unimplemented. It
 // is what lets a proof scenario reach the BOS-720 accepted-then-settled shape

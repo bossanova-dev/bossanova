@@ -84,5 +84,5 @@ Blocks until the chat identified by a session id or agent_session_id becomes idl
 boss chat wait <session-id|chat-id>
 boss chat wait <session-id|chat-id> --timeout 10m
 # Full cross-agent second-opinion recipe
-CHAT=$(boss new --agent codex --repo my-repo --prompt "second opinion on PR #42" --detach | awk '/^chat-id/{print $2}') && boss chat wait $CHAT
+CHAT=$(boss new --agent codex --repo my-repo --prompt "second opinion on PR #42" --detach | sed -n 's/^chat-id:[[:space:]]*//p') && boss chat wait $CHAT
 ```

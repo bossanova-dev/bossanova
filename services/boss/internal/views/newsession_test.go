@@ -41,7 +41,7 @@ type stubClient struct {
 	createdCronReq    *pb.CreateCronJobRequest
 	updatedCronReq    *pb.UpdateCronJobRequest
 	authChanges       []string
-	notifyAuthChange  func(context.Context, string) error
+	notifyAuthChange  func(context.Context, string) (*pb.NotifyAuthChangeResponse, error)
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -225,12 +225,12 @@ func (s *stubClient) GetChatTranscript(context.Context, *pb.GetChatTranscriptReq
 func (s *stubClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) NotifyAuthChange(ctx context.Context, action string) error {
+func (s *stubClient) NotifyAuthChange(ctx context.Context, action string) (*pb.NotifyAuthChangeResponse, error) {
 	if s.notifyAuthChange != nil {
 		return s.notifyAuthChange(ctx, action)
 	}
 	s.authChanges = append(s.authChanges, action)
-	return nil
+	return nil, nil
 }
 
 func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
@@ -295,6 +295,10 @@ func (s *stubClient) TestAccount(context.Context, string) (*pb.TestAccountRespon
 	panic("unused")
 }
 func (s *stubClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+
+func (s *stubClient) GetAuthState(context.Context) (*pb.GetAuthStateResponse, error) {
 	panic("unused")
 }
 

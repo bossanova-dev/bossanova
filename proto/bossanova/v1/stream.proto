@@ -768,7 +768,9 @@ message TestAccountCommand { string id = 1; }
 // only — never credentials). Replies with CommandResult carrying a
 // ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
 // live usage probe over each account first; false/omitted keeps the passive read
-// an older bosso would have sent.
+// an older bosso would have sent. This field carries the caller's should_refresh
+// through unchanged, including the user-intent convention bosso's telemetry gate
+// depends on — see ProxyManageListAccountsRequest in orchestrator.proto.
 message ListAccountsCommand {
   string provider = 1;
   bool should_refresh = 2;

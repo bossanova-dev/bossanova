@@ -307,6 +307,232 @@ func (c TmuxIdleReapConfig) IdleThreshold() time.Duration {
 	return 8 * time.Hour
 }
 
+// TmuxDeliveryConfig holds the composer-readiness budgets bossd waits out
+// before it delivers input into a tmux pane (BOS-893). The wait polls
+// capture-pane for the agent's composer prompt glyph; the budget is what bounds
+// that poll.
+//
+// There are deliberately TWO knobs rather than one, because the two delivery
+// paths answer to different ceilings:
+//
+//   - Session start (and resume) has to cover tmux spawn, a full interactive
+//     login-shell init, exec of the agent, node boot, and TUI first paint.
+//     Measured on an affected host, `fish -l -i -c 'exec true'` alone ranged
+//     0.75s to 12s — up to 2.4x the historical 5s budget before the agent even
+//     started. No downstream deadline usefully bounds it, so it is UNCLAMPED —
+//     with one caller-shaped caveat spelled out on the accessor.
+//   - An established chat's send runs inside the SendChatMessage RPC, which
+//     bosso relays under a fixed command deadline. A budget that outlives that
+//     relay produces an ambiguous delivery the caller must not retry, because a
+//     retry double-types into the composer. So it is CLAMPED (see the accessor).
+//
+// Both are plain ints rather than *ints: the interesting states are only
+// "unset" and "a positive number of seconds", and a non-positive value has a
+// single sane reading (fall back to the default) rather than a third meaning.
+// "No wait at all" is not an offered option — it is the bug this block exists
+// to make configurable, not a posture an operator should be able to select.
+type TmuxDeliveryConfig struct {
+	SessionStartReadyDeadlineSeconds int `json:"session_start_ready_deadline_seconds,omitempty"`
+	SendReadyDeadlineSeconds         int `json:"send_ready_deadline_seconds,omitempty"`
+}
+
+// DefaultSessionStartReadyDeadline and DefaultSendReadyDeadline are the
+// fallbacks for the two knobs above, and SendReadyDeadlineMax is the ceiling
+// the send knob is clamped to. They are exported so a caller can describe the
+// effective policy without re-deriving the numbers.
+//
+// bossd's tmux package carries its own copies of the two defaults (it must not
+// import this package — see the accessors), so a drift guard in
+// services/bossd/internal/tmux asserts the pairs stay equal.
+const (
+	DefaultSessionStartReadyDeadline = 45 * time.Second
+	DefaultSendReadyDeadline         = 5 * time.Second
+	SendReadyDeadlineMax             = 20 * time.Second
+)
+
+// SessionStartReadyDeadline returns how long a session-start or resume delivery
+// waits for the agent's composer prompt before giving up; the default is 45s.
+// A non-positive value (unset, or a hand-edited negative) falls back rather
+// than producing a zero or negative duration, which would mean "no wait".
+//
+// This accessor is deliberately UNCLAMPED, unlike its sibling below, so an
+// operator on a pathologically slow host may raise it as far as their patience
+// allows. The 45s default is sized against the measured 12s shell-init ceiling
+// with roughly 33s — about 3x — left for exec, node boot, and TUI first paint.
+// A configured value so large it overflows time.Duration falls back to the
+// default rather than wrapping negative; every representable value is honoured.
+//
+// Which callers actually spend this budget is worth stating, because it is
+// narrower than "anything that starts a session". It is spent only by the four
+// start-path wrappers, all reached through injectTmuxChatInput
+// (services/bossd/internal/session/tmux_chat.go), whose only production callers
+// are Lifecycle.StartTmuxChat and Lifecycle.sendInputToLiveTmuxChat.
+//
+// Most of those callers are unbounded downstream, which is what leaves this
+// knob free — but NOT all of them, and the exception is worth naming because
+// this comment previously claimed there was none. Lifecycle.SwitchAccount
+// respawns the switched chat through StartTmuxChat
+// (services/bossd/internal/session/switch_account.go). It has four production
+// callers and TWO of them are relay-bounded: ProxySwitchSessionAccount
+// (services/bosso/internal/server/proxy.go) and a "/boss switch" intercepted
+// inside SendChatMessage, both dispatched under commandDeadline (30s, same
+// file). The other two — the local SwitchSessionAccount RPC and the rotation
+// engine — are unbounded, which is what still leaves this knob mostly free.
+//
+// On the two bounded routes the respawned pane is cold, and the wait runs
+// before the payload is even looked at (sendPlan waits for the ready marker as
+// step 1, so the switch's empty ChatInput does not skip it), so a boot slower
+// than the relay leaves bossd still waiting after bosso has returned
+// CodeDeadlineExceeded.
+//
+// Treat that 30-45s band as RETRY-HAZARDOUS, not merely ambiguous. The user's
+// remedy for a timed-out switch is to press the button again, and a resumable
+// switch reuses the same agentSessionID, so both attempts compute the same
+// tmux name (tmux.ChatSessionName is pure over repoID and agentSessionID).
+// Nothing serializes SwitchAccount. The retry respawns the pane, and then the
+// FIRST attempt hits its own 45s timeout and runs failStartBestEffort, which
+// kills that tmux name and stamps MarkStartFailed — so the loser tears down
+// the winner's pane and marks the chat start-failed. Nothing is durably
+// corrupted (starting the chat again recovers it), but this is worse than a
+// slow success, and it needs a cloud-relayed switch AND a >30s boot AND a
+// retry to reach.
+//
+// It is still not a pure regression: before this knob existed the same path
+// was pinned at 5s, so every boot slower than that failed the switch outright
+// — and, being well inside the 30s relay, could never produce the overlap
+// above. Raising it to 45s converts boots in the 5-30s range from certain
+// failure into success, and confines the new hazard to the 30-45s band.
+// Closing it properly means giving the switch respawn a budget of its own,
+// which is a change to that path rather than to this value, and a policy
+// choice this ticket's acceptance criteria do not cover. It is tracked as
+// BOS-897, which owns both the fix and the rewrite of this paragraph.
+//
+// The price of the raised default is that a start which is genuinely going to
+// fail now costs 45s of wall clock instead of 5s, and that cost serializes
+// across a cron sweep. That is accepted: the alternative was failing correct
+// starts.
+//
+// BOS-895 doubled that price without touching this value: the session-start
+// readiness wait is now attempted TWICE, so this is a PER-ATTEMPT budget and a
+// doomed start costs about 94s rather than 45s. (94s, not 90s: the per-attempt
+// ceiling is deadline + modalProbeTimeout once a ModalDetector is wired, and
+// since BOS-894 the start path wires one — injectTmuxChatInput binds a detector
+// into the …WithModal wrappers, services/bossd/internal/session — so each
+// attempt reserves 2s beyond this budget.) Three consequences follow
+// for the paragraphs above, and none of them is new in kind — all three are
+// bigger than this comment used to say.
+//
+// The serialized cron cost doubles.
+//
+// The retry-hazardous band above is not 30-45s any more, it is 30-94s. Note
+// what does NOT save it: bosso's 30s commandDeadline never becomes a deadline
+// on the DAEMON's context. It bounds only bosso's own wait for the
+// CommandResult coming back over the stream; the command itself arrives at
+// bossd on the long-lived stream context and reaches SwitchAccount ->
+// StartTmuxChat with no deadline attached at all. So the tmux loop's
+// remaining-budget guard, which fires only when ctx.Deadline() reports one,
+// never fires on that route and both attempts run in full. The relay-bounded
+// switch routes are exactly where the widening lands, and they are also the
+// ones with a user holding a button to press again — so the window in which
+// the loser's failStartBestEffort tears down the winner's pane grows from
+// about 15s (45 - 30) to about 64s (94 - 30). At 30-45s deferring "give the
+// switch respawn a budget of its own" was comfortable; at 30-94s it is not,
+// which is why BOS-897 exists rather than a note to revisit this someday.
+//
+// And a doomed switch now pins bossd's inbound command reader for ~94s rather
+// than ~45s: handleCommand runs synchronously inside the Receive loop
+// (services/bossd/internal/upstream/stream.go), so no other orchestrator
+// command is read off the stream while it waits. Switch only — WakeChat spawns
+// its pane through spawnChatTmux (services/bossd/internal/server), which never
+// waits for the ready marker and so never spends this budget at all.
+//
+// Keep this paragraph and services/docs/docs/reference/settings.md in step with
+// the attempt count in services/bossd/internal/tmux, which owns it.
+func (c TmuxDeliveryConfig) SessionStartReadyDeadline() time.Duration {
+	if c.SessionStartReadyDeadlineSeconds <= 0 {
+		return DefaultSessionStartReadyDeadline
+	}
+	d := time.Duration(c.SessionStartReadyDeadlineSeconds) * time.Second
+	if d <= 0 {
+		// int64 nanoseconds top out around 292 years, so a large enough
+		// positive seconds value wraps to zero or negative. Re-check the
+		// PRODUCT, not just the input: guarding the int alone would let an
+		// overflowed value out of an accessor whose contract above is that it
+		// never returns a non-positive duration. "Unclamped" is preserved for
+		// every value time.Duration can actually represent.
+		return DefaultSessionStartReadyDeadline
+	}
+	return d
+}
+
+// SendReadyDeadline returns how long a send into an ESTABLISHED chat's composer
+// waits for the agent's ready marker; the default is 5s, and the result is
+// clamped to SendReadyDeadlineMax (20s) however large the configured value is —
+// including a value large enough to overflow time.Duration, which clamps rather
+// than wrapping past the ceiling it exists to enforce.
+//
+// The default is unchanged from the historical hardcoded budget on purpose: the
+// defect BOS-893 fixes is a session-start defect, and an established chat's
+// agent is already booted, so its composer is either there now or wedged.
+//
+// That premise has one known exception, and it is a residual instance of the
+// very defect this change was made to fix. SendChatMessage with wake_if_asleep
+// wakes an asleep chat first (services/bossd/internal/server/send_chat_message.go),
+// and the wake does NOT spend the session-start budget: spawnChatTmux only
+// launches (or resumes) the agent via NewSessionWithCmd and returns. It
+// delivers nothing — argvBuilder.BuildInteractive takes no parameter that can
+// carry the user's message (its appendSystemPrompt argument reaches argv, but
+// the chat message has no slot at all) — and it runs no readiness wait,
+// so the session-start budget is never spent there. The message is typed in
+// afterwards by the ordinary send path (send_chat_message.go →
+// liveTmuxSpawner.SendMessage → SendMessageWithModal), which then
+// meets a pane that is still cold-booting — shell init, exec, node boot, first
+// paint — on THIS budget, 5s by default and 20s at the ceiling. Whether that is
+// enough is exactly the question BOS-893 answered "no" to for the start path.
+//
+// Raising this default is not the fix, because it is the wrong knob: the send
+// clamp below is derived from a relay ceiling that a wake-then-send is already
+// closer to breaching (the same wake spends up to
+// providerSessionIDLegacyBackfillTimeout — 20s,
+// services/bossd/internal/server/server.go — on the legacy codex backfill
+// before the send begins). Closing it properly means the wake path waiting for
+// readiness on its own budget, which is a change to that path rather than to
+// this value. Until then, a caller that wants the long budget should wake the
+// chat explicitly and send once it is live.
+//
+// The clamp is DERIVED, not picked. This delivery happens inside the
+// SendChatMessage RPC, which bosso relays under
+// `commandDeadline = 30 * time.Second`
+// (services/bosso/internal/server/proxy.go). That 30s has to cover the whole
+// round trip: a relay hop each way, the chat lookup, prefix rendering,
+// delivery, the 2s submit-verify wait, and the verifier's one Enter retry.
+// Reserving 10s for everything that is NOT the readiness wait leaves 20s here.
+// Let the readiness wait exceed that and bossd can still be waiting after bosso
+// has already returned CodeDeadlineExceeded — an ambiguous delivery that must
+// not be retried, because a retry double-types into the composer.
+//
+// The dependency is real but not mechanical: commandDeadline lives in another
+// module this one cannot import. If it is ever lowered, this clamp silently
+// stops protecting the relay, and the 10s reservation is an estimate rather
+// than a measurement — only an operator who deliberately raises this knob
+// toward the ceiling is exposed to that.
+func (c TmuxDeliveryConfig) SendReadyDeadline() time.Duration {
+	if c.SendReadyDeadlineSeconds <= 0 {
+		return DefaultSendReadyDeadline
+	}
+	d := time.Duration(c.SendReadyDeadlineSeconds) * time.Second
+	if d <= 0 || d > SendReadyDeadlineMax {
+		// d <= 0 here means int64 nanosecond overflow (the non-positive input
+		// already returned above), i.e. an operator asking for an enormous
+		// budget. Clamping is the faithful answer to that ask and it is also
+		// the safe one: without the overflow arm the `d > max` test is false
+		// for a wrapped-negative d, and the clamp this whole accessor exists
+		// to enforce would be silently skipped.
+		return SendReadyDeadlineMax
+	}
+	return d
+}
+
 // ManagedAccountsConfig holds account-rotation policy knobs.
 type ManagedAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
@@ -1002,6 +1228,7 @@ type Settings struct {
 	ManagedAccounts                ManagedAccountsConfig `json:"managed_accounts,omitzero"`
 	TmuxReaper                     TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
 	TmuxIdleReap                   TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
+	TmuxDelivery                   TmuxDeliveryConfig    `json:"tmux_delivery,omitzero"`
 	ProvidersAcknowledged          bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string              `json:"known_agent_providers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this

@@ -3371,26 +3371,32 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		}
 	}
 
-	// Clear archived status.
-	if err := l.sessions.Resurrect(ctx, sessionID); err != nil {
+	// Clear archived status AND leave the terminal state in one conditional
+	// write, BEFORE the slow agent start below (BOS-697, BOS-924).
+	//
+	// It has to be one statement. A row wearing {archived_at NULL, state
+	// Merged} is byte-for-byte what archiveMergedButUnarchived (reconcile.go)
+	// heals, so clearing archived_at and writing the state as two writes opens
+	// a window in which a reconcile tick can dispatch a detached archive that
+	// deletes the worktree this call just recreated. Writing the live state
+	// also un-wedges the row for its own sake: a terminal state permits no
+	// lifecycle event, so nothing else could ever move it.
+	//
+	// preResurrectState and preResurrectArchivedAt are captured from the row we
+	// read above, so a failed start can put it back exactly where it was rather
+	// than resetting its trash age.
+	preResurrectState := int(session.State)
+	preResurrectArchivedAt := *session.ArchivedAt
+	implementingState := int(machine.ImplementingPlan)
+	resurrected, err := l.sessions.ResurrectToState(ctx, sessionID, implementingState)
+	if err != nil {
 		return fmt.Errorf("resurrect session: %w", err)
 	}
-
-	// Leave the terminal state in the same breath as clearing archived_at,
-	// BEFORE the slow agent start below (BOS-697). A row wearing
-	// {archived_at NULL, state Merged} is exactly what
-	// archiveMergedButUnarchived (reconcile.go) heals, so a resurrect that
-	// left that shape standing across StartByAgent would invite the reconcile
-	// tick to archive the session back out from under the agent it is starting
-	// — and a StartByAgent failure below would leave it wearing that shape
-	// forever. Writing the live state here also un-wedges the row for its own
-	// sake: a terminal state permits no lifecycle event, so nothing else could
-	// ever move it.
-	implementingState := int(machine.ImplementingPlan)
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		State: &implementingState,
-	}); err != nil {
-		return fmt.Errorf("clear terminal state on resurrect: %w", err)
+	if !resurrected {
+		// The row stopped being archived between the read above and this write.
+		// Another writer owns it now; proceeding would start an agent against a
+		// session this call does not control.
+		return fmt.Errorf("resurrect session: %s was no longer archived", sessionID)
 	}
 
 	// Start Claude process, resuming previous session if available.
@@ -3411,6 +3417,43 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	resumeEnv := dotenv.OverlayWithRepo(mergeEnv(l.resolveAccountEnv(ctx, spawnSess), l.resolveProofEnv()), session.WorktreePath, repo)
 	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, spawnSess.AgentName, session.WorktreePath, session.Plan, resume, "", spawnSess.Model, resumeEnv)
 	if err != nil {
+		// Undo the un-archive (BOS-924). Without this the session is left live,
+		// agent-less and un-retryable: the guard at the top of this function
+		// rejects a row that is no longer archived, and a terminal state permits
+		// no lifecycle event, so nothing would ever move it again.
+		//
+		// The compensating write runs on a detached, bounded context because ctx
+		// may already be cancelled by whatever failed the start — the same reason
+		// rollbackPreflightFailure detaches. Its own failure is logged, never
+		// folded into the returned error: masking the start error would hide why
+		// the resurrect failed in the first place.
+		func() {
+			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
+			defer cancelRollback()
+			restored, rollbackErr := l.sessions.RollbackFailedResurrect(
+				rollbackCtx, sessionID, preResurrectArchivedAt, preResurrectState, implementingState)
+			switch {
+			case rollbackErr != nil:
+				l.logger.Error().
+					Err(rollbackErr).
+					Str("session", sessionID).
+					Msg("resurrect rollback failed; session left live without an agent")
+			case !restored:
+				// A concurrent writer moved the row off the shape this call
+				// wrote. Re-archiving anyway would stomp whatever it is doing,
+				// so stop and name what we actually see instead of retrying
+				// blind.
+				observed := "unknown"
+				if current, getErr := l.sessions.Get(rollbackCtx, sessionID); getErr == nil && current != nil {
+					observed = current.State.String()
+				}
+				l.logger.Warn().
+					Str("session", sessionID).
+					Str("observedState", observed).
+					Str("expectedState", machine.ImplementingPlan.String()).
+					Msg("resurrect rollback skipped: session moved on before it could be re-archived")
+			}
+		}()
 		return fmt.Errorf("start claude: %w", err)
 	}
 

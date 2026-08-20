@@ -59,9 +59,11 @@ function normalizeMakefilePath(directory, value) {
 // Pull `make <target>` invocations out of Markdown code (fenced blocks and
 // inline backtick spans) while ignoring prose, so "make sure" never registers
 // as a target. A bare `make` with no target (the default build) is skipped.
+// Every invocation carries the 1-based `line` it was found on so a failure can
+// point a reader straight at the offending source.
 export function extractDocumentedMakeInvocations(markdown) {
   const invocations = []
-  const addFromCode = (code) => {
+  const addFromCode = (code, line) => {
     for (const match of code.matchAll(/\bmake(?:\s+([^\n#;&|]+))?/g)) {
       const goals = match[1]
       if (!goals) continue
@@ -129,25 +131,37 @@ export function extractDocumentedMakeInvocations(markdown) {
       }
 
       for (const target of targets) {
-        invocations.push({ directory, makefile, target })
+        invocations.push({ directory, makefile, target, line })
       }
     }
   }
 
+  // Scanning is line by line, and a line is parsed on its own: a command
+  // wrapped across lines with a trailing backslash contributes only the goals
+  // written on the `make` line itself, reported at that line. Goals pushed onto
+  // a continuation line are invisible to this guard -- `make lint \` + `test`
+  // checks `lint` and never sees `test`, and a bare `make \` + `ghost` yields
+  // nothing at all. That is a known coverage gap, not a line-attribution
+  // choice; no doc in the scanned set continues a `make` command today. Joining
+  // continuations before parsing would close it.
   let inFence = false
-  for (const line of markdown.split('\n')) {
+  const lines = markdown.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const lineNumber = index + 1
+
     if (/^\s*```/.test(line)) {
       inFence = !inFence
       continue
     }
 
     if (inFence) {
-      addFromCode(line)
+      addFromCode(line, lineNumber)
       continue
     }
 
     for (const match of line.matchAll(/`([^`]+)`/g)) {
-      addFromCode(match[1])
+      addFromCode(match[1], lineNumber)
     }
   }
 
@@ -277,11 +291,17 @@ export function findUndefinedDocumentedTargets(documented, defined) {
   return [...documented].filter((target) => !defined.has(target)).sort()
 }
 
-function formatDocumentedMakeInvocation({ directory, makefile, target }) {
+// Render one offending invocation as `path/to/doc.md:LINE: make <target>` so
+// the failure is directly navigable. `doc` is attached by checkDocMakeTargets,
+// which is the only caller, so both parts are always present; the bare-command
+// branch is defensive and unreachable today, guarding against a future caller
+// printing a stray `undefined:undefined: ` prefix.
+function formatDocumentedMakeInvocation({ directory, makefile, target, doc, line }) {
   const defaultMakefile = normalizeMakefilePath(directory)
   const directoryOption = directory === '.' ? '' : ` -C ${directory}`
   const makefileOption = makefile === defaultMakefile ? '' : ` -f ${makefile}`
-  return `make${directoryOption}${makefileOption} ${target}`
+  const source = doc && line ? `${doc}:${line}: ` : ''
+  return `${source}make${directoryOption}${makefileOption} ${target}`
 }
 
 function discoverPluginNames(repoRoot) {
@@ -376,15 +396,21 @@ export function checkDocMakeTargets(repoRoot = process.cwd()) {
   const documented = []
   for (const docPath of docPaths) {
     if (!fs.existsSync(docPath)) continue
+    // Always POSIX-separated, so the printed location is stable across hosts.
+    const doc = path.relative(repoRoot, docPath).split(path.sep).join('/')
     for (const invocation of extractDocumentedMakeInvocations(fs.readFileSync(docPath, 'utf8'))) {
-      documented.push(invocation)
+      documented.push({ ...invocation, doc })
     }
   }
 
+  const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
   const undefinedTargets = documented
     .filter((invocation) => !getDefinedTargets(invocation).has(invocation.target))
+    // Sort by source location, then target, so the report is stable: doc path,
+    // then line *numerically* (line 10 follows line 9, where a lexicographic
+    // sort of the rendered strings would put it before line 2), then target.
+    .sort((a, b) => compare(a.doc, b.doc) || a.line - b.line || compare(a.target, b.target))
     .map(formatDocumentedMakeInvocation)
-    .sort()
 
   if (undefinedTargets.length > 0) {
     console.error('Docs reference make targets that the Makefile does not define:')

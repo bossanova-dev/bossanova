@@ -1572,6 +1572,35 @@ type sendPlanRecordingFactory struct {
 	// captureFailStderr is the text a failed capture-pane writes to stderr.
 	// Empty → defaultCaptureFailStderr, a real tmux message.
 	captureFailStderr string
+
+	// failWithStderr maps a subcommand to the stderr text EVERY invocation of
+	// it writes before exiting non-zero. Unlike failOnSubcommand (one indexed
+	// occurrence, empty stderr) this is unconditional and carries tmux's own
+	// words, which is what a caller reading stderr — HasSessionStatus — needs
+	// in order to tell "no such session" from "something else went wrong".
+	// An empty string is a MEANINGFUL value here: it models the failure that
+	// says nothing, which HasSessionStatus must treat as indeterminate.
+	failWithStderr map[string]string
+
+	// capturePaneRules, when non-empty, selects capture-pane stdout by ELAPSED
+	// TIME since this factory's first capture-pane call rather than by call
+	// index, and takes precedence over capturePaneOutputs. Rules must be in
+	// ascending `after` order; the last one whose `after` has elapsed wins, and
+	// output is empty until the first rule is due.
+	//
+	// Position cannot express what the retry tests need. "The marker appears
+	// after the first attempt's budget expires" is a statement about the clock,
+	// and how many capture-pane calls an attempt fits into its budget is a
+	// property of the machine, not of the test.
+	capturePaneRules []capturePaneRule
+	firstCaptureAt   time.Time
+}
+
+// capturePaneRule is one entry in capturePaneRules: from `after` onwards (until
+// a later rule is due) capture-pane emits `output`.
+type capturePaneRule struct {
+	after  time.Duration
+	output string
 }
 
 // defaultCaptureFailStderr is what tmux itself prints when the target session
@@ -1586,6 +1615,12 @@ func failingCaptureCmd(ctx context.Context, stderr string) *exec.Cmd {
 	if stderr == "" {
 		stderr = defaultCaptureFailStderr
 	}
+	return failingCmdWithStderr(ctx, stderr)
+}
+
+// failingCmdWithStderr is failingCaptureCmd without the defaulting, so a caller
+// can model a failure whose stderr really is empty.
+func failingCmdWithStderr(ctx context.Context, stderr string) *exec.Cmd {
 	return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$0" >&2; exit 1`, stderr)
 }
 
@@ -1607,12 +1642,28 @@ func (f *sendPlanRecordingFactory) factory(ctx context.Context, name string, arg
 	if failIdx, ok := f.failOnSubcommand[subcommand]; ok && failIdx == subcommandSeenIndex(f.calls, subcommand)-1 {
 		return exec.CommandContext(ctx, "false")
 	}
+	if stderr, ok := f.failWithStderr[subcommand]; ok {
+		return failingCmdWithStderr(ctx, stderr)
+	}
 
 	switch subcommand {
 	case "capture-pane":
 		idx := int(f.captureCallIdx.Add(1)) - 1
 		if f.failCapturePaneFrom != nil && idx >= *f.failCapturePaneFrom {
 			return failingCaptureCmd(ctx, f.captureFailStderr)
+		}
+		if len(f.capturePaneRules) > 0 {
+			if f.firstCaptureAt.IsZero() {
+				f.firstCaptureAt = time.Now()
+			}
+			elapsed := time.Since(f.firstCaptureAt)
+			ruled := ""
+			for _, r := range f.capturePaneRules {
+				if elapsed >= r.after {
+					ruled = r.output
+				}
+			}
+			return exec.CommandContext(ctx, "printf", "%s", ruled)
 		}
 		out := ""
 		if len(f.capturePaneOutputs) > 0 {

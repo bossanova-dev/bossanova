@@ -742,8 +742,10 @@ func (s *stubRepoClient) GetChatTranscript(context.Context, *pb.GetChatTranscrip
 func (s *stubRepoClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) NotifyAuthChange(context.Context, string) error { return nil }
-func (s *stubRepoClient) ShutdownDaemon(context.Context) error           { panic("unused") }
+func (s *stubRepoClient) NotifyAuthChange(context.Context, string) (*pb.NotifyAuthChangeResponse, error) {
+	return nil, nil
+}
+func (s *stubRepoClient) ShutdownDaemon(context.Context) error { panic("unused") }
 func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }
@@ -810,6 +812,10 @@ func (s *stubRepoClient) TestAccount(context.Context, string) (*pb.TestAccountRe
 	panic("unused")
 }
 func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+
+func (s *stubRepoClient) GetAuthState(context.Context) (*pb.GetAuthStateResponse, error) {
 	panic("unused")
 }
 

@@ -7,9 +7,14 @@ import (
 	"connectrpc.com/connect"
 )
 
-// ProcedureClassifier reports whether a procedure represents a cloud action
-// worth recording and returns its coarse product area.
-type ProcedureClassifier func(procedure string) (productArea string, ok bool)
+// ProcedureClassifier reports whether a request represents a cloud action worth
+// recording and returns its coarse product area. request is the decoded request
+// message, supplied so a host classifier can gate on a request field (for
+// example, "was this list call a user-initiated refresh?"). It is deliberately
+// an opaque any: this package stays independent of any service-specific
+// protobuf package, and a classifier that inspects it is responsible for
+// keeping telemetry coarse.
+type ProcedureClassifier func(procedure string, request any) (productArea string, ok bool)
 
 // IdentityResolver returns the safe, stable identity for an authenticated
 // request. Returning an empty string suppresses telemetry for the request.
@@ -33,7 +38,7 @@ func (i actionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if i.client == nil || i.classify == nil || i.identity == nil {
 			return next(ctx, req)
 		}
-		productArea, ok := i.classify(req.Spec().Procedure)
+		productArea, ok := i.classify(req.Spec().Procedure, req.Any())
 		command, commandOK := procedureCommand(req.Spec().Procedure)
 		if !ok || productArea == "" || !commandOK {
 			return next(ctx, req)

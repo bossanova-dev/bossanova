@@ -32,6 +32,10 @@ type deviceCodeMsg struct {
 // loginCompleteMsg signals that login polling completed successfully.
 type loginCompleteMsg struct {
 	email string
+	// verification is the verdict the manager reached on the persisted
+	// record. The view renders from it rather than re-reading the store, so
+	// the TUI and `boss login` report the same outcome the same way.
+	verification auth.LoginVerification
 }
 
 // loginErrorMsg signals that login polling failed.
@@ -48,21 +52,22 @@ var openLoginVerificationURL = auth.OpenBrowser
 
 // LoginModel handles the interactive device code login flow.
 type LoginModel struct {
-	mgr         *auth.Manager
-	client      client.BossClient
-	ctx         context.Context
-	cancel      context.CancelFunc
-	spinner     spinner.Model
-	phase       loginPhase
-	userCode    string
-	verifyURL   string
-	email       string
-	err         error
-	cancelled   bool
-	done        bool
-	width       int
-	afterAuth   loginCompleteHook
-	authChanges *authChangeQueue
+	mgr          *auth.Manager
+	client       client.BossClient
+	ctx          context.Context
+	cancel       context.CancelFunc
+	spinner      spinner.Model
+	phase        loginPhase
+	userCode     string
+	verifyURL    string
+	email        string
+	verification auth.LoginVerification
+	err          error
+	cancelled    bool
+	done         bool
+	width        int
+	afterAuth    loginCompleteHook
+	authChanges  *authChangeQueue
 
 	cloudAccess       CloudAccessClient
 	checkoutReturnURL string
@@ -108,6 +113,25 @@ func (m LoginModel) requestDeviceCode() tea.Cmd {
 		resp, err := m.mgr.StartLogin(m.ctx)
 		return deviceCodeMsg{resp: resp, err: err}
 	}
+}
+
+// loginPollResult maps the manager's poll outcome onto the message the view
+// consumes. It takes PollLogin's two return values directly so the mapping is
+// testable without a device-code round trip: a verdict that says nothing was
+// stored becomes a login failure rather than a success screen over an empty
+// keychain, and only the enumerated reason is rendered — never the verdict's
+// Err, which may wrap a keyring error whose text embeds record bytes.
+func loginPollResult(verdict auth.LoginVerification, err error) tea.Msg {
+	if err != nil {
+		return loginErrorMsg{err: err}
+	}
+	if verdict.Outcome == auth.LoginVerifyRecordNotUpdated {
+		return loginErrorMsg{err: errors.New(verdict.Note())}
+	}
+	// The email comes from the verified read the manager already did under the
+	// credential lock; a second, unlocked Status() read could disagree with the
+	// verdict being rendered.
+	return loginCompleteMsg{email: verdict.Email, verification: verdict}
 }
 
 func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -187,19 +211,19 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		interval := msg.resp.Interval
 		return m, func() tea.Msg {
 			defer pollCancel()
-			err := m.mgr.PollLogin(pollCtx, deviceCode, interval)
-			if err != nil {
-				return loginErrorMsg{err: err}
-			}
-			status := m.mgr.Status()
-			return loginCompleteMsg{email: status.Email}
+			return loginPollResult(m.mgr.PollLogin(pollCtx, deviceCode, interval))
 		}
 
 	case loginCompleteMsg:
 		m.phase = loginPhaseSuccess
 		m.email = msg.email
+		// View() renders from model state, not from the consumed message.
+		m.verification = msg.verification
 		cmds := []tea.Cmd{func() tea.Msg { return nil }}
-		if m.client != nil {
+		// Only a verified write may tell the daemon to connect upstream. An
+		// inconclusive one may or may not have landed, so nothing downstream
+		// is allowed to assume a usable credential.
+		if m.client != nil && msg.verification.Outcome == auth.LoginVerified {
 			// The queued notification can outlive this login view. In particular,
 			// Esc dismisses the success screen and cancels m.ctx while an earlier
 			// logout notification is still ahead of it. The queue supplies its own
@@ -295,6 +319,15 @@ func (m LoginModel) View() tea.View {
 			styleActionBar.Render("[esc] cancel")
 
 	case loginPhaseSuccess:
+		if m.verification.Outcome == auth.LoginVerifyInconclusive {
+			// The write may have landed, but nobody confirmed it — so no
+			// "Logged in as" label here, only the remediation note. The CLI
+			// renders this same verdict the same way.
+			content = padding.Render(
+				lipgloss.NewStyle().Foreground(colorWarning).Render(m.verification.Note()),
+			) + "\n" + styleActionBar.Render("[esc] back")
+			break
+		}
 		label := "Login successful!"
 		if m.email != "" {
 			label = fmt.Sprintf("Logged in as %s", m.email)

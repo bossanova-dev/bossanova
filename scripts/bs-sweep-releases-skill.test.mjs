@@ -68,9 +68,9 @@ test('the recorder has no dry-run or interactive branch and writes Boss improvem
   const body = skill()
   assert.doesNotMatch(body, /dry[- ]run|--no-dry-run/i)
   assert.doesNotMatch(body, /interactive|ask(?: the)? user|prompt/i)
-  assert.match(body, /boss notes ls --tag improvement --json --limit 0/)
-  assert.match(body, /boss notes add .* --tag improvement --json/)
-  assert.doesNotMatch(body, /boss notes (?:add|ls)[^\n]*(?!improvement)--tag\s+(?!improvement)/)
+  assert.match(body, /boss\s+notes\s+ls --tag\s+improvement --json --limit\s+0/)
+  assert.match(body, /boss\s+notes\s+add .* --tag\s+improvement --json/)
+  assert.doesNotMatch(body, /boss\s+notes (?:add|ls)[^\n]*(?!improvement)--tag\s+(?!improvement)/)
   assert.match(body, /one .*note.*per .*unseen.*cluster/i)
   assert.match(body, /all[- ]unseen/i)
 })
@@ -84,9 +84,9 @@ test('release selection and exact marker dedupe are delegated to the pure core',
   assert.match(body, /staging/)
   assert.match(body, /production/)
   assert.match(body, /seven.*UTC.*day|seven-day/i)
-  assert.match(body, /Release review: v2:<base64url-anchor>/)
-  assert.match(body, /exact.*last line/i)
-  assert.match(body, /immediately before each write|pre-write re-check/i)
+  assert.match(body, /Release\s+review: v2:<base64url-anchor>/)
+  assert.match(body, /exact.*last\s+line/i)
+  assert.match(body, /immediately\s+before\s+each\s+write|pre-write\s+re-check/i)
   assert.match(body, /fail-closed/i)
 })
 
@@ -101,15 +101,15 @@ test('untrusted review text cannot create markers and neither remote review surf
 
 test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal notes teardown are explicit', () => {
   const body = skill()
-  assert.match(body, /every shell fence.*one continuous shell session/i)
+  assert.match(body, /every\s+shell\s+fence.*one\s+continuous\s+shell\s+session/i)
   assert.match(body, /mkdir/)
   assert.match(body, /bs-sweep-releases\.lock/)
   assert.match(body, /heartbeat/i)
   assert.match(body, /stale/i)
   assert.match(body, /LOCK_TOKEN/)
-  assert.match(body, /GIT_COMMON_DIR="\$\(git rev-parse --git-common-dir\)"/)
+  assert.match(body, /GIT_COMMON_DIR="\$\(git[ ]rev-parse --git-common-dir\)"/)
   assert.match(body, /LOCK_DIR="\$GIT_COMMON_DIR\/bs-sweep-releases\.lock"/)
-  assert.match(body, /umask 077/)
+  assert.match(body, /umask[ ]077/)
   assert.match(body, /RUN_DIR="\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/bs-sweep-releases\.XXXXXX"\)"/)
   assert.match(body, /NOTES_JSON="\$RUN_DIR\/notes\.json"/)
   assert.match(body, /COMMENTS_JSON="\$RUN_DIR\/comments\.json"/)
@@ -121,13 +121,16 @@ test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal 
   assert.match(body, /owner/)
   assert.match(body, /STALE_DIR/)
   assert.match(body, /STALE_TARGET="\$HEARTBEAT"/)
-  assert.match(body, /if ! test -f "\$STALE_TARGET"; then STALE_TARGET="\$LOCK_DIR"; fi/)
+  assert.match(body, /if ! test -f "\$STALE_TARGET"; then[ ]STALE_TARGET="\$LOCK_DIR"; fi/)
   assert.match(body, /mv "\$LOCK_DIR" "\$STALE_DIR"/)
-  assert.match(body, /lease lost/)
+  assert.match(body, /lease[ ]lost/)
   assert.match(body, /utimesSync/)
   assert.match(
     body,
-    /const trackedMarkers = await fetchTrackedReleaseMarkers\(\{ notes: JSON\.parse\(snapshot\) \}\)\n  heartbeat\(\)\n  if \(isTrackedReleaseMarker\(candidate, trackedMarkers\)\) continue\n  await addNote\(candidate\)/,
+    // Fenced JS, and the point of the pin is that these four statements are on consecutive lines at
+    // one indent level. `\s+` would match a blank line between them, so the gaps stay exact: `[ ]`
+    // for the word gaps the gate flags, a plain `\n  ` for the indentation it does not.
+    /const[ ]trackedMarkers = await[ ]fetchTrackedReleaseMarkers\(\{ notes: JSON\.parse\(snapshot\) \}\)\n  heartbeat\(\)\n  if \(isTrackedReleaseMarker\(candidate, trackedMarkers\)\) continue\n  await[ ]addNote\(candidate\)/,
   )
   assert.match(body, /setInterval\(/)
   assert.match(body, /child\.kill\('SIGKILL'\)/)
@@ -135,7 +138,7 @@ test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal 
   assert.match(body, /teardown\(\)/)
   assert.match(body, /raw.*JSON.*scratch|scratch.*raw.*JSON/i)
   assert.match(body, /rm -rf/)
-  assert.match(body, /git status --porcelain/)
+  assert.match(body, /git\s+status --porcelain/)
   assert.match(body, /bs-record-notes/)
   assert.match(body, /non-fatal/i)
 })
@@ -143,8 +146,8 @@ test('lock, heartbeat, stale reclaim, scratch cleanup, clean tree, and nonfatal 
 test('dedupe contract names the local lease boundary instead of claiming an impossible remote atomic create', () => {
   const body = skill()
   assert.match(body, /--idempotency-key.*candidate\.marker/)
-  assert.match(body, /atomically returns the existing repo-scoped note/i)
-  assert.doesNotMatch(body, /no conditional\/idempotent create/i)
+  assert.match(body, /atomically\s+returns\s+the\s+existing\s+repo-scoped\s+note/i)
+  assert.doesNotMatch(body, /no\s+conditional\/idempotent\s+create/i)
 })
 
 test('writer pages release pull requests by update time before applying the cutoff', () => {

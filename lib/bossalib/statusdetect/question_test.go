@@ -1352,27 +1352,25 @@ func TestHasQuestionPrompt_RealQuestionBelowTip(t *testing.T) {
 }
 
 // TestHasQuestionPrompt_DecoratedRowUnderSelector pins the exclusion of └ and ※
-// from tipBlockStops. Both open a tip block but must never CLOSE one: they are
-// absent from optionStopMarkers, so a row kept below a stripped tip re-enters
-// countConsecutiveOptionLines -- whose optionRe gate accepts any 2+-space row --
-// counts as a live option under the "❯ " selector, and fires Pattern 1. That
-// flips HasModalPrompt false->TRUE against base, a modal FALSE POSITIVE.
+// from tipBlockStops. Both open a tip block but must never CLOSE one: a row kept
+// below a stripped tip re-enters countConsecutiveOptionLines -- whose optionRe
+// gate accepts any 2+-space row -- and can count as a live option under the "❯ "
+// selector, firing Pattern 1. That flips HasModalPrompt false->TRUE against
+// base, a modal FALSE POSITIVE.
 //
 // This is not one of the two documented accepted-risk shapes; both of those are
 // over-sweeping false negatives. Sweeping the decorated row instead matches the
 // base commit's behaviour for these panes.
 func TestHasQuestionPrompt_DecoratedRowUnderSelector(t *testing.T) {
-	// └ and ※ are the two glyphs excluded from the stop set, plus ⎿ and · as
-	// controls: both are in optionStopMarkers, so they are kept AND break the
-	// option run, and they pass either way.
+	// └ and ※ are the two glyphs excluded from the tip-block stop set, plus ⎿
+	// and · as controls: both close the tip block and break the option run, and
+	// they pass either way.
 	//
-	// • is deliberately absent. It is a stop (tipBlockExtraStops) and so shows
-	// the same flip on this pane, but it cannot simply be swept: the
+	// • is deliberately absent. It closes the tip block (tipBlockExtraStops) and
+	// so shows the same flip on this pane, but it cannot simply be swept: the
 	// "bulleted list whose first item starts with Tip:" case in
 	// TestHasQuestionPrompt_RealQuestionBelowTip needs a • row below a • tip to
-	// survive, or a genuine question is swallowed. Resolving that needs • in
-	// optionStopMarkers -- the same pre-existing root cause tracked for └ --
-	// rather than a change to this sweep.
+	// survive, or a genuine question is swallowed.
 	for _, decoration := range []string{"└", "※", "⎿", "·"} {
 		t.Run(decoration, func(t *testing.T) {
 			data := "⏺ Let me look for it.\n" +
@@ -1839,6 +1837,94 @@ func TestCountConsecutiveNumberedOptions_ColumnZeroNonOption(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("count = %d, want 2 (indented continuation allowed between options)", count)
+	}
+}
+
+func TestOptionStopMarkers_BoxCornerTerminatesOptionRuns(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want int
+	}{
+		{
+			name: "numbered flush",
+			data: []byte("  1. first\n└ decoration\n  2. second\n"),
+			want: 1,
+		},
+		{
+			name: "numbered indented",
+			data: []byte("  1. first\n  └ decoration\n  2. second\n"),
+			want: 1,
+		},
+		{
+			name: "numbered mid-line control",
+			data: []byte("  1. first\n     text └ decoration\n  2. second\n"),
+			want: 2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			count, broken := countConsecutiveNumberedOptions(tc.data)
+			if !broken && tc.want == 1 {
+				t.Fatal("brokenByMarker = false, want true")
+			}
+			if got := count; got != tc.want {
+				t.Fatalf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want int
+	}{
+		{
+			name: "option flush",
+			data: []byte("  first\n└ decoration\n  second\n"),
+			want: 1,
+		},
+		{
+			name: "option indented",
+			data: []byte("  first\n  └ decoration\n  second\n"),
+			want: 1,
+		},
+		{
+			name: "option mid-line control",
+			data: []byte("  first\n  text └ decoration\n  second\n"),
+			want: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			count, broken := countConsecutiveOptionLines(tc.data)
+			if !broken && tc.want == 1 {
+				t.Fatal("brokenByMarker = false, want true")
+			}
+			if got := count; got != tc.want {
+				t.Fatalf("count = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoxCornerCarveOutsStayStripped(t *testing.T) {
+	tipData := []byte("⏺ Working.\n" +
+		"  Tip: Press Ctrl-R to expand collapsed tool output\n" +
+		"  └  Should I keep going?\n")
+	if got := string(stripTipLines(StripANSI(tipData))); strings.Contains(got, "Should I keep going?") {
+		t.Fatalf("stripTipLines kept box-corner tip continuation:\n%s", got)
+	}
+	if HasQuestionPrompt(tipData) {
+		t.Fatal("HasQuestionPrompt = true, want false for box-corner row under a tip")
+	}
+
+	suggestedData := []byte("Suggested next prompts:\n" +
+		"  └  Should I keep going?\n")
+	if got := string(stripSuggestedFollowUpLines(StripANSI(suggestedData))); strings.Contains(got, "Should I keep going?") {
+		t.Fatalf("stripSuggestedFollowUpLines kept box-corner suggested prompt:\n%s", got)
+	}
+	if HasQuestionPrompt(suggestedData) {
+		t.Fatal("HasQuestionPrompt = true, want false for box-corner suggested prompt")
 	}
 }
 

@@ -1,9 +1,11 @@
 package apiversion
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/recurser/bossalib/displaystatus"
@@ -45,6 +47,42 @@ type VersionChange interface {
 	// Implementations must be no-ops for methods and message types they do not
 	// target.
 	TransformResponse(method string, msg any)
+}
+
+// ErrorTransform is an OPTIONAL capability a VersionChange may implement when
+// the behavior it versions lives on the ERROR path rather than in a response
+// message. A change that does not implement it is simply skipped by ApplyError,
+// exactly as a change that targets no method is a no-op in TransformResponse.
+//
+// NOTE THE DELIBERATE SHAPE ASYMMETRY with TransformResponse, which takes msg
+// any, returns nothing, and mutates the response in place. An error is an
+// immutable value: there is no in-place edit that turns a CodeDeadlineExceeded
+// into a CodeAborted. So the error capability must RETURN the replacement and
+// ApplyError must thread it through the fan-out. Contorting either side to
+// match the other would be worse than documenting the difference — making
+// TransformResponse return a message would break every existing in-place
+// transform, and pretending an error can be mutated in place would not work at
+// all.
+//
+// SCOPE — UNARY ONLY. ApplyError is called from WrapUnary and from nowhere
+// else. WrapStreamingHandler wraps the conn for Send-side RESPONSE transforms
+// and returns the handler's error completely raw, and
+// transformingStreamingHandlerConn has no error hook at all. So an
+// ErrorTransform written for a streaming procedure is a silent no-op: no
+// compile error, no failing test, no warning. That is a deliberate boundary
+// (BOS-947 versioned a unary procedure and did not widen the interceptor), not
+// an oversight — but it is invisible from this interface, which is why it is
+// stated here rather than only in the plan that chose it.
+// TestApplyError_StreamingHandlerErrorIsNotTransformed pins it, so extending
+// the seam to streaming means deleting that test on purpose.
+//
+// Implementations must return err UNCHANGED for methods and error shapes they
+// do not target, and must tolerate a nil err.
+type ErrorTransform interface {
+	// TransformError returns the error to serve in place of err for a client
+	// resolved to the version prior to this change, or err unchanged when this
+	// change does not target it. method is the Connect RPC procedure path.
+	TransformError(method string, err error) error
 }
 
 // Changes is an ordered list of VersionChanges (oldest→newest) that can be
@@ -90,6 +128,181 @@ func (c *Changes) Apply(method string, msg any, resolved Version) {
 	}
 }
 
+// ApplyError is Apply for the error path. It runs, in newest→oldest order,
+// every change whose Version() is strictly newer than resolved AND that
+// implements the optional ErrorTransform capability, threading each result into
+// the next. Changes that only transform responses are skipped here, so the
+// common case allocates nothing and returns err untouched.
+//
+// Unlike Apply it RETURNS the (possibly replaced) error, because an error is an
+// immutable value — see ErrorTransform for why that asymmetry is deliberate. A
+// nil err is returned as-is without consulting any change: the success path
+// never reaches this.
+//
+// Applied by WrapUnary ONLY — streaming handler errors are not transformed. See
+// the SCOPE note on ErrorTransform.
+//
+// A change that REPLACES the error rather than returning it unchanged ends the
+// chain's access to whatever the original carried: the replacement is what the
+// next (older) ErrorTransform is handed, so any typed marker the original held
+// is gone from that point on. With one implementer that is unobservable; a
+// second error-path change that discriminates on a marker must therefore either
+// preserve it when replacing, or accept that a newer change can shadow it.
+func (c *Changes) ApplyError(method string, err error, resolved Version) error {
+	if err == nil {
+		return nil
+	}
+	for i := len(c.changes) - 1; i >= 0; i-- {
+		ch := c.changes[i]
+		if !c.reg.Newer(ch.Version(), resolved) {
+			continue
+		}
+		if et, ok := ch.(ErrorTransform); ok {
+			err = et.TransformError(method, err)
+		}
+	}
+	return err
+}
+
+// relayedDaemonDeadline marks a connect error as the RELAYED daemon deadline —
+// a ProxySwitchSessionAccount whose CommandResult came back carrying
+// CommandResult_ERROR_CODE_DEADLINE_EXCEEDED because the DAEMON's own switch
+// budget expired. bosso's validateCommandResult wraps with it (through
+// MarkRelayedDaemonDeadline); SwitchDeadlineCodeChange matches it with
+// errors.As, and callers outside this package ask IsRelayedDaemonDeadline.
+//
+// The marker exists because procedure alone cannot discriminate this case.
+// bosso's dispatchOwnerCommand already maps its OWN commandDeadline expiry on
+// this very procedure to connect.CodeDeadlineExceeded, and it did so long
+// before V20260820. A transform that rewrote every CodeDeadlineExceeded on
+// ProxySwitchSessionAccount back to CodeAborted would therefore regress that
+// older, already-correct answer for old clients — a regression manufactured by
+// the compatibility layer itself. Only the relayed error is new at V20260820,
+// so only the relayed error is down-converted.
+//
+// Matching on the error MESSAGE text instead was considered and rejected: see
+// docs/solutions/design-patterns/ask-whether-the-context-ended-before-asking-what-the-error-text-says.md
+// for this repo's own record of why a substring classifier over an error string
+// is unsafe.
+//
+// The TYPE is deliberately unexported while its constructor and predicate are
+// not. Exporting it would make the zero value — &RelayedDaemonDeadline{}, a
+// composite literal naming no fields, which is legal from any package even
+// though every field is unexported — constructible by callers who never went
+// through MarkRelayedDaemonDeadline, and a marker whose whole job is to be
+// walked by errors.As must not be able to nil-deref the interceptor walking it.
+// Unexporting removes that shape from the language rather than guarding against
+// it, so Error and Unwrap need no nil branches and the exported surface is two
+// functions instead of a type plus a constructor.
+//
+// It is a transparent wrapper: Unwrap exposes the underlying *connect.Error, so
+// connect.CodeOf and connect's own error serialization see CodeDeadlineExceeded
+// exactly as they would without the marker. Wrapping changes what the transform
+// can recognise, never what an unversioned caller receives.
+type relayedDaemonDeadline struct{ err error }
+
+// MarkRelayedDaemonDeadline wraps err in the relayed-daemon-deadline marker.
+// Returns nil for a nil err so callers can wrap unconditionally. It is the only
+// way to produce the marker, which is what makes the zero value unreachable.
+func MarkRelayedDaemonDeadline(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &relayedDaemonDeadline{err: err}
+}
+
+// IsRelayedDaemonDeadline reports whether err carries the relayed-daemon-
+// deadline marker anywhere in its chain. It is the exported way to ask the
+// question — the marker type itself stays unexported, so a caller asserts the
+// contract rather than reaching for the concrete type.
+func IsRelayedDaemonDeadline(err error) bool {
+	var marker *relayedDaemonDeadline
+	return errors.As(err, &marker)
+}
+
+// Error implements error, delegating to the wrapped error so the message a
+// client sees is unchanged by the marking.
+func (e *relayedDaemonDeadline) Error() string { return e.err.Error() }
+
+// Unwrap exposes the wrapped *connect.Error to errors.As / errors.Is and, via
+// them, to connect.CodeOf and connect's error serialization.
+func (e *relayedDaemonDeadline) Unwrap() error { return e.err }
+
+// switchResultCeilingExceeded marks the HANDLER-owned result ceiling on
+// ProxySwitchSessionAccount: bosso stopped waiting before a daemon verdict
+// arrived, while the account switch may still be running. It is deliberately
+// separate from relayedDaemonDeadline, where the daemon itself already ended
+// the switch and sent a deadline verdict.
+type switchResultCeilingExceeded struct{ err error }
+
+// MarkSwitchResultCeilingExceeded wraps err in the handler-owned switch result
+// ceiling marker. Returns nil for a nil err so callers can wrap
+// unconditionally.
+func MarkSwitchResultCeilingExceeded(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &switchResultCeilingExceeded{err: err}
+}
+
+// IsSwitchResultCeilingExceeded reports whether err carries the handler-owned
+// switch result ceiling marker anywhere in its chain.
+func IsSwitchResultCeilingExceeded(err error) bool {
+	var marker *switchResultCeilingExceeded
+	return errors.As(err, &marker)
+}
+
+func (e *switchResultCeilingExceeded) Error() string { return e.err.Error() }
+
+func (e *switchResultCeilingExceeded) Unwrap() error { return e.err }
+
+// relayedDaemonCanceled marks a connect error as the RELAYED daemon
+// cancellation — a ProxySwitchSessionAccount whose CommandResult came back
+// carrying CommandResult_ERROR_CODE_CANCELED because the caller cancelled the
+// switch request while the DAEMON was executing it. bosso's validateCommandResult
+// wraps with it (through MarkRelayedDaemonCanceled); SwitchCanceledCodeChange
+// matches it with errors.As, and callers outside this package ask
+// IsRelayedDaemonCanceled.
+//
+// The marker exists for the same reason relayedDaemonDeadline does: procedure
+// alone cannot discriminate this case. bosso's dispatchOwnerCommand already maps
+// its own context.Canceled path on this procedure to connect.CodeCanceled, and
+// it did so before V20260821. A transform that rewrote every CodeCanceled on
+// ProxySwitchSessionAccount back to CodeAborted would therefore regress that
+// older, already-correct answer for old clients. Only the relayed error is new
+// at V20260821, so only the relayed error is down-converted.
+//
+// The type is deliberately unexported while its constructor and predicate are
+// exported. See relayedDaemonDeadline above for the zero-value rationale.
+type relayedDaemonCanceled struct{ err error }
+
+// MarkRelayedDaemonCanceled wraps err in the relayed-daemon-canceled marker.
+// Returns nil for a nil err so callers can wrap unconditionally. It is the only
+// way to produce the marker, which is what makes the zero value unreachable.
+func MarkRelayedDaemonCanceled(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &relayedDaemonCanceled{err: err}
+}
+
+// IsRelayedDaemonCanceled reports whether err carries the relayed-daemon-
+// canceled marker anywhere in its chain. It is the exported way to ask the
+// question — the marker type itself stays unexported, so a caller asserts the
+// contract rather than reaching for the concrete type.
+func IsRelayedDaemonCanceled(err error) bool {
+	var marker *relayedDaemonCanceled
+	return errors.As(err, &marker)
+}
+
+// Error implements error, delegating to the wrapped error so the message a
+// client sees is unchanged by the marking.
+func (e *relayedDaemonCanceled) Error() string { return e.err.Error() }
+
+// Unwrap exposes the wrapped *connect.Error to errors.As / errors.Is and, via
+// them, to connect.CodeOf and connect's error serialization.
+func (e *relayedDaemonCanceled) Unwrap() error { return e.err }
+
 // RefMsg is the demo message type used by ReferenceChange. Real transforms in
 // future PRs will type-assert against generated bossanova.v1 protobuf messages;
 // this demo struct keeps the apiversion package self-contained and is what the
@@ -99,7 +312,7 @@ type RefMsg struct {
 }
 
 // ProductionChanges returns the Changes wired into bosso, built against
-// DefaultRegistry. It ships eleven live transforms in non-decreasing version
+// DefaultRegistry. It ships twelve live transforms in non-decreasing version
 // order: OrphanedStateChange (introduced at V20260704), which down-converts
 // SESSION_STATE_ORPHANED on Session.state; AgentAuthFailedChange (introduced at
 // V20260705), which neutralizes the ATTENTION_REASON_AGENT_AUTH_FAILED attention
@@ -126,9 +339,19 @@ type RefMsg struct {
 // draft-PR creation failed while a chat is live; and GateFailedOutcomeChange
 // (introduced at V20260816), which restores the pre-BOS-881 "gated" outcome,
 // CRON_JOB_STATUS_GATED status, and "gated" RunCronJobNow skip reason for a
-// cron job whose gate command could not be evaluated at all.
+// cron job whose gate command could not be evaluated at all; and
+// SwitchDeadlineCodeChange (introduced at V20260820), which restores the
+// pre-BOS-947 connect.CodeAborted for a relayed ProxySwitchSessionAccount
+// failure whose CommandResult carried ERROR_CODE_DEADLINE_EXCEEDED — the
+// mechanism's first ERROR-path transform, applied via ApplyError rather than
+// Apply; SwitchResultCeilingMessageChange (introduced at V20260821), which
+// restores the legacy "command timed out after 2m0s" text for older clients
+// when ProxySwitchSessionAccount's handler-owned result ceiling expires; and
+// SwitchCanceledCodeChange (also introduced at V20260821), which restores the
+// pre-BOS-958 connect.CodeAborted for a relayed ProxySwitchSessionAccount
+// failure whose CommandResult carried ERROR_CODE_CANCELED.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260816 (Current) runs zero transforms.
+// request resolved to V20260821 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -137,7 +360,7 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
@@ -187,48 +410,79 @@ func downconvertOrphanedSession(s *pb.Session) *pb.Session {
 	return clone
 }
 
+func transformUnarySessionResponse(method string, msg any, transform func(*pb.Session) *pb.Session) bool {
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
+		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
+			for i := range m.Sessions {
+				m.Sessions[i] = transform(m.Sessions[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
+		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
+		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
+		if m, ok := msg.(*pb.TransferSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
+		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
+		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
+		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
+		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // TransformResponse implements VersionChange. It down-converts Session.state on
 // each OrchestratorService response type that carries one or more Sessions,
 // matched by procedure path, rewriting only response-local (cloned) copies so a
 // shared registry pointer is never mutated. It is a no-op for any other method
 // or payload type.
 func (OrphanedStateChange) TransformResponse(method string, msg any) {
-	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertOrphanedSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertOrphanedSession(m.GetSession())
-		}
-	}
+	transformUnarySessionResponse(method, msg, downconvertOrphanedSession)
 	// ProxyCreateSession (and other streaming Session-bearing responses) are
 	// intentionally NOT handled: the version interceptor applies transforms to
 	// unary responses only, and streaming envelope evolution is handled by
@@ -291,42 +545,7 @@ func downconvertAuthFailedSession(s *pb.Session) *pb.Session {
 // response-local (cloned) copies so a shared registry pointer is never mutated.
 // It is a no-op for any other method or payload type.
 func (AgentAuthFailedChange) TransformResponse(method string, msg any) {
-	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertAuthFailedSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertAuthFailedSession(m.GetSession())
-		}
-	}
+	transformUnarySessionResponse(method, msg, downconvertAuthFailedSession)
 }
 
 // AgentStalledChange is the production VersionChange introduced at V20260803.
@@ -400,66 +619,7 @@ func downconvertStalledSession(s *pb.Session) *pb.Session {
 // copies so a shared registry pointer is never mutated. It is a no-op for any
 // other method or payload type.
 func (AgentStalledChange) TransformResponse(method string, msg any) {
-	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertStalledSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
-		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
-		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
-		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
-			m.Session = downconvertStalledSession(m.GetSession())
-		}
-	}
+	transformUnarySessionResponse(method, msg, downconvertStalledSession)
 }
 
 // UnmanagedLabelChange is the production VersionChange introduced at V20260706.
@@ -604,41 +764,10 @@ func downconvertUnmanagedSwitchResponse(m *pb.ProxySwitchSessionAccountResponse)
 // pointer is never mutated), and on the ProxySwitchSessionAccount response. It is
 // a no-op for any other method or payload type.
 func (UnmanagedLabelChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertUnmanagedLabelSession) {
+		return
+	}
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertUnmanagedLabelSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertUnmanagedLabelSession(m.GetSession())
-		}
 	case bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure:
 		if m, ok := msg.(*pb.ProxySwitchSessionAccountResponse); ok {
 			downconvertUnmanagedSwitchResponse(m)
@@ -733,43 +862,18 @@ func downconvertLimitedChatStatusDelta(d *pb.ChatStatusDelta) *pb.ChatStatusDelt
 // TransformResponse implements VersionChange. It down-converts LIMITED chat
 // status enum values and the corresponding Session display composite.
 func (LimitedChatStatusChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertLimitedSession) {
+		return
+	}
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertLimitedSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertLimitedSession(m.GetSession())
-		}
 	case bossanovav1connect.DaemonServiceGetChatStatusesProcedure:
 		if m, ok := msg.(*pb.GetChatStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertLimitedChatStatusEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetChatStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetChatStatusesResponse); ok {
 			for i := range m.Statuses {
 				m.Statuses[i] = downconvertLimitedChatStatusEntry(m.Statuses[i])
 			}
@@ -920,67 +1024,18 @@ func downconvertWaitingSession(s *pb.Session) *pb.Session {
 // status enum values, clears the accompanying waiting_reason, and restores the
 // pre-waiting display composite on every session-bearing response.
 func (WaitingChatStatusChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertWaitingSession) {
+		return
+	}
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertWaitingSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
-		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
-		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
-		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
-			m.Session = downconvertWaitingSession(m.GetSession())
-		}
 	case bossanovav1connect.DaemonServiceGetChatStatusesProcedure:
 		if m, ok := msg.(*pb.GetChatStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWaitingChatStatusEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetChatStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetChatStatusesResponse); ok {
 			for i := range m.Statuses {
 				m.Statuses[i] = downconvertWaitingChatStatusEntry(m.Statuses[i])
 			}
@@ -1088,70 +1143,15 @@ func downconvertDraftPRFailureSession(s *pb.Session) *pb.Session {
 // "? PR failed" composite on every session-bearing response — the unary set and
 // the streamed ProxyCreateSession created message alike.
 func (DraftPRFailureLabelChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertDraftPRFailureSession) {
+		return
+	}
 	switch method {
 	case bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure:
 		if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
 			if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
 				created.Created = downconvertDraftPRFailureSession(created.Created)
 			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertDraftPRFailureSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
-		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
-		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
-		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
-			m.Session = downconvertDraftPRFailureSession(m.GetSession())
 		}
 	}
 }
@@ -1344,42 +1344,7 @@ func rotationEventsHaveNoEligible(evs []*pb.RotationEvent) bool {
 // response-local (cloned) copies so a shared registry pointer is never mutated.
 // It is a no-op for any other method or payload type.
 func (NoEligibleAccountChange) TransformResponse(method string, msg any) {
-	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertNoEligibleSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertNoEligibleSession(m.GetSession())
-		}
-	}
+	transformUnarySessionResponse(method, msg, downconvertNoEligibleSession)
 }
 
 // ErroredStatusChange is the production VersionChange introduced at V20260718.
@@ -1457,70 +1422,15 @@ func downconvertErroredSession(s *pb.Session) *pb.Session {
 // (cloned) copies so a shared registry pointer is never mutated. It is a no-op
 // for any other method or payload type.
 func (ErroredStatusChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertErroredSession) {
+		return
+	}
 	switch method {
 	case bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure:
 		if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
 			if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
 				created.Created = downconvertErroredSession(created.Created)
 			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertErroredSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure:
-		if m, ok := msg.(*pb.ProxyRetrySessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateSessionProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
-		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure:
-		if m, ok := msg.(*pb.ProxyRunCronJobNowResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyCloseSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResurrectSessionResponse); ok {
-			m.Session = downconvertErroredSession(m.GetSession())
 		}
 	}
 }
@@ -1602,42 +1512,7 @@ func rotationEventsHaveRespawn(evs []*pb.RotationEvent) bool {
 // only response-local (cloned) copies so a shared registry pointer is never
 // mutated. It is a no-op for any other method or payload type.
 func (RespawnSameAccountOutcomeChange) TransformResponse(method string, msg any) {
-	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:
-		if m, ok := msg.(*pb.ProxyListSessionsResponse); ok {
-			for i := range m.Sessions {
-				m.Sessions[i] = downconvertRespawnSession(m.Sessions[i])
-			}
-		}
-	case bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure:
-		if m, ok := msg.(*pb.ProxyGetSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure:
-		if m, ok := msg.(*pb.ProxyStopSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure:
-		if m, ok := msg.(*pb.ProxyPauseSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyResumeSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure:
-		if m, ok := msg.(*pb.ProxyMergeSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure:
-		if m, ok := msg.(*pb.ProxyArchiveSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	case bossanovav1connect.OrchestratorServiceTransferSessionProcedure:
-		if m, ok := msg.(*pb.TransferSessionResponse); ok {
-			m.Session = downconvertRespawnSession(m.GetSession())
-		}
-	}
+	transformUnarySessionResponse(method, msg, downconvertRespawnSession)
 }
 
 // ReferenceChange is an example VersionChange introduced at V20260701. It
@@ -1665,4 +1540,177 @@ func (ReferenceChange) TransformResponse(method string, msg any) {
 		return
 	}
 	m.Greeting = "[v1] " + m.Greeting
+}
+
+// SwitchDeadlineCodeChange is the production VersionChange introduced at
+// V20260820, and the mechanism's FIRST error-path transform.
+//
+// At V20260820 the OrchestratorService began serving
+// connect.CodeDeadlineExceeded for a ProxySwitchSessionAccount that the
+// DAEMON's own switch budget ended (BOS-947). Before this change the daemon had
+// no wire value for "a deadline stopped this": the relayed CommandResult
+// carried ERROR_CODE_UNSPECIFIED and bosso's validateCommandResult fell through
+// to connect.CodeAborted. That was not merely vaguer — CodeAborted invites a
+// retry, and BOS-747's rule is that a request killed by its own deadline must
+// not be retried. The daemon now emits the new
+// CommandResult_ERROR_CODE_DEADLINE_EXCEEDED for that case.
+//
+// The behavior change is in the CODE served on an existing procedure, not the
+// schema — exactly the case this versioning mechanism exists for. A client
+// pinned to an older version was built when this case read as CodeAborted, so
+// for any request resolved older than V20260820 this change restores that code
+// with the message preserved.
+//
+// SCOPE — this is the part to read before touching the match. The transform is
+// discriminated by BOTH the procedure AND the relayed-daemon-deadline marker, and
+// the marker is the load-bearing half. bosso's dispatchOwnerCommand maps its
+// OWN commandDeadline/switchCommandDeadline expiry on this same procedure to
+// CodeDeadlineExceeded, and has done so since long before V20260820. Matching
+// on the procedure alone would down-convert that pre-existing, correct answer
+// too and hand old clients a CodeAborted the server never used to send — a
+// regression introduced by the compatibility layer itself. Broadening this
+// match is a blocking review finding, not a simplification.
+//
+// It implements ErrorTransform only. TransformResponse is a no-op: there is no
+// success-path shape to down-convert, and the change must not touch one.
+type SwitchDeadlineCodeChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260820, so
+// it is applied to any request resolved to a strictly older version.
+func (SwitchDeadlineCodeChange) Version() Version { return V20260820 }
+
+// TransformResponse implements VersionChange. Deliberately a no-op: this change
+// lives entirely on the error path (see TransformError). It exists only because
+// VersionChange requires it for membership in ProductionChanges, and it is what
+// the ApplyError/Apply split tests pin — a success response must never be
+// touched by an error-path change.
+func (SwitchDeadlineCodeChange) TransformResponse(string, any) {}
+
+// TransformError implements ErrorTransform. It rewrites ONLY a
+// ProxySwitchSessionAccount error carrying the relayed-daemon-deadline marker,
+// restoring the pre-V20260820 connect.CodeAborted with the original message
+// intact. Every other procedure, an unmarked CodeDeadlineExceeded on this same
+// procedure (bosso's own relay timeout), a non-Connect error, and a nil error
+// are all returned unchanged.
+func (SwitchDeadlineCodeChange) TransformError(method string, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+		return err
+	}
+	if !IsRelayedDaemonDeadline(err) {
+		return err
+	}
+	// Preserve the daemon's own message; only the code changes. connect.Error's
+	// Message() is what a client renders, and the pre-V20260820 CodeAborted
+	// carried exactly this string via validateCommandResult's default arm.
+	//
+	// Message-only reconstruction deliberately drops Meta() and Details(). The
+	// error this targets is built by validateCommandResult from a relayed
+	// CommandResult and carries neither, so there is nothing to lose here — but
+	// a future ErrorTransform copied from this one may target an error that
+	// does, and it must copy them across rather than inherit this shortcut.
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		// Marked but not a Connect error: nothing meaningful to down-convert to,
+		// and inventing a code here would be worse than passing it through.
+		return err
+	}
+	return connect.NewError(connect.CodeAborted, errors.New(connectErr.Message()))
+}
+
+const legacySwitchResultCeilingMessage = "command timed out after 2m0s"
+
+// SwitchResultCeilingMessageChange is the production VersionChange introduced
+// at V20260821.
+//
+// At V20260821 ProxySwitchSessionAccount began serving a self-describing
+// message when BOSSO's own result ceiling stops waiting before a daemon verdict
+// arrives: the account switch may still be running, and the request did not
+// cancel or tear it down. Before that change this path looked like the generic
+// relay timeout, "command timed out after 2m0s". The code remains
+// connect.CodeDeadlineExceeded in both versions; only the observable message
+// changed.
+//
+// The match is deliberately both procedure-scoped and marker-scoped. The same
+// procedure can also return a relayed daemon deadline, and dispatchOwnerCommand
+// can produce generic unmarked relay timeouts. Neither behavior changed at
+// V20260821.
+type SwitchResultCeilingMessageChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260821, so
+// it is applied to any request resolved to a strictly older version.
+func (SwitchResultCeilingMessageChange) Version() Version { return V20260821 }
+
+// TransformResponse implements VersionChange. Deliberately a no-op: this
+// change lives entirely on the error path.
+func (SwitchResultCeilingMessageChange) TransformResponse(string, any) {}
+
+// TransformError implements ErrorTransform. It rewrites ONLY the handler-owned
+// ProxySwitchSessionAccount result-ceiling error back to the legacy timeout
+// text older clients saw before V20260821, preserving CodeDeadlineExceeded.
+func (SwitchResultCeilingMessageChange) TransformError(method string, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+		return err
+	}
+	if !IsSwitchResultCeilingExceeded(err) {
+		return err
+	}
+	if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+		return err
+	}
+	return connect.NewError(connect.CodeDeadlineExceeded, errors.New(legacySwitchResultCeilingMessage))
+}
+
+// SwitchCanceledCodeChange is the production VersionChange introduced at
+// V20260821.
+//
+// At V20260821 the OrchestratorService began serving connect.CodeCanceled for a
+// ProxySwitchSessionAccount that the caller cancelled while the DAEMON was
+// executing the switch (BOS-958). Before this change the daemon had no wire
+// value for "the caller abandoned this": the relayed CommandResult carried
+// ERROR_CODE_UNSPECIFIED and bosso's validateCommandResult fell through to
+// connect.CodeAborted. That was not merely vaguer — CodeAborted invites a retry,
+// and retrying a caller-cancelled switch can stack duplicate work on top of a
+// partially completed first attempt.
+//
+// The behavior change is in the CODE served on an existing procedure, not the
+// schema. A client pinned to an older version was built when this case read as
+// CodeAborted, so for any request resolved older than V20260821 this change
+// restores that code with the message preserved.
+//
+// SCOPE — match both the procedure and the relayed-daemon-canceled marker.
+// bosso's dispatchOwnerCommand maps its OWN context.Canceled path on this same
+// procedure to CodeCanceled, and it did so before V20260821. Matching on the
+// procedure alone would down-convert that pre-existing, correct answer too and
+// hand old clients a CodeAborted the server never used to send.
+//
+// It implements ErrorTransform only. TransformResponse is a no-op: there is no
+// success-path shape to down-convert, and the change must not touch one.
+type SwitchCanceledCodeChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260821, so
+// it is applied to any request resolved to a strictly older version.
+func (SwitchCanceledCodeChange) Version() Version { return V20260821 }
+
+// TransformResponse implements VersionChange. Deliberately a no-op: this change
+// lives entirely on the error path (see TransformError).
+func (SwitchCanceledCodeChange) TransformResponse(string, any) {}
+
+// TransformError implements ErrorTransform. It rewrites ONLY a
+// ProxySwitchSessionAccount error carrying the relayed-daemon-canceled marker,
+// restoring the pre-V20260821 connect.CodeAborted with the original message
+// intact. Every other procedure, an unmarked CodeCanceled on this same
+// procedure (bosso's own cancellation), a non-Connect error, and a nil error are
+// all returned unchanged.
+func (SwitchCanceledCodeChange) TransformError(method string, err error) error {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+		return err
+	}
+	if !IsRelayedDaemonCanceled(err) {
+		return err
+	}
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return err
+	}
+	return connect.NewError(connect.CodeAborted, errors.New(connectErr.Message()))
 }

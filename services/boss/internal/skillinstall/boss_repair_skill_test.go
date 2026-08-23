@@ -18,7 +18,7 @@ func TestBossRepairSkillWatchModePollingContract(t *testing.T) {
 
 	assertNotContains(t, skill, "gh pr checks --watch")
 	assertContains(t, watchMode, "gh pr checks --json bucket")
-	assertContains(t, watchMode, "node scripts/review-feedback-probe.js")
+	assertContains(t, watchMode, "${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js")
 	assertContains(t, watchMode, "if checks are pending")
 	assertContains(t, watchMode, "seconds, then poll checks, review threads, and mergeability again.")
 	assertContains(t, watchMode, "Do not wait on checks without probing reviews and mergeability first.")
@@ -33,7 +33,7 @@ func TestBossRepairSkillReviewRepliesUseGitHubReplyEndpoint(t *testing.T) {
 	skill := readEmbeddedBossRepairSkill(t)
 
 	assertNotContains(t, skill, "in_reply_to_id")
-	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\"")
+	assertContains(t, skill, "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\" -q .html_url")
 	assertContains(t, skill, "Reply bodies are Markdown and must never be shell-interpolated.")
 	assertContains(t, skill, "Use the agent's file-editing tool to write the complete reply text")
 	assertContains(t, skill, "First run the path-creation block by itself")
@@ -46,7 +46,7 @@ func TestBossRepairSkillReviewRepliesPreserveAPIFailureStatus(t *testing.T) {
 	skill := readEmbeddedBossRepairSkill(t)
 	strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
 
-	const replyCommand = "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\""
+	const replyCommand = "gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@\"$REPLY_BODY\" -q .html_url"
 	if got := strings.Count(strategyC, replyCommand); got != 3 {
 		t.Fatalf("reply command count = %d, want 3", got)
 	}
@@ -55,6 +55,47 @@ func TestBossRepairSkillReviewRepliesPreserveAPIFailureStatus(t *testing.T) {
 	}
 	if got := strings.Count(strategyC, "exit \"$GH_STATUS\""); got != 3 {
 		t.Fatalf("preserved GitHub failure exit count = %d, want 3", got)
+	}
+}
+
+func TestBossRepairSkillReviewProbeContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			const relative = "node scripts/review-feedback-probe.js"
+			const absolute = "${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+			if got := strings.Count(skill, relative); got != 0 {
+				t.Fatalf("relative probe command count = %d, want 0", got)
+			}
+			if got := strings.Count(skill, absolute); got != 8 {
+				t.Fatalf("absolute probe command count = %d, want 8", got)
+			}
+			assertNotContains(t, skill, "from this skill directory")
+
+			phase1 := sectionBetween(t, skill, "### Phase 1: Assess Current State", "### Phase 2: Execute Repair Strategy")
+			step12 := boldStepWindow(t, phase1, "**1.2 Identify Problem Type**", "**1.3 Identify Project Gate Commands**")
+			assertContains(t, step12, "repair_status=not_evaluated")
+
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertContains(t, strategyC, "repair_status=not_evaluated")
+			assertContains(t, strategyC, "It is never")
+			assertContains(t, strategyC, "stdout without a `probe_status=` line")
+			assertContains(t, strategyC, "--repo OWNER/REPO --pr PR_NUM --host HOST")
+
+			phase3 := sectionBetween(t, skill, "### Phase 3: Verify and Monitor", "## Repair Summary")
+			assertContains(t, phase3, "repair_status=not_evaluated")
+
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+			assertContains(t, watchMode, "`clean`, `parked`, `needs_repair`, `unknown`, `not_evaluated`")
+			assertContains(t, watchMode, "repair_status=unknown` or `repair_status=not_evaluated")
+			assertContains(t, watchMode, "terminal only as a non-green unreadable-review state")
+
+			outcomes := sectionBetween(t, skill, "## Terminal outcomes", "## Residuals vs true stops")
+			assertContains(t, outcomes, "repair_status=not_evaluated")
+
+			residuals := sectionBetween(t, skill, "## Residuals vs true stops", "## Edge Cases and Error Handling")
+			assertContains(t, residuals, "repair_status=not_evaluated")
+			assertContains(t, residuals, "repository or PR 404")
+		})
 	}
 }
 
@@ -206,6 +247,45 @@ func TestBossRepairSkillResidualContract(t *testing.T) {
 
 	// The contradicted directive is gone from the whole skill, not merely from these sections.
 	assertNotContains(t, skill, "Exit with failure status")
+}
+
+func TestBossRepairSkillVerifiesGateSummariesAndReviewThreadGrouping(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase2 := sectionBetween(t, skill, "### Phase 2: Execute Repair Strategy", "#### Strategy A: Merge Conflicts")
+			assertContains(t, phase2, "authoritative completion evidence")
+			assertContains(t, phase2, "verbatim final")
+			assertContains(t, phase2, "summary line")
+			assertContains(t, phase2, "aggregate command's completed exit")
+			assertContains(t, phase2, "status or status file is the authority")
+			assertContains(t, phase2, "A gate figure")
+			assertContains(t, phase2, "is **unverified**")
+			assertContains(t, phase2, "a restated number and a")
+			assertContains(t, phase2, "fabricated number have the same shape")
+			assertContains(t, phase2, "re-derive the failure identity from the test log")
+			assertContains(t, phase2, "Assess the returned verdict")
+			assertContains(t, phase2, "evidence it cites independently")
+			assertContains(t, phase2, "Never promote narrative to authority when the log is available")
+
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+			assertContains(t, strategyC, "Group the unresolved threads by the file each thread anchors to")
+			assertContains(t, strategyC, "When the Phase 2 dispatch branch is available")
+			assertContains(t, strategyC, "dispatch one worker per file group for **verdict-only** analysis")
+			assertContains(t, strategyC, "When the documented inline branch is active")
+			assertContains(t, strategyC, "the orchestrator triages each group itself")
+			assertContains(t, strategyC, "separate verdict per thread")
+			assertContains(t, strategyC, "must not edit, commit, push, reply, or resolve")
+			assertContains(t, strategyC, "The orchestrator serializes all repository-mutating work")
+			assertContains(t, strategyC, "shared helpers, generated artifacts, lockfiles, the Git index, and the branch tip are repository-wide")
+
+			summary := sectionBetween(t, skill, "## Repair Summary", "## Terminal outcomes")
+			assertContains(t, summary, "**Gate results**:")
+			assertContains(t, summary, "authoritative completion evidence")
+			assertContains(t, summary, "quoted final summary line")
+			assertContains(t, summary, "missing either the completion evidence or quoted line")
+			assertContains(t, summary, "`unverified`")
+		})
+	}
 }
 
 // TestBossRepairSkillStaleSHAContract pins the stale-SHA cancellation rule in Phase 2. A round reads
@@ -674,7 +754,24 @@ func TestBossRepairSkillStrategyCVerificationSteps(t *testing.T) {
 			assertContains(t, strategyC, "A park keys on the **reviewer's last-comment identity**, not on the branch head")
 			assertContains(t, strategyC, "**Never carry a prior pass's parked verdict forward.**")
 			assertContains(t, strategyC, "**re-derive its premise against current HEAD**")
-			assertContains(t, strategyC, "node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition open")
+			assertContains(t, strategyC, "node \"$BOSS_REPAIR_PROBE\" mark --thread THREAD_ID --disposition open --repo OWNER/REPO --pr PR_NUM --host HOST")
+		})
+	}
+}
+
+func TestBossRepairSkillStrategyCSiblingClassSweep(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyC := sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")
+
+			assertContains(t, strategyC, "**Run a sibling-class sweep before writing the fix.**")
+			assertContains(t, strategyC, "Once you understand the finding's mechanism, search the repository for that mechanism before editing the cited site.")
+			assertContains(t, strategyC, "Enumerate every site the search returns and record a verdict for each one: `fixed in this pass`, or `not a defect` with the reason")
+			assertContains(t, strategyC, "a one-row result is a complete discharge when the search finds only the cited site")
+			assertContains(t, strategyC, "The class is never fixed wholesale on the strength of the search alone")
+			assertContains(t, strategyC, "the discriminator is where the branch lives, not whether the pattern matched")
+			assertContains(t, strategyC, "when one message drives both an observer and view state, relocating only the observer can leave the view half of the defect behind")
+			assertContains(t, strategyC, "Put the verdict table in the PR body or Repair Summary so the enumeration is reviewable.")
 		})
 	}
 }
@@ -829,6 +926,406 @@ func TestBossRepairSkillGateRedIsNotAutomaticallyAFinding(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBossRepairSkillPushedHeadSurvivalContract pins the survival check for this run's OWN commit.
+// A sibling agent sharing the worktree force-pushed over a round's committed content and every
+// signal the skill checked still read green: the sibling moved LOCAL HEAD too, so `git push`
+// printed `Everything up-to-date`, and the PR head was a perfectly valid new commit, so the
+// `ROUND_HEAD` comparison saw an ordinary advance. The round reported success for work that no
+// longer existed.
+//
+// Each literal closes one half of that failure and is pinned separately:
+//
+//   - `PUSHED_HEAD` must exist as a NAMED baseline distinct from `ROUND_HEAD`. Without the separate
+//     name the only question the round can ask is "did the head move", which is the question that
+//     already answered wrongly.
+//   - The `Everything up-to-date` disclaimer, because that string is what the failing round read as
+//     proof of a successful push.
+//   - `git merge-base --is-ancestor`, with the prose that says ancestry is required INSTEAD OF
+//     equality. Equality is wrong in both directions — it fires on a benign peer commit stacked on
+//     top, and it cannot see a clobber, because the clobbering commit is a valid head.
+//   - The failure branch is a residual and explicitly must not re-push, or the remedy for a
+//     concurrent writer becomes a race against them.
+//
+// The window is the Phase 2 preamble, scoped by sectionBetween rather than searched document-wide:
+// a document-wide match would go green with the rule written under a heading the round never reads.
+func TestBossRepairSkillPushedHeadSurvivalContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase2 := sectionBetween(t, skill, "### Phase 2: Execute Repair Strategy", "#### Strategy A: Merge Conflicts")
+
+			// The vocabulary: four baselines, named, with the non-substitutability stated. That
+			// sentence is the reason the four recorded failures are distinct rules rather than one,
+			// and it is what stops a later editor collapsing them back onto `ROUND_HEAD`.
+			assertContains(t, phase2, "no one of them substitutes for another")
+			assertContains(t, phase2, "They are **four different questions**")
+			assertContains(t, phase2, "`PUSHED_HEAD`")
+			assertContains(t, phase2, "the SHA this run authored and sent, captured before the push")
+
+			// A multi-pass watch round sends more than one SHA, so the assertion is a loop over the
+			// notes, not a single check of the newest value.
+			assertContains(t, phase2, "once for **every** SHA your notes recorded, not only")
+			assertContains(t, phase2, "the most recent")
+			assertContains(t, phase2, "sends one per pass that pushed")
+			assertContains(t, phase2, "`PREV_PASS_HEAD`")
+			assertContains(t, phase2, "`$BEFORE`")
+
+			// The CAPTURE POINT, not just the name. `PUSHED_HEAD` has to be the SHA this run
+			// AUTHORED, read before the push. Taking it from the post-push re-baselining that
+			// produces `ROUND_HEAD` records whatever happens to be at the head — which is the
+			// clobbering commit in exactly the case this rule exists for: a peer sharing the
+			// worktree moves local HEAD onto its own commit, `git push` reports
+			// `Everything up-to-date`, and the ancestry assertion below then passes vacuously.
+			assertContains(t, phase2, "`PUSHED_HEAD` is the SHA **this")
+			assertContains(t, phase2, "run authored and sent**")
+			assertContains(t, phase2, "capture it from your own commit (`git rev-parse HEAD` immediately after")
+			assertContains(t, phase2, "**before** the `git push` that sends it")
+			assertContains(t, phase2, "**not** take it from the post-push re-baselining above")
+			assertContains(t, phase2, "post-push read would then record the")
+
+			// `PUSHED_HEAD` is recorded in notes, not only in a shell variable — the same reason
+			// the pre-existing `ROUND_HEAD` prose gives, and the reason it survives tool calls.
+			assertContains(t, phase2, "record it in your own notes rather than")
+
+			// Both empty operands are handled inside the fence. `git branch --show-current` exits
+			// zero with empty output on a detached HEAD, and a round that pushed nothing has an
+			// empty `SENT_SHAS`; without the explicit `[ -z ]` arm the `for` would run zero times
+			// and print nothing at all, which reads downstream as "no residual" rather than as
+			// "nothing was checked".
+			assertContains(t, phase2, `[ -n "$BRANCH" ] || exit 1`)
+			assertContains(t, phase2, `if [ -z "$SENT_SHAS" ]; then`)
+			assertContains(t, phase2, "this round sent nothing")
+
+			// The list is RE-HYDRATED FROM NOTES at the point of use, and then ITERATED. Both halves
+			// are load-bearing and both were missing while the prose above them already demanded
+			// "every SHA your notes recorded": the block read a single shell `$PUSHED_HEAD` that no
+			// longer exists by the time Phase 3 runs, so it took the "sent nothing" arm on every
+			// pass and reported a clean survival for a round whose commit had been replaced. A
+			// prose-only requirement with a single-shot block underneath it is what shipped, so pin
+			// the loop itself — not just the sentence asking for one.
+			assertContains(t, phase2, "**Re-hydrate the list from your notes before you read it.**")
+			assertContains(t, phase2, "No shell variable set by the push")
+			assertContains(t, phase2, "is still in scope here")
+			assertContains(t, phase2, `SENT_SHAS="<paste the SHAs your notes recorded`)
+			assertContains(t, phase2, "for SENT_SHA in $SENT_SHAS; do")
+			assertContains(t, phase2, "**Every** entry is checked and reported, not just the newest")
+			assertContains(t, phase2, "Stopping at the first survivor would")
+			assertContains(t, phase2, "a single residual anywhere in the list means the repair did")
+
+			// A commit the round DELIBERATELY withheld — the stale-SHA cancellation — must not set
+			// `PUSHED_HEAD` at all. Capturing before the push makes it tempting to set it on every
+			// commit, and then the assertion fails for a commit that was never sent and prints a
+			// concurrent writer that does not exist.
+			assertContains(t, phase2, "**A commit you deliberately withheld never sets `PUSHED_HEAD`.**")
+			assertContains(t, phase2, "leave `PUSHED_HEAD` unset there and report that commit as built but unpushed")
+			assertContains(t, phase2, "print a concurrent writer that does not exist")
+			assertContains(t, phase2, "**rejected**: nothing was sent, so unset `PUSHED_HEAD` and report the rejection")
+			assertContains(t, phase2, "exits **zero with empty output** on a detached HEAD")
+
+			// The disclaimer, and WHY the string is not proof.
+			assertContains(t, phase2, "`git push` printing `Everything up-to-date` is **not** proof your commit is on the branch")
+			assertContains(t, phase2, "another writer")
+			assertContains(t, phase2, "never as a successful push")
+
+			// Ancestry, with equality explicitly rejected.
+			assertContains(t, phase2, "**ancestry, not equality**")
+			assertContains(t, phase2, `git merge-base --is-ancestor "$SENT_SHA" "origin/$BRANCH"`)
+			assertContains(t, phase2, "Equality would fire on every")
+			assertContains(t, phase2, "cannot see that your commit is gone at all")
+
+			// The failure branch: residual, not a re-push.
+			assertContains(t, phase2, "**do not re-push and do not force-push over the")
+			assertContains(t, phase2, "Report it as a **residual** naming both SHAs")
+			assertContains(t, phase2, "do not claim the repair landed")
+
+			// Order matters: the disclaimer must precede the assertion it motivates, or a reader
+			// who stops at the first green-looking signal never reaches the check.
+			disclaimerAt := strings.Index(phase2, "`git push` printing `Everything up-to-date`")
+			assertionAt := strings.Index(phase2, `git merge-base --is-ancestor "$SENT_SHA"`)
+			if disclaimerAt < 0 || assertionAt < 0 || disclaimerAt > assertionAt {
+				t.Fatalf("the `Everything up-to-date` disclaimer must precede the ancestry assertion (disclaimer at %d, assertion at %d)", disclaimerAt, assertionAt)
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillPhase11ReadsExistingWorktreeDiff pins the obligation to READ a dirty tree
+// before authoring anything into it. Phase 1.1 has always run a bare `git status` with the comment
+// "Check for conflicts and uncommitted changes", but nothing told the round to read the diff and
+// judge it. An interrupted earlier round had left a complete, coherent fix for the very thread
+// under repair sitting uncommitted; authoring a replacement would have duplicated or regressed it.
+//
+// The three commands are pinned individually because `git status --porcelain` alone shows only
+// which files moved — the decision "does this already fix the thread" needs the content, and staged
+// content is invisible to `git diff` alone.
+//
+// Both branches are pinned, and they are asymmetric on purpose: a matching fix is validated and
+// committed (scoped to the thread's files, and REPORTED, so a reviewer can tell adopted work from
+// authored work), while an unrelated or partial diff is neither committed nor reset. A live peer
+// may be mid-edit in this worktree, so resetting is destructive and committing publishes a half-edit.
+//
+// The 1.1 fence ordering is re-asserted here as well. This test's own addition sits directly under
+// that fence, and the ordering it depends on (head capture before the `gh pr view` state read) is
+// exactly what a careless insertion would disturb; TestBossRepairSkillStaleSHAContract checks it
+// against the whole Phase 1 window, this one against the narrowed 1.1 step.
+func TestBossRepairSkillPhase11ReadsExistingWorktreeDiff(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase1 := sectionBetween(t, skill, "### Phase 1: Assess Current State", "### Phase 2: Execute Repair Strategy")
+			step11 := boldStepWindow(t, phase1, "**1.1 Check PR Status**", "**1.1a Read any work already in the tree**")
+			step11a := boldStepWindow(t, phase1, "**1.1a Read any work already in the tree**", "**1.2 Identify Problem Type**")
+
+			// The head capture still precedes the PR state read inside the 1.1 fence.
+			captureAt := strings.Index(step11, "gh pr view --json headRefOid -q .headRefOid")
+			readAt := strings.Index(step11, "\ngh pr view  ")
+			if captureAt < 0 || readAt < 0 || captureAt > readAt {
+				t.Fatalf("step 1.1 must still capture the PR head SHA before the `gh pr view` state read (capture at %d, read at %d)", captureAt, readAt)
+			}
+
+			// Read the change, not just the file list.
+			assertContains(t, step11a, "When `git status` is not clean, read the actual change before authoring anything")
+			assertContains(t, step11a, "git status --porcelain")
+			assertContains(t, step11a, "\ngit diff\n")
+			assertContains(t, step11a, "git diff --cached")
+
+			// Judge it against the thread under repair.
+			assertContains(t, step11a, "check whether that pre-existing diff **already")
+			assertContains(t, step11a, "unresolved review thread you are about to repair")
+
+			// Adopt branch: validate, commit that work, scope it, report it.
+			assertContains(t, step11a, "rather than authoring a replacement")
+			assertContains(t, step11a, "duplicates or regresses it")
+			assertContains(t, step11a, "Commit only the files that belong to the thread under repair")
+			assertContains(t, step11a, "**pre-existing uncommitted work was adopted**")
+			assertContains(t, step11a, "tell adopted work from work this pass authored")
+
+			// Leave branch: neither commit nor reset.
+			assertContains(t, step11a, "commit it and do **not** reset it")
+			assertContains(t, step11a, "record it as a residual")
+			assertContains(t, step11a, "discarding it is destructive and")
+			assertContains(t, step11a, "publishes a half-edit")
+		})
+	}
+}
+
+// TestBossRepairSkillPushOwedIsReDerived pins "is a push owed" as a question re-derived at the
+// moment of use. The old step ran `git status -sb` and read its `[ahead N]`, which is computed
+// against the remote-tracking ref and is therefore only as fresh as the last fetch. A peer session
+// sharing the worktree can push the very commits this round produced, so an ahead count observed
+// earlier in the pass makes a push look owed when it is not — and acting on it either wastes a
+// round or clobbers the peer.
+//
+// Pinned separately: the fetch (without it the compare is against stale data and the rule is
+// cosmetic); both `rev-parse` reads (comparing HEAD to a remembered value reintroduces the staleness);
+// the explicit statement that an earlier observation is insufficient (the wording, not the command,
+// is what stops a round reusing what it already has); and the remote-ahead branch, which must NOT
+// push — that is the case where a naive "we're behind, force it up" reaction destroys peer work.
+//
+// The cancelled-CI carve-out is pinned here too. Phase 2's stale-SHA cancellation deliberately
+// leaves a built-but-unpushed commit, so the branch IS ahead of origin in that one case and must be
+// reported rather than pushed. A push-owed rule written without that exception contradicts it, and
+// the contradiction would only surface as a clobber in production.
+func TestBossRepairSkillPushOwedIsReDerived(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			phase3 := sectionBetween(t, skill, "### Phase 3: Verify and Monitor", "## Repair Summary")
+
+			// The stale command is gone, not merely supplemented.
+			assertNotContains(t, phase3, "git status -sb")
+
+			// The clean-tree check must not contradict Phase 1 step 1.1a, which deliberately leaves
+			// a peer's unrelated work in place. Without this carve-out the agent resolves the
+			// conflict by committing or resetting someone else's mid-edit tree.
+			assertContains(t, phase3, "One case legitimately leaves the tree dirty")
+			assertContains(t, phase3, "step 1.1a found and deliberately did not touch")
+			assertContains(t, phase3, "is **expected** here and is reported as the residual 1.1a already")
+			assertContains(t, phase3, "do **not** commit it to make this check green, and do **not** reset it")
+			assertContains(t, phase3, "Anything else")
+			assertContains(t, phase3, "dirty is this round's own unfinished work")
+
+			// Fresh fetch, then a comparison of two live reads.
+			assertContains(t, phase3, `git fetch origin "$BRANCH"`)
+			assertContains(t, phase3, "LOCAL=$(git rev-parse HEAD) || exit 1")
+			assertContains(t, phase3, `REMOTE=$(git rev-parse "origin/$BRANCH") || exit 1`)
+			assertContains(t, phase3, `if [ "$LOCAL" = "$REMOTE" ]; then`)
+
+			// Fail-closed string comparison, per the Linear-History Invariant.
+			assertContains(t, phase3, "Compare the two SHAs as **strings**")
+			assertContains(t, phase3, "`|| exit 1` on each substitution")
+
+			// An earlier reading is never sufficient — the wording is the rule.
+			assertContains(t, phase3, "an `[ahead N]` count observed earlier in the pass is never sufficient")
+			assertContains(t, phase3, "only as fresh as the last fetch")
+			assertContains(t, phase3, "may have already pushed the very commits this round produced")
+
+			// The remote-ahead branch does not push.
+			assertContains(t, phase3, "remote is ahead of this worktree — do not push")
+			assertContains(t, phase3, "re-derive the round from the new head")
+
+			// FOUR arms, because "not equal" is three situations, not one. A two-arm `else` labels
+			// divergence — a peer rewrote the branch, so the two tips share only an older base — as
+			// routine unpushed work, and the round then either fails a rejected push or force-pushes
+			// over the writer the rest of this change exists to protect.
+			assertContains(t, phase3, `elif git merge-base --is-ancestor "$REMOTE" "$LOCAL"; then`)
+			assertContains(t, phase3, "diverged — a concurrent writer rewrote the branch")
+			assertContains(t, phase3, "do not push and do not force-push")
+			assertContains(t, phase3, "Collapsing the last two arms")
+
+			// The cancelled-CI carve-out is carried by the arm it modifies, not only by prose three
+			// lines below it: the fence is copy-pasteable, and its verdict is what gets acted on.
+			assertContains(t, phase3, "push owed — unless this commit was withheld by the stale-SHA cancellation")
+
+			// The cancelled-CI carve-out survives: ahead of origin is expected there, and reported.
+			assertContains(t, phase3, "One case legitimately leaves the branch ahead of origin")
+			assertContains(t, phase3, "built but deliberately not pushed")
+			assertContains(t, phase3, "is **expected** there and is reported as that cancellation, not pushed")
+
+			// Order: the fetch must precede the reads it makes meaningful.
+			fetchAt := strings.Index(phase3, `git fetch origin "$BRANCH"`)
+			localAt := strings.Index(phase3, "LOCAL=$(git rev-parse HEAD)")
+			if fetchAt < 0 || localAt < 0 || fetchAt > localAt {
+				t.Fatalf("the fetch must precede the rev-parse comparison (fetch at %d, read at %d)", fetchAt, localAt)
+			}
+		})
+	}
+}
+
+// TestBossRepairSkillWatchPassFreshnessContract pins per-PASS freshness. Watch Mode loops up to five
+// passes and carries verdicts between them; on one observed PR the head moved twice between passes,
+// the first jump a non-fast-forward rewrite by another session, so five passes' conclusions all
+// described a tree that had ceased to exist. Nothing in the skill covered "the whole branch was
+// replaced since my last pass", and the pushed-SHA remedy cannot cover it either: a pass that pushed
+// nothing has no pushed SHA to compare against.
+//
+// Pinned separately:
+//
+//   - The per-pass head re-read and `PREV_PASS_HEAD`, because the baseline that answers this question
+//     only exists if the previous pass recorded it.
+//   - The INVALIDATION wording. "Stale" or "re-report with a caveat" is the failure mode: a carried
+//     verdict about a replaced tree is not weak evidence, it is evidence about a different subject,
+//     so the prose must say discard and re-derive rather than re-report.
+//   - The fast-forward half, which is the easy one to drop — a peer's benign advance still
+//     invalidates carried CHECK verdicts even though nothing was rewritten.
+//   - The no-progress restatement in terms of `PUSHED_HEAD`. The raw `HEAD` comparison is wrong in
+//     both directions: a peer push reads as progress the pass did not make, and a peer force-push
+//     back to `$BEFORE` reads as no progress when the pass did push.
+//
+// The negative assertion is the other half of the contract. The final reason line's vocabulary is a
+// CLOSED SET consumed by callers that classify it, and a rule about a brand-new situation is exactly
+// the edit that tempts an author to give it a token of its own; a token outside the set degrades to
+// a retry. Each candidate is checked in the backticked spelling the reason line uses.
+func TestBossRepairSkillWatchPassFreshnessContract(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			watchMode := sectionBetween(t, skill, "## Watch Mode", "## Checklist")
+
+			// Re-read the head every pass, against the previous pass's value.
+			assertContains(t, watchMode, "**Pass freshness — re-read the PR head at the start of every pass.**")
+			assertContains(t, watchMode, "`PREV_PASS_HEAD`, the value the previous pass recorded")
+			assertContains(t, watchMode, `git merge-base --is-ancestor "$PREV_PASS_HEAD" "$ROUND_HEAD"`)
+			assertContains(t, watchMode, "NON-FAST-FORWARD: the branch was rewritten since the previous pass")
+
+			// The baseline only exists if a pass HANDS IT OVER. Nothing else writes it, so the
+			// obligation to record this pass's head as the next pass's `PREV_PASS_HEAD` is pinned
+			// separately from the comparison that consumes it.
+			assertContains(t, watchMode, "record this pass's `ROUND_HEAD` as `PREV_PASS_HEAD` for the")
+			assertContains(t, watchMode, "next pass**")
+			assertContains(t, watchMode, "PREV_PASS_HEAD=$ROUND_HEAD")
+
+			// Pass 1 has no previous value, and an unset one must not read as a rewrite. Without
+			// this arm `merge-base` takes an empty operand, errors, falls into the `else`, and the
+			// first pass announces a rewrite that did not happen — ordering the agent to discard the
+			// triage it has just finished.
+			assertContains(t, watchMode, `if [ -z "$PREV_PASS_HEAD" ]; then`)
+			assertContains(t, watchMode, "first pass — no previous baseline, nothing is invalidated")
+			assertContains(t, watchMode, "pass 1 would announce a rewrite that did not happen")
+
+			// Invalidation, not a caveated re-report.
+			assertContains(t, watchMode, "**invalid outright** — not stale-but-reportable")
+			assertContains(t, watchMode, "Discard the prior triage, discard any carried `parked` verdict")
+			assertContains(t, watchMode, "re-derive every premise")
+			assertContains(t, watchMode, "against a tree that no longer exists")
+
+			// A benign fast-forward by another writer still invalidates carried check verdicts.
+			assertContains(t, watchMode, "Even a **fast-forward** move made by a writer other than this pass invalidates carried check")
+			assertContains(t, watchMode, "only re-derived reads may be acted on")
+
+			// The no-progress stop, restated in terms of this pass's own push.
+			assertContains(t, watchMode, "So a pass made progress only when **this pass's own note entry exists**")
+			assertContains(t, watchMode, "an ancestor of the current `origin/$BRANCH`")
+			assertContains(t, watchMode, "it is a re-derivation trigger")
+
+			// The sent-SHA record has ONE carrier — the notes — and two readers keyed apart by pass
+			// number: step 9 reads this pass's own entry, the Phase 2 survival assertion reads all
+			// of them. The earlier design gave step 9 a shell variable cleared at pass start, which
+			// was unreachable in exactly the passes that pushed (no shell state survives between the
+			// tool calls a pass is made of) AND collided with Phase 2's requirement to keep every
+			// sent SHA. Pin that the shell carrier is refused outright, so a future edit cannot
+			// reintroduce a per-pass clear that silently empties the round-wide record.
+			assertContains(t, watchMode, "**Key every sent-SHA note entry to its pass number.**")
+			assertContains(t, watchMode, "`pass <n>: <sha>`, never overwritten and never erased")
+			assertContains(t, watchMode, "**Do not carry a sent-SHA in a shell variable across the pass.**")
+			assertContains(t, watchMode, "does not survive")
+			assertContains(t, watchMode, "step 9 reads **this pass's own entry**")
+			assertContains(t, watchMode, "Phase 2's assertion reads **all** entries")
+			if strings.Contains(watchMode, "PUSHED_HEAD=   # shell-only clear") {
+				t.Fatal("watch step 1 must not reintroduce the per-pass shell clear: it empties the round-wide sent-SHA record that the Phase 2 survival assertion runs over")
+			}
+
+			// The record must still be justified by the clobber it exists to catch.
+			assertContains(t, watchMode, "must keep **every SHA this round sent**, one entry per pass that pushed")
+			assertContains(t, watchMode, "survival assertion runs over all of them")
+			assertContains(t, watchMode, "report \"sent nothing\" and never look")
+
+			// Position: the freshness rule runs at pass start, before the poll step.
+			freshnessAt := strings.Index(watchMode, "**Pass freshness — re-read the PR head")
+			pollAt := strings.Index(watchMode, "\n2. Poll all repair signals before every sleep:")
+			if freshnessAt < 0 || pollAt < 0 || freshnessAt > pollAt {
+				t.Fatalf("the pass-freshness rule must sit at pass start, before the poll step (freshness at %d, poll at %d)", freshnessAt, pollAt)
+			}
+
+			// The closed reason-token set is intact and gained nothing. The negatives are scoped to
+			// the reason LINE, not the whole Watch Mode window: `stale`, `rewritten`, `re-derive`
+			// and `invalidated` are ordinary vocabulary in this section — the stale-SHA
+			// cancellation is named throughout it — so a window-wide ban would fail a future editor
+			// for prose that mints nothing. Window-wide coverage for THESE tokens is deliberately
+			// given up: TestBossRepairSkillTerminalOutcomesMintNoNewWatchTokens bans a disjoint
+			// list (the terminal-outcome names) and does not cover them. The reason line is where a
+			// token is actually emitted and parsed, so that is where the closed set is enforced.
+			assertContains(t, watchMode, "`green` / `parked` / `no-progress` / `max-attempts` / `blocked`")
+			reasonLine := lineContaining(t, watchMode, "When watch mode exits")
+			for _, minted := range []string{
+				"`non-fast-forward`",
+				"`nonfastforward`",
+				"`rewritten`",
+				"`clobbered`",
+				"`stale`",
+				"`invalidated`",
+				"`re-derive`",
+				"`concurrent-writer`",
+				"`concurrent writer`",
+			} {
+				assertNotContains(t, reasonLine, minted)
+			}
+		})
+	}
+}
+
+// lineContaining returns the single line of section that holds marker. A gate on the final reason
+// line needs exactly that line: the reason vocabulary is a closed set only where the line is
+// printed, and asserting the same negatives across a whole section forbids words the surrounding
+// prose legitimately uses.
+func lineContaining(t *testing.T, section, marker string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(section, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no line containing %q found in section", marker)
+	return ""
 }
 
 // boldStepWindow narrows an already-anchored section to one bold-labelled step. sectionBetween cannot

@@ -53,7 +53,8 @@
     "testSmoke": "make test-smoke",
     "testAffected": "make test-affected",
     "testFull": "make test-full",
-    "testModule": "make test-{module}"
+    "testModule": "make test-{module}",
+    "postRebase": "make post-rebase-check"
   },
   "test": { "manifestPath": "docs/testing/test-command-manifest.md" },
   "env": {
@@ -113,6 +114,7 @@
       { "heading": "## Key changes", "required": "always" },
       { "heading": "## Testing", "required": "always" },
       { "heading": "## Risks / unknowns", "required": "always" },
+      { "heading": "## Premises", "required": "optional" },
       { "heading": "## Acceptance criteria", "required": "always" },
       { "heading": "## Required proof", "required": "always" },
       { "heading": "## Proof harness analysis", "required": "optional" },

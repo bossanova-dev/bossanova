@@ -38,7 +38,12 @@ export function runCli(
       return 2
     }
     const adapter = resolve(env)
-    adapter.injectPrTag(pr, { baseBranch: env.BASE_BRANCH })
+    try {
+      adapter.injectPrTag(pr, { baseBranch: env.BASE_BRANCH })
+    } catch (err) {
+      errWrite(`inject-pr-tag: ${err?.message ?? String(err)}\n`)
+      return Number.isInteger(err?.status) && err.status > 0 ? err.status : 1
+    }
     return 0
   }
   errWrite(`unknown finalize capability: ${cmd ?? '(none)'}\n`)

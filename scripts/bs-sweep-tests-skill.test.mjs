@@ -241,6 +241,28 @@ test('the coverage-neutrality guardrail is stated in both mirrors', () => {
   }
 })
 
+test('the web coverage command is measurable and names the baseline metric', () => {
+  for (const [label, skill] of [
+    ['.claude', SKILL],
+    ['.codex', CODEX],
+  ]) {
+    assert.ok(
+      skill.includes('make -C services/web test-coverage'),
+      `${label} must use the dedicated web coverage target`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /make\s+-C\s+services\/web\s+test\s+--\s+--coverage/,
+      `${label} must not use the broken make goal-forwarding form`,
+    )
+    assert.match(
+      skill,
+      /total\s+statements[\s>]+percentage\s+from[\s>]+`services\/web\/coverage\/coverage-summary\.json`/i,
+      `${label} must name the json-summary total statements baseline metric`,
+    )
+  }
+})
+
 // The kill-set gate is the PRIMARY proof for a Go removal. Coverage proves a line ran;
 // only mutation proves the test asserted anything about it, so a coverage-only gate both
 // admits tests that assert nothing and rejects tests that quietly kill mutants. These
@@ -308,13 +330,8 @@ test('the skill never adds coverage and never edits production code beyond a mec
   )
 })
 
-// ---------------------------------------------------------------------------
-// Manifest coupling — deleting a Go _test.go file bumps the per-module count.
-// ---------------------------------------------------------------------------
-
-test('the manifest runtime note is present', () => {
-  assert.ok(SKILL.includes('test-command-manifest.md'), 'must note the manifest coupling')
-  assert.ok(SKILL.includes('make test-manifest-update'), 'must run test-manifest-update')
+test('the obsolete test-file-count manifest instruction is absent', () => {
+  assert.doesNotMatch(SKILL, /make\s+test-manifest-update/)
 })
 
 // ---------------------------------------------------------------------------
@@ -411,7 +428,6 @@ test('files the SKILL references are reachable', () => {
     '../skills-toolbox/sweep-pr-gate.sh',
     '../skills-toolbox/linear-gate-lib.mjs',
     '../scripts/cron-open-pr.mjs',
-    '../docs/testing/test-command-manifest.md',
   ]
   for (const rel of referenced) {
     assert.ok(existsSync(here(rel)), `referenced file must exist: ${rel}`)
@@ -477,7 +493,11 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // Rebased onto main at 5978bd850: #2090 rewrote the awk whole-record positionals out of the
   // published bodies, growing this one by 55 B. That is a correctness rewrite of code the body
   // must carry, not new prose, so the pin absorbs exactly it.
-  const SOURCE_BYTES = 26790 // exact measured .claude body, re-measured 2026-08-19
+  // BOS-919 adds the measurable web coverage target plus its load-bearing baseline metric
+  // (`services/web/coverage/coverage-summary.json` total statements percentage) to the
+  // resident Phase 6 worker prompt. The repo-root-relative artifact path is required because
+  // the worker's declared working directory is the session worktree.
+  const SOURCE_BYTES = 26600 // exact measured .claude body, re-measured after BOS-919 web coverage artifact path
   assertExactSize({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 27050 },
     constFile: 'scripts/bs-sweep-tests-skill.test.mjs',

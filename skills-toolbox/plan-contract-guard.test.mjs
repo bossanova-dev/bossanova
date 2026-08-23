@@ -6,13 +6,16 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  checkPlanCitations,
   checkPlanContract,
+  checkPrBodyOnlyEvidence,
+  checkSelfFalsifiedLiteralSearch,
   emittedContractHeadings,
   hasUnterminatedFence,
   isContractOrdered,
@@ -181,6 +184,122 @@ describe('checkPlanContract — each violation code fires', () => {
     const result = checkPlanContract({ description: conformant(), plan: '   \n\n' })
     assert.equal(result.ok, false)
     assert.ok(codes(result).includes('plan-file-residue'))
+  })
+
+  test('self-falsified-literal-search fires when a criterion forbids text the plan mandates', () => {
+    const descriptionFor = (check) =>
+      conformant()
+        .replace(
+          '## Key changes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+          '## Key changes\n\nAdd the exact phrase `must stay visible` to the skill body.',
+        )
+        .replace(
+          '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+          `## Acceptance criteria\n\n- [ ] No mandated text remains — check: \`${check}\``,
+        )
+    const description = descriptionFor('rg -F "must stay visible" services/boss')
+    const result = checkPlanContract({ description })
+    assert.ok(codes(result).includes('self-falsified-literal-search'))
+
+    for (const check of [
+      'rg -Fq "must stay visible" services/boss',
+      'grep -qF "must stay visible" services/boss',
+      'grep -Fq "must stay visible" services/boss',
+    ]) {
+      assert.ok(
+        codes(checkPlanContract({ description: descriptionFor(check) })).includes(
+          'self-falsified-literal-search',
+        ),
+        `${check} should be treated as a fixed-string search`,
+      )
+    }
+
+    const control = description.replace(
+      'must stay visible" services/boss',
+      'not mandated" services/boss',
+    )
+    assert.deepEqual(checkSelfFalsifiedLiteralSearch(DEFAULT_CONFIG, control), [])
+  })
+
+  test('unresolvable-citation rejects paths that escape the working tree', () => {
+    const parent = mkdtempSync(path.join(tmpdir(), 'plan-contract-citation-parent-'))
+    const dir = path.join(parent, 'repo')
+    mkdirSync(dir)
+    writeFileSync(path.join(parent, 'outside.md'), 'one\n')
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      '## Acceptance criteria\n\n- [ ] ../outside.md:1 must not resolve',
+    )
+    const result = checkPlanCitations(DEFAULT_CONFIG, description, { cwd: dir })
+    assert.deepEqual(
+      result.violations.map((v) => v.code),
+      ['unresolvable-citation'],
+    )
+    assert.match(result.violations[0].message, /escapes the working tree root/)
+  })
+
+  test('unresolvable-citation fires only for premises and acceptance criteria citations', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-citation-'))
+    writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
+    const description = conformant()
+      .replace(
+        '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        [
+          '## Premises',
+          '',
+          '- [ ] present.md:2 resolves',
+          '- [ ] present.md:5 does not',
+          '',
+          '## Acceptance criteria',
+          '',
+          '- [ ] missing.md:1 does not',
+        ].join('\n'),
+      )
+      .replace(
+        '## Original notes\n\nSubstantive body prose for this section, long enough to be a real plan.',
+        '## Original notes\n\nstale.md:999 is quoted source material, not scanned',
+      )
+    const result = checkPlanCitations(DEFAULT_CONFIG, description, { cwd: dir })
+    assert.deepEqual(
+      result.violations.map((v) => v.code),
+      ['unresolvable-citation', 'unresolvable-citation'],
+    )
+    assert.match(result.violations[0].message, /present\.md:5/)
+    assert.match(result.violations[1].message, /missing\.md:1/)
+    assert.doesNotMatch(result.violations.map((v) => v.message).join('\n'), /stale\.md/)
+  })
+
+  test('pr-body-only-evidence fires unless the criterion is verify-only or orchestrator-owned', () => {
+    const description = conformant().replace(
+      '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
+      [
+        '## Acceptance criteria',
+        '',
+        '- [ ] The PR body lists the mutation result.',
+        '- [ ] (verify-only) The PR body records the run — check: `gh pr view`',
+        '- [ ] orchestrator-owned: The PR body contains the Linear link.',
+      ].join('\n'),
+    )
+    const findings = checkPrBodyOnlyEvidence(DEFAULT_CONFIG, description)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0].code, 'pr-body-only-evidence')
+  })
+
+  test('citation could-not-evaluate is separate from clean and violation', () => {
+    const result = checkPlanCitations(DEFAULT_CONFIG, conformant(), { cwd: '' })
+    assert.deepEqual(result.violations, [])
+    assert.deepEqual(
+      result.couldNotEvaluate.map((item) => item.code),
+      ['citation-could-not-evaluate'],
+    )
+
+    const full = checkPlanContract({ description: conformant(), citationCwd: '' })
+    assert.equal(full.ok, false)
+    assert.deepEqual(full.violations, [])
+    assert.deepEqual(
+      full.couldNotEvaluate.map((item) => item.code),
+      ['citation-could-not-evaluate'],
+    )
   })
 
   test('a namespace-prefixed closing scaffolding tag is still residue', () => {
@@ -412,7 +531,7 @@ describe('checkPlanContract — the scoping guarantees', () => {
 describe('CLI', () => {
   // The CLI — not `checkPlanContract` — is what Phase 4 and the drafting brief actually invoke, so
   // its exit code and stderr shape are the contract agents see. Exercise the process itself.
-  const runCli = (descriptionMd, planMd = null, override = null) => {
+  const runCli = (descriptionMd, planMd = null, override = null, options = {}) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-'))
     const description = path.join(dir, 'description.md')
     writeFileSync(description, descriptionMd)
@@ -422,7 +541,7 @@ describe('CLI', () => {
       writeFileSync(plan, planMd)
       args.push('--plan', plan)
     }
-    return spawnSync(process.execPath, args, { encoding: 'utf8' })
+    return spawnSync(process.execPath, args, { encoding: 'utf8', ...options })
   }
 
   test('a conformant description exits 0 and says nothing', () => {
@@ -444,6 +563,15 @@ describe('CLI', () => {
     const res = runCli(conformant(), null, path.join(tmpdir(), 'plan-contract-guard-absent.md'))
     assert.notEqual(res.status, 0, 'an unreadable input must never exit 0')
     assert.match(res.stderr, /\[unreadable-input\]/)
+  })
+
+  test('could-not-evaluate emits a tagged CLI line and exits non-zero', () => {
+    const res = runCli(conformant(), null, null, {
+      env: { ...process.env, PLAN_CONTRACT_GUARD_CWD: '' },
+    })
+    assert.notEqual(res.status, 0, 'an unknown citation check must not exit 0')
+    assert.match(res.stderr, /\[citation-could-not-evaluate\]/)
+    assert.match(res.stderr, /could not be evaluated/)
   })
 })
 

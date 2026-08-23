@@ -97,6 +97,9 @@ func (s *stubSessionSettingsClient) RemoveSession(context.Context, string) error
 func (s *stubSessionSettingsClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubSessionSettingsClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }

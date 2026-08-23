@@ -188,20 +188,15 @@ func isTipRuleRune(r rune) bool {
 //   - • (U+2022) opens a fresh bullet row, which is never the wrapped tail of
 //     the line above.
 //
-// This set is deliberately NOT derived from tipDecorations. Three decorations
-// are stops (⎿ and · via optionStopMarkers, • here); the other two, └ (U+2514)
-// and ※ (U+203B), MUST NOT be, because they are absent from optionStopMarkers.
-// A row kept here re-enters countConsecutiveOptionLines, whose optionRe gate
-// accepts any 2+-space-indented row and whose stop set is optionStopMarkers --
-// so a kept "  └  Did you mean …?" row under a selector counts as a live option
-// and fires Pattern 1, flipping HasModalPrompt false->TRUE against base. That
-// modal FALSE POSITIVE is the regression this exclusion exists to prevent; it is
-// pinned by TestHasQuestionPrompt_DecoratedRowUnderSelector.
-//
-// The root cause is pre-existing and lives elsewhere: └ is documented as the
-// box-drawing variant of the ⎿ tool connector yet is missing from
-// optionStopMarkers. Adding it there is the real fix and touches three counters,
-// so it is tracked separately rather than widened into this change.
+// This set is deliberately NOT derived from tipDecorations. Four decorations
+// are stops for option parsing (└, ⎿ and · via optionStopMarkers, • here), but
+// └ (U+2514) and ※ (U+203B) MUST NOT close a tip block. A row kept here
+// re-enters countConsecutiveOptionLines, whose optionRe gate accepts any
+// 2+-space-indented row and whose stop set is optionStopMarkers; a kept
+// "  └  Did you mean …?" row under a selector would otherwise count as a live
+// option and fire Pattern 1, flipping HasModalPrompt false->TRUE. That modal
+// FALSE POSITIVE is the regression this exclusion prevents; it is pinned by
+// TestHasQuestionPrompt_DecoratedRowUnderSelector.
 var tipBlockExtraStops = map[rune]bool{
 	'☐': true,
 	'•': true,
@@ -228,10 +223,11 @@ func tipBlockStops(lineText string) bool {
 	if trimmed == "" {
 		return true
 	}
-	// NOT derived from tipDecorations: └ and ※ open a tip but must not close
-	// one, or a kept decorated row counts as a live option under a selector.
-	// See the tipBlockExtraStops doc comment for the full reasoning.
-	if r, _ := utf8.DecodeRuneInString(trimmed); optionStopMarkers[r] || tipBlockExtraStops[r] {
+	// NOT derived from tipDecorations: tipDecorationBoxCorner and ※ open a tip
+	// but must not close one, or a kept decorated row counts as a live option
+	// under a selector. See the tipBlockExtraStops doc comment for the full
+	// reasoning.
+	if r, _ := utf8.DecodeRuneInString(trimmed); (optionStopMarkers[r] && r != tipDecorationBoxCorner) || tipBlockExtraStops[r] {
 		return true
 	}
 	// A numbered option row ("  1. Rebase") opens a selection list. A wrapped
@@ -466,7 +462,7 @@ func stripSuggestedFollowUpLines(data []byte) []byte {
 			}
 			r, _ := utf8.DecodeRuneInString(trimmed)
 			switch {
-			case optionStopMarkers[r]:
+			case optionStopMarkers[r] && r != tipDecorationBoxCorner:
 				// A Claude response / tool output / spinner / prompt marker
 				// begins new content; the suggested-prompt block has ended.
 				// Fall through to write the marker line below.
@@ -496,11 +492,12 @@ func stripSuggestedFollowUpLines(data []byte) []byte {
 // (after trimming spaces) with one of these, it's not an option -- it's
 // Claude conversation, tool output, a spinner, or another prompt entry.
 var optionStopMarkers = map[rune]bool{
-	'⎿': true, // tool output continuation (U+23BF)
-	'⏺': true, // Claude response marker (U+23FA)
-	'·': true, // working spinner (U+00B7)
-	'✻': true, // thinking spinner (U+273B)
-	'❯': true, // another prompt entry (U+276F)
+	tipDecorationBoxCorner: true, // tip box continuation (U+2514)
+	'⎿':                    true, // tool output continuation (U+23BF)
+	'⏺':                    true, // Claude response marker (U+23FA)
+	'·':                    true, // working spinner (U+00B7)
+	'✻':                    true, // thinking spinner (U+273B)
+	'❯':                    true, // another prompt entry (U+276F)
 }
 
 // cardHeaderRe matches an AskUserQuestion card title row "☐ <title>". ☐ is
@@ -564,7 +561,7 @@ func hasAskUserQuestionFooter(data []byte) bool {
 // strictly-increasing integers. Blank lines and indented continuation lines
 // (lines that are not a new numbered option but are still indented) are
 // allowed between options. A line whose first non-space rune is one of
-// optionStopMarkers (⎿ ⏺ · ✻ ❯) aborts the run and sets brokenByMarker.
+// optionStopMarkers (└ ⎿ ⏺ · ✻ ❯) aborts the run and sets brokenByMarker.
 func countConsecutiveNumberedOptions(data []byte) (count int, brokenByMarker bool) {
 	prev := 0
 	for len(data) > 0 {

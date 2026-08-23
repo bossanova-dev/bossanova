@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +18,7 @@ const defaultRootTargets = [
   'test-profile',
   'test-scripts',
   'test-no-inline-stop-hooks',
+  'post-rebase-check',
   'test-readme',
   'test-public-mirror',
   'test-web-e2e',
@@ -95,24 +95,6 @@ export function discoverModuleTargets(root = repoRoot) {
   return deriveModuleTargets(listGoModPaths(root))
 }
 
-function countTestFiles(modulePath) {
-  const absoluteModulePath = path.join(repoRoot, modulePath)
-  if (!fs.existsSync(absoluteModulePath)) {
-    return 0
-  }
-
-  const output = execFileSync('find', [modulePath, '-name', '*_test.go'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  }).trim()
-
-  if (output === '') {
-    return 0
-  }
-
-  return output.split('\n').length
-}
-
 function renderCommand(target) {
   return `make ${target}`
 }
@@ -147,7 +129,6 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
   const moduleRows = modules.map((module) => [
     `\`${module.path}\``,
     `\`${renderCommand(module.target)}\``,
-    String(module.testFiles),
   ])
   const webRows = webTargets.map((target) => [
     `\`${target.command}\``,
@@ -172,21 +153,24 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     // This manifest is byte-for-byte generated and `scripts/check-test-command-manifest.mjs`
     // fails if the checked-in file differs, so prose belongs HERE and nowhere else. Editing
     // docs/testing/test-command-manifest.md by hand turns that gate red on the next run.
-    '`make test-smoke` runs `node --test scripts/bs-*-skill.test.mjs`. That glob does **not** match `scripts/boss-skill.test.mjs`, `scripts/boss-build-skill.test.mjs`, or `scripts/check-agent-test-guidance.test.mjs`, so those suites — including their exact-size ratchets — are not covered by a smoke run. `make test-scripts` (the `test` target in `scripts/Makefile`) runs every `scripts/*.test.mjs` and is the target that covers them, along with the `check-vacuous-regions.mjs` and `check-raw-size-ratchets.mjs` gates. Neither of those two is a whole-tree scan, and neither claims to be: `check-vacuous-regions.mjs` reads `scripts/` and `skills-toolbox/` only, and `check-raw-size-ratchets.mjs` reads `scripts/` files matching `skill*.test.mjs` plus one named extra. Each prints its own scope and residual with its success line — read that line, not this sentence, for what a given run actually covered.',
+    '`make test-smoke` runs `node --test scripts/bs-*-skill.test.mjs`. That glob does **not** match `scripts/boss-skill.test.mjs`, `scripts/boss-build-skill.test.mjs`, or `scripts/check-agent-test-guidance.test.mjs`, so those suites — including their exact-size ratchets — are not covered by a smoke run. `make test-scripts` (the `test` target in `scripts/Makefile`) runs every `scripts/*.test.mjs` and is the target that covers them, along with the `check-vacuous-regions.mjs` and `check-raw-size-ratchets.mjs` gates. Neither of those two is a whole-tree scan, and neither claims to be: `check-vacuous-regions.mjs` reads `scripts/` and `skills-toolbox/` only, and `check-raw-size-ratchets.mjs` reads `scripts/` files matching `skill*.test.mjs` plus one named extra. `make lint-scripts` reaches `scripts/Makefile` `lint`, including `node scripts/check-exec-waitdelay.mjs`, the BOS-927 full-tree Go exec captured-output gate. Each gate prints its own scope and residual with its success line — read that line, not this sentence, for what a given run actually covered.',
     '',
     '`codex-skills-check` (the `.codex` mirror staleness check) is a prerequisite of `make test-smoke` and `make test-all`, but **not** of `make test` / `make test-affected` — those run only the commands `scripts/select-affected-tests.mjs` picked, and reach `test-smoke` only when the selection is empty. A change that leaves a `.codex` mirror stale can therefore pass `make test`. The per-skill `assertMirrorRegenerated` checks in the `bs-sweep-*` suites close this for those skills by regenerating the mirror in memory and comparing exactly; size is never the discriminator, because the generated header makes a healthy mirror larger than its source.',
     '',
     '## Web Targets (`services/web`)',
     '',
+    'Frontend Biome lint authoring traps are documented in',
+    '[`docs/testing/frontend-lint-gates.md`](frontend-lint-gates.md).',
+    '',
     ...renderTable(['Command', 'Description', 'CI?'], webRows),
     '',
     'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` and a running bossd+bosso stack; it is never set in CI.',
     '',
-    "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite, including the `smoke.spec.ts` harness-boot spec). It first does a best-effort `playwright install chromium` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
+    "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite, including the `smoke.spec.ts` harness-boot spec). It first does a best-effort `playwright install chromium-headless-shell` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
     '',
     '## Go Module Targets',
     '',
-    ...renderTable(['Module', 'Target', 'Test files'], moduleRows, ['left', 'left', 'right']),
+    ...renderTable(['Module', 'Target'], moduleRows),
     '',
   ]
 
@@ -196,10 +180,7 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
 function buildManifest() {
   return renderManifest({
     rootTargets: defaultRootTargets,
-    modules: discoverModuleTargets().map((module) => ({
-      ...module,
-      testFiles: countTestFiles(module.path),
-    })),
+    modules: discoverModuleTargets(),
   })
 }
 

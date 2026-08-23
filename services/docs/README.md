@@ -11,7 +11,7 @@ workspace at the repo root. Docusaurus pulls in deps that conflict with the
 marketing/web vite tree, so we keep them isolated.
 
 ```bash
-make deps     # one-time: pnpm install --ignore-workspace
+make deps     # one-time: pnpm install (docs is its own pnpm workspace root)
 make dev      # http://localhost:3001
 make build    # produces build/
 make test     # typecheck + unit tests + build (catches broken links and MDX errors)
@@ -42,6 +42,22 @@ repos"` — not commands. Write what a reader would actually type at the agent.
   `Unexpected character \ (U+005C) in attribute name`. Wrap an example
   containing `"` in single quotes (`chat='"list my repos"'`, as above) and one
   containing `'` in double quotes. An example needing both has to be reworded.
+- **Use a template-literal expression for multi-line CLI examples.** A
+  backslash line continuation inside a quoted JSX attribute is parsed as raw
+  MDX, not shell syntax, so `cli="boss run \` followed by another line fails
+  with `Unexpected character \ (U+005C) in attribute name`. Put multi-line
+  commands in a JSX expression instead:
+
+  ```mdx
+  <CommandTabs
+    cli={`boss session new \\
+  --repo recurser/bossanova \\
+  --base main`}
+    chat='"start a session for recurser/bossanova"'
+    mcp="create_session"
+  />
+  ```
+
 - **MCP** entries are the bare tool name, `list_repos`, exactly as registered in
   `lib/bossalib/bossmcp/manifest.go`. That file is the authoritative list, so
   check a name there rather than guessing it.
@@ -63,6 +79,23 @@ and any pre-existing `<` or `{` in that page's prose can start erroring once MDX
 takes the file seriously. `make build` (and so `make test`) is what catches
 this; run it after converting a page.
 
+## Testing `@theme/*` components
+
+Docusaurus resolves `@theme/*` modules through webpack aliases that do not
+exist in bare Vitest. A test that imports `@theme/Tabs`, `@theme/TabItem`, or
+`@theme/CodeBlock` without a local alias fails during Vite import analysis
+before any `vi.mock` factory can run.
+
+Extend the existing `resolve.alias` block in `services/docs/vitest.config.ts`
+when a component needs another `@theme/*` module, and put the double under
+`services/docs/src/test/theme/`. The existing doubles live at
+`services/docs/src/test/theme/Tabs.tsx`,
+`services/docs/src/test/theme/TabItem.tsx`, and
+`services/docs/src/test/theme/CodeBlock.tsx`. Keep the same two safety
+conditions: production code must never import the double, and `tsc --noEmit`
+must not need it to typecheck the site. The double should expose only the props
+the unit test asserts; Docusaurus behavior belongs to Docusaurus.
+
 ## Linking between docs pages
 
 **Link to another docs page relatively (`./notes.md`), never by absolute
@@ -80,8 +113,8 @@ stays greppable so every exception can be audited in one command.
 - `docusaurus.config.ts`: Site metadata, theme, plugins.
 - `src/css/custom.css`: Theme tokens (mirrors `services/web/src/index.css`).
 - `static/img/`: Logo, favicon, screenshots.
-- `SCREENSHOTS.md`: Inventory of placeholder screenshots and what each
-  should depict. Replace placeholders one at a time and update this file.
+- `SCREENSHOTS.md`: Inventory of placeholder screenshots and what each should
+  depict. Replace placeholders one at a time and update this file.
 
 ## Deploy
 

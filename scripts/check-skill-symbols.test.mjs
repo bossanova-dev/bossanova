@@ -90,6 +90,28 @@ test('form A: a configured role passes and an unconfigured one is named with its
   )
 })
 
+test('optionalLabelName allows taxonomy and absent labels but rejects pipeline roles', () => {
+  const contents = [
+    "taxonomy: `optionalLabelName(config, 'docs')`",
+    "mapped taxonomy: `optionalLabelName(config, 'bug')`",
+    "absent: `optionalLabelName(config, 'improvement')`",
+    "pipeline: `optionalLabelName(config, 'agentFriendly')`",
+  ].join('\n')
+  const citations = extractRoleCitations(contents)
+  assert.deepEqual(citations, [
+    { line: 1, fn: 'optionalLabelName', role: 'docs', form: 'A' },
+    { line: 2, fn: 'optionalLabelName', role: 'bug', form: 'A' },
+    { line: 3, fn: 'optionalLabelName', role: 'improvement', form: 'A' },
+    { line: 4, fn: 'optionalLabelName', role: 'agentFriendly', form: 'A' },
+  ])
+
+  const findings = checkRoleCitations(citations, roleKeys())
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].line, 4)
+  assert.equal(findings[0].kind, 'role-optional-pipeline')
+  assert.match(findings[0].detail, /pipeline\s+roles\s+must\s+resolve\s+through\s+labelName\(\)/)
+})
+
 test('form B: every role in the enumerated run is cited, and the prose tail is not', () => {
   // The defect shape from boss-plan/SKILL.md: a `<role>` placeholder whose real roles
   // follow as a comma-separated inline-code run, trailed by PROSE that also carries

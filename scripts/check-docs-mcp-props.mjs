@@ -31,6 +31,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readRegisteredToolNames } from './mcp-tool-registry.mjs'
+export { parseToolNames } from './mcp-tool-registry.mjs'
 
 // Docs tree whose `mcp` props are checked. `DOCS_DIR` is derived from
 // `DOCS_SITE_DIR` rather than spelled out again: the two are used as a pair
@@ -41,18 +43,6 @@ import { fileURLToPath } from 'node:url'
 const DOCS_SITE_DIR = path.join('services', 'docs')
 const DOCS_DIR = path.join(DOCS_SITE_DIR, 'docs')
 const DOC_EXTENSIONS = ['.md', '.mdx']
-
-// The bossmcp registration files. `manifest.go` holds no `Name:` entries — the
-// tools are registered from these three siblings, split by mutability class.
-const TOOL_SOURCE_FILES = [
-  path.join('lib', 'bossalib', 'bossmcp', 'tools.go'),
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_mutating.go'),
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_destructive.go'),
-]
-
-// MCP tool names are snake_case. Used to tell a tool name apart from the other
-// string literals sitting beside it (descriptions, display names, ids).
-const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
 
 // The repo root relative to this file, so the gate works from any cwd — it runs
 // from the repo root via `node scripts/check-docs-mcp-props.mjs` and from
@@ -89,39 +79,6 @@ export function extractMcpProps(markdown) {
   return props
 }
 
-// Collect the MCP tool names a bossmcp registration file registers.
-//
-// Form 1 — the tool struct's own field:
-//   addTool(server, opts, &mcp.Tool{
-//     Name:        "list_sessions",
-// The lookbehind excludes `DisplayName:` and friends; the snake_case filter
-// excludes `Name: args.Name` style non-literals and prose values.
-//
-// Form 2 — the name passed to a registration helper:
-//   registerSessionStateTool(server, opts, "stop_session", "Stop a running session.", …)
-// Matching any `register…Tool(` call rather than the two helper names that
-// exist today means a new helper is picked up without editing this gate. The
-// first snake_case literal in the argument list is the tool name; the
-// description that follows is prose and never matches.
-export function parseToolNames(goSource) {
-  const names = new Set()
-
-  for (const match of goSource.matchAll(/(?<![A-Za-z0-9_])Name:\s*"([^"]*)"/g)) {
-    if (TOOL_NAME_PATTERN.test(match[1])) names.add(match[1])
-  }
-
-  for (const match of goSource.matchAll(/(?<![A-Za-z0-9_])register[A-Za-z0-9]*Tool\s*\(([^)]*)/g)) {
-    for (const argument of match[1].matchAll(/"([^"]*)"/g)) {
-      if (TOOL_NAME_PATTERN.test(argument[1])) {
-        names.add(argument[1])
-        break
-      }
-    }
-  }
-
-  return names
-}
-
 // Every Markdown/MDX doc under `docsDir`, as absolute paths in stable (sorted)
 // order. A missing directory yields [] so a partial checkout without the docs
 // site is not a failure. (Not the public mirror — mirror-public.yml's
@@ -147,18 +104,15 @@ export function discoverDocFiles(docsDir) {
 }
 
 export function checkDocsMcpProps(repoRoot = REPO_ROOT) {
-  const registered = new Set()
-  for (const relativeSource of TOOL_SOURCE_FILES) {
-    const sourcePath = path.join(repoRoot, relativeSource)
-    if (!fs.existsSync(sourcePath)) {
-      // Bail loudly rather than checking props against a half-built tool set,
-      // which would report every prop in that class as unregistered.
+  const missingSources = []
+  const registered = readRegisteredToolNames(repoRoot, missingSources)
+  if (missingSources.length > 0) {
+    // Bail loudly rather than checking props against a half-built tool set,
+    // which would report every prop in that class as unregistered.
+    for (const relativeSource of missingSources) {
       console.error(`Missing MCP tool source ${relativeSource}; cannot check docs mcp props.`)
-      return false
     }
-    for (const name of parseToolNames(fs.readFileSync(sourcePath, 'utf8'))) {
-      registered.add(name)
-    }
+    return false
   }
 
   const docsDir = path.join(repoRoot, DOCS_DIR)

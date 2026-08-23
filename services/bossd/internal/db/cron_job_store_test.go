@@ -544,7 +544,7 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 
 	firedAt := time.Now().UTC().Truncate(time.Millisecond)
 	nextRun := firedAt.Add(time.Hour)
-	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, firedAt, &nextRun); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, "codex", firedAt, &nextRun); err != nil {
 		t.Fatalf("MarkFireStarted: %v", err)
 	}
 
@@ -554,6 +554,9 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 	}
 	if got.LastRunSessionID == nil || *got.LastRunSessionID != sess.ID {
 		t.Errorf("last_run_session_id = %v, want %s", got.LastRunSessionID, sess.ID)
+	}
+	if got.LastRunAgentName != "codex" {
+		t.Errorf("last_run_agent_name = %q, want codex", got.LastRunAgentName)
 	}
 	if got.LastRunAt == nil || !got.LastRunAt.Equal(firedAt) {
 		t.Errorf("last_run_at = %v, want %v", got.LastRunAt, firedAt)
@@ -579,12 +582,15 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 	if got2.LastRunSessionID == nil || *got2.LastRunSessionID != sess.ID {
 		t.Errorf("last_run_session_id changed across UpdateLastRun: got %v", got2.LastRunSessionID)
 	}
+	if got2.LastRunAgentName != "codex" {
+		t.Errorf("last_run_agent_name changed across UpdateLastRun: got %q", got2.LastRunAgentName)
+	}
 	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomePRCreated {
 		t.Errorf("outcome = %v, want pr_created", got2.LastRunOutcome)
 	}
 
 	// Clearing next_run_at.
-	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, firedAt, nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, "codex", firedAt, nil); err != nil {
 		t.Fatalf("MarkFireStarted (clear next): %v", err)
 	}
 	got3, _ := store.Get(ctx, job.ID)
@@ -615,7 +621,7 @@ func TestCronJobStore_MarkFireStarted_ClearsStaleOutcome(t *testing.T) {
 		RepoID: repo.ID, Title: "next fire", WorktreePath: "/tmp/wt/next",
 		BranchName: "feat/next", BaseBranch: "main",
 	})
-	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, time.Now().UTC(), nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, "claude", time.Now().UTC(), nil); err != nil {
 		t.Fatalf("MarkFireStarted: %v", err)
 	}
 
@@ -659,10 +665,10 @@ func TestCronJobStore_UpdateLastRun_ExpectedSessionGuard(t *testing.T) {
 
 	// Run A fires, then the next tick fires run B (B's MarkFireStarted moves
 	// the pointer forward while A is still idle in ImplementingPlan).
-	if err := store.MarkFireStarted(ctx, job.ID, runA, time.Now().UTC(), nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, runA, "claude", time.Now().UTC(), nil); err != nil {
 		t.Fatalf("MarkFireStarted A: %v", err)
 	}
-	if err := store.MarkFireStarted(ctx, job.ID, runB, time.Now().UTC(), nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, runB, "codex", time.Now().UTC(), nil); err != nil {
 		t.Fatalf("MarkFireStarted B: %v", err)
 	}
 
@@ -717,7 +723,7 @@ func TestCronJobStore_UpdateLastRun_DeletedSessionGuardAllowsClearedPointer(t *t
 	if err != nil {
 		t.Fatalf("create run A: %v", err)
 	}
-	if err := store.MarkFireStarted(ctx, job.ID, runA.ID, time.Now().UTC(), nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, runA.ID, "claude", time.Now().UTC(), nil); err != nil {
 		t.Fatalf("MarkFireStarted A: %v", err)
 	}
 	if err := sessionStore.Delete(ctx, runA.ID); err != nil {
@@ -746,7 +752,7 @@ func TestCronJobStore_UpdateLastRun_DeletedSessionGuardAllowsClearedPointer(t *t
 	if err != nil {
 		t.Fatalf("create run B: %v", err)
 	}
-	if err := store.MarkFireStarted(ctx, job.ID, runB.ID, time.Now().UTC(), nil); err != nil {
+	if err := store.MarkFireStarted(ctx, job.ID, runB.ID, "codex", time.Now().UTC(), nil); err != nil {
 		t.Fatalf("MarkFireStarted B: %v", err)
 	}
 
@@ -772,9 +778,41 @@ func TestCronJobStore_MarkFireStarted_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewCronJobStore(db)
 	firedAt := time.Now().UTC()
-	err := store.MarkFireStarted(context.Background(), "missing", "sess", firedAt, nil)
+	err := store.MarkFireStarted(context.Background(), "missing", "sess", "claude", firedAt, nil)
 	if err != sql.ErrNoRows {
 		t.Errorf("got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestCronJobStore_MarkFireStarted_PreservesEmptyLastRunAgent(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	repo := createTestRepo(t, NewRepoStore(db))
+	store := NewCronJobStore(db)
+	sessionStore := NewSessionStore(db)
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "job", Prompt: "p", Schedule: "@daily",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "empty agent", WorktreePath: "/tmp/wt/empty-agent",
+		BranchName: "feat/empty-agent", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+
+	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, " \t", time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted: %v", err)
+	}
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastRunAgentName != "" {
+		t.Fatalf("last_run_agent_name = %q, want empty for unknown resolved agent", got.LastRunAgentName)
 	}
 }
 

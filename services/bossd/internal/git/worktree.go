@@ -1082,12 +1082,12 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // long past the deadline. Manager.Create holds the per-clone gate across exactly
 // that window, so one such invocation wedges every create for the repo.
 //
-// lib/bossalib/setupscript/setupscript.go deliberately leaves WaitDelay UNSET
-// for the opposite trade, and the difference is the workload: a setup script
-// legitimately starts background services (a dev server, a package-manager
-// daemon) that outlive it holding the pipe, so a WaitDelay there would report a
-// SUCCESSFUL setup as failed routinely. git does not: the commands bossd runs
-// exit synchronously, and git's own background maintenance (`gc --auto
+// lib/bossalib/setupscript/setupscript.go makes the opposite result trade, and
+// the difference is the workload: a setup script legitimately starts background
+// services (a dev server, a package-manager daemon) that outlive it holding the
+// pipe, so setupscript treats exec.ErrWaitDelay after an otherwise successful
+// exit as success with truncated diagnostics. git does not: the commands bossd
+// runs exit synchronously, and git's own background maintenance (`gc --auto
 // --detach`) daemonizes onto /dev/null before returning, so it never holds these
 // pipes. A lingering writer here means something is genuinely stuck.
 //
@@ -2625,14 +2625,13 @@ var (
 	// rebase --exec re-tagged it. Only this package's own injector emits these
 	// tags and it always emits exactly one space.
 	//
-	// The `+` matters: tags STACK. The boss-finalize skill's add-pr-numbers.sh
-	// (plugins/bossd-plugin-claude/skilldata/skills/boss-finalize/, and its
-	// services/boss mirror) still tags the placeholder unconditionally, and its
-	// idempotence check is `grep -q "\[#$PR_NUM\]"` — it only skips when THIS
-	// run's number is already present. Two runs for different PR numbers
-	// therefore leave `chore: [#7] [#42] [skip ci] create pull request`. A
-	// single-tag strip would classify that as real work and reopen the very
-	// guard BOS-591 closes, so the strip must be repeat-capable.
+	// The `+` matters: tags STACK. Older boss-finalize add-pr-numbers.sh
+	// payloads tagged the placeholder before they learned to skip empty
+	// commits, and their idempotence check only skipped when THIS run's number
+	// was already present. Two runs for different PR numbers could therefore
+	// leave `chore: [#7] [#42] [skip ci] create pull request`. A single-tag
+	// strip would classify that historical subject as real work and reopen the
+	// very guard BOS-591 closes, so the strip must be repeat-capable.
 	// `[skip ci]` can never be eaten by it: the tag shape requires `#`+digits.
 	// (The prefix RE above may stay loose: its looseness is neutralised by the
 	// whole-subject equality check that follows it.)
@@ -2643,10 +2642,9 @@ var (
 // bootstrap placeholder commit (DraftPRPlaceholderCommitSubject), tolerating
 // any run of "[#NNN] " PR tags injected immediately after the
 // conventional-commit "type: "/"type(scope): " prefix — a rebase run before
-// this fix, a retry against a branch already tagged for a different PR number,
-// or the boss-finalize skill's still-unconditional add-pr-numbers.sh (whose
-// idempotence check only recognises the current run's number, so tags stack)
-// can all leave tags in place.
+// BOS-591, a retry against a branch already tagged for a different PR number,
+// or an older boss-finalize add-pr-numbers.sh payload can all leave tags in
+// place.
 //
 // It is exported because package session needs the same classification to
 // decide whether a branch carries real work, and the dependency only runs one
@@ -2721,9 +2719,8 @@ func (m *Manager) InjectPRNumbers(ctx context.Context, worktreePath, branch stri
 		// never make needsTag true either: a branch whose only commit is the
 		// placeholder must be a true no-op here. It is skipped by
 		// classification rather than by exact match precisely because it CAN
-		// arrive already tagged — the boss-finalize skill's add-pr-numbers.sh
-		// still tags it, and its tags stack (see draftPRPlaceholderTagRE).
-		// Skipping it keeps the
+		// arrive already tagged from older boss-finalize payloads, and those
+		// tags stack (see draftPRPlaceholderTagRE). Skipping it keeps the
 		// rebase itself from running — git does preserve the SHA of a commit
 		// its --exec leaves untouched, so this is not the only thing standing
 		// between a placeholder-only branch and a new SHA, but it is what

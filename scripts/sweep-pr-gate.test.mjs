@@ -179,7 +179,11 @@ case "$*" in
   "pr create"*)          : > "$STUB_CREATED_MARKER"; echo created ;;
   *"--json baseRefName"*) echo main ;;
   *"--json isDraft"*)
-    if [ -f "$STUB_READY_MARKER" ]; then echo false; else echo "$STUB_IS_DRAFT"; fi ;;
+    if [ -f "$STUB_READY_MARKER" ] && [ "$STUB_DRAFT_AFTER_READY" != true ]; then
+      echo false
+    else
+      echo "$STUB_IS_DRAFT"
+    fi ;;
   "pr ready"*)           : > "$STUB_READY_MARKER"; echo readied ;;
 esac
 `
@@ -233,6 +237,7 @@ function runStubbed({
   pushLands = true,
   pushFails = false,
   startSha = 'startsha',
+  draftAfterReady = false,
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-pr-gate-'))
   const bin = path.join(dir, 'bin')
@@ -263,6 +268,7 @@ function runStubbed({
     STUB_GIT_LOG: gitLog,
     STUB_PRE_EXISTING: preExisting,
     STUB_IS_DRAFT: isDraft,
+    STUB_DRAFT_AFTER_READY: String(draftAfterReady),
     STUB_PR_EXISTS: String(prExists),
     STUB_PR_NUMBER: prNumber,
     STUB_LOCAL_HEAD: 'deadbeef',
@@ -373,6 +379,13 @@ test('behaviour: an untagged commit aborts and names the offending commit', () =
   assert.match(stderr, /bbb untagged subject/, 'the offending commit is listed on stderr')
   assert.match(stderr, /Commits still missing \[#7\]/)
   assert.doesNotMatch(calls, /git push/)
+})
+
+test('behaviour: a PR that still reports draft after ready fails the gate', () => {
+  const { code, stdout, calls } = runStubbed({ isDraft: 'true', draftAfterReady: true })
+  assert.notEqual(code, 0, 'a PR that remains draft after ready must abort the gate')
+  assert.equal(stdout, '')
+  assert.match(calls, /pr ready/, 'the failure is the post-ready verification, not a skipped ready')
 })
 
 test('behaviour: no commits ahead is not an untagged-commit failure', () => {

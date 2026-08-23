@@ -122,13 +122,22 @@ export const TOOLBOX_OWNING_SKILLS = new Set([
 // is the authority, so `bug` is a configured role and direction 2 does not apply to it.
 // assertTaxonomySplit below is what caught the divergence — leave it armed.
 export const CONTENT_LABELS = ['feature', 'improvement', 'docs']
+const PIPELINE_LABELS = new Set([
+  'agentPlan',
+  'agentFriendly',
+  'needsHuman',
+  'agentQuestion',
+  'epic',
+])
 
 // Role-resolving helpers and the trackerConfig field each reads.
 export const ROLE_FIELDS = Object.freeze({
   labelName: 'labels',
+  optionalLabelName: 'labels',
   stateName: 'states',
   githubLabelName: 'githubLabels',
 })
+const OPTIONAL_ROLE_FUNCTIONS = new Set(['optionalLabelName'])
 
 const ROLE_FUNCTIONS = Object.keys(ROLE_FIELDS).join('|')
 const ROLE_CALL = new RegExp(`\\b(${ROLE_FUNCTIONS})\\(\\s*config\\s*,\\s*'([^']*)'\\s*\\)`, 'g')
@@ -252,6 +261,16 @@ export function checkRoleCitations(citations, roleKeys) {
   const findings = []
   for (const { line, fn, role, form } of citations) {
     const field = ROLE_FIELDS[fn]
+    if (OPTIONAL_ROLE_FUNCTIONS.has(fn)) {
+      if (field === 'labels' && PIPELINE_LABELS.has(role)) {
+        findings.push({
+          line,
+          kind: 'role-optional-pipeline',
+          detail: `${fn}(config, '${role}') cites pipeline label role '${role}' — pipeline roles must resolve through labelName() (form ${form})`,
+        })
+      }
+      continue
+    }
     if (field === 'labels' && CONTENT_LABELS.includes(role)) {
       findings.push({
         line,

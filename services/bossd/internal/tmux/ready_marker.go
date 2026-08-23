@@ -340,11 +340,15 @@ func paneVanishedErr(sessionName string, capturesOK, capturesFailed int, elapsed
 //
 // A second attempt is only started when the caller's context can actually fund
 // it, INCLUDING the modal probe the attempt may make on its way out
-// (modalProbeTimeout). Starting an attempt that the context will cut short
-// converts a diagnostic timeout — which carries a pane snapshot — into a bare
-// context error, which carries nothing. Attempt one always runs: a context too
-// small even for that is the caller's problem to report, and the attempt still
-// produces the better error. A context with no deadline funds the full count.
+// (modalProbeTimeout). What an underfunded attempt costs is the ATTEMPT, not
+// the diagnostic: clampAttemptDeadline below trims every attempt to fit the
+// remaining context, so even a stub still fails with the ready-marker error and
+// its pane snapshot. It would simply be a stub — a look too short to tell a slow
+// boot from a stuck one, bought at the price of the latency it spends — which is
+// why the guard declines it rather than clamping one more time. Attempt one
+// always runs: a context too small even for that is the caller's problem to
+// report, and the attempt still produces the better error. A context with no
+// deadline funds the full count.
 func (c *Client) waitForReadyMarkerWithAttempts(ctx context.Context, sessionName string, opts sendPlanOpts) error {
 	attempts := resolveReadyAttemptsFloor(opts.readyAttempts)
 	// # The frozen single-attempt path

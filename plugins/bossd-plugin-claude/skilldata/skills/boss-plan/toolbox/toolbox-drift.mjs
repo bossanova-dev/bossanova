@@ -78,6 +78,7 @@ export function resolveSourceDir({ explicit, env = process.env, cwd = process.cw
 export function compareToolbox({ installedDir, sourceDir }) {
   const result = {
     sourcePresent: Boolean(sourceDir) && isDir(sourceDir),
+    configuredDir: installedDir,
     installedDir: resolved(installedDir),
     sourceDir: sourceDir ? resolved(sourceDir) : null,
     checked: 0,
@@ -142,10 +143,14 @@ export function main(argv, { stderr = process.stderr, env = process.env, cwd } =
     })
     if (report.sourcePresent && report.drifted.length > 0) {
       const names = report.drifted.map((entry) => entry.file).join(', ')
+      const configured =
+        report.configuredDir && report.configuredDir !== report.installedDir
+          ? ` configured=${report.configuredDir}`
+          : ''
       stderr.write(
         `boss-toolbox-drift: ${report.drifted.length} of ${report.checked} installed helpers ` +
           `differ from source (${names}) ` +
-          `[installed=${report.installedDir} source=${report.sourceDir}] - ` +
+          `[installed=${report.installedDir}${configured} source=${report.sourceDir}] - ` +
           `re-vendor the toolbox and reinstall the skills; continuing.\n`,
       )
     }

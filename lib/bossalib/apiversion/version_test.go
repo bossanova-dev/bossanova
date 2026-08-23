@@ -183,21 +183,21 @@ func TestDefaultRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("DefaultRegistry() = nil")
 	}
-	// Production registry has eleven versions ordered oldest→newest:
+	// Production registry has thirteen versions ordered oldest→newest:
 	// Baseline, V20260704, V20260705, V20260706, V20260711, V20260718,
-	// V20260723, V20260803, V20260804, V20260812 and V20260816. Current is
-	// V20260816 (newest behavior) while Default stays Baseline (header-less
-	// callers pin to the oldest version). V20260701 is NOT a member
+	// V20260723, V20260803, V20260804, V20260812, V20260816, V20260820 and
+	// V20260821. Current is V20260821 (newest behavior) while Default stays Baseline
+	// (header-less callers pin to the oldest version). V20260701 is NOT a member
 	// (example/test use only).
-	if reg.Current() != apiversion.V20260816 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260816)
+	if reg.Current() != apiversion.V20260821 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260821)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 11 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 11", len(all))
+	if len(all) != 13 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 13", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -231,6 +231,12 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 	if !reg.IsSupported(apiversion.V20260816) {
 		t.Errorf("DefaultRegistry().IsSupported(V20260816) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260820) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260820) = false, want true")
+	}
+	if !reg.IsSupported(apiversion.V20260821) {
+		t.Errorf("DefaultRegistry().IsSupported(V20260821) = false, want true")
 	}
 	// V20260701 is an exported example const but must not be in the production registry.
 	if reg.IsSupported(apiversion.V20260701) {
@@ -287,7 +293,7 @@ func TestConstants(t *testing.T) {
 // version is therefore a deliberate two-line edit — the registry and this
 // literal — not an accident.
 func TestDefaultRegistry_CurrentIsNewestReleasedLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-08-16")
+	const wantCurrent = apiversion.Version("2026-08-21")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}

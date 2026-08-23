@@ -79,6 +79,44 @@ test('resolveClaim reproduces first-writer-wins', () => {
   assert.equal(adapter.resolveClaim(comments, theirs), false)
 })
 
+test('resolveClaim forwards liveness evidence to claim arbitration', () => {
+  const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
+  const mine = 'a'.repeat(32)
+  const theirs = 'b'.repeat(32)
+  const comments = [
+    { body: formatClaimComment(theirs, 'dead-session'), createdAt: '2026-01-01T00:00:01Z' },
+    { body: formatClaimComment(mine), createdAt: '2026-01-01T00:00:02Z' },
+  ]
+  assert.equal(
+    adapter.resolveClaim(comments, mine, {
+      now: '2026-01-01T00:10:00Z',
+      inactiveAfterMs: 60_000,
+      sessions: {
+        'dead-session': { lastActivityAt: '2026-01-01T00:00:00Z' },
+      },
+    }),
+    true,
+  )
+})
+
+test('resolveClaim returns null when liveness forfeits every claim', () => {
+  const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
+  const mine = 'a'.repeat(32)
+  const comments = [
+    { body: formatClaimComment(mine, 'dead-session'), createdAt: '2026-01-01T00:00:01Z' },
+  ]
+  assert.equal(
+    adapter.resolveClaim(comments, mine, {
+      now: '2026-01-01T00:10:00Z',
+      inactiveAfterMs: 60_000,
+      sessions: {
+        'dead-session': { lastActivityAt: '2026-01-01T00:00:00Z' },
+      },
+    }),
+    null,
+  )
+})
+
 test('normalizeTicket flattens a raw GraphQL issue', () => {
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
   const ticket = adapter.normalizeTicket({

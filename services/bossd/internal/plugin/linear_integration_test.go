@@ -33,7 +33,6 @@ type linearHarnessOpts struct {
 	IssuesFixture    string
 	PRsFixture       string
 	LinearHTTPStatus int
-	AssertRequest    func(t *testing.T, r *http.Request, body []byte)
 }
 
 // linearCapturedRequest records one request seen by the mock Linear server.
@@ -59,8 +58,11 @@ type linearHarness struct {
 	requests []linearCapturedRequest
 }
 
-// Requests returns a snapshot of every request the mock Linear server has
-// observed during the test. Callers must not mutate the returned slice.
+// Requests is the only sanctioned way to assert on requests captured by the
+// mock Linear server. Terminating assertions must run on the test goroutine:
+// calling t.Fatalf or t.FailNow from the httptest server goroutine unwinds
+// the wrong goroutine.
+// Callers must not mutate the returned slice.
 func (h *linearHarness) Requests() []linearCapturedRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -114,10 +116,6 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 			Body:   body,
 		})
 		h.mu.Unlock()
-
-		if opts.AssertRequest != nil {
-			opts.AssertRequest(t, r, body)
-		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if opts.LinearHTTPStatus != 0 {

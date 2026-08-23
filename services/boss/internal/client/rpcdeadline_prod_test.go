@@ -5,6 +5,8 @@ package client
 import (
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/config"
 )
 
 // TestProductionIgnoresRPCDeadlineEnv is the safety half of the build-tag pair:
@@ -22,11 +24,25 @@ func TestProductionIgnoresRPCDeadlineEnv(t *testing.T) {
 	if defaultRPCDeadline != 30*time.Second {
 		t.Fatalf("defaultRPCDeadline = %v; want the 30s production default", defaultRPCDeadline)
 	}
-	// Both bound assertions are constant pins rather than guards on the
-	// override wiring: in a !e2e build applyE2ERPCDeadlineOverride always
-	// declines, so nothing here can move them. The load-bearing assertion in
-	// this test is the one above — that the production variant declines at all.
-	if slowRPCDeadline != 120*time.Second {
-		t.Fatalf("slowRPCDeadline = %v; want the 120s production bound, aligned with the daemon's http.Server WriteTimeout", slowRPCDeadline)
+	got := slowRPCDeadline
+	want := config.SwitchResultCeiling
+	if got <= 0 || want <= 0 {
+		t.Fatalf("invalid non-positive timeout operand: slowRPCDeadline (services/boss/internal/client/rpcdeadline.go) = %v, "+
+			"config.SwitchResultCeiling (lib/bossalib/config/config.go) = %v", got, want)
+	}
+	if got != want {
+		t.Fatalf("slowRPCDeadline (services/boss/internal/client/rpcdeadline.go) = %v, want config.SwitchResultCeiling "+
+			"(lib/bossalib/config/config.go) = %v.\n"+
+			"This equality pins the generic local-client slow RPC ceiling to the account-switch result ceiling. If "+
+			"slowRPCDeadline rises, move SwitchResultCeiling and the settings-reference crossover with it; if "+
+			"SwitchResultCeiling moves, keep slowRPCDeadline equal or document why the local TUI can now expire "+
+			"switch results at a different boundary.\n"+
+			"This guard cannot see an operator's runtime session_start_ready_deadline_seconds; it only holds the "+
+			"compiled result ceiling that the derived switch budget crosses.",
+			got, want)
+	}
+	if slowDeadlineRatio != slowRPCDeadline/defaultRPCDeadline {
+		t.Fatalf("slowDeadlineRatio = %v, want slowRPCDeadline/defaultRPCDeadline = %v/%v = %v",
+			slowDeadlineRatio, slowRPCDeadline, defaultRPCDeadline, slowRPCDeadline/defaultRPCDeadline)
 	}
 }

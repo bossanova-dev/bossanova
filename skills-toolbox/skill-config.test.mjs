@@ -1,6 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,15 +35,18 @@ import {
   planStorageFor,
   stateName,
   labelName,
+  optionalLabelName,
   githubLabelName,
   isConfiguredForRepo,
   isConfiguredForPlanning,
+  scanUnmappedRoleClaims,
   planContractVersion,
   planSections,
   planDescriptionSections,
   requiredPlanSections,
   validatePlanDescription,
   parseAcceptanceCriteria,
+  parsePremises,
   validateVerifyOnlyEvidence,
   VERIFY_ONLY_MARKER,
   VERIFY_ONLY_CHECK,
@@ -1125,6 +1136,7 @@ test('planContract default is version 1 with today’s ordered section set', () 
       '## Key changes',
       '## Testing',
       '## Risks / unknowns',
+      '## Premises',
       '## Acceptance criteria',
       '## Required proof',
       '## Proof harness analysis',
@@ -1143,6 +1155,7 @@ test('requiredPlanSections excludes the conditional and optional sections', () =
   // `optional` is RECOGNISED but never required: registering the drafting template's
   // `## Proof harness analysis` must not newly require it of the plans already stamped v1.
   assert.ok(!req.includes('## Proof harness analysis'))
+  assert.ok(!req.includes('## Premises'))
   assert.ok(req.includes('## Summary') && req.includes('## Original notes'))
 })
 
@@ -1153,6 +1166,14 @@ const planDesc = (planningLine) =>
     .join('\n\nx\n\n')
     .replace('## Planning\n\nx', `## Planning\n\n${planningLine}`)
 
+const epicParentDesc = () =>
+  [
+    '## Summary\n\nEpic parent overview.',
+    '## Child tickets\n\n- [ ] BOS-1 — child plan',
+    '## Planning\n\n- Contract: v1',
+    '## Original notes\n\nReporter text.',
+  ].join('\n\n')
+
 test('validatePlanDescription accepts a well-formed v1 description', () => {
   const r = validatePlanDescription(DEFAULT_CONFIG, planDesc('- Contract: v1'))
   assert.deepEqual(r, {
@@ -1162,6 +1183,40 @@ test('validatePlanDescription accepts a well-formed v1 description', () => {
     unknown: [],
     unsupportedVersion: false,
   })
+})
+
+test('validatePlanDescription accepts an explicit epic-parent overview mode', () => {
+  const r = validatePlanDescription(DEFAULT_CONFIG, epicParentDesc(), { mode: 'epic-parent' })
+  assert.deepEqual(r, {
+    ok: true,
+    version: 1,
+    missing: [],
+    unknown: [],
+    unsupportedVersion: false,
+  })
+})
+
+test('validatePlanDescription keeps the default child-plan contract unchanged', () => {
+  const r = validatePlanDescription(DEFAULT_CONFIG, epicParentDesc())
+  assert.equal(r.ok, false)
+  assert.ok(r.missing.includes('## Approach'))
+  assert.ok(r.missing.includes('## Acceptance criteria'))
+})
+
+test('validatePlanDescription warns and falls back for an unknown mode', () => {
+  const originalWarn = console.warn
+  const warnings = []
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    const r = validatePlanDescription(DEFAULT_CONFIG, epicParentDesc(), { mode: 'future-parent' })
+    assert.equal(r.ok, false)
+    assert.ok(r.missing.includes('## Approach'))
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /skill-config: validatePlanDescription unknown mode "future-parent"/)
+  assert.match(warnings[0], /falling back to child-plan/)
 })
 
 test('validatePlanDescription throws a named argument-order error when arguments are swapped', () => {
@@ -1413,14 +1468,111 @@ test('stateName, labelName, and githubLabelName resolve tracker roles', () => {
   assert.equal(githubLabelName(cfg, 'proofInvalid'), 'invalid-proof')
 })
 
+test('optionalLabelName resolves configured roles and returns null for absent label roles', () => {
+  const cfg = configuredFixture()
+  for (const [role, name] of Object.entries(trackerConfigFor(cfg).labels)) {
+    assert.equal(optionalLabelName(cfg, role), name)
+  }
+  for (const role of ['docs', 'feature', 'improvement', 'bugfix', 'epic']) {
+    assert.equal(optionalLabelName(cfg, role), null)
+  }
+})
+
 test('stateName, labelName, and githubLabelName fail closed for missing roles', () => {
   const cfg = configuredFixture()
   assert.throws(() => stateName(cfg, 'done'), /skill-config:.*states\.done must be configured/)
+  assert.throws(() => labelName(cfg, 'docs'), /skill-config:.*labels\.docs must be configured/)
   assert.throws(() => labelName(cfg, 'bugfix'), /skill-config:.*labels\.bugfix must be configured/)
   assert.throws(
     () => githubLabelName(cfg, 'release'),
     /skill-config:.*githubLabels\.release must be configured/,
   )
+})
+
+test('optionalLabelName still fails closed for malformed configured label roles', () => {
+  const cfg = configuredFixture()
+  const withEmpty = mergeConfig(cfg, { trackerConfig: { demo: { labels: { agentPlan: '' } } } })
+  const withNonString = mergeConfig(cfg, { trackerConfig: { demo: { labels: { agentPlan: 7 } } } })
+  assert.throws(
+    () => optionalLabelName(withEmpty, 'agentPlan'),
+    /skill-config:.*labels\.agentPlan must be configured as a non-empty string/,
+  )
+  assert.throws(
+    () => optionalLabelName(withNonString, 'agentPlan'),
+    /skill-config:.*labels\.agentPlan must be configured as a non-empty string/,
+  )
+})
+
+test('scanUnmappedRoleClaims detects bounded tracker-role claim families', () => {
+  const claims = scanUnmappedRoleClaims(
+    [
+      'The bug role is deliberately unmapped in this repo.',
+      "Calling labelName(config, 'agentFriendly') throws here.",
+      'The release role is unavailable for this tracker.',
+      'The epic role was deliberately unmapped before BOS-792.',
+      "Calling `stateName(config, 'planned')` throws in this example.",
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    claims.map((claim) => [claim.role, claim.line]),
+    [
+      ['bug', 1],
+      ['agentFriendly', 2],
+      ['release', 3],
+      ['epic', 4],
+      ['planned', 5],
+    ],
+  )
+  assert.match(claims[0].quote, /bug role is deliberately unmapped/)
+})
+
+test('scanUnmappedRoleClaims ignores ordinary role prose and explicit opt-outs', () => {
+  assert.deepEqual(
+    scanUnmappedRoleClaims(
+      [
+        'The bug role maps to the bug label in this repo.',
+        'The foreign role is deliberately unmapped elsewhere.',
+        '<!-- skill-config-claim: ignore -->',
+      ].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('scanUnmappedRoleClaims detects line-wrapped multi-word claims', () => {
+  const claims = scanUnmappedRoleClaims('The bug role is deliberately\nunmapped in this repo.')
+  assert.equal(claims.length, 1)
+  assert.equal(claims[0].role, 'bug')
+  assert.equal(claims[0].line, 1)
+  assert.match(claims[0].quote, /deliberately unmapped/)
+})
+
+test('scanUnmappedRoleClaims detects Markdown-wrapped role identifiers', () => {
+  const claims = scanUnmappedRoleClaims(
+    [
+      'The `bug` role is deliberately unmapped here.',
+      'The **epic** label role is unavailable.',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    claims.map((claim) => [claim.role, claim.field ?? null]),
+    [
+      ['bug', null],
+      ['epic', 'labels'],
+    ],
+  )
+})
+
+test('scanUnmappedRoleClaims scopes ignore markers to the containing list item', () => {
+  const claims = scanUnmappedRoleClaims(
+    [
+      '- The foreign role is deliberately unmapped. <!-- skill-config-claim: ignore -->',
+      '- The bug role is deliberately unmapped.',
+    ].join('\n'),
+  )
+  assert.equal(claims.length, 1)
+  assert.equal(claims[0].role, 'bug')
+  assert.match(claims[0].quote, /^- The bug role is deliberately unmapped\./)
 })
 
 test('the committed tracker config supplies every operational state and label role', () => {
@@ -1594,6 +1746,43 @@ test('a repo with no .boss-skills.json is unconfigured (probe is false)', () => 
 
 // The repo root is one level up from skills-toolbox/skill-config.test.mjs.
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
+const SKILL_CLAIM_ROOTS = ['.claude/skills', 'services/boss/internal/skillinstall/skills']
+
+function discoverSkillDocs(root) {
+  const out = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (entry.isFile() && entry.name === 'SKILL.md') out.push(full)
+    }
+  }
+  if (existsSync(root)) walk(root)
+  return out.sort()
+}
+
+function claimTrackerFields(claim) {
+  if (claim.field) return [claim.field]
+  if (/\blabelName\(/i.test(claim.quote) || /\blabel\s+role\b/i.test(claim.quote)) {
+    return ['labels']
+  }
+  if (/\bstateName\(/i.test(claim.quote) || /\bstate\s+role\b/i.test(claim.quote)) {
+    return ['states']
+  }
+  return ['states', 'labels', 'githubLabels']
+}
+
+function resolvedTrackerRole(config, claim) {
+  const tracker = trackerConfigFor(config)
+  for (const field of claimTrackerFields(claim)) {
+    const value = tracker?.[field]?.[claim.role]
+    if (typeof value === 'string' && value.length > 0) return { field, value }
+  }
+  return null
+}
 
 test('the committed .boss-skills.json reproduces the current hard-coded values', () => {
   const cfg = loadSkillConfig({ cwd: REPO_ROOT })
@@ -1682,6 +1871,45 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   assert.ok(pc.bucket.length > 0)
   assert.match(pc.baseUrl, /^https:\/\//)
   assert.deepEqual(planStorageFor(cfg), { kind: 'tracker-attachment' })
+})
+
+test('skill prose does not claim resolved tracker roles are unmapped', () => {
+  // This is a bounded claim-family gate, not full natural-language proof that no false config
+  // statement exists. It compares the claims the scanner recognises against this repo's committed
+  // tracker role maps and requires any rare legitimate exception to carry the explicit ignore
+  // marker near the claim.
+  const cfg = loadSkillConfig({ cwd: REPO_ROOT })
+  const failures = []
+  for (const root of SKILL_CLAIM_ROOTS) {
+    for (const file of discoverSkillDocs(join(REPO_ROOT, root))) {
+      const body = readFileSync(file, 'utf8')
+      for (const claim of scanUnmappedRoleClaims(body)) {
+        const resolved = resolvedTrackerRole(cfg, claim)
+        if (!resolved) continue
+        failures.push(
+          `${file}:${claim.line}: role "${claim.role}" is resolved at trackerConfig.${adapterFor(cfg, 'tracker')}.${resolved.field}.${claim.role}="${resolved.value}" but prose claims it is unmapped: ${claim.quote}`,
+        )
+      }
+    }
+  }
+  assert.deepEqual(failures, [])
+})
+
+test('typed helper claims are checked against the matching tracker role namespace', () => {
+  const cfg = loadSkillConfig({ cwd: REPO_ROOT })
+  const [stateClaim] = scanUnmappedRoleClaims("Calling stateName(config, 'bug') throws here.")
+  const [labelClaim] = scanUnmappedRoleClaims("Calling labelName(config, 'bug') throws here.")
+  const sameParagraph = scanUnmappedRoleClaims(
+    "Calling labelName(config, 'release') throws and stateName(config, 'planned') throws here.",
+  )
+
+  assert.equal(resolvedTrackerRole(cfg, stateClaim), null)
+  assert.deepEqual(resolvedTrackerRole(cfg, labelClaim), { field: 'labels', value: 'bug' })
+  assert.equal(resolvedTrackerRole(cfg, sameParagraph[0]), null)
+  assert.deepEqual(resolvedTrackerRole(cfg, sameParagraph[1]), {
+    field: 'states',
+    value: stateName(cfg, 'planned'),
+  })
 })
 
 // --- Verify-only acceptance criteria (BOS-861) -----------------------------
@@ -1974,5 +2202,66 @@ test('both new exports reject a swapped (description, config) call by name', () 
   assert.throws(
     () => validateVerifyOnlyEvidence('## Acceptance criteria', DEFAULT_CONFIG),
     /validateVerifyOnlyEvidence\(config, description\)/,
+  )
+})
+
+test('parsePremises reads scoped premise bullets and central markers', () => {
+  const body = planBody('- [x] ordinary criterion').replace(
+    '## Acceptance criteria',
+    [
+      '## Premises',
+      '',
+      '- [ ] (central) the generated plan must still be checked — check: `make test-scripts`',
+      '- [ ] supporting premise wraps',
+      '  across lines — check: `rg -n parsePremises skills-toolbox`',
+      '',
+      '```md',
+      '- [ ] (central) fenced sample',
+      '```',
+      '',
+      '## Acceptance criteria',
+    ].join('\n'),
+  )
+  const premises = parsePremises(DEFAULT_CONFIG, body)
+  assert.equal(premises.length, 2)
+  assert.deepEqual(premises[0], {
+    text: '(central) the generated plan must still be checked — check: `make test-scripts`',
+    claim: 'the generated plan must still be checked',
+    check: 'make test-scripts',
+    central: true,
+    duplicateCentral: false,
+  })
+  assert.equal(premises[1].claim, 'supporting premise wraps across lines')
+  assert.equal(premises[1].check, 'rg -n parsePremises skills-toolbox')
+})
+
+test('parsePremises reports two central premises instead of choosing one', () => {
+  const body = planBody('- [x] ordinary criterion').replace(
+    '## Acceptance criteria',
+    [
+      '## Premises',
+      '',
+      '- [ ] (central) first',
+      '- [ ] **(central)** second',
+      '',
+      '## Acceptance criteria',
+    ].join('\n'),
+  )
+  const central = parsePremises(DEFAULT_CONFIG, body).filter((premise) => premise.central)
+  assert.equal(central.length, 2)
+  assert.deepEqual(
+    central.map((premise) => premise.claim),
+    ['first', 'second'],
+  )
+  assert.deepEqual(
+    central.map((premise) => premise.duplicateCentral),
+    [true, true],
+  )
+})
+
+test('parsePremises throws the named swapped-argument error', () => {
+  assert.throws(
+    () => parsePremises('## Premises', DEFAULT_CONFIG),
+    /parsePremises\(config, description\)/,
   )
 })

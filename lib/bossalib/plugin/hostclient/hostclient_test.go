@@ -53,6 +53,36 @@ func newBufconnDirectClient(t *testing.T, opts ...ClientOption) (*DirectClient, 
 	}
 }
 
+func newBufconnEagerClient(t *testing.T, opts ...ClientOption) (*EagerClient, func()) {
+	t.Helper()
+	lis := bufconn.Listen(1 << 16)
+	srv := grpc.NewServer(grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		<-stream.Context().Done()
+		return stream.Context().Err()
+	}))
+	go func() { _ = srv.Serve(lis) }()
+
+	dialer := func(context.Context, string) (net.Conn, error) { return lis.Dial() }
+	conn, err := grpc.NewClient(
+		"passthrough:///bufconn",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	c := newEagerClientFromDialer(func() (*grpc.ClientConn, error) { return conn, nil }, zerolog.Nop(), opts...)
+	<-c.ready
+	if c.err != nil {
+		t.Fatalf("eager dial: %v", c.err)
+	}
+	return c, func() {
+		_ = conn.Close()
+		srv.Stop()
+		_ = lis.Close()
+	}
+}
+
 func TestDirectClientAppliesDefaultTimeout(t *testing.T) {
 	t.Parallel()
 	c, cleanup := newBufconnDirectClient(t, WithTimeout(150*time.Millisecond))
@@ -110,6 +140,17 @@ func TestWithTimeoutOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestWithStartChatRunTimeoutOverridesStartChatRunOnly(t *testing.T) {
+	t.Parallel()
+	c := NewDirectClient(nil, WithTimeout(5*time.Second), WithStartChatRunTimeout(6*time.Second))
+	if c.defaultRPCTimeout != 5*time.Second {
+		t.Fatalf("default RPC timeout = %v, want 5s", c.defaultRPCTimeout)
+	}
+	if c.startChatRunTimeout != 6*time.Second {
+		t.Fatalf("StartChatRun timeout = %v, want 6s", c.startChatRunTimeout)
+	}
+}
+
 func TestResolveOptionsDefault(t *testing.T) {
 	t.Parallel()
 	if got := resolveOptions(nil).rpcTimeout; got != DefaultRPCTimeout {
@@ -117,6 +158,14 @@ func TestResolveOptionsDefault(t *testing.T) {
 	}
 	if got := resolveOptions([]ClientOption{WithTimeout(2 * time.Second)}).rpcTimeout; got != 2*time.Second {
 		t.Fatalf("override = %v, want 2s", got)
+	}
+	if got := resolveOptions(nil).startChatRunTimeout; got != StartChatRunRPCTimeout {
+		t.Fatalf("default StartChatRun timeout = %v, want %v", got, StartChatRunRPCTimeout)
+	}
+	for _, d := range []time.Duration{0, -time.Second} {
+		if got := resolveOptions([]ClientOption{WithStartChatRunTimeout(d)}).startChatRunTimeout; got != StartChatRunRPCTimeout {
+			t.Fatalf("WithStartChatRunTimeout(%v) resolved to %v, want default %v", d, got, StartChatRunRPCTimeout)
+		}
 	}
 }
 
@@ -270,7 +319,7 @@ func TestStartChatRunIgnoresClientDefaultTimeout(t *testing.T) {
 // supplies a tighter deadline still wins.
 func TestStartChatRunHonorsShorterCallerDeadline(t *testing.T) {
 	t.Parallel()
-	c, cleanup := newBufconnDirectClient(t)
+	c, cleanup := newBufconnDirectClient(t, WithStartChatRunTimeout(600*time.Second))
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -295,20 +344,58 @@ func TestStartChatRunHonorsShorterCallerDeadline(t *testing.T) {
 	}
 }
 
+func TestStartChatRunUsesConfiguredCeiling(t *testing.T) {
+	t.Parallel()
+	c, cleanup := newBufconnDirectClient(t, WithStartChatRunTimeout(160*time.Millisecond))
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed < 120*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v, before the configured 160ms ceiling could be observed", elapsed)
+	}
+	if elapsed > 350*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v; configured ceiling was not applied before the caller's 500ms deadline", elapsed)
+	}
+}
+
+func TestEagerStartChatRunForwardsConfiguredCeiling(t *testing.T) {
+	t.Parallel()
+	c, cleanup := newBufconnEagerClient(t, WithStartChatRunTimeout(160*time.Millisecond))
+	defer cleanup()
+
+	if c.inner.startChatRunTimeout != 160*time.Millisecond {
+		t.Fatalf("eager inner StartChatRun timeout = %v, want 160ms", c.inner.startChatRunTimeout)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed < 120*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v, before the configured 160ms ceiling could be observed", elapsed)
+	}
+	if elapsed > 350*time.Millisecond {
+		t.Fatalf("StartChatRun returned after %v; eager client did not forward the configured ceiling", elapsed)
+	}
+}
+
 func TestStartChatRunRPCTimeoutDefault(t *testing.T) {
 	t.Parallel()
-	// Pins the production ceiling. It is not free to move downward: the guard
-	// test TestSessionStartReadinessFitsStartChatRunBudget in
-	// services/bossd/internal/tmux/tmux_budget_test.go sizes the daemon-side
-	// composer-readiness deadline against this value, and lowering it here
-	// would silently re-cap that deadline on the repair-driven session-start
-	// path — the exact bug this constant exists to prevent.
-	//
-	// Moving it *upward* is legitimate — that guard test's own remediation
-	// advice says to do exactly that when the readiness deadline rises. This
-	// assertion is an equality pin, so such a change must update the literal
-	// below in the same commit; a raise that skips this file fails here, not in
-	// the guard.
 	if StartChatRunRPCTimeout != 90*time.Second {
 		t.Fatalf("StartChatRunRPCTimeout = %v, want 90s", StartChatRunRPCTimeout)
 	}

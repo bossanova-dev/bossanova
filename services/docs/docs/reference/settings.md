@@ -168,10 +168,10 @@ There are **two** deadlines because the two delivery paths have different
 ceilings, and each is configured independently — setting one never moves the
 other.
 
-| Field                                  | Type | Default | Description                                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------- | ---- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_start_ready_deadline_seconds` | int  | `45`    | How long **each attempt** of a **session start or resume** waits for the composer prompt. This covers tmux spawn, interactive login-shell init, agent exec, node boot, and first paint. The start path makes up to **two** attempts, so the value you write is half the worst-case wall clock. Not clamped — raise it as needed. |
-| `send_ready_deadline_seconds`          | int  | `5`     | How long a send into an **already-running** agent waits for the composer prompt. **Clamped to 20 seconds**, whatever you write.                                                                                                                                                                                                  |
+| Field                                  | Type | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------- | ---- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_start_ready_deadline_seconds` | int  | `45`    | How long **each attempt** of a **session start or resume** waits for the composer prompt. This covers tmux spawn, interactive login-shell init, agent exec, node boot, and first paint. The start path makes up to **two** attempts, and each one reserves a further two seconds for an interstitial-dialog check, so the worst-case wall clock is a little over twice the value you write. Not clamped — raise it as needed. |
+| `send_ready_deadline_seconds`          | int  | `5`     | How long a send into an **already-running** agent waits for the composer prompt. **Clamped to 20 seconds**, whatever you write.                                                                                                                                                                                                                                                                                               |
 
 Values of zero or below are ignored and the default applies; a settings file
 written before this block existed keeps both defaults, so there is nothing to
@@ -183,18 +183,78 @@ under a second to twelve seconds on affected machines.
 
 It is a **per-attempt** budget, not a total. The start path retries the
 readiness wait once before giving up, so a start that is genuinely going to fail
-spends roughly twice this value — about 90 seconds at the default of 45. Size
-the knob against the boot you want to survive, then expect twice that before a
-doomed start reports failure. The send deadline is **not** retried: one attempt,
-always.
+spends roughly twice this value — about 94 seconds at the default of 45 (each
+attempt also reserves two seconds for an interstitial-dialog check on its way
+out). Size the knob against the boot you want to survive, then expect a little
+over twice that before a doomed start reports failure. The send deadline is
+**not** retried: one attempt, always.
 
 An attempt can also be **shortened** — not by this setting, but by whatever
 context the start is running under. If the caller has less time left than a full
 attempt needs, the wait is trimmed to fit rather than skipped, and the timeout
 message says so: _shortened from 45s to stay inside the caller's context_. Read
-that clause as pointing somewhere other than this file. The number you configured
-was not the constraint, so raising it will not help; something above the start —
-a request deadline, a cancelled parent — is what ran out.
+that clause as pointing somewhere other than this file: the number you
+configured was not the constraint, and something above the start ran out first.
+
+**Switching a chat's account** used to be the commonest concrete source, and is
+no longer one. A switch respawns the pane under the new account and then waits
+for its composer, and bossanova gives that whole operation a budget of its own,
+so a failing switch cannot run unbounded after the request that asked for it.
+That budget is **derived from this setting** rather than fixed: it is whatever
+you configure here plus a further 45 seconds, covering the interstitial-dialog
+check an attempt reserves, the work the switch does before the respawn even
+starts (mid-turn check, pane kill, transcript probe, account binding write), and
+a margin on top.
+
+So the longest a doomed switch waits before reporting failure is
+`session_start_ready_deadline_seconds` **+ 45 seconds** — 90 seconds at the
+45-second default, and 345 seconds if you raise the setting to 300. Raising this
+value **does** help on the switch route: the budget rises with it instead of
+clamping the wait below the number you wrote. The cost is proportional, and it
+is the deliberate trade — the more room you buy a slow host, the longer a switch
+that is going to fail takes to say so.
+
+The repair-driven start path has the same derived protection around its
+plugin-to-daemon `StartChatRun` RPC. Its ceiling is
+`session_start_ready_deadline_seconds + max(session_start_ready_deadline_seconds, 4 seconds)`:
+90 seconds at the 45-second default, and 600 seconds if you raise the setting to 300. Raising this value therefore also lengthens how long an automated repair
+attempt may wait on an unresponsive daemon. That is intentional; a fixed cap
+would put the silent readiness clamp back on the slow hosts this setting exists
+to support.
+
+That number is the **daemon's** budget. The result path has a separate reporting
+bound: the same 120-second ceiling applies to a switch sent through the cloud
+relay and to the local path's daemon socket write timeout plus the TUI's slow-RPC
+deadline. The crossover readiness (`config.SwitchBudgetCrossoverReadiness()`, 75
+seconds at today's reserves) is a nominal, budget-only comparison of
+`session_start_ready_deadline_seconds + 45 seconds` against that 120-second
+result ceiling. It excludes the bosso work that happens before the daemon switch
+budget starts: cloud/account access, ownership and chat lookup, command
+dispatch, and transport scheduling. Values near 75 seconds are therefore not a
+hard user-visible flip point.
+
+When the **bosso relay** result ceiling does stop waiting first, the switch may
+still be running, the request did not cancel or tear it down, and the timeout
+text says the caller stopped waiting without receiving a daemon verdict. Re-check
+the chat's account to see where it landed. The relayed switch path is the remote
+client (`boss --remote`) and gateway proxy path, not a web-UI-only button. The
+local TUI path is bounded by the same 120-second value, but it still uses the
+generic slow-RPC wording from the local client deadline interceptor when that
+caller-side ceiling wins. A `/boss switch` typed into a chat still runs inside
+the ordinary 30-second chat-message ceiling, which it is already past at the
+default; that route deliberately keeps the generic chat-message timeout wording
+because bosso cannot cheaply single out switches there without moving the command
+parser.
+
+The budget still funds one full attempt and declines a second once the first has
+used most of it, so above roughly 33 configured seconds a switch reports
+`after 1 of 2 attempts` where an ordinary session start would have tried twice.
+That is the switch's budget doing its job, not this setting being too small.
+Below that threshold both attempts are still funded, which costs a doomed switch
+a few extra seconds and nothing else.
+
+The other sources of a shortened attempt are unchanged: a request deadline, or a
+cancelled parent.
 
 The send deadline is clamped because that delivery runs inside a request the
 cloud relay bounds at 30 seconds. A readiness wait that outlives the relay

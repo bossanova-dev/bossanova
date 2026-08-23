@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -350,104 +351,263 @@ const (
 	SendReadyDeadlineMax             = 20 * time.Second
 )
 
-// SessionStartReadyDeadline returns how long a session-start or resume delivery
-// waits for the agent's composer prompt before giving up; the default is 45s.
-// A non-positive value (unset, or a hand-edited negative) falls back rather
-// than producing a zero or negative duration, which would mean "no wait".
+// SessionStartReadyDeadlinePluginKey is projected into every plugin process as
+// BOSS_PLUGIN_session_start_ready_deadline_seconds. Plugins that need a budget
+// sized against the daemon's resolved readiness deadline read this key rather
+// than re-loading settings.json themselves.
+const SessionStartReadyDeadlinePluginKey = "session_start_ready_deadline_seconds"
+
+// SwitchModalProbeReserve, switchPreRespawnReserve and switchPolicyMargin are
+// the three fixed allowances SwitchRespawnBudgetFor adds on top of the resolved
+// readiness deadline. They are named terms so in-package guards can describe
+// the arithmetic without restating one opaque sum.
 //
-// This accessor is deliberately UNCLAMPED, unlike its sibling below, so an
+//   - SwitchModalProbeReserve restates services/bossd/internal/tmux's
+//     modalProbeTimeout. The readiness wait reserves one modal probe beyond its
+//     own budget on the way out, so a FULL attempt costs the deadline plus this.
+//     bossalib cannot import that package (the dependency edge runs the other
+//     way), so this term is exported for
+//     TestSwitchModalProbeReserveMatchesModalProbeTimeout in
+//     services/bossd/internal/tmux, the drift guard that holds the pair equal
+//     — the same shape DefaultSessionStartReadyDeadline already uses.
+//   - switchPreRespawnReserve covers the real work the switch does BEFORE the
+//     respawn starts and inside the same budget: the mid-turn check, the pane
+//     kill, the transcript probe and the binding write. The readiness wait only
+//     ever receives the budget MINUS this, which is why the guard on the sizing
+//     asserts against that quantity rather than against the budget itself.
+//   - switchPolicyMargin is deliberate headroom above one full attempt, not a
+//     measurement. It is also the lever that decides the retry: what survives
+//     attempt 1 is exactly this margin, so the remaining-budget guard declines
+//     attempt 2 whenever the configured readiness exceeds switchPolicyMargin
+//     minus SwitchModalProbeReserve — 33s at these values.
+//
+// Only their SUM is pinned, by the compatibility equality in
+// TestSwitchRespawnBudgetAtTheDefaultIsNinetySeconds: at the 45s default the
+// three add to 45s, so the derived budget still lands on exactly the 90s BOS-897
+// shipped as a constant. The split between the second and third is a judgement
+// nobody has measured on a slow host — re-tuning either means re-deciding the
+// pair against that equality rather than nudging one.
+const (
+	SwitchModalProbeReserve = 2 * time.Second
+	switchPreRespawnReserve = 8 * time.Second
+	switchPolicyMargin      = 35 * time.Second
+)
+
+// StartChatRunSubmitVerifierTail and StartChatRunFreshSessionIDResolveTail are
+// the two fixed in-RPC tails StartChatRunBudgetFor accounts for after the
+// session-start readiness wait. They restate values in services/bossd/internal:
+// submitVerifyWait from tmux.startDeliveryOpts and
+// freshProviderSessionIDResolveDeadline from session.StartTmuxChat. bossalib
+// cannot import either package, so bossd-side drift guards hold these pairs
+// equal.
+const (
+	StartChatRunSubmitVerifierTail        = 2 * time.Second
+	StartChatRunFreshSessionIDResolveTail = 2 * time.Second
+)
+
+// StartChatRunInRPCTail is the fixed floor for the work that follows the
+// readiness wait inside one StartChatRun RPC.
+const StartChatRunInRPCTail = StartChatRunSubmitVerifierTail + StartChatRunFreshSessionIDResolveTail
+
+// switchBudgetAllowances is the fixed part of the budget: everything except the
+// operator-configurable readiness term.
+const switchBudgetAllowances = SwitchModalProbeReserve + switchPreRespawnReserve + switchPolicyMargin
+
+// StartChatRunBudgetFor returns the per-call ceiling for the plugin→host
+// StartChatRun RPC when the host resolved the supplied readiness deadline.
+//
+// It takes the RESOLVED readiness duration rather than a TmuxDeliveryConfig for
+// the same reason SwitchRespawnBudgetFor does: the zero-value config means
+// "default", so accepting it would let tests and callers accidentally exercise
+// only the default path while the configured path regressed.
+//
+// The sizing is readiness + max(readiness, StartChatRunInRPCTail). The second
+// readiness-sized term preserves the long-standing 2x policy ratio at ordinary
+// values, while the tail floor keeps very small configured readiness values
+// from starving the submit verifier and fresh-session-ID resolve that run inside
+// the same RPC. At the 45s default the derived value is still exactly 90s.
+//
+// Non-positive readiness floors to DefaultSessionStartReadyDeadline, matching
+// the settings accessor. Overflow saturates instead of falling back: a very
+// large configured readiness must not receive the smallest budget.
+func StartChatRunBudgetFor(readiness time.Duration) time.Duration {
+	if readiness <= 0 {
+		readiness = DefaultSessionStartReadyDeadline
+	}
+	tail := readiness
+	if tail < StartChatRunInRPCTail {
+		tail = StartChatRunInRPCTail
+	}
+	budget := readiness + tail
+	if budget < readiness {
+		return time.Duration(math.MaxInt64)
+	}
+	return budget
+}
+
+// SwitchResultCeiling bounds how long callers wait for an account-switch
+// result; it does not bound the switch itself. The switch budget remains
+// SwitchRespawnBudgetFor(readiness), so when an operator raises
+// session_start_ready_deadline_seconds past SwitchBudgetCrossoverReadiness, the
+// caller-side ceiling can expire before the daemon gives a verdict. The
+// invariant at every configured readiness is therefore that callers are never
+// told a daemon verdict the daemon did not give. Below the nominal crossover the
+// daemon budget is shorter than the result ceiling on paper, but real elapsed
+// ordering can still be affected by bosso work before the daemon budget starts.
+// Near or above the crossover they may see the caller-side expiry in its own
+// wording.
+//
+// Three enforcement sites must stay equal to this ceiling:
+// services/bosso/internal/server/proxy.go's switchCommandDeadline,
+// services/bossd/internal/server/server.go's http.Server WriteTimeout, and
+// services/boss/internal/client/rpcdeadline.go's slowRPCDeadline. The latter two
+// are generic ceilings for many operations, so their production values are
+// pinned by relational guards rather than renamed. The operator-facing
+// crossover is derived by SwitchBudgetCrossoverReadiness; if the allowances or
+// this ceiling move, update services/docs/docs/reference/settings.md with the
+// new derived figure.
+const SwitchResultCeiling = 120 * time.Second
+
+// SwitchBudgetCrossoverReadiness returns the nominal configured readiness at
+// which SwitchRespawnBudgetFor exactly meets SwitchResultCeiling. It compares
+// budgets only and excludes bosso auth/account/ownership lookup and dispatch
+// latency before the daemon switch budget begins.
+func SwitchBudgetCrossoverReadiness() time.Duration {
+	return SwitchResultCeiling - switchBudgetAllowances
+}
+
+// SwitchRespawnBudgetFor returns the budget that bounds the whole account-switch
+// primitive as it is reached from internal/server — the SwitchSessionAccount RPC
+// and the "/boss switch" interception inside SendChatMessage. Without it that
+// path arrives at StartTmuxChat carrying the daemon's long-lived stream context,
+// so the composer-readiness wait spends its full per-attempt budget twice with
+// nothing above it to stop (see the SessionStartReadyDeadline comment below).
+//
+// It takes the RESOLVED readiness duration rather than a TmuxDeliveryConfig, and
+// that parameter shape is the whole point of BOS-948. What this replaces was a
+// compiled 90s constant whose entire sizing argument was stated against
+// SessionStartReadyDeadline — a setting the accessor below leaves deliberately
+// UNCLAMPED and services/docs/docs/reference/settings.md actively tells slow-host
+// operators to raise. Past 88 configured seconds the constant could no longer
+// fund one attempt plus its modal probe, so it clamped the readiness wait BELOW
+// the value the operator had chosen, and both guards on it read the compiled
+// default and stayed green. Taking a config struct would have preserved that
+// blind spot exactly: a zero-value struct answers with the default, so the one
+// call shape a careless caller reaches for is the one that can never fail.
+//
+// The sizing is readiness + the three allowances above. It funds ONE full
+// readiness attempt and — above the threshold named there — declines a second.
+// A budget short enough to clamp attempt 1 would trade BOS-897's bug for
+// BOS-896's, which is why TestSwitchRespawnBudgetFundsOneFullAttemptAtEveryConfiguredValue asserts
+// the inequality at a range of CONFIGURED values rather than at the default.
+//
+// Two edges, both chosen rather than inherited:
+//
+//   - A non-positive readiness is floored to DefaultSessionStartReadyDeadline
+//     before deriving, matching SessionStartReadyDeadline's own contract, so an
+//     unconfigured or hand-edited-negative setting yields the 90s default budget
+//     rather than a budget made of allowances alone.
+//   - A readiness within one allowance of time.Duration's ceiling SATURATES
+//     rather than falling back to the default. Falling back there would be this
+//     ticket's own bug at a different number — it would hand the largest
+//     configured readiness the smallest budget.
+//
+// It lives in bossalib because it is the one place both services can import
+// from. services/bosso's switchCommandDeadline is bound to SwitchResultCeiling,
+// which carries the cross-service result-ordering decision and derives the
+// crossover where this budget meets the caller-side result ceiling.
+//
+// The rotation engine (services/bossd/cmd/main.go) calls lifecycle.SwitchAccount
+// directly and never enters internal/server, so its automatic switch stays
+// unbounded by construction. That is the intended scope boundary.
+func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
+	if readiness <= 0 {
+		readiness = DefaultSessionStartReadyDeadline
+	}
+	budget := readiness + switchBudgetAllowances
+	if budget < readiness {
+		// int64 nanoseconds top out around 292 years, so a readiness within one
+		// allowance of that ceiling wraps negative. Saturate instead of falling
+		// back: the caller asked for the longest budget it could express, and
+		// every alternative here — the default, or the readiness unchanged —
+		// hands the largest configured value a budget SMALLER than a modest one
+		// would get, which is the inversion this function exists to remove.
+		return time.Duration(math.MaxInt64)
+	}
+	return budget
+}
+
+// SessionStartReadyDeadline returns how long ONE session-start or resume
+// readiness wait may spend looking for the agent's composer prompt before it
+// gives up. The default is 45s, sized against the measured 12s shell-init
+// ceiling with roughly 33s — about 3x — left for exec, node boot and TUI first
+// paint.
+//
+// The return value is a contract, not a passthrough. A non-positive configured
+// value (unset, or a hand-edited negative) yields the default rather than a
+// zero or negative duration, which downstream reads as "no wait"; a value so
+// large it overflows time.Duration yields the default rather than wrapping
+// negative. Every representable positive value is honoured verbatim, because
+// this accessor is deliberately UNCLAMPED, unlike SendReadyDeadline below: an
 // operator on a pathologically slow host may raise it as far as their patience
-// allows. The 45s default is sized against the measured 12s shell-init ceiling
-// with roughly 33s — about 3x — left for exec, node boot, and TUI first paint.
-// A configured value so large it overflows time.Duration falls back to the
-// default rather than wrapping negative; every representable value is honoured.
+// allows.
 //
-// Which callers actually spend this budget is worth stating, because it is
-// narrower than "anything that starts a session". It is spent only by the four
-// start-path wrappers, all reached through injectTmuxChatInput
-// (services/bossd/internal/session/tmux_chat.go), whose only production callers
-// are Lifecycle.StartTmuxChat and Lifecycle.sendInputToLiveTmuxChat.
-//
-// Most of those callers are unbounded downstream, which is what leaves this
-// knob free — but NOT all of them, and the exception is worth naming because
-// this comment previously claimed there was none. Lifecycle.SwitchAccount
-// respawns the switched chat through StartTmuxChat
-// (services/bossd/internal/session/switch_account.go). It has four production
-// callers and TWO of them are relay-bounded: ProxySwitchSessionAccount
-// (services/bosso/internal/server/proxy.go) and a "/boss switch" intercepted
-// inside SendChatMessage, both dispatched under commandDeadline (30s, same
-// file). The other two — the local SwitchSessionAccount RPC and the rotation
-// engine — are unbounded, which is what still leaves this knob mostly free.
-//
-// On the two bounded routes the respawned pane is cold, and the wait runs
-// before the payload is even looked at (sendPlan waits for the ready marker as
-// step 1, so the switch's empty ChatInput does not skip it), so a boot slower
-// than the relay leaves bossd still waiting after bosso has returned
-// CodeDeadlineExceeded.
-//
-// Treat that 30-45s band as RETRY-HAZARDOUS, not merely ambiguous. The user's
-// remedy for a timed-out switch is to press the button again, and a resumable
-// switch reuses the same agentSessionID, so both attempts compute the same
-// tmux name (tmux.ChatSessionName is pure over repoID and agentSessionID).
-// Nothing serializes SwitchAccount. The retry respawns the pane, and then the
-// FIRST attempt hits its own 45s timeout and runs failStartBestEffort, which
-// kills that tmux name and stamps MarkStartFailed — so the loser tears down
-// the winner's pane and marks the chat start-failed. Nothing is durably
-// corrupted (starting the chat again recovers it), but this is worse than a
-// slow success, and it needs a cloud-relayed switch AND a >30s boot AND a
-// retry to reach.
-//
-// It is still not a pure regression: before this knob existed the same path
-// was pinned at 5s, so every boot slower than that failed the switch outright
-// — and, being well inside the 30s relay, could never produce the overlap
-// above. Raising it to 45s converts boots in the 5-30s range from certain
-// failure into success, and confines the new hazard to the 30-45s band.
-// Closing it properly means giving the switch respawn a budget of its own,
-// which is a change to that path rather than to this value, and a policy
-// choice this ticket's acceptance criteria do not cover. It is tracked as
-// BOS-897, which owns both the fix and the rewrite of this paragraph.
-//
-// The price of the raised default is that a start which is genuinely going to
-// fail now costs 45s of wall clock instead of 5s, and that cost serializes
-// across a cron sweep. That is accepted: the alternative was failing correct
-// starts.
-//
-// BOS-895 doubled that price without touching this value: the session-start
-// readiness wait is now attempted TWICE, so this is a PER-ATTEMPT budget and a
-// doomed start costs about 94s rather than 45s. (94s, not 90s: the per-attempt
-// ceiling is deadline + modalProbeTimeout once a ModalDetector is wired, and
-// since BOS-894 the start path wires one — injectTmuxChatInput binds a detector
-// into the …WithModal wrappers, services/bossd/internal/session — so each
-// attempt reserves 2s beyond this budget.) Three consequences follow
-// for the paragraphs above, and none of them is new in kind — all three are
-// bigger than this comment used to say.
-//
-// The serialized cron cost doubles.
-//
-// The retry-hazardous band above is not 30-45s any more, it is 30-94s. Note
-// what does NOT save it: bosso's 30s commandDeadline never becomes a deadline
-// on the DAEMON's context. It bounds only bosso's own wait for the
-// CommandResult coming back over the stream; the command itself arrives at
-// bossd on the long-lived stream context and reaches SwitchAccount ->
-// StartTmuxChat with no deadline attached at all. So the tmux loop's
-// remaining-budget guard, which fires only when ctx.Deadline() reports one,
-// never fires on that route and both attempts run in full. The relay-bounded
-// switch routes are exactly where the widening lands, and they are also the
-// ones with a user holding a button to press again — so the window in which
-// the loser's failStartBestEffort tears down the winner's pane grows from
-// about 15s (45 - 30) to about 64s (94 - 30). At 30-45s deferring "give the
-// switch respawn a budget of its own" was comfortable; at 30-94s it is not,
-// which is why BOS-897 exists rather than a note to revisit this someday.
-//
-// And a doomed switch now pins bossd's inbound command reader for ~94s rather
-// than ~45s: handleCommand runs synchronously inside the Receive loop
-// (services/bossd/internal/upstream/stream.go), so no other orchestrator
-// command is read off the stream while it waits. Switch only — WakeChat spawns
-// its pane through spawnChatTmux (services/bossd/internal/server), which never
+// WHO SPENDS IT. Only the four start-path …WithModal wrappers, all reached
+// through injectTmuxChatInput (services/bossd/internal/session/tmux_chat.go),
+// whose production callers are Lifecycle.StartTmuxChat and
+// Lifecycle.sendInputToLiveTmuxChat. WakeChat is not among them: it spawns its
+// pane through spawnChatTmux (services/bossd/internal/server), which never
 // waits for the ready marker and so never spends this budget at all.
 //
-// Keep this paragraph and services/docs/docs/reference/settings.md in step with
-// the attempt count in services/bossd/internal/tmux, which owns it.
+// IT IS PER-ATTEMPT, NOT A TOTAL. services/bossd/internal/tmux owns the attempt
+// count (sessionStartReadyAttempts) and re-runs the whole readiness wait that
+// many times; each attempt additionally reserves modalProbeTimeout
+// (tmux_modal.go) for the ModalDetector call injectTmuxChatInput binds into the
+// wrappers. The wall clock a doomed start costs is therefore the attempt count
+// multiplied by the sum of this value and that probe reservation. That product
+// is stated here as a rule rather than as a number: neither constant is
+// importable from this package, so a literal here would be a copy nothing
+// checks. services/docs/docs/reference/settings.md quotes the arithmetic for
+// operators, and scripts/check-settings-readiness-figure.mjs derives that
+// page's figure from all three constants so the two cannot drift.
+//
+// WHAT BOUNDS THE SPENDERS FROM ABOVE. For most of them, nothing — which is
+// what leaves this knob free. The exception is Lifecycle.SwitchAccount
+// (services/bossd/internal/session/switch_account.go), which respawns the
+// switched chat through StartTmuxChat against a cold pane. Every route into it
+// that passes through internal/server — the SwitchSessionAccount RPC and the
+// "/boss switch" interception inside SendChatMessage — runs the switch
+// primitive in Server.executeAccountSwitch (services/bossd/internal/server)
+// under the switch respawn budget this package declares above, which is
+// DERIVED from this value rather than fixed: raising this raises that budget
+// with it, so the budget funds one full attempt and declines a second at every
+// configured value and not only at the default. That keeps the retry loop's
+// remaining-budget guard live here: it fires only when ctx.Deadline() reports
+// one, and here one is reported, so attempt 2 starts when the budget left can
+// fund this value plus modalProbeTimeout and is declined otherwise.
+//
+// Two overlapping attempts on one chat compute the same tmux name — a resumable
+// switch reuses the same agentSessionID, and tmux.ChatSessionName is pure over
+// repoID and agentSessionID — so what stops a second attempt tearing down the
+// first's pane is SERIALIZATION, not arithmetic. Server.chatSwitchGroup, a
+// singleflight.Group keyed by agentSessionID, admits one flight per chat and
+// joins the rest to the leader; it is joined with DoChan and a caller-owned
+// select rather than Do, so a joiner whose own context ends returns without
+// touching the pane while the leader runs on. Spending the budget also leaves
+// bossd's inbound command reader free: dispatchSwitchAccount
+// (services/bossd/internal/upstream) hands the work to runAsyncCommand, so the
+// Receive loop keeps draining other commands.
+//
+// The rotation engine (services/bossd/cmd/main.go) calls
+// lifecycle.SwitchAccount directly, entering neither the budget nor the group,
+// so an automatic rotation and a manual switch on one chat can overlap and tear
+// down each other's pane; that scope boundary is deliberate and is tracked as
+// deferred follow-up in the BOS-897 plan.
+//
+// The price of the 45s default is that a start which is genuinely going to fail
+// spends the full per-attempt budget on every attempt rather than failing fast,
+// and that cost serializes across a cron sweep. It is accepted: the alternative
+// is failing correct starts.
 func (c TmuxDeliveryConfig) SessionStartReadyDeadline() time.Duration {
 	if c.SessionStartReadyDeadlineSeconds <= 0 {
 		return DefaultSessionStartReadyDeadline

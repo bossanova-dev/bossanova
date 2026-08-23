@@ -111,12 +111,64 @@ func TestPreparePluginConfigForStartInjectsLoginShellBeforeEnvProjection(t *test
 	if env["BOSS_PLUGIN_x"] != "1" {
 		t.Fatalf("BOSS_PLUGIN_x = %q, want %q", env["BOSS_PLUGIN_x"], "1")
 	}
+	if env["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey] != "45" {
+		t.Fatalf("BOSS_PLUGIN_%s = %q, want %q",
+			config.SessionStartReadyDeadlinePluginKey,
+			env["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey], "45")
+	}
 
 	nonAgent := preparePluginConfigForStart(config.PluginConfig{Name: "linear"}, settings)
+	nonAgentEnv := map[string]string{}
 	for _, kv := range pluginEnvFromConfig(nonAgent) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			t.Fatalf("malformed env entry %q", kv)
+		}
+		nonAgentEnv[k] = v
 		if strings.HasPrefix(kv, "BOSS_PLUGIN_login_shell=") {
 			t.Fatalf("non-agent plugin must not project login_shell env, got %q", kv)
 		}
+	}
+	if nonAgentEnv["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey] != "45" {
+		t.Fatalf("non-agent plugin readiness env = %q, want %q",
+			nonAgentEnv["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey], "45")
+	}
+}
+
+func TestPreparePluginConfigForStartProjectsSessionStartReadiness(t *testing.T) {
+	settings := config.Settings{
+		TmuxDelivery: config.TmuxDeliveryConfig{SessionStartReadyDeadlineSeconds: 300},
+	}
+	sourceConfig := map[string]string{
+		"x": config.SessionStartReadyDeadlinePluginKey,
+		config.SessionStartReadyDeadlinePluginKey: "99",
+	}
+	cfg := preparePluginConfigForStart(config.PluginConfig{
+		Name:   "repair",
+		Config: sourceConfig,
+	}, settings)
+
+	if sourceConfig[config.SessionStartReadyDeadlinePluginKey] != "99" {
+		t.Fatal("preparePluginConfigForStart mutated the caller's config map")
+	}
+	if cfg.Config["x"] != config.SessionStartReadyDeadlinePluginKey {
+		t.Fatalf("unrelated config entry = %q, want preserved", cfg.Config["x"])
+	}
+	if cfg.Config[config.SessionStartReadyDeadlinePluginKey] != "300" {
+		t.Fatalf("%s = %q, want host-resolved 300",
+			config.SessionStartReadyDeadlinePluginKey, cfg.Config[config.SessionStartReadyDeadlinePluginKey])
+	}
+
+	env := map[string]string{}
+	for _, kv := range pluginEnvFromConfig(cfg) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			t.Fatalf("malformed env entry %q", kv)
+		}
+		env[k] = v
+	}
+	if env["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey] != "300" {
+		t.Fatalf("projected env = %q, want 300", env["BOSS_PLUGIN_"+config.SessionStartReadyDeadlinePluginKey])
 	}
 }
 

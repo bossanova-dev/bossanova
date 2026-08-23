@@ -114,6 +114,12 @@ func (f *fakeDaemonRPC) LinkSessionPR(_ context.Context, _ *connect.Request[pb.L
 	})
 }
 
+func (f *fakeDaemonRPC) RefreshSessionPR(_ context.Context, _ *connect.Request[pb.RefreshSessionPRRequest]) (*connect.Response[pb.RefreshSessionPRResponse], error) {
+	return sessionResp(f, func() *pb.RefreshSessionPRResponse {
+		return &pb.RefreshSessionPRResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
 func (f *fakeDaemonRPC) ArchiveSession(_ context.Context, _ *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
 	return sessionResp(f, func() *pb.ArchiveSessionResponse {
 		return &pb.ArchiveSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
@@ -174,6 +180,10 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 			return c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: "id"})
 		}},
 		{"LinkSessionPR", func(c *LocalClient) (*pb.Session, error) { return c.LinkSessionPR(ctx, "id", "1") }},
+		{"RefreshSessionPR", func(c *LocalClient) (*pb.Session, error) {
+			id := "id"
+			return c.RefreshSessionPR(ctx, &pb.RefreshSessionPRRequest{Id: &id})
+		}},
 		{"ArchiveSession", func(c *LocalClient) (*pb.Session, error) { return c.ArchiveSession(ctx, "id") }},
 		{"ResurrectSession", func(c *LocalClient) (*pb.Session, error) { return c.ResurrectSession(ctx, "id") }},
 	}

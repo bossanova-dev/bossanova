@@ -77,6 +77,7 @@ type CronJob struct {
 	// fires exactly as it does today (BOS-543).
 	IsZeroOutput     bool
 	LastRunSessionID *string
+	LastRunAgentName string
 	LastRunAt        *time.Time
 	LastRunOutcome   *CronJobOutcome
 	NextRunAt        *time.Time

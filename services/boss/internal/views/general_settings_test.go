@@ -103,8 +103,8 @@ func TestGeneralSettings_SuccessfulOtherSaveClearsFailedNotificationSaveError(t 
 	if m.err == nil {
 		t.Fatal("failed notification save did not retain an error")
 	}
-	if config.NotificationsEnabled(m.settings) {
-		t.Fatal("failed notification save did not retain the requested toggle")
+	if !config.NotificationsEnabled(m.settings) {
+		t.Fatal("failed notification save did not roll back the requested toggle")
 	}
 
 	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(t.TempDir(), "settings.json"))
@@ -124,11 +124,621 @@ func TestGeneralSettings_SuccessfulOtherSaveClearsFailedNotificationSaveError(t 
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if config.NotificationsEnabled(persisted) {
-		t.Fatal("successful other save did not persist notification toggle")
+	if !config.NotificationsEnabled(persisted) {
+		t.Fatal("successful other save persisted a rolled-back notification toggle")
 	}
 	if !persisted.ErrorTrackingEnabled {
 		t.Fatal("successful other save did not persist its own setting")
+	}
+}
+
+func rowIndexByKind(t *testing.T, m GeneralSettingsModel, kind settingsRowKind) int {
+	t.Helper()
+	for i, row := range m.rows {
+		if row.Kind == kind {
+			return i
+		}
+	}
+	t.Fatalf("row kind %v not found", kind)
+	return -1
+}
+
+func rowIndexByKindAndPlugin(t *testing.T, m GeneralSettingsModel, kind settingsRowKind, plugin, key string) int {
+	t.Helper()
+	for i, row := range m.rows {
+		if row.Kind == kind && row.Plugin == plugin && row.Key == key {
+			return i
+		}
+	}
+	t.Fatalf("row kind %v for %s.%s not found", kind, plugin, key)
+	return -1
+}
+
+func makeSettingsSaveFail(t *testing.T) {
+	t.Helper()
+	badPath := filepath.Join(t.TempDir(), "settings-dir")
+	if err := os.Mkdir(badPath, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q): %v", badPath, err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", badPath)
+}
+
+func updateGeneralSettings(t *testing.T, m GeneralSettingsModel, msg tea.Msg) GeneralSettingsModel {
+	t.Helper()
+	updated, _ := m.Update(msg)
+	next, ok := updated.(GeneralSettingsModel)
+	if !ok {
+		t.Fatalf("updated model = %T, want GeneralSettingsModel", updated)
+	}
+	return next
+}
+
+func TestGeneralSettings_FailedSaveRollsBackEditedRows(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		setup      func(t *testing.T) GeneralSettingsModel
+		rowIndex   func(t *testing.T, m GeneralSettingsModel) int
+		setInput   func(m *GeneralSettingsModel)
+		assertKept func(t *testing.T, m GeneralSettingsModel)
+	}{
+		{
+			name: "plugin string",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.Plugins = []config.PluginConfig{{Name: "codex", Enabled: true, Config: map[string]string{"model": "old-model"}}}
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{
+					stubClient: &stubClient{},
+					agents: []client.AgentInfo{{
+						Name: "codex",
+						UserSettings: []client.UserSetting{{
+							Key:   "model",
+							Label: "Model",
+							Type:  client.SettingTypeString,
+						}},
+					}},
+				}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKindAndPlugin(t, m, settingsRowKindString, "codex", "model")
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("new-model")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := config.PluginConfigString(&m.settings, "codex", "model"); got != "old-model" {
+					t.Fatalf("plugin string = %q, want old-model", got)
+				}
+				if got := m.stringInput.Value(); got != "new-model" {
+					t.Fatalf("editor value = %q, want candidate new-model", got)
+				}
+			},
+		},
+		{
+			name: "PostHog token",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.EventTracingEnabled = true
+				settings.PostHogProjectToken = "ph-old"
+				settings.PostHogHost = "https://old.example"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPostHogToken)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue(" ph-new ")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.PostHogProjectToken; got != "ph-old" {
+					t.Fatalf("PostHogProjectToken = %q, want ph-old", got)
+				}
+			},
+		},
+		{
+			name: "PostHog host",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.EventTracingEnabled = true
+				settings.PostHogProjectToken = "ph-token"
+				settings.PostHogHost = "https://old.example"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPostHogHost)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue(" https://new.example ")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.PostHogHost; got != "https://old.example" {
+					t.Fatalf("PostHogHost = %q, want https://old.example", got)
+				}
+			},
+		},
+		{
+			name: "daemon name",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.DaemonName = "studio-mini"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindDaemonName)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("studio-scratch")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.DaemonName; got != "studio-mini" {
+					t.Fatalf("DaemonName = %q, want studio-mini", got)
+				}
+			},
+		},
+		{
+			name: "worktree",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.WorktreeBaseDir = "/tmp/old-worktrees"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindWorktree)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.worktreeDirInput.SetValue("/tmp/new-worktrees")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.WorktreeBaseDir; got != "/tmp/old-worktrees" {
+					t.Fatalf("WorktreeBaseDir = %q, want /tmp/old-worktrees", got)
+				}
+			},
+		},
+		{
+			name: "poll interval",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.PollIntervalSeconds = 15
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPollInterval)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.pollIntervalInput.SetValue("45")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.PollIntervalSeconds; got != 15 {
+					t.Fatalf("PollIntervalSeconds = %d, want 15", got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempConfigHome(t)
+			m := tc.setup(t)
+			m.cursor = tc.rowIndex(t, m)
+			m = updateGeneralSettings(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.editingRow < 0 {
+				t.Fatal("enter did not open editor")
+			}
+			tc.setInput(&m)
+			makeSettingsSaveFail(t)
+			m = updateGeneralSettings(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+			if m.err == nil {
+				t.Fatal("failed save did not surface an error")
+			}
+			tc.assertKept(t, m)
+		})
+	}
+}
+
+func TestGeneralSettings_CancelRestoresEditedRowsFromSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		setup      func(t *testing.T) GeneralSettingsModel
+		rowIndex   func(t *testing.T, m GeneralSettingsModel) int
+		setInput   func(m *GeneralSettingsModel)
+		assertKept func(t *testing.T, m GeneralSettingsModel)
+	}{
+		{
+			name: "plugin string",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.Plugins = []config.PluginConfig{{Name: "codex", Enabled: true, Config: map[string]string{"model": "old-model"}}}
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{
+					stubClient: &stubClient{},
+					agents: []client.AgentInfo{{
+						Name: "codex",
+						UserSettings: []client.UserSetting{{
+							Key:   "model",
+							Label: "Model",
+							Type:  client.SettingTypeString,
+						}},
+					}},
+				}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKindAndPlugin(t, m, settingsRowKindString, "codex", "model")
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("new-model")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.stringInput.Value(); got != "old-model" {
+					t.Fatalf("string input = %q, want old-model", got)
+				}
+			},
+		},
+		{
+			name: "PostHog token",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.EventTracingEnabled = true
+				settings.PostHogProjectToken = "ph-old"
+				settings.PostHogHost = "https://old.example"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPostHogToken)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("ph-new")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.stringInput.Value(); got != "ph-old" {
+					t.Fatalf("string input = %q, want ph-old", got)
+				}
+			},
+		},
+		{
+			name: "PostHog host",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.EventTracingEnabled = true
+				settings.PostHogProjectToken = "ph-token"
+				settings.PostHogHost = "https://old.example"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPostHogHost)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("https://new.example")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.stringInput.Value(); got != "https://old.example" {
+					t.Fatalf("string input = %q, want https://old.example", got)
+				}
+			},
+		},
+		{
+			name: "daemon name",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.DaemonName = "studio-mini"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindDaemonName)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.stringInput.SetValue("studio-scratch")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.stringInput.Value(); got != "studio-mini" {
+					t.Fatalf("string input = %q, want studio-mini", got)
+				}
+			},
+		},
+		{
+			name: "worktree",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.WorktreeBaseDir = "/tmp/old-worktrees"
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindWorktree)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.worktreeDirInput.SetValue("/tmp/new-worktrees")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.worktreeDirInput.Value(); got != "/tmp/old-worktrees" {
+					t.Fatalf("worktree input = %q, want /tmp/old-worktrees", got)
+				}
+			},
+		},
+		{
+			name: "poll interval",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.PollIntervalSeconds = 15
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindPollInterval)
+			},
+			setInput: func(m *GeneralSettingsModel) {
+				m.pollIntervalInput.SetValue("45")
+			},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.pollIntervalInput.Value(); got != "15" {
+					t.Fatalf("poll interval input = %q, want 15", got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempConfigHome(t)
+			m := tc.setup(t)
+			m.cursor = tc.rowIndex(t, m)
+			m = updateGeneralSettings(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.editingRow < 0 {
+				t.Fatal("enter did not open editor")
+			}
+			tc.setInput(&m)
+			m = updateGeneralSettings(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+			if m.err != nil {
+				t.Fatalf("cancel retained err: %v", m.err)
+			}
+			if m.editingRow >= 0 {
+				t.Fatal("esc did not leave editor")
+			}
+			tc.assertKept(t, m)
+		})
+	}
+}
+
+func TestGeneralSettings_FailedSaveRollsBackActivationRows(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		setup      func(t *testing.T) GeneralSettingsModel
+		rowIndex   func(t *testing.T, m GeneralSettingsModel) int
+		press      tea.KeyPressMsg
+		assertKept func(t *testing.T, m GeneralSettingsModel)
+	}{
+		{
+			name: "plugin bool",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				return NewGeneralSettingsModel(&settingsAgentStub{
+					stubClient: &stubClient{},
+					agents: []client.AgentInfo{{
+						Name: "claude",
+						UserSettings: []client.UserSetting{{
+							Key:   "dangerously_skip_permissions",
+							Label: "Skip",
+							Type:  client.SettingTypeBool,
+						}},
+					}},
+				}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKindAndPlugin(t, m, settingsRowKindBool, "claude", "dangerously_skip_permissions")
+			},
+			press: tea.KeyPressMsg{Code: ' ', Text: " "},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if config.PluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions") {
+					t.Fatal("plugin bool changed after failed save")
+				}
+			},
+		},
+		{
+			name: "plugin enum",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.Plugins = []config.PluginConfig{{Name: "codex", Enabled: true, Config: map[string]string{"model": "a"}}}
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{
+					stubClient: &stubClient{},
+					agents: []client.AgentInfo{{
+						Name: "codex",
+						UserSettings: []client.UserSetting{{
+							Key:           "model",
+							Label:         "Model",
+							Type:          client.SettingTypeEnum,
+							AllowedValues: []string{"a", "b"},
+						}},
+					}},
+				}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKindAndPlugin(t, m, settingsRowKindEnum, "codex", "model")
+			},
+			press: tea.KeyPressMsg{Code: tea.KeyEnter},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := config.PluginConfigString(&m.settings, "codex", "model"); got != "a" {
+					t.Fatalf("plugin enum = %q, want a", got)
+				}
+			},
+		},
+		{
+			name: "agent enabled",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.DefaultAgent = "codex"
+				settings.KnownAgentProviders = []string{"claude", "codex"}
+				settings.Plugins = []config.PluginConfig{
+					{Name: "claude", Enabled: false},
+					{Name: "codex", Enabled: true},
+				}
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				for i, row := range m.rows {
+					if row.Kind == settingsRowKindAgentEnabled && row.Plugin == "claude" {
+						return i
+					}
+				}
+				t.Fatal("claude enabled row not found")
+				return -1
+			},
+			press: tea.KeyPressMsg{Code: tea.KeyEnter},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if pluginEnabled(m.settings, "claude") {
+					t.Fatal("claude enabled after failed save")
+				}
+				if got := m.settings.DefaultAgent; got != "codex" {
+					t.Fatalf("DefaultAgent = %q, want codex", got)
+				}
+			},
+		},
+		{
+			name: "event tracing",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindEventTracing)
+			},
+			press: tea.KeyPressMsg{Code: ' ', Text: " "},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if m.settings.EventTracingEnabled {
+					t.Fatal("event tracing enabled after failed save")
+				}
+				if m.settings.PostHogProjectToken != "" || m.settings.PostHogHost != "" {
+					t.Fatalf("PostHog defaults seeded after failed save: token=%q host=%q",
+						m.settings.PostHogProjectToken, m.settings.PostHogHost)
+				}
+			},
+		},
+		{
+			name: "error tracking",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindErrorTracking)
+			},
+			press: tea.KeyPressMsg{Code: tea.KeyEnter},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if m.settings.ErrorTrackingEnabled {
+					t.Fatal("error tracking enabled after failed save")
+				}
+			},
+		},
+		{
+			name: "rotation",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindRotation)
+			},
+			press: tea.KeyPressMsg{Code: tea.KeyEnter},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if !m.settings.ManagedAccounts.ManagedAccountsEnabled() {
+					t.Fatal("rotation disabled after failed save")
+				}
+				if m.settings.ManagedAccounts.Enabled != nil {
+					t.Fatal("rotation pointer changed after failed save")
+				}
+			},
+		},
+		{
+			name: "notifications",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				return NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindNotifications)
+			},
+			press: tea.KeyPressMsg{Code: ' ', Text: " "},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if !config.NotificationsEnabled(m.settings) {
+					t.Fatal("notifications disabled after failed save")
+				}
+				if m.settings.NotificationsEnabled != nil {
+					t.Fatal("notifications pointer changed after failed save")
+				}
+			},
+		},
+		{
+			name: "default agent",
+			setup: func(t *testing.T) GeneralSettingsModel {
+				settings := config.DefaultSettings()
+				settings.DefaultAgent = "claude"
+				settings.Plugins = []config.PluginConfig{
+					{Name: "claude", Enabled: true},
+					{Name: "codex", Enabled: true},
+				}
+				if err := config.Save(settings); err != nil {
+					t.Fatalf("config.Save: %v", err)
+				}
+				return NewGeneralSettingsModel(&settingsAgentStub{
+					stubClient: &stubClient{},
+					agents: []client.AgentInfo{
+						{Name: "claude", UserSettings: []client.UserSetting{{Key: "x", Label: "X", Type: client.SettingTypeBool}}},
+						{Name: "codex", UserSettings: []client.UserSetting{{Key: "y", Label: "Y", Type: client.SettingTypeBool}}},
+					},
+				}, context.Background())
+			},
+			rowIndex: func(t *testing.T, m GeneralSettingsModel) int {
+				return rowIndexByKind(t, m, settingsRowKindDefaultAgent)
+			},
+			press: tea.KeyPressMsg{Code: tea.KeyEnter},
+			assertKept: func(t *testing.T, m GeneralSettingsModel) {
+				if got := m.settings.DefaultAgent; got != "claude" {
+					t.Fatalf("DefaultAgent = %q, want claude", got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempConfigHome(t)
+			m := tc.setup(t)
+			m.cursor = tc.rowIndex(t, m)
+			makeSettingsSaveFail(t)
+			m = updateGeneralSettings(t, m, tc.press)
+
+			if m.err == nil {
+				t.Fatal("failed save did not surface an error")
+			}
+			tc.assertKept(t, m)
+		})
 	}
 }
 

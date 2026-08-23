@@ -26,6 +26,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/socketauth"
+	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
@@ -34,6 +35,7 @@ import (
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/mergepolicy"
@@ -153,14 +155,55 @@ type Server struct {
 	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
 	// interception can be exercised without a real Lifecycle.
 	switchAccountFn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
-	agent           agent.AgentRunner
-	agentClients    map[string]agent.AgentRunnerClient
-	worktrees       gitpkg.WorktreeManager
-	provider        vcs.Provider
-	prResolver      PRAssociationResolver
-	pluginHost      *plugin.Host
-	tmux            *tmux.Client
-	chatWakeGroup   singleflight.Group // per-chat idempotency for WakeChat
+	// switchFlightAttached is test-only: nil in production, where
+	// executeAccountSwitch passes detach.Flight no option at all. When set it
+	// fires once per caller that ATTACHES to the chat's switch flight, which is
+	// what four time.Sleep calls in switch_account_budget_test.go previously
+	// stood in for — three waiting for a joiner to attach before the held
+	// leader was released, one draining for a publish that could not arrive.
+	//
+	// The attach moment is not here. detach.Flight owns the DoChan call, and
+	// attachment is complete only once DoChan has returned, so the hook is
+	// installed through detach.WithAttachHook and fires inside Flight; this
+	// field is just the seam that carries the test's channel down to it.
+	//
+	// A field rather than a package-level var because three of those tests call
+	// t.Parallel() under -race, where a shared global would be a data race and
+	// would force t.Parallel() off all three. It mirrors switchAccountFn, the
+	// seam the same file already uses.
+	switchFlightAttached func(agentSessionID string)
+	// switchRespawnBudgetOverride is test-only. Production leaves it zero and
+	// resolves the budget from the tmux readiness setting below.
+	switchRespawnBudgetOverride time.Duration
+	agent                       agent.AgentRunner
+	agentClients                map[string]agent.AgentRunnerClient
+	worktrees                   gitpkg.WorktreeManager
+	provider                    vcs.Provider
+	prResolver                  PRAssociationResolver
+	pluginHost                  *plugin.Host
+	tmux                        *tmux.Client
+	chatWakeGroup               singleflight.Group // per-chat idempotency for WakeChat
+	// chatSwitchGroup serializes account switches per chat, and it is the
+	// mechanism BOS-897's teardown fix actually rests on — not the budget
+	// beside it. A relay-bounded switch that outlives its caller leaves a user
+	// pressing the button again; a resumable switch reuses the same
+	// agentSessionID, and tmux.ChatSessionName is pure over repoID plus that
+	// id, so both attempts compute the same tmux name. With nothing
+	// serializing them the first attempt's failStartBestEffort kills the pane
+	// the SECOND one established and stamps the chat start-failed. Admitting
+	// one flight per chat removes the loser entirely: only the leader ever
+	// calls SwitchAccount, so no attempt is left to tear down a pane it does
+	// not own. This holds on every route regardless of deadline arithmetic.
+	//
+	// A detach.Group rather than a bare singleflight.Group: the flight is
+	// joined with DoChan and a caller-owned select, never Do (Do ignores a
+	// joiner's context and would pin a 30s-relay joiner behind a 90s leader,
+	// re-creating on the joiner the very "outlives its caller" defect this
+	// removes — see upstream/terminal_stream.go's warning, BOS-885), and
+	// DoChan's flight body MUST recover its own panic or the daemon dies. That
+	// obligation is no longer prose: detach.Group exposes neither Do nor
+	// DoChan, so detach.Flight — which always recovers — is the only way in.
+	chatSwitchGroup detach.Group
 	// mergeMu guards repoMergeGates. repoMergeGates serializes user-initiated
 	// merges per repo (BOS-439): concurrent MergeSession calls for the same repo
 	// share one local clone (.git/index.lock, refs/heads/<base>), so they must
@@ -775,8 +818,11 @@ func (s *Server) Listen(socketPath string) error {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// Keep this generic response ceiling equal to
+		// config.SwitchResultCeiling; TestServerListenSetsWriteTimeout guards the
+		// cross-service account-switch boundary.
+		WriteTimeout: 120 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	return nil
 }
@@ -1776,9 +1822,8 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			if err != nil {
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("dedup active sessions: %w", err))
 			}
-			if existingID, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
-				return connect.NewError(connect.CodeAlreadyExists,
-					fmt.Errorf("active session %s already exists for this %s in repo %s; pass force to create another", existingID, kind, msg.RepoId))
+			if existingID, existingPlan, kind, ok := keys.duplicateSessionID(msg.TrackerId, prNumber, headBranch); ok {
+				return connect.NewError(connect.CodeAlreadyExists, duplicateSessionAlreadyExistsError(existingID, existingPlan, kind, msg.RepoId))
 			}
 		}
 	}
@@ -2139,6 +2184,11 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if s.displayTracker != nil {
 		HydrateDisplayEntry(p, s.displayTracker.Get(session.ID))
 	}
+	// Hydrate recent rotation audit events before the auth-failed overlay below:
+	// the overlay requires a corroborating auth-invalidation audit row and fails
+	// toward NOT flagging when none exists.
+	s.withRotationEvents(ctx, p, session)
+
 	// Hydrate the liveness heartbeat + auth-failed attention overlay from the
 	// session's chats (needs the status tracker, which convert.SessionToProto
 	// has no access to). Loaded once here and reused by the BOS-473 endpoint
@@ -2147,7 +2197,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if s.agentChats != nil {
 		if loaded, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
 			chats = loaded
-			HydrateAgentObservability(s.chatStatus, p, chats)
+			HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
 		}
 	}
 
@@ -2162,9 +2212,6 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	s.withPrimaryChatIdentity(ctx, p, session)
 	// Resolve the non-secret account label for display (best-effort).
 	s.withAccountLabel(ctx, p, session)
-	// Hydrate the recent rotation audit events for the history block (best-effort).
-	s.withRotationEvents(ctx, p, session)
-
 	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
 	// opted-in local read that clears the daemon's locality gates. Every other
 	// egress path leaves p.HttpEndpoints empty (SessionToProto never sets it).
@@ -2289,7 +2336,8 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// Runs after suppressStaleConflictAttention so the auth overlay sees the
 	// final attention state (and only fills in where none exists).
 	for _, p := range pbSessions {
-		HydrateAgentObservability(s.chatStatus, p, chatsBySession[p.Id])
+		chats := chatsBySession[p.Id]
+		HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
 	}
 
 	// repair_active + its BOS-515 repair_stalled_at stall overlay. Deliberately
@@ -2795,6 +2843,14 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			// rejects here; so does a read that could not be performed at all, which
 			// blocks with gate=pending rather than merging an unverified state
 			// (BOS-644).
+			refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
+			if err := s.refreshSessionPRDisplay(refreshCtx, repo, req.Msg.Id, *sess.PRNumber); err != nil {
+				s.logger.Debug().Err(err).
+					Str("session_id", req.Msg.Id).
+					Int("pr", *sess.PRNumber).
+					Msg("merge: pre-gate PR refresh failed; live gate will re-read")
+			}
+			cancel()
 			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber)
 			if err != nil {
 				// The gate read died with the caller's context, not against an
@@ -3564,6 +3620,52 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
+// switchRespawnBudget resolves the deadline executeAccountSwitch applies to the
+// switch primitive, derived from the composer-readiness deadline this daemon's
+// tmux client is actually configured with (BOS-948).
+//
+// It has to be derived rather than fixed. The budget's whole sizing argument is
+// stated against session_start_ready_deadline_seconds, and that setting is
+// deliberately unclamped — the operator docs tell slow-host operators to raise
+// it. A compiled constant stopped funding one full readiness attempt past
+// roughly 88 configured seconds, and the shortening was silent: the wait simply
+// ran for less than the operator had asked for.
+//
+// The resolved value is read from the tmux client rather than from
+// config.Load(). The client already holds the setting as resolved at daemon
+// start, so reading it here costs nothing, cannot disagree with the wait it is
+// sizing, and preserves the "takes effect on the next daemon restart" contract
+// the setting documents — a per-switch re-read would quietly break it.
+//
+// A nil client is the test and not-yet-wired case; SwitchRespawnBudgetFor
+// floors a non-positive readiness to the default, so it yields the same budget
+// the constant used to.
+func (s *Server) switchRespawnBudget() time.Duration {
+	if s.switchRespawnBudgetOverride > 0 {
+		return s.switchRespawnBudgetOverride
+	}
+	if s.tmux == nil {
+		return config.SwitchRespawnBudgetFor(0)
+	}
+	return config.SwitchRespawnBudgetFor(s.tmux.SessionStartReadyDeadline())
+}
+
+// ExpireSwitchBudgetForTest drives executeAccountSwitch until its real
+// detach.Flight budget expires. It is exported only for cross-service tests
+// that cannot import this internal package directly.
+func ExpireSwitchBudgetForTest(ctx context.Context, budget time.Duration) error {
+	s := &Server{
+		logger:                      zerolog.Nop(),
+		switchRespawnBudgetOverride: budget,
+	}
+	s.switchAccountFn = func(ctx context.Context, _ session.SwitchAccountParams) (session.SwitchAccountResult, error) {
+		<-ctx.Done()
+		return session.SwitchAccountResult{}, ctx.Err()
+	}
+	_, err := s.executeAccountSwitch(ctx, "sess-switch-budget-expiry", "agent-switch-budget-expiry", "acct-switch-budget-expiry", false)
+	return err
+}
+
 // executeAccountSwitch runs the manual (Auto:false) account switch primitive for
 // an already-resolved target account id and publishes the rebound session. It is
 // the shared body of the SwitchSessionAccount RPC and the SendChatMessage
@@ -3574,19 +3676,100 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 //
 // The returned error is already a connect error with the right code; callers
 // return it verbatim.
+//
+// # Budget and serialization (BOS-897, BOS-948)
+//
+// The whole primitive runs as one detach.Flight on chatSwitchGroup under the
+// budget switchRespawnBudget resolves — derived from this daemon's configured
+// composer-readiness deadline rather than compiled (BOS-948), so it is read per
+// call rather than referenced as a constant. detach.Flight owns the mechanics —
+// key validation, the dead-caller fence, panic recovery, the detached budget
+// context, and the caller-owned wait — so what remains here is why THIS call
+// site wants them:
+//
+//   - The budget is the only deadline the switch's respawn ever sees. bosso's
+//     per-command relay bounds only bosso's own wait for the CommandResult; the
+//     command reaches the daemon on the long-lived stream context, so without
+//     this the readiness wait inside StartTmuxChat runs its full per-attempt
+//     budget twice with nothing above it to stop.
+//   - The group is what makes a losing attempt harmless — see chatSwitchGroup's
+//     own comment for the teardown race it removes.
+//
+// A joiner that abandons leaves the leader running, deliberately: the leader's
+// pane is the one that should survive. The cost is that a caller can be told
+// DeadlineExceeded while the switch subsequently succeeds, which is strictly
+// better than the pane being destroyed and matches how WakeChat already
+// behaves. Keying on agentSessionID also coalesces two switches on one chat to
+// DIFFERENT target accounts inside one budget — the joiner receives the
+// leader's result. Rare and non-destructive, and pinned by test so it is a
+// chosen semantic rather than a discovered one.
 func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessionID, targetAccountID string, force bool) (session.SwitchAccountResult, error) {
 	switchFn := s.switchAccountFn
 	if switchFn == nil {
 		switchFn = s.lifecycle.SwitchAccount
 	}
-	res, err := switchFn(ctx, session.SwitchAccountParams{
-		SessionID:       sessionID,
-		AgentSessionID:  agentSessionID,
-		TargetAccountID: targetAccountID,
-		Force:           force,
-	})
+
+	// Built only when the test-only seam is set, so production passes no option
+	// at all and the flight below is the unmodified primitive. The hook's
+	// parameter is detach.Flight's own flight key, which on this route IS
+	// agentSessionID — the same value passed as the key below — so the field is
+	// handed over directly rather than re-closed over.
+	var opts []detach.FlightOption
+	if s.switchFlightAttached != nil {
+		opts = append(opts, detach.WithAttachHook(s.switchFlightAttached))
+	}
+
+	// The flight key must never be empty. Both production callers resolve a real
+	// chat first — SwitchSessionAccount through resolvePrimaryLiveChat, which
+	// errors rather than yielding "", and the "/boss switch" interception from an
+	// already-loaded chat row — so ErrEmptyKey below is an assertion, not a
+	// reachable path. detach.Flight refuses it because the failure it guards is
+	// silent and cross-session: on an empty key EVERY concurrent switch would
+	// coalesce into one flight regardless of chat or session, and a switch for
+	// session B would return session A's result having never run its own.
+	//
+	// detach.Flight also refuses an ALREADY-dead caller before seeding a flight,
+	// returning its ctx.Err() verbatim so the arms below can split Canceled from
+	// DeadlineExceeded, and recovers any panic in the body — which on a DoChan
+	// group is otherwise unrecoverable and takes the whole daemon down.
+	res, err := detach.Flight(ctx, &s.chatSwitchGroup, s.logger, agentSessionID, s.switchRespawnBudget(),
+		func(budgetCtx context.Context) (session.SwitchAccountResult, error) {
+			// budgetCtx is detached from whichever caller happened to WIN the
+			// race to be leader and bounded only by the budget, so no caller's
+			// departure can cancel work a healthy joiner is still waiting on.
+			flightRes, switchErr := switchFn(budgetCtx, session.SwitchAccountParams{
+				SessionID:       sessionID,
+				AgentSessionID:  agentSessionID,
+				TargetAccountID: targetAccountID,
+				Force:           force,
+			})
+			if switchErr != nil {
+				return session.SwitchAccountResult{}, switchErr
+			}
+			// Publish from INSIDE the flight, on the flight's own budget,
+			// because this is the only place that runs exactly once per switch
+			// and only when the switch actually happened.
+			//
+			// Outside the flight it would run neither reliably nor once. A
+			// caller that leaves gets its own context error back, so a switch
+			// whose callers all left — reachable precisely because the flight is
+			// detached and outlives them — would change the durable
+			// sessions.account_id and publish nothing, leaving the web account
+			// badge stale until the next full daemon snapshot. And every joiner
+			// receiving the shared result would publish the same delta again, so
+			// N callers meant N identical publishes. budgetCtx is also the only
+			// context here guaranteed live: the caller's may already be dead,
+			// which is exactly the case that leaks.
+			s.publishReboundSession(budgetCtx, sessionID)
+			return flightRes, nil
+		}, opts...)
 	if err != nil {
 		switch {
+		// Preserves the pre-detach.Flight message and code exactly; the guard
+		// itself now lives in the helper so a future call site cannot omit it.
+		case errors.Is(err, detach.ErrEmptyKey):
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("switch session account: agent_session_id is required"))
 		case errors.Is(err, session.ErrChatMidTurn):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
@@ -3594,36 +3777,56 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeNotFound, err)
+		// Ahead of the default arm on purpose (BOS-747): a request that ended
+		// because a context ran out must not be answered with a code that
+		// invites a retry, and CodeInternal is what the default would give it.
+		// Reachable only when a context genuinely expired — a readiness wait
+		// that merely exhausts its OWN budget returns readyMarkerTimeoutErr,
+		// which wraps no context error, so the diagnostic timeout still lands
+		// on the default arm with its pane snapshot intact.
+		case errors.Is(err, context.DeadlineExceeded):
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeDeadlineExceeded,
+				fmt.Errorf("switch session account: %w", err))
+		case errors.Is(err, context.Canceled):
+			return session.SwitchAccountResult{}, connect.NewError(connect.CodeCanceled,
+				fmt.Errorf("switch session account: %w", err))
 		default:
 			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
 		}
 	}
 
-	// Publish the rebound session so the cloud/web read model reflects the new
-	// account immediately, mirroring update/archive/resurrect. The switch changed
-	// the durable sessions.account_id; without this delta ProxyGetSession and the
-	// stream-driven read model keep showing the old account badge until the next
-	// daemon snapshot. Best-effort: the switch already succeeded, so a load/publish
-	// failure must not fail the RPC.
-	if s.onSessionUpdated != nil {
-		if sess, gerr := s.sessions.Get(ctx, sessionID); gerr == nil {
-			p := s.sessionProtoWithRepo(ctx, sess)
-			// Re-source provider/account from the primary chat (BOS-381 authority)
-			// so the streamed delta matches the Get/List read paths.
-			s.withPrimaryChatIdentity(ctx, p, sess)
-			// Hydrate the non-secret account label so the streamed delta matches
-			// the Get/List read paths; otherwise the web AccountBadge shows the
-			// raw account id until the next full snapshot.
-			s.withAccountLabel(ctx, p, sess)
-			s.withRotationEvents(ctx, p, sess)
-			s.onSessionUpdated(ctx, p)
-		} else {
-			s.logger.Warn().Err(gerr).Str("session", sessionID).
-				Msg("switch account: failed to load session for stream update")
-		}
-	}
-
 	return res, nil
+}
+
+// publishReboundSession streams the rebound session so the cloud/web read model
+// reflects the new account immediately, mirroring update/archive/resurrect. The
+// switch changed the durable sessions.account_id; without this delta
+// ProxyGetSession and the stream-driven read model keep showing the old account
+// badge until the next daemon snapshot.
+//
+// Best-effort: the switch already succeeded by the time this runs, so a
+// load/publish failure must never fail the RPC. Call it on the switch's own
+// budget context, not a caller's — see the call site for why.
+func (s *Server) publishReboundSession(ctx context.Context, sessionID string) {
+	if s.onSessionUpdated == nil {
+		return
+	}
+	sess, gerr := s.sessions.Get(ctx, sessionID)
+	if gerr != nil {
+		s.logger.Warn().Err(gerr).Str("session", sessionID).
+			Msg("switch account: failed to load session for stream update")
+		return
+	}
+	p := s.sessionProtoWithRepo(ctx, sess)
+	// Re-source provider/account from the primary chat (BOS-381 authority)
+	// so the streamed delta matches the Get/List read paths.
+	s.withPrimaryChatIdentity(ctx, p, sess)
+	// Hydrate the non-secret account label so the streamed delta matches
+	// the Get/List read paths; otherwise the web AccountBadge shows the
+	// raw account id until the next full snapshot.
+	s.withAccountLabel(ctx, p, sess)
+	s.withRotationEvents(ctx, p, sess)
+	s.onSessionUpdated(ctx, p)
 }
 
 // resolvePrimaryLiveChat returns the agent_session_id of the session's primary
@@ -4420,7 +4623,8 @@ func latestAgentActivity(tracker *status.Tracker, chats []*models.AgentChat) (ti
 }
 
 // sessionAuthFailed reports whether any of the session's chats currently shows
-// the login-required terminal shape (a fresh auth-failed marker in the tracker).
+// the login-required terminal shape (a fresh, debounced auth-failed marker in
+// the tracker).
 func sessionAuthFailed(tracker *status.Tracker, chats []*models.AgentChat) bool {
 	if tracker == nil {
 		return false
@@ -4431,6 +4635,47 @@ func sessionAuthFailed(tracker *status.Tracker, chats []*models.AgentChat) bool 
 		}
 	}
 	return false
+}
+
+func sessionAuthInvalidationCorroborated(tracker *status.Tracker, p *pb.Session, chats []*models.AgentChat) bool {
+	if tracker == nil || p == nil {
+		return false
+	}
+	failedChats := make(map[string]time.Time)
+	for _, chat := range chats {
+		if since, ok := tracker.AuthFailedSince(chat.AgentSessionID); ok {
+			failedChats[chat.AgentSessionID] = rotationEventComparableTime(since)
+		}
+	}
+	if len(failedChats) == 0 {
+		return false
+	}
+	seenChat := make(map[string]struct{})
+	for _, ev := range p.GetRotationEvents() {
+		if ev.GetTrigger() != pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED {
+			continue
+		}
+		since, ok := failedChats[ev.GetChatId()]
+		if !ok {
+			continue
+		}
+		if _, seen := seenChat[ev.GetChatId()]; seen {
+			continue
+		}
+		if ev.GetCreatedAt() == nil || ev.GetCreatedAt().AsTime().Before(since) {
+			continue
+		}
+		seenChat[ev.GetChatId()] = struct{}{}
+		if ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED &&
+			ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED {
+			return true
+		}
+	}
+	return false
+}
+
+func rotationEventComparableTime(t time.Time) time.Time {
+	return sqlutil.ParseTime(sqlutil.FormatTime(t))
 }
 
 // sessionAgentStalled reports whether any of the session's chats currently
@@ -4488,7 +4733,8 @@ func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.R
 }
 
 // HydrateAgentObservability sets the liveness heartbeat (last_agent_activity_at)
-// from real agent output and, when the agent pane shows the login-required shape
+// from real agent output and, when the agent pane persistently shows the
+// login-required shape, rotation audit corroborates an invalidated auth signal,
 // AND the session has no other attention reason, overlays the AGENT_AUTH_FAILED
 // attention reason plus a stable blocked_reason.
 //
@@ -4510,8 +4756,13 @@ func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.R
 // down-convert faithful: AGENT_AUTH_FAILED fires exactly where there was
 // previously no attention, so neutralizing it for older clients restores the
 // prior "just went quiet" behavior. Fails toward NOT flagging: no marker → no
-// change.
+// change. Fails toward NOT flagging: no marker or no corroborating rotation
+// audit row for the currently auth-failed chat -> no change.
 func HydrateAgentObservability(tracker *status.Tracker, p *pb.Session, chats []*models.AgentChat) {
+	HydrateAgentObservabilityWithAuthCorroboration(tracker, p, chats, false)
+}
+
+func HydrateAgentObservabilityWithAuthCorroboration(tracker *status.Tracker, p *pb.Session, chats []*models.AgentChat, authInvalidationCorroborated bool) {
 	if p == nil || len(chats) == 0 {
 		return
 	}
@@ -4527,7 +4778,7 @@ func HydrateAgentObservability(tracker *status.Tracker, p *pb.Session, chats []*
 	var reason pb.AttentionReason
 	blockedReason, summary := "", ""
 	switch {
-	case sessionAuthFailed(tracker, chats):
+	case sessionAuthFailed(tracker, chats) && (authInvalidationCorroborated || sessionAuthInvalidationCorroborated(tracker, p, chats)):
 		reason, blockedReason, summary = pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED, agentAuthFailedBlockedReason, agentAuthFailedSummary
 	case sessionAgentStalled(tracker, chats):
 		reason, blockedReason, summary = pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED, agentStalledBlockedReason, agentStalledSummary

@@ -61,6 +61,7 @@ go_library(
         "20260726000002_notes.sql",
         "20260726000003_broadcast_subscriptions.sql",
         "20260805000000_notes_idempotency_key.sql",
+        "20260822000000_add_cron_job_last_run_agent_name.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

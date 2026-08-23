@@ -30,17 +30,23 @@ go_test(
         "audit_test.go",
         "chat_rotator_integration_test.go",
         "chat_rotator_test.go",
+        "dochan_ratchet_test.go",
         "engine_test.go",
         "fakestore_test.go",
         "proactive_sweep_test.go",
         "util_test.go",
     ],
+    data = glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),  # keep: TestNoRawDoChanCallInThisPackage parses this package's own sources from disk
     embed = [":rotation"],
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
         "//lib/bossalib/telemetry",
+        "//services/bossd/internal/detach/detachgate",
         "//services/bossd/internal/status",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_grpc//codes",

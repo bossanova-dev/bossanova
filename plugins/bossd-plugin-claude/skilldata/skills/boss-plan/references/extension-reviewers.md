@@ -16,8 +16,14 @@ dispatched as an awaited subagent (no human gating).
    `skipped`:
 
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
    node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role plan-reviewer --json
    ```
 
@@ -69,8 +75,14 @@ dispatched as an awaited subagent (no human gating).
 3. **Validate + fold or skip.** Validate each returned envelope:
 
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
    node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" validate --role plan-reviewer --file "<outPath>"
    ```
 

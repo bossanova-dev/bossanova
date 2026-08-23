@@ -245,12 +245,13 @@ echo "PR number: $PR_NUM"
 git log origin/$BASE_BRANCH..HEAD --oneline
 ```
 
-**Check EVERY commit message for `[#PR-NUM]`:**
+**Check every non-empty commit message for `[#PR-NUM]`:**
 
 - ✅ Good: `feat(mobile): [#2137] add feature X`
-- ❌ Bad: `feat(mobile): add feature X` (missing PR number!)
+- ✅ Good: `chore: [skip ci] create pull request` when the commit is empty
+- ❌ Bad: `feat(mobile): add feature X` on a non-empty commit
 
-**⛔ If ANY commit is missing the PR number, you MUST run the fix script:**
+**⛔ If ANY non-empty commit is missing the PR number, you MUST run the fix script:**
 
 ```bash
 # Run from repo root - automatically detects PR number
@@ -259,7 +260,7 @@ git log origin/$BASE_BRANCH..HEAD --oneline
 
 **DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against the PR base branch, not the feature branch.
 
-The script now verifies this post-condition itself: after the rebase it re-checks every commit and exits non-zero, printing the commits it could not tag — typically the ones whose amended message the repo's `commit-msg` hook rejected. Treat a non-zero exit as "the branch is still partly untagged" and fix those commits before pushing. The manual verification below stays as the belt-and-braces check.
+The script now verifies this post-condition itself: after the rebase it re-checks every commit, skips empty commits, and exits non-zero only for non-empty commits it could not tag — typically the ones whose amended message a repo hook rejected. Treat a non-zero exit as "the branch still has at least one untagged non-empty commit" and fix those commits before pushing. The manual verification below stays as the belt-and-braces check.
 
 **After the script completes, force-push to update the branch:**
 
@@ -269,11 +270,22 @@ git push --force-with-lease
 
 **If the rebase fails:** Reset with `git rebase --abort` or `git reset --hard origin/<branch-name>` and try again.
 
-**Verify ALL commits now have PR numbers before proceeding:**
+**Verify all non-empty commits now have PR numbers before proceeding:**
 
 ```bash
-git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"
-# Should return NOTHING - if it returns commits, they still need fixing
+git log origin/$BASE_BRANCH..HEAD --format='%H%x09%s' |
+  while IFS=$'\t' read -r sha subject; do
+    tree=$(git show -s --format=%T "$sha") || exit 1
+    parent=$(git rev-parse --verify "$sha^" 2>/dev/null || true)
+    if [ -n "$parent" ]; then
+      if ! parent_tree=$(git show -s --format=%T "$parent"); then exit 1; fi
+    else
+      if ! parent_tree=$(git hash-object -t tree /dev/null); then exit 1; fi
+    fi
+    [ "$tree" = "$parent_tree" ] && continue
+    case "$subject" in *"[#$PR_NUM]"*) ;; *) printf '%s %s\n' "${sha:0:12}" "$subject";; esac
+  done
+# Expected output is empty; any listed non-empty commit still needs fixing
 ```
 
 ### Step 5: Squash and Tidy Commits
@@ -304,7 +316,18 @@ git diff --name-only "$MERGE_BASE"..HEAD > "$BRANCH_OWNED_FILES"
 
 ```bash
 git log origin/$BASE_BRANCH..HEAD --oneline          # Clean, logical commits
-git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"  # All have PR numbers
+git log origin/$BASE_BRANCH..HEAD --format='%H%x09%s' |
+  while IFS=$'\t' read -r sha subject; do
+    tree=$(git show -s --format=%T "$sha") || exit 1
+    parent=$(git rev-parse --verify "$sha^" 2>/dev/null || true)
+    if [ -n "$parent" ]; then
+      if ! parent_tree=$(git show -s --format=%T "$parent"); then exit 1; fi
+    else
+      if ! parent_tree=$(git hash-object -t tree /dev/null); then exit 1; fi
+    fi
+    [ "$tree" = "$parent_tree" ] && continue
+    case "$subject" in *"[#$PR_NUM]"*) ;; *) printf '%s %s\n' "${sha:0:12}" "$subject";; esac
+  done                                          # All non-empty commits have PR numbers
 test -n "${BRANCH_OWNED_FILES:-}" || { echo "Missing BRANCH_OWNED_FILES; rerun the Step 5 file capture"; exit 1; }
 git diff --name-only origin/$BASE_BRANCH..HEAD       # Only branch-owned/finalize-intended files
 comm -13 <(sort "$BRANCH_OWNED_FILES") <(git diff --name-only origin/$BASE_BRANCH..HEAD | sort)
@@ -473,7 +496,7 @@ Before saying "done", verify ALL items:
 - [ ] `origin/$BASE_BRANCH` is an ancestor of `HEAD`
 - [ ] `git rev-list --merges --count "origin/$BASE_BRANCH"..HEAD` is `0` (base synced by rebase)
 - [ ] No base-only files appear in `git diff origin/$BASE_BRANCH..HEAD`
-- [ ] All commits have `[#PR-NUM]` in message
+- [ ] All non-empty commits have `[#PR-NUM]` in message
 - [ ] Commits squashed into logical groups (force-pushed)
 - [ ] Empty "create pull request" commits dropped
 - [ ] `git push` succeeded
@@ -495,10 +518,10 @@ Before saying "done", verify ALL items:
 | Missing dependencies in worktree     | Generate/format fails   | Install the repo's documented dependencies, then re-run the same gate commands                              |
 | Stopped to ask permission to push    | Blocked automation      | Just push — do NOT ask for permission. Force-push is expected and authorized.                               |
 | Squashed stale branch onto new base  | PR reverts base changes | Rebase onto `origin/$BASE_BRANCH` first; never soft-reset stale history onto the new base                   |
-| Commit missing `[#PR-NUM]`           | PR not linked           | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix ALL commits                         |
+| Non-empty commit missing `[#PR-NUM]` | PR not linked           | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix all non-empty commits               |
 | Reported issue but didn't fix        | Commits still broken    | You MUST run the script, not just report that commits need fixing                                           |
 | Compared against feature branch      | Wrong comparison        | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                          |
-| Branch "up to date" so skipped       | Commits still need PR#  | Even pushed commits need PR numbers - compare to the PR base branch, not feature branch                     |
+| Branch "up to date" so skipped       | Commits still need PR#  | Even pushed non-empty commits need PR numbers - compare to the PR base branch, not feature branch           |
 | Didn't squash commits                | Messy history           | ALWAYS squash into logical groups — this is mandatory, not optional                                         |
 | Said "ready when you are"            | Work stranded           | YOU push immediately — do not wait for user to do it or ask permission                                      |
 | Left session with failing checks     | CI is red               | Run `gh pr checks`, investigate failures with `gh run view --log-failed`, fix and re-push                   |

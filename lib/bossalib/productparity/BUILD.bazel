@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "productparity_test",
+    srcs = ["trial_test.go"],
+    data = [
+        "//services/boss/internal/views:cloudpromo.go",
+        "//services/bosso/internal/server:billing.go",
+        "//services/marketing/src/components/pricing:PricingCards.astro",
+        "//services/marketing/src/pages:cloud.astro",
+        "//services/web/src/pages:Subscribe.tsx",
+    ],
+    rundir = ".",
+)

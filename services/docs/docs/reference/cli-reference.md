@@ -261,7 +261,9 @@ mcp="list_sessions"
       "pr_url": "https://github.com/acme/app/pull/42",
       "branch": "add-dark-mode",
       "created_at": "2026-01-02T03:04:05Z",
-      "updated_at": "2026-01-02T04:05:06Z"
+      "updated_at": "2026-01-02T04:05:06Z",
+      "tracker_id": "BOS-123",
+      "last_agent_activity_at": "2026-01-02T04:06:07Z"
     }
   ]
 }
@@ -270,6 +272,9 @@ mcp="list_sessions"
 `sessions` is `[]` when nothing matches — the human `No sessions found.` line is
 never emitted under `--json`, so a driver decodes one shape either way.
 `pr_number` is `null` rather than `0` for a session with no PR.
+`tracker_id` is `null` when the session is not linked to a tracker issue, and
+drivers can use `last_agent_activity_at` to tell whether a peer session is still
+alive.
 
 `state` here is the **short** enum name, with the `SESSION_STATE_` prefix
 trimmed — the same vocabulary `boss ls --state` accepts, so a value read out of
@@ -329,6 +334,19 @@ corrupting the surrounding envelope.
 `computed_status` is the same `DisplayStatus` vocabulary the text rendering
 prints. Snapshots are newest first and `--limit` (default 5) truncates from that
 end, exactly as without `--json`; `snapshots` is `[]` when none are recorded yet.
+
+Refresh one session's cached PR status immediately:
+
+<CommandTabs
+chat='"refresh the dark mode session PR status"'
+cli="boss session refresh-pr <session-id>"
+mcp="refresh_session_pr"
+/>
+
+Pass `--pr <number>` instead of a session id when you only have the pull request
+number, or pass both to require that they match. The command fetches from the VCS
+provider immediately; fetch failures return an error and leave the previous
+cached snapshot intact.
 
 Read which MCP servers a chat's agent actually resolved:
 
@@ -461,11 +479,14 @@ cli="boss new --repo <r> --prompt <p>"
 mcp="create_session"
 />
 
-The CLI form creates the session, prints its session-id and chat-id, and exits.
-`--detach` is deliberately absent: the `--repo` + `--prompt` path always detaches, so
-passing it changes nothing. For a run that is **not** expected to change the
-repository, reach for `--defer-pr` instead — see [Runs that may change
-nothing](#runs-that-may-change-nothing) below.
+The CLI form creates the session, prints its session-id as soon as the session
+row exists, prints chat-id later if the daemon provides one, then keeps streaming
+setup progress on stderr until setup settles. `--detach` is deliberately absent:
+the `--repo` + `--prompt` path
+always runs the initial agent pass headlessly, so passing it changes nothing. For
+a run that is **not** expected to change the repository, reach for `--defer-pr`
+instead — see [Runs that may change nothing](#runs-that-may-change-nothing)
+below.
 
 `boss new` runs non-interactively when both `--repo` and `--prompt` are given (`--detach`
 is then implicit; `--no-attach` is an alias). `--agent <a>` overrides the default agent
@@ -473,7 +494,7 @@ plugin; `--title <t>` is optional (auto-derived from the prompt when absent).
 
 | Flag                      | Description                                                                                                                                                                                                                        |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--detach`, `--no-attach` | Exit after creating the session. The `--repo` + `--prompt` path **always** detaches, so the flag is a no-op there                                                                                                                  |
+| `--detach`, `--no-attach` | No-op on the `--repo` + `--prompt` path, which always runs the initial agent pass headlessly, prints session-id as soon as the session exists, prints chat-id later if available, and streams setup progress on stderr             |
 | `--tmux-unattended`       | Host the session in a durable tmux pane that survives a daemon restart and is attach-safe                                                                                                                                          |
 | `--defer-pr`              | Create the worktree-backed session but open **no** draft PR up front; a PR is opened at finalize only if the run produced commits. No PR exists until the run finalizes, so pair with `--tmux-unattended` for long unattended runs |
 | `--quick-chat`            | Create a session with no worktree, branch, or PR, in the repository checkout. The agent starts when you attach. Mutually exclusive with `--defer-pr`                                                                               |
@@ -488,7 +509,9 @@ before it exits; `--tmux-unattended` says where the session should live — a du
 tmux pane that outlives a daemon restart and can be attached to later. Neither one
 decides whether the agent runs: supplying a prompt is what launches it headlessly. A
 scripted launch that should stay reachable wants `--tmux-unattended`, not `--detach`,
-which the non-interactive path already implies.
+which the non-interactive path already implies. Do not retry a launch just
+because `boss ls` is temporarily empty while setup is still running; capture the
+printed session id and verify that exact session with `boss show <session-id>`.
 
 #### Runs that may change nothing
 

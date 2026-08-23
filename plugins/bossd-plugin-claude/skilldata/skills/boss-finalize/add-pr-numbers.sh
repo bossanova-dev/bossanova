@@ -84,8 +84,10 @@ git log "$BASE_COMMIT"..HEAD --oneline
 echo ""
 
 # Copy helper script to /tmp (so it exists during rebase when working tree changes).
-# The helper reports every commit it could not amend to PR_TAG_SKIP_REPORT, which
-# must reach it through the environment: the heredoc below is unexpanded.
+# The helper reports every non-empty commit it could not amend to
+# PR_TAG_SKIP_REPORT, which must reach it through the environment: the heredoc
+# below is unexpanded. Empty commits are intentionally skipped before any amend
+# attempt, so they never write a skip-report row.
 HELPER_SCRIPT="/tmp/add-pr-to-commit-$$.sh"
 PR_TAG_SKIP_REPORT="/tmp/add-pr-skips-$$.tsv"
 export PR_TAG_SKIP_REPORT
@@ -121,6 +123,43 @@ if [ -z "$PR_NUM" ]; then
   exit 1
 fi
 MSG=$(git log -1 --format=%B)
+
+# Keep this predicate aligned with the outer post-condition copy below. A commit
+# is empty when its tree matches its parent's tree; a root commit compares
+# against the empty tree Git computes for the repository hash algorithm.
+is_empty_commit() {
+  local commit tree parent parent_tree
+  commit="$1"
+  tree=$(git show -s --format=%T "$commit") || return 1
+  parent=$(git rev-parse --verify "$commit^" 2>/dev/null || true)
+  if [ -n "$parent" ]; then
+    parent_tree=$(git show -s --format=%T "$parent") || return 1
+  else
+    parent_tree=$(git hash-object -t tree /dev/null) || return 1
+  fi
+  [ "$tree" = "$parent_tree" ]
+}
+
+current_commit() {
+  local done line sha
+  done=$(git rev-parse --git-path rebase-merge/done 2>/dev/null || true)
+  if [ -f "$done" ]; then
+    line=$(awk '$1 == "pick" || $1 == "reword" || $1 == "edit" {last=$0} END {print last}' "$done")
+    sha=$(printf '%s\n' "$line" | awk '{print $2}')
+    if [ -n "$sha" ] && git cat-file -e "$sha^{commit}" 2>/dev/null; then
+      printf '%s\n' "$sha"
+      return 0
+    fi
+  fi
+  git rev-parse --verify HEAD
+}
+
+CURRENT_COMMIT=$(current_commit)
+if is_empty_commit "$CURRENT_COMMIT"; then
+  echo "Skipped empty commit $(git show -s --format=%h "$CURRENT_COMMIT") $(git show -s --format=%s "$CURRENT_COMMIT")"
+  exit 0
+fi
+
 # Scope "already tagged" to the SUBJECT, the same place the caller's post-condition
 # and every downstream consumer look. Checking the whole body instead would treat a
 # commit that merely *mentions* [#N] in its prose as done, skip the amend, and then
@@ -147,12 +186,16 @@ if [ "$NEW_MSG" = "$MSG" ]; then
   fi
 fi
 
-# The amend can be rejected by the repo's commit-msg hook (an over-long subject or
-# body line) or by git itself (amending a commit into an empty one). Report the real
-# error rather than claiming success -- and rather than naming a cause we did not
-# check: without this the helper's exit status is the echo's, i.e. always 0, and the
-# caller ships a partially tagged branch believing it worked.
+# The amend can be rejected by the repo's hooks (an over-long subject or body
+# line, or any other hook policy) or by git itself. Report the real error
+# rather than claiming success -- and rather than naming a cause we did not
+# check: without this the helper's exit status is the echo's, i.e. always 0,
+# and the caller ships a partially tagged branch believing it worked.
 if ! AMEND_ERR=$(git commit --amend -m "$NEW_MSG" 2>&1); then
+  if printf '%s' "$AMEND_ERR" | grep -q "would make it empty"; then
+    echo "Skipped empty commit $(git log -1 --format=%h) $(git log -1 --format=%s)"
+    exit 0
+  fi
   # Flatten to one line: the reason is the third TSV field, so a newline or tab in it
   # would split the record. The subject gets the same treatment for the same reason --
   # a tab there shifts the reason into field 4 and garbles the caller's annotation.
@@ -198,10 +241,32 @@ if [ -z "$COMMIT_LOG" ]; then
   exit 1
 fi
 SKIPPED_COUNT=0
+
+# Keep this predicate aligned with the rebase-helper copy above. It is repeated
+# across the quoted heredoc boundary so the post-condition independently
+# classifies empty commits the same way the inner helper does.
+is_empty_commit() {
+  local commit tree parent parent_tree
+  commit="$1"
+  tree=$(git show -s --format=%T "$commit") || return 1
+  parent=$(git rev-parse --verify "$commit^" 2>/dev/null || true)
+  if [ -n "$parent" ]; then
+    parent_tree=$(git show -s --format=%T "$parent") || return 1
+  else
+    parent_tree=$(git hash-object -t tree /dev/null) || return 1
+  fi
+  [ "$tree" = "$parent_tree" ]
+}
+
 while IFS=$'\t' read -r short sha subject; do
   case "$subject" in
   *"[#$PR_NUM]"*) continue ;;
   esac
+  if is_empty_commit "$sha"; then
+    # The rebase helper already announced this commit when it skipped the
+    # amend. The post-condition only reclassifies it so it is not an error.
+    continue
+  fi
   if [ "$SKIPPED_COUNT" -eq 0 ]; then
     echo "" >&2
     echo "ERROR: these commits were left untagged:" >&2

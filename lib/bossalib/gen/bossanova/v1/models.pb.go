@@ -3935,9 +3935,10 @@ type CronJob struct {
 	// branch, or pull request, because the run is expected to produce no repo
 	// changes. Persisted and echoed back only — nothing honours it yet, so a job
 	// with this set still fires exactly as it does today (BOS-543).
-	IsZeroOutput  bool `protobuf:"varint,19,opt,name=is_zero_output,json=isZeroOutput,proto3" json:"is_zero_output,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsZeroOutput     bool   `protobuf:"varint,19,opt,name=is_zero_output,json=isZeroOutput,proto3" json:"is_zero_output,omitempty"`
+	LastRunAgentName string `protobuf:"bytes,20,opt,name=last_run_agent_name,json=lastRunAgentName,proto3" json:"last_run_agent_name,omitempty"` // resolved agent used by the last spawned run; empty = unknown/legacy
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CronJob) Reset() {
@@ -4101,6 +4102,13 @@ func (x *CronJob) GetIsZeroOutput() bool {
 		return x.IsZeroOutput
 	}
 	return false
+}
+
+func (x *CronJob) GetLastRunAgentName() string {
+	if x != nil {
+		return x.LastRunAgentName
+	}
+	return ""
 }
 
 // GithubCallback is a durable one-shot registration that delivers a chat
@@ -4930,7 +4938,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
 	"\vstart_error\x18\n" +
 	" \x01(\tR\n" +
-	"startError\"\xf8\x05\n" +
+	"startError\"\xa7\x06\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
@@ -4955,7 +4963,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
 	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x127\n" +
 	"\x18should_run_setup_command\x18\x12 \x01(\bR\x15shouldRunSetupCommand\x12$\n" +
-	"\x0eis_zero_output\x18\x13 \x01(\bR\fisZeroOutput\"\xc3\x06\n" +
+	"\x0eis_zero_output\x18\x13 \x01(\bR\fisZeroOutput\x12-\n" +
+	"\x13last_run_agent_name\x18\x14 \x01(\tR\x10lastRunAgentName\"\xc3\x06\n" +
 	"\x0eGithubCallback\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\tR\agroupId\x12$\n" +

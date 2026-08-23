@@ -1396,14 +1396,13 @@ func (p *KeychainTokenProvider) clearCacheLocked() {
 //
 // Reviewers keep reading that branch as dead, on the grounds that refresh()
 // returns early for a marked record before it can ever dispatch. It is not.
-// The two early returns (the in-memory pendingReason, and the marker on the
-// record loaded under the authlock) BOTH require a successful read. When the
-// pre-exchange load ERRORS, refresh() falls through with only its stale
-// in-memory token, dispatches, and the post-failure reload can then succeed
-// and hand back a record a PEER daemon flagged before we took the lock —
-// carrying the same refresh token, hence the "already exchanged" answer. That
-// is the interleaving TestKeychainTokenProviderRefreshKeepsPendingUnknownReason
-// stages with its load counter: unreadable-then-flagged, not clean-then-flagged.
+// The early returns (the in-memory pendingReason, and the marker on the record
+// loaded under the authlock) both depend on the state visible before dispatch.
+// A writer that does not hold the credential lock, such as an older boss binary
+// or a foreign shared-keychain process, can flag the same refresh token after
+// our under-lock pre-exchange read but before the post-failure reload. That is
+// the interleaving TestKeychainTokenProviderRefreshKeepsPendingUnknownReason
+// stages with its load counter: clean-then-flagged, not unreadable-then-flagged.
 func preservedReloginReason(preserved *keychainTokens, refreshTok string, err error) string {
 	if preserved != nil &&
 		preserved.reloginReason() == reloginReasonRefreshOutcomeUnknown &&

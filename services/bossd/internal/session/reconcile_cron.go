@@ -65,7 +65,16 @@ func NewCronActivityChecker(agentLogsDir string, liveness sessionLiveness) *Cron
 }
 
 func (c *CronActivityChecker) RunActive(sess *models.Session) bool {
-	if sess == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+	if sess == nil {
+		return false
+	}
+	if isPreAgentState(sess.State) {
+		if c.liveness != nil && c.liveness.SessionLiveness(context.Background(), sess.ID) == LivenessAlive {
+			return true
+		}
+		return time.Since(sess.CreatedAt) < preAgentReapGrace
+	}
+	if sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
 		return false
 	}
 	// Only ImplementingPlan represents active agent work here; later states may

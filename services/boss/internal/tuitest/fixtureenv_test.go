@@ -8,9 +8,10 @@ import (
 
 func TestFilterProofEnvAllowsWhitelistedFamilies(t *testing.T) {
 	requested := map[string]string{
-		"BOSS_CLOUD_ACCESS_E2E_SEQUENCE":  "active",
-		"BOSS_GITHUB_APP_E2E_INSTALL_URL": "https://example.test",
-		"BOSS_AUTH_E2E_EMAIL":             "proof@example.com",
+		"BOSS_CLOUD_ACCESS_E2E_SEQUENCE":   "active",
+		"BOSS_GITHUB_APP_E2E_INSTALL_URL":  "https://example.test",
+		"BOSS_AUTH_E2E_EMAIL":              "proof@example.com",
+		"BOSS_PROOF_SETTINGS_SAVE_FAILURE": "1",
 	}
 	allowed, rejected := FilterProofEnv(requested)
 	if len(rejected) != 0 {
@@ -124,6 +125,46 @@ func TestProofEnvWhitelistFamilies(t *testing.T) {
 	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_PROOF_UPGRADE_"}
 	if !reflect.DeepEqual(ProofEnvWhitelist, want) {
 		t.Fatalf("ProofEnvWhitelist = %v, want %v", ProofEnvWhitelist, want)
+	}
+}
+
+func TestProofEnvAllowedKeys(t *testing.T) {
+	want := []string{
+		"BOSS_PROOF_SETTINGS_EVENT_TRACING",
+		"BOSS_PROOF_SETTINGS_POSTHOG_HOST",
+		"BOSS_PROOF_SETTINGS_SAVE_FAILURE",
+	}
+	if !reflect.DeepEqual(ProofEnvAllowedKeys, want) {
+		t.Fatalf("ProofEnvAllowedKeys = %v, want %v", ProofEnvAllowedKeys, want)
+	}
+}
+
+func TestProofSettingsAllowedKeysSurviveFilterAndFamilyIsStripped(t *testing.T) {
+	requested := map[string]string{
+		"BOSS_PROOF_SETTINGS_EVENT_TRACING": "1",
+		"BOSS_PROOF_SETTINGS_POSTHOG_HOST":  "https://k.bossanova.dev",
+		"BOSS_PROOF_SETTINGS_SAVE_FAILURE":  "1",
+	}
+	allowed, rejected := FilterProofEnv(requested)
+	if len(rejected) != 0 {
+		t.Fatalf("proof settings exact keys must be forwardable, got rejected %v", rejected)
+	}
+	if !reflect.DeepEqual(allowed, requested) {
+		t.Fatalf("allowed = %v, want %v", allowed, requested)
+	}
+
+	got := BaseHarnessEnv([]string{"PATH=/bin", "BOSS_PROOF_SETTINGS_SAVE_FAILURE=1"})
+	for _, e := range got {
+		if strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") {
+			t.Fatalf("BaseHarnessEnv must strip ambient BOSS_PROOF_SETTINGS_ vars, got %v", got)
+		}
+	}
+}
+
+func TestProofSettingsUnknownKeyIsRejected(t *testing.T) {
+	_, rejected := FilterProofEnv(map[string]string{"BOSS_PROOF_SETTINGS_UNREVIEWED": "1"})
+	if !reflect.DeepEqual(rejected, []string{"BOSS_PROOF_SETTINGS_UNREVIEWED"}) {
+		t.Fatalf("rejected = %v, want unknown proof settings key rejected", rejected)
 	}
 }
 

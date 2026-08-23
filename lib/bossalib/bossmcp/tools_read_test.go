@@ -2,6 +2,7 @@ package bossmcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -185,5 +186,73 @@ func TestReadTools(t *testing.T) {
 				t.Fatalf("%s result missing sentinel %q: %s", tc.tool, tc.sentinel, got)
 			}
 		})
+	}
+}
+
+func TestCronJobReadToolsExposeLastRunAgentMismatch(t *testing.T) {
+	backend := &fakeBackend{
+		listCronJobs: func(_ context.Context) ([]*pb.CronJob, error) {
+			return []*pb.CronJob{{
+				Id:               "cron-list",
+				AgentName:        "claude",
+				LastRunAgentName: "codex",
+			}}, nil
+		},
+		getCronJob: func(_ context.Context, id string) (*pb.CronJob, error) {
+			if id != "cron-get" {
+				t.Errorf("id not forwarded: %q", id)
+			}
+			return &pb.CronJob{
+				Id:               "cron-get",
+				AgentName:        "claude",
+				LastRunAgentName: "codex",
+			}, nil
+		},
+	}
+	cs := newConnectedClient(t, backend, Options{})
+
+	listRes, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_cron_jobs", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("call list_cron_jobs: %v", err)
+	}
+	if listRes.IsError {
+		t.Fatalf("list_cron_jobs returned error result: %s", textOf(t, listRes))
+	}
+	var listPayload []map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, listRes)), &listPayload); err != nil {
+		t.Fatalf("decode list_cron_jobs result: %v\n%s", err, textOf(t, listRes))
+	}
+	if len(listPayload) != 1 {
+		t.Fatalf("list_cron_jobs returned %d jobs, want 1", len(listPayload))
+	}
+	assertCronMismatchPayload(t, listPayload[0], "cron-list")
+
+	getRes, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_cron_job", Arguments: map[string]any{"id": "cron-get"}})
+	if err != nil {
+		t.Fatalf("call get_cron_job: %v", err)
+	}
+	if getRes.IsError {
+		t.Fatalf("get_cron_job returned error result: %s", textOf(t, getRes))
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, getRes)), &getPayload); err != nil {
+		t.Fatalf("decode get_cron_job result: %v\n%s", err, textOf(t, getRes))
+	}
+	assertCronMismatchPayload(t, getPayload, "cron-get")
+}
+
+func assertCronMismatchPayload(t *testing.T, payload map[string]any, wantID string) {
+	t.Helper()
+	if got := payload["id"]; got != wantID {
+		t.Fatalf("id = %v, want %q; payload=%v", got, wantID, payload)
+	}
+	if got := payload["last_run_agent_name"]; got != "codex" {
+		t.Fatalf("last_run_agent_name = %v, want codex; payload=%v", got, payload)
+	}
+	if got := payload["last_run_agent_label"]; got != "codex (mismatch: job claude)" {
+		t.Fatalf("last_run_agent_label = %v, want mismatch label; payload=%v", got, payload)
+	}
+	if got := payload["last_run_agent_mismatch"]; got != true {
+		t.Fatalf("last_run_agent_mismatch = %v, want true; payload=%v", got, payload)
 	}
 }

@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "drip",
+    srcs = [
+        "drip.go",
+        "loops.go",
+        "noop.go",
+    ],
+    importpath = "github.com/recurser/bossalib/drip",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "drip_test",
+    srcs = ["loops_test.go"],
+    embed = [":drip"],
+)

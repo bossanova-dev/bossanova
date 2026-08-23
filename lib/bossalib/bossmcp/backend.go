@@ -56,6 +56,7 @@ type Backend interface {
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
+	RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
 	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)
 	ResurrectSession(ctx context.Context, id string) (*pb.Session, error)
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)

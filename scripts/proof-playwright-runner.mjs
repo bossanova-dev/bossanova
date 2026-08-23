@@ -1224,15 +1224,15 @@ function uploadFileChooserScript(recipe) {
 // notificationStageScript makes the BOS-492 notification surfaces deterministic
 // per recipe (the browser Notification API's permission is otherwise
 // environment-dependent and the priming modal mounts app-wide):
-//   - the priming-modal recipe forces permission 'default' and leaves the modal
-//     un-dismissed so it renders;
+//   - the priming-modal and subscribe-gate recipes force permission 'default'
+//     and leave the modal un-dismissed so regressions stay visible;
 //   - the settings recipe forces permission 'denied' so the "blocked" note shows,
 //     and pre-dismisses the modal so it does not overlay the settings card;
 //   - every other web recipe pre-dismisses the modal so it never overlays the
 //     captured surface.
 function notificationStageScript(recipe) {
   const id = recipe?.id ?? ''
-  if (id === 'web-notification-permission-modal') {
+  if (id === 'web-notification-permission-modal' || id === 'web-subscribe-no-notification-prompt') {
     return notificationInitScript('default', false)
   }
   if (id === 'web-notification-settings') {

@@ -1011,12 +1011,52 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 	if want := "start session sess-789: worktree conflict"; err.Error() != want {
 		t.Errorf("got error %q, want %q", err.Error(), want)
 	}
+	var postRow *SessionPostRowError
+	if errors.As(err, &postRow) {
+		t.Fatal("StartSession failure deleted its row; must not expose a post-row session id")
+	}
 
 	// The half-started session row must be cleaned up: leaving it behind
 	// produces phantom entries in the home view (a session with no chat,
 	// no PR, stuck in CreatingWorktree) that the user can't recover.
 	if len(store.deleted) != 1 || store.deleted[0] != "sess-789" {
 		t.Errorf("expected Delete(\"sess-789\") to be called once, got %v", store.deleted)
+	}
+}
+
+func TestCreateSession_RefetchErrorCarriesSurvivingSessionID(t *testing.T) {
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-789"}, nil
+		},
+		getFn: func(_ context.Context, _ string) (*models.Session, error) {
+			return nil, errors.New("db read failed")
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return nil
+		},
+	}
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
+
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:     "repo-1",
+		Title:      "Test",
+		BaseBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var postRow *SessionPostRowError
+	if !errors.As(err, &postRow) {
+		t.Fatalf("error type = %T, want SessionPostRowError", err)
+	}
+	if postRow.SessionID != "sess-789" {
+		t.Fatalf("SessionID = %q, want sess-789", postRow.SessionID)
+	}
+	if len(store.deleted) != 0 {
+		t.Fatalf("re-fetch failure must leave row for recovery, deleted %v", store.deleted)
 	}
 }
 

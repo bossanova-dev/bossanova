@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1553,17 +1554,33 @@ func runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON bool) error {
 	}
 	defer func() { _ = stream.Close() }()
 
-	// Drain the stream; print setup output inline and capture the final session.
-	// Setup output goes to stderr on both paths, so stdout under --json carries
-	// exactly one JSON object.
+	// Drain the stream. Setup output goes to stderr on both paths, so stdout
+	// under --json carries exactly one JSON object. On the human path, print the
+	// stable id lines as soon as their values are available; setup can keep
+	// running for minutes after the session row exists, and callers need the ids
+	// while it is still in progress. The accepted frame may not yet carry a chat
+	// id, so do not freeze the chat-id line until it is populated or the stream
+	// settles.
 	var session *pb.Session
+	printedSessionID := false
+	printedChatID := false
 	for stream.Receive() {
 		msg := stream.Msg()
 		if so := msg.GetSetupOutput(); so != nil {
-			_, _ = fmt.Fprint(cmd.ErrOrStderr(), so.Text)
+			printSetupOutput(cmd.ErrOrStderr(), so.Text)
 		}
 		if sc := msg.GetSessionCreated(); sc != nil {
 			session = sc.Session
+			if !asJSON {
+				if !printedSessionID {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\n", session.GetId())
+					printedSessionID = true
+				}
+				if !printedChatID && session.GetAgentSessionId() != "" {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "chat-id:    %s\n", session.GetAgentSessionId())
+					printedChatID = true
+				}
+			}
 		}
 	}
 	if err := stream.Err(); err != nil {
@@ -1587,12 +1604,24 @@ func runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON bool) error {
 	if asJSON {
 		return emitJSON(cmd, newSessionJSON(session))
 	}
-	// Byte-identical to what this path printed before --json existed: it is a
-	// documented scripting surface and existing callers parse it positionally.
-	// The chat-id line is printed even when empty, for the same reason.
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\nchat-id:    %s\n",
-		session.GetId(), session.GetAgentSessionId())
+	if !printedSessionID {
+		// Byte-identical to what this path printed before --json existed: it is a
+		// documented scripting surface and existing callers parse it positionally.
+		// The chat-id line is printed even when empty, for the same reason.
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\n", session.GetId())
+	}
+	if !printedChatID {
+		// The chat-id line is printed even when empty, for the same reason.
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "chat-id:    %s\n", session.GetAgentSessionId())
+	}
 	return nil
+}
+
+func printSetupOutput(w io.Writer, text string) {
+	_, _ = fmt.Fprint(w, text)
+	if !strings.HasSuffix(text, "\n") {
+		_, _ = fmt.Fprintln(w)
+	}
 }
 
 // idleSessionNotice is the stderr warning for a create that launched no agent,
@@ -2253,6 +2282,42 @@ func runSessionLinkPR(cmd *cobra.Command, sessionID, prRef string) error {
 		return nil
 	}
 	fmt.Printf("Session %s linked to PR.\n", sess.Id)
+	return nil
+}
+
+type sessionPRRefresher interface {
+	RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
+}
+
+func runSessionRefreshPR(cmd *cobra.Command, sessionID string, prNumber int32) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	return refreshSessionPR(cmd, c, sessionID, prNumber)
+}
+
+func refreshSessionPR(cmd *cobra.Command, c sessionPRRefresher, sessionID string, prNumber int32) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" && prNumber == 0 {
+		return fmt.Errorf("refresh PR: session id or --pr is required")
+	}
+	if prNumber < 0 {
+		return fmt.Errorf("refresh PR: --pr must be positive")
+	}
+
+	req := &pb.RefreshSessionPRRequest{}
+	if sessionID != "" {
+		req.Id = &sessionID
+	}
+	if prNumber > 0 {
+		req.PrNumber = &prNumber
+	}
+	sess, err := c.RefreshSessionPR(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("refresh PR: %w", err)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Session %s refreshed PR #%d (%s).\n", sess.GetId(), sess.GetPrNumber(), displayStatusName(sess.GetDisplayStatus()))
 	return nil
 }
 

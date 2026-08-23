@@ -300,6 +300,10 @@ type ChatRotatorDeps struct {
 	// Recorder audits each rotation decision outcome (BOS-176). Nil is safe: the
 	// Recorder's methods are nil-receiver no-ops.
 	Recorder *Recorder
+	// OnAuthDecisionComplete runs after an auth dispatch finishes its
+	// auth probe/decision path. Stream publishers use it to republish after the
+	// audit row that corroborates AGENT_AUTH_FAILED has been recorded.
+	OnAuthDecisionComplete func(agentSessionID string)
 }
 
 // ChatRotator auto-rotates interactive chats on CHAT_STATUS_LIMITED transitions
@@ -382,14 +386,22 @@ func (r *ChatRotator) OnChatStatus(agentSessionID string, st bossanovav1.ChatSta
 // limit+auth signal, and a persistent auth-failed marker cannot storm rotations.
 func (r *ChatRotator) OnAuthFailed(agentSessionID string) {
 	if !r.reserveAttempt(agentSessionID) {
+		r.scheduleReprobe(agentSessionID)
 		return
 	}
 	r.active.Add(1)
 	safego.Go(r.deps.Logger, func() {
 		defer r.active.Add(-1)
 		defer r.releaseInFlight(agentSessionID)
+		defer r.finishAuthDecision(agentSessionID)
 		r.rotateAuth(agentSessionID)
 	})
+}
+
+func (r *ChatRotator) finishAuthDecision(agentSessionID string) {
+	if r.deps.OnAuthDecisionComplete != nil {
+		r.deps.OnAuthDecisionComplete(agentSessionID)
+	}
 }
 
 // reserveAttempt applies the shared per-chat inFlight + rate-limit guard for both
@@ -656,14 +668,16 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 	// session context is not yet loaded, so a meaningful AuditEvent cannot be built.
 	cfg, err := r.deps.LoadConfig()
 	if err != nil {
-		log.Warn().Err(err).Msg("auto-rotate(auth): config load failed; leaving chat as-is")
+		log.Warn().Err(err).Msg("auto-rotate(auth): config load failed; leaving chat as-is, will re-probe")
 		r.forgetAttempt(agentSessionID)
+		r.scheduleReprobe(agentSessionID)
 		return
 	}
 	cc, err := r.deps.ChatContext(ctx, agentSessionID)
 	if err != nil {
-		log.Warn().Err(err).Msg("auto-rotate(auth): chat context lookup failed")
+		log.Warn().Err(err).Msg("auto-rotate(auth): chat context lookup failed; will re-probe")
 		r.forgetAttempt(agentSessionID)
+		r.scheduleReprobe(agentSessionID)
 		return
 	}
 	if !cfg.ManagedAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
@@ -1172,6 +1186,7 @@ func (r *ChatRotator) reprobeAuth(agentSessionID string) {
 	r.active.Add(1)
 	defer r.active.Add(-1)
 	defer r.releaseInFlight(agentSessionID)
+	defer r.finishAuthDecision(agentSessionID)
 	r.rotateAuth(agentSessionID)
 }
 

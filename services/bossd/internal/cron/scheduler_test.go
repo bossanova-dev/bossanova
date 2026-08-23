@@ -86,12 +86,14 @@ func (r fakeGateProofEnv) Resolve() map[string]string { return r.env }
 type markStartedCall struct {
 	id        string
 	sessionID string
+	agentName string
 	firedAt   time.Time
 	nextRunAt *time.Time
 }
 
 type lastRunCall struct {
 	id        string
+	sessionID *string
 	outcome   models.CronJobOutcome
 	nextRunAt *time.Time
 }
@@ -133,15 +135,16 @@ func (f *fakeStore) ListEnabled(ctx context.Context) ([]*models.CronJob, error) 
 	return out, nil
 }
 
-func (f *fakeStore) MarkFireStarted(ctx context.Context, id string, sessionID string, firedAt time.Time, nextRunAt *time.Time) error {
+func (f *fakeStore) MarkFireStarted(ctx context.Context, id string, sessionID string, agentName string, firedAt time.Time, nextRunAt *time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.markStartedCalls = append(f.markStartedCalls, markStartedCall{
-		id: id, sessionID: sessionID, firedAt: firedAt, nextRunAt: nextRunAt,
+		id: id, sessionID: sessionID, agentName: agentName, firedAt: firedAt, nextRunAt: nextRunAt,
 	})
 	if j, ok := f.jobs[id]; ok {
 		sid := sessionID
 		j.LastRunSessionID = &sid
+		j.LastRunAgentName = agentName
 		if nextRunAt != nil {
 			na := *nextRunAt
 			j.NextRunAt = &na
@@ -155,10 +158,14 @@ func (f *fakeStore) MarkFireStarted(ctx context.Context, id string, sessionID st
 func (f *fakeStore) UpdateLastRun(ctx context.Context, id string, params db.UpdateCronJobLastRunParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, outcome: params.Outcome, nextRunAt: params.NextRunAt})
+	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, sessionID: params.SessionID, outcome: params.Outcome, nextRunAt: params.NextRunAt})
 	if j, ok := f.jobs[id]; ok {
 		o := params.Outcome
 		j.LastRunOutcome = &o
+		if params.SessionID != nil {
+			sid := *params.SessionID
+			j.LastRunSessionID = &sid
+		}
 	}
 	return nil
 }
@@ -316,9 +323,10 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 // fakeCreator is a SessionCreator mock. Each call optionally blocks on a
 // gate (for concurrency-cap tests) and can be configured to error.
 type fakeCreator struct {
-	mu    sync.Mutex
-	calls []taskorchestrator.CreateSessionOpts
-	err   error
+	mu                sync.Mutex
+	calls             []taskorchestrator.CreateSessionOpts
+	resolvedAgentName string
+	err               error
 
 	// gate, if non-nil, is read from at the start of every CreateSession
 	// call. Send one value to release one call; close to release all.
@@ -372,7 +380,11 @@ func (f *fakeCreator) CreateSession(ctx context.Context, opts taskorchestrator.C
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &models.Session{ID: id, RepoID: opts.RepoID, Title: opts.Title}, nil
+	agentName := f.resolvedAgentName
+	if agentName == "" {
+		agentName = opts.AgentName
+	}
+	return &models.Session{ID: id, RepoID: opts.RepoID, Title: opts.Title, AgentName: agentName}, nil
 }
 
 // --- Helpers -------------------------------------------------------------
@@ -670,6 +682,9 @@ func TestFire_Happy(t *testing.T) {
 	mc := store.markStartedCalls[0]
 	if mc.id != "j" || mc.sessionID != sess.ID {
 		t.Errorf("MarkFireStarted call = %+v, want id=j sessionID=%s", mc, sess.ID)
+	}
+	if mc.agentName != "codex" {
+		t.Errorf("MarkFireStarted agentName = %q, want codex", mc.agentName)
 	}
 	if mc.nextRunAt == nil {
 		t.Error("MarkFireStarted next_run_at was nil; scheduler should persist next tick")
@@ -972,6 +987,30 @@ func TestRunNow_UsesCronJobAgentName(t *testing.T) {
 	}
 }
 
+func TestRunNow_RecordsResolvedSessionAgentName(t *testing.T) {
+	store := newFakeStore()
+	store.put(makeJobWithAgent("j", "@every 1m", true, "codex"))
+
+	creator := newFakeCreator()
+	creator.resolvedAgentName = "claude"
+	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+	if err := s.AddJob(store.jobs["j"]); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	if _, skipped, err := s.RunNow(context.Background(), "j"); err != nil {
+		t.Fatalf("RunNow: %v", err)
+	} else if skipped != "" {
+		t.Fatalf("RunNow skipped = %q, want empty", skipped)
+	}
+	if len(store.markStartedCalls) != 1 {
+		t.Fatalf("MarkFireStarted calls = %d, want 1", len(store.markStartedCalls))
+	}
+	if got := store.markStartedCalls[0].agentName; got != "claude" {
+		t.Fatalf("recorded agentName = %q, want resolved session agent claude", got)
+	}
+}
+
 // TestFire_RepoFetchError_MarksFireFailed covers the case where the repo
 // row has been deleted between job creation and fire. The session must not
 // be spawned with an empty BaseBranch; instead the outcome should be
@@ -1044,6 +1083,37 @@ func TestFire_SessionCreateError_MarksFireFailed(t *testing.T) {
 	}
 	if len(store.markStartedCalls) != 0 {
 		t.Error("MarkFireStarted should not be called when CreateSession fails")
+	}
+}
+
+func TestFire_SessionCreatePartialErrorRecordsSessionIDAndBlocksNextFire(t *testing.T) {
+	store := newFakeStore()
+	store.put(makeJob("j", "@every 1m", true))
+	sessions := newFakeSessionStore()
+	sessions.put(&models.Session{ID: "sess-live", State: machine.CreatingWorktree})
+	creator := newFakeCreator()
+	creator.err = &taskorchestrator.SessionPostRowError{
+		SessionID: "sess-live",
+		Err:       errors.New("re-fetch failed"),
+	}
+
+	s := newTestScheduler(t, store, sessions, creator)
+	s.activity = fakeActivity{active: true}
+	if _, _, err := s.fire(context.Background(), "j"); err == nil {
+		t.Fatal("fire: want error when CreateSession returns a partial session error")
+	}
+	if len(store.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
+	}
+	if got := store.lastRunCalls[0].sessionID; got == nil || *got != "sess-live" {
+		t.Fatalf("UpdateLastRun SessionID = %v, want sess-live", got)
+	}
+
+	if _, skipped, err := s.fire(context.Background(), "j"); err != nil || skipped != SkipReasonOverlapPrevActive {
+		t.Fatalf("second fire = (_, %q, %v), want overlap skip", skipped, err)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want only the first failed create", len(creator.calls))
 	}
 }
 

@@ -13,7 +13,7 @@
 
 import { runLinearGate } from '../linear-gate-lib.mjs'
 import { runUnblockedGate, extractBlockers, isUnblocked } from '../linear-deps-lib.mjs'
-import { formatClaimComment, isClaimWon, parseClaimComments } from '../linear-claim.mjs'
+import { claimWinner, formatClaimComment, parseClaimComments } from '../linear-claim.mjs'
 import { normalizeTicket } from '../bs-epic-lib.mjs'
 import { loadSkillConfig, trackerConfigFor } from '../skill-config.mjs'
 // From adapter-core.mjs, not adapter.mjs: adapter.mjs imports THIS module to build
@@ -154,8 +154,12 @@ export function createLinearAdapter({ apiKey, fetchImpl, endpoint, cwd }) {
       runUnblockedGate({ apiKey, state, label, fetchImpl, endpoint }),
     readDependencies: (issue) => extractBlockers(issue),
     isUnblocked: (issue) => isUnblocked(issue),
-    formatClaimComment: (token) => formatClaimComment(token),
-    resolveClaim: (comments, myToken) => isClaimWon(parseClaimComments(comments), myToken),
+    formatClaimComment: (token, sessionId) => formatClaimComment(token, sessionId),
+    resolveClaim: (comments, myToken, options = null) => {
+      const winner = claimWinner(parseClaimComments(comments), options)
+      if (winner === null) return null
+      return winner === myToken
+    },
     normalizeTicket: (issue) => normalizeTicket(issue),
     states: (opts) => linearStates(opts),
     operationMap: buildLinearOperationMap(mcpServer),

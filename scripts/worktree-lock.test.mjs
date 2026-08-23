@@ -147,15 +147,30 @@ test('worktree-lock: acquire / re-entrancy / peer / stale / release / isolation 
   // path is covered by case 5). The residual 0-winners flake (BOS-400) was a real source
   // bug — a `<=` stale boundary and a write_meta temp renamed out from under the winner —
   // fixed in worktree-lock.sh, not papered over by loosening the assertions below.
+  // Staleness here is BACKDATED into the owner meta, not slept out against a 1-second window.
+  // BLI_LOCK_STALE_SECS=1 puts the staleness threshold at the resolution of the script's own
+  // whole-second `date +%s` clock, which makes "brand new" and "one second stale" the same
+  // reading: a racer whose NOW lands one tick after the other racer published its fresh lock
+  // measures that lock at age=1, decisively stale under the `-lt` boundary, and steals it — two
+  // winners. The skew never appears on an idle machine and is routine on a loaded CI runner
+  // (reproduced at 8/240 under load). Planting a heartbeat far past the default 5h window keeps
+  // the stale lock unambiguously stale and every lock the racers publish unambiguously live, so
+  // single ownership stays the only thing these assertions can fail on.
   const repo5 = initRepo()
+  lock(repo5, env, 'acquire', 'old', 'BOS-5')
+  const meta5 = execFileSync(
+    'bash',
+    ['-c', `find "${HOME}" -path '*${path.basename(repo5)}*/owner' -type f | head -1`],
+    { encoding: 'utf8' },
+  ).trim()
+  assert.ok(meta5, 'should locate repo5 owner meta')
+  fs.writeFileSync(meta5, `old\n999\n${Math.floor(Date.now() / 1000) - 86400}\nBOS-5\n`)
   const revival = execFileSync(
     'bash',
     [
       '-c',
-      `BLI_LOCK_HOME="${HOME}" BLI_SLUG=testslug BLI_LOCK_STALE_SECS=1 bash "${scriptPath}" acquire old BOS-5 >/dev/null; ` +
-        `sleep 2; ` +
-        `BLI_LOCK_HOME="${HOME}" BLI_SLUG=testslug BLI_LOCK_STALE_SECS=1 bash "${scriptPath}" acquire P BOS-5 >p.out 2>&1 & ` +
-        `BLI_LOCK_HOME="${HOME}" BLI_SLUG=testslug BLI_LOCK_STALE_SECS=1 bash "${scriptPath}" acquire Q BOS-5 >q.out 2>&1 & wait; ` +
+      `BLI_LOCK_HOME="${HOME}" BLI_SLUG=testslug bash "${scriptPath}" acquire P BOS-5 >p.out 2>&1 & ` +
+        `BLI_LOCK_HOME="${HOME}" BLI_SLUG=testslug bash "${scriptPath}" acquire Q BOS-5 >q.out 2>&1 & wait; ` +
         `cat p.out q.out`,
     ],
     { cwd: repo5, encoding: 'utf8' },

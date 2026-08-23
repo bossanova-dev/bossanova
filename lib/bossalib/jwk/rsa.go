@@ -1,4 +1,9 @@
-// Package jwk parses JSON Web Keys shared across Bossanova services.
+// Package jwk parses and validates JSON Web Keys shared by the bosso and
+// mcp-gateway auth packages.
+//
+// This package owns the key-material parsing boundary only. Each consuming
+// service remains responsible for fetching keys, caching them, and applying its
+// own rotation policy.
 package jwk
 
 import (

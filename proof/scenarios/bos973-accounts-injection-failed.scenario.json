@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "title": "BOS-973 Credential-injection failure is visible on the account",
+  "fixture": { "preset": "demo" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "the Accounts list shows the injection-failed codex account as failed",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        { "key": "a", "caption": "Press [a] to open the Accounts list" },
+        {
+          "waitFor": {
+            "text": "LABEL PROVIDER",
+            "match": "normalized",
+            "label": "Accounts list loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Accounts table settled"
+        },
+        {
+          "expect": [
+            {
+              "text": "HEALTH",
+              "match": "normalized",
+              "label": "HEALTH column header"
+            },
+            {
+              "text": "team-codex",
+              "match": "normalized",
+              "label": "the codex account whose credential injection failed"
+            },
+            {
+              "text": "failed",
+              "match": "normalized",
+              "label": "failed HEALTH cell — before BOS-973 this row read ok while every session ran on the ambient CLI login"
+            },
+            {
+              "text": "credential injectio",
+              "match": "normalized",
+              "label": "the injection-failure reason leads the LAST TEST cell (the column truncates it at 22 cells; the full prefix is asserted on the detail screen in scene-02)"
+            }
+          ],
+          "caption": "The Accounts list reports the credential-injection failure instead of hiding it"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the account detail screen shows the masked injection reason in full",
+      "steps": [
+        { "key": "down", "caption": "Move the cursor past the claude account (index 1)" },
+        { "key": "down", "caption": "Move the cursor to the injection-failed codex row (index 2)" },
+        { "key": "enter", "caption": "Open the account detail screen" },
+        {
+          "waitFor": { "text": "Details", "match": "normalized" },
+          "timeoutMs": 10000,
+          "caption": "Detail screen with the read-only breakdown is visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "failed",
+              "match": "normalized",
+              "label": "failed health in the detail breakdown"
+            },
+            {
+              "text": "credential injection failed",
+              "match": "normalized",
+              "label": "the full injection-failure prefix, rendered through maskTestError — masked and truncated, never raw"
+            }
+          ],
+          "caption": "Detail shows the masked credential-injection reason, so the operator can tell it apart from a login failure"
+        }
+      ]
+    }
+  ]
+}

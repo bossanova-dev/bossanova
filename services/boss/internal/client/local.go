@@ -416,6 +416,14 @@ func (c *LocalClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Ses
 	return resp.Msg.Session, nil
 }
 
+func (c *LocalClient) RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	resp, err := c.rpc.RefreshSessionPR(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
+}
+
 // --- Archive / Resurrect ---
 
 func (c *LocalClient) ArchiveSession(ctx context.Context, id string) (*pb.Session, error) {

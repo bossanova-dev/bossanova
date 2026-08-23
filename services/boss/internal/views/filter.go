@@ -19,7 +19,8 @@ import (
 //	idle      -> Activate()   -> filtering (input focused, query empty)
 //	filtering -> Commit()     -> applied   (input blurred, query kept)
 //	applied   -> Activate()   -> filtering (input focused, query preserved)
-//	any       -> Deactivate() -> idle
+//	any       -> Reset()      -> idle     (query cleared)
+//	any       -> Dismiss()    -> idle     (query preserved)
 type listFilter struct {
 	input      textinput.Model
 	active     bool
@@ -69,8 +70,7 @@ func (f listFilter) Matches(haystack string) bool {
 }
 
 // Activate focuses the input and enters editing mode. The existing query is
-// preserved — callers rely on Deactivate to clear the query when exiting the
-// filter entirely, so re-entering from idle sees an empty input naturally.
+// preserved; callers choose Reset or Dismiss when exiting the filter.
 func (f *listFilter) Activate() tea.Cmd {
 	f.active = true
 	f.applied = false
@@ -78,7 +78,7 @@ func (f *listFilter) Activate() tea.Cmd {
 }
 
 // Commit blurs the input, keeping the query. Returns true when a non-empty query
-// was committed; false when the query is empty (caller should Deactivate).
+// was committed; false when the trimmed query is empty.
 func (f *listFilter) Commit() bool {
 	f.active = false
 	f.input.Blur()
@@ -90,11 +90,18 @@ func (f *listFilter) Commit() bool {
 	return true
 }
 
-// Deactivate clears the query and exits filter mode entirely.
-func (f *listFilter) Deactivate() {
+// Reset clears the query and exits filter mode entirely.
+func (f *listFilter) Reset() {
 	f.active = false
 	f.applied = false
 	f.input.SetValue("")
+	f.input.Blur()
+}
+
+// Dismiss exits filter mode without clearing the raw input value.
+func (f *listFilter) Dismiss() {
+	f.active = false
+	f.applied = false
 	f.input.Blur()
 }
 

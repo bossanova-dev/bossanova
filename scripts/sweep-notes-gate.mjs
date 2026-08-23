@@ -39,6 +39,9 @@ export const VERDICTS = ['live', 'fixed', 'unverifiable']
  */
 export const DEFAULT_CAP = 15
 
+/** Live themes older than this many days expire out of the improvement backlog. */
+export const DEFAULT_STALE_DAYS = 30
+
 /**
  * Resolve the cap from an explicit argument, then the environment, then the
  * default. The environment leg exists because the documented way to raise the
@@ -56,6 +59,21 @@ export function resolveCap(argument, env = {}) {
     return Math.max(0, Math.floor(parsed))
   }
   return DEFAULT_CAP
+}
+
+/**
+ * Resolve the age-expiry window with the same argument-then-environment shape
+ * as `resolveCap`. Reading the environment inside the process is the important
+ * part: shell expansions happen before a VAR=value prefix reaches this child.
+ */
+export function resolveStaleDays(argument, env = {}) {
+  for (const candidate of [argument, env.BS_SWEEP_NOTES_STALE_DAYS]) {
+    if (candidate === undefined || candidate === null || String(candidate).trim() === '') continue
+    const parsed = Number(candidate)
+    if (!Number.isFinite(parsed) || parsed < 0) continue
+    return Math.floor(parsed)
+  }
+  return DEFAULT_STALE_DAYS
 }
 
 const FIELD_PREFIXES = {
@@ -314,6 +332,22 @@ function toEpoch(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function newestNoteEpoch(cluster) {
+  return (Array.isArray(cluster?.notes) ? cluster.notes : []).reduce((latest, note) => {
+    const at = toEpoch(note?.created_at)
+    return at !== null && (latest === null || at > latest) ? at : latest
+  }, null)
+}
+
+function isExpired(cluster, { staleDays, now }) {
+  const newest = newestNoteEpoch(cluster)
+  if (newest === null) return false
+  const current = Number(now)
+  if (!Number.isFinite(current)) return false
+  const windowMs = Math.max(0, Math.floor(Number(staleDays))) * 24 * 60 * 60 * 1000
+  return newest < current - windowMs
+}
+
 /**
  * Pull repo-relative file paths out of free-text `Where:` prose. A token must
  * carry a directory separator and a file extension: absolute and home-relative
@@ -457,7 +491,7 @@ export function applyVerdicts(clusters, verdicts) {
  * other verdict. Computing it here keeps the union out of skill prose, where an
  * omitted bucket would silently under- or over-retire.
  */
-export function retiredNoteIds(buckets) {
+export function retiredNoteIds(buckets, selection = {}) {
   const ids = new Set()
   for (const verdict of VERDICTS) {
     for (const entry of Array.isArray(buckets?.[verdict]) ? buckets[verdict] : []) {
@@ -469,30 +503,49 @@ export function retiredNoteIds(buckets) {
       for (const id of Array.isArray(entry?.fixedNoteIds) ? entry.fixedNoteIds : []) ids.add(id)
     }
   }
+  for (const entry of [
+    ...(Array.isArray(buckets?.expired) ? buckets.expired : []),
+    ...(Array.isArray(selection?.expired) ? selection.expired : []),
+  ]) {
+    for (const note of Array.isArray(entry?.cluster?.notes) ? entry.cluster.notes : []) {
+      if (typeof note?.id === 'string' && note.id) ids.add(note.id)
+    }
+  }
   return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
 /**
- * Account for every cluster exactly once. Marker-carriers are dropped; up to
- * `cap` remaining clusters are selected, and the rest are deferred. Ranking is
+ * Account for every cluster exactly once. Marker-carriers are dropped; themes
+ * whose newest note is older than the stale window expire; up to `cap`
+ * remaining clusters are selected, and the rest are deferred. Ranking is
  * applied here rather than by the caller so it cannot be skipped.
  */
-export function selectClusters(clusters, markedIssues = [], { cap = DEFAULT_CAP } = {}) {
+export function selectClusters(
+  clusters,
+  markedIssues = [],
+  { cap = DEFAULT_CAP, staleDays = DEFAULT_STALE_DAYS, now = Date.now() } = {},
+) {
   const selected = []
   const deferred = []
   const dropped = []
+  const expired = []
   const limit = Number.isFinite(Number(cap)) ? Math.max(0, Math.floor(Number(cap))) : DEFAULT_CAP
+  const staleWindow = Number.isFinite(Number(staleDays))
+    ? Math.max(0, Math.floor(Number(staleDays)))
+    : DEFAULT_STALE_DAYS
   for (const cluster of rankClusters(clusters)) {
     if (!cluster || typeof cluster.key !== 'string') continue
     if (carriesMarker(cluster, markedIssues)) {
       dropped.push({ cluster, reason: 'already-tracked' })
+    } else if (isExpired(cluster, { staleDays: staleWindow, now })) {
+      expired.push({ cluster, reason: 'expired' })
     } else if (selected.length < limit) {
       selected.push({ cluster, reason: 'selected' })
     } else {
       deferred.push({ cluster, reason: 'over-cap' })
     }
   }
-  return { selected, deferred, dropped }
+  return { selected, deferred, dropped, expired }
 }
 
 export const MARKED_ISSUES_QUERY = `query Marked($filter: IssueFilter!, $after: String) {
@@ -589,11 +642,12 @@ export function runCli(
     case 'verdicts':
       return JSON.stringify(applyVerdicts(readJson(args[0]), readJson(args[1])))
     case 'retired':
-      return JSON.stringify(retiredNoteIds(readJson(args[0])))
+      return JSON.stringify(retiredNoteIds(readJson(args[0]), args[1] ? readJson(args[1]) : {}))
     case 'select':
       return JSON.stringify(
         selectClusters(readJson(args[0]), readJson(args[1]), {
           cap: resolveCap(args[2], env),
+          staleDays: resolveStaleDays(args[3], env),
         }),
       )
     default:

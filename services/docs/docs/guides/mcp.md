@@ -10,12 +10,12 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents — Claude Code, Claude Desktop, and any MCP-capable host — drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
 
-The server exposes **69 tools** in three tiers:
+The server exposes **70 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
 | Read-only   | 24    | Always available                   |
-| Mutating    | 31    | Non-destructive writes             |
+| Mutating    | 32    | Non-destructive writes             |
 | Destructive | 14    | Require `confirm: true` to execute |
 
 ## Install
@@ -189,9 +189,9 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | `list_broadcasts`              | List broadcasts and their lifecycle state; the message body is never returned              |
 | `list_broadcast_subscriptions` | List standing broadcast subscriptions; the registered message body is never returned       |
 
-### Mutating (31)
+### Mutating (32)
 
-`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`
+`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `refresh_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`
 
 `send_chat_message` delivers a follow-up message into a live agent chat via its
 `agent_session_id`; set `wake_if_asleep: true` to wake the agent before delivery.

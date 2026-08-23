@@ -22,6 +22,8 @@ import (
 
 const codexOperationRegistrySource = "codex app-server mcpServerStatus/list"
 
+const codexOperationRegistryWaitDelay = 5 * time.Second
+
 type codexRuntimeTarget struct {
 	Home  string
 	Model string
@@ -96,6 +98,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 	// load-bearing.
 	cmd.Dir = target.WorkDir
 	cmd.Stderr = io.Discard
+	cmd.WaitDelay = codexOperationRegistryWaitDelay
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return runtimeOperationSurface{}, fmt.Errorf("open app-server stdin: %w", err)

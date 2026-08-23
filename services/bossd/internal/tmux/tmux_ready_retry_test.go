@@ -1020,3 +1020,94 @@ func TestWithSessionStartReadyAttempts(t *testing.T) {
 		}
 	}
 }
+
+// TestReadyRetry_RemainingBudgetGuardBothDirections is the guard's other half.
+// TestReadyRetry_NoAttemptStartsItCannotFinish proves it DECLINES an attempt
+// the context cannot fund; nothing proved it still STARTS one when the context
+// can, and a guard that only ever declines is indistinguishable from a broken
+// retry.
+//
+// It matters now because BOS-897 put a real deadline on the switch route. The
+// guard fires only when ctx.Deadline() reports one, so before that budget
+// existed neither direction was reachable there and both attempts always ran in
+// full. config.SwitchRespawnBudgetFor is deliberately sized to fund one attempt
+// generously and leave the second conditional on how long the first took —
+// which is exactly what makes this two-sided rather than a constant.
+//
+// The two cases straddle perAttempt + modalProbeTimeout, the quantity the guard
+// compares against. modalProbeTimeout is reserved whether or not this delivery
+// carries a detector, so it is part of the arithmetic in both.
+func TestReadyRetry_RemainingBudgetGuardBothDirections(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive tmux test in -short; run make test-bossd for coverage")
+	}
+	const perAttempt = 100 * time.Millisecond
+	const attempts = 2
+	// The guard's threshold, restated from the production comparison. A margin
+	// either side of it keeps both cases off the boundary on a loaded runner.
+	needed := perAttempt + modalProbeTimeout
+
+	tests := []struct {
+		name        string
+		ctxBudget   time.Duration
+		wantText    string
+		wantMaxTime time.Duration
+	}{
+		{
+			// Comfortably more than one further attempt's worth left after
+			// attempt one, so the second must start and the pair exhaust.
+			name:        "a second attempt starts when the remaining budget funds it",
+			ctxBudget:   needed + 4*perAttempt,
+			wantText:    "after 2 attempts",
+			wantMaxTime: needed,
+		},
+		{
+			// Less than one further attempt's worth left after attempt one, so
+			// the loop stops and says which of the two ceilings ran out.
+			name:        "a second attempt is declined when it cannot be funded",
+			ctxBudget:   needed - 3*perAttempt,
+			wantText:    "after 1 of 2 attempts",
+			wantMaxTime: needed - 3*perAttempt,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := neverReadyFactory()
+			c := NewClient(WithCommandFactory(fake.factory))
+			ctx, cancel := context.WithTimeout(context.Background(), tt.ctxBudget)
+			defer cancel()
+
+			started := time.Now()
+			err := c.sendPlan(ctx, "boss-test-sess", retryPlanBody, sendPlanOpts{
+				deadline:      perAttempt,
+				pollInterval:  retryPollInterval,
+				readyAttempts: attempts,
+				prefillOnly:   true,
+			})
+			elapsed := time.Since(started)
+
+			if err == nil {
+				t.Fatal("expected a readiness timeout, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error does not report %q: %v", tt.wantText, err)
+			}
+			if elapsed > tt.wantMaxTime {
+				t.Errorf("ran for %v, want under %v — the attempt count does not match the wall clock",
+					elapsed, tt.wantMaxTime)
+			}
+			// Neither direction may cost the diagnostic. The budget must never
+			// clamp an attempt so hard that the wait returns a bare context
+			// error: the pane snapshot is the whole reason this timeout is
+			// worth more than "deadline exceeded" (BOS-896).
+			var timeout *readyMarkerTimeoutError
+			if !errors.As(err, &timeout) {
+				t.Fatalf("lost the readiness verdict to a bare context error: %#v", err)
+			}
+			if !strings.Contains(err.Error(), "still booting") {
+				t.Errorf("the timeout carries no pane snapshot: %v", err)
+			}
+			assertNoDestructiveTmuxCalls(t, fake)
+		})
+	}
+}

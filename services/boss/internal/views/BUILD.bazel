@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+exports_files(["cloudpromo.go"])
+
 go_library(
     name = "views",
     srcs = [
@@ -40,6 +42,7 @@ go_library(
         "form_mouse.go",
         "formfields.go",
         "general_settings.go",
+        "general_settings_proof_disabled.go",
         "github_app_install_url.go",
         "heartbeat.go",
         "home.go",

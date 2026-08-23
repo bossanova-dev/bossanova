@@ -2689,6 +2689,67 @@ test('default catalog exposes no surface:"tui" recipes and no TUI pathRules', ()
   }
 })
 
+test('default catalog recipe ids are unique', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+
+  const ids = catalog.recipes.map((recipe) => recipe.id)
+  assert.deepEqual(ids, [...new Set(ids)])
+
+  const duplicate = structuredClone(catalog)
+  duplicate.recipes.push({ ...duplicate.recipes[0] })
+  const duplicateIds = duplicate.recipes.map((recipe) => recipe.id)
+  assert.notDeepEqual(duplicateIds, [...new Set(duplicateIds)])
+})
+
+test('GitHub callbacks docs recipe captures lifecycle and callback list sections', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+  const recipe = catalog.recipes.find((r) => r.id === 'docs-github-callbacks-guide')
+  assert.ok(recipe, 'docs-github-callbacks-guide recipe must exist')
+  assert.equal(
+    recipe.cropToSelector,
+    undefined,
+    'GitHub callbacks guide recipe must use full viewport frames, not a top-slice crop',
+  )
+
+  const scrollTargets = (recipe.steps ?? [])
+    .filter((step) => step.action === 'scroll')
+    .map((step) => step.toSelector)
+  assert.ok(
+    scrollTargets.includes('h2#lifecycle'),
+    'GitHub callbacks proof must scroll to the Lifecycle table',
+  )
+  assert.ok(
+    scrollTargets.includes('h3#boss-callback-list'),
+    'GitHub callbacks proof must scroll to the boss callback list section',
+  )
+})
+
+test('default catalog pathRules reference defined recipe ids', () => {
+  const catalog = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/default.json', import.meta.url), 'utf8'),
+  )
+
+  const assertCatalogReferencesResolve = (candidate) => {
+    const recipeIds = new Set(candidate.recipes.map((recipe) => recipe.id))
+    for (const rule of candidate.pathRules) {
+      for (const id of rule.recipeIds) {
+        assert.ok(recipeIds.has(id), `pathRule "${rule.name}" references missing recipe ${id}`)
+      }
+    }
+  }
+
+  assertCatalogReferencesResolve(catalog)
+
+  const broken = structuredClone(catalog)
+  const referencedId = broken.pathRules.find((rule) => rule.recipeIds.length > 0).recipeIds[0]
+  broken.recipes = broken.recipes.filter((recipe) => recipe.id !== referencedId)
+  assert.throws(() => assertCatalogReferencesResolve(broken), /references missing recipe/)
+})
+
 test('parseProofArgs defaults empty invocation to help (not run)', () => {
   assert.deepEqual(parseProofArgs([]), {
     command: 'help',

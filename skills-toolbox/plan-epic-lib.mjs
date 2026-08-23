@@ -77,9 +77,9 @@
 //     where createdIdByKey maps every child `key` -> created tracker id, plus a
 //     reserved `parent` entry -> the epic parent's tracker id, and each wiring
 //     entry is { key, childId, parentId, blockedBy: [resolvedId, ...] } in topo order.
-//   stableChildKey(child, seen?) -> deterministic title-derived slug, unique within
-//     `seen` (a colliding slug gets a `-2`, `-3`, … suffix); the STABLE `key` a
-//     headless retry re-derives identically so resume markers keep matching.
+//   stableChildKey(child, seen?) -> deterministic title-derived slug from a child object, unique
+//     within `seen` (a colliding slug gets a `-2`, `-3`, … suffix); the STABLE `key` a headless retry
+//     re-derives identically so resume markers keep matching. THROWS on non-object child input.
 //   serializeEpicSpec(spec)      -> the spec ATTACHMENT body: pretty-printed JSON
 //     `{schemaVersion, parentId, parent, children:[…]}` (the durable FULL spec:
 //     parent overview + every child's full metadata). No size bound; never throws.
@@ -489,6 +489,9 @@ const slugify = (s) =>
  * @returns {string}
  */
 export function stableChildKey(child, seen = new Set()) {
+  if (!child || typeof child !== 'object' || Array.isArray(child)) {
+    throw new Error('stableChildKey: child must be an object')
+  }
   const base = slugify(child?.title) || 'child'
   let key = base === RESERVED_PARENT_KEY ? `${base}-2` : base
   let n = 2

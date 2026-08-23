@@ -11,6 +11,7 @@ go_library(
         "tmux_poller.go",
         "tmux_reaper.go",
         "tracker.go",
+        "turn_start.go",
     ],
     importpath = "github.com/recurser/bossd/internal/status",
     visibility = ["//services/bossd:__subpackages__"],
@@ -41,6 +42,7 @@ go_test(
         "tmux_poller_test.go",
         "tmux_reaper_test.go",
         "tracker_test.go",
+        "turn_start_test.go",
         "waiting_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller

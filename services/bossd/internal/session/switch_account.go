@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/detach"
 )
 
 // AccountStatus is the switch-relevant state of a target account, mapped from
@@ -419,16 +420,26 @@ func (l *Lifecycle) switchTranscriptExists(ctx context.Context, agentName, workD
 // that dies after STOP leaves a visible "(failed to start)" entry rather than a
 // silently vanished chat. Errors are logged, never returned — the caller has its
 // own error to surface.
+//
+// Why it is detached: Server.executeAccountSwitch bounds the switch with its
+// derived respawn budget, so the most likely way to reach this helper at all is
+// that budget expiring inside the respawn's readiness wait — and a stamp
+// issued on that expired context is refused by the store, leaving the row still
+// reading live with its pane already killed. That is the exact state this stamp
+// exists to prevent, so the deadline that causes the failure must not also
+// disarm the record of it (BOS-897).
 func (l *Lifecycle) stampSwitchStartError(ctx context.Context, agentSessionID, reason string) {
 	if l.agentChats == nil {
 		return
 	}
-	if err := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
-		l.logger.Warn().Err(err).
-			Str("agentSessionID", agentSessionID).
-			Str("reason", reason).
-			Msg("account switch: failed to stamp chat start-error")
-	}
+	detach.Cleanup(ctx, detach.CleanupBudget, func(stampCtx context.Context) {
+		if err := l.agentChats.MarkStartFailed(stampCtx, agentSessionID, reason); err != nil {
+			l.logger.Warn().Err(err).
+				Str("agentSessionID", agentSessionID).
+				Str("reason", reason).
+				Msg("account switch: failed to stamp chat start-error")
+		}
+	})
 }
 
 // switchResumeID returns the id the respawn resumes under: the chat's LOGICAL

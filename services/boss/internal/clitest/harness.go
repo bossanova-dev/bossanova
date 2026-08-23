@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ type Harness struct {
 	env          []string
 	settingsPath string
 }
+
+const harnessWaitDelay = 5 * time.Second
 
 // Option configures a Harness.
 type Option func(*harnessConfig)
@@ -243,6 +246,83 @@ func (h *Harness) RunWithStdin(stdin string, args ...string) Result {
 	return h.run(strings.NewReader(stdin), args)
 }
 
+// RunningResult is a boss subprocess started by Start. It lets tests inspect
+// stdout/stderr before a deliberately delayed command has exited.
+type RunningResult struct {
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	stdout *lockedBuffer
+	stderr *lockedBuffer
+}
+
+// Start launches the compiled boss binary and returns immediately. Call Wait to
+// reap it. The subprocess is still protected by the same 30s timeout as Run.
+func (h *Harness) Start(args ...string) *RunningResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// #nosec G204 -- test-only harness runs the compiled boss binary with test-controlled args
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	cmd := exec.CommandContext(ctx, h.binPath, args...)
+	cmd.Env = h.env
+	stdout := &lockedBuffer{}
+	stderr := &lockedBuffer{}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.WaitDelay = harnessWaitDelay
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return &RunningResult{
+			cmd:    nil,
+			cancel: func() {},
+			stdout: stdout,
+			stderr: &lockedBuffer{initial: "start subprocess: " + err.Error()},
+		}
+	}
+	return &RunningResult{cmd: cmd, cancel: cancel, stdout: stdout, stderr: stderr}
+}
+
+// Stdout returns the stdout captured so far.
+func (r *RunningResult) Stdout() string { return r.stdout.String() }
+
+// Stderr returns the stderr captured so far.
+func (r *RunningResult) Stderr() string { return r.stderr.String() }
+
+// Wait waits for the subprocess and returns its final captured output.
+func (r *RunningResult) Wait() Result {
+	defer r.cancel()
+	if r.cmd == nil {
+		return Result{Stdout: r.Stdout(), Stderr: r.Stderr(), ExitCode: -1}
+	}
+	err := r.cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			exitCode = ee.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	return Result{Stdout: r.Stdout(), Stderr: r.Stderr(), ExitCode: exitCode}
+}
+
+type lockedBuffer struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	initial string
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.initial + b.buf.String()
+}
+
 func (h *Harness) run(stdin io.Reader, args []string) Result {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -257,6 +337,7 @@ func (h *Harness) run(stdin io.Reader, args []string) Result {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = harnessWaitDelay
 
 	err := cmd.Run()
 	exitCode := 0

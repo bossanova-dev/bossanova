@@ -11,6 +11,7 @@
 //
 // Evidence tokens it prints: `children: N`, `acyclic`, `adopted`.
 
+import { epicPhase25WritePlan } from './plan-epic-phase25.mjs'
 import {
   validateDecomposition,
   validateLayering,
@@ -18,6 +19,8 @@ import {
   topoOrderChildren,
   epicWiringPlan,
 } from './plan-epic-lib.mjs'
+import { assertWritePlanEntryExecutable } from './tracker/adapter.mjs'
+import { buildLinearOperationMap } from './tracker/linear.mjs'
 
 // A synthetic oversized ticket the planner judged to span multiple PRs.
 // Every child is <= CHILD_MAX_ESTIMATE (3) so the whole feature lands as small,
@@ -85,28 +88,47 @@ const spec = {
 }
 
 const PARENT_ID = 'BOS-9001' // the original ticket, repurposed as the epic parent
+const NON_ADAPTER_OPS = ['createChild', 'putPlanAttachment']
+const DELIBERATELY_OMITTED = { moveState: ['state'] }
 
 // A tiny in-memory tracker — proves the flow WITHOUT any real Linear write.
 // `existing` pre-seeds children already on the parent (the resume case).
 function makeFakeTracker(existing = {}) {
   const childrenByKey = new Map(Object.entries(existing))
   const writes = []
+  const adapter = { operationMap: buildLinearOperationMap('bossanova-linear') }
   return {
     writes,
+    execute(entry) {
+      assertWritePlanEntryExecutable(entry, adapter, {
+        nonAdapterOps: NON_ADAPTER_OPS,
+        deliberatelyOmitted: DELIBERATELY_OMITTED,
+      })
+      if (entry.op === 'createChild') {
+        return this.createChild(entry.args.key, childrenByKey.size + 1, entry.args)
+      }
+      writes.push({ op: entry.op, args: { ...entry.args }, runtimeArgs: [...entry.runtimeArgs] })
+      return { ok: true }
+    },
     // Idempotent create: adopt an existing child (matched by key) or mint a new id.
-    createChild(key, seq) {
+    createChild(key, seq, args = {}) {
       if (childrenByKey.has(key)) {
         const id = childrenByKey.get(key)
-        writes.push({ op: 'adopt', key, id })
+        writes.push({ op: 'adopt', key, id, args: { ...args } })
         return { id, adopted: true }
       }
       const id = `BOS-91${String(seq).padStart(2, '0')}`
       childrenByKey.set(key, id)
-      writes.push({ op: 'create', key, id })
+      writes.push({ op: 'create', key, id, args: { ...args } })
       return { id, adopted: false }
     },
     wire(entry) {
-      writes.push({ op: 'wire', child: entry.childId, blockedBy: entry.blockedBy })
+      writes.push({
+        op: 'wire',
+        child: entry.childId,
+        blockedBy: entry.blockedBy,
+        args: { child: entry.childId, blockedBy: [...entry.blockedBy] },
+      })
     },
   }
 }
@@ -142,12 +164,21 @@ function runEpicPass(label, tracker) {
   const createdIdByKey = { parent: PARENT_ID }
   let created = 0
   let adopted = 0
-  order.forEach((childNode, i) => {
-    const { id, adopted: wasAdopted } = tracker.createChild(childNode.key, i + 1)
-    createdIdByKey[childNode.key] = id
-    wasAdopted ? (adopted += 1) : (created += 1)
+  let argsValidated = 0
+  const writePlan = epicPhase25WritePlan({
+    parentId: PARENT_ID,
+    spec,
+    unplannedState: 'Backlog',
   })
+  for (const entry of writePlan) {
+    const result = tracker.execute(entry)
+    argsValidated += 1
+    if (entry.op !== 'createChild') continue
+    createdIdByKey[entry.args.key] = result.id
+    result.adopted ? (adopted += 1) : (created += 1)
+  }
   console.log(`created: ${created}  adopted: ${adopted}`)
+  console.log(`args-validated: ${argsValidated}`)
 
   // Deterministic wiring plan.
   const wiring = epicWiringPlan(spec, createdIdByKey)

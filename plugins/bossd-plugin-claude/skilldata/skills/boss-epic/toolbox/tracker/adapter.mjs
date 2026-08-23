@@ -31,6 +31,77 @@ export {
 /** @typedef {import('./adapter-core.mjs').TrackerAdapter} TrackerAdapter */
 /** @typedef {import('./adapter-core.mjs').TrackerOperation} TrackerOperation */
 
+/**
+ * Read the argument names declared by an operation summary's leading
+ * `{arg, other=default}` block.
+ * @param {TrackerOperation} operation
+ * @returns {Set<string>}
+ */
+export function declaredOperationArgKeys(operation) {
+  const match =
+    typeof operation?.summary === 'string' ? operation.summary.match(/^\{([^}]*)\}/) : null
+  return new Set(
+    (match?.[1] ?? '')
+      .split(',')
+      .map((part) => part.trim().split(/[=:(]/)[0].trim())
+      .filter(Boolean),
+  )
+}
+
+/**
+ * Assert that an emitted write-plan entry can be replayed against a tracker
+ * adapter operation contract.
+ * @param {{op?: string, args?: object, runtimeArgs?: unknown}} entry
+ * @param {{operationMap?: Record<string, TrackerOperation>}} adapter
+ * @param {{nonAdapterOps?: string[], deliberatelyOmitted?: Record<string, string[]|Set<string>>}} [options]
+ */
+export function assertWritePlanEntryExecutable(entry, adapter, options = {}) {
+  const operationMap = adapter?.operationMap ?? {}
+  const nonAdapterOps = new Set(options.nonAdapterOps ?? [])
+  for (const op of nonAdapterOps) {
+    if (op in operationMap) throw new Error(`${op} is now an adapter operation — re-partition`)
+  }
+
+  const op = entry?.op
+  if (nonAdapterOps.has(op)) return
+
+  const operation = operationMap[op]
+  if (!operation) throw new Error(`${op}: not a tracker adapter operation`)
+
+  const args = entry?.args
+  const emittedArgs = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  if (!Array.isArray(entry?.runtimeArgs))
+    throw new Error(`${op}: runtimeArgs must always be present`)
+
+  const declared = declaredOperationArgKeys(operation)
+  if (declared.size === 0) throw new Error(`${op}: could not read declared args from its summary`)
+
+  const omitted = new Set(options.deliberatelyOmitted?.[op] ?? [])
+  for (const key of Object.keys(emittedArgs)) {
+    if (omitted.has(key)) {
+      throw new Error(`${op}: "${key}" is pinned as deliberately omitted but is emitted`)
+    }
+    if (!declared.has(key)) {
+      throw new Error(
+        `${op}: emits "${key}", which its adapter summary does not declare (${[...declared].join(', ')})`,
+      )
+    }
+  }
+  for (const key of entry.runtimeArgs) {
+    if (!declared.has(key)) throw new Error(`${op}: runtimeArg "${key}" is not a declared argument`)
+  }
+
+  const covered = new Set([...Object.keys(emittedArgs), ...entry.runtimeArgs])
+  for (const key of declared) {
+    if (omitted.has(key)) continue
+    if (!covered.has(key)) {
+      throw new Error(
+        `${op}: declared argument "${key}" is neither emitted nor listed in runtimeArgs`,
+      )
+    }
+  }
+}
+
 const BUILDERS = {
   linear: ({ env, fetchImpl }) =>
     createLinearAdapter({

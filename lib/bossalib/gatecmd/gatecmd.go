@@ -26,6 +26,8 @@ import (
 // DefaultTimeout is the gate timeout when Options.Timeout <= 0.
 const DefaultTimeout = 60 * time.Second
 
+const waitDelay = 5 * time.Second
+
 // Shell exit codes that, by near-universal POSIX convention, mean the shell
 // itself could not run what it was asked to run. `sh -c` launches fine even
 // when the inner command is missing, so Go sees a plain *exec.ExitError and
@@ -187,6 +189,7 @@ func Run(ctx context.Context, o Options) Result {
 	c.Env = commandEnv(o)
 	c.Stdout = output
 	c.Stderr = output
+	c.WaitDelay = waitDelay
 
 	if runErr := c.Run(); runErr != nil {
 		return classify(ctx, runErr, timeout)

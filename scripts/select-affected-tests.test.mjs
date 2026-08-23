@@ -9,6 +9,9 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  externalInputRules,
+  moduleRules,
+  nativeModuleRootsForExternalInputRule,
   renderMakeCommands,
   selectBazelAffected,
   selectLedgerModules,
@@ -71,6 +74,55 @@ test('selectTargets maps skills-toolbox changes to script tests', () => {
   assert.deepEqual(selectTargets(['skills-toolbox/bs-epic-lib.mjs']), [
     { kind: 'make', target: 'test-scripts', env: {} },
   ])
+})
+
+test('selectTargets routes declared external inputs to native module targets', () => {
+  assert.deepEqual(selectTargets(['docs/analytics/events.md']), [
+    { kind: 'make', target: 'test-bossalib', env: {} },
+    { kind: 'make', target: 'test-smoke', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['docs/skills/README.md']), [
+    { kind: 'make', target: 'test-boss', env: {} },
+    { kind: 'make', target: 'test-smoke', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['services/web/src/api.ts']), [
+    { kind: 'make', target: 'test-bossalib', env: {} },
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['plugins/bossd-plugin-codex/testdata/fake_codex_tui.sh']), [
+    { kind: 'make', target: 'test-bossd', env: {} },
+    { kind: 'make', target: 'test-codex', env: {} },
+  ])
+})
+
+test('selectTargets maps every Go module on disk to a native make target', () => {
+  const roots = moduleRootsFromDisk()
+  const missing = roots.filter(
+    (root) => !moduleRules.some((rule) => trimSlash(rule.root) === trimSlash(root)),
+  )
+
+  assert.deepEqual(missing, [])
+  for (const root of roots) {
+    const selected = selectTargets([`${root}/main.go`]).map(({ target }) => target)
+    assert.notDeepEqual(selected, ['test-smoke'], `${root} must not fall back to smoke only`)
+  }
+})
+
+test('each external input rule selects every derivable native target from its sample path', () => {
+  for (const rule of externalInputRules) {
+    assert.equal(typeof rule.samplePath, 'string', 'external input rules need a samplePath')
+    assert.ok(rule.match(rule.samplePath), `${rule.samplePath} must satisfy its rule`)
+
+    const selected = new Set(selectTargets([rule.samplePath]).map(({ target }) => target))
+    for (const moduleRoot of nativeModuleRootsForExternalInputRule(rule)) {
+      const moduleRule = moduleRules.find((candidate) => trimSlash(candidate.root) === moduleRoot)
+      if (!moduleRule) continue
+      assert.ok(
+        selected.has(moduleRule.target),
+        `${rule.samplePath} must select ${moduleRule.target}`,
+      )
+    }
+  }
 })
 
 test('selectTargets maps the build-and-ci reference doc to script tests', () => {
@@ -179,6 +231,7 @@ test('selectTargets maps web changes to the turbo web target', () => {
 
 test('selectTargets maps marketing changes to the turbo web target', () => {
   assert.deepEqual(selectTargets(['services/marketing/src/pages/index.astro']), [
+    { kind: 'make', target: 'test-bossalib', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
 })
@@ -552,6 +605,26 @@ function runMakeFixture(fixture) {
 
 function realMakePath() {
   return execFileSync('which', ['make'], { encoding: 'utf8' }).trim()
+}
+
+function moduleRootsFromDisk() {
+  return execFileSync(
+    'git',
+    ['ls-files', '--', 'lib/*/go.mod', 'services/*/go.mod', 'plugins/*/go.mod'],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    },
+  )
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((file) => path.posix.dirname(file))
+    .sort()
+}
+
+function trimSlash(value) {
+  return value.replace(/\/+$/, '')
 }
 
 function makefileWithoutTarget(target) {

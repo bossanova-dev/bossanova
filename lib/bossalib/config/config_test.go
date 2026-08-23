@@ -2598,3 +2598,190 @@ func TestLoadSubagentDispatchGrantReportsDiscards(t *testing.T) {
 		t.Errorf("reason %q must say the configured opt-out is not in effect", discarded)
 	}
 }
+
+// TestSwitchRespawnBudgetFundsOneFullAttemptAtEveryConfiguredValue is the guard BOS-897 wrote and
+// BOS-948 rebuilt as a table over CONFIGURED readiness values rather than a
+// pair of assertions on the compiled default.
+//
+// The invariant is unchanged — the budget must fund one full readiness attempt
+// — but it is now asserted against the quantity the wait actually RECEIVES.
+// SwitchRespawnBudgetFor bounds the whole switch primitive, and the switch does
+// real work before the respawn starts (mid-turn check, pane kill, transcript
+// probe, binding write), so the readiness wait is handed the budget minus
+// switchPreRespawnReserve. A guard comparing the budget itself against one
+// attempt stays green while the wait is already being shortened.
+//
+// Why a table over configured values rather than one default row: the old guard
+// read DefaultSessionStartReadyDeadline, but SessionStartReadyDeadline() is
+// deliberately UNCLAMPED and services/docs/docs/reference/settings.md tells
+// slow-host operators to raise it. Past 88 configured seconds the old 90s
+// constant could no longer fund even attempt 1, so it clamped the wait below
+// the value the operator had chosen — and this test, reading the default, went
+// on passing.
+//
+// Be clear about what the rows do and do not buy. Against the CURRENT code they
+// are algebraically identical: budget minus needed is switchPolicyMargin for
+// every row, whatever the configured value, so all six assert only that the
+// margin is positive. Their value is as a REGRESSION guard — they are the rows
+// that redden the moment the budget stops tracking the setting, which is what
+// makes reverting the derivation to a constant fail here on 89s, 120s and 300s
+// while the unset/5s/45s rows keep passing. Read them as the table's proof that
+// the derivation is load-bearing, not as six independent checks of it.
+// TestSwitchRespawnBudgetSecondAttemptThreshold owns the second-attempt behaviour below the threshold.
+func TestSwitchRespawnBudgetFundsOneFullAttemptAtEveryConfiguredValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		seconds int
+	}{
+		{name: "unset falls back to the 45s default", seconds: 0},
+		{name: "5s, well under the default", seconds: 5},
+		{name: "45s, the default itself", seconds: 45},
+		{name: "89s, one second past the old constant's ceiling", seconds: 89},
+		{name: "120s, the slow host the docs encourage", seconds: 120},
+		{name: "300s, the pathological host the docs still allow", seconds: 300},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			readiness := TmuxDeliveryConfig{SessionStartReadyDeadlineSeconds: tt.seconds}.SessionStartReadyDeadline()
+			budget := SwitchRespawnBudgetFor(readiness)
+
+			attempt := readiness + SwitchModalProbeReserve
+			needed := attempt + switchPreRespawnReserve
+
+			if budget <= needed {
+				t.Fatalf("session_start_ready_deadline_seconds = %d: SwitchRespawnBudgetFor(%v) = %v, which does "+
+					"not fund one full readiness attempt plus the pre-respawn work (%v = attempt %v "+
+					"[readiness %v + modal probe %v] + switchPreRespawnReserve %v).\n"+
+					"The readiness wait receives the budget MINUS the pre-respawn reserve, so a budget this size "+
+					"shortens attempt 1 below the value the operator configured. The switch route is "+
+					"multi-attempt, so the diagnostic survives the clamp — what is lost is the wait itself, "+
+					"silently, on exactly the hosts slow enough to have raised the setting.\n"+
+					"This is exactly the failure a hardcoded budget produces at a raised setting, which is the "+
+					"defect BOS-948 exists to remove: derive the budget from the configured readiness rather "+
+					"than pinning it to the default.",
+					tt.seconds, readiness, budget, needed, attempt, readiness, SwitchModalProbeReserve,
+					switchPreRespawnReserve)
+			}
+		})
+	}
+}
+
+// TestSwitchRespawnBudgetAtTheDefaultIsNinetySeconds is the compatibility pin,
+// and it is the only equality assertion on the derivation.
+//
+// BOS-897 shipped a 90s constant. BOS-948 replaced it with a sum of a
+// configurable term and three fixed allowances, and those allowances were
+// FITTED so the default still lands on exactly the value that shipped — the
+// change is meant to make the budget scale, not to re-tune it. Record that as
+// compatibility fitting rather than an independent derivation: nobody measured
+// the switch's pre-respawn work, so this equality, not the individual
+// allowances, is what pins the sum.
+func TestSwitchRespawnBudgetAtTheDefaultIsNinetySeconds(t *testing.T) {
+	t.Parallel()
+
+	const want = 90 * time.Second
+	if got := SwitchRespawnBudgetFor(DefaultSessionStartReadyDeadline); got != want {
+		t.Fatalf("SwitchRespawnBudgetFor(DefaultSessionStartReadyDeadline %v) = %v, want exactly %v.\n"+
+			"The three allowances (SwitchModalProbeReserve %v + switchPreRespawnReserve %v + "+
+			"switchPolicyMargin %v = %v) are fitted so the default reproduces the constant BOS-897 shipped. "+
+			"Re-tuning any one of them means re-deciding the SUM against this equality, not nudging a term.",
+			DefaultSessionStartReadyDeadline, got, want,
+			SwitchModalProbeReserve, switchPreRespawnReserve, switchPolicyMargin,
+			SwitchModalProbeReserve+switchPreRespawnReserve+switchPolicyMargin)
+	}
+}
+
+func TestSwitchBudgetCrossoverReadiness(t *testing.T) {
+	t.Parallel()
+
+	crossover := SwitchBudgetCrossoverReadiness()
+	if crossover <= 0 {
+		t.Fatalf("SwitchBudgetCrossoverReadiness() = %v, want positive.\n"+
+			"SwitchResultCeiling (%v) must exceed the fixed switch-budget allowances (%v) so the "+
+			"operator-facing crossover remains a real configured readiness rather than an already-inverted "+
+			"contract at every value.",
+			crossover, SwitchResultCeiling, switchBudgetAllowances)
+	}
+
+	if got := SwitchRespawnBudgetFor(crossover); got != SwitchResultCeiling {
+		t.Fatalf("SwitchRespawnBudgetFor(SwitchBudgetCrossoverReadiness() %v) = %v, want exactly "+
+			"SwitchResultCeiling (%v).\nThe crossover is derived from SwitchResultCeiling minus the "+
+			"fixed allowances; restating it as a literal would let the documented boundary drift from "+
+			"the budget math.",
+			crossover, got, SwitchResultCeiling)
+	}
+
+	oneSecondUnder := crossover - time.Second
+	if got := SwitchRespawnBudgetFor(oneSecondUnder); got >= SwitchResultCeiling {
+		t.Fatalf("one second under the crossover, SwitchRespawnBudgetFor(%v) = %v, want strictly below "+
+			"SwitchResultCeiling (%v).\nBelow the crossover the daemon budget is nominally below "+
+			"the result ceiling; this does not prove the daemon timer wins in wall-clock time once "+
+			"pre-budget bosso latency is included.",
+			oneSecondUnder, got, SwitchResultCeiling)
+	}
+
+	oneSecondOver := crossover + time.Second
+	if got := SwitchRespawnBudgetFor(oneSecondOver); got <= SwitchResultCeiling {
+		t.Fatalf("one second over the crossover, SwitchRespawnBudgetFor(%v) = %v, want strictly above "+
+			"SwitchResultCeiling (%v).\nAbove the crossover the caller-side result ceiling may expire "+
+			"first, so its expiry must be worded as its own report rather than a daemon verdict.",
+			oneSecondOver, got, SwitchResultCeiling)
+	}
+}
+
+// TestSwitchRespawnBudgetSecondAttemptThreshold states the retry behaviour the
+// derivation produces, as DOCUMENTED behaviour rather than as a defect.
+//
+// BOS-897's budget declined a second readiness attempt, and at the default this
+// one still does. But the allowance is not clamped at small configured values,
+// so below a threshold a second attempt is still funded. That is deliberate:
+// clamping to force the inequality everywhere would starve
+// switchPreRespawnReserve at exactly the values where it is proportionally
+// largest — this ticket's own bug re-created at the low end — and two attempts
+// at a 5s readiness costs a doomed switch a handful of seconds.
+//
+// The arithmetic: the wait receives budget - switchPreRespawnReserve, attempt 1
+// costs readiness + SwitchModalProbeReserve, so what survives attempt 1 is
+// exactly switchPolicyMargin. The remaining-budget guard in
+// services/bossd/internal/tmux compares that against a further full attempt, so
+// the threshold is switchPolicyMargin - SwitchModalProbeReserve (33s here).
+func TestSwitchRespawnBudgetSecondAttemptThreshold(t *testing.T) {
+	t.Parallel()
+
+	// What the remaining-budget guard in services/bossd/internal/tmux would
+	// decide, restated over named allowance terms.
+	fundsSecondAttempt := func(readiness time.Duration) bool {
+		remainingAfterAttemptOne := SwitchRespawnBudgetFor(readiness) - switchPreRespawnReserve - (readiness + SwitchModalProbeReserve)
+		return remainingAfterAttemptOne >= readiness+SwitchModalProbeReserve
+	}
+
+	tests := []struct {
+		name      string
+		readiness time.Duration
+		wantFunds bool
+	}{
+		{name: "the 45s default still declines a second attempt", readiness: DefaultSessionStartReadyDeadline, wantFunds: false},
+		{name: "120s declines", readiness: 120 * time.Second, wantFunds: false},
+		{name: "300s declines", readiness: 300 * time.Second, wantFunds: false},
+		{name: "34s, one second past the threshold, declines", readiness: 34 * time.Second, wantFunds: false},
+		{name: "33s, at the threshold, still funds two", readiness: 33 * time.Second, wantFunds: true},
+		{name: "5s funds two, which is accepted", readiness: 5 * time.Second, wantFunds: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := fundsSecondAttempt(tt.readiness); got != tt.wantFunds {
+				t.Errorf("at a %v readiness the budget funds a second attempt = %t, want %t.\n"+
+					"The threshold is switchPolicyMargin (%v) - SwitchModalProbeReserve (%v) = %v. "+
+					"This test states the behaviour rather than enforcing a universal invariant; if the "+
+					"allowances moved, re-read the threshold before changing this expectation.",
+					tt.readiness, got, tt.wantFunds,
+					switchPolicyMargin, SwitchModalProbeReserve, switchPolicyMargin-SwitchModalProbeReserve)
+			}
+		})
+	}
+}

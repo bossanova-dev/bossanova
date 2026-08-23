@@ -59,6 +59,7 @@ go_library(
         "//services/bossd/internal/account",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/detach",
         "//services/bossd/internal/dotenv",
         "//services/bossd/internal/git",
         "//services/bossd/internal/mergepolicy",
@@ -89,8 +90,10 @@ go_test(
         "cleanup_bootstrap_artifacts_test.go",
         "cron_completion_gate_test.go",
         "cron_title_repair_test.go",
+        "detached_cleanup_test.go",
         "dispatcher_test.go",
         "display_poller_test.go",
+        "dochan_ratchet_test.go",
         "duplicate_pr_test.go",
         "event_emitter_test.go",
         "failover_cooldown_test.go",
@@ -123,9 +126,12 @@ go_test(
         "tmux_chat_modal_test.go",
         "tmux_chat_test.go",
     ],
-    data = glob(["testdata/**"]) + [
+    data = glob(["testdata/**"]) + glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ) + [
         "//services/bossd/migrations:sql",  # keep: testharness reads migrations/*.sql from disk via runtime.Caller
-    ],
+    ],  # keep: TestNoRawDoChanCallInThisPackage parses this package's own sources from disk
     embed = [":session"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     shard_count = 4,  # keep: 121s serial under --config=race
@@ -141,6 +147,8 @@ go_test(
         "//services/bossd/internal/account",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/detach",
+        "//services/bossd/internal/detach/detachgate",
         "//services/bossd/internal/git",
         "//services/bossd/internal/proofenv",
         "//services/bossd/internal/rotation",

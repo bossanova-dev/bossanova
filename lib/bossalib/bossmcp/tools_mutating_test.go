@@ -3,6 +3,7 @@ package bossmcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -185,6 +186,17 @@ func TestMutatingTools(t *testing.T) {
 				return &pb.Session{Id: "sess-lsp"}, nil
 			}},
 			sentinel: "sess-lsp",
+		},
+		{
+			tool: "refresh_session_pr",
+			args: map[string]any{"session_id": "s1", "pr_number": 42},
+			backend: &fakeBackend{refreshSessionPR: func(_ context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+				if req.GetId() != "s1" || req.GetPrNumber() != 42 {
+					t.Errorf("refresh_session_pr args not forwarded: %+v", req)
+				}
+				return &pb.Session{Id: "sess-rsp"}, nil
+			}},
+			sentinel: "sess-rsp",
 		},
 		{
 			tool: "record_chat",
@@ -1150,5 +1162,117 @@ func TestCreateSessionToolDescriptionSaysACancelledCreateStillCreates(t *testing
 	const want = "the create continues on the daemon even if this call is cancelled"
 	if !strings.Contains(desc, want) {
 		t.Fatalf("create_session description missing %q: %s", want, desc)
+	}
+}
+
+func TestSendChatMessageObservesTurnStartForEverySubmitMode(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{
+			name: "submit omitted",
+			args: map[string]any{"agent_session_id": "agent-omitted", "message": "prefill"},
+		},
+		{
+			name: "submit false",
+			args: map[string]any{"agent_session_id": "agent-false", "message": "prefill", "submit": false},
+		},
+		{
+			name: "submit true",
+			args: map[string]any{"agent_session_id": "agent-true", "message": "run", "submit": true},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				if !req.GetShouldObserveTurnStart() {
+					return nil, fmt.Errorf("ShouldObserveTurnStart = false for args %+v", tc.args)
+				}
+				return &pb.SendChatMessageResponse{
+					TmuxSessionName: "tmux-" + req.GetAgentSessionId(),
+					Delivered:       true,
+					TurnStartState:  pb.SendChatMessageResponse_TURN_START_STATE_UNOBSERVABLE,
+				}, nil
+			}}
+			cs := newConnectedClient(t, backend, Options{})
+
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "send_chat_message",
+				Arguments: tc.args,
+			})
+			if err != nil {
+				t.Fatalf("call send_chat_message: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("send_chat_message error: %s", textOf(t, res))
+			}
+		})
+	}
+}
+
+func TestSendChatMessageResultNamesTurnStartAndDeliveryStates(t *testing.T) {
+	cases := []struct {
+		name      string
+		turnStart pb.SendChatMessageResponse_TurnStartState
+		delivery  pb.SendChatMessageResponse_DeliveryState
+	}{
+		{
+			name:      "observed",
+			turnStart: pb.SendChatMessageResponse_TURN_START_STATE_OBSERVED,
+			delivery:  pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED,
+		},
+		{
+			name:      "not observed",
+			turnStart: pb.SendChatMessageResponse_TURN_START_STATE_NOT_OBSERVED,
+			delivery:  pb.SendChatMessageResponse_DELIVERY_STATE_NOT_SUBMITTED,
+		},
+		{
+			name:      "unobservable",
+			turnStart: pb.SendChatMessageResponse_TURN_START_STATE_UNOBSERVABLE,
+			delivery:  pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED,
+		},
+		{
+			name:      "zero values",
+			turnStart: pb.SendChatMessageResponse_TURN_START_STATE_UNSPECIFIED,
+			delivery:  pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				return &pb.SendChatMessageResponse{
+					TmuxSessionName: "tmux-state",
+					Delivered:       true,
+					TurnStartState:  tc.turnStart,
+					DeliveryState:   tc.delivery,
+				}, nil
+			}}
+			cs := newConnectedClient(t, backend, Options{})
+
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "send_chat_message",
+				Arguments: map[string]any{"agent_session_id": "agent-state", "message": "hello"},
+			})
+			if err != nil {
+				t.Fatalf("call send_chat_message: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("send_chat_message error: %s", textOf(t, res))
+			}
+
+			var out map[string]any
+			if err := json.Unmarshal([]byte(textOf(t, res)), &out); err != nil {
+				t.Fatalf("unmarshal result %q: %v", textOf(t, res), err)
+			}
+			if got := out["turn_start_state_name"]; got != tc.turnStart.String() || got == "" {
+				t.Fatalf("turn_start_state_name = %v, want %q in %s", got, tc.turnStart.String(), textOf(t, res))
+			}
+			if got := out["delivery_state_name"]; got != tc.delivery.String() || got == "" {
+				t.Fatalf("delivery_state_name = %v, want %q in %s", got, tc.delivery.String(), textOf(t, res))
+			}
+		})
 	}
 }

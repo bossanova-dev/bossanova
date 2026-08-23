@@ -54,23 +54,26 @@ func sortedKeys(m map[string]string) []string {
 // The session-start deadline is not the outermost limit on every path, so it
 // cannot be raised in isolation (BOS-896). On the repair-driven session-start
 // path this readiness wait runs *inside* a plugin→host unary RPC, StartChatRun,
-// which carries its own ceiling — hostclient.StartChatRunRPCTimeout in
-// lib/bossalib/plugin/hostclient/hostclient.go, currently 90s. This deadline
-// plus the in-RPC tails that follow it (the submit verifier here, and
+// which carries its own ceiling in lib/bossalib/plugin/hostclient. That ceiling
+// is derived from the host's resolved readiness deadline on the repair path:
+// readiness + max(readiness, the submit-verifier and fresh-session-ID tails).
+// At the 45s default it is 90s; at 300s it is 600s. This deadline plus the
+// in-RPC tails that follow it (the submit verifier here, and
 // freshProviderSessionIDResolveDeadline over in internal/session) must stay
 // under that ceiling with headroom, or the RPC is cut off first and the number
-// below silently stops taking effect on that path. Worse, a ceiling that fires
-// first costs the diagnostic: waitForReadyMarker honours ctx.Done(), so the
-// caller gets a bare context error instead of the pane capture that
+// below silently stops taking effect on that path. Be precise about what that
+// costs. It is the CONFIGURED wait rather than the diagnostic: this is the
+// multi-attempt session-start path, so waitForReadyMarkerWithAttempts clamps
+// each attempt to what the caller's context can still fund and the failure
+// still arrives as the ready-marker error carrying the pane capture that
 // distinguishes a slow boot from an auth prompt from an update interstitial.
-// TestSessionStartReadinessFitsStartChatRunBudget in tmux_budget_test.go
-// enforces the relationship and will fail if this value outgrows it. Two gaps
-// in that guard are worth knowing. It sees only the compiled default below, so
-// an operator-configured deadline — resolved at runtime — is not covered and
-// can still re-create the bug. And it sees only this deadline and the submit
-// verifier: freshProviderSessionIDResolveDeadline lives in internal/session and
-// is invisible from package tmux, so growing that constant would eat the same
-// budget with nothing firing.
+// The attempt simply runs for less than the number below promises, and only the
+// clamp clause in the timeout message says so. A bare context error is the
+// FROZEN single-attempt path's failure mode (see ready_marker.go) — that
+// delivery is handed its context unclamped, so ctx.Done() reaches the caller
+// with nothing attached. TestSessionStartReadinessFitsStartChatRunBudget in
+// tmux_budget_test.go enforces the configured-value relationship, and drift
+// guards in tmux and session pin the two shared in-RPC tail terms.
 //
 // sendPlanReadyMarker is the prompt indicator Claude Code renders inside
 // its input box once the TUI is ready to accept input. We intentionally
@@ -89,6 +92,7 @@ const (
 	// purpose: that agent is booted, so its composer is either there now or
 	// wedged, and this delivery has a relay deadline above it.
 	DefaultSendReadyDeadline    = 5 * time.Second
+	tmuxCommandWaitDelay        = 2 * time.Second
 	sendPlanDefaultPollInterval = 100 * time.Millisecond
 	sendPlanReadyMarker         = "❯"
 
@@ -336,6 +340,7 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 	cmd := c.cmdFunc(ctx, "tmux", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("failed to create tmux session %q: %w (stderr: %s)", opts.Name, err, msg)
@@ -432,6 +437,7 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 	cmd := c.cmdFunc(ctx, "tmux", "has-session", "-t", name)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") {
@@ -477,6 +483,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]LiveSession, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if strings.Contains(msg, "no server running") {
@@ -515,6 +522,7 @@ func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, bool) {
 	cmd := c.cmdFunc(ctx, "tmux", "show-environment", "-t", name, key)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
@@ -694,6 +702,7 @@ func (c *Client) listClientNames(ctx context.Context, sessionName string) ([]str
 	cmd := c.cmdFunc(ctx, "tmux", "list-clients", "-t", sessionName, "-F", "#{client_name}")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
@@ -758,6 +767,7 @@ func (c *Client) PipePane(ctx context.Context, sessionName, logPath string) erro
 	cmd := c.cmdFunc(ctx, "tmux", "pipe-pane", "-o", "-t", sessionName, pipeCmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("tmux pipe-pane -t %q: %w (stderr: %s)", sessionName, err, msg)
@@ -856,6 +866,11 @@ type sendPlanOpts struct {
 	// submit and verify as before.
 	prefillOnly bool
 
+	// beforeSubmit runs after the payload is in the composer and immediately
+	// before the first Enter is sent. It lets callers capture a baseline for
+	// post-submit observation without moving that observation concern into tmux.
+	beforeSubmit func()
+
 	// modalDetector is the "is this a menu?" half of the readiness gate for
 	// THIS delivery. It lives here, in the per-call options, rather than on
 	// Client because the grammar is per agent — codex's glyphs are not Claude's
@@ -884,6 +899,30 @@ func (c *Client) startDeliveryOpts(readyMarker string, submit bool, detector Mod
 		attempts = sessionStartReadyAttempts
 	}
 	return c.deliveryOpts(c.sessionStartReadyDeadline, DefaultSessionStartReadyDeadline, attempts, readyMarker, submit, detector)
+}
+
+// SessionStartReadyDeadline reports the composer-readiness budget this client
+// applies to a SESSION-START (or resume) delivery: the operator-configured
+// value when one was supplied through WithSessionStartReadyDeadline, otherwise
+// DefaultSessionStartReadyDeadline.
+//
+// It reads the SAME field startDeliveryOpts reads and substitutes the same
+// default, deliberately, so an out-of-package caller asking what a delivery
+// will wait cannot get a different answer from the one the delivery uses.
+//
+// It is exported for exactly one caller: Server.executeAccountSwitch
+// (services/bossd/internal/server) sizes the switch's respawn budget with
+// config.SwitchRespawnBudgetFor over this value (BOS-948). The budget has to
+// scale with the readiness wait it funds, and the daemon holds one long-lived
+// client that already carries the resolved setting — so reading it here is both
+// cheaper and more honest than re-reading settings.json per switch, which would
+// quietly break the "takes effect on the next daemon restart" contract the
+// setting documents.
+func (c *Client) SessionStartReadyDeadline() time.Duration {
+	if c.sessionStartReadyDeadline > 0 {
+		return c.sessionStartReadyDeadline
+	}
+	return DefaultSessionStartReadyDeadline
 }
 
 // sendDeliveryOpts builds the production timing for a delivery into an
@@ -1117,6 +1156,15 @@ func (c *Client) SendMessageWithModal(ctx context.Context, sessionName, text str
 	return c.sendMessage(ctx, sessionName, text, submit, readyMarker, detector)
 }
 
+// SendMessageWithModalBeforeSubmit is SendMessageWithModal with a hook that runs
+// after the payload is staged but immediately before the first Enter. The hook
+// must not mutate tmux state; it is for external observation baselines.
+func (c *Client) SendMessageWithModalBeforeSubmit(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector, beforeSubmit func()) error {
+	opts := c.sendDeliveryOpts(readyMarker, WillSubmit(submit, text), detector)
+	opts.beforeSubmit = beforeSubmit
+	return c.sendPlan(ctx, sessionName, text, opts)
+}
+
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
 // timing. Both production code and tests funnel through here.
 func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts sendPlanOpts) error {
@@ -1171,6 +1219,9 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	}
 
 	// Step 3: submit with Enter.
+	if opts.beforeSubmit != nil {
+		opts.beforeSubmit()
+	}
 	if err := c.sendEnter(ctx, sessionName); err != nil {
 		return err
 	}
@@ -1221,6 +1272,9 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return nil
 	}
 
+	if opts.beforeSubmit != nil {
+		opts.beforeSubmit()
+	}
 	if err := c.sendEnter(ctx, sessionName); err != nil {
 		return err
 	}
@@ -1249,6 +1303,7 @@ func (c *Client) typeLiteralLineNoEnter(ctx context.Context, sessionName, line s
 	textCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "-l", "--", escapeSendKeysLiteral(line))
 	var textStderr bytes.Buffer
 	textCmd.Stderr = &textStderr
+	textCmd.WaitDelay = tmuxCommandWaitDelay
 	if err := textCmd.Run(); err != nil {
 		if msg := strings.TrimSpace(textStderr.String()); msg != "" {
 			return fmt.Errorf("tmux send-keys literal line for %q: %w (stderr: %s)", sessionName, err, msg)
@@ -1268,6 +1323,7 @@ func (c *Client) pasteBufferNoEnter(ctx context.Context, sessionName, text strin
 	loadCmd.Stdin = strings.NewReader(text)
 	var loadStderr bytes.Buffer
 	loadCmd.Stderr = &loadStderr
+	loadCmd.WaitDelay = tmuxCommandWaitDelay
 	if err := loadCmd.Run(); err != nil {
 		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
 			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
@@ -1278,6 +1334,7 @@ func (c *Client) pasteBufferNoEnter(ctx context.Context, sessionName, text strin
 	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
 	var pasteStderr bytes.Buffer
 	pasteCmd.Stderr = &pasteStderr
+	pasteCmd.WaitDelay = tmuxCommandWaitDelay
 	if err := pasteCmd.Run(); err != nil {
 		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
 			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
@@ -1295,6 +1352,7 @@ func (c *Client) sendEnter(ctx context.Context, sessionName string) error {
 	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
 	var enterStderr bytes.Buffer
 	enterCmd.Stderr = &enterStderr
+	enterCmd.WaitDelay = tmuxCommandWaitDelay
 	if err := enterCmd.Run(); err != nil {
 		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
 			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
@@ -1324,6 +1382,7 @@ func (c *Client) clearComposer(ctx context.Context, sessionName string) error {
 	clearCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "C-u")
 	var clearStderr bytes.Buffer
 	clearCmd.Stderr = &clearStderr
+	clearCmd.WaitDelay = tmuxCommandWaitDelay
 	if err := clearCmd.Run(); err != nil {
 		if msg := strings.TrimSpace(clearStderr.String()); msg != "" {
 			return fmt.Errorf("tmux send-keys C-u for %q: %w (stderr: %s)", sessionName, err, msg)

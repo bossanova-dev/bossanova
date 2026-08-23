@@ -184,6 +184,15 @@ test('assertConforms throws when a capability is missing', () => {
   assert.throws(() => assertConforms({ tracker: 'stub' }), /missing capability: hasWork/)
 })
 
+test('assertConforms accepts two-argument resolveClaim implementations', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  adapter.resolveClaim = function resolveClaim(_comments, _myToken) {
+    return true
+  }
+  assert.equal(adapter.resolveClaim.length, 2)
+  assert.doesNotThrow(() => assertConforms(adapter))
+})
+
 // A stub adapter with every TRACKER_CAPABILITIES member present and a fully
 // valid operationMap (every REQUIRED_TRACKER_OPERATIONS key with a non-empty
 // tool + summary), so the operationMap-specific tests below isolate exactly

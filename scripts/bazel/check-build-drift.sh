@@ -10,7 +10,12 @@ cd "$(git rev-parse --show-toplevel)"
 
 # 1) Gazelle drift over ALL modules (no directory args = whole repo). Hand-added
 #    attrs marked `# keep` (data, rundir, tags, visibility) must survive regen.
-bazel run //:gazelle -- -mode=diff
+if ! gazelle_diff="$(bazel run //:gazelle -- -mode=diff 2>&1)"; then
+  echo "ERROR: BUILD files are out of sync with 'bazel run //:gazelle':" >&2
+  echo "Run: bazel run //:gazelle" >&2
+  printf '%s\n' "$gazelle_diff" >&2
+  exit 1
+fi
 echo "BUILD files clean (repo-wide gazelle diff)"
 
 # 2) binary-inventory.json must match `bazel query 'kind(go_binary, //...)'`

@@ -401,10 +401,13 @@ func TestNewCmdRegistersBOS821Flags(t *testing.T) {
 // the durable-pane option a caller actually wants is --tmux-unattended.
 func TestNewCmdDetachHelpDistinguishesTmuxUnattended(t *testing.T) {
 	usage := newCmd().Flags().Lookup("detach").Usage
-	for _, want := range []string{"--repo", "--prompt", "always detaches", "no-op", "--tmux-unattended"} {
+	for _, want := range []string{"--repo", "--prompt", "headlessly", "no-op", "--tmux-unattended", "stderr"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("--detach usage %q is missing %q", usage, want)
 		}
+	}
+	if strings.Contains(usage, "Exit immediately") {
+		t.Errorf("--detach usage %q still promises an immediate exit", usage)
 	}
 }
 

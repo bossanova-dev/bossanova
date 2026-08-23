@@ -490,10 +490,10 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 
 			snapshot := p.snapshotEarlyOutput()
 			if discovered := r.sessionIDFromOutput(snapshot); discovered != "" {
-				// Re-key the process map so future Stop/IsRunning/ExitError
-				// calls find the process under the canonical session ID.
+				// Keep the caller-minted key as an alias while the discovered ID
+				// becomes canonical. Future eviction must remove every key that
+				// points at this process, not just p.sessionID.
 				r.mu.Lock()
-				delete(r.procs, sessionID)
 				p.sessionID = discovered
 				r.procs[discovered] = p
 				r.mu.Unlock()

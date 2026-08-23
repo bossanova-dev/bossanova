@@ -94,6 +94,41 @@ func TestStatusToolDescriptionCaveats(t *testing.T) {
 			claim:  "says the roll-up carries no per-chat liveness fields",
 			phrase: "aggregate only",
 		},
+		{
+			tool:   "send_chat_message",
+			claim:  "delivered is a handoff receipt, not evidence the agent began",
+			phrase: "not proof the agent took the work",
+		},
+		{
+			tool:   "send_chat_message",
+			claim:  "names the turn-start verdict field",
+			phrase: "`turn_start_state_name`",
+		},
+		{
+			tool:   "send_chat_message",
+			claim:  "a not-observed verdict does not retract delivery",
+			phrase: "does not mean not delivered",
+		},
+		{
+			tool:   "send_chat_message",
+			claim:  "warns that resending after a verdict double-posts",
+			phrase: "double-posts",
+		},
+		{
+			tool:   "send_chat_message",
+			claim:  "prefill-only sends cannot be turn-start observed",
+			phrase: "UNOBSERVABLE",
+		},
+		{
+			tool:   "create_session",
+			claim:  "agent_launched is not proof the prompt was consumed",
+			phrase: "not proof the prompt was consumed",
+		},
+		{
+			tool:   "create_session",
+			claim:  "points callers at get_chat_statuses before assuming work began",
+			phrase: "`get_chat_statuses`",
+		},
 	}
 
 	for _, tc := range cases {

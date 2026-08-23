@@ -20,6 +20,40 @@ test('inject-pr-tag without a PR number exits 2', () => {
   assert.match(err, /<pr-number> is required/)
 })
 
+test('inject-pr-tag returns the adapter failure status and names the failure', () => {
+  let err = ''
+  const thrown = new Error('helper rejected the rewrite')
+  thrown.status = 2
+  const code = runCli(['inject-pr-tag', '1234'], {
+    errWrite: (s) => (err += s),
+    resolve: () => ({
+      injectPrTag: () => {
+        throw thrown
+      },
+    }),
+  })
+  assert.equal(code, 2)
+  assert.equal(err, 'inject-pr-tag: helper rejected the rewrite\n')
+})
+
+test('inject-pr-tag flattens thrown zero or missing statuses to failure', () => {
+  for (const status of [undefined, 0]) {
+    let err = ''
+    const thrown = new Error(`bad status ${status}`)
+    thrown.status = status
+    const code = runCli(['inject-pr-tag', '1234'], {
+      errWrite: (s) => (err += s),
+      resolve: () => ({
+        injectPrTag: () => {
+          throw thrown
+        },
+      }),
+    })
+    assert.equal(code, 1)
+    assert.equal(err, `inject-pr-tag: bad status ${status}\n`)
+  }
+})
+
 test('an unknown finalize capability exits 2', () => {
   let err = ''
   const code = runCli(['bogus'], { errWrite: (s) => (err += s), resolve: () => ({}) })

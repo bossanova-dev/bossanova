@@ -1,18 +1,30 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  utimesSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   REPAIR_RESULTS,
   DISPATCH_FAILURE,
+  PROVISIONAL_KEY,
+  provisionalPayload,
+  isProvisional,
   makeRunContext,
   writeSentinel,
   readSentinel,
   matchRepairResult,
   cleanupRunContext,
+  reapStaleRunDirs,
+  STALE_RUN_DIR_TTL_MS,
 } from './bs-run-sentinel.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-run-sentinel.mjs', import.meta.url))
@@ -26,6 +38,74 @@ function runCli(args = []) {
 test('REPAIR_RESULTS is the byte-identical published set', () => {
   assert.deepEqual(REPAIR_RESULTS, ['green', 'no-progress', 'max-attempts', 'blocked'])
   assert.equal(DISPATCH_FAILURE, 'dispatch-failure')
+})
+
+test('PROVISIONAL_KEY is the byte-identical payload marker the skill markdown writes', () => {
+  // The skill markdown hand-writes `{"provisional":true}` into a shell command rather than
+  // spawning a second node process for it, so this constant and that literal are two stores of
+  // one string. Pin the byte here; the boss-build content gate joins the markdown against it.
+  assert.equal(PROVISIONAL_KEY, 'provisional')
+  assert.deepEqual(provisionalPayload(), { provisional: true })
+  // The seed payload must survive `JSON.parse(JSON.stringify(…))` unchanged — that is the exact
+  // trip it makes through the CLI's `[payloadJson]` argument.
+  assert.deepEqual(JSON.parse(JSON.stringify(provisionalPayload())), { provisional: true })
+})
+
+test('isProvisional is true only for an ok read carrying strict boolean true', () => {
+  const base = mkdtempSync(join(tmpdir(), 'brs-prov-'))
+  const ctx = makeRunContext('boss-build', { tmpdir: base })
+
+  // The seed: written before dispatch, read back as a routable verdict.
+  writeSentinel(ctx, 'review', 'bs-review capped: after 1 rounds.', provisionalPayload())
+  const seeded = readSentinel(ctx, 'review')
+  assert.equal(seeded.status, 'ok')
+  assert.equal(isProvisional(seeded), true)
+
+  // The upgrade: a later non-provisional write to the same context overwrites it.
+  writeSentinel(ctx, 'review', 'bs-review clean: no open must-fix.', { provisional: false })
+  const upgraded = readSentinel(ctx, 'review')
+  assert.equal(upgraded.status, 'ok')
+  assert.equal(isProvisional(upgraded), false)
+})
+
+test('isProvisional is false for missing, stale, absent payload, and the STRING "true"', () => {
+  const base = mkdtempSync(join(tmpdir(), 'brs-prov-neg-'))
+  const ctx = makeRunContext('boss-build', { tmpdir: base })
+
+  // missing — no observation happened at all, so it is a dispatch-failure, never a seed.
+  assert.equal(isProvisional(readSentinel(ctx, 'review')), false)
+
+  // stale — a foreign run's leftover is never trusted, marker or not.
+  writeFileSync(
+    ctx.sentinelPath('review'),
+    JSON.stringify({ runId: 'OTHER', kind: 'x', payload: { provisional: true } }),
+  )
+  const stale = readSentinel(ctx, 'review')
+  assert.equal(stale.status, 'stale')
+  assert.equal(isProvisional(stale), false)
+
+  // absent payload — `readSentinel` defaults it to `{}`, which is not the marker.
+  writeSentinel(ctx, 'review', 'bs-review clean: no open must-fix.')
+  assert.equal(isProvisional(readSentinel(ctx, 'review')), false)
+
+  // The string `"true"` is NOT the marker. This is a property of THIS module's API, not of the
+  // shipped shell path: the skill's classify block reads the marker with
+  // `jq -r '.payload.provisional // empty'`, which cannot tell JSON `true` from JSON `"true"`.
+  // That divergence is unreachable (only the skill's own seed writes the marker, as a boolean
+  // literal) and its failure direction is safe (a stringified marker over-routes to BLOCKED,
+  // never to clean) — but a JS caller reaching for `isProvisional` gets the strict reading, so
+  // the two never converge on treating a stringified marker as a seed.
+  writeFileSync(
+    ctx.sentinelPath('review'),
+    JSON.stringify({ runId: ctx.runId, kind: 'k', payload: { provisional: 'true' } }),
+  )
+  assert.equal(isProvisional(readSentinel(ctx, 'review')), false)
+
+  // Defensive shapes a caller can hand it.
+  assert.equal(isProvisional(null), false)
+  assert.equal(isProvisional(undefined), false)
+  assert.equal(isProvisional({ status: 'ok' }), false)
+  assert.equal(isProvisional({ payload: { provisional: true } }), false)
 })
 
 test('a fresh context has a unique dir under the given tmpdir', () => {
@@ -98,6 +178,40 @@ test('cleanupRunContext removes the dir and is idempotent', () => {
   cleanupRunContext(ctx) // second call must not throw
   assert.equal(existsSync(ctx.dir), false)
   assert.equal(readSentinel(ctx, 'repair').status, 'missing')
+})
+
+test('makeRunContext reaps stale sentinel and boss-plan run dirs but keeps fresh siblings', () => {
+  const base = mkdtempSync(join(tmpdir(), 'brs-reap-'))
+  const sentinelBase = join(base, 'bs-run-sentinel')
+  const staleSentinel = join(sentinelBase, 'boss-plan-OLD')
+  const freshSentinel = join(sentinelBase, 'boss-plan-FRESH')
+  const staleRunScratch = join(base, 'boss-plan-run.STALE')
+  const freshRunScratch = join(base, 'boss-plan-run.FRESH')
+  for (const dir of [staleSentinel, freshSentinel, staleRunScratch, freshRunScratch]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'x'), 'x')
+  }
+  const old = new Date(Date.now() - STALE_RUN_DIR_TTL_MS - 1000)
+  utimesSync(staleSentinel, old, old)
+  utimesSync(staleRunScratch, old, old)
+
+  makeRunContext('boss-plan', { tmpdir: base, runId: 'NEW' })
+
+  assert.equal(existsSync(staleSentinel), false)
+  assert.equal(existsSync(staleRunScratch), false)
+  assert.equal(existsSync(freshSentinel), true)
+  assert.equal(existsSync(freshRunScratch), true)
+  assert.equal(existsSync(join(sentinelBase, 'boss-plan-NEW')), true)
+})
+
+test('reapStaleRunDirs never touches the excluded directory', () => {
+  const base = mkdtempSync(join(tmpdir(), 'brs-reap-exclude-'))
+  const current = join(base, 'bs-run-sentinel', 'boss-plan-CURRENT')
+  mkdirSync(current, { recursive: true })
+  const old = new Date(Date.now() - STALE_RUN_DIR_TTL_MS - 1000)
+  utimesSync(current, old, old)
+  reapStaleRunDirs({ tmpdir: base, excludeDirs: [current] })
+  assert.equal(existsSync(current), true)
 })
 
 test('writeSentinel is atomic: no partial file is ever left at the final path', () => {

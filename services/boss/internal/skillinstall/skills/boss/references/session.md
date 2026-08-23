@@ -81,7 +81,7 @@ boss merge abc123 --yes --json
 
 Create a new coding session
 
-Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, streams any setup output to stderr, and prints the session-id and chat-id to stdout, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.
+Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, prints the session-id to stdout as soon as the session exists, prints chat-id later if the daemon provides one, streams setup progress to stderr until setup settles, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.
 
 Launching a session to run work unattended: supplying a prompt launches the agent headlessly so the work actually runs — that is the path's own behaviour, not something --detach causes. The CLI and the MCP `create_session` tool now share this default. `create_session` applies the same rule: a prompt-carrying call defaults to headless and reports agent_launched=true, while attended:true creates the session idle awaiting a human `boss attach` (agent_launched=false). Prefer the default for programmatic/unattended launches.
 
@@ -89,14 +89,14 @@ Launching a session to run work unattended: supplying a prompt launches the agen
 
 Tracker binding: --tracker-id, --tracker-source (linear or sentry) and --tracker-url bind the session to an external issue, which is what the daemon's tracker-id dedup keys on — more robust than the `[<TICKET>] <title>` title convention, which silently duplicates a session when the title drifts. Each flag is independent and an omitted one leaves its field unset; an unrecognised --tracker-source is rejected before any session is created.
 
-Use --json on the non-interactive path for a machine-readable envelope instead of the two-line output: success prints {session:{id, title, chat_id}} on stdout, failure prints {error:{code, connect_code, message}} with a stable `code` such as INVALID_ARGUMENT or NOT_FOUND, and every failure still exits 1. Setup output goes to stderr either way, so stdout carries exactly one JSON object. Without --json the two-line `session-id:` / `chat-id:` output is unchanged.
+Use --json on the non-interactive path for a machine-readable envelope instead of the two-line output: success prints {session:{id, title, chat_id}} on stdout, failure prints {error:{code, connect_code, message}} with a stable `code` such as INVALID_ARGUMENT or NOT_FOUND, and every failure still exits 1. Setup output goes to stderr either way, so stdout carries exactly one JSON object. Without --json the two-line `session-id:` / `chat-id:` output is unchanged; session-id appears as soon as the session exists, and chat-id appears later if the daemon provides one.
 
 **Flags:**
 
 - `--account` — Account id or label to run this session under (empty = system default)
 - `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
 - `--defer-pr` — Open no draft PR up front; a PR is opened at finalize only if the run produced commits. For runs not expected to change the repository. Pair with --tmux-unattended so a restart cannot strand commits before finalize. Non-interactive --repo + --prompt path only
-- `--detach` — Exit immediately after creating the session; print session-id and chat-id. The non-interactive --repo + --prompt path always detaches, so the flag is a no-op there; --tmux-unattended is the distinct durable-pane option
+- `--detach` — A no-op on the non-interactive --repo + --prompt path, which always runs headlessly, prints session-id as soon as the session exists, prints chat-id later if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the distinct durable-pane option
 - `--json` — Emit the created session as a stable JSON schema instead of the two-line output
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach

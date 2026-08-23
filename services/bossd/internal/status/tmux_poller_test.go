@@ -2304,9 +2304,13 @@ func TestTmuxStatusPoller_AuthFailedDetected(t *testing.T) {
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
+	if tracker.AuthFailed(agentSessionID) {
+		t.Fatal("auth-failed marker surfaced after one login-required poll, want debounced")
+	}
+	poller.pollOnce(context.Background())
 
 	if !tracker.AuthFailed(agentSessionID) {
-		t.Error("expected auth-failed marker after polling a login-required pane")
+		t.Error("expected auth-failed marker after two consecutive login-required polls")
 	}
 }
 
@@ -2318,6 +2322,7 @@ func TestTmuxStatusPoller_AuthFailedClearedOnNormalOutput(t *testing.T) {
 	tmuxName := "boss-test-authclear"
 	agentSessionID := "claude-clear"
 	// Pre-seed a stale auth marker; a normal pane must clear it.
+	tracker.SetAuthFailed(agentSessionID, true)
 	tracker.SetAuthFailed(agentSessionID, true)
 
 	chatStore := &mockChatStore{

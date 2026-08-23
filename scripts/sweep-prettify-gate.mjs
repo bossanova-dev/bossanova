@@ -6,21 +6,20 @@
 //
 // The gate answers one question before an LLM session spawns: "would a whole-repo
 // `make format-all` pass change anything?" It probes the formatters `make
-// format-all` actually applies, in CHECK mode (prettier `--check`, `gofmt -l`), so
-// the tree is never mutated. Exit 0 == run the sweep; non-zero == skip (zero tokens).
+// format-all` actually applies, in CHECK mode (syncpack lint/format --check,
+// prettier `--check`, biome `check`, `gofmt -l`), so the tree is never mutated.
+// Exit 0 == run the sweep; non-zero == skip (zero tokens).
 // The target is `format-all`, NOT `format`: BOS-371 made the bare `format` target
 // the changed-files one, which on a fresh cron branch formats nothing (BOS-653).
 //
-// The probe is a SOUND SUBSET of `make format-all`, not a complete mirror of it: it
-// covers the two cheap, high-value formatters (docs prettier + gofmt) and omits
-// the rest (`syncpack`, the biome-owned web target, `services/docs`, `scripts`).
-// This is deliberate. Soundness — every drift it reports IS fixed by `make
-// format-all`, so the gate never triggers a run that produces an empty diff — is
-// what matters for a cost gate; a missed formatter just defers the sweep to a later
-// trigger, it never wastes an agent run. Crucially it does NOT probe goimports:
-// each module's `format` target runs plain `gofmt -w` and never `goimports -w`, so a
-// goimports probe would exit 0 (run) on drift the sweep could not reconcile -> a
-// guaranteed wasted NO_CHANGE run.
+// The probe is a sound mirror of the formatter families `make format-all` runs:
+// root syncpack format/fix, docs/skills prettier, tracked Go gofmt, services/web
+// biome, services/docs prettier, and scripts prettier. Soundness — every drift it
+// reports IS fixed by `make format-all`, so the gate never triggers a run that
+// produces an empty diff — is what matters for a cost gate. It deliberately does
+// NOT probe goimports: each module's `format` target runs plain `gofmt -w` and
+// never `goimports -w`, so a goimports probe would exit 0 (run) on drift the
+// sweep could not reconcile -> a guaranteed wasted NO_CHANGE run.
 
 // Batch size for the gofmt arg list so a 1000+ file repo never blows ARG_MAX.
 export const GO_BATCH = 300
@@ -31,12 +30,38 @@ export const GO_BATCH = 300
 // reached prettier — the dependency-free-worktree failure the gate MUST fail
 // closed on rather than mistake for drift. Stable across prettier 3.x.
 export const PRETTIER_DRIFT_MARKER = 'Code style issues found'
+export const SYNCPACK_DRIFT_MARKER = '✘'
+export const BIOME_FORMAT_DRIFT_MARKER = 'Formatter would have printed'
 
 // True iff a completed `pnpm run lint:docs` result carries prettier's `--check`
 // drift marker. Checks both captured streams because pnpm forwards prettier's
 // stderr (where the marker lands) through its own stderr. Pure.
 export function prettierReportedDrift(result) {
   return `${result.stdout ?? ''}\n${result.stderr ?? ''}`.includes(PRETTIER_DRIFT_MARKER)
+}
+
+export function syncpackReportedDrift(result) {
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+  return output.includes(SYNCPACK_DRIFT_MARKER)
+}
+
+export function biomeReportedFormatDrift(result) {
+  return `${result.stdout ?? ''}\n${result.stderr ?? ''}`.includes(BIOME_FORMAT_DRIFT_MARKER)
+}
+
+function assertNoSpawnError(result, label) {
+  if (result.error)
+    throw new Error(`${label} probe failed to run: ${result.error.message ?? result.error}`)
+}
+
+function checkMarkerProbe(result, { label, reason, reasons, isDrift }) {
+  assertNoSpawnError(result, label)
+  if (result.status === 0) return false
+  if (result.status === 1 && isDrift(result)) {
+    reasons.push(reason)
+    return true
+  }
+  throw new Error(`${label} probe errored (exit ${result.status}); cannot prove format state`)
 }
 
 /** Split `items` into consecutive chunks of at most `size` (pure). */
@@ -62,18 +87,18 @@ export function parseGoFiles(listed) {
 }
 
 // detectDrift decides whether a whole-repo `make format-all` pass would change
-// anything and returns the set of probes that reported drift.
+// anything and returns the first probe that reported drift.
 //
 // An environment probe (`make lint-check-version`) plus both formatter probes —
-// prettier over the docs/skills markdown globs and gofmt over tracked Go — are
 // REQUIRED and fail CLOSED: a spawn error, a failed environment probe, or ANY
 // completed exit that is neither a clean result nor the formatter's specific drift
 // signal, THROWS so the gate cannot prove state and therefore skips. This symmetry
 // matters most in a dependency-free worktree (the gate's design target): a missing
-// prettier/pnpm, OR a `pnpm`/Corepack exit-1 that fails before prettier runs, must
-// fail closed (skip), never be mistaken for drift and waste an agent run. There is
-// intentionally no goimports probe: `make format-all` does not apply `goimports -w`,
-// so probing it would trigger runs the sweep can't reconcile (see the file header).
+// formatter/pnpm, OR a `pnpm`/Corepack exit-1 that fails before the formatter runs,
+// must fail closed (skip), never be mistaken for drift and waste an agent run. There
+// is intentionally no goimports probe: `make format-all` does not apply
+// `goimports -w`, so probing it would trigger runs the sweep can't reconcile (see
+// the file header).
 export function detectDrift(run, { goFiles = [] } = {}) {
   const reasons = []
 
@@ -100,7 +125,88 @@ export function detectDrift(run, { goFiles = [] } = {}) {
     )
   }
 
-  // 1. Prettier `--check` over the docs/skills markdown globs (respects
+  // 1. syncpack lint/format checks mirror the two root syncpack write-mode
+  //    commands in `make format-all` (`syncpack fix` and `syncpack format`).
+  //    Both commands use exit 1 for findings. Require syncpack's own non-clean
+  //    output marker shape; bare lifecycle/Corepack failures fail closed.
+  if (
+    checkMarkerProbe(run('pnpm', ['syncpack', 'lint']), {
+      label: 'syncpack lint',
+      reason: 'syncpack',
+      reasons,
+      isDrift: syncpackReportedDrift,
+    })
+  ) {
+    return { drift: true, reasons }
+  }
+  if (
+    checkMarkerProbe(run('pnpm', ['syncpack', 'format', '--check']), {
+      label: 'syncpack format',
+      reason: 'syncpack',
+      reasons,
+      isDrift: syncpackReportedDrift,
+    })
+  ) {
+    return { drift: true, reasons }
+  }
+
+  // 2. Prettier `--check` over the scripts formatter globs. The arg list is the
+  //    check-mode twin of scripts/Makefile's write-mode `format` target.
+  if (
+    checkMarkerProbe(
+      run('pnpm', [
+        'exec',
+        'prettier',
+        '--check',
+        'scripts/*.{cjs,mjs}',
+        'scripts/bazel/*.mjs',
+        'scripts/changelog/*.{cjs,mjs}',
+        'scripts/skill-parity/*.{cjs,mjs}',
+        'skills-toolbox/*.mjs',
+        'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}',
+        '.claude/skills/*/gate/*.mjs',
+      ]),
+      {
+        label: 'scripts prettier',
+        reason: 'scripts-prettier',
+        reasons,
+        isDrift: prettierReportedDrift,
+      },
+    )
+  ) {
+    return { drift: true, reasons }
+  }
+
+  // 3. services/docs prettier check. Use the package's `lint` script directly,
+  //    not `make -C services/docs lint`, because that make target also typechecks
+  //    and would be stricter than the formatter `make format-all` runs.
+  if (
+    checkMarkerProbe(run('pnpm', ['--dir', 'services/docs', 'run', 'lint']), {
+      label: 'docs prettier',
+      reason: 'docs-prettier',
+      reasons,
+      isDrift: prettierReportedDrift,
+    })
+  ) {
+    return { drift: true, reasons }
+  }
+
+  // 4. services/web biome check. `biome check .` reports lint and format
+  //    together, but the sweep can only rely on format drift being reconciled by
+  //    `biome check --write .`. Treat only the formatter marker as drift; lint-only
+  //    exits fail closed.
+  if (
+    checkMarkerProbe(run('pnpm', ['--dir', 'services/web', 'run', 'lint']), {
+      label: 'web biome',
+      reason: 'web-biome',
+      reasons,
+      isDrift: biomeReportedFormatDrift,
+    })
+  ) {
+    return { drift: true, reasons }
+  }
+
+  // 5. Prettier `--check` over the docs/skills markdown globs (respects
   //    .prettierignore), via `pnpm run lint:docs`. Exit 0 = clean. Exit 1 is
   //    AMBIGUOUS: it is prettier's own drift signal, but `pnpm`/Corepack ALSO
   //    exit 1 when they fail *before* prettier runs — e.g. the gate's design
@@ -111,18 +217,18 @@ export function detectDrift(run, { goFiles = [] } = {}) {
   //    prettier's `--check` marker; a bare exit 1 (no marker) and every other
   //    non-zero exit (2 = config/parse error, 127 = missing binary) fail CLOSED.
   const prettier = run('pnpm', ['run', 'lint:docs'])
-  if (prettier.error) {
-    throw new Error(`prettier probe failed to run: ${prettier.error.message ?? prettier.error}`)
-  }
-  if (prettier.status === 0) {
-    // Clean tree — no docs/skills markdown drift.
-  } else if (prettier.status === 1 && prettierReportedDrift(prettier)) {
-    reasons.push('prettier-docs')
-  } else {
-    throw new Error(`prettier probe errored (exit ${prettier.status}); cannot prove format state`)
+  if (
+    checkMarkerProbe(prettier, {
+      label: 'prettier',
+      reason: 'prettier-docs',
+      reasons,
+      isDrift: prettierReportedDrift,
+    })
+  ) {
+    return { drift: true, reasons }
   }
 
-  // 2. gofmt -l over tracked Go files (batched). `gofmt -l` exits 0 and lists
+  // 6. gofmt -l over tracked Go files (batched). `gofmt -l` exits 0 and lists
   //    mis-formatted paths on stdout, so a non-zero exit is a genuine error
   //    (unreadable/unparseable file) → fail closed, not "no drift". Any listed
   //    path == drift. (`make format-all` applies `gofmt -w` per module but not
@@ -137,9 +243,9 @@ export function detectDrift(run, { goFiles = [] } = {}) {
     }
     if (String(gofmt.stdout ?? '').trim() !== '') {
       reasons.push('gofmt')
-      break
+      return { drift: true, reasons }
     }
   }
 
-  return { drift: reasons.length > 0, reasons }
+  return { drift: false, reasons }
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,25 @@ type spyStore struct {
 	suspendCalls  int
 	suspendID     string
 	suspendReason string
+
+	injectCalls  int
+	injectID     string
+	injectReason string
+	clearCalls   int
+	clearID      string
+}
+
+func (s *spyStore) RecordInjectionFailure(_ context.Context, id string, reason string) error {
+	s.injectCalls++
+	s.injectID = id
+	s.injectReason = reason
+	return nil
+}
+
+func (s *spyStore) ClearInjectionFailure(_ context.Context, id string) error {
+	s.clearCalls++
+	s.clearID = id
+	return nil
 }
 
 func (s *spyStore) List(_ context.Context) ([]*models.Account, error) {
@@ -1088,4 +1108,122 @@ type spySuspender struct{ calls int }
 func (s *spySuspender) MarkAccountSuspended(context.Context, string, string) error {
 	s.calls++
 	return nil
+}
+
+// TestRegistryAdapterInjectionHealthPassThrough proves the wiring the resolver's
+// optional seam depends on: the adapter must actually satisfy
+// account.injectionHealthRecorder and forward to the store, or the resolver's
+// type assertion silently fails and BOS-973's whole observability path is dead
+// code in production while the unit tests still pass on their fake.
+func TestRegistryAdapterInjectionHealthPassThrough(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{
+		"a1": {ID: "a1", Provider: models.AccountProviderCodex, Health: models.AccountHealthOK},
+	}}
+	reg := NewRegistry(store)
+
+	rec, ok := reg.(interface {
+		RecordInjectionFailure(ctx context.Context, id string, reason string) error
+		ClearInjectionFailure(ctx context.Context, id string) error
+	})
+	if !ok {
+		t.Fatal("registry adapter does not satisfy the injection-health seam the resolver asserts")
+	}
+
+	if err := rec.RecordInjectionFailure(context.Background(), "a1", "project codex base home: boom"); err != nil {
+		t.Fatalf("RecordInjectionFailure: %v", err)
+	}
+	if store.injectCalls != 1 || store.injectID != "a1" || store.injectReason != "project codex base home: boom" {
+		t.Fatalf("store record = (%d, %q, %q), want (1, \"a1\", the materialize error)",
+			store.injectCalls, store.injectID, store.injectReason)
+	}
+
+	if err := rec.ClearInjectionFailure(context.Background(), "a1"); err != nil {
+		t.Fatalf("ClearInjectionFailure: %v", err)
+	}
+	if store.clearCalls != 1 || store.clearID != "a1" {
+		t.Fatalf("store clear = (%d, %q), want (1, \"a1\")", store.clearCalls, store.clearID)
+	}
+}
+
+// A nil store must stay a no-op, matching every other registryAdapter method.
+func TestRegistryAdapterInjectionHealthNilStore(t *testing.T) {
+	reg := NewRegistry(nil)
+	rec, ok := reg.(interface {
+		RecordInjectionFailure(ctx context.Context, id string, reason string) error
+		ClearInjectionFailure(ctx context.Context, id string) error
+	})
+	if !ok {
+		t.Fatal("registry adapter does not satisfy the injection-health seam")
+	}
+	if err := rec.RecordInjectionFailure(context.Background(), "a1", "boom"); err != nil {
+		t.Errorf("RecordInjectionFailure on nil store: %v", err)
+	}
+	if err := rec.ClearInjectionFailure(context.Background(), "a1"); err != nil {
+		t.Errorf("ClearInjectionFailure on nil store: %v", err)
+	}
+}
+
+// TestSpawnEnvResolver_MaterializeFailureIsLoudAndRecorded is the BOS-973
+// end-to-end guard, run through the REAL registry adapter and resolver rather
+// than a stub seam. It pins all three halves of the fix at the one site whose
+// WRN line hid a month of ambient-login spawns:
+//
+//  1. the env still degrades to nil (the spawn policy is deliberately unchanged);
+//  2. the log line is ERROR — not WARN — and names the account id and provider,
+//     so the downgrade is legible in the daemon log; and
+//  3. the failure is recorded durably on the account row, which is what the TUI
+//     Accounts list, `boss account ls`, and rotation eligibility all read.
+//
+// (3) is the part a stubbed resolver test cannot prove: it only works if the
+// registry adapter actually satisfies the resolver's optional type assertion.
+func TestSpawnEnvResolver_MaterializeFailureIsLoudAndRecorded(t *testing.T) {
+	var logs bytes.Buffer
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	client := &fakeRotationClient{supports: true, matErr: errors.New("project codex base home: boom")}
+	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.New(&logs))
+
+	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
+	if env := r.Resolve(context.Background(), sess); env != nil {
+		t.Fatalf("env = %v, want nil (the degrade policy is unchanged)", env)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"level":"error"`) {
+		t.Fatalf("degrade must log at ERROR, not WARN:\n%s", out)
+	}
+	if !strings.Contains(out, `"account_id":"a1"`) {
+		t.Fatalf("degrade log must name the account id:\n%s", out)
+	}
+	if !strings.Contains(out, `"provider":"claude"`) {
+		t.Fatalf("degrade log must name the provider:\n%s", out)
+	}
+
+	if store.injectCalls != 1 {
+		t.Fatalf("store recorded %d injection failures, want exactly 1", store.injectCalls)
+	}
+	if store.injectID != "a1" {
+		t.Errorf("recorded against %q, want %q", store.injectID, "a1")
+	}
+	if !strings.Contains(store.injectReason, "project codex base home: boom") {
+		t.Errorf("recorded reason = %q, want the materialize error", store.injectReason)
+	}
+}
+
+// The mirror case: a successful spawn withdraws any recorded injection failure,
+// again through the real adapter chain, so a transient failure self-heals.
+func TestSpawnEnvResolver_SuccessClearsInjectionFailure(t *testing.T) {
+	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
+	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
+
+	sess := &models.Session{AgentName: "claude", AccountID: strptr("a1")}
+	if env := r.Resolve(context.Background(), sess); env["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
+		t.Fatalf("env = %v, want the materialized overlay", env)
+	}
+	if store.clearCalls != 1 {
+		t.Fatalf("store clear calls = %d, want exactly 1", store.clearCalls)
+	}
+	if store.injectCalls != 0 {
+		t.Errorf("store recorded %d injection failures on success, want 0", store.injectCalls)
+	}
 }

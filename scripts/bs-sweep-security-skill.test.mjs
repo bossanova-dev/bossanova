@@ -233,19 +233,24 @@ test('untagged commits after the injector take the BLOCKED branch (both mirrors)
   // failures, so on its own it would also swallow a real "commits left untagged" failure.
   // The post-condition guard below it is what makes the sweep stop. It MUST be an
   // `if … then … fi` (a trailing `&& { …; }` compound returns non-zero and aborts the block
-  // under `set -e`) and MUST use `grep -qv`, which succeeds when ANY line lacks the tag.
+  // under `set -e`) and MUST ignore empty bootstrap commits by comparing trees, not subjects.
   for (const [label, skill] of [
     ['source', SKILL],
     ['codex mirror', CODEX],
   ]) {
     const commitsLine =
-      'COMMITS="$(git log "origin/$BASE_BRANCH".."refs/heads/$SESSION_BRANCH" --oneline)"'
-    const untaggedLine = String.raw`UNTAGGED="$(printf '%s' "$COMMITS" | grep -v "\[#$PR_NUMBER\]" || true)"`
+      'COMMITS="$(git log "origin/$BASE_BRANCH".."refs/heads/$SESSION_BRANCH" --format=\'%H%x09%s\')"'
+    const untaggedLine = String.raw`if ! tree=$(git show -s --format=%T "$sha"); then exit 1; fi`
     // Against the BRANCH REF, not HEAD — HEAD is detached mid-rebase, so a HEAD-scoped
     // range would be empty on a stranded rebase and the guard would pass on nothing.
     assert.ok(
       skill.includes(commitsLine) && skill.includes(untaggedLine),
-      `${label} must fail closed when the branch range is unreadable`,
+      `${label} must inspect commit trees and fail closed when a commit is unreadable`,
+    )
+    assert.match(
+      skill,
+      /git\s+hash-object\s+-t\s+tree\s+\/dev\/null/,
+      `${label} must handle root commits`,
     )
     assert.doesNotMatch(
       skill,

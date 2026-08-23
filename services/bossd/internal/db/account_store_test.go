@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -527,3 +528,343 @@ func TestAccountStore_RecordUsageProbeUnknownID(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// --- BOS-973: credential-injection failure health ---------------------------
+
+func TestAccountStore_RecordInjectionFailure(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Seed a passing test so we can prove the injection failure clears it.
+	okAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
+		t.Fatalf("seed test result: %v", err)
+	}
+
+	const reason = "materialize codex account: project codex base home: boom"
+	if err := store.RecordInjectionFailure(ctx, acct.ID, reason); err != nil {
+		t.Fatalf("record injection failure: %v", err)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+	want := InjectionFailureReasonPrefix + reason
+	if got.LastTestError != want {
+		t.Errorf("last_test_error = %q, want %q", got.LastTestError, want)
+	}
+	// last_test_ok_at is deliberately PRESERVED. An injection failure is a
+	// local materialization failure, not a credential failure, so the
+	// last-verified-good timestamp is still true — and clearing it here would
+	// be the one part of the record ClearInjectionFailure cannot withdraw,
+	// leaving a self-healed account rendering as never tested.
+	if got.LastTestOkAt == nil {
+		t.Fatal("last_test_ok_at was cleared; an injection failure must leave the last verified-good test intact")
+	}
+	if !got.LastTestOkAt.Equal(okAt) {
+		t.Errorf("last_test_ok_at = %v, want %v (unchanged)", got.LastTestOkAt, okAt)
+	}
+
+	// …and the withdrawal leaves the row exactly as the failure found it.
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear injection failure: %v", err)
+	}
+	cleared, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if cleared.Health != models.AccountHealthOK || cleared.LastTestError != "" {
+		t.Errorf("after clear: health=%q last_test_error=%q, want ok and empty", cleared.Health, cleared.LastTestError)
+	}
+	if cleared.LastTestOkAt == nil || !cleared.LastTestOkAt.Equal(okAt) {
+		t.Errorf("after clear: last_test_ok_at = %v, want %v — a self-healed account must not render as never tested",
+			cleared.LastTestOkAt, okAt)
+	}
+}
+
+// MarkAccountSuspended keeps clearing last_test_ok_at: a suspension means the
+// credential itself can no longer serve requests, so the last-verified-good
+// timestamp is a stale claim. Pinned here because RecordInjectionFailure is the
+// near-identical write that must NOT clear it — the two are one edit away from
+// each other.
+func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "suspend"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	okAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
+		t.Fatalf("seed test result: %v", err)
+	}
+	if err := store.MarkAccountSuspended(ctx, acct.ID, "billing suspended"); err != nil {
+		t.Fatalf("mark suspended: %v", err)
+	}
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+	if got.LastTestOkAt != nil {
+		t.Errorf("last_test_ok_at = %v, want nil (cleared by a suspension)", got.LastTestOkAt)
+	}
+}
+
+func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.RecordInjectionFailure(ctx, acct.ID, "transient"); err != nil {
+		t.Fatalf("record injection failure: %v", err)
+	}
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear injection failure: %v", err)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthOK {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthOK)
+	}
+	if got.LastTestError != "" {
+		t.Errorf("last_test_error = %q, want empty", got.LastTestError)
+	}
+}
+
+// TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure is the whole
+// point of the prefix guard: a successful materialize must never erase a real
+// `boss account test` failure an operator still needs to see.
+// A healthy row routinely carries a STALE last_test_error: restoreAccountHealth
+// sets health=ok without clearing the reason. If RecordInjectionFailure preserved
+// that string, the row would end up failed with a reason ClearInjectionFailure can
+// never match (it is prefix-scoped), so every later successful injection would be a
+// no-op and the account would stay out of rotation permanently — exactly the
+// stuck-account class this change exists to remove. A reason on a HEALTHY row is
+// history, not protection, so it must be replaced.
+func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// A real failure, then a refresh that restores health but leaves the reason.
+	const staleErr = "401 invalid_grant: refresh token rejected"
+	if err := store.RecordTestResult(ctx, acct.ID, nil, staleErr); err != nil {
+		t.Fatalf("record test result: %v", err)
+	}
+	healthy := models.AccountHealthOK
+	if _, err := store.Update(ctx, acct.ID, UpdateAccountParams{Health: &healthy}); err != nil {
+		t.Fatalf("restore health: %v", err)
+	}
+
+	if err := store.RecordInjectionFailure(ctx, acct.ID, "project codex base home: boom"); err != nil {
+		t.Fatalf("record injection failure: %v", err)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+	if !strings.HasPrefix(got.LastTestError, InjectionFailureReasonPrefix) {
+		t.Fatalf("last_test_error = %q, want the injection prefix (a stale reason on a healthy row is history, not protection)", got.LastTestError)
+	}
+
+	// The whole point: the record must remain self-clearing.
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear injection failure: %v", err)
+	}
+	cleared, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if cleared.Health != models.AccountHealthOK {
+		t.Errorf("health after clear = %q, want %q (the account would otherwise be stuck out of rotation)", cleared.Health, models.AccountHealthOK)
+	}
+	if cleared.LastTestError != "" {
+		t.Errorf("last_test_error after clear = %q, want empty", cleared.LastTestError)
+	}
+}
+
+func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const testErr = "401 invalid_grant: refresh token rejected"
+	if err := store.RecordTestResult(ctx, acct.ID, nil, testErr); err != nil {
+		t.Fatalf("record test result: %v", err)
+	}
+	if err := store.MarkAccountSuspended(ctx, acct.ID, testErr); err != nil {
+		t.Fatalf("fail health: %v", err)
+	}
+
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear injection failure: %v", err)
+	}
+
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q (a genuine test failure must survive)", got.Health, models.AccountHealthFailed)
+	}
+	if got.LastTestError != testErr {
+		t.Errorf("last_test_error = %q, want %q (unchanged)", got.LastTestError, testErr)
+	}
+}
+
+// A clear against a healthy row matches nothing and must be a silent no-op —
+// it runs on EVERY successful spawn, so sql.ErrNoRows there would be noise.
+func TestAccountStore_ClearInjectionFailureNoopOnHealthyRow(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "healthy"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear on healthy row: %v", err)
+	}
+	if err := store.ClearInjectionFailure(ctx, "nope"); err != nil {
+		t.Fatalf("clear on unknown row: %v", err)
+	}
+}
+
+func TestAccountStore_RecordInjectionFailureUnknownID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	if err := store.RecordInjectionFailure(ctx, "nope", "x"); err != sql.ErrNoRows {
+		t.Errorf("record unknown: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestAccountStore_RecordInjectionFailurePreservesForeignReason closes the
+// round-2 hole: an injection failure recorded ON TOP of a protected failure
+// must not convert that failure into a self-clearing one. Materialization is a
+// local filesystem operation that never re-validates the credential, so a later
+// successful materialize is not evidence a live credential failure is resolved
+// — and if the record had overwritten the reason, ClearInjectionFailure would
+// then have matched and returned a known-bad account to rotation as healthy.
+func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "clobber"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const genuine = "401 invalid_grant: refresh token rejected"
+	if err := store.RecordTestResult(ctx, acct.ID, nil, genuine); err != nil {
+		t.Fatalf("record test result: %v", err)
+	}
+	if err := store.MarkAccountSuspended(ctx, acct.ID, genuine); err != nil {
+		t.Fatalf("mark suspended: %v", err)
+	}
+
+	// The plan's own Risks section notes DefaultAccountID tier 2 deliberately
+	// binds a failed-health active account when it is the only active one, so
+	// this ordering is reachable in production, not hypothetical.
+	if err := store.RecordInjectionFailure(ctx, acct.ID, "project codex base home: boom"); err != nil {
+		t.Fatalf("record injection failure: %v", err)
+	}
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.LastTestError != genuine {
+		t.Fatalf("last_test_error = %q, want the genuine failure %q preserved", got.LastTestError, genuine)
+	}
+	if got.Health != models.AccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	}
+
+	// …and the withdrawal therefore still matches nothing.
+	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+		t.Fatalf("clear injection failure: %v", err)
+	}
+	after, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if after.Health != models.AccountHealthFailed || after.LastTestError != genuine {
+		t.Fatalf("after clear: health=%q last_test_error=%q — a protected failure must survive a successful materialize",
+			after.Health, after.LastTestError)
+	}
+}
+
+// A blank last_test_error is not a foreign reason: an account that is simply
+// healthy (or whose reason was emptied by a passing test) must still receive
+// the injection reason, or the failure would be recorded with no explanation.
+func TestAccountStore_RecordInjectionFailureWritesOverBlankReason(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewAccountStore(db)
+	ctx := context.Background()
+
+	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "blank"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const reason = "project codex base home: boom"
+	if err := store.RecordInjectionFailure(ctx, acct.ID, reason); err != nil {
+		t.Fatalf("record injection failure: %v", err)
+	}
+	got, err := store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if want := InjectionFailureReasonPrefix + reason; got.LastTestError != want {
+		t.Fatalf("last_test_error = %q, want %q", got.LastTestError, want)
+	}
+
+	// A SECOND injection failure replaces the first: both are this record's own
+	// reason, so there is nothing to protect and the newest cause is the useful
+	// one.
+	const newer = "project codex base home: different entry"
+	if err := store.RecordInjectionFailure(ctx, acct.ID, newer); err != nil {
+		t.Fatalf("record second injection failure: %v", err)
+	}
+	got, err = store.Get(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if want := InjectionFailureReasonPrefix + newer; got.LastTestError != want {
+		t.Fatalf("last_test_error = %q, want the newer reason %q", got.LastTestError, want)
+	}
+}

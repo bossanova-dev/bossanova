@@ -13,6 +13,7 @@ import (
 const (
 	defaultProcessTimeout = 5 * time.Second
 	defaultSocketTimeout  = 8 * time.Second
+	commandWaitDelay      = 2 * time.Second
 )
 
 // runCommand runs name+args under a timeout derived from ctx and returns the
@@ -27,6 +28,7 @@ func runCommand(ctx context.Context, timeout time.Duration, name string, args ..
 	cmd := exec.CommandContext(cctx, name, args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.WaitDelay = commandWaitDelay
 	err := cmd.Run()
 	if cctx.Err() != nil {
 		// The derived deadline/cancellation fired: surface it so callers can

@@ -391,6 +391,10 @@ func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Se
 	return resp.Msg.GetSession(), nil
 }
 
+func (c *RemoteClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	return nil, errors.New("refresh session PR is not supported via the hosted orchestrator")
+}
+
 // --- Archive / Resurrect (local only) ---
 
 func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {
@@ -542,16 +546,13 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 	// in services/mcp-gateway/internal/proxybackend/proxybackend.go — so both are
 	// places where a new daemon-side signal can be dropped silently, and a field
 	// added here has to be added there too (they have already drifted once).
-	// delivery_state is deliberately NOT threaded: it lives on the
-	// daemon-local SendChatMessageResponse, and ProxySendChatMessageResponse
-	// (orchestrator.proto) carries no mirror of it — that proto is an observable
-	// surface whose change would force an apiversion bump. On the remote path
-	// notice_text is therefore the only reason a caller gets, which is why the
-	// daemon always populates it alongside delivered=false; a cloud caller sees
-	// delivered=false plus prose rather than a distinct UNCONFIRMED state.
+	// delivery_state is an additive proxy response field. Older bosso builds omit
+	// it, so notice_text remains the mixed-version fallback that lets cloud
+	// callers distinguish unconfirmed/queued sends from a bare delivered=false.
 	return &pb.SendChatMessageResponse{
 		TmuxSessionName: resp.Msg.GetTmuxSessionName(),
 		Delivered:       resp.Msg.GetDelivered(),
+		DeliveryState:   resp.Msg.GetDeliveryState(),
 		// Thread the mechanical-outcome notice (e.g. an intercepted
 		// "/boss switch") from the proxy response back to the local caller.
 		NoticeText: resp.Msg.GetNoticeText(),

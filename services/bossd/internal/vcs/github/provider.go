@@ -42,6 +42,8 @@ type Provider struct {
 	sleepFn func(time.Duration)
 }
 
+const ghWaitDelay = 5 * time.Second
+
 // ProviderOption configures a Provider.
 type ProviderOption func(*Provider)
 
@@ -1060,6 +1062,7 @@ func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = ghWaitDelay
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}

@@ -213,9 +213,11 @@ func CronJobs() []*pb.CronJob {
 }
 
 // Accounts returns the managed rotation accounts so the Settings → Accounts
-// list (BOS-265) is non-empty. Two entries exercise both providers and both
-// health/status states: an active/ok "claude" account and a disabled/failed
-// "codex" account that is cooling down and carries a last-test error. Fields
+// list (BOS-265) is non-empty. Three entries exercise both providers and every
+// health/status combination the list renders: an active/ok "claude" account, a
+// disabled/failed "codex" account that is cooling down and carries a last-test
+// error, and (BOS-973) an ACTIVE/failed "codex" account whose credentials could
+// not be injected. Fields
 // are display-safe metadata only — the Account proto has no credential field —
 // and all timestamps derive from the pinned clock so captures stay byte-stable.
 func Accounts() []*pb.Account {
@@ -277,6 +279,37 @@ func Accounts() []*pb.Account {
 			LastTestError: "401 invalid_grant: token=sk-FAKE0123456789abcdef rejected",
 			CreatedAt:     ts(-480 * time.Hour),
 			UpdatedAt:     ts(-3 * time.Hour),
+		},
+		{
+			// BOS-973: an ACTIVE codex account whose health failed because its
+			// credentials could not be materialized for a spawn. Before BOS-973
+			// this state was invisible — the session silently ran on the ambient
+			// ~/.codex login and only a WRN line in the daemon log said so. The
+			// row now carries the failure, so the Accounts list, the account
+			// detail screen, and `boss account ls` all show it.
+			//
+			// Deliberately status=active (unlike the disabled sibling above): the
+			// point of the capture is an account an operator BELIEVES is in
+			// service. It is also why this row makes the codex provider render
+			// the no-eligible-account hint in `boss account ls` — active but
+			// health=failed is not eligible.
+			//
+			// The reason string is the real recorded shape:
+			// db.InjectionFailureReasonPrefix + the materialize error. It carries
+			// filesystem paths only — never credential material — and the TUI
+			// still routes it through maskTestError before render.
+			Id:       "acct-codex-2",
+			Provider: "codex",
+			Label:    "team-codex",
+			Status:   "active",
+			Priority: 2,
+			Health:   "failed",
+			Tier:     "plus",
+			LastTestError: "credential injection failed: materialize codex account: " +
+				"project codex base home: refusing account projection " +
+				"\"~/.config/accounts/codex/acct-codex-2/config.toml\": existing entry is not a symlink",
+			CreatedAt: ts(-240 * time.Hour),
+			UpdatedAt: ts(-15 * time.Minute),
 		},
 	}
 }

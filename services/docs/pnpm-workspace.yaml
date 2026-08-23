@@ -1,0 +1,46 @@
+# services/docs is deliberately OUTSIDE the root pnpm workspace (adding docusaurus
+# pulled terser into the shared peer graph and broke the marketing vite build), so
+# it is its own workspace root: this file stops pnpm's upward search before the
+# repo root and single-sources every setting the standalone install needs.
+packages:
+  - "."
+
+# pnpm 11's supply-chain "minimum release age" cooldown (default ~24h) rejects
+# lockfile entries for packages published inside the window, which blocks CI
+# right after a dependency bump. 0 = no cooldown. Mirrors the root workspace.
+minimumReleaseAge: 0
+
+# core-js and protobufjs ship postinstall build scripts this site does not need.
+# Declaring them keeps pnpm 11's strict-dep-builds check active for anything new
+# that starts running scripts, instead of blanket-disabling it.
+allowBuilds:
+  core-js: false
+  protobufjs: false
+
+# Security pins. These lived in package.json's "pnpm.overrides" until pnpm 11
+# stopped reading that field, which silently dropped every pin and broke the
+# frozen install against a lockfile that still recorded them.
+overrides:
+  '@docusaurus/theme-common': '3.10.1'
+  'websocket-driver': '0.7.5'
+  'shell-quote': '1.9.0'
+  'fast-uri': '3.1.5'
+  'fast-xml-parser': '5.10.1'
+  'svgo': '3.3.4'
+  'gray-matter>js-yaml': '3.15.1'
+  'js-yaml': '4.3.1'
+  'brace-expansion': '1.1.18'
+  'undici': '7.29.0'
+  'protobufjs': '7.6.5'
+  'ws': '7.5.11'
+  'serialize-javascript': '7.0.5'
+  'webpack-dev-server': '5.2.6'
+  '@opentelemetry/core': '2.8.0'
+  'dompurify': '3.4.12'
+  'http-proxy-middleware': '2.0.10'
+  'joi': '17.13.4'
+  'qs': '6.15.2'
+  'postcss': '8.5.23'
+  'sockjs>uuid': '11.1.1'
+  'body-parser': '1.20.6'
+  '@babel/core': '7.29.6'

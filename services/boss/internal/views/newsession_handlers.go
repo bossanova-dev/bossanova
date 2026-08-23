@@ -109,6 +109,7 @@ func (m NewSessionModel) handleIssues(msg issuesMsg) (tea.Model, tea.Cmd) {
 		m.err = fmt.Errorf("no %s issues without an existing session", m.trackerSourceLabel())
 		return m, nil
 	}
+	m.err = nil
 	m.phase = newSessionPhaseIssueSelect
 	m.issueTable.SetCursor(0)
 	m.buildIssueTable()

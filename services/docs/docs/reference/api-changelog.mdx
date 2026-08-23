@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version — so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-08-16**. The engineering procedure for adding a new
+The current version is **2026-08-21**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -144,7 +144,7 @@ The failure itself is not hidden from a current client: it is surfaced as a
 session warning hint, and that hint is deliberately exempt from the accompanying
 recessive treatment because it is the row's only carrier of the failure.
 
-### 2026-08-16 — A cron gate that could not run is no longer reported as `gated` (Current)
+### 2026-08-16 — A cron gate that could not run is no longer reported as `gated`
 
 The OrchestratorService began distinguishing a cron gate that **could not be
 evaluated** from one that **ran and decided there was no work**. Previously every
@@ -164,6 +164,73 @@ served rather than in the schema.
 Clients pinned to an older version were built against the previous values, so they
 are down-converted back to outcome `gated`, status `CRON_JOB_STATUS_GATED`, and
 skip reason `gated`.
+
+### 2026-08-20 — A session account switch stopped by its own deadline is no longer reported as `ABORTED`
+
+The OrchestratorService began distinguishing a session account switch that **ran
+out of time** from one that **failed for an unknown reason**. Previously the
+daemon had no wire value for "a deadline stopped this", so a switch ended by its
+own daemon-side respawn budget came back with no typed error code and
+`ProxySwitchSessionAccount` answered `ABORTED` — the historical fallback for an
+unmodelled failure.
+
+`ABORTED` was not merely vaguer; it was actively misleading. It invites a retry,
+and a request killed by its own deadline is exactly the request a caller must not
+retry: re-sending restarts a budget that has already proven too short, and on an
+at-least-once command stream it can stack a second switch on top of work the
+first one may have partially completed.
+
+A switch ended by its daemon-side budget now answers `DEADLINE_EXCEEDED`. A new
+`CommandResult.ErrorCode` value, `ERROR_CODE_DEADLINE_EXCEEDED`, carries the
+distinction over the daemon stream. **No procedure or message field was added** —
+this is a change in the status code served on an existing procedure rather than
+in the schema.
+
+The change is scoped to the account switch alone. Other commands that fail with
+an expired context are unaffected and still answer `ABORTED`. `ProxySwitchSessionAccount`'s
+**own** relay timeout — the orchestrator giving up waiting for the daemon — has
+always answered `DEADLINE_EXCEEDED` and is unchanged at every version, including
+for older clients.
+
+Clients pinned to an older version were built when this case read as `ABORTED`,
+so they are down-converted back to `ABORTED` with the failure message preserved.
+
+### 2026-08-21 — Switch cancellation and result-ceiling behavior (Current)
+
+The OrchestratorService began distinguishing a session account switch that the
+caller **canceled** from one that **failed for an unknown reason**. Previously the
+daemon had no wire value for "the caller canceled this", so a canceled switch
+came back with no typed error code and `ProxySwitchSessionAccount` answered
+`ABORTED`, the historical fallback for an unmodelled failure.
+
+`ABORTED` invites a retry, which is the wrong signal for a request the caller
+abandoned. Retrying can stack duplicate switch work on top of the partially
+completed first attempt.
+
+A switch canceled by its caller now answers `CANCELED`. A new
+`CommandResult.ErrorCode` value, `ERROR_CODE_CANCELED`, carries the distinction
+over the daemon stream. **No procedure or message field was added** — this is a
+change in the status code served on an existing procedure rather than in the
+schema.
+
+The change is scoped to the account switch alone. Other daemon-scoped commands
+that return the same typed code still answer `ABORTED`, and
+`ProxySwitchSessionAccount`'s own orchestrator-side cancellation path is
+unchanged for every version.
+
+Clients pinned to an older version were built when this case read as `ABORTED`,
+so they are down-converted back to `ABORTED` with the failure message preserved.
+
+`ProxySwitchSessionAccount` began using self-describing timeout text when bosso's
+own 120-second result ceiling expires before a daemon verdict arrives. The status
+code remains `DEADLINE_EXCEEDED`, but current clients now see that the account
+switch may still be running, and that the request did not cancel or tear down the
+switch. The caller should re-check the chat's account to see where it landed.
+
+Previously this handler-owned result ceiling used the generic relay timeout text:
+`command timed out after 2m0s`. Clients pinned to an older version were built
+against that message, so they are down-converted back to the legacy text while
+keeping `DEADLINE_EXCEEDED`.
 
 ## See also
 

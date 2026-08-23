@@ -2,11 +2,13 @@
 
 import { execFileSync } from 'node:child_process'
 
-const moduleRules = [
+export const moduleRules = [
   { root: 'lib/bossalib/', target: 'test-bossalib' },
   { root: 'services/boss/', target: 'test-boss' },
   { root: 'services/bossd/', target: 'test-bossd' },
   { root: 'services/bosso/', target: 'test-bosso' },
+  { root: 'services/mcp/', target: 'test-mcp' },
+  { root: 'services/mcp-gateway/', target: 'test-mcp-gateway' },
   { root: 'plugins/bossd-plugin-claude/', target: 'test-claude' },
   { root: 'plugins/bossd-plugin-codex/', target: 'test-codex' },
   { root: 'plugins/bossd-plugin-dependabot/', target: 'test-dependabot' },
@@ -14,6 +16,7 @@ const moduleRules = [
   { root: 'plugins/bossd-plugin-opencode/', target: 'test-opencode' },
   { root: 'plugins/bossd-plugin-repair/', target: 'test-repair' },
   { root: 'plugins/bossd-plugin-sentry/', target: 'test-sentry' },
+  { root: 'plugins/bossd-plugin-stub-runner/', target: 'test-stub-runner' },
 ]
 
 const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso']
@@ -61,11 +64,12 @@ const bazelGoModuleRules = [
 // `ledgerModules` is listed separately from `patterns` because the two selections answer
 // different questions: bazel needs the target pattern to test, the native ledger needs the
 // `module` value of the row to run. A file can feed one and not the other.
-const externalInputRules = [
+export const externalInputRules = [
   {
     // //lib/bossalib/telemetry:telemetry_test `data` deps; client_test.go reads both files
     // to assert doc/web/Go analytics-event parity.
     match: (f) => f.startsWith('docs/analytics/') || f.startsWith('services/web/src/analytics/'),
+    samplePath: 'docs/analytics/events.md',
     patterns: ['//lib/bossalib/...'],
     ledgerModules: [],
   },
@@ -73,8 +77,30 @@ const externalInputRules = [
     // lib/bossalib/apiversion/webversion_test.go reads services/web/src/api.ts. That row is
     // bazel-`manual` (it escapes the module), so this feeds the LEDGER, not the graph.
     match: (f) => f === 'services/web/src/api.ts',
+    samplePath: 'services/web/src/api.ts',
     patterns: [],
     ledgerModules: ['lib/bossalib'],
+  },
+  {
+    // lib/bossalib/apiversion/openapiversion_test.go reads services/docs/openapi/*.yaml.
+    // That row is bazel-`manual` (it escapes the module), so this feeds the LEDGER, not the graph.
+    match: (f) => f.startsWith('services/docs/openapi/'),
+    samplePath: 'services/docs/openapi/base.openapi.yaml',
+    patterns: [],
+    ledgerModules: ['lib/bossalib'],
+  },
+  {
+    // //lib/bossalib/productparity:productparity_test `data` deps; trial_test.go reads these
+    // cross-surface sources to keep checkout, web, marketing, and TUI trial copy in sync.
+    match: (f) =>
+      f.startsWith('services/boss/internal/views/') ||
+      f.startsWith('services/bosso/internal/server/') ||
+      f.startsWith('services/marketing/src/components/pricing/') ||
+      f.startsWith('services/marketing/src/pages/') ||
+      f.startsWith('services/web/src/pages/'),
+    samplePath: 'services/web/src/pages/Billing.tsx',
+    patterns: ['//lib/bossalib/...'],
+    ledgerModules: [],
   },
   {
     // services/boss/internal/skillinstall reads the published skill trees and their prose
@@ -84,12 +110,14 @@ const externalInputRules = [
       f.startsWith('plugins/bossd-plugin-claude/skilldata/') ||
       f.startsWith('docs/skills/') ||
       f.startsWith('services/docs/docs/skills/'),
+    samplePath: 'docs/skills/README.md',
     patterns: ['//services/boss/...'],
     ledgerModules: ['services/boss'],
   },
   {
     // services/bossd/internal/testharness spawns plugins/bossd-plugin-codex/testdata fakes.
     match: (f) => f.startsWith('plugins/bossd-plugin-codex/testdata/'),
+    samplePath: 'plugins/bossd-plugin-codex/testdata/fake_codex_tui.sh',
     patterns: ['//services/bossd/...'],
     ledgerModules: ['services/bossd'],
   },
@@ -274,6 +302,8 @@ export function selectLedgerModules(files) {
 
 export function selectTargets(files) {
   const selections = new Map()
+  let selectedPrimaryTarget = false
+  let selectedExternalInputTarget = false
 
   for (const rawFile of files) {
     const file = normalizePath(rawFile)
@@ -281,20 +311,34 @@ export function selectTargets(files) {
       continue
     }
 
+    for (const rule of externalInputRules) {
+      if (!rule.match(file)) continue
+      for (const moduleRoot of nativeModuleRootsForExternalInputRule(rule)) {
+        const moduleRule = findModuleRule(moduleRoot)
+        if (moduleRule) {
+          selectWholeTarget(selections, moduleRule.target)
+          selectedExternalInputTarget = true
+        }
+      }
+    }
+
     if (file.startsWith('proto/') && file.endsWith('.proto')) {
       for (const target of protoTargets) {
         selectWholeTarget(selections, target)
       }
+      selectedPrimaryTarget = true
       continue
     }
 
     if (file.startsWith('scripts/')) {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
     if (file.startsWith('proof/')) {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -303,6 +347,7 @@ export function selectTargets(files) {
     // edit must run the script tests rather than falling through to test-smoke.
     if (file === 'docs/build-and-ci.md') {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -311,6 +356,7 @@ export function selectTargets(files) {
     // no scripts/** change at all.
     if (file === '.boss-skills.json') {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -319,6 +365,7 @@ export function selectTargets(files) {
     // skills-toolbox/ must run those tests, not fall through to test-smoke.
     if (file.startsWith('skills-toolbox/')) {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -334,6 +381,7 @@ export function selectTargets(files) {
     // docs/build-and-ci.md and .boss-skills.json rules above already make.
     if (PRETTIER_PIN_INPUTS.has(file)) {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       // Deliberately no `continue` for the root lockfile: isWebPath() claims it too, and
       // swallowing it here would silently drop the web targets it has always selected.
       if (file !== 'pnpm-lock.yaml') continue
@@ -345,11 +393,13 @@ export function selectTargets(files) {
       // A SKILL.md-only edit must also run the skill content tests (BOS-144), which pin
       // the byte-stable dispatch/sentinel contracts documented in the skill bodies.
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
     if (isManifestPath(file)) {
       selectWholeTarget(selections, 'test-manifest')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -359,6 +409,7 @@ export function selectTargets(files) {
     // here. These are NOT Go modules, so select the whole target.
     if (isWebPath(file)) {
       selectWholeTarget(selections, 'test-web')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -372,15 +423,19 @@ export function selectTargets(files) {
       (file.endsWith('.md') || file.endsWith('.sh'))
     ) {
       selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
     }
 
     const moduleRule = moduleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       selectModuleTarget(selections, moduleRule, file)
+      selectedPrimaryTarget = true
     }
   }
 
   if (selections.size === 0) {
+    selectWholeTarget(selections, 'test-smoke')
+  } else if (selectedExternalInputTarget && !selectedPrimaryTarget) {
     selectWholeTarget(selections, 'test-smoke')
   }
 
@@ -391,6 +446,23 @@ export function selectTargets(files) {
       ? {}
       : { GO_TEST_PACKAGES: [...selection.packages].sort().join(' ') },
   }))
+}
+
+export function nativeModuleRootsForExternalInputRule(rule) {
+  return [...(rule.ledgerModules ?? []), ...(rule.patterns ?? []).map(patternToModuleRoot)].map(
+    normalizeModuleRoot,
+  )
+}
+
+function normalizeModuleRoot(root) {
+  return String(root ?? '')
+    .replaceAll('\\', '/')
+    .replace(/\/+$/, '')
+}
+
+function findModuleRule(moduleRoot) {
+  const normalized = normalizeModuleRoot(moduleRoot)
+  return moduleRules.find(({ root }) => normalizeModuleRoot(root) === normalized)
 }
 
 export function renderMakeCommands(targets) {

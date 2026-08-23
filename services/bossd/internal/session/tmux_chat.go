@@ -19,6 +19,7 @@ import (
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
@@ -880,15 +881,23 @@ func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client
 // Best-effort: both the tmux kill and the DB stamp log on failure but
 // never bubble up, because the caller is already on a failure path and
 // has its own error to surface.
+//
+// Why both halves are detached: the failure being recorded is most often the
+// caller's own context expiring, and a stamp issued on a dead context is
+// refused by the store — leaving the row still pointing at a pane that is gone,
+// which is the "silently vanished chat" this stamp exists to replace (BOS-897).
+// The kill half detaches inside killTmuxChatBestEffort; the stamp does so here.
 func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName, reason string) {
 	l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-	if markErr := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); markErr != nil {
-		l.logger.Warn().Err(markErr).
-			Str("session", sessionID).
-			Str("agentSessionID", agentSessionID).
-			Str("reason", reason).
-			Msg("failed to mark agent_chat row as start-failed; row may still show as live")
-	}
+	detach.Cleanup(ctx, detach.CleanupBudget, func(stampCtx context.Context) {
+		if markErr := l.agentChats.MarkStartFailed(stampCtx, agentSessionID, reason); markErr != nil {
+			l.logger.Warn().Err(markErr).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("reason", reason).
+				Msg("failed to mark agent_chat row as start-failed; row may still show as live")
+		}
+	})
 }
 
 // recordFailedStartChat ensures an agent_chats row exists for a StartTmuxChat
@@ -900,38 +909,48 @@ func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSes
 // row yet, so we create one first via the same store method the happy path
 // uses. Best-effort: store errors are logged, never returned — the caller
 // already carries the primary tmux error.
+//
+// Why the whole trio is detached, under ONE derived context: the switch route
+// reaches StartTmuxChat under the switch's respawn budget, and that budget can
+// expire inside the tmux launch above just as it can inside the readiness wait.
+// On the caller's context the LOOKUP is then the first thing to fail, so the
+// function takes its `default` arm and returns having written nothing at all —
+// the row keeps pointing at a pane that never came up, which is precisely the
+// invisible failure this helper exists to prevent (BOS-897).
 func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title, reason string) {
-	existing, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
-	switch {
-	case err == nil && existing != nil:
-		// Row already exists (resume path); stamp it in place below.
-	case errors.Is(err, db.ErrAgentChatNotFound):
-		if _, createErr := l.agentChats.Create(ctx, db.CreateAgentChatParams{
-			SessionID:      sessionID,
-			AgentSessionID: agentSessionID,
-			AgentName:      agentName,
-			Title:          title,
-		}); createErr != nil {
-			l.logger.Warn().Err(createErr).
+	detach.Cleanup(ctx, detach.CleanupBudget, func(recordCtx context.Context) {
+		existing, err := l.agentChats.GetByAgentSessionID(recordCtx, agentSessionID)
+		switch {
+		case err == nil && existing != nil:
+			// Row already exists (resume path); stamp it in place below.
+		case errors.Is(err, db.ErrAgentChatNotFound):
+			if _, createErr := l.agentChats.Create(recordCtx, db.CreateAgentChatParams{
+				SessionID:      sessionID,
+				AgentSessionID: agentSessionID,
+				AgentName:      agentName,
+				Title:          title,
+			}); createErr != nil {
+				l.logger.Warn().Err(createErr).
+					Str("session", sessionID).
+					Str("agentSessionID", agentSessionID).
+					Msg("record failed-start chat: create row failed; tmux launch failure will be invisible")
+				return
+			}
+		default:
+			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Str("agentSessionID", agentSessionID).
-				Msg("record failed-start chat: create row failed; tmux launch failure will be invisible")
+				Msg("record failed-start chat: lookup failed; tmux launch failure will be invisible")
 			return
 		}
-	default:
-		l.logger.Warn().Err(err).
-			Str("session", sessionID).
-			Str("agentSessionID", agentSessionID).
-			Msg("record failed-start chat: lookup failed; tmux launch failure will be invisible")
-		return
-	}
-	if markErr := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); markErr != nil {
-		l.logger.Warn().Err(markErr).
-			Str("session", sessionID).
-			Str("agentSessionID", agentSessionID).
-			Str("reason", reason).
-			Msg("record failed-start chat: mark start-failed failed; row may not show the failure reason")
-	}
+		if markErr := l.agentChats.MarkStartFailed(recordCtx, agentSessionID, reason); markErr != nil {
+			l.logger.Warn().Err(markErr).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("reason", reason).
+				Msg("record failed-start chat: mark start-failed failed; row may not show the failure reason")
+		}
+	})
 }
 
 // findLiveTmuxChat scans the session's existing agent_chats rows for an
@@ -1132,6 +1151,17 @@ func (l *Lifecycle) KillChatTmuxSession(ctx context.Context, sessionID, agentSes
 // idleReapPointerRestoreTimeout bounds the compensating pointer write that
 // follows a failed idle kill. It runs on a detached context, so it needs a
 // deadline of its own.
+//
+// It is deliberately NOT detach.CleanupBudget, and the call site below is
+// deliberately still a hand-rolled WithTimeout(WithoutCancel(ctx), …) pair,
+// even though both spellings of the same five seconds now sit in this one file.
+// BOS-952 converted the three cleanups whose budget constants it enumerated;
+// this one was outside that scope and is left for the change that next touches
+// it. Recorded here rather than left silent because the alternative — a reader
+// finding two shapes side by side with nothing saying why — is how the prose
+// obligation this package exists to retire got established in the first place.
+// If you are editing this path, convert it: detach.Cleanup(ctx,
+// detach.CleanupBudget, …) is the same call with one fewer thing to remember.
 const idleReapPointerRestoreTimeout = 5 * time.Second
 
 // ReapIdleChatTmuxSession tears down the pane of a chat that has gone idle
@@ -1828,15 +1858,24 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName str
 // StartTmuxChat. Errors are logged but never returned — the caller is
 // already on a failure path and the surfaced error wraps the original
 // cause.
+//
+// Why it is detached: the failure being cleaned up is frequently the caller's
+// context expiring — the switch route reaches StartTmuxChat under the switch's
+// respawn budget, and a readiness wait that spends it fails exactly that way —
+// so on the caller's context the kill fails immediately, leaking precisely the
+// pane this exists to reclaim. Chat panes are spawned with
+// RemainOnExit and never self-reap, so a leaked one lasts the host's lifetime.
 func (l *Lifecycle) killTmuxChatBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName string) {
 	if l.tmux == nil {
 		return
 	}
-	if err := l.tmux.KillSession(ctx, tmuxName); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", sessionID).
-			Str("agentSessionID", agentSessionID).
-			Str("tmuxSession", tmuxName).
-			Msg("failed to kill tmux session during failure cleanup")
-	}
+	detach.Cleanup(ctx, detach.CleanupBudget, func(killCtx context.Context) {
+		if err := l.tmux.KillSession(killCtx, tmuxName); err != nil {
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("failed to kill tmux session during failure cleanup")
+		}
+	})
 }

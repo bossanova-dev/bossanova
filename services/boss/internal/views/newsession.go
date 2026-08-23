@@ -270,6 +270,9 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // order), and both of those are pure y/n-and-esc screens. The phase test still
 // leads because a form left non-nil by an earlier phase is not on screen either.
 func (m NewSessionModel) textEntryActive() bool {
+	if m.err != nil {
+		return false
+	}
 	if m.phase == newSessionPhasePRSelect && m.prFilter.Active() {
 		return true
 	}

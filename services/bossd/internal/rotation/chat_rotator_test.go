@@ -31,6 +31,8 @@ type fakeDeps struct {
 	probeErr    error
 	switchCalls []SwitchRequest
 	switchErr   error
+	loadErr     error
+	chatCtxErr  error
 
 	status   bossanovav1.ChatStatus // what the re-check sees
 	cfg      config.ManagedAccountsConfig
@@ -109,8 +111,11 @@ func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, f.loadErr },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
+			if f.chatCtxErr != nil {
+				return ChatContext{}, f.chatCtxErr
+			}
 			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
 		},
 		CurrentStatus: func(_ string) bossanovav1.ChatStatus {
@@ -162,8 +167,11 @@ func (f *fakeDeps) authRotator(now *time.Time, store AuditStore) *ChatRotator {
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
 		Recorder:   rec,
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, f.loadErr },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
+			if f.chatCtxErr != nil {
+				return ChatContext{}, f.chatCtxErr
+			}
 			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
 		},
 		CurrentStatus: func(_ string) bossanovav1.ChatStatus {
@@ -698,6 +706,12 @@ func (s *lockedAuditStore) details() []string {
 	return out
 }
 
+func (s *lockedAuditStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.inserted)
+}
+
 func rotatorWithRecorder(f *fakeDeps, now *time.Time, store AuditStore) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
@@ -810,6 +824,68 @@ func TestChatRotator_RecordsNoEligibleAccount(t *testing.T) {
 			t.Fatalf("triggers = %v, want ROTATION_TRIGGER_AUTH_INVALIDATED", trig)
 		}
 	})
+}
+
+func TestChatRotator_OnAuthDecisionCompleteRunsAfterAuditRecord(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed: true,
+		authResult: AuthProbeConfirmed401,
+		decision:   Decision{Kind: DecisionStatusOnly},
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+	done := make(chan int, 1)
+	r.deps.OnAuthDecisionComplete = func(string) {
+		done <- store.count()
+	}
+
+	r.OnAuthFailed(testChatID)
+	select {
+	case got := <-done:
+		if got != 1 {
+			t.Fatalf("audit records visible to callback = %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for auth decision completion callback")
+	}
+	waitIdle(t, r)
+}
+
+func TestChatRotator_OnAuthDecisionCompleteRunsAfterScheduledReprobeAudit(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed: true,
+		authResult: AuthProbeUnknown,
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+	done := make(chan int, 2)
+	r.deps.OnAuthDecisionComplete = func(string) {
+		done <- store.count()
+	}
+
+	r.OnAuthFailed(testChatID)
+	select {
+	case got := <-done:
+		if got != 1 {
+			t.Fatalf("initial callback audit records = %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for initial auth decision completion callback")
+	}
+	if !f.sched.fire() {
+		t.Fatal("scheduled auth re-probe was not armed")
+	}
+	select {
+	case got := <-done:
+		if got != 2 {
+			t.Fatalf("reprobe callback audit records = %d, want 2", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for re-probe auth decision completion callback")
+	}
+	waitIdle(t, r)
 }
 
 func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
@@ -1135,6 +1211,42 @@ func TestChatRotator_AuthProbeGateRecordsAudit(t *testing.T) {
 	}
 }
 
+func TestChatRotator_AuthTransientPreAuditFailuresScheduleReprobe(t *testing.T) {
+	tests := []struct {
+		name       string
+		loadErr    error
+		chatCtxErr error
+	}{
+		{name: "config load error", loadErr: errors.New("config unavailable")},
+		{name: "chat context error", chatCtxErr: errors.New("chat context unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			f := &fakeDeps{
+				authFailed: true,
+				loadErr:    tt.loadErr,
+				chatCtxErr: tt.chatCtxErr,
+			}
+			store := &lockedAuditStore{}
+			r := f.authRotator(&now, store)
+
+			r.OnAuthFailed(testChatID)
+			waitIdle(t, r)
+
+			if got := store.count(); got != 0 {
+				t.Fatalf("pre-audit failure audit records = %d, want 0", got)
+			}
+			if got := f.sched.pendingCount(); got != 1 {
+				t.Fatalf("scheduled auth re-probes = %d, want 1", got)
+			}
+			if got := f.authProbes(); got != 0 {
+				t.Fatalf("auth probes = %d, want 0 before context is available", got)
+			}
+		})
+	}
+}
+
 // TestChatRotator_AuthAllFailedParksWithoutLoop pins the no-rotate-loop
 // safeguard: with every candidate account failed the engine returns
 // DecisionStatusOnly, so the confirmed-401 pane records a status-only audit and
@@ -1174,6 +1286,50 @@ func TestChatRotator_AuthAllFailedParksWithoutLoop(t *testing.T) {
 	}
 	if len(f.switched()) != 0 {
 		t.Fatal("auth path looped into a switch")
+	}
+}
+
+func TestChatRotator_AuthLimiterSuppressionSchedulesReprobe(t *testing.T) {
+	now := time.Now()
+	f := &fakeDeps{
+		authFailed: true,
+		authResult: AuthProbeConfirmed401,
+		decision:   Decision{Kind: DecisionStatusOnly},
+	}
+	store := &lockedAuditStore{}
+	r := f.authRotator(&now, store)
+
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if got := f.authProbes(); got != 1 {
+		t.Fatalf("initial auth probes = %d, want 1", got)
+	}
+	if got := store.count(); got != 1 {
+		t.Fatalf("initial audit records = %d, want 1", got)
+	}
+
+	f.mu.Lock()
+	f.authResult = AuthProbeUnknown
+	f.mu.Unlock()
+	now = now.Add(time.Minute)
+	r.OnAuthFailed(testChatID)
+	waitIdle(t, r)
+	if got := f.authProbes(); got != 1 {
+		t.Fatalf("rate-limited auth edge probed immediately: probes = %d, want 1", got)
+	}
+	if n := f.sched.pendingCount(); n != 1 {
+		t.Fatalf("rate-limited auth edge pending re-probes = %d, want 1", n)
+	}
+
+	if !f.sched.fire() {
+		t.Fatal("expected limiter-suppressed auth edge to arm a re-probe")
+	}
+	waitIdle(t, r)
+	if got := f.authProbes(); got != 2 {
+		t.Fatalf("re-probe auth probes = %d, want 2", got)
+	}
+	if out := store.outcomes(); len(out) != 2 || out[1] != "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED" {
+		t.Fatalf("outcomes after re-probe = %v, want second STATUS_ONLY_PROBE_UNCONFIRMED", out)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -468,7 +469,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 	repo, err := s.repos.Get(ctx, job.RepoID)
 	if err != nil {
 		logger.Error().Err(err).Msg("fire: failed to load repo for base branch")
-		if markErr := s.markFireFailed(ctx, job); markErr != nil {
+		if markErr := s.markFireFailed(ctx, job, nil); markErr != nil {
 			logger.Warn().Err(markErr).Msg("fire: also failed to mark outcome=fire_failed")
 		}
 		return nil, "", fmt.Errorf("load repo for cron job %s: %w", job.ID, err)
@@ -592,22 +593,24 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 	sess, err := s.creator.CreateSession(ctx, opts)
 	if err != nil {
 		logger.Error().Err(err).Msg("fire: session create failed")
-		if markErr := s.markFireFailed(ctx, job); markErr != nil {
+		if markErr := s.markFireFailed(ctx, job, sessionIDFromCreateError(err)); markErr != nil {
 			logger.Warn().Err(markErr).Msg("fire: also failed to mark outcome=fire_failed")
 		}
 		return nil, "", fmt.Errorf("create session for cron job %s: %w", job.ID, err)
 	}
 
-	// Persist last_run_session_id so the next tick's overlap check sees
-	// this session as the current run. next_run_at is computed from the
-	// parsed schedule so the DB reflects the runner's next decision.
+	// Persist last_run_session_id and the resolved session agent so the next
+	// tick's overlap check sees this session as the current run and operators can
+	// diagnose job/session agent mismatches from the job record alone.
+	// next_run_at is computed from the parsed schedule so the DB reflects the
+	// runner's next decision.
 	firedAt := s.nowFunc()
 	nextAt := s.peekNextFire(jobID, firedAt)
 	var nextArg *time.Time
 	if !nextAt.IsZero() {
 		nextArg = &nextAt
 	}
-	if markErr := s.store.MarkFireStarted(ctx, job.ID, sess.ID, firedAt, nextArg); markErr != nil {
+	if markErr := s.store.MarkFireStarted(ctx, job.ID, sess.ID, sess.AgentName, firedAt, nextArg); markErr != nil {
 		// Non-fatal: the session is already spawned. Overlap detection
 		// will fall back to whatever last_run_session_id was previously,
 		// which is stale but safe (worst case: a duplicate fire).
@@ -689,11 +692,21 @@ func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) 
 // markFireFailed records last_run_outcome = fire_failed when CreateSession
 // returns an error. next_run_at is cleared so the DB reflects "no run was
 // scheduled"; the cron runner will still tick on its own schedule.
-func (s *Scheduler) markFireFailed(ctx context.Context, job *models.CronJob) error {
+func (s *Scheduler) markFireFailed(ctx context.Context, job *models.CronJob, sessionID *string) error {
 	return s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
-		RanAt:   s.nowFunc(),
-		Outcome: models.CronJobOutcomeFireFailed,
+		SessionID: sessionID,
+		RanAt:     s.nowFunc(),
+		Outcome:   models.CronJobOutcomeFireFailed,
 	})
+}
+
+func sessionIDFromCreateError(err error) *string {
+	var postRow *taskorchestrator.SessionPostRowError
+	if errors.As(err, &postRow) && postRow.SessionID != "" {
+		sessionID := postRow.SessionID
+		return &sessionID
+	}
+	return nil
 }
 
 // isTerminalState reports whether a session has reached the end of its

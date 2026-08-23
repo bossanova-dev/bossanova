@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -41,6 +42,14 @@ func (getOnlyAccountStore) RecordTestResult(context.Context, string, *time.Time,
 
 func (getOnlyAccountStore) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
 	panic("unexpected RecordUsageProbe")
+}
+
+func (getOnlyAccountStore) RecordInjectionFailure(context.Context, string, string) error {
+	panic("unexpected RecordInjectionFailure")
+}
+
+func (getOnlyAccountStore) ClearInjectionFailure(context.Context, string) error {
+	panic("unexpected ClearInjectionFailure")
 }
 
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
@@ -181,10 +190,12 @@ func (s stubTranscriptProbe) TranscriptExists(_ context.Context, _, _, _ string)
 // newSwitchHarness reuses the StartTmuxChat harness and seeds a single chat
 // backed by a live tmux pane, an active target account "acct-2", and the
 // account-switch seams. Individual tests tweak the seams before calling
-// SwitchAccount.
-func newSwitchHarness(t *testing.T) *startTmuxChatHarness {
+// SwitchAccount. tmuxOpts are forwarded to the underlying tmux client, so a
+// test that has to sit through the respawn's readiness wait can shorten it
+// rather than spend the production budget twice.
+func newSwitchHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxChatHarness {
 	t.Helper()
-	h := newStartTmuxChatHarness(t)
+	h := newStartTmuxChatHarness(t, tmuxOpts...)
 	tmuxName := "bossd-agent-run-agent-1"
 	h.chats.chatsBySession = map[string][]*models.AgentChat{
 		"sess-1": {
@@ -798,5 +809,92 @@ func TestSwitchAccount_FailureAfterStopStampsStartError(t *testing.T) {
 	}
 	if !stamped {
 		t.Error("expected the chat row to be stamped start-failed after the post-STOP failure")
+	}
+}
+
+// TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext is the assertion
+// BOS-897's budget makes necessary. Once executeAccountSwitch runs the switch
+// under its derived respawn budget, the context that reaches the respawn can
+// expire mid-readiness-wait — and every best-effort cleanup on that path was
+// issuing its write on that same context, which turns each one into an instant
+// no-op precisely when it is needed: the pane leaks and the chat row keeps
+// reading live.
+//
+// The two seams this leans on (recordedTmuxCall.ctxErr and
+// markStartFailedCall.ctxErr) exist because the obvious assertions cannot tell
+// detached from undetached on their own. fakeTmux records a subcommand BEFORE
+// running it, and the mock store recorded the call while discarding the
+// context, so "kill-session was issued" and "MarkStartFailed was called" are
+// both true whether or not the write could actually land.
+//
+// A shortened readiness budget with a single attempt is what lets the caller's
+// context be the thing that ends the wait, in well under a second.
+func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newSwitchHarness(t,
+		tmux.WithSessionStartReadyDeadline(3*time.Second),
+		tmux.WithSessionStartReadyAttempts(1),
+	)
+	// The respawned pane never draws a composer, so the readiness wait runs
+	// until something stops it — here, the caller's own deadline.
+	h.tmuxFake.capturePaneOutput = "Welcome to Claude — still booting\n"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err := h.lc.SwitchAccount(ctx, SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+	})
+	if err == nil {
+		t.Fatal("expected the switch to fail once its context expired during the respawn")
+	}
+
+	// Two kills: the STOP that precedes the respawn (issued while the context
+	// was still live, so it proves nothing) and the failure cleanup after the
+	// wait burned the budget. Only the second is under test.
+	if got := h.tmuxFake.subcommandCount("kill-session"); got < 2 {
+		t.Fatalf("kill-session calls = %d, want at least 2 (STOP plus the failure cleanup); "+
+			"without the cleanup kill the assertion below would read the STOP and pass vacuously", got)
+	}
+	if kill := h.tmuxFake.lastCall("kill-session"); kill == nil {
+		t.Fatal("no kill-session recorded at all")
+	} else if kill.ctxErr != nil {
+		t.Errorf("the failure-cleanup kill-session was issued on a dead context (%v), so tmux never ran it "+
+			"and the respawned pane leaks; killTmuxChatBestEffort must detach from the caller's context",
+			kill.ctxErr)
+	}
+
+	// Both start-error stamps must survive the same expiry: failStartBestEffort's
+	// (inside StartTmuxChat) and the switch's own (stampSwitchStartError). A row
+	// that keeps its live tmux pointer after a failed switch is exactly the
+	// "silently vanished chat" both stamps exist to prevent.
+	var sawRespawnStamp, sawStartStamp bool
+	h.chats.mu.Lock()
+	stamps := append([]markStartFailedCall(nil), h.chats.markStartFailedCalls...)
+	h.chats.mu.Unlock()
+	for _, c := range stamps {
+		if c.agentSessionID != "agent-1" {
+			continue
+		}
+		switch {
+		case strings.Contains(c.reason, "respawn after switch failed"):
+			sawRespawnStamp = true
+			if c.ctxErr != nil {
+				t.Errorf("stampSwitchStartError wrote on a dead context (%v); the row keeps reading live", c.ctxErr)
+			}
+		case strings.Contains(c.reason, "send plan failed"):
+			sawStartStamp = true
+			if c.ctxErr != nil {
+				t.Errorf("failStartBestEffort's stamp wrote on a dead context (%v); the row keeps reading live", c.ctxErr)
+			}
+		}
+	}
+	if !sawRespawnStamp {
+		t.Errorf("no switch start-error stamp recorded for agent-1; calls = %+v", stamps)
+	}
+	if !sawStartStamp {
+		t.Errorf("no StartTmuxChat start-error stamp recorded for agent-1; calls = %+v", stamps)
 	}
 }

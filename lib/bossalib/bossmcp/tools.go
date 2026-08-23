@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -119,6 +120,36 @@ func redactBroadcasts(bcs []*pb.Broadcast) []*pb.Broadcast {
 	out := make([]*pb.Broadcast, len(bcs))
 	for i, bc := range bcs {
 		out[i] = redactBroadcast(bc)
+	}
+	return out
+}
+
+type cronJobReadResult struct {
+	*pb.CronJob
+	LastRunAgentLabel    string `json:"last_run_agent_label"`
+	LastRunAgentMismatch bool   `json:"last_run_agent_mismatch"`
+}
+
+func cronJobReadResultFromProto(job *pb.CronJob) cronJobReadResult {
+	runAgent := strings.TrimSpace(job.GetLastRunAgentName())
+	if runAgent == "" {
+		return cronJobReadResult{CronJob: job, LastRunAgentLabel: "unknown"}
+	}
+	jobAgent := strings.TrimSpace(job.GetAgentName())
+	if jobAgent != "" && runAgent != jobAgent {
+		return cronJobReadResult{
+			CronJob:              job,
+			LastRunAgentLabel:    fmt.Sprintf("%s (mismatch: job %s)", runAgent, jobAgent),
+			LastRunAgentMismatch: true,
+		}
+	}
+	return cronJobReadResult{CronJob: job, LastRunAgentLabel: runAgent}
+}
+
+func cronJobReadResultsFromProto(jobs []*pb.CronJob) []cronJobReadResult {
+	out := make([]cronJobReadResult, len(jobs))
+	for i, job := range jobs {
+		out[i] = cronJobReadResultFromProto(job)
 	}
 	return out
 }
@@ -429,7 +460,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(cronJobReadResultsFromProto(out))
 		return r, nil, err
 	})
 
@@ -442,7 +473,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(cronJobReadResultFromProto(out))
 		return r, nil, err
 	})
 

@@ -337,3 +337,59 @@ func TestDeliveryDeadline_WorkedValuesRenderAsTheOperatorReadsThem(t *testing.T)
 		t.Fatalf("premise broken: the two worked budgets render identically (%q)", start.String())
 	}
 }
+
+// TestSwitchModalProbeReserveMatchesModalProbeTimeout is the second drift guard
+// across the one-way import edge, and it exists for the same reason
+// TestDeliveryDeadline_MatchesConfigDefaults does: this package must not import
+// lib/bossalib/config in production code, so a value both sides need is written
+// down twice and nothing but a test would notice them diverging. The import
+// here is test-only and adds no production dependency.
+//
+// config.SwitchRespawnBudgetFor reserves SwitchModalProbeReserve on top of the
+// readiness deadline because an attempt costs deadline + modalProbeTimeout once
+// a ModalDetector is wired — and since BOS-894 the session-start path always
+// wires one. If modalProbeTimeout grew and the reserve did not, the switch
+// budget would stop funding a full attempt at every configured value, which is
+// precisely the silent shortening BOS-948 removed.
+func TestSwitchModalProbeReserveMatchesModalProbeTimeout(t *testing.T) {
+	if config.SwitchModalProbeReserve != modalProbeTimeout {
+		t.Fatalf("the switch budget's modal-probe reserve drifted from the probe it reserves for: "+
+			"config.SwitchModalProbeReserve (lib/bossalib/config/config.go) = %v, but "+
+			"modalProbeTimeout (services/bossd/internal/tmux/tmux_modal.go) = %v.\n"+
+			"These are two spellings of one number, kept apart only because package tmux must not import "+
+			"lib/bossalib/config. Move them together, or the switch budget stops funding a full readiness "+
+			"attempt.",
+			config.SwitchModalProbeReserve, modalProbeTimeout)
+	}
+}
+
+// TestSessionStartReadyDeadlineAccessor_AgreesWithTheDelivery holds the
+// exported accessor and the option builder to the same answer.
+//
+// The accessor exists so Server.executeAccountSwitch can size the switch budget
+// against the wait it actually funds (BOS-948). That only works while the two
+// resolve identically — an accessor reporting the default while the delivery
+// used a configured value would hand the switch a budget for the wrong wait,
+// silently, on exactly the hosts that configured one.
+func TestSessionStartReadyDeadlineAccessor_AgreesWithTheDelivery(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []Option
+		want time.Duration
+	}{
+		{name: "unconfigured is the package default", want: DefaultSessionStartReadyDeadline},
+		{name: "a configured value is reported verbatim", opts: []Option{WithSessionStartReadyDeadline(120 * time.Second)}, want: 120 * time.Second},
+		{name: "a non-positive option is ignored, as the option documents", opts: []Option{WithSessionStartReadyDeadline(-1)}, want: DefaultSessionStartReadyDeadline},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewClient(tt.opts...)
+			if got := c.SessionStartReadyDeadline(); got != tt.want {
+				t.Errorf("SessionStartReadyDeadline() = %v, want %v", got, tt.want)
+			}
+			if got := c.startDeliveryOpts(sendPlanReadyMarker, true, nil).deadline; got != tt.want {
+				t.Errorf("startDeliveryOpts deadline = %v, want %v — the accessor and the delivery disagree", got, tt.want)
+			}
+		})
+	}
+}

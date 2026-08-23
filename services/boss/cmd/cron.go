@@ -35,6 +35,7 @@ type cronJobJSON struct {
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
 	IsZeroOutput          bool   `json:"zero_output"`
 	LastRunSessionID      string `json:"last_run_session_id"`
+	LastRunAgentName      string `json:"last_run_agent_name"`
 	LastRunAt             string `json:"last_run_at"`
 	LastRunOutcome        string `json:"last_run_outcome"`
 	NextRunAt             string `json:"next_run_at"`
@@ -56,6 +57,7 @@ func cronJobToJSON(j *pb.CronJob) cronJobJSON {
 		ShouldRunSetupCommand: j.GetShouldRunSetupCommand(),
 		IsZeroOutput:          j.GetIsZeroOutput(),
 		LastRunSessionID:      j.GetLastRunSessionId(),
+		LastRunAgentName:      j.GetLastRunAgentName(),
 		LastRunAt:             rfc3339OrEmpty(j.GetLastRunAt()),
 		LastRunOutcome:        j.GetLastRunOutcome(),
 		NextRunAt:             rfc3339OrEmpty(j.GetNextRunAt()),
@@ -109,6 +111,7 @@ func runCronLS(cmd *cobra.Command) error {
 	schedules := make([]string, len(jobs))
 	tzs := make([]string, len(jobs))
 	agents := make([]string, len(jobs))
+	runAgents := make([]string, len(jobs))
 	enabled := make([]string, len(jobs))
 	for i, j := range jobs {
 		ids[i] = j.GetId()
@@ -117,6 +120,7 @@ func runCronLS(cmd *cobra.Command) error {
 		schedules[i] = j.GetSchedule()
 		tzs[i] = orDash(j.GetTimezone())
 		agents[i] = orDash(j.GetAgentName())
+		runAgents[i] = lastRunAgentLabel(j)
 		enabled[i] = boolLabel(j.GetIsEnabled())
 	}
 
@@ -127,12 +131,13 @@ func runCronLS(cmd *cobra.Command) error {
 		{Title: "SCHEDULE", Width: views.MaxColWidth("SCHEDULE", schedules, 20)},
 		{Title: "TZ", Width: views.MaxColWidth("TZ", tzs, 20)},
 		{Title: "AGENT", Width: views.MaxColWidth("AGENT", agents, 12)},
+		{Title: "RUN AGENT", Width: views.MaxColWidth("RUN AGENT", runAgents, 20)},
 		{Title: "ENABLED", Width: views.MaxColWidth("ENABLED", enabled, 8)},
 	}
 
 	rows := make([]table.Row, len(jobs))
 	for i := range jobs {
-		rows[i] = table.Row{ids[i], names[i], repos[i], schedules[i], tzs[i], agents[i], enabled[i]}
+		rows[i] = table.Row{ids[i], names[i], repos[i], schedules[i], tzs[i], agents[i], runAgents[i], enabled[i]}
 	}
 
 	t := table.New(
@@ -183,6 +188,7 @@ func runCronShow(cmd *cobra.Command, id string) error {
 	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetShouldRunSetupCommand()))
 	fmt.Fprintf(&b, "Zero output:         %s\n", boolLabel(job.GetIsZeroOutput()))
 	fmt.Fprintf(&b, "Last run session ID: %s\n", orDash(job.GetLastRunSessionId()))
+	fmt.Fprintf(&b, "Last run agent:      %s\n", lastRunAgentLabel(job))
 	fmt.Fprintf(&b, "Last run at:         %s\n", orDash(rfc3339OrEmpty(job.GetLastRunAt())))
 	fmt.Fprintf(&b, "Last run outcome:    %s\n", orDash(job.GetLastRunOutcome()))
 	fmt.Fprintf(&b, "Next run at:         %s\n", orDash(rfc3339OrEmpty(job.GetNextRunAt())))
@@ -417,4 +423,16 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func lastRunAgentLabel(job *pb.CronJob) string {
+	runAgent := strings.TrimSpace(job.GetLastRunAgentName())
+	if runAgent == "" {
+		return "unknown"
+	}
+	jobAgent := strings.TrimSpace(job.GetAgentName())
+	if jobAgent != "" && runAgent != jobAgent {
+		return fmt.Sprintf("%s (mismatch: job %s)", runAgent, jobAgent)
+	}
+	return runAgent
 }

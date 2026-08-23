@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,12 @@ import (
 
 type testRefreshLock struct {
 	mu *sync.Mutex
+}
+
+type refreshRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f refreshRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (l *testRefreshLock) Unlock() error {
@@ -1023,19 +1030,23 @@ func TestRefreshWorkOSTokenHonorsContext(t *testing.T) {
 	var lockMu sync.Mutex
 	withTokenRefreshHooks(t, &lockMu)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	workOSAuthenticateURL = srv.URL
-	workOSRefreshHTTPClient = srv.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	workOSAuthenticateURL = "https://workos-refresh.test/token"
+	workOSRefreshHTTPClient = &http.Client{Transport: refreshRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if trace := httptrace.ContextClientTrace(req.Context()); trace != nil && trace.GotConn != nil {
+			trace.GotConn(httptrace.GotConnInfo{})
+		}
+		cancel()
+		return nil, req.Context().Err()
+	})}
+
 	_, err := refreshWorkOSToken(ctx, "client", "refresh")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("refreshWorkOSToken error = %v, want context deadline exceeded", err)
+	if err == nil {
+		t.Fatal("refreshWorkOSToken error = nil, want context canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("refreshWorkOSToken error = %v, want context canceled", err)
 	}
 	// The request was dispatched, so WorkOS may already have consumed and
 	// rotated the refresh token: the outcome is unknown, not a rejection.

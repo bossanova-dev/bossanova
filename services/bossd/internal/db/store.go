@@ -519,6 +519,25 @@ type AccountStore interface {
 	// and bumps updated_at. The snapshot never carries credentials. Returns
 	// sql.ErrNoRows when the account does not exist.
 	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
+	// RecordInjectionFailure fails a row's health because its credentials could
+	// not be materialized for a spawn: health=failed and last_test_error set
+	// to reason prefixed with InjectionFailureReasonPrefix. The write is
+	// deliberately non-destructive so ClearInjectionFailure can fully withdraw
+	// it — last_test_ok_at is PRESERVED (the credential is untouched, only the
+	// local materialization failed), and a last_test_error written by anything
+	// else is PRESERVED too, so a protected failure never becomes a
+	// self-clearing one. Without it the spawn silently runs on the agent CLI's
+	// ambient login (BOS-973). reason is a materialize error string, never
+	// credential material. Returns sql.ErrNoRows when the account does not
+	// exist.
+	RecordInjectionFailure(ctx context.Context, id string, reason string) error
+	// ClearInjectionFailure withdraws a previously recorded injection failure
+	// after a successful materialize, leaving the row exactly as the failure
+	// found it. It is guarded on InjectionFailureReasonPrefix, so a genuine
+	// RecordTestResult failure is never erased, and it is a no-op (nil, NOT
+	// sql.ErrNoRows) when no such failure is recorded — the normal case on
+	// every successful spawn.
+	ClearInjectionFailure(ctx context.Context, id string) error
 }
 
 // CronJobStore defines the interface for cron job persistence.
@@ -530,11 +549,11 @@ type CronJobStore interface {
 	ListEnabled(ctx context.Context) ([]*models.CronJob, error)
 	Update(ctx context.Context, id string, params UpdateCronJobParams) (*models.CronJob, error)
 	// MarkFireStarted records that a cron job has fired and spawned a session.
-	// It updates last_run_session_id, last_run_at, and next_run_at but does
-	// NOT touch last_run_outcome — outcome is written later by the finalize
-	// pipeline via UpdateLastRun. Use this at fire time; use UpdateLastRun
-	// for terminal outcomes.
-	MarkFireStarted(ctx context.Context, id string, sessionID string, firedAt time.Time, nextRunAt *time.Time) error
+	// It updates last_run_session_id, last_run_agent_name, last_run_at, and
+	// next_run_at but does NOT touch last_run_outcome — outcome is written later
+	// by the finalize pipeline via UpdateLastRun. Use this at fire time; use
+	// UpdateLastRun for terminal outcomes.
+	MarkFireStarted(ctx context.Context, id string, sessionID string, agentName string, firedAt time.Time, nextRunAt *time.Time) error
 	UpdateLastRun(ctx context.Context, id string, params UpdateCronJobLastRunParams) error
 	Delete(ctx context.Context, id string) error
 }

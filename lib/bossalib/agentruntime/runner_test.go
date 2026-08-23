@@ -562,14 +562,14 @@ exit 0
 
 const fakeBinThreadStartedThenSleeps = `#!/usr/bin/env bash
 echo '{"type":"thread.started","thread_id":"fast-1234"}'
-sleep 10
+sleep 1
 exit 0
 `
 
 const fakeBinThreadStartedAfterSlowStartup = `#!/usr/bin/env bash
-sleep 3
+sleep 0.3
 echo '{\"type\":\"thread.started\",\"thread_id\":\"slow-1234\"}'
-sleep 1
+sleep 0.1
 exit 0
 `
 
@@ -590,10 +590,8 @@ func threadIDFromOutput(buf []byte) string {
 	return ""
 }
 
-// TestRunnerSessionIDFromOutput verifies the SessionIDFromOutput hook
-// re-keys the runner's session ID to whatever the hook discovers in the
-// early stdout — the caller's "ignored-hint" value must be replaced by
-// "abcd-1234" parsed out of the fake binary's `thread.started` line.
+// TestRunnerSessionIDFromOutput verifies the SessionIDFromOutput hook returns
+// the discovered session ID while keeping the caller's hint as a valid handle.
 func TestRunnerSessionIDFromOutput(t *testing.T) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "fake-thread.sh")
@@ -617,13 +615,6 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 	if sid != "abcd-1234" {
 		t.Errorf("Start returned sid=%q, want abcd-1234 (caller hint should be replaced by SessionIDFromOutput)", sid)
 	}
-	// Sanity: the runner should track the process under the discovered
-	// ID. IsRunning("ignored-hint") must be false; IsRunning(sid) is
-	// either still true or false (depending on scheduling), but it must
-	// not panic and must be consistent with ExitError(sid).
-	if r.IsRunning("ignored-hint") {
-		t.Error("IsRunning still finds process under caller-supplied hint after SessionIDFromOutput re-keyed it")
-	}
 	deadline := time.After(2 * time.Second)
 	for r.IsRunning(sid) {
 		select {
@@ -632,6 +623,41 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}
+	}
+
+	if r.IsRunning("ignored-hint") != r.IsRunning(sid) {
+		t.Errorf("IsRunning alias = %v, canonical = %v", r.IsRunning("ignored-hint"), r.IsRunning(sid))
+	}
+	if got, want := r.ExitError("ignored-hint"), r.ExitError(sid); got != want {
+		t.Errorf("ExitError alias = %v, canonical = %v", got, want)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if got, want := r.Wait(waitCtx, "ignored-hint"), r.Wait(waitCtx, sid); got != want {
+		t.Errorf("Wait alias = %v, canonical = %v", got, want)
+	}
+	if got, want := len(r.History("ignored-hint")), len(r.History(sid)); got != want {
+		t.Errorf("History alias len = %d, canonical len = %d", got, want)
+	}
+	subCtx, subCancel := context.WithCancel(context.Background())
+	if _, err := r.Subscribe(subCtx, "ignored-hint"); err != nil {
+		t.Fatalf("Subscribe alias: %v", err)
+	}
+	subCancel()
+	if err := r.Stop("ignored-hint"); err != nil {
+		t.Fatalf("Stop alias after exit: %v", err)
+	}
+	if err := r.Stop(sid); err != nil {
+		t.Fatalf("Stop canonical after alias stop: %v", err)
+	}
+	if r.IsRunning("never-issued") {
+		t.Error("unknown id reports running")
+	}
+	if _, err := r.Subscribe(context.Background(), "never-issued"); err == nil {
+		t.Error("Subscribe unknown id succeeded")
+	}
+	if got := r.History("never-issued"); got != nil {
+		t.Errorf("History unknown id = %v, want nil", got)
 	}
 }
 
@@ -666,9 +692,20 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	if !r.IsRunning(sid) {
 		t.Fatal("Start returned after fake-thread subprocess exited; want return while process is still running")
 	}
+	if !r.IsRunning("ignored-hint") {
+		t.Fatal("caller hint should resolve while discovered-id process is still running")
+	}
+	subCtx, subCancel := context.WithCancel(context.Background())
+	if _, err := r.Subscribe(subCtx, "ignored-hint"); err != nil {
+		t.Fatalf("Subscribe caller hint while running: %v", err)
+	}
+	subCancel()
 
+	if err := r.Stop("ignored-hint"); err != nil {
+		t.Fatalf("Stop via caller hint: %v", err)
+	}
 	if err := r.Stop(sid); err != nil {
-		t.Fatalf("Stop: %v", err)
+		t.Fatalf("second Stop via discovered id: %v", err)
 	}
 }
 

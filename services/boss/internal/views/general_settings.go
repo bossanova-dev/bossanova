@@ -465,12 +465,54 @@ func (m *GeneralSettingsModel) moveCursor(delta int) {
 // authoritative for the error banner. A later successful save can persist an
 // earlier failed mutation, so it must also clear that stale failure.
 func (m *GeneralSettingsModel) persistSettings() bool {
+	if proofSettingsSaveFailure() {
+		m.err = fmt.Errorf("proof settings save failure")
+		return false
+	}
 	if err := config.Save(m.settings); err != nil {
 		m.err = err
 		return false
 	}
 	m.err = nil
 	return true
+}
+
+func cloneGeneralSettings(settings config.Settings) config.Settings {
+	cloned := settings
+	if settings.NotificationsEnabled != nil {
+		v := *settings.NotificationsEnabled
+		cloned.NotificationsEnabled = &v
+	}
+	if settings.ManagedAccounts.Enabled != nil {
+		v := *settings.ManagedAccounts.Enabled
+		cloned.ManagedAccounts.Enabled = &v
+	}
+	if settings.Plugins != nil {
+		cloned.Plugins = make([]config.PluginConfig, len(settings.Plugins))
+		for i, plugin := range settings.Plugins {
+			cloned.Plugins[i] = plugin
+			if plugin.Config != nil {
+				cloned.Plugins[i].Config = make(map[string]string, len(plugin.Config))
+				for key, value := range plugin.Config {
+					cloned.Plugins[i].Config[key] = value
+				}
+			}
+		}
+	}
+	return cloned
+}
+
+func (m GeneralSettingsModel) persistSettingsWithRollback(mutate func(*config.Settings) error) GeneralSettingsModel {
+	saved := cloneGeneralSettings(m.settings)
+	if err := mutate(&m.settings); err != nil {
+		m.err = err
+		return m
+	}
+	if !m.persistSettings() {
+		m.settings = saved
+		return m
+	}
+	return m
 }
 
 func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
@@ -485,28 +527,34 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		return m, nil
 	case settingsRowKindBool:
 		current := config.PluginConfigBool(&m.settings, row.Plugin, row.Key)
-		config.SetPluginConfigBool(&m.settings, row.Plugin, row.Key, !current)
-		m.persistSettings()
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			config.SetPluginConfigBool(settings, row.Plugin, row.Key, !current)
+			return nil
+		})
 	case settingsRowKindAgentEnabled:
 		current := pluginEnabled(m.settings, row.Plugin)
 		if current && len(enabledAgentNames(m.settings, m.agents)) <= 1 {
 			m.err = fmt.Errorf("select at least one agent")
 			return m, nil
 		}
-		setPluginEnabled(&m.settings, row.Plugin, !current)
-		if !current && (m.settings.DefaultAgent == "" || !pluginEnabled(m.settings, m.settings.DefaultAgent)) {
-			m.settings.DefaultAgent = row.Plugin
-		}
-		if current && m.settings.DefaultAgent == row.Plugin {
-			enabled := enabledAgentNames(m.settings, m.agents)
-			if len(enabled) > 0 {
-				m.settings.DefaultAgent = enabled[0]
-			} else {
-				m.settings.DefaultAgent = ""
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			setPluginEnabled(settings, row.Plugin, !current)
+			if !current && (settings.DefaultAgent == "" || !pluginEnabled(*settings, settings.DefaultAgent)) {
+				settings.DefaultAgent = row.Plugin
 			}
+			if current && settings.DefaultAgent == row.Plugin {
+				enabled := enabledAgentNames(*settings, m.agents)
+				if len(enabled) > 0 {
+					settings.DefaultAgent = enabled[0]
+				} else {
+					settings.DefaultAgent = ""
+				}
+			}
+			return nil
+		})
+		if m.err == nil {
+			m.rebuildRows()
 		}
-		m.persistSettings()
-		m.rebuildRows()
 	case settingsRowKindEnum:
 		// Cycle to the next allowed value.
 		if len(row.Allowed) == 0 {
@@ -514,41 +562,50 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		}
 		current := config.PluginConfigString(&m.settings, row.Plugin, row.Key)
 		next := nextEnumValue(row.Allowed, current)
-		if err := config.SetPluginConfigEnum(&m.settings, row.Plugin, row.Key, next, row.Allowed); err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.persistSettings()
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			return config.SetPluginConfigEnum(settings, row.Plugin, row.Key, next, row.Allowed)
+		})
 	case settingsRowKindString:
 		m.editingRow = m.cursor
 		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
 		return m, m.stringInput.Focus()
 	case settingsRowKindEventTracing:
-		m.settings.EventTracingEnabled = !m.settings.EventTracingEnabled
-		if m.settings.EventTracingEnabled {
-			if m.settings.PostHogProjectToken == "" {
-				m.settings.PostHogProjectToken = telemetry.ProductionProjectToken
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.EventTracingEnabled = !settings.EventTracingEnabled
+			if settings.EventTracingEnabled {
+				if settings.PostHogProjectToken == "" {
+					settings.PostHogProjectToken = telemetry.ProductionProjectToken
+				}
+				if settings.PostHogHost == "" {
+					settings.PostHogHost = telemetry.DefaultHost
+				}
 			}
-			if m.settings.PostHogHost == "" {
-				m.settings.PostHogHost = telemetry.DefaultHost
-			}
-		}
-		if m.persistSettings() {
+			return nil
+		})
+		if m.err == nil {
 			m.rebuildRows()
 		}
 	case settingsRowKindErrorTracking:
-		m.settings.ErrorTrackingEnabled = !m.settings.ErrorTrackingEnabled
-		m.persistSettings()
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.ErrorTrackingEnabled = !settings.ErrorTrackingEnabled
+			return nil
+		})
 	case settingsRowKindRotation:
-		next := !m.settings.ManagedAccounts.ManagedAccountsEnabled()
-		m.settings.ManagedAccounts.Enabled = &next
-		if m.persistSettings() {
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			next := !settings.ManagedAccounts.ManagedAccountsEnabled()
+			settings.ManagedAccounts.Enabled = &next
+			return nil
+		})
+		if m.err == nil {
 			m.rebuildRows()
 		}
 	case settingsRowKindNotifications:
-		next := !config.NotificationsEnabled(m.settings)
-		m.settings.NotificationsEnabled = &next
-		if m.persistSettings() {
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			next := !config.NotificationsEnabled(*settings)
+			settings.NotificationsEnabled = &next
+			return nil
+		})
+		if m.err == nil {
 			m.rebuildRows()
 		}
 	case settingsRowKindPostHogToken:
@@ -574,8 +631,10 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 			return m, nil
 		}
 		next := nextEnumValue(row.Allowed, m.settings.DefaultAgent)
-		m.settings.DefaultAgent = next
-		m.persistSettings()
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.DefaultAgent = next
+			return nil
+		})
 	}
 	return m, nil
 }
@@ -626,44 +685,56 @@ func (m GeneralSettingsModel) commitEdit() (GeneralSettingsModel, tea.Cmd) {
 			m.err = fmt.Errorf("directory cannot be empty")
 			return m, nil
 		}
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.WorktreeBaseDir = dir
+			return nil
+		})
+		if m.err != nil {
+			return m, nil
+		}
 		m.editingRow = -1
-		m.err = nil
 		m.worktreeDirInput.Blur()
-		m.settings.WorktreeBaseDir = dir
-		m.persistSettings()
 
 	case settingsRowKindPollInterval:
 		val := m.pollIntervalInput.Value()
+		n := 0
 		if val == "" {
-			m.editingRow = -1
-			m.err = nil
-			m.pollIntervalInput.Blur()
-			m.settings.PollIntervalSeconds = 0
-			m.persistSettings()
-			return m, nil
+			// Empty resets to the default poll interval.
+		} else {
+			var err error
+			n, err = strconv.Atoi(val)
+			if err != nil || n < 1 {
+				m.err = fmt.Errorf("poll interval must be a positive integer")
+				return m, nil
+			}
 		}
-		n, err := strconv.Atoi(val)
-		if err != nil || n < 1 {
-			m.err = fmt.Errorf("poll interval must be a positive integer")
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.PollIntervalSeconds = n
+			return nil
+		})
+		if m.err != nil {
 			return m, nil
 		}
 		m.editingRow = -1
-		m.err = nil
 		m.pollIntervalInput.Blur()
-		m.settings.PollIntervalSeconds = n
-		m.persistSettings()
 
 	case settingsRowKindString:
 		val := m.stringInput.Value()
-		config.SetPluginConfigString(&m.settings, row.Plugin, row.Key, val)
-		if !m.persistSettings() {
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			config.SetPluginConfigString(settings, row.Plugin, row.Key, val)
+			return nil
+		})
+		if m.err != nil {
 			return m, nil
 		}
 		m.editingRow = -1
 		m.stringInput.Blur()
 	case settingsRowKindPostHogToken:
-		m.settings.PostHogProjectToken = strings.TrimSpace(m.stringInput.Value())
-		if !m.persistSettings() {
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.PostHogProjectToken = strings.TrimSpace(m.stringInput.Value())
+			return nil
+		})
+		if m.err != nil {
 			return m, nil
 		}
 		m.editingRow = -1
@@ -673,8 +744,11 @@ func (m GeneralSettingsModel) commitEdit() (GeneralSettingsModel, tea.Cmd) {
 		if host == "" {
 			host = telemetry.DefaultHost
 		}
-		m.settings.PostHogHost = host
-		if !m.persistSettings() {
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.PostHogHost = host
+			return nil
+		})
+		if m.err != nil {
 			return m, nil
 		}
 		m.editingRow = -1
@@ -683,15 +757,11 @@ func (m GeneralSettingsModel) commitEdit() (GeneralSettingsModel, tea.Cmd) {
 		// A blank (or whitespace-only) value is the documented reset: it
 		// persists no override, so the daemon falls back to the machine
 		// hostname on its next start.
-		saved := m.settings.DaemonName
-		m.settings.DaemonName = strings.TrimSpace(m.stringInput.Value())
-		if !m.persistSettings() {
-			// The candidate stays in the still-focused input for a retry, but
-			// the model rolls back to the saved name: the editor remains open,
-			// so cancelling from here would otherwise leave the resting row
-			// showing an unsaved value that the next successful save of any
-			// other setting would silently persist.
-			m.settings.DaemonName = saved
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.DaemonName = strings.TrimSpace(m.stringInput.Value())
+			return nil
+		})
+		if m.err != nil {
 			return m, nil
 		}
 		m.editingRow = -1
@@ -715,8 +785,16 @@ func (m GeneralSettingsModel) cancelEdit() (GeneralSettingsModel, tea.Cmd) {
 		}
 	case settingsRowKindString:
 		m.stringInput.Blur()
-	case settingsRowKindPostHogToken, settingsRowKindPostHogHost, settingsRowKindDaemonName:
+		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
+	case settingsRowKindPostHogToken:
 		m.stringInput.Blur()
+		m.stringInput.SetValue(m.settings.PostHogProjectToken)
+	case settingsRowKindPostHogHost:
+		m.stringInput.Blur()
+		m.stringInput.SetValue(m.settings.PostHogHost)
+	case settingsRowKindDaemonName:
+		m.stringInput.Blur()
+		m.stringInput.SetValue(m.settings.DaemonName)
 	}
 	m.editingRow = -1
 	m.err = nil

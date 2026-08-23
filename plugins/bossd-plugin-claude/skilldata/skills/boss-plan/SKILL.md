@@ -48,11 +48,9 @@ names generically everywhere else:
   `agentFriendly` and `needsHuman` are mutually exclusive (every plan gets exactly one).
 - **Content-taxonomy labels** (`bug`, `feature`, `improvement`, `docs`) are the tracker's own
   display names, not fixed pipeline roles. Read the issue's existing set with the `readLabels` op
-  and merge — preserve what it returned, and add one only when it genuinely applies. Resolve a
-  taxonomy name through `labelName` whenever the repo maps that role, and treat the four names
-  above as this repo's display names rather than universal ones: a tracker that calls the role
-  something else (`bug: "defect"`) maps it under `trackerConfig.<tracker>.labels`, and writing the
-  literal would submit a label its tracker does not have.
+  and merge — preserve what it returned, and add one only when it genuinely applies. Resolve each
+  taxonomy name with `optionalLabelName(config, '<role>')`, whose keys are `bug`, `feature`,
+  `improvement`, `docs`; if it returns `null`, apply the literal display name. Never create labels.
 - Tracker priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
 - Dependency links use the tracker's `blocks`/`blocked by` relations. A blocker is "cleared" only
   when its state type is completed or canceled (PR merged / work dropped) — the
@@ -69,9 +67,14 @@ names generically everywhere else:
    no-op, not an error (a `/boss-plan` in an unrelated repo is a no-op; a non-zero exit would surface
    as a cron/agent error):
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
-   export BOSS_PLAN_TOOLBOX
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
    CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
    # `isConfiguredForPlanning` requires the tracker identity AND the full state role map
    # (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
@@ -88,22 +91,41 @@ names generically everywhere else:
      exit 0
    fi
    ```
+   This block is the **toolbox preamble**. Each Bash tool call is a fresh shell, so every command
+   block that dereferences `$BOSS_PLAN_TOOLBOX` must begin with this preamble; an exported value
+   never survives to the next block. `loadSkillConfig` is synchronous and takes an options object
+   (`loadSkillConfig({ cwd })`); positional or awaited calls read as broken config.
 2. **Warn when this installed toolbox has drifted from its source.** The install is a copy, so a
    repo whose helpers have moved on leaves a stale one here — silently. Probe once, now; it is an
-   observation that never aborts and never re-checks mid-run. Guard the call, because an install
-   predating the helper must stay silent rather than fail — and re-derive the path first, since a
+   observation that never aborts and never re-checks mid-run. The probe prints the realpath of the
+   toolbox, so a `bossanova/`-prefixed `installed=` path is symlink equivalence with the configured
+   `$BOSS_PLAN_TOOLBOX`, not drift. Guard the call, because an install predating the helper must
+   report that the drift status is unknown rather than fail — and re-derive the path first, since a
    guard against an unset variable is silent in exactly the same way as a clean tree:
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_PLAN_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox}"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
-   [ -f "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" ] && node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   if [ -f "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" ]; then
+     node "$BOSS_PLAN_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_PLAN_TOOLBOX" || true
+   else
+     echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
+   fi
    ```
    A `boss-toolbox-drift:` line names installed helpers that differ from this repo's helper source.
    Re-vendor and reinstall the skills to clear it, then continue — the run is not blocked.
 3. Require the configured tracker's optional `preparePlanAttachment`, `finalizePlanAttachment`,
    `readPlanAttachment`, and `deletePlanAttachment` operations now. If any is absent, stop before
-   drafting or tracker writes. `deletePlanAttachment` is required here, not at its first use: every
-   upload site reads its artifact back and deletes a confirmed-unreadable orphan
+   drafting or tracker writes. These names are conventional tracker-adapter operations declared in
+   the adapter `operationMap` (`OPTIONAL_TRACKER_OPERATIONS` in `tracker/adapter-core.mjs`), not
+   toolbox exports or greppable helper symbols; for a tool-backed adapter, each op's `tool` field is
+   the concrete capability to probe. `deletePlanAttachment` is required here, not at its first use:
+   every upload site reads its artifact back and deletes a confirmed-unreadable orphan
    (`references/plan-storage.md` step 5), so a missing op must fail with nothing written.
    Native tracker attachments are the only implementation-plan store and never change proof storage.
 4. Confirm the tracker adapter is reachable with a cheap read (its status-list capability scoped to
@@ -115,9 +137,11 @@ names generically everywhere else:
   regardless of status.
   - **Interactive:** if it is already in the planned/in-progress/`Done`/`Canceled` state, warn and
     confirm before re-planning (see `references/interactive-mode.md`).
-  - **Headless (`BOSS_CRON=true`):** do not ask. A cron job that names a ticket means to plan that
-    ticket, so proceed regardless of status — but if it is `Done`/`Canceled`, log a warning and
-    **stop** (re-planning finished work unattended is almost never intended) rather than blocking.
+  - **Headless (`BOSS_CRON=true`):** do not ask. A cron job that names a ticket means to consider that
+    ticket, but the idempotence precheck below still wins: an already-planned ticket with a valid
+    description and canonical plan attachment exits cleanly without re-drafting. If the ticket is
+    `Done`/`Canceled`, log a warning and **stop** (re-planning finished work unattended is almost
+    never intended) rather than blocking.
 - **Otherwise**: list the team's unplanned issues via the tracker adapter's list/select capability —
   scoped to `trackerConfigFor(config).team` and the `unplanned` state, `limit=250`. **Rank the whole
   queue** by **priority**, reading the tracker's numbers correctly: Urgent(1) > High(2) > Medium(3)
@@ -128,6 +152,29 @@ names generically everywhere else:
   - **Headless (`BOSS_CRON=true`):** do not ask. Select the **head of the ranked queue** (highest
     priority, oldest tie-break) and proceed straight to Phase 2. If the unplanned queue is empty,
     report that and stop.
+
+Before Phase 2 in both modes, run the idempotence precheck. Write the selected issue payload from
+the Phase 1 read to `.linear-plans/<ISSUE-ID>.precheck.json` and invoke the deterministic guard
+(`planIdempotencePrecheck(...)` in `$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs`):
+
+```bash
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+PRECHECK=".linear-plans/<ISSUE-ID>.precheck.json"
+node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" idempotence "$PRECHECK"
+```
+
+If it prints `action: "noop"`, delete the scratch file, print one line naming the ticket and the
+satisfied conjuncts (planned state, valid description, canonical plan attachment), then exit **0**
+with **zero tracker writes**. If it prints `action: "plan"`, log every `reasons[]` token and
+continue. This precheck applies to explicitly-named tickets as well as queue-selected tickets; a
+named ticket is not permission to destructively re-draft an already valid plan.
 
 ## Phase 2 — Draft the plan
 
@@ -169,8 +216,14 @@ for the Phase 4 secret gate.
    the module constant in `bs-run-sentinel.mjs`:
 
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
    RUN_SENTINEL="$BOSS_PLAN_TOOLBOX/bs-run-sentinel.mjs"
    test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing" >&2; exit 1; }
    DISPATCH_FAILURE="dispatch-failure"
@@ -180,11 +233,17 @@ for the Phase 4 secret gate.
    export RUN_SENTINEL DISPATCH_FAILURE PLAN_PATH RUN_ID RUN_DIR
    ```
 
-2. **Dispatch ONE awaited `general-purpose` subagent** (`subagent_type: general-purpose`,
+2. Before dispatch, write the byte copy of the Phase 1 `get_issue` description to
+   `.linear-plans/<ISSUE-ID>.image-guard-orig.md`. This is the single raw-description snapshot for
+   the whole run: Phase 4 reuses it, and the worker receives this path as its **only** description
+   source. Do not let the worker re-read the tracker description; signed upload URLs can rotate and
+   fail the parity gate.
+
+3. **Dispatch ONE awaited `general-purpose` subagent** (`subagent_type: general-purpose`,
    <!-- tier: opus --> plan drafting is judgment, so **tier: opus**; **await** the dispatch —
 
    **never** `run_in_background`). Pass it the **path** `references/headless-drafting-brief.md` (not
-   its text), the ticket `id`/`title`/`description`, the target `PLAN_PATH`, and the sentinel context
+   its text), the ticket `id`/`title`, the description snapshot path, the target `PLAN_PATH`, and the sentinel context
    `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. The brief tells it to recon, work the review dimensions, write
    the plan to `PLAN_PATH`, write the terminal sentinel with a `planPath` payload, and **return only**
    the bounded metadata object
@@ -196,33 +255,53 @@ for the Phase 4 secret gate.
    print one clear stderr line, clean up the sentinel context if it exists, make **no Linear write**,
    and exit non-zero. Do **not** draft inline in headless mode.
 
-3. **Classify from the run-file sentinel only**, then re-verify (never trust the sentinel alone —
+4. **Classify from the run-file sentinel only**, then re-verify (never trust the sentinel alone —
    epic D11):
+   **Measurement is orchestrator-owned.** The orchestrator measures on-disk artifacts with `stat` or
+   `wc -c`; reported size is never the input. After `ok`, re-verify every orchestrator-consumed
+   artifact: `PLAN_PATH`, guard, child-plan and epic-spec scratch. Epics
+   require artifact manifests (`guardScratchPaths`,`epicSpecPaths`).
+   Zero-byte original guard sources
+   (`.image-guard-orig.md` / `.attachment-guard-orig.md`) are ok; others non-empty.
+   Missing, empty, directory or wrong-path ⇒
+   `echo "$DISPATCH_FAILURE: sentinel ok but artifact missing/empty or wrong path (<path>) — no Linear write, aborting" >&2`.
+
    ```bash
    READ="$(node "$RUN_SENTINEL" read "$RUN_DIR" "$RUN_ID" draft)"
    RC_STATUS="$(printf '%s' "$READ" | jq -r '.status')"
    if [ "$RC_STATUS" != "ok" ]; then
-     # status == missing (dead/failed subagent) OR stale (foreign leftover): a distinct
-     # dispatch-failure. It routes to the SAFE branch — NO Linear write, non-zero exit — and the
-     # plan NEVER completes. A half-planned issue is worse than none (the Phase 0 rule).
+     # missing/stale sentinel: SAFE branch — NO Linear write, non-zero exit.
      echo "$DISPATCH_FAILURE: drafting subagent left no valid sentinel (status=$RC_STATUS) — no Linear write, aborting" >&2
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-     # A headless EPIC subagent can write child plans (.linear-plans/<ISSUE-ID>-child-*.md, which
-    # carry `## Original notes`) + image-guard, attachment-guard, attachment-header and epic-spec-body scratch, then
-    # die WITHOUT an ok sentinel. This abort skips Phase 5, so remove the same five patterns here —
-     # never leave that scratch in the cron worktree. ONE PATTERN PER LINE + CLEANUP_RC, for the
-     # reasons Phase 5 records; this path already exits 1, so a failure is warned about, not re-signalled.
+     # Abort skips Phase 5; delete the epic/guard/run-boundary scratch families now.
      CLEANUP_RC=0
+     rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
      if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
      exit 1
    fi
+   node -e 'const f=require("fs"),p=require("path"),[r,L,F]=process.argv.slice(1),x=JSON.parse(r).payload||{},T=c=>c?.trim?.(),B="epicSpecPaths",H="guardScratchPaths",P="childPlanPaths",K=["planPath",H,P,B,"attachmentHeaderPaths"],v=k=>{const q=x[k]||[];return k===P&&q&&!Array.isArray(q)&&typeof q=="object"?Object.values(q):[].concat(q)},g=s=>s.toLowerCase().replace(/[^a-z\d]+/g,"-").replace(/^-+|-+$/g,""),n=(id,t)=>id.toUpperCase()+"-"+g(t);let b=0,E=c=>{console.error(`${F}: sentinel ok but artifact missing/empty or wrong path (${c}) — no Linear write, aborting`);b=1},S=v(B).filter(T),G=v(H).filter(T),D=p.resolve(".linear-plans");if(x.epic){const I=v("childIds").filter(T),M=typeof x[P]=="object"&&!Array.isArray(x[P])?x[P]:{},C=I.map(id=>M[id]).filter(T),R=T(x.epicParentId),A=[],U=new Set,O=p.resolve(D,`${R}.epic-spec.json`);for(const k of[H,B])if(!Array.isArray(x[k]))E(k);if(!S.length)E(B);for(const s of S){if(p.resolve(s)!==O){E(B);continue}try{const q=JSON.parse(f.readFileSync(s));if(T(q.parentId)!==R)E(B);for(const c of q.children||[])if(T(c.key)&&T(c.title))A.push([c.key,c.title])}catch{E(s)}}if([R,...I].some(id=>"image-guard-orig attachment-guard-orig image-guard-new".split` `.some(w=>!G.some(c=>p.basename(c)===`${id}.${w}.md`))))E(H);if(!R||!I.length||A.length!==I.length||C.length!==I.length||new Set(C.map(c=>p.resolve(c))).size!==I.length)E(P);for(const id of I){const c=T(M[id]);if(!c){E(`${P}.${id}`);continue}const j=A.findIndex(y=>p.basename(c)===`${R}-child-${y[0]}-${n(id,y[1])}.md`);if(j<0||U.has(j))E(c);else U.add(j)}if(U.size!==A.length)E(P)}else if(!v("planPath").some(T))E("planPath");const P0=p.resolve(L);for(const k of K)for(const c of v(k))if(T(c)){const z=p.resolve(c),a=z===P0||p.dirname(z)===D,m=a&&f.existsSync(z)&&f.statSync(z),s=m&&m.isFile()&&(m.size||k===H&&/-guard-orig[.]md$/.test(z));if(!s)E(c)}process.exit(b)' "$READ" "$PLAN_PATH" "$DISPATCH_FAILURE" ||
+     {
+       node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+       # Artifact verification failure also skips Phase 5; remove the same scratch families.
+       CLEANUP_RC=0
+       rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
+       if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
+       if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
+       exit 1
+     }
    EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
+   PREMISES="$(printf '%s' "$READ" | jq -c '.payload.premises // []')"
    if [ "$EPIC" = "true" ]; then
      # EPIC outcome: the subagent claims it performed ALL tracker writes itself (children
      # created + wired, parent repurposed with the parent-label exception, moved
@@ -230,38 +309,25 @@ for the Phase 4 secret gate.
      # the sentinel alone — the subagent may have written `ok` too early / with partial
      # tracker writes, mirroring the single-ticket plan-file re-verify below):
      EPIC_PARENT="$(printf '%s' "$READ" | jq -r '.payload.epicParentId // empty')"
-     # Run BOTH Linear MCP reads NOW and SET EPIC_REVERIFIED from their actual results. Initialize
-     # it to false and promote to true ONLY when both checks pass — never leave it unset: an unset
-     # flag would force the `!= "true"` guard below to reject even a fully-successful epic (children
-     # created + wired, parent flipped to planned), and because that parent is already no longer
-     # unplanned the unplanned resume sweep would never re-pick it — a genuinely complete epic
-     # misreported as failed and stranded. So this assignment is load-bearing, not narration.
+     # Run BOTH Linear MCP reads NOW and promote only from their actual results.
      EPIC_REVERIFIED=false
-     #   (a) get_issue "$EPIC_PARENT": confirm it was actually repurposed — its state is
-     #       now planned, NOT still unplanned. Parent-repurpose-is-LAST, so a planned
-     #       parent is the commit point proving children + wiring already completed; a
-     #       parent still unplanned means the epic is incomplete.
-     #   (b) list_issues parentId="$EPIC_PARENT" limit=250: confirm the created children
-     #       are present and their count matches the payload `childIds` (equivalently the
-     #       `parseEpicSpec` child-key set recovered from the parent's spec attachment).
-     # When (a) shows planned AND (b) matches, set `EPIC_REVERIFIED=true`; otherwise leave it false
-     # and take the SAFE branch below — NO success report. For an INCOMPLETE epic that never flipped,
-     # the parent is still unplanned, so the next headless sweep re-picks and resumes it.
+     # (a) get_issue "$EPIC_PARENT": parent is planned, not unplanned.
+     # (b) list_issues parentId="$EPIC_PARENT" limit=250: children match required payload
+     # `childIds` (missing/empty childIds is a sentinel-shape failure, not a silent fallback).
+     # Both true ⇒ EPIC_REVERIFIED=true; otherwise SAFE branch — NO success report.
      if [ "$EPIC_REVERIFIED" != "true" ]; then
        echo "$DISPATCH_FAILURE: epic sentinel ok but reverify failed (parent still unplanned, or children missing/short) — no success report, aborting" >&2
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-       # Reverify-fail also skips Phase 5, and a partial epic definitely wrote child scratch (plans
-       # carry `## Original notes`, header files carry signed request data, the epic-spec body carries
-       # the whole decomposition) — same five patterns, same CLEANUP_RC accumulation; this path already
-       # exits 1, so a failure is warned about.
+       # Reverify-fail also skips Phase 5; remove the same scratch families.
        CLEANUP_RC=0
+       rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
        if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text or signed upload headers" >&2; fi
+     if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans may still hold plan text, tracker state or signed upload headers" >&2; fi
        exit 1
      fi
      # reverify PASSED: there is NO single-ticket plan file, and the single-ticket
@@ -282,13 +348,44 @@ for the Phase 4 secret gate.
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
    fi
    ```
+
    **Branch on the `ok` payload.** An **epic** outcome (`payload.epic == true`, no `planPath`) means
    the subagent already did every Phase 2.5 tracker write. Re-read Linear before accepting: its parent
-   must be planned and its children must match `childIds` / `parseEpicSpec`; otherwise safe-abort so
-   the next sweep resumes it. On success skip Phase 3.5–4; re-running them would turn the parent into a
+   must be planned and its children must match required `childIds` / `parseEpicSpec`; a sentinel that
+   omits `childIds` is rejected separately from a child-reconciliation miss. Recovery is to decode the
+   spec attachment body with `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>`
+   and re-run reconciliation, never to accept the sentinel alone. Otherwise safe-abort so the next
+   sweep resumes it. On success skip Phase 3.5–4; re-running them would turn the parent into a
    `boss-build` target. A single-ticket `ok` sentinel proceeds only when its metadata `planPath`
    resolves to `PLAN_PATH` and names a non-empty plan file. Its `descriptionSummary` becomes the
    Linear description; read the plan file only for the secret gate.
+
+   After an `ok` sentinel and the plan-file reverify pass, validate the returned bounded metadata
+   before Phase 3.5. Write exactly the returned metadata object to
+   `.linear-plans/<ISSUE-ID>.draft-metadata.json` and run:
+
+   ```bash
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+   METADATA=".linear-plans/<ISSUE-ID>.draft-metadata.json"
+   if ! node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata "$METADATA"; then
+     echo "$DISPATCH_FAILURE: draft metadata failed plan-run-guards.mjs metadata — no Linear write, aborting" >&2
+     node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+    rm -f "$METADATA" .linear-plans/<ISSUE-ID>.{precheck,premises,premise-states}.json
+     exit 1
+   fi
+   ```
+
+   Unknown top-level keys, a missing `descriptionSummary`, non-boolean `agentFriendly`, a
+   non-single-ticket estimate, or an off-contract `descriptionSummary` are all the same SAFE branch:
+   `DISPATCH_FAILURE`, no Phase 3.5, no tracker write. Preserve `PREMISES` from the sentinel payload
+   before cleanup; Phase 4 re-verifies those tracker premises immediately before writeback.
 
 ## Phase 2.5 — Epic decomposition (triage = EPIC only)
 
@@ -397,8 +494,8 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
 1. **Validate the spec.** `validateDecomposition` + `assertAcyclic`. On failure: interactive
    re-asks / falls back to a single `SUBSTANTIAL` plan; headless **falls back to a single-ticket
    plan and records the reason** (never emit a broken epic).
-2. **Fully plan every child locally** to `.linear-plans/<PARENT>-child-<key>-<slug>.md`, each a full
-   **planContract-v1** plan (Phase 3), drafted with **`allowEpic: false`** — the **recursion guard**:
+2. **Fully plan every child locally** to IDless scratch, each a **planContract-v1** plan (Phase 3), drafted with
+   **`allowEpic: false`** — the **recursion guard**:
    a child is never itself decomposed (depth cap = 1). The spec never carries plan bodies, so copy
    only each child plan's own `agentFriendly` verdict **and its `openQuestions` list** onto its spec
    entry — `serializeEpicSpec` derives the child's `agentQuestion` (⇒ the `agent-question` label) from
@@ -420,7 +517,9 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
    report `missing`** (it emits one `createChild` per SPEC child, never per missing child; executing
    those unfiltered on a resume duplicates every child that already exists), exactly as step 5
    executes `epicWiringPlan`. Each entry is `{stage, op, args, runtimeArgs}`, and **`args` is the
-   statically-known subset only**, under the adapter's own key names — `runtimeArgs` names what only
+   statically-known subset only**, under the adapter's own key names; the created-id map passed to
+   `epicWiringPlan` must include the reserved `parent` entry beside every child id — `runtimeArgs`
+   names what only
    the executor can supply because it does not exist until the previous op ran (the prepare's `size`,
    the PUT's `file`/`uploadURL`/`headers`, the finalize's `assetUrl`). It owns the ordering (in
    particular that every destructive delete comes strictly after the spec upload); never re-derive
@@ -458,14 +557,18 @@ validate everything locally BEFORE the first Linear write** (the atomicity guard
      writes **no** attachment — it keeps its inline marker, carried verbatim through step 6's save. Otherwise upload — first **set `spec.parentId` to this
      ticket's id**, since only a bound spec can ever pass `validateSpecIdentity`. The PUT takes a
      **file**, so write
-     `serializeEpicSpec(spec)` to `.linear-plans/<ISSUE-ID>.epic-spec.json` (the exact path Phase 5
-     cleanup matches by name). **Then verify those bytes BEFORE the PUT:**
+     `serializeEpicSpec(spec)` to `.linear-plans/<ISSUE-ID>.epic-spec.json` (Phase 5 deletes this
+     scratch). **Then verify those bytes BEFORE the PUT:**
      `validateSpecIdentity(parseEpicSpec(<the file's contents>), <ISSUE-ID>)` must be `ok`. Nothing
      else catches an unbound spec — `serializeEpicSpec` omits an unset `parentId` silently rather
      than inventing one, and `validateDecomposition` never inspects it — so without this check the
-     attachment uploads clean and only turns fatal much later, when a resume cannot bind it. `ok:false`
+     attachment uploads clean and only turns fatal much later, when a resume cannot bind it. `ok: false`
      ⇒ abort here, while zero children exist. Otherwise prepare → PUT → finalize the
-     `epic-spec.json` attachment per the contract above, then delete that scratch. **Then read the
+     `epic-spec.json` attachment per the contract above; keep it for
+     `epicSpecPaths` reverify when this stage ran. When this stage is skipped because a stored
+     attachment or legacy marker already exists, write the stored spec to
+     `.linear-plans/<ISSUE-ID>.epic-spec.json`, report it in `epicSpecPaths`, and do not upload.
+     **Then read the
      finalized spec back — still inside this stage, BEFORE any child is created** (step 5 of that
      contract, one retry on a transport error): the read must return non-empty content **and**
      `validateSpecIdentity(parseEpicSpec(<the returned body>), <ISSUE-ID>)` must be `ok`. The pre-PUT
@@ -639,7 +742,8 @@ children are created + wired **before** step 7 moves the parent unplanned → pl
 malformed sentinel mid-create leaves the original ticket unplanned and the next sweep re-picks and
 resumes it — a partial epic is never stranded), and **idempotent resume** (durable — survives a fresh
 cron worktree where the `.linear-plans/` scratch is gone): first `get_issue` the parent and
-`parseEpicSpec` the **body of its `Epic spec (<ISSUE-ID>)` attachment** (two or more
+decode the returned body first with `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>`, then
+`parseEpicSpec` the decoded **body of its `Epic spec (<ISSUE-ID>)` attachment** (two or more
 `Epic spec (…)` attachments ⇒ **abort loudly**, never guess) to recover the **FULL original
 spec** (parent overview + every child's full metadata) — step 4 stage 2 wrote it before any child and
 no later description save touches it, so it survives even a fully-built epic. **Then
@@ -682,31 +786,34 @@ fully-built epic it is a clean no-op (never duplicates), even from a fresh workt
 
 ## Phase 3 — Plan requirements (shared drafting spec)
 
-Whoever drafts — the interactive path or the headless subagent (per
-`references/headless-drafting-brief.md`) — produces a plan file at
-`.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored scratch; slug = issue id + hyphenated
-title; compute it with
-`node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`).
-The **full drafting spec** — the plan-body requirements (first dev step, `## Acceptance criteria`,
-`## Required proof`, a `## Proof harness analysis` readiness pass mapping each acceptance criterion to
-a concrete proof artifact, autonomous framing, agent-friendliness call) **and** the fill-in
-description-summary template — lives once in **`references/headless-drafting-brief.md` § "Step 5"/"Step 7"**;
-both modes follow it, not repeated resident.
+Interactive or headless drafting (per `references/headless-drafting-brief.md`) produces
+`.linear-plans/<ISSUE-ID>-<slug>.md` (gitignored; slug = issue id + hyphenated title; compute with
+`node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"` after running the toolbox preamble first).
+The **full drafting spec** — body requirements and fill-in description-summary template — lives once
+in **`references/headless-drafting-brief.md` § "Step 5"/"Step 7"**; both modes follow it.
 
-The orchestrator only needs the **versioned Linear description section contract** that boss-build
-and bs-sweep-plan consume — the drafter's `descriptionSummary` MUST carry exactly these `##` sections,
-in order (`## Why this needs a human` and `## Open Questions` are conditional; all others always
-present). Its machine-readable form lives in `.boss-skills.json` under `planContract`, and each
-description stamps `- Contract: v<N>` under `## Planning` (v1 today):
+The orchestrator keeps only the versioned description section contract consumed by boss-build and
+bs-sweep-plan: `descriptionSummary` MUST carry these `##` sections in order (`## Why this needs a
+human` and `## Open Questions` conditional; all others always present), and stamps
+`- Contract: v<N>` under `## Planning` (v1 today):
 
 `## Summary` · `## Approach` · `## Key changes` · `## Testing` · `## Risks / unknowns` ·
-`## Acceptance criteria` · `## Required proof` · `## Why this needs a human` · `## Open Questions` ·
-`## Planning` · `## Original notes`
+`## Premises` · `## Acceptance criteria` · `## Required proof` · `## Why this needs a human` ·
+`## Open Questions` · `## Planning` · `## Original notes`
 
-`## Proof harness analysis` is additionally registered `optional` — recognised, never required — so
-the Step 7 template may emit it. Any other heading is off-contract: drop it, or register it in
-`planContract.sections`. The programmatic check is
-**`validatePlanDescription(config, description)`** (`$BOSS_PLAN_TOOLBOX/skill-config.mjs`) — note the
+`## Premises` and `## Proof harness analysis` are optional. Any other heading is off-contract: drop
+it, or register it in `planContract.sections`. The programmatic check is
+**`validatePlanDescription(config, description)`** (`$BOSS_PLAN_TOOLBOX/skill-config.mjs`). The
+epic-parent overview uses explicit `validatePlanDescription(config, description, {mode:'epic-parent'})`
+with `## Summary`, `## Child tickets`, `## Planning`, and `## Original notes`. Unknown modes warn and fall back to child-plan.
+
+When a ticket names a specific call site, construct, literal claim, or other mechanism that could
+recur, record a repo-wide sibling-class enumeration before fixing scope. List every
+site the search returns with verdict (`fix` or `not a defect`) and reason; adjudicate the class per
+site rather than sweeping every match wholesale. The reason names the discriminator, such as where
+the branch actually lives. A one-row "only named site found" table discharges it. An acceptance
+criterion must not cap the number of changed files; scope comes from enumeration, not file count.
+
 **config-first** order; the natural-reading `(description, config)` call throws a named
 argument-order error. It returns `{ ok, version, missing, unknown, unsupportedVersion }`; `ok` covers
 only `missing`/`unsupportedVersion`, and `unknown` is enforced by the Phase 4 contract gate.
@@ -749,12 +856,11 @@ subagent → validate its envelope → fold or skip), against
 > **STOP — image-parity gate (mandatory, mechanical, do not skip).** A rewritten description that
 > silently drops the reporter's screenshots is "worse than none" (the Phase 0 edge rule), and the
 > drafting LLM cannot be trusted to preserve them — so verify parity **mechanically** before any
-> Linear write. Use your **Write tool** to materialize two scratch files under gitignored
-> `.linear-plans/` — they do not exist until you write them. An **empty** or whitespace-only
-> original is refused (exit 1); pass `--allow-empty-original` only if it truly is empty. Write the
-> **byte copy** of the Phase 1 `get_issue` description (never retyped prose or a
-> summary/paraphrase) to `.linear-plans/<ISSUE-ID>.image-guard-orig.md` and the returned
-> `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md` (per-issue paths avoid
+> Linear write. Reuse the raw snapshot Phase 2 already wrote at
+> `.linear-plans/<ISSUE-ID>.image-guard-orig.md`; do not rewrite it here. An **empty** or
+> whitespace-only original is refused (exit 1); pass `--allow-empty-original` only if it truly is
+> empty. Write the returned `descriptionSummary` to `.linear-plans/<ISSUE-ID>.image-guard-new.md`
+> (per-issue paths avoid
 > clobbering). Also write `.linear-plans/<ISSUE-ID>.attachment-guard-orig.md` as the same Phase 1
 > source with **only** the mandatory secret/PII redactions and upload-signature stripping applied;
 > do not derive it from either generated artifact. Both the returned `descriptionSummary` and the
@@ -763,8 +869,14 @@ subagent → validate its envelope → fold or skip), against
 > `uploads.linear.app` origin plus pathname, ignoring query strings — then run the guard:
 >
 > ```bash
-> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+>   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+>     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+>   done
+> fi
+> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
 > EXPECTED_IMAGES="<distinct canonical upload identities observed in Phase 1>"
@@ -818,8 +930,14 @@ subagent → validate its envelope → fold or skip), against
 > reads. Re-derive the toolbox dir here; blocks inherit nothing:
 >
 > ```bash
-> BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-> if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+>   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+>     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+>   done
+> fi
+> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 > ORIG=".linear-plans/<ISSUE-ID>.image-guard-orig.md"; SAFE_ORIG=".linear-plans/<ISSUE-ID>.attachment-guard-orig.md"; NEW=".linear-plans/<ISSUE-ID>.image-guard-new.md"
 > PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"
 > if ! node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_FILE"; then
@@ -841,29 +959,56 @@ subagent → validate its envelope → fold or skip), against
 > attachment finalize, a one-line stderr reason carrying the guard's own message, discard the scratch
 > as above, exit non-zero.
 
+> **STOP — premise re-verification (mandatory, mechanical, do not skip).** The plan artifact and
+> description may still be valid while the tracker premises the drafter relied on have moved. The
+> drafting sentinel carries `premises: [{id, state}]`; immediately before the single tracker save,
+> re-read those issue ids through the tracker adapter's `getIssue` capability, build a JSON object of
+> live states, and run:
+>
+> ```bash
+> if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+>   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+>     if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+>   done
+> fi
+> test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+> BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+> export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
+> PREMISES_FILE=".linear-plans/<ISSUE-ID>.premises.json"; LIVE_STATES_FILE=".linear-plans/<ISSUE-ID>.premise-states.json"
+> PREMISE_REPORT="$(node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" premises "$PREMISES_FILE" "$LIVE_STATES_FILE" 2>&1)"
+> PREMISE_RC=$?
+> ```
+>
+> An empty `premises` array skips the reads. A `premise-limit` or unreadable premise is a SAFE
+> branch before tracker writeback. A changed state does **not** abort: append an orchestrator-owned
+> `- Premise drift: <ticket> was <state at recon>, is now <current state>` line parsed from
+> `PREMISE_REPORT` under `## Planning` before the save, and name that annotation in the Phase 6
+> report. This warning line is outside the description-section contract; `planContract.version` stays
+> unchanged.
+
 1. Finalize the native tracker attachment before tracker writeback (failure: no plan metadata/state write). Follow
    [`references/plan-storage.md`](references/plan-storage.md). Set
-   `PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"`, then set `TRACKER` to the configured tracker adapter
-   (`adapters.tracker`, default `linear`) before write-back. Steps 2–5
-   use tracker adapter ops; for `linear`, each `op` is a `linearOperationMap` key (`get_issue`,
-   `save_issue`, or `list_issues`). Other trackers substitute their operation map without changing
-   the sequence.
+   `PLAN_FILE="${PLAN_FILE:-.linear-plans/<ISSUE-ID>-<slug>.md}"` and `TRACKER` before write-back.
+   After `references/plan-storage.md` returns success, assert exactly one
+   `Implementation plan (<ISSUE-ID>)` attachment remains; more than one exact-title attachment takes
+   the SAFE branch: no plan metadata/state write, stderr naming duplicate ids, non-zero exit.
 
 2. Read labels with op `readLabels` so you can **merge** (Linear `save_issue labels` replaces the
-   set — never clobber existing labels like `feature`/`docs`).
+   set — never clobber existing labels like `feature`/`docs`). Compute the written label set as
+   existing ∪ additions ∖ strips.
 3. Decide the metadata (headless: derive from the subagent's returned metadata; interactive: from
    the interview):
    - **description**: the composed description-summary block (headless: the returned
      `descriptionSummary`, verbatim; interactive: composed per the drafting spec in
      `references/headless-drafting-brief.md` § "Step 7", matching the Phase 3 section contract).
-   - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`). **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. When there are none, do not add it. Note: `bs-sweep-plan` strips only `agent-plan` after a successful plan and leaves `agent-question` in place — that persistence is intentional, so do not strip it.
+   - **labels**: union of existing labels + relevant ones (`bug`/`feature`/`improvement`/`docs`) minus `stripLabels`. **Agent-friendly is the default:** add **`agent-friendly`** to every plan **unless** an autonomous agent genuinely could not complete the task (headless: `agentFriendly == false`) — in that case add **`needs-human`** **instead** (never both) and ensure the plan body carries the **## Why this needs a human** section (see Phase 3). Complexity alone is not a reason for `needs-human` — a large but well-specced ticket is still `agent-friendly`. Add **`agent-question`** (headless only) **if and only if** ≥1 open question was recorded (`openQuestions` non-empty); union it in, never clobber — it is independent of the agent-friendly/needs-human call. Set `stripLabels` to `agent-plan` on a successful plan. When there are no open questions, do not add `agent-question`; when it is already present, do not strip it.
    - **estimate** (Fibonacci): `0` trivial/minimal · `1`/`2`/`3` well-defined single-PR ticket, clear path · `5`/`8` too big for one PR ⇒ **triage EPIC** (Phase 2.5), never a single-ticket estimate (sole exception: a genuinely atomic, un-splittable `5` with a recorded `- Atomic-5:` justification under `## Planning`). Every planned ticket gets a non-null estimate.
    - **priority** (`1-4`): honor a reporter-set priority. Otherwise rank against the current config-resolved planned (`stateName(config, 'planned')`) backlog, considering urgency, simplicity, positive/business impact, and security (security concerns bias toward Urgent/High). A planned ticket should not stay `0=None`.
 4. Single tracker save op (ops `moveState`/`setPriorityEstimate`; Linear uses `save_issue`) updating the issue by
    `id`:
    - `description`: the summary block above.
    - no plan link: the finalized attachment is the canonical plan.
-   - `labels`: the merged set (names).
+   - `labels`: the merged-minus-stripped set (names).
    - `estimate`: the Fibonacci number.
    - `priority`: the chosen `1-4`.
    - `state`: the planned state.
@@ -915,9 +1060,14 @@ note}`. **Direction is part of the verdict**, not something the library re-deriv
    empty `mktemp` file parses as nothing and throws.
 
    ```bash
-   BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-   if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
-   export BOSS_PLAN_TOOLBOX
+   if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+     for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+       if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+     done
+   fi
+   test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+   BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+   export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
    DEPS_IN="<the scratch JSON file you just wrote>"
    node -e 'const u=require("node:url"),T=process.env.BOSS_PLAN_TOOLBOX,M=p=>import(u.pathToFileURL(T+p).href);Promise.all([M("/skill-config.mjs"),M("/plan-deps-lib.mjs")]).then(([c,d])=>{const g=c.loadSkillConfig({cwd:process.cwd()}),i=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")),a=x=>d.extractKeyChangeAreas(g,x.description,{moduleRoots:i.moduleRoots||[]}).areas;i.subjectAreas=a(i.subject);i.candidates=i.candidates.map(x=>({...x,areas:a(x)}));console.log(JSON.stringify(d.planDependencyEdges(i)))}).catch(e=>{process.stderr.write("boss-plan deps: "+(e&&e.message||e)+"\n");process.exitCode=1})' "$DEPS_IN"
    rm -f "$DEPS_IN"
@@ -1004,13 +1154,14 @@ rm -f "${ATTACHMENT_HEADERS_FILE:-}"
 # sweep is the implementation-independent check: it asserts the post-condition we actually want
 # (no matching scratch survives) rather than trusting any find's exit status.
 CLEANUP_RC=0
+rm -f .linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json || CLEANUP_RC=1
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>-child-*.md' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.image-guard-*.md' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-guard-orig.md' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.attachment-headers-*.json' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ISSUE-ID>*.epic-spec.json' -delete || CLEANUP_RC=1; fi
 if [ -d .linear-plans ] && [ -n "$(find .linear-plans -maxdepth 1 -type f \( -name '<ISSUE-ID>-child-*.md' -o -name '<ISSUE-ID>*.image-guard-*.md' -o -name '<ISSUE-ID>*.attachment-guard-orig.md' -o -name '<ISSUE-ID>*.attachment-headers-*.json' -o -name '<ISSUE-ID>*.epic-spec.json' \) -print)" ]; then CLEANUP_RC=1; fi
-[ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans may still hold plan text, signed upload headers or the epic spec" >&2; exit 1; }
+[ "$CLEANUP_RC" = 0 ] || { echo "scratch cleanup failed — .linear-plans may still hold plan text, tracker state, signed upload headers or the epic spec" >&2; exit 1; }
 ```
 
 In **interactive** mode also remove the seeded design doc (see "Interactive cleanup" in
@@ -1032,8 +1183,14 @@ remaining (it is copied into `docs/plans/` at implementation time, per the plan'
 After the terminal outcome is decided and the report is emitted, resolve the extension helper and run:
 
 ```bash
-BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-plan/toolbox"
-if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/boss-plan/toolbox"; fi
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 NOTES_JSON=$(node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role notes --json)
 ```
 
@@ -1081,7 +1238,7 @@ Each receives:
 ```
 
 Validate each result with `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" validate --role notes --file
-"<outPath>"`. On success append one terminal-ledger line with the total persisted-note count. On a
+"<outPath>"` after running the toolbox preamble first. On success append one terminal-ledger line with the total persisted-note count. On a
 discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
 append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
 post-opt-in terminal path. The phase cannot change the outcome, exit code, tracker or PR writes, and

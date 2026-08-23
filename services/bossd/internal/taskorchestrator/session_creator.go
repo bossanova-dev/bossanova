@@ -78,6 +78,28 @@ type SessionCreator interface {
 	CreateSession(ctx context.Context, opts CreateSessionOpts) (*models.Session, error)
 }
 
+// SessionPostRowError is returned when CreateSession created a session row but
+// failed before returning a usable session. Callers can persist SessionID for
+// recovery or overlap detection even though the return session is nil.
+type SessionPostRowError struct {
+	SessionID string
+	Err       error
+}
+
+func (e *SessionPostRowError) Error() string {
+	if e == nil || e.Err == nil {
+		return "session create failed after row creation"
+	}
+	return e.Err.Error()
+}
+
+func (e *SessionPostRowError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // DefaultAccountResolver picks the default rotation account for a provider at
 // session-creation time so task-created (cron/dependabot) sessions honor the
 // same default-account policy as the interactive StreamCreateSession path.
@@ -337,9 +359,13 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 	}
 
 	// Re-fetch to get updated fields from StartSession (worktree path, branch, state).
-	sess, err = c.sessions.Get(ctx, sess.ID)
+	createdSessionID := sess.ID
+	sess, err = c.sessions.Get(ctx, createdSessionID)
 	if err != nil {
-		return nil, fmt.Errorf("re-fetch session %s: %w", sess.ID, err)
+		return nil, &SessionPostRowError{
+			SessionID: createdSessionID,
+			Err:       fmt.Errorf("re-fetch session %s: %w", createdSessionID, err),
+		}
 	}
 
 	return sess, nil

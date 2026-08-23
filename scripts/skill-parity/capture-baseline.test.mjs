@@ -175,6 +175,7 @@ test("signature: boss-plan Step 7 section contract matches the committed snapsho
     '## Key changes',
     '## Testing',
     '## Risks / unknowns',
+    '## Premises',
     '## Acceptance criteria',
     '## Required proof',
     '## Proof harness analysis',

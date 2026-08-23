@@ -333,6 +333,14 @@ func (b *Backend) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session
 	return resp.Msg.GetSession(), nil
 }
 
+func (b *Backend) RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	resp, err := b.rpc.RefreshSessionPR(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
+}
+
 func (b *Backend) ArchiveSession(ctx context.Context, id string) (*pb.Session, error) {
 	resp, err := b.rpc.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: id}))
 	if err != nil {

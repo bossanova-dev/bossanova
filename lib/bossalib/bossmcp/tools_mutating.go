@@ -117,7 +117,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
-		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). The bootstrap runs in the background, so the create continues on the daemon even if this call is cancelled; this tool still awaits the settled session, so agent_launched is accurate. DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach — two active sessions cannot share one branch). If an active session already owns the same tracker_id with no branch collision, the create fails with AlreadyExists; pass force:true to create a second session for that tracker. Supports detach (headless initial agent pass), tmux_unattended (durable tmux pane surviving a daemon restart), model, account (an id or label; empty = system default), pr_number, quick_chat, explicit base/branch names, and tracker_id/tracker_url/tracker_source. By DEFAULT, a create with a non-empty prompt launches the agent headless (mirroring the CLI's implicit --detach) so the work actually runs; the result reports agent_launched=true. To instead create the session idle awaiting a human `boss attach`, pass attended:true — the result then reports agent_launched=false with a next_action hint. The composite tracker_issue field is web-only, not exposed here.\nZERO-CHANGE SESSIONS: planning-only work should use a subagent; for a visible no-worktree/no-PR conversation use quick_chat, not tmux_unattended. For a read-only/planning worktree session that should NOT get an up-front draft PR, set defer_pr:true (best paired with detach/tmux_unattended, which open a PR at finalize only if commits land).",
+		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session (its agent_session_id is the primary chat id — no sqlite read needed). The bootstrap runs in the background, so the create continues on the daemon even if this call is cancelled; agent_launched means an agent process launched, not proof the prompt was consumed. This path has no turn-start observation, so verify work began with `get_chat_statuses`. DEDUP: if an active session already owns the target branch or PR (via pr_number/branch_name), the daemon ATTACHES to that existing session instead of creating one — the result then has attached_existing=true and the supplied prompt is NOT run; deliver it via send_chat_message with the returned agent_session_id (force does NOT bypass this branch/PR attach). By DEFAULT, a create with a non-empty prompt launches the agent headless (mirroring the CLI's implicit --detach) so the work can run; the result reports agent_launched=true. To instead create the session idle awaiting a human `boss attach`, pass attended:true — the result then reports agent_launched=false with a next_action hint. The composite tracker_issue field is web-only, not exposed here.\nZERO-CHANGE SESSIONS: planning-only work should use a subagent; for visible no-worktree/no-PR conversation use quick_chat. For read-only worktree planning without an up-front draft PR, set defer_pr:true with detach or tmux_unattended.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateSessionArgs) (*mcp.CallToolResult, any, error) {
 		// BOS-498: mirror the CLI's implicit --detach (services/boss/cmd
@@ -248,6 +248,26 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args LinkSessionPRArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.LinkSessionPR(ctx, args.SessionID, args.PR)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "refresh_session_pr",
+		Description: "Refresh one cached PR status from the VCS provider by session_id, pr_number, or both. Fetch failures return errors without overwriting the cache.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RefreshSessionPRArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.RefreshSessionPRRequest{}
+		if args.SessionID != "" {
+			req.Id = &args.SessionID
+		}
+		if args.PRNumber != nil {
+			req.PrNumber = args.PRNumber
+		}
+		out, err := backend.RefreshSessionPR(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -476,7 +496,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "send_chat_message",
-		Description: "Deliver a user message into one chat's live agent (targeted by its agent_session_id, e.g. one returned by start_chat or create_session), optionally waking it if asleep.",
+		Description: "Deliver a user message into one chat's live agent (targeted by its agent_session_id, e.g. one returned by start_chat or create_session), optionally waking it if asleep. delivered is a handoff receipt, not proof the agent took the work; read `turn_start_state_name` for the observed turn-start verdict. NOT_OBSERVED does not mean not delivered, and re-sending double-posts the prompt; poll `get_chat_statuses` instead. Prefill-only sends return UNOBSERVABLE.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SendChatMessageArgs) (*mcp.CallToolResult, any, error) {
 		wakeIfAsleep := true
@@ -491,16 +511,21 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			submit = *args.Submit
 		}
 		req := &pb.SendChatMessageRequest{
-			AgentSessionId: args.AgentSessionID,
-			Message:        args.Message,
-			WakeIfAsleep:   wakeIfAsleep,
-			Submit:         submit,
+			AgentSessionId:         args.AgentSessionID,
+			Message:                args.Message,
+			WakeIfAsleep:           wakeIfAsleep,
+			Submit:                 submit,
+			ShouldObserveTurnStart: true,
 		}
 		out, err := backend.SendChatMessage(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(sendChatMessageOutput{
+			SendChatMessageResponse: out,
+			TurnStartStateName:      out.GetTurnStartState().String(),
+			DeliveryStateName:       out.GetDeliveryState().String(),
+		})
 		return r, nil, err
 	})
 
@@ -952,6 +977,18 @@ type createSessionOutput struct {
 	NextAction string `json:"next_action,omitempty"`
 }
 
+// sendChatMessageOutput keeps the raw daemon response flattened while adding
+// enum legends that cannot be omitted for zero values. Embedding is safe here
+// because SendChatMessageResponse has no MarshalJSON and no top-level JSON
+// field collides with the added names. Keep this as jsonResult-only payload:
+// registering it as structured output would add a schema to the measured MCP
+// tool surface.
+type sendChatMessageOutput struct {
+	*pb.SendChatMessageResponse
+	TurnStartStateName string `json:"turn_start_state_name"`
+	DeliveryStateName  string `json:"delivery_state_name"`
+}
+
 // CreateSessionArgs is the typed argument struct for create_session. The full
 // CreateSessionRequest surface is exposed except tracker_issue, the composite
 // message used only for web server-side plan formatting (intentionally omitted).
@@ -962,7 +999,7 @@ type CreateSessionArgs struct {
 	Agent            string  `json:"agent,omitempty" jsonschema:"agent runner plugin name (empty = server default)"`
 	Account          *string `json:"account,omitempty" jsonschema:"Account id or label to run this session under; empty = system default"`
 	BaseBranch       string  `json:"base_branch,omitempty" jsonschema:"base branch to create the session from (empty = repo default)"`
-	BranchName       *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch)"`
+	BranchName       *string `json:"branch_name,omitempty" jsonschema:"explicit branch name (e.g. a tracker's suggested branch). If an active session already owns it, create_session attaches because two active sessions cannot share one branch"`
 	ForceBranch      bool    `json:"force_branch,omitempty" jsonschema:"remove any existing branch with the same name before creating"`
 	Force            bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
 	IsQuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
@@ -989,6 +1026,12 @@ type UpdateSessionArgs struct {
 type LinkSessionPRArgs struct {
 	SessionID string `json:"session_id" jsonschema:"the id of the session to attach the PR to"`
 	PR        string `json:"pr" jsonschema:"an existing pull request number or URL (create it first, e.g. with gh pr create)"`
+}
+
+// RefreshSessionPRArgs is the typed argument struct for refresh_session_pr.
+type RefreshSessionPRArgs struct {
+	SessionID string `json:"session_id,omitempty" jsonschema:"session id to refresh; optional with pr_number"`
+	PRNumber  *int32 `json:"pr_number,omitempty" jsonschema:"pull request number to refresh; optional with session_id"`
 }
 
 // StartChatArgs is the typed argument struct for start_chat. The handler mints

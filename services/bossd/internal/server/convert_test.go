@@ -950,24 +950,28 @@ func TestCronJobStatus(t *testing.T) {
 	}
 }
 
-func TestCronJobToProtoIncludesAgentName(t *testing.T) {
+func TestCronJobToProtoIncludesAgentNames(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	job := &models.CronJob{
-		ID:        "cron-1",
-		RepoID:    "repo-1",
-		Name:      "Daily",
-		Prompt:    "Run daily checks",
-		Schedule:  "@daily",
-		AgentName: "codex",
-		IsEnabled: true,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:               "cron-1",
+		RepoID:           "repo-1",
+		Name:             "Daily",
+		Prompt:           "Run daily checks",
+		Schedule:         "@daily",
+		AgentName:        "codex",
+		LastRunAgentName: "claude",
+		IsEnabled:        true,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
 
 	if got.AgentName != "codex" {
 		t.Fatalf("agent_name = %q, want codex", got.AgentName)
+	}
+	if got.LastRunAgentName != "claude" {
+		t.Fatalf("last_run_agent_name = %q, want claude", got.LastRunAgentName)
 	}
 }
 

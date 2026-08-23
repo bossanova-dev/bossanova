@@ -215,6 +215,23 @@ func TestEmbeddedSkillMetadataUsesPublishedBossNames(t *testing.T) {
 	}
 }
 
+func TestSessionToolboxShowJSONLivenessContract(t *testing.T) {
+	for _, core := range []string{"boss-build", "boss-epic", "boss-repair"} {
+		path := filepath.ToSlash(filepath.Join("skills", core, "toolbox", "session", "boss.mjs"))
+		content, err := fs.ReadFile(SkillsFS, path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(content)
+		if !strings.Contains(text, "response: ['session.state', 'session.last_agent_activity_at']") {
+			t.Errorf("%s: getSession CLI response must declare session.last_agent_activity_at", path)
+		}
+		if strings.Contains(text, "missingResponse: [\n        'last_agent_activity_at',") {
+			t.Errorf("%s: getSession CLI missingResponse must not include last_agent_activity_at", path)
+		}
+	}
+}
+
 // shippedPayloads returns the two payload trees a published core can reach a user's machine
 // through: the embedded skillinstall FS the boss CLI extracts, and the on-disk claude plugin mirror
 // bossd ships. Every cross-payload gate below scans BOTH, because either one alone can be the copy a
@@ -571,8 +588,14 @@ func TestPublishedCoresDoNotHardCodeNamespaceHelperPaths(t *testing.T) {
 func TestNotesToolboxResolverUsesPostTerminalNotesSection(t *testing.T) {
 	const beforeNotes = `BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi`
-	const notesResolver = `BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.codex/skills}/boss-review/toolbox"
-if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.claude/skills/boss-review/toolbox"; fi`
+	const notesResolver = `if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-review/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_REVIEW_TOOLBOX="$BOSS_SKILLS_HOME/boss-review/toolbox"
+export BOSS_SKILLS_HOME BOSS_REVIEW_TOOLBOX`
 	content := beforeNotes + `
 
 ### Post-terminal notes extensions (repo opt-in)
@@ -650,8 +673,19 @@ func notesToolboxResolver(t *testing.T, content, core, toolbox string) string {
 		t.Fatalf("%s post-terminal notes section not found", core)
 	}
 
-	pattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(toolbox) + `="\$\{BOSS_SKILLS_HOME:-[^}]+\}/` + regexp.QuoteMeta(core) + `/toolbox"\n(?:if \[ ! -d "\$` + regexp.QuoteMeta(toolbox) + `" \]; then ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox"; fi|\[ -d "\$` + regexp.QuoteMeta(toolbox) + `" \] \|\| ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox")$`)
-	loc := pattern.FindStringIndex(notesSection)
+	canonicalPattern := regexp.MustCompile(`(?m)^if \[ -z "\$\{BOSS_SKILLS_HOME:-\}" \]; then
+  for candidate in "\$HOME/\.claude/skills" "\$HOME/\.codex/skills"; do
+    if \[ -d "\$candidate/` + regexp.QuoteMeta(core) + `/toolbox" \]; then BOSS_SKILLS_HOME="\$candidate"; break; fi
+  done
+fi
+test -n "\$\{BOSS_SKILLS_HOME:-\}" \|\| \{ echo "BLOCKED: installed boss skills not found"; exit 1; \}
+` + regexp.QuoteMeta(toolbox) + `="\$BOSS_SKILLS_HOME/` + regexp.QuoteMeta(core) + `/toolbox"
+export BOSS_SKILLS_HOME ` + regexp.QuoteMeta(toolbox) + `$`)
+	loc := canonicalPattern.FindStringIndex(notesSection)
+	if loc == nil {
+		legacyPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(toolbox) + `="\$\{BOSS_SKILLS_HOME:-[^}]+\}/` + regexp.QuoteMeta(core) + `/toolbox"\n(?:if \[ ! -d "\$` + regexp.QuoteMeta(toolbox) + `" \]; then ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox"; fi|\[ -d "\$` + regexp.QuoteMeta(toolbox) + `" \] \|\| ` + regexp.QuoteMeta(toolbox) + `="[^"]+/` + regexp.QuoteMeta(core) + `/toolbox")$`)
+		loc = legacyPattern.FindStringIndex(notesSection)
+	}
 	if loc == nil {
 		t.Fatalf("%s terminal notes-hook resolver not found", core)
 	}
@@ -1703,6 +1737,7 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 		// The stage-2 pre-PUT self-check: the only thing that catches a spec whose `parentId`
 		// was never set, since `serializeEpicSpec` omits an absent id silently.
 		"validateSpecIdentity(parseEpicSpec(",
+		"artifact manifests (`guardScratchPaths`,`epicSpecPaths`)",
 	} {
 		if !strings.Contains(payload, want) {
 			t.Errorf("boss-plan payload missing %q", want)
@@ -1717,6 +1752,24 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 	}
 	if !strings.Contains(string(brief), "`deletePlanAttachment` was already required **before the FIRST epic") {
 		t.Error("boss-plan drafting brief must require deletePlanAttachment before the first epic write, not at stage 3 (which every resume skips)")
+	}
+	if strings.Contains(string(brief), "guardScratchPaths:[]") {
+		t.Error("boss-plan drafting brief epic sentinel must report guard scratch paths instead of hard-coding an empty list")
+	}
+	briefText := strings.ReplaceAll(string(brief), "\n", " ")
+	if !strings.Contains(briefText, "maps each actual child id to that child's actual plan path") ||
+		!strings.Contains(briefText, "basename exactly equals") ||
+		!strings.Contains(briefText, "prefix does not satisfy a missing child") {
+		t.Error("boss-plan drafting brief must bind child plan paths to child ids")
+	}
+	if !strings.Contains(briefText, "every child and parent image-parity / safe-source guard scratch path this epic created") {
+		t.Error("boss-plan drafting brief must require epic sentinels to report every created guard scratch path")
+	}
+	if !strings.Contains(briefText, "`guardScratchPaths` array") ||
+		!strings.Contains(briefText, "field is mandatory even when the array is empty") ||
+		!strings.Contains(briefText, "mandatory `epicSpecPaths` field") ||
+		!strings.Contains(briefText, "rehydrated the durable stored spec during resume") {
+		t.Error("boss-plan drafting brief must require epic sentinels to include guardScratchPaths and epicSpecPaths manifests")
 	}
 	storage, err := SkillsFS.ReadFile("skills/boss-plan/references/plan-storage.md")
 	if err != nil {
@@ -1738,6 +1791,259 @@ func TestBossPlanPayloadDocumentsAtomicAttachmentPublish(t *testing.T) {
 	for _, forbidden := range []string{"planMarkdown"} {
 		if strings.Contains(payload, forbidden) {
 			t.Errorf("boss-plan payload must not claim the spec persists %q; BOS-651 removed child plan bodies from the spec", forbidden)
+		}
+	}
+}
+
+func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
+	dir := t.TempDir()
+	plansDir := filepath.Join(dir, ".linear-plans")
+	if err := os.Mkdir(plansDir, 0o755); err != nil {
+		t.Fatalf("mkdir .linear-plans: %v", err)
+	}
+	childPlan := filepath.Join(plansDir, "BOS-0-child-api-BOS-1-add-api.md")
+	if err := os.WriteFile(childPlan, []byte("# child\n"), 0o644); err != nil {
+		t.Fatalf("write child plan: %v", err)
+	}
+	childPlan2 := filepath.Join(plansDir, "BOS-0-child-ui-BOS-2-add-ui.md")
+	if err := os.WriteFile(childPlan2, []byte("# child 2\n"), 0o644); err != nil {
+		t.Fatalf("write second child plan: %v", err)
+	}
+	duplicateAPIPlan := filepath.Join(plansDir, "BOS-0-child-api-BOS-2-add-api.md")
+	if err := os.WriteFile(duplicateAPIPlan, []byte("# duplicate api child\n"), 0o644); err != nil {
+		t.Fatalf("write duplicate api child plan: %v", err)
+	}
+	forgedPlan := filepath.Join(plansDir, "BOS-0-child-forged-BOS-1-add-forged.md")
+	if err := os.WriteFile(forgedPlan, []byte("# forged child\n"), 0o644); err != nil {
+		t.Fatalf("write forged child plan: %v", err)
+	}
+	unrelatedPlan := filepath.Join(plansDir, "BOS-0-child-ui-anything.md")
+	if err := os.WriteFile(unrelatedPlan, []byte("# unrelated\n"), 0o644); err != nil {
+		t.Fatalf("write unrelated child plan: %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(plansDir, "BOS-0-child-dir-BOS-3-add-dir.md"), 0o755); err != nil {
+		t.Fatalf("mkdir child plan directory: %v", err)
+	}
+	nestedPlansDir := filepath.Join(plansDir, "nested")
+	if err := os.Mkdir(nestedPlansDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested plans dir: %v", err)
+	}
+	nestedChildPlan := filepath.Join(nestedPlansDir, "BOS-0-child-api-BOS-1-add-api.md")
+	if err := os.WriteFile(nestedChildPlan, []byte("# nested child\n"), 0o644); err != nil {
+		t.Fatalf("write nested child plan: %v", err)
+	}
+	specPath := filepath.Join(plansDir, "BOS-0.epic-spec.json")
+	writeDefaultSpec := func(t *testing.T) {
+		t.Helper()
+		body := `{"parentId":"BOS-0","children":[{"key":"api","title":"Add API"},{"key":"ui","title":"Add UI"}]}`
+		if err := os.WriteFile(specPath, []byte(body), 0o644); err != nil {
+			t.Fatalf("write epic spec: %v", err)
+		}
+	}
+	writeDefaultSpec(t)
+	forgedSpecPath := filepath.Join(plansDir, "BOS-0-forged.epic-spec.json")
+	if err := os.WriteFile(forgedSpecPath, []byte(`{"parentId":"BOS-0","children":[{"key":"forged","title":"Add Forged"}]}`), 0o644); err != nil {
+		t.Fatalf("write forged epic spec: %v", err)
+	}
+	writeGuards := func(t *testing.T, ids ...string) string {
+		t.Helper()
+		paths := make([]string, 0, len(ids)*3)
+		for _, id := range ids {
+			for _, suffix := range []string{".image-guard-orig.md", ".attachment-guard-orig.md", ".image-guard-new.md"} {
+				rel := ".linear-plans/" + id + suffix
+				body := []byte("# guard\n")
+				if strings.HasSuffix(suffix, "-orig.md") {
+					body = nil
+				}
+				if err := os.WriteFile(filepath.Join(dir, rel), body, 0o644); err != nil {
+					t.Fatalf("write guard %s: %v", rel, err)
+				}
+				paths = append(paths, `"`+rel+`"`)
+			}
+		}
+		return "[" + strings.Join(paths, ",") + "]"
+	}
+	defaultGuards := writeGuards(t, "BOS-0", "BOS-1", "BOS-2")
+	dirGuards := writeGuards(t, "BOS-0", "BOS-3")
+	parentOnlyGuards := writeGuards(t, "BOS-0")
+	nestedGuardPath := ".linear-plans/nested/BOS-2.image-guard-new.md"
+	if err := os.WriteFile(filepath.Join(dir, nestedGuardPath), []byte("# nested guard\n"), 0o644); err != nil {
+		t.Fatalf("write nested guard: %v", err)
+	}
+	nestedGuards := strings.Replace(defaultGuards, `".linear-plans/BOS-2.image-guard-new.md"`, `"`+nestedGuardPath+`"`, 1)
+
+	validator := bossPlanArtifactVerifier(t)
+	t.Run("valid child id to plan path map", func(t *testing.T) {
+		writeDefaultSpec(t)
+		read := `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`
+		cmd := exec.Command("node", "-e", validator, read, filepath.Join(dir, "plan.md"), "dispatch failed")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("valid child plan map failed validation: %v\n%s", err, out)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		read  string
+		want  string
+		setup func(t *testing.T)
+	}{
+		{
+			name: "duplicate child plan paths",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "childPlanPaths",
+		},
+		{
+			name: "unrelated path cannot cover missing child id",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-999":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "childPlanPaths",
+		},
+		{
+			name: "child manifest must cover every spec child",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "childPlanPaths",
+		},
+		{
+			name: "child manifest must use each spec child once",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-api-BOS-2-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/BOS-0-child-api-BOS-2-add-api.md",
+		},
+		{
+			name: "wrong canonical child artifact",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-anything.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/BOS-0-child-ui-anything.md",
+		},
+		{
+			name: "sentinel child key cannot forge missing child artifact",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md"},"childPlanKeysById":{"BOS-1":"forged"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md",
+		},
+		{
+			name: "missing rehydrated epic spec scratch",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[]}}`,
+			want: "epicSpecPaths",
+		},
+		{
+			name: "directory child plan path",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-3"],"childPlanPaths":{"BOS-3":".linear-plans/BOS-0-child-dir-BOS-3-add-dir.md"},"guardScratchPaths":` + dirGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/BOS-0-child-dir-BOS-3-add-dir.md",
+			setup: func(t *testing.T) {
+				t.Helper()
+				body := `{"parentId":"BOS-0","children":[{"key":"dir","title":"Add Dir"}]}`
+				if err := os.WriteFile(specPath, []byte(body), 0o644); err != nil {
+					t.Fatalf("write directory epic spec: %v", err)
+				}
+			},
+		},
+		{
+			name: "nested child plan path",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/nested/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: ".linear-plans/nested/BOS-0-child-api-BOS-1-add-api.md",
+		},
+		{
+			name: "noncanonical epic spec path cannot forge child metadata",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-forged-BOS-1-add-forged.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0-forged.epic-spec.json"]}}`,
+			want: "epicSpecPaths",
+		},
+		{
+			name: "canonical epic spec path must match parent id",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":` + defaultGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "epicSpecPaths",
+			setup: func(t *testing.T) {
+				t.Helper()
+				body := `{"parentId":"BOS-999","children":[{"key":"api","title":"Add API"}]}`
+				if err := os.WriteFile(specPath, []byte(body), 0o644); err != nil {
+					t.Fatalf("write mismatched epic spec: %v", err)
+				}
+			},
+		},
+		{
+			name: "partial guard scratch manifest",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + parentOnlyGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "guardScratchPaths",
+		},
+		{
+			name: "nested guard scratch path",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1","BOS-2"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md","BOS-2":".linear-plans/BOS-0-child-ui-BOS-2-add-ui.md"},"guardScratchPaths":` + nestedGuards + `,"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: nestedGuardPath,
+		},
+		{
+			name: "missing guard scratch manifest",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"epicSpecPaths":[".linear-plans/BOS-0.epic-spec.json"]}}`,
+			want: "guardScratchPaths",
+		},
+		{
+			name: "missing epic spec manifest",
+			read: `{"payload":{"epic":true,"epicParentId":"BOS-0","childIds":["BOS-1"],"childPlanPaths":{"BOS-1":".linear-plans/BOS-0-child-api-BOS-1-add-api.md"},"guardScratchPaths":[]}}`,
+			want: "epicSpecPaths",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeDefaultSpec(t)
+			if tc.setup != nil {
+				tc.setup(t)
+			}
+			cmd := exec.Command("node", "-e", validator, tc.read, filepath.Join(dir, "plan.md"), "dispatch failed")
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("%s passed validation, output: %s", tc.name, out)
+			}
+			if !strings.Contains(string(out), tc.want) {
+				t.Fatalf("%s failure did not name %s: %s", tc.name, tc.want, out)
+			}
+		})
+	}
+}
+
+func bossPlanArtifactVerifier(t *testing.T) string {
+	t.Helper()
+	b, err := SkillsFS.ReadFile("skills/boss-plan/SKILL.md")
+	if err != nil {
+		t.Fatalf("read boss-plan payload: %v", err)
+	}
+	m := regexp.MustCompile(`(?s)node -e '([^']+)' "\$READ" "\$PLAN_PATH" "\$DISPATCH_FAILURE" \|\|`).FindStringSubmatch(string(b))
+	if len(m) != 2 {
+		t.Fatalf("boss-plan payload missing artifact verifier node command")
+	}
+	return m[1]
+}
+
+func TestBossPlanArtifactVerifierFailureCleansScratch(t *testing.T) {
+	b, err := SkillsFS.ReadFile("skills/boss-plan/SKILL.md")
+	if err != nil {
+		t.Fatalf("read boss-plan payload: %v", err)
+	}
+	payload := string(b)
+	artifactFailure := "Artifact verification failure also skips Phase 5; remove the same scratch families."
+	start := strings.Index(payload, artifactFailure)
+	if start < 0 {
+		t.Fatalf("boss-plan payload missing artifact-verifier failure cleanup block")
+	}
+	cleanupLine := "node \"$RUN_SENTINEL\" cleanup \"$RUN_DIR\""
+	cleanupStart := strings.LastIndex(payload[:start], cleanupLine)
+	if cleanupStart < 0 {
+		t.Fatalf("boss-plan payload missing artifact-verifier run-sentinel cleanup before scratch cleanup")
+	}
+	block := payload[cleanupStart:]
+	if end := strings.Index(block, "EPIC=\"$(printf '%s' \"$READ\""); end >= 0 {
+		block = block[:end]
+	}
+	for _, want := range []string{
+		cleanupLine,
+		".linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json",
+		"-name '<ISSUE-ID>-child-*.md' -delete",
+		"-name '<ISSUE-ID>*.image-guard-*.md' -delete",
+		"-name '<ISSUE-ID>*.attachment-guard-orig.md' -delete",
+		"-name '<ISSUE-ID>*.attachment-headers-*.json' -delete",
+		"-name '<ISSUE-ID>*.epic-spec.json' -delete",
+		"warning: scratch cleanup failed",
+		"exit 1",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("artifact verifier failure cleanup block missing %q", want)
 		}
 	}
 }

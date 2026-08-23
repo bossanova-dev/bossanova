@@ -15,6 +15,7 @@ go_library(
     importpath = "github.com/recurser/bossd-plugin-repair",
     visibility = ["//visibility:private"],
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/plugin",
         "//lib/bossalib/plugin/hostclient",
@@ -37,12 +38,14 @@ go_test(
     name = "bossd-plugin-repair_test",
     srcs = [
         "helpers_test.go",
+        "host_test.go",
         "main_test.go",
         "server_test.go",
         "workflow_lifecycle_test.go",
     ],
     embed = [":bossd-plugin-repair_lib"],
     deps = [
+        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_github_rs_zerolog//:zerolog",
         "@com_github_stretchr_testify//assert",

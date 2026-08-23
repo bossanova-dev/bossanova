@@ -41,8 +41,8 @@ schedules and merges.
 - **Serialized merges.** At most one merge in flight, ever — the base branch is
   advanced one PR at a time, in `nextToMerge` order.
 - **Prefer a callback over blind polling.** Whenever you are about to wait on a
-  child's PR / CI check / merge state, arm a one-shot callback group first rather
-  than spinning on the poll — gated on the single `callbacksAvailable(env)` signal
+  child's PR / CI check / merge state, arm callback watches first rather than
+  spinning on the poll — gated on the single `callbacksAvailable(env)` signal
   (`toolbox/callback/adapter.mjs`: a managed session **and** a `boss` executable
   that actually resolves; gate false ⇒ log `callbacksUnavailableReason(env)`). Gate true ⇒
   resolve `selectEpicCallbackTarget` (`toolbox/callback/epic-target.mjs`) from the
@@ -114,7 +114,7 @@ Bossanova reference impls resolve to today's exact tools and sub-skills —
   (`toolbox/callback/adapter.mjs`). One-shot GitHub PR-event watches
   (`registerWatch` / `listWatches` / `removeWatch` over `boss callback
 add|list|remove`); `policy.watchTriggers` = `checks_passed` / `checks_failed`
-  / `merged`, armed as a group per in-flight child **when
+  / `merged`, armed under per-trigger groups **when
   `callbacksAvailable(env)`** and `selectEpicCallbackTarget` returns a verified
   target. Register, re-arm, and list use that target's `--chat` plus the child
   PR's `--repo`; `remove` accepts `--chat` but not `--repo`, so cleanup first uses
@@ -345,11 +345,10 @@ assumeCleared, assumeClearedAndMerge}`.
 
    `partial` = a working transport missing response fields, so deliberately not
    degraded. Today `getSession`: `boss show --json` carries the lifecycle state
-   but none of `last_agent_activity_at`, `repair_active`,
-   `attention_status.reason`, `pr_mergeable`, `merge_block` — hang detection,
-   auth-death and conflict-after-green routing all gone. Poll
-   `boss session checks` for CI, and treat an unreadable signal as "not
-   settled", never as a green.
+   and `last_agent_activity_at`, but lacks `repair_active`,
+   `attention_status.reason`, `pr_mergeable`, `merge_block` — auth-death and
+   conflict-after-green routing still need fallbacks. Poll `boss session checks`
+   for CI, and treat an unreadable signal as "not settled", never as a green.
 
    `bossEpicToolPreflight(availableTools)` → `{ ok, missing }` remains available
    for MCP-only callers and is unchanged.
@@ -447,7 +446,10 @@ assumeCleared, assumeClearedAndMerge}`.
    **merge** clearance: only `--assume-cleared-and-merge` ids clear the Phase 3d
    merge-time re-check (`mergeBlockedExternalBlockers`); a plain `--assume-cleared`
    launches dependents yet the merge step still refuses to merge past that
-   blocker's own still-open gate.
+   blocker's own still-open gate. Before launching, record the best-case merge
+   count as `eligible - uncleared-external-blocked - cannot-evaluate-here - cascade-skipped`; a blocker
+   owned by a session outside this epic is reported as `cannot-evaluate-here`,
+   distinct from both cleared and blocked, and is never counted as mergeable.
 
 ## Phase 2 — Resume reconstruction (idempotent start)
 
@@ -545,7 +547,7 @@ A callback wake (armed per child that enters flight **only when
 `callbacksAvailable(env)` and `selectEpicCallbackTarget` returns a verified target**)
 trims the poll cadence but never replaces this
 reconciliation — a wake means _re-read the state below_, never _act on the trigger
-name_; dedup by callback id, and re-arm the child's group while it is still in flight.
+name_; dedup by callback id, and re-arm the child's consumed watches while it is still in flight.
 
 **Never arm bare `checks_passed` on a child PR.** boss-build opens its PR as a **draft**
 and CI runs on drafts, so bare `checks_passed` fires on the first green draft commit —
@@ -554,9 +556,8 @@ merge-eligible. Arm **`checks_passed_ready`** (green **and** not a draft — the
 merge-eligibility moment) together with `checks_failed` and `merged`, plus optionally
 **`ready_for_review`** for the un-draft flip itself; this draft-aware set replaces the
 generic `policy.watchTriggers` default for boss-epic's in-flight watch. The daemon merge
-gate stays authoritative — a wake is a signal, not proof. Re-arm any watch consumed
-prematurely or expired, keeping one `group` per child so a superseded re-arm cancels its
-siblings.
+gate stays authoritative — a wake is a signal, not proof. Re-arm consumed or expired watches,
+keeping one `group` per trigger so re-arm cancels only same-trigger siblings.
 
 **How the driver waits.** Callbacks are primary; a **session cron** (a scheduled prompt
 re-entering this poll cycle every 2–5 minutes) is the bounded fallback. **Never** rely on
@@ -581,7 +582,10 @@ still holding only its bootstrap commit. The push oracle is the remote itself:
 `git fetch --quiet origin && git rev-list --count origin/<base>..origin/<branch> 2>/dev/null || echo 0`
 — zero means nothing was pushed, whatever the session state says. Keep the
 guard: before the first push `origin/<branch>` does not exist and `rev-list`
-errors with empty output instead of printing `0`.
+errors with empty output instead of printing `0`. An unmoving remote head means
+either the child produced no commit or it has local commits that never pushed;
+establish whether a push happened before reading the head, and record which
+cause was observed.
 
 A green is trustworthy only once that tracked chat has **settled**: `IDLE` or
 `STOPPED` on **two consecutive polls** with the spinner absent. STOPPED +
@@ -658,6 +662,12 @@ IDLE/STOPPED + passing.
   send_chat_message {agent_session_id: <same UUID>, wake_if_asleep: true,
                      submit: true, message: "/boss-repair watch"}  // submits
   ```
+
+  Read the repair skill's final terminal line from the tracked repair chat. Normalize the token by
+  stripping backticks, emphasis, any leading label, and surrounding whitespace. `inner-cap-exhausted`
+  counts as a consumed repair round but is not `no-progress`; `no-progress` means the repair ran and
+  changed nothing. Any unreadable or unclassifiable token goes to `repair-unclassifiable`, counts
+  toward the 4-round cap, and is never success.
 
   Cap at **4 repair rounds per ticket** (a plugin-held or frozen-lease round
   counts too; each
@@ -764,7 +774,8 @@ comment and print the same in the driver chat:
 
 - **merged** — ticket → PR link, in merge order.
 - **failed-isolated** — ticket → session id + last DisplayStatus + a one-line
-  reason.
+  reason. If any fail-isolated session is still live, keep the cron/callback
+  teardown needed to observe or resume it; clean up only settled child watches.
 - **skipped** — ticket → reason (ineligible, or cascade-skipped under a named
   failed ancestor).
 - **duration** — wall-clock of the whole run.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
 
@@ -57,14 +58,15 @@ var defaultRPCDeadline = 30 * time.Second
 // is aligned with the daemon's own http.Server WriteTimeout
 // (services/bossd/internal/server/server.go): a non-streaming response the
 // daemon has not written by then cannot arrive at all, so waiting longer buys
-// nothing.
+// nothing. Keep it equal to config.SwitchResultCeiling; the production test
+// guards the local account-switch result boundary.
 //
 // Like defaultRPCDeadline it is a var, not a const, so tests can shrink it and
 // so the e2e-only override above can scale it alongside the
 // default. Both have to move together: an e2e build that shrank only the
 // default would leave every table member at two minutes, well past any proof
 // step's timeout budget.
-var slowRPCDeadline = 120 * time.Second
+var slowRPCDeadline = config.SwitchResultCeiling
 
 // slowDeadlineRatio is slowRPCDeadline / defaultRPCDeadline (120s / 30s). The
 // e2e override preserves it so a scaled-down build keeps the same shape — slow
@@ -98,8 +100,8 @@ const slowDeadlineRatio = 4
 //     about, so capping it at the default would report a merely-cold daemon as
 //     wedged on the one screen the fix exists to improve.
 //   - external network / provider work — MergeSession blocks on the merge gate
-//     plus the provider merge and its verification; ListTrackerIssues and
-//     ListRepoPRs call out to Linear/Sentry/GitHub; ListAccounts with refresh
+//     plus the provider merge and its verification; RefreshSessionPR,
+//     ListTrackerIssues and ListRepoPRs call out to Linear/Sentry/GitHub; ListAccounts with refresh
 //     fans out one live provider usage probe per account and waits for all of
 //     them; RepairDoctor, TestAccount, RunCronJobNow and SwitchSessionAccount
 //     do subprocess or provider work.
@@ -129,6 +131,7 @@ const slowDeadlineRatio = 4
 var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: {},
 	bossanovav1connect.DaemonServiceMergeSessionProcedure:         {},
+	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     {},
 	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    {},
 	bossanovav1connect.DaemonServiceListRepoPRsProcedure:          {},
 	bossanovav1connect.DaemonServiceListAccountsProcedure:         {},

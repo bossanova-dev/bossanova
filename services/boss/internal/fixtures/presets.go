@@ -92,7 +92,7 @@ func Presets() map[string]Preset {
 		"empty": {
 			World:      emptyWorld,
 			SeedKind:   SeedAcknowledged,
-			DefaultEnv: map[string]string{},
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
 		// async-create: the demo world plus a scripted CreateSession stream that
 		// reproduces the BOS-720 daemon contract — SessionCreated (accepted, the

@@ -15,6 +15,17 @@ const os = require('os')
 const path = require('path')
 
 const INLINE_COMMENT_DISPLAY_LIMIT = 100
+const REVIEW_THREAD_DISPLAY_LIMIT = 100
+const DEFAULT_HOST = 'github.com'
+const CONTRACT_VERSION = 'review-feedback-probe/v2'
+let contractPrinted = false
+
+function printContract() {
+  if (!contractPrinted) {
+    console.log(`probe_contract=${CONTRACT_VERSION}`)
+    contractPrinted = true
+  }
+}
 
 function runGh(args) {
   const out = execFileSync('gh', args, {
@@ -30,11 +41,22 @@ function runGh(args) {
   return out
 }
 
+function redactCredentials(value) {
+  return String(value || '')
+    .replace(/\bgh[os]_[A-Za-z0-9_]+\b/g, '[redacted]')
+    .replace(/x-access-token:[^@\s]+@/g, 'x-access-token:[redacted]@')
+}
+
 function compact(value, max = 360) {
   return String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
+}
+
+function failReason(error) {
+  const stderr = error?.stderr ? error.stderr.toString() : ''
+  return compact(redactCredentials(stderr || error?.message || error))
 }
 
 function parsePaginatedArray(raw) {
@@ -75,11 +97,15 @@ function requireSafeDirectory(dir) {
   }
 }
 
+function journalKey({ host, owner, name, pr }) {
+  return `${host}-${owner}-${name}-${pr}`.toLowerCase().replace(/[^a-z0-9._-]/g, '_')
+}
+
 function stateDirectory({ stateRoot, host, owner, name, pr }) {
   const root =
     stateRoot || process.env.BOSS_REPAIR_STATE_DIR || path.join(os.tmpdir(), 'boss-repair-state')
   requireSafeDirectory(root)
-  const child = `${host}-${owner}-${name}-${pr}`.replace(/[^A-Za-z0-9._-]/g, '_')
+  const child = journalKey({ host, owner, name, pr })
   const dir = path.join(root, child)
   withPrivateUmask(() => mkdirSync(dir, { recursive: true, mode: 0o700 }))
   requireSafeDirectory(dir)
@@ -171,9 +197,110 @@ function repairStatusFromReviewProbe({
   return { status: 'clean', reason: 'no unresolved review threads' }
 }
 
-function reviewContext(prView, owner, name) {
-  const host = new URL(prView.url || 'https://github.com').hostname
-  return { host, owner, name, pr: prView.number }
+function parseFlag(args, flag) {
+  const index = args.indexOf(flag)
+  return index >= 0 ? args[index + 1] || '' : ''
+}
+
+function validateRepo(value) {
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(`invalid --repo: ${value}`)
+  }
+  const [owner, name] = value.split('/')
+  return { owner, name }
+}
+
+function validatePr(value) {
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`invalid --pr: ${value}`)
+  }
+  return Number(value)
+}
+
+function validateHost(value) {
+  if (!/^[A-Za-z0-9.-]+$/.test(value)) {
+    throw new Error(`invalid --host: ${value}`)
+  }
+  return value
+}
+
+function hostnameFromUrl(value) {
+  if (!value) {
+    return ''
+  }
+  try {
+    return new URL(value).hostname
+  } catch {
+    return ''
+  }
+}
+
+function hostnameArgs(host) {
+  return host && host !== DEFAULT_HOST ? ['--hostname', host] : []
+}
+
+function repoArgForHost(repo, host) {
+  return host && host !== DEFAULT_HOST ? `${host}/${repo}` : repo
+}
+
+function resolveHost({ requestedHost, repoForHost }) {
+  if (requestedHost) {
+    return validateHost(requestedHost)
+  }
+  if (process.env.GH_HOST) {
+    return validateHost(process.env.GH_HOST)
+  }
+  try {
+    const args = ['repo', 'view', '--json', 'url']
+    if (repoForHost) {
+      args.splice(2, 0, repoForHost)
+    }
+    const repoView = JSON.parse(runGh(args))
+    return hostnameFromUrl(repoView.url) || DEFAULT_HOST
+  } catch {
+    return DEFAULT_HOST
+  }
+}
+
+function resolveIdentity(args, options = {}) {
+  const repoFlag = parseFlag(args, '--repo')
+  const prFlag = parseFlag(args, '--pr')
+  const hostFlag = parseFlag(args, '--host')
+  if ((repoFlag && !prFlag) || (!repoFlag && prFlag)) {
+    throw new Error('--repo and --pr must be supplied together')
+  }
+
+  if (repoFlag || prFlag) {
+    const repo = validateRepo(repoFlag)
+    const pr = validatePr(prFlag)
+    const host = resolveHost({ requestedHost: hostFlag, repoForHost: repoFlag })
+    if (options.skipPrView) {
+      return { ...repo, pr, host, prView: { number: pr, latestReviews: [] } }
+    }
+    const prView = JSON.parse(
+      runGh([
+        'pr',
+        'view',
+        String(pr),
+        '--repo',
+        repoArgForHost(`${repo.owner}/${repo.name}`, host),
+        '--json',
+        'number,latestReviews,url',
+      ]),
+    )
+    return { ...repo, pr: prView.number || pr, host, prView }
+  }
+
+  const host = resolveHost({ requestedHost: hostFlag })
+  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews,url']))
+  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']))
+  return {
+    owner: repoView.owner.login,
+    name: repoView.name,
+    pr: prView.number,
+    host: host || hostnameFromUrl(prView.url) || DEFAULT_HOST,
+    prView,
+  }
 }
 
 function markArguments(args) {
@@ -191,12 +318,11 @@ function markArguments(args) {
 }
 
 function main(args = process.argv.slice(2)) {
+  printContract()
   const mark = markArguments(args)
-  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews,url']))
-  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']))
-  const owner = repoView.owner.login
-  const name = repoView.name
-  const context = reviewContext(prView, owner, name)
+  const identity = resolveIdentity(args, { skipPrView: mark?.disposition === 'open' })
+  const { owner, name, pr, host, prView } = identity
+  const context = { host, owner, name, pr }
 
   if (mark) {
     if (mark.disposition === 'open') {
@@ -204,9 +330,7 @@ function main(args = process.argv.slice(2)) {
       console.log(`marked_thread=${mark.threadId} disposition=open`)
       return
     }
-    const thread = fetchReviewThreads(owner, name, prView.number).find(
-      (item) => item.id === mark.threadId,
-    )
+    const thread = fetchReviewThreads(context).find((item) => item.id === mark.threadId)
     if (!thread) {
       throw new Error(`review thread not found: ${mark.threadId}`)
     }
@@ -215,10 +339,10 @@ function main(args = process.argv.slice(2)) {
     return
   }
 
-  return probe(context, prView, owner, name)
+  return probe(context, prView)
 }
 
-function fetchReviewThreads(owner, name, pr) {
+function fetchReviewThreads({ owner, name, pr, host }) {
   const query = `
     query($owner: String!, $name: String!, $number: Int!, $after: String) {
       repository(owner: $owner, name: $name) {
@@ -252,6 +376,7 @@ function fetchReviewThreads(owner, name, pr) {
   for (;;) {
     const args = [
       'api',
+      ...hostnameArgs(host),
       'graphql',
       '-f',
       `owner=${owner}`,
@@ -283,13 +408,36 @@ function fetchReviewThreads(owner, name, pr) {
   }
 }
 
-function probe(context, prView, owner, name) {
-  const repo = `${owner}/${name}`
-  const pr = prView.number
+function firstAndLast(thread) {
+  const nodes = thread.comments?.nodes || []
+  const first = nodes[0] || {}
+  const last = nodes[nodes.length - 1] || first
+  return { first, last }
+}
+
+function printThreadRows(threads, label, limit = REVIEW_THREAD_DISPLAY_LIMIT) {
+  threads.slice(0, limit).forEach((thread, index) => {
+    const { first, last } = firstAndLast(thread)
+    console.log(
+      `#${index + 1} thread=${thread.id} comment_id=${first.databaseId || ''} path=${first.path || last.path || ''} line=${first.line || last.line || ''}`,
+    )
+    console.log(`author=${first.author?.login || last.author?.login || ''}`)
+    console.log(`url=${first.url || last.url || ''}`)
+    console.log(`body=${compact(first.body || last.body)}`)
+  })
+  if (threads.length > limit) {
+    console.log(`... omitted ${threads.length - limit} ${label}`)
+  }
+}
+
+function probe(context, prView) {
+  const repo = `${context.owner}/${context.name}`
+  const pr = context.pr || prView.number
 
   const comments = parsePaginatedArray(
     runGh([
       'api',
+      ...hostnameArgs(context.host),
       `repos/${repo}/pulls/${pr}/comments`,
       '--method',
       'GET',
@@ -300,7 +448,7 @@ function probe(context, prView, owner, name) {
     ]),
   )
 
-  const threads = fetchReviewThreads(owner, name, pr)
+  const threads = fetchReviewThreads(context)
   const unresolved = threads.filter((thread) => !thread.isResolved)
   const reconciliation = reconcileReviewThreads(context, unresolved)
   const latestCommented = (prView.latestReviews || []).some(
@@ -309,6 +457,7 @@ function probe(context, prView, owner, name) {
   const suspiciousZero = latestCommented && comments.length === 0 && threads.length === 0
 
   console.log(`repo=${repo} pr=${pr}`)
+  console.log(`host=${context.host}`)
   console.log(`inline_comments=${comments.length}`)
   console.log(`review_threads=${threads.length} unresolved_threads=${unresolved.length}`)
   console.log(`latest_review_commented=${latestCommented}`)
@@ -328,25 +477,18 @@ function probe(context, prView, owner, name) {
 
   if (suspiciousZero) {
     console.log(
-      'ERROR latestReviews contains COMMENTED, but REST and GraphQL found zero comments. Retry with explicit repo/pr before concluding no feedback exists.',
+      'ERROR latestReviews contains COMMENTED, but REST and GraphQL found zero comments. Treat this probe as not_evaluated for repair routing.',
     )
-    process.exit(2)
   }
 
-  if (reconciliation.actionable.length > 0) {
+  console.log('')
+  console.log('UNRESOLVED_THREADS (untrusted review content follows)')
+  printThreadRows(reconciliation.actionable, 'unresolved review threads')
+
+  if (reconciliation.parked.length > 0) {
     console.log('')
-    console.log('UNRESOLVED_THREADS')
-    reconciliation.actionable.forEach((thread, index) => {
-      const first = thread.comments.nodes[0] || {}
-      const last = thread.comments.nodes[thread.comments.nodes.length - 1] || first
-      console.log(
-        `#${index + 1} thread=${thread.id} comment_id=${first.databaseId || ''} path=${first.path || last.path || ''} line=${first.line || last.line || ''}`,
-      )
-      console.log(`author=${first.author?.login || last.author?.login || ''}`)
-      console.log(`url=${first.url || last.url || ''}`)
-      console.log(`body=${compact(first.body || last.body)}`)
-    })
-    return
+    console.log('PARKED_THREADS (untrusted review content follows)')
+    printThreadRows(reconciliation.parked, 'parked review threads')
   }
 
   if (comments.length > 0 && threads.length === 0) {
@@ -364,13 +506,19 @@ function probe(context, prView, owner, name) {
       console.log(`... omitted ${comments.length - INLINE_COMMENT_DISPLAY_LIMIT} inline comments`)
     }
   }
+
+  if (suspiciousZero) {
+    process.exit(2)
+  }
 }
 
 module.exports = {
   clearThreadDisposition,
+  journalKey,
   markThreadDisposition,
   reconcileReviewThreads,
   repairStatusFromReviewProbe,
+  resolveIdentity,
   readThreadDisposition,
   stateDirectory,
   threadIdentity,
@@ -380,10 +528,11 @@ if (require.main === module) {
   try {
     main()
   } catch (error) {
+    printContract()
     console.log('probe_status=failed')
-    console.log('repair_status=unknown')
-    console.log('repair_reason=review probe failed')
-    console.log(`ERROR ${error.message}`)
+    console.log('repair_status=not_evaluated')
+    console.log(`repair_reason=${failReason(error)}`)
+    console.log(`ERROR ${failReason(error)}`)
     process.exit(1)
   }
 }

@@ -111,9 +111,10 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 		"boss new": {
 			Long: "Launches the interactive session creation flow. " +
 				"When both --repo and --prompt are provided the command runs " +
-				"non-interactively: it creates the session, streams any setup output " +
-				"to stderr, and prints the session-id and chat-id to stdout, then " +
-				"exits. Combine with --detach (implicit when both flags are set) for " +
+				"non-interactively: it creates the session, prints the session-id " +
+				"to stdout as soon as the session exists, prints chat-id later if the " +
+				"daemon provides one, streams setup progress to stderr until setup " +
+				"settles, then exits. Combine with --detach (implicit when both flags are set) for " +
 				"scripting. Use --agent to override the default agent plugin.\n\n" +
 				"Launching a session to run work unattended: supplying a prompt " +
 				"launches the agent headlessly so the work actually runs — that is " +
@@ -147,7 +148,8 @@ func TestRegistryBuilderPreservesSessionAndChatDocumentation(t *testing.T) {
 				"INVALID_ARGUMENT or NOT_FOUND, and every failure still exits 1. " +
 				"Setup output goes to stderr either way, so stdout carries exactly " +
 				"one JSON object. Without --json the two-line `session-id:` / " +
-				"`chat-id:` output is unchanged.",
+				"`chat-id:` output is unchanged; session-id appears as soon as the " +
+				"session exists, and chat-id appears later if the daemon provides one.",
 			Examples: []Example{
 				{Command: "boss new"},
 				{Command: "boss new --agent opencode"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -766,5 +767,205 @@ func TestResolveSpawnEnvForProbeSkipsOnlyLastUsed(t *testing.T) {
 	}
 	if !maps.Equal(probeEnv, spawnEnv) {
 		t.Fatalf("probe env %v differs from spawn env %v: the two must come from one shared body so a probe can never describe an environment the chat never sees", probeEnv, spawnEnv)
+	}
+}
+
+// --- BOS-973: durable record of a credential-injection failure --------------
+
+// recordingRegistry is a stubRegistry that ALSO implements the optional
+// injectionHealthRecorder seam, so the resolver's type assertion succeeds.
+type recordingRegistry struct {
+	stubRegistry
+	recorded    []string
+	recordErr   error
+	clearCalls  int
+	clearedIDs  []string
+	clearErr    error
+	recordedIDs []string
+}
+
+func (r *recordingRegistry) RecordInjectionFailure(_ context.Context, id, reason string) error {
+	r.recordedIDs = append(r.recordedIDs, id)
+	r.recorded = append(r.recorded, reason)
+	return r.recordErr
+}
+
+func (r *recordingRegistry) ClearInjectionFailure(_ context.Context, id string) error {
+	r.clearCalls++
+	r.clearedIDs = append(r.clearedIDs, id)
+	return r.clearErr
+}
+
+func newRecordingRegistry(accounts ...AccountMeta) *recordingRegistry {
+	return &recordingRegistry{stubRegistry: stubRegistry{accounts: accounts}}
+}
+
+func TestResolveSpawnEnvRecordsInjectionFailure(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	mat := &stubMaterializer{supports: true, materializeErr: errors.New("project codex base home: boom")}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
+	// The degrade POLICY is unchanged: the error is still returned verbatim to
+	// the caller, which decides to fall back to the ambient login.
+	if err == nil {
+		t.Fatal("ResolveSpawnEnv: want the materialize error returned unchanged")
+	}
+	if env != nil {
+		t.Fatalf("env = %v, want nil", env)
+	}
+	if len(reg.recorded) != 1 {
+		t.Fatalf("recorded %d injection failures, want exactly 1", len(reg.recorded))
+	}
+	if reg.recordedIDs[0] != "a1" {
+		t.Errorf("recorded against %q, want %q", reg.recordedIDs[0], "a1")
+	}
+	if !strings.Contains(reg.recorded[0], "project codex base home: boom") {
+		t.Errorf("recorded reason = %q, want the materialize error text", reg.recorded[0])
+	}
+	if reg.clearCalls != 0 {
+		t.Errorf("clear called %d times on the failure path, want 0", reg.clearCalls)
+	}
+}
+
+// ctxObservingRegistry models what a real store does: its write runs through
+// ExecContext, so an already-cancelled context fails the UPDATE outright. The
+// stub recordingRegistry ignores ctx entirely and therefore cannot catch a
+// regression here.
+type ctxObservingRegistry struct {
+	stubRegistry
+	recorded  []string
+	recordErr error
+}
+
+func (r *ctxObservingRegistry) RecordInjectionFailure(ctx context.Context, _, reason string) error {
+	if err := ctx.Err(); err != nil {
+		r.recordErr = err
+		return err
+	}
+	r.recorded = append(r.recorded, reason)
+	return nil
+}
+
+func (r *ctxObservingRegistry) ClearInjectionFailure(ctx context.Context, _ string) error {
+	return ctx.Err()
+}
+
+// A cancelled spawn is the failure class most likely to strand an operator with
+// no signal: the materialize error IS a context error, so a health write that
+// inherited the spawn's ctx would be guaranteed to fail and be swallowed as a
+// WARN — reproducing the BOS-973 silent degrade precisely where it hurts. The
+// write is detached with context.WithoutCancel so it survives.
+func TestResolveSpawnEnvRecordsInjectionFailureOnCancelledSpawn(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := &ctxObservingRegistry{stubRegistry: stubRegistry{
+		accounts: []AccountMeta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}},
+	}}
+	mat := &stubMaterializer{supports: true, materializeErr: context.Canceled}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the spawn is already gone by the time materialize reports it
+
+	if _, err := r.ResolveSpawnEnv(ctx, "a1", "codex", now); err == nil {
+		t.Fatal("ResolveSpawnEnv: want the materialize error returned")
+	}
+	if reg.recordErr != nil {
+		t.Fatalf("health write saw a cancelled context (%v); it must be detached via context.WithoutCancel", reg.recordErr)
+	}
+	if len(reg.recorded) != 1 {
+		t.Fatalf("recorded %d injection failures on a cancelled spawn, want exactly 1", len(reg.recorded))
+	}
+}
+
+// The probe is a read-only diagnostic. health is a rotation-selection key
+// (rotation.isSelectable), exactly like the LastUsedAt the probe already
+// refuses to skew, so the probe must write no health record at all.
+func TestResolveSpawnEnvForProbeRecordsNothing(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	mat := &stubMaterializer{supports: true, materializeErr: errors.New("boom")}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	if _, err := r.ResolveSpawnEnvForProbe(context.Background(), "a1", "codex", now); err == nil {
+		t.Fatal("ResolveSpawnEnvForProbe: want the materialize error returned")
+	}
+	if len(reg.recorded) != 0 {
+		t.Errorf("probe recorded %d injection failures, want 0", len(reg.recorded))
+	}
+	if reg.clearCalls != 0 {
+		t.Errorf("probe called clear %d times, want 0", reg.clearCalls)
+	}
+}
+
+func TestResolveSpawnEnvClearsInjectionFailureOnSuccess(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "failed"})
+	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/a1"}}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
+	if err != nil {
+		t.Fatalf("ResolveSpawnEnv: %v", err)
+	}
+	if env["CODEX_HOME"] != "/tmp/a1" {
+		t.Fatalf("env = %v, want the materialized overlay", env)
+	}
+	if reg.clearCalls != 1 {
+		t.Fatalf("clear called %d times, want exactly 1", reg.clearCalls)
+	}
+	if reg.clearedIDs[0] != "a1" {
+		t.Errorf("cleared %q, want %q", reg.clearedIDs[0], "a1")
+	}
+	if len(reg.recorded) != 0 {
+		t.Errorf("recorded %d injection failures on the success path, want 0", len(reg.recorded))
+	}
+}
+
+// A registry that does NOT implement the optional seam must behave exactly as
+// it did before BOS-973 — the resolver's existing nil-dependency discipline.
+func TestResolveSpawnEnvWithoutRecorderIsUnchanged(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := &stubRegistry{accounts: []AccountMeta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}}}
+	wantErr := errors.New("boom")
+	mat := &stubMaterializer{supports: true, materializeErr: wantErr}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	env, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if env != nil {
+		t.Fatalf("env = %v, want nil", env)
+	}
+
+	// …and the success path stays clean too.
+	mat.materializeErr = nil
+	mat.env = map[string]string{"CODEX_HOME": "/tmp/a1"}
+	if _, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now); err != nil {
+		t.Fatalf("ResolveSpawnEnv without recorder: %v", err)
+	}
+}
+
+// A failing health write must never turn a degradable resolve into a different
+// error: the caller's degrade policy keys on the materialize error.
+func TestResolveSpawnEnvRecordErrorDoesNotMaskMaterializeError(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	reg.recordErr = errors.New("db is down")
+	reg.clearErr = errors.New("db is down")
+	wantErr := errors.New("materialize boom")
+	mat := &stubMaterializer{supports: true, materializeErr: wantErr}
+	r := NewResolver(reg, mat, zerolog.Nop())
+
+	if _, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now); !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want the materialize error %v", err, wantErr)
+	}
+
+	mat.materializeErr = nil
+	mat.env = map[string]string{"CODEX_HOME": "/tmp/a1"}
+	if _, err := r.ResolveSpawnEnv(context.Background(), "a1", "codex", now); err != nil {
+		t.Fatalf("a failing clear must not fail the resolve: %v", err)
 	}
 }

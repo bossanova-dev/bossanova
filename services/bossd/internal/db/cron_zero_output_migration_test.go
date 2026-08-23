@@ -139,9 +139,13 @@ func TestCronZeroOutputMigrationBackfillsExistingRow(t *testing.T) {
 		t.Fatalf("insert pre-migration row: %v", err)
 	}
 
-	// Now apply BOS-563 on top of the existing row.
+	// Now apply BOS-563 on top of the existing row, then continue to the current
+	// schema before reading through the current store implementation.
 	if err := migrate.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("re-run up after down: %v", err)
+	}
+	if err := migrate.Run(db, migrations); err != nil {
+		t.Fatalf("run remaining migrations after BOS-563: %v", err)
 	}
 
 	got, err := NewCronJobStore(db).Get(ctx, "cron-pre-migration")

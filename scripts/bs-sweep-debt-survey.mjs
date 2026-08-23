@@ -9,7 +9,24 @@
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { isMainModule } from '../skills-toolbox/main-module.mjs'
+
 const AREA_RE = /^(services\/[^/\s]+|lib\/bossalib|plugins\/[^/\s]+|scripts|proto|docs)/
+
+const DEFAULT_MODULE_ROOTS = {
+  boss: 'services/boss',
+  bossd: 'services/bossd',
+  bossalib: 'lib/bossalib',
+  bosso: 'services/bosso',
+  docs: 'docs',
+  proto: 'proto',
+  scripts: 'scripts',
+  web: 'services/web',
+}
+
+const DECOMPOSITION_MULTIPLE = 2
 
 /** Top-level rotation area for a repo-relative path (or the raw path if unmatched). */
 export function areaOf(file) {
@@ -19,7 +36,7 @@ export function areaOf(file) {
 
 /** Stable identity of a candidate — used for the superset/loss check. */
 export function candidateKey(c) {
-  return `${c.category}::${c.file}::${c.evidence}`
+  return `${c.category}::${c.path || c.file}::${c.evidence}`
 }
 
 // Which detector produced the block that follows a command line. The survey subagent runs
@@ -35,6 +52,19 @@ function detectorFor(line) {
   return null
 }
 
+function moduleForCommand(line) {
+  let m
+  if ((m = /\bmake debt-[a-z]+-([A-Za-z0-9_-]+)\b/.exec(line))) {
+    const mod = m[1]
+    return { command: `make ${/make (debt-[A-Za-z0-9_-]+)/.exec(line)[1]}`, module: mod }
+  }
+  if (/\bpnpm -C services\/web knip\b/.test(line))
+    return { command: 'pnpm -C services/web knip', module: 'web' }
+  if (/\bnpx jscpd services\/web\/src\b/.test(line))
+    return { command: 'npx jscpd services/web/src', module: 'web' }
+  return { command: line.replace(/^\$\s*/, '').trim(), module: '' }
+}
+
 const CATEGORY_OF = {
   deadcode: 'dead-code',
   dupl: 'duplication',
@@ -45,16 +75,70 @@ const CATEGORY_OF = {
   jscpd: 'duplication',
 }
 
+function moduleRoot(moduleName, moduleRoots = DEFAULT_MODULE_ROOTS) {
+  if (moduleRoots[moduleName]) return moduleRoots[moduleName]
+  if (moduleName.startsWith('bossd-plugin-')) return `plugins/${moduleName}`
+  return `plugins/bossd-plugin-${moduleName}`
+}
+
+function isRepoRelativePath(candidatePath) {
+  return (
+    typeof candidatePath === 'string' &&
+    candidatePath.length > 0 &&
+    !path.isAbsolute(candidatePath) &&
+    !candidatePath.split('/').includes('..')
+  )
+}
+
+function pathInsideModule(candidatePath, moduleName, moduleRoots = DEFAULT_MODULE_ROOTS) {
+  const root = moduleRoot(moduleName, moduleRoots)
+  return candidatePath === root || candidatePath.startsWith(`${root}/`)
+}
+
+export function validateSurveyCandidate(candidate, options = {}) {
+  const candidatePath = candidate.path
+  const moduleName = candidate.module
+  const repoRoot = options.repoRoot || process.cwd()
+  const moduleRoots = options.moduleRoots || DEFAULT_MODULE_ROOTS
+
+  if (!moduleName) return { ok: false, reason: 'missing module' }
+  if (!candidatePath) return { ok: false, reason: 'missing path' }
+  if (!isRepoRelativePath(candidatePath)) {
+    return { ok: false, reason: 'path must be repo-root-relative' }
+  }
+  if (!fs.existsSync(path.join(repoRoot, candidatePath))) {
+    return { ok: false, reason: 'path does not exist at repo root' }
+  }
+  if (!pathInsideModule(candidatePath, moduleName, moduleRoots)) {
+    return { ok: false, reason: `path is outside declared module ${moduleName}` }
+  }
+  return { ok: true, reason: null }
+}
+
+function fileAxisExclusion(detector, evidence) {
+  if (detector !== 'filesize') return null
+  const m = /^(\d+)\s+lines\s+\(limit\s+(\d+)\)$/.exec(evidence)
+  if (!m) return null
+  const lines = Number(m[1])
+  const limit = Number(m[2])
+  if (lines > limit * DECOMPOSITION_MULTIPLE) {
+    return `file-axis decomposition candidate: ${lines} lines exceeds ${DECOMPOSITION_MULTIPLE}x limit ${limit}`
+  }
+  return null
+}
+
 /**
  * Parse combined detector output into normalized candidates. Each `$ make debt-*` / `knip`
  * command line switches the active detector; the following lines are parsed in that
  * detector's format. Every recognized finding becomes a candidate — none is dropped.
  * @param {string} text raw combined detector output
- * @returns {Array<{category: string, area: string, file: string, evidence: string}>}
+ * @returns {Array<{category: string, area: string, module: string, path: string, file: string, evidence: string, confirmationCommand: string, findingLine: string, excluded?: string}>}
  */
 export function parseDetectorFindings(text) {
   const out = []
   let detector = null
+  let command = ''
+  let module = ''
   let jscpdPrimary = null
   let vulnId = null
   for (const raw of String(text).split('\n')) {
@@ -63,13 +147,27 @@ export function parseDetectorFindings(text) {
     const cmd = /^\$\s/.test(raw) ? detectorFor(raw) : null
     if (cmd) {
       detector = cmd
+      ;({ command, module } = moduleForCommand(raw))
       jscpdPrimary = null
       vulnId = null
       continue
     }
     if (!detector) continue
-    const push = (file, evidence) =>
-      out.push({ category: CATEGORY_OF[detector], area: areaOf(file), file, evidence })
+    const push = (candidatePath, evidence) => {
+      const candidate = {
+        category: CATEGORY_OF[detector],
+        area: areaOf(candidatePath),
+        module,
+        path: candidatePath,
+        file: candidatePath,
+        evidence,
+        confirmationCommand: command,
+        findingLine: line,
+      }
+      const excluded = fileAxisExclusion(detector, evidence)
+      if (excluded) candidate.excluded = excluded
+      out.push(candidate)
+    }
 
     let m
     if (
@@ -126,4 +224,37 @@ export function parseDetectorFindings(text) {
     }
   }
   return out
+}
+
+export function filterValidSurveyCandidates(candidates, options = {}) {
+  const dropped = []
+  const valid = []
+  for (const candidate of candidates) {
+    const verdict = validateSurveyCandidate(candidate, options)
+    if (verdict.ok) {
+      valid.push(candidate)
+    } else {
+      dropped.push({ candidate, reason: verdict.reason })
+    }
+  }
+  return { dropped, valid }
+}
+
+function runCli(argv) {
+  const [cmd, json = '[]'] = argv
+  if (cmd !== 'validate-candidates') return 0
+  const { dropped, valid } = filterValidSurveyCandidates(JSON.parse(json), {
+    repoRoot: process.cwd(),
+  })
+  for (const drop of dropped) {
+    process.stderr.write(
+      `bs-sweep-debt survey: dropped ${drop.candidate.path || drop.candidate.file || '<missing path>'}: ${drop.reason}\n`,
+    )
+  }
+  process.stdout.write(JSON.stringify(valid))
+  return 0
+}
+
+if (isMainModule(import.meta.url)) {
+  process.exitCode = runCli(process.argv.slice(2))
 }

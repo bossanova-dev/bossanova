@@ -571,13 +571,12 @@ func TestReportChatSendOutcome(t *testing.T) {
 			ownLine: []string{"the message may already have been submitted; check the pane before resending"},
 		},
 		{
-			// The shape a proxied client produces: RemoteClient rebuilds the
-			// response field by field and does not carry delivery_state, so this
-			// branch never sees UNCONFIRMED. The guidance bossd folded into
-			// notice_text is what identifies it, and tmux_session_name — which
-			// every converter does forward — is what names the pane the operator
-			// is being told to go look at.
-			name: "unconfirmed over the proxy is still headlined and names the pane",
+			// The mixed-version shape an older bosso produces: delivery_state is
+			// UNSPECIFIED, so this branch never sees UNCONFIRMED. The guidance
+			// bossd folded into notice_text is what identifies it, and
+			// tmux_session_name is what names the pane the operator is being told
+			// to go look at.
+			name: "unconfirmed from an older bosso is still headlined and names the pane",
 			resp: &pb.SendChatMessageResponse{
 				TmuxSessionName: "boss-chat-1",
 				Delivered:       false,
@@ -628,11 +627,11 @@ func TestReportChatSendOutcome(t *testing.T) {
 			},
 		},
 		{
-			// The proxied shape of the case above: delivery_state is dropped in
-			// transit, so the queued guidance inside notice_text is the only
-			// thing standing between the operator and a generic notice that
-			// says nothing about whether to resend.
-			name: "queued over the proxy is still headlined and names the pane",
+			// The mixed-version shape of the case above: an older bosso leaves
+			// delivery_state UNSPECIFIED, so the queued guidance inside
+			// notice_text is the only thing standing between the operator and a
+			// generic notice that says nothing about whether to resend.
+			name: "queued from an older bosso is still headlined and names the pane",
 			resp: &pb.SendChatMessageResponse{
 				TmuxSessionName: "boss-chat-1",
 				Delivered:       true,
@@ -721,13 +720,13 @@ func TestReportChatSendOutcome(t *testing.T) {
 // free to reword its copy alone.
 //
 // The recognition is not cosmetic. A response that reached the CLI through the
-// proxy has no delivery_state (the proxy response carries no mirror of it), so
-// this sentence inside notice_text is the ONLY thing that identifies the send as
-// unconfirmed — and everything the operator needs hangs off recognising it: the
-// headline, the pane to go and look at, and the guidance on its own line rather
-// than trailing a verifier error. Building the notice the way the daemon does,
-// from the SHARED constant, is what turns a divergence into a red test here
-// instead of a silently degraded cloud client.
+// proxy path can still have no delivery_state when the caller talks to an older
+// bosso, so this sentence inside notice_text is the ONLY thing that identifies
+// the send as unconfirmed — and everything the operator needs hangs off
+// recognising it: the headline, the pane to go and look at, and the guidance on
+// its own line rather than trailing a verifier error. Building the notice the
+// way the daemon does, from the SHARED constant, is what turns a divergence into
+// a red test here instead of a silently degraded cloud client.
 func TestReportChatSendOutcomeRecognisesTheSharedGuidance(t *testing.T) {
 	t.Parallel()
 
@@ -739,7 +738,7 @@ func TestReportChatSendOutcomeRecognisesTheSharedGuidance(t *testing.T) {
 	reportChatSendOutcome(&buf, &pb.SendChatMessageResponse{
 		TmuxSessionName: "boss-chat-1",
 		Delivered:       false,
-		// The proxied shape: recognition can only come from the notice.
+		// The older-bosso shape: recognition can only come from the notice.
 		DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED,
 		NoticeText:    notice,
 	})
@@ -775,12 +774,12 @@ func TestReportChatSendOutcomeRecognisesTheSharedGuidance(t *testing.T) {
 // when the two copies drift.
 //
 // The consequence is worse because the proxied queued response and the proxied
-// unconfirmed response are indistinguishable once delivery_state is gone —
-// both arrive as a notice and a pane name. If the CLI stops recognising the
-// queued sentence the send does not merely lose its headline: it falls through
-// to a branch that says nothing about resending, and the operator's natural
-// next move is to send the message a second time to a chat that is already
-// holding it.
+// unconfirmed response are indistinguishable when an older bosso omits
+// delivery_state — both arrive as a notice and a pane name. If the CLI stops
+// recognising the queued sentence the send does not merely lose its headline:
+// it falls through to a branch that says nothing about resending, and the
+// operator's natural next move is to send the message a second time to a chat
+// that is already holding it.
 func TestReportChatSendOutcomeRecognisesTheQueuedGuidance(t *testing.T) {
 	t.Parallel()
 
@@ -791,7 +790,7 @@ func TestReportChatSendOutcomeRecognisesTheQueuedGuidance(t *testing.T) {
 	reportChatSendOutcome(&buf, &pb.SendChatMessageResponse{
 		TmuxSessionName: "boss-chat-1",
 		Delivered:       true,
-		// The proxied shape: recognition can only come from the notice.
+		// The older-bosso shape: recognition can only come from the notice.
 		DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED,
 		NoticeText:    notice,
 	})

@@ -74,10 +74,12 @@
  *           Blocker issues of a raw tracker issue payload. (read dependency edges)
  * @property {(issue: object) => boolean} isUnblocked
  *           True iff every blocker of the issue is in a cleared state.
- * @property {(token: string) => string} formatClaimComment
+ * @property {(token: string, sessionId?: string | null) => string} formatClaimComment
  *           The claim-comment body for a run token. (claim capability)
- * @property {(comments: object[], myToken: string) => boolean} resolveClaim
- *           First-writer-wins: did myToken win the claim over these comments?
+ * @property {(comments: object[], myToken: string, options?: object) => boolean | null} resolveClaim
+ *           Did myToken win the claim over these comments? Null means no claim survived
+ *           forfeiture. Implementations may use the optional third argument to forfeit claims whose
+ *           owners are provably inactive.
  * @property {(issue: object) => object} normalizeTicket
  *           Flatten a raw tracker issue into the shared ticket shape.
  * @property {Record<string, TrackerOperation>} operationMap

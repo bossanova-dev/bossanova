@@ -5,7 +5,7 @@
     "mechanism": "manual",
     "command": "cd lib/bossalib && go test -timeout 300s ./apiversion/...",
     "disposition": "default-run",
-    "reason": "webversion_test.go reads services/web/src/api.ts (escapes the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
+    "reason": "webversion_test.go reads services/web/src/api.ts and openapiversion_test.go reads services/docs/openapi/*.yaml (both escape the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
   },
   {
     "label": "//services/bossd/internal/testharness:testharness_test",

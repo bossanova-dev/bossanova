@@ -280,8 +280,8 @@ func reportChatSendOutcome(w io.Writer, resp *pb.SendChatMessageResponse) {
 	// branch below because the two call for OPPOSITE actions — resend vs do not
 	// resend — and rendering one as the other is how a user ends up running the
 	// message twice. Like that branch it keys on the guidance as well as the
-	// state, so a response that lost delivery_state to the proxy still renders as
-	// queued rather than falling through to the generic notice.
+	// state, so a response from an older bosso that omitted delivery_state still
+	// renders as queued rather than falling through to the generic notice.
 	if resp.GetDeliveryState() == pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED ||
 		guidance == chatdelivery.QueuedGuidance {
 		headline := "delivery queued" + chatSendPaneSuffix(detail, resp.GetTmuxSessionName())
@@ -305,11 +305,11 @@ func reportChatSendOutcome(w io.Writer, resp *pb.SendChatMessageResponse) {
 	// non-zero exit is exactly what would prompt a script to blindly retry.
 	//
 	// The guidance in notice_text is the second, converter-proof tell: a response
-	// that reached us through the proxy has delivery_state UNSPECIFIED (the proxy
-	// response carries no mirror of it), so keying on the state alone rendered a
-	// cloud operator's unconfirmed submit through the generic notice branch below
-	// — which never names the pane. A "/boss switch" notice carries no guidance,
-	// so that path still falls through unchanged.
+	// from an older bosso can still reach us with delivery_state UNSPECIFIED, so
+	// keying on the state alone rendered a cloud operator's unconfirmed submit
+	// through the generic notice branch below — which never names the pane. A
+	// "/boss switch" notice carries no guidance, so that path still falls through
+	// unchanged.
 	if resp.GetDeliveryState() == pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED || guidance != "" {
 		headline := "delivery unconfirmed" + chatSendPaneSuffix(detail, resp.GetTmuxSessionName())
 		if detail != "" {

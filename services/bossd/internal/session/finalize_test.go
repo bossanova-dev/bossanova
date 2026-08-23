@@ -4003,7 +4003,7 @@ func (s *stubCronJobStore) ListEnabled(context.Context) ([]*models.CronJob, erro
 func (s *stubCronJobStore) Update(context.Context, string, db.UpdateCronJobParams) (*models.CronJob, error) {
 	return nil, nil
 }
-func (s *stubCronJobStore) MarkFireStarted(context.Context, string, string, time.Time, *time.Time) error {
+func (s *stubCronJobStore) MarkFireStarted(context.Context, string, string, string, time.Time, *time.Time) error {
 	return nil
 }
 func (s *stubCronJobStore) UpdateLastRun(context.Context, string, db.UpdateCronJobLastRunParams) error {

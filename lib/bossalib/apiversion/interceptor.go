@@ -89,6 +89,20 @@ func (vi *versionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFun
 		ctx = withResolvedVersion(ctx, v)
 		resp, err := next(ctx, req)
 		if err != nil {
+			// Error-path transforms for older-version clients. A change opts in
+			// by implementing ErrorTransform; ApplyError skips the rest, so this
+			// returns err untouched for every procedure no change targets. Uses
+			// the same resolved version v as the success path below, so a client
+			// cannot see a response down-converted to one version and an error
+			// down-converted to another.
+			//
+			// This is the ONLY ApplyError call site. WrapStreamingHandler below
+			// returns its handler's error raw, so the error-path seam is
+			// unary-only by construction — see the SCOPE note on ErrorTransform
+			// in transform.go, and the test that pins it.
+			if vi.changes != nil {
+				err = vi.changes.ApplyError(req.Spec().Procedure, err, v)
+			}
 			return nil, err
 		}
 		// Apply response transforms for older-version clients (newest→resolved order).
@@ -112,6 +126,14 @@ func (vi *versionInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 		}
 		ctx = withResolvedVersion(ctx, v)
 		conn.ResponseHeader().Set(HeaderName, v.String())
+		// NOTE: the handler's error is returned raw below — no ApplyError call.
+		// The error-path transform seam is unary-only; see the SCOPE note on
+		// ErrorTransform in transform.go. Wiring it here is mechanically small
+		// — the application error is just next(ctx, conn)'s return value — but
+		// it would also need a decision about Send-side errors, which are
+		// transport failures rather than application errors and have no
+		// business being version-transformed. It is a deliberate future change
+		// rather than an omission.
 		if vi.changes != nil {
 			conn = &transformingStreamingHandlerConn{
 				StreamingHandlerConn: conn,
@@ -131,9 +153,21 @@ type transformingStreamingHandlerConn struct {
 	resolved  Version
 }
 
+type streamingHandlerCloser interface {
+	Close(error) error
+}
+
 func (c *transformingStreamingHandlerConn) Send(msg any) error {
 	c.changes.Apply(c.procedure, msg, c.resolved)
 	return c.StreamingHandlerConn.Send(msg)
+}
+
+func (c *transformingStreamingHandlerConn) Close(err error) error {
+	closer, ok := c.StreamingHandlerConn.(streamingHandlerCloser)
+	if !ok {
+		return fmt.Errorf("streaming handler connection does not support Close")
+	}
+	return closer.Close(err)
 }
 
 // ClientInterceptor returns a connect.Interceptor for use in first-party

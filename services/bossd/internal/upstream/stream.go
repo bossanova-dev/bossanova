@@ -849,6 +849,13 @@ type StreamClient struct {
 	// log and `boss daemon doctor` cannot disagree about how long the daemon
 	// has been broken.
 	authFailingSince time.Time
+
+	asyncMu      sync.Mutex
+	asyncCancels map[string]context.CancelFunc
+	asyncDone    map[string]<-chan struct{}
+	// asyncCanceled records bounded, short-lived tombstones for CommandCancel
+	// frames that arrive before the async command they target is registered.
+	asyncCanceled map[string]time.Time
 	// authStuckStreak counts consecutive suppressed (debug-level) auth
 	// failures since the last WARN. Crossing authWedgeWarnBudget re-states the
 	// wedge in the log and resets the counter.
@@ -1470,6 +1477,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// channel so the writer exits, then wait for all children so a
 	// subsequent reconnect attempt sees a clean slate.
 	cancel()
+	c.cancelAndWaitAsyncCommands()
 
 	// Drain the refresh error channel so its error takes precedence
 	// over the generic EOF from Receive when a refresh forced the

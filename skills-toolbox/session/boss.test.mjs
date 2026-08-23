@@ -359,7 +359,11 @@ test('the cli transports name the real boss CLI envelope paths, not the MCP ones
   ])
   assert.deepEqual(bossSessionOperationMap.mergeSession.cli.response, ['session.state'])
   // MCP list_sessions / list_agents are bare arrays; the CLI wraps both.
-  assert.deepEqual(bossSessionOperationMap.listSessions.cli.response, ['sessions'])
+  assert.deepEqual(bossSessionOperationMap.listSessions.cli.response, [
+    'sessions',
+    'sessions[].last_agent_activity_at',
+    'sessions[].tracker_id',
+  ])
   assert.deepEqual(bossSessionOperationMap.listAgents.cli.response, ['agents'])
   // get_chat_statuses returns `statuses`; `boss chats --json` returns `chats`.
   assert.deepEqual(bossSessionOperationMap.getChatStatuses.cli.response, ['chats'])
@@ -368,12 +372,18 @@ test('the cli transports name the real boss CLI envelope paths, not the MCP ones
 })
 
 test('partially-covered cli transports name what the CLI cannot supply', () => {
-  // `boss show --json` carries state/pr_number/pr_url but none of getSession's
-  // routing signals. A partial transport is still usable, so it stays OUT of
-  // `degraded` (which means "cannot do at all") — but it must say what is absent
-  // rather than let a caller read `undefined` and route on it.
+  // `boss show --json` carries state/last_agent_activity_at/pr_number/pr_url,
+  // but not every getSession routing signal. A partial transport is still
+  // usable, so it stays OUT of `degraded` (which means "cannot do at all") —
+  // but it must say what is absent rather than let a caller read `undefined`
+  // and route on it.
   const missing = bossSessionOperationMap.getSession.cli.missingResponse
   assert.ok(Array.isArray(missing))
+  assert.deepEqual(bossSessionOperationMap.getSession.cli.response, [
+    'session.state',
+    'session.last_agent_activity_at',
+  ])
+  assert.equal(missing.includes('last_agent_activity_at'), false)
   for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block']) {
     assert.ok(missing.includes(field), `getSession cli must declare ${field} unavailable`)
   }
@@ -384,8 +394,8 @@ test('bossEpicTransportPreflight reports partially-covered capabilities on the C
   // BOS-827. `degraded` only ever named the cli: null capabilities, so a
   // capability whose CLI exists but is INCOMPLETE was reported as fine. Once the
   // boss MCP server stopped being wired by default, every run took the CLI
-  // transport and reported ok:true while silently losing getSession's routing
-  // signals — hang detection, auth-death routing and conflict-after-green. The
+  // transport and reported ok:true while silently losing getSession's remaining
+  // missing routing signals — auth-death routing and conflict-after-green. The
   // run must say so out loud instead.
   const result = bossEpicTransportPreflight({
     availableTools: [],
@@ -398,7 +408,6 @@ test('bossEpicTransportPreflight reports partially-covered capabilities on the C
     ['getSession'],
   )
   assert.deepEqual(result.partial[0].missingResponse, [
-    'last_agent_activity_at',
     'repair_active',
     'attention_status.reason',
     'pr_mergeable',

@@ -7,12 +7,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import {
-  checkDocsMcpProps,
-  discoverDocFiles,
-  extractMcpProps,
-  parseToolNames,
-} from './check-docs-mcp-props.mjs'
+import { checkDocsMcpProps, discoverDocFiles, extractMcpProps } from './check-docs-mcp-props.mjs'
+import { parseToolNames } from './mcp-tool-registry.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -170,7 +166,7 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
   assert.ok(block, 'expectedTools declaration not found in contract_test.go')
   const expected = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
 
-  assert.equal(expected.length, 69, 'contract_test.go should list 69 tools')
+  assert.equal(expected.length, 70, 'contract_test.go should list 70 tools')
   assert.deepEqual([...parsed].sort(), [...expected].sort())
 })
 

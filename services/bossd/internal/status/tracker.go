@@ -14,6 +14,12 @@ import (
 // considered stale (and thus stopped). Set to 5x the 3s heartbeat interval.
 const StaleThreshold = 15 * time.Second
 
+// AuthFailedConsecutivePollsRequired is the number of consecutive poll ticks
+// that must observe the login-required pane shape before AuthFailed reports it.
+// This adds at most one poll interval of latency to a real auth failure, while
+// preventing a one-tick compaction/capture gap from surfacing as terminal.
+const AuthFailedConsecutivePollsRequired = 2
+
 // Entry is a cached status heartbeat for a single Claude chat process.
 type Entry struct {
 	Status       pb.ChatStatus
@@ -29,6 +35,10 @@ type Entry struct {
 // livenessMarker is the poller-derived liveness state for one chat (BOS-805).
 // See Tracker.liveness for why it is not an Entry field.
 type livenessMarker struct {
+	// observedAt is when the poller last wrote any liveness reading for this
+	// chat. It distinguishes "we looked and saw no substantive change" from
+	// "nothing observed this chat during the window".
+	observedAt time.Time
 	// spinnerAt is when a live agent spinner was last observed on the chat's
 	// pane. Zero means the last observation saw none.
 	spinnerAt time.Time
@@ -43,19 +53,34 @@ type livenessMarker struct {
 	seeded bool
 }
 
+// LivenessObservation is the raw poller-derived marker used by bounded
+// observers that need to reason about whether a fresh poll tick landed.
+type LivenessObservation struct {
+	ObservedAt                time.Time
+	LastSubstantiveOutputAt   time.Time
+	LastSubstantiveOutputSeed bool
+	Present                   bool
+}
+
+type authFailedMarker struct {
+	observedAt  time.Time
+	effectiveAt time.Time
+	consecutive int
+}
+
 // Tracker is a thread-safe in-memory cache of chat process statuses.
 type Tracker struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry // claude_id -> entry
 
-	// authFailed records, per agent session ID, the time the login-required
-	// terminal shape ("Not logged in" / "Please run /login") was last observed
+	// authFailed records, per agent session ID, the consecutive poll streak for
+	// the login-required terminal shape ("Not logged in" / "Please run /login")
 	// on the chat's pane. It is kept separate from entries because Update
 	// recreates the Entry on every heartbeat (which would otherwise wipe the
 	// marker); this map is only written by the poller's dedicated SetAuthFailed
 	// path. A marker older than StaleThreshold is treated as absent so a chat
 	// that logged back in (or died) stops flagging — fail toward NOT flagging.
-	authFailed map[string]time.Time // agent_session_id -> last observed
+	authFailed map[string]authFailedMarker // agent_session_id -> last observation streak
 
 	// transientAPIError records, per agent session ID, the time the transient
 	// API-failure terminal shape (an end-of-turn "API Error:" banner naming a
@@ -191,7 +216,7 @@ type Tracker struct {
 func NewTracker() *Tracker {
 	return &Tracker{
 		entries:           make(map[string]*Entry),
-		authFailed:        make(map[string]time.Time),
+		authFailed:        make(map[string]authFailedMarker),
 		transientAPIError: make(map[string]time.Time),
 		stalled:           make(map[string]time.Time),
 		liveness:          make(map[string]*livenessMarker),
@@ -212,9 +237,9 @@ func NewTracker() *Tracker {
 func (t *Tracker) SetLiveness(agentSessionID string, spinnerPresent bool, lastSubstantiveOutputAt time.Time, lastOutputSeeded bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	m := &livenessMarker{substantiveAt: lastSubstantiveOutputAt, seeded: lastOutputSeeded}
+	m := &livenessMarker{observedAt: time.Now(), substantiveAt: lastSubstantiveOutputAt, seeded: lastOutputSeeded}
 	if spinnerPresent {
-		m.spinnerAt = time.Now()
+		m.spinnerAt = m.observedAt
 	}
 	t.liveness[agentSessionID] = m
 }
@@ -240,6 +265,25 @@ func (t *Tracker) Liveness(agentSessionID string) (spinnerPresent bool, lastSubs
 	}
 	spinnerPresent = !m.spinnerAt.IsZero() && time.Since(m.spinnerAt) <= StaleThreshold
 	return spinnerPresent, m.substantiveAt, m.seeded
+}
+
+// LivenessObservation returns the raw liveness marker for agentSessionID.
+// Unlike Liveness, it does not freshness-gate spinnerAt or collapse absent into
+// zero values, because its callers need to know whether the poller wrote a
+// reading inside their observation window.
+func (t *Tracker) LivenessObservation(agentSessionID string) LivenessObservation {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	m, ok := t.liveness[agentSessionID]
+	if !ok {
+		return LivenessObservation{}
+	}
+	return LivenessObservation{
+		ObservedAt:                m.observedAt,
+		LastSubstantiveOutputAt:   m.substantiveAt,
+		LastSubstantiveOutputSeed: m.seeded,
+		Present:                   true,
+	}
 }
 
 // SetCapturedOutput stores (or, when tail is empty, clears) the bounded final
@@ -309,26 +353,40 @@ func (t *Tracker) update(agentSessionID string, status pb.ChatStatus, lastOutput
 }
 
 // SetAuthFailed records or clears the login-required marker for a chat. When
-// failed is true it stamps the current time; when false it clears any existing
-// marker immediately (so a chat that logged back in stops flagging on the next
-// poll tick). Called by the tmux poller every tick with the current pane state.
+// failed is true it stamps the current time and advances the consecutive
+// observation streak; when false it clears any existing marker immediately (so a
+// chat that logged back in stops flagging on the next poll tick). Called by the
+// tmux poller every tick with the current pane state.
 //
 // It fires onAuthChange only when the EFFECTIVE auth-failed state flips — a
-// fresh marker appearing where there was none (or a stale one), or a fresh
-// marker being cleared. Because the poller calls this every tick, gating on the
-// transition keeps the hook from re-emitting a SessionDelta on every poll while
-// the state holds steady.
+// consecutive marker becoming reportable, or a reportable marker being cleared.
+// Because the poller calls this every tick, gating on the transition keeps the
+// hook from re-emitting a SessionDelta on every poll while the state holds
+// steady.
 func (t *Tracker) SetAuthFailed(agentSessionID string, failed bool) {
 	t.mu.Lock()
-	prevAt, had := t.authFailed[agentSessionID]
-	wasFailed := had && time.Since(prevAt) <= StaleThreshold
+	prev, had := t.authFailed[agentSessionID]
+	wasFresh := had && time.Since(prev.observedAt) <= StaleThreshold
+	wasFailed := wasFresh && prev.consecutive >= AuthFailedConsecutivePollsRequired
+	now := time.Now()
+	nowFailed := false
 	if failed {
-		t.authFailed[agentSessionID] = time.Now()
+		consecutive := 1
+		effectiveAt := time.Time{}
+		if wasFresh {
+			consecutive = prev.consecutive + 1
+			effectiveAt = prev.effectiveAt
+		}
+		if consecutive >= AuthFailedConsecutivePollsRequired && effectiveAt.IsZero() {
+			effectiveAt = now
+		}
+		t.authFailed[agentSessionID] = authFailedMarker{observedAt: now, effectiveAt: effectiveAt, consecutive: consecutive}
+		nowFailed = consecutive >= AuthFailedConsecutivePollsRequired
 	} else {
 		delete(t.authFailed, agentSessionID)
 	}
 	hook := t.onAuthChange
-	shouldFire := (!failed && had) || (failed && !wasFailed)
+	shouldFire := (!failed && had && prev.consecutive >= AuthFailedConsecutivePollsRequired) || (failed && !wasFailed && nowFailed)
 	t.mu.Unlock()
 
 	if hook != nil && shouldFire {
@@ -336,19 +394,36 @@ func (t *Tracker) SetAuthFailed(agentSessionID string, failed bool) {
 	}
 }
 
-// AuthFailed reports whether the chat's pane currently shows the login-required
-// terminal shape and the marker is fresh (observed within StaleThreshold). A
-// stale marker — the poller stopped re-observing it (the chat logged in, its
-// pane changed, or it died) — is treated as absent so the flag clears itself and
-// never sticks. This fails toward NOT flagging.
+// AuthFailed reports whether the chat's pane has shown the login-required
+// terminal shape on enough consecutive polls and the latest marker is fresh
+// (observed within StaleThreshold). A stale marker — the poller stopped
+// re-observing it (the chat logged in, its pane changed, or it died) — is
+// treated as absent so the flag clears itself and never sticks. This fails
+// toward NOT flagging.
 func (t *Tracker) AuthFailed(agentSessionID string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	at, ok := t.authFailed[agentSessionID]
+	marker, ok := t.authFailed[agentSessionID]
 	if !ok {
 		return false
 	}
-	return time.Since(at) <= StaleThreshold
+	return marker.consecutive >= AuthFailedConsecutivePollsRequired && time.Since(marker.observedAt) <= StaleThreshold
+}
+
+// AuthFailedSince reports when the current fresh auth-failed episode became
+// effective for the chat. It is stable across later poll observations in the
+// same episode, unlike observedAt, which advances every tick.
+func (t *Tracker) AuthFailedSince(agentSessionID string) (time.Time, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	marker, ok := t.authFailed[agentSessionID]
+	if !ok || marker.consecutive < AuthFailedConsecutivePollsRequired || time.Since(marker.observedAt) > StaleThreshold {
+		return time.Time{}, false
+	}
+	if marker.effectiveAt.IsZero() {
+		return marker.observedAt, true
+	}
+	return marker.effectiveAt, true
 }
 
 // SetTransientAPIError records or clears the transient-API-failure marker for a
@@ -631,7 +706,7 @@ func (t *Tracker) Snapshot() map[string]*Entry {
 // Remove deletes the entry for the given claude ID.
 func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
-	_, hadAuthMarker := t.authFailed[agentSessionID]
+	authMarker, hadAuthMarker := t.authFailed[agentSessionID]
 	_, hadTransientMarker := t.transientAPIError[agentSessionID]
 	_, hadStalledMarker := t.stalled[agentSessionID]
 	_, hadWaitingMarker := t.waiting[agentSessionID]
@@ -648,7 +723,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	waitingHook := t.onWaitingChange
 	t.mu.Unlock()
 
-	if hook != nil && hadAuthMarker {
+	if hook != nil && hadAuthMarker && authMarker.consecutive >= AuthFailedConsecutivePollsRequired {
 		hook(agentSessionID)
 	}
 	if transientHook != nil && hadTransientMarker {
@@ -690,10 +765,12 @@ func (t *Tracker) Cleanup() {
 		}
 	}
 	var clearedAuthMarkers []string
-	for id, at := range t.authFailed {
-		if now.Sub(at) > StaleThreshold {
+	for id, marker := range t.authFailed {
+		if now.Sub(marker.observedAt) > StaleThreshold {
 			delete(t.authFailed, id)
-			clearedAuthMarkers = append(clearedAuthMarkers, id)
+			if marker.consecutive >= AuthFailedConsecutivePollsRequired {
+				clearedAuthMarkers = append(clearedAuthMarkers, id)
+			}
 		}
 	}
 	var clearedTransientMarkers []string

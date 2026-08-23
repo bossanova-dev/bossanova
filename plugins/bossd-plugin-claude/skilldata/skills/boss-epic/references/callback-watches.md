@@ -64,8 +64,8 @@ When the gate is **false**, **skip `registerWatch` entirely and let `policy.fall
 Phase 3** — the clean, documented no-op below, never a failed wait — and **report why**:
 `callbacksUnavailableReason(env)` returns the failing conjunct (`BOSS_SESSION_ID is unset`, or the
 binary rejection naming `BOSS_BIN`/`PATH`/`./bin/boss`), so the epic log records "polling, because …"
-rather than degrading silently. When it is **true**, arm a group per in-flight child as described. It
-is an up-front check, not a "did the CLI happen to fail at runtime" guess.
+rather than degrading silently. When it is **true**, arm per-trigger watches per in-flight child as
+described. It is an up-front check, not a "did the CLI happen to fail at runtime" guess.
 
 **Then select a verified callback target before any callback operation.** The driver records
 `CHILD_PR_REPOSITORY` from the PR and the candidate chat/repository pairs from verified orchestrator
@@ -114,22 +114,22 @@ callback. If there is no verified target, skip callback registration, re-arm, li
 retain the existing cron/poll reconciliation for that child. The bridge emits JSON, reads the selected
 chat into `CALLBACK_CHAT`, and produces an empty value for no target. An empty chat disables only the
 callback commands guarded below; it must fall through to the normal Phase 3b authoritative
-reconciliation and bounded poll/session cron for that child. `CHILD_PR_REPOSITORY` remains the child
-PR repository for every supported CLI operation.
+reconciliation and bounded poll/session cron for that child. `CHILD_PR_REPOSITORY` remains the
+verified selector input; callback CLI operations use the selected target's normalized repository.
 
 The capability contract is the callback-notifier adapter (`toolbox/callback/adapter.mjs`, default
 `CALLBACK=boss`). The boss reference (`toolbox/callback/boss.mjs`) maps three capabilities onto the
 generic `boss callback` CLI and carries the watch policy:
 
-| Capability      | `boss callback` command | Purpose                                                       |
-| --------------- | ----------------------- | ------------------------------------------------------------- |
-| `registerWatch` | `boss callback add`     | Arm a one-shot watch for one trigger (grouped per child).     |
-| `listWatches`   | `boss callback list`    | Reconciliation read: enumerate live watches, dedup by id.     |
-| `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when a child settles. |
+| Capability      | `boss callback` command | Purpose                                                                       |
+| --------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| `registerWatch` | `boss callback add`     | Arm a one-shot watch for one trigger; group only mutually exclusive triggers. |
+| `listWatches`   | `boss callback list`    | Reconciliation read: enumerate live watches, dedup by id.                     |
+| `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when a child settles.                 |
 
 `policy.defaultExpiresIn` = `24h`. `policy.fallbackPoll` = `gh pr checks --watch --fail-fast`.
 `registerWatch` and `listWatches` require both `--chat "$CALLBACK_CHAT"` and
-`--repo "$CHILD_PR_REPOSITORY"`.
+`--repo "$CALLBACK_REPO"`.
 The generic `removeWatch` CLI accepts `--chat` but not `--repo`: use the prior scoped list to obtain
 the callback id, then remove that returned id with `--chat`.
 
@@ -161,23 +161,35 @@ read are the authoritative filter, and both run again on every wake regardless o
 
 ## Protocol
 
-1. **Arm per child on flight entry** (gate `callbacksAvailable` true and `CALLBACK_CHAT` non-empty).
-   When a child enters `inFlight`
-   (Phase 3a launch), register the three triggers against that child's PR as a single **group** so the
-   first to fire cancels its siblings — the epic wakes exactly once whether the child's CI went green,
-   went red, or its PR merged out from under it. The `--message` is the wake payload (a secret — never
-   echoed by `list`); `--expires-in` bounds the watch so an abandoned run's watch self-expires. Record
-   the returned callback/group ids alongside the child's `session_id` / `chat_id` for re-arm and
-   cleanup.
+1. **Arm per child on flight entry** (gate `callbacksAvailable` true and `CALLBACK_CHAT`/`CALLBACK_REPO`
+   non-empty). When a child enters `inFlight` (Phase 3a launch), register the three triggers against
+   that child's PR with separate per-trigger groups. Group two triggers only when at most one of them
+   can ever be satisfied for a given PR, such as `merged` versus `closed`; triggers that can be
+   satisfied at different times or re-satisfied after a push each need their own group. The `--message`
+   is the wake payload (a secret — never echoed by `list`); `--expires-in` bounds the watch so an
+   abandoned run's watch self-expires. Record the returned callback/group ids alongside the child's
+   `session_id` / `chat_id` for re-arm and cleanup.
 
    ```bash
    PR="$CHILD_PR_NUMBER"
    MSG="boss-epic: CI/PR state changed for child PR #$PR — reconcile and continue scheduling."
+   CALLBACK_CHAT="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.chatId === "string" ? target.chatId : "")
+     '
+   )"
+   CALLBACK_REPO="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.repo === "string" ? target.repo : "")
+     '
+   )"
    # checks_passed_ready, NOT checks_passed: the child PR is a draft until boss-build
    # readies it, and a bare green-on-draft fire would burn the one-shot watch.
-   if [ -n "$CALLBACK_CHAT" ]; then
+   if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
      for T in checks_passed_ready checks_failed merged; do
-       boss callback add "$PR" "$T" --group "epicwait-$PR" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CHILD_PR_REPOSITORY" --json
+       boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
      done
    fi
    ```
@@ -192,9 +204,23 @@ read are the authoritative filter, and both run again on every wake regardless o
 
 2. **Reconcile on wake — a callback is a nudge, not a verdict.** A wake (or a poll return) means
    _re-run the Phase 3b reconciliation_, not _act on the trigger name_. Read the child's real
-   session/PR state (`get_session`, `list_check_snapshots`, `get_chat_statuses`, `gh pr view`) and
-   decide from that — a green is merge-eligible only once the tracked chat has **settled** (Phase 3b),
-   never because a `checks_passed` wake arrived.
+   session/PR state (`get_session`, `list_check_snapshots`, `get_chat_statuses`, `gh pr checks`, and
+   `gh pr view --json state,isDraft,mergedAt,mergeStateStatus`) and record which conjunct declined:
+
+   - `ready` — the rollup was read successfully, is non-empty, every entry is terminal, none failed,
+     the PR is open and not a draft, `mergeStateStatus == "CLEAN"`, and the tracked chat has
+     **settled** (Phase 3b).
+   - `not-yet` — the read succeeded, but one of the `ready` conjuncts is false. Keep waiting unless
+     the PR is red or the child left this workflow's hands.
+   - `could-not-evaluate` — the rollup could not be read, the rollup was empty, or
+     `mergeStateStatus` is `UNKNOWN`/unreadable. Report this outcome by name; never fold it into
+     `not-yet`, and never let it reach `ready`.
+
+   A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
+   merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty
+   check test while nothing required to merge has run. `ready` therefore needs both the non-empty
+   all-terminal rollup and GitHub's `CLEAN` merge-state signal. A green is merge-eligible only once
+   the tracked chat has **settled** (Phase 3b), never because a `checks_passed` wake arrived.
 
 3. **Dedup — delivery is at-least-once.** Callbacks may deliver more than once. Guard every transition
    on real state (step 2) and on the callback id: a wake whose reconciliation shows the action already
@@ -202,17 +228,34 @@ read are the authoritative filter, and both run again on every wake regardless o
    Never take an irreversible action (merge, fail-isolate, progress-comment claim) purely because a
    wake arrived.
 
-4. **Re-arm while the child is still in flight.** A one-shot watch is consumed when it fires. If
-   reconciliation says the child must keep running (woke on an intermediate signal, or a repair round
-   is in progress and the next CI run is pending), re-register the child's group before blocking again.
-   Use the same verified target to list the child repository's watches, then only re-arm missing
-   triggers (avoids duplicate watches):
+4. **Re-arm while the child is still in flight.** A one-shot watch is consumed when it fires. Re-arm
+   a trigger only when the reconcile in step 2 just read that trigger's condition as **false**.
+   Re-arming a trigger whose condition still holds fires it immediately and burns the watch. When a
+   trigger is skipped for this reason, record the skip by name, and state that the bounded
+   `policy.fallbackPoll` is the sole wait mechanism for that trigger until a later reconcile reads its
+   condition as false; arm it on that later reconcile. On `could-not-evaluate`, arm nothing and keep
+   polling. This guard is inherently racy — the condition can flip between the read and the arm — but
+   the consequence is bounded: a spurious immediate fire is absorbed by the dedup rule above, and the
+   fallback poll still covers the wait. Use the same verified target to list the child repository's
+   watches, then only re-arm missing, safe-to-arm triggers (avoids duplicate watches):
 
    ```bash
-   if [ -n "$CALLBACK_CHAT" ]; then
-     LIVE_WATCHES="$(boss callback list --chat "$CALLBACK_CHAT" --repo "$CHILD_PR_REPOSITORY" --json)"
+   CALLBACK_CHAT="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.chatId === "string" ? target.chatId : "")
+     '
+   )"
+   CALLBACK_REPO="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.repo === "string" ? target.repo : "")
+     '
+   )"
+   if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
+     LIVE_WATCHES="$(boss callback list --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json)"
      # For each missing trigger T, use the same scoped registration shape:
-     boss callback add "$PR" "$T" --group "epicwait-$PR" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CHILD_PR_REPOSITORY" --json
+     boss callback add "$PR" "$T" --group "epicwait-$PR-$T" --message "$MSG" --expires-in 24h --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json
    fi
    ```
 
@@ -228,8 +271,20 @@ read are the authoritative filter, and both run again on every wake regardless o
    with its chat scope (the generic CLI has no `remove --repo`):
 
    ```bash
-   if [ -n "$CALLBACK_CHAT" ]; then
-     LIVE_WATCHES="$(boss callback list --chat "$CALLBACK_CHAT" --repo "$CHILD_PR_REPOSITORY" --json)"
+   CALLBACK_CHAT="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.chatId === "string" ? target.chatId : "")
+     '
+   )"
+   CALLBACK_REPO="$(
+     CALLBACK_TARGET_JSON="$CALLBACK_TARGET_JSON" node --input-type=module -e '
+       const target = JSON.parse(process.env.CALLBACK_TARGET_JSON ?? "null")
+       process.stdout.write(typeof target?.repo === "string" ? target.repo : "")
+     '
+   )"
+   if [ -n "$CALLBACK_CHAT" ] && [ -n "$CALLBACK_REPO" ]; then
+     LIVE_WATCHES="$(boss callback list --chat "$CALLBACK_CHAT" --repo "$CALLBACK_REPO" --json)"
      # For each CALLBACK_ID returned in LIVE_WATCHES for this group's child PR:
      boss callback remove "$CALLBACK_ID" --chat "$CALLBACK_CHAT"
    fi
@@ -257,8 +312,9 @@ Two caveats, both learned the hard way:
 - **Avoid the herd minutes.** Do not schedule on `:00` or `:30` — every naively-configured job in the
   world fires there. Offset by a few minutes (the `4,11,18,…` set above is already offset).
 
-Tear the cron down when Phase 4 posts the final report; a cron outliving its run wakes a driver with
-no epic to schedule.
+Tear the cron down when Phase 4 posts the final report unless a fail-isolated session is still live;
+in that case keep only the cron/callback teardown needed to observe or resume it, and remove settled
+child watches. A cron outliving a fully settled run wakes a driver with no epic to schedule.
 
 **3. Anti-pattern — backgrounded watchers.** Do **not** hold the wait with a backgrounded shell loop
 (`… &`, a host's "run this in the background" affordance, `sleep` / `while true` polling). Session
@@ -280,6 +336,8 @@ what makes the two mechanisms safe to run at once: a duplicate wake is a no-op, 
 - **The wait survives the turn.** Callbacks and a session cron are the only two wait mechanisms;
   a backgrounded watcher or sleep loop may be killed within its turn and stalls the epic silently.
 - **Idempotent under duplicate/late delivery** (`policy.dedupById`). Re-delivery is a no-op.
+- **Group only mutually exclusive triggers.** Sharing a group across triggers that can both hold
+  makes the first fire cancel a still-needed watch.
 - **Graceful degradation gated on `callbacksAvailable`.** Gate false ⇒ skip `registerWatch`, use
   `fallbackPoll` — an explicit no-op, never a failed wait. The gate, not a runtime CLI failure,
   decides. The gate **verifies the `boss` executable** (an existing executable file, by stat) as

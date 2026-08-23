@@ -28,6 +28,7 @@ func newSendMessageTestServer(t *testing.T, chat *models.AgentChat, sess *models
 	return &Server{
 		agentChats: &chatStoreFake{chat: chat},
 		sessions:   &sessionStoreFake{sess: sess},
+		chatStatus: status.NewTracker(),
 		wakeHook: wakeHook{
 			spawner:     tmuxer,
 			transcripts: &fakeTranscriptOracle{exists: false},

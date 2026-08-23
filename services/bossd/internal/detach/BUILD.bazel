@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "detach",
+    srcs = ["detach.go"],
+    importpath = "github.com/recurser/bossd/internal/detach",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_x_sync//singleflight",
+    ],
+)
+
+go_test(
+    name = "detach_test",
+    srcs = ["detach_test.go"],
+    embed = [":detach"],
+    deps = ["@com_github_rs_zerolog//:zerolog"],
+)

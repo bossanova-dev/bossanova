@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -504,5 +505,20 @@ func TestE2E_SeedEnvRejectsNonWhitelisted(t *testing.T) {
 	}
 	if strings.Contains(out, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE") {
 		t.Fatalf("whitelisted key should not be listed as rejected; output:\n%s", out)
+	}
+}
+
+func TestProofSettingsSeedOverrides(t *testing.T) {
+	got := proofSettingsSeedOverrides(map[string]string{
+		"BOSS_PROOF_SETTINGS_EVENT_TRACING": "1",
+		"BOSS_PROOF_SETTINGS_POSTHOG_HOST":  " https://old.example ",
+		"BOSS_PROOF_SETTINGS_SAVE_FAILURE":  "1",
+	})
+	want := map[string]any{
+		"event_tracing_enabled": true,
+		"posthog_host":          "https://old.example",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("proofSettingsSeedOverrides = %#v, want %#v", got, want)
 	}
 }

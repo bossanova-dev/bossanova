@@ -55,6 +55,24 @@ func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID str
 	return evs, nil
 }
 
+func (f fakeRotationEventStore) ConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
+	for _, ev := range f.bySession[sessionID] {
+		if ev.ChatID == chatID &&
+			ev.Trigger == "ROTATION_TRIGGER_AUTH_INVALIDATED" &&
+			ev.Outcome != "" &&
+			ev.Outcome != "ROTATION_OUTCOME_UNSPECIFIED" &&
+			ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_DISABLED" &&
+			!ev.CreatedAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f fakeRotationEventStore) append(sessionID string, ev db.RotationEvent) {
+	f.bySession[sessionID] = append([]db.RotationEvent{ev}, f.bySession[sessionID]...)
+}
+
 func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	t.Parallel()
 
@@ -90,12 +108,13 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 		sessionID: {{
 			ID:          "rot-1",
 			SessionID:   sessionID,
+			ChatID:      agentSessionID,
 			Provider:    "claude",
-			Trigger:     "ROTATION_TRIGGER_USAGE_LIMITED",
+			Trigger:     "ROTATION_TRIGGER_AUTH_INVALIDATED",
 			FromAccount: "acct-a",
 			ToAccount:   "acct-b",
 			Outcome:     "ROTATION_OUTCOME_ROTATED",
-			CreatedAt:   now,
+			CreatedAt:   now.Add(time.Hour),
 		}},
 	}}
 	hydrator := &streamSessionHydrator{
@@ -111,6 +130,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
 	})
 
+	tracker.SetAuthFailed(agentSessionID, true)
 	tracker.SetAuthFailed(agentSessionID, true)
 	setEvent := nextStreamEvent(t, events)
 	setSession := requireSessionDelta(t, setEvent)
@@ -147,12 +167,75 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 	}
 
 	tracker.SetAuthFailed(agentSessionID, true)
+	tracker.SetAuthFailed(agentSessionID, true)
 	_ = nextStreamEvent(t, events)
 	tracker.Remove(agentSessionID)
 	removeClearEvent := nextStreamEvent(t, events)
 	removeClearSession := requireSessionDelta(t, removeClearEvent)
 	if removeClearSession.GetAttentionStatus() != nil {
 		t.Fatalf("remove clear delta attention_status = %+v, want nil", removeClearSession.GetAttentionStatus())
+	}
+}
+
+func TestPublishAuthFailedSessionDelta_RepublishesAfterCorroboratingAudit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	bus := upstream.NewStreamBus(zerolog.Nop())
+	defer bus.Close()
+	events := bus.Subscribe(ctx)
+
+	agentSessionID := "agent-auth-audit-1"
+	sessionID := "sess-auth-audit-1"
+	repoID := "repo-auth-audit-1"
+	now := time.Now()
+	sessions := &fakeSessionStore{byID: map[string]*models.Session{
+		sessionID: {
+			ID:        sessionID,
+			RepoID:    repoID,
+			Title:     "auth audit stream",
+			State:     machine.ImplementingPlan,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}}
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+		agentSessionID: {ID: "chat-auth-audit-1", SessionID: sessionID, AgentSessionID: agentSessionID},
+	}}
+	tracker := status.NewTracker()
+	rotationEvents := fakeRotationEventStore{bySession: map[string][]db.RotationEvent{}}
+	hydrator := &streamSessionHydrator{
+		agentChats:        chats,
+		rawSessions:       sessions,
+		chatStatusTracker: tracker,
+		rotationEvents:    rotationEvents,
+		accountLabeler:    fakeStreamAccountLabeler{},
+		logger:            zerolog.Nop(),
+	}
+	tracker.SetOnAuthChange(func(id string) {
+		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
+		rotationEvents.append(sessionID, db.RotationEvent{
+			ID:        "rot-auth-audit-1",
+			SessionID: sessionID,
+			ChatID:    agentSessionID,
+			Provider:  "claude",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_ROTATED",
+			CreatedAt: time.Now(),
+		})
+		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
+	})
+
+	tracker.SetAuthFailed(agentSessionID, true)
+	tracker.SetAuthFailed(agentSessionID, true)
+
+	first := requireSessionDelta(t, nextStreamEvent(t, events))
+	if first.GetAttentionStatus() != nil {
+		t.Fatalf("first delta attention_status = %+v, want nil before audit corroboration", first.GetAttentionStatus())
+	}
+	second := requireSessionDelta(t, nextStreamEvent(t, events))
+	if got := second.GetAttentionStatus().GetReason(); got != bossanovav1.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("second delta attention reason = %v, want AGENT_AUTH_FAILED after audit corroboration", got)
 	}
 }
 
@@ -277,15 +360,26 @@ func TestPublishStalledSessionDelta_AuthOutranksStalled(t *testing.T) {
 		rawSessions:       sessions,
 		repos:             repos,
 		chatStatusTracker: tracker,
-		rotationEvents:    fakeRotationEventStore{},
-		accountLabeler:    fakeStreamAccountLabeler{},
-		logger:            zerolog.Nop(),
+		rotationEvents: fakeRotationEventStore{bySession: map[string][]db.RotationEvent{
+			sessionID: {{
+				ID:        "rot-auth",
+				SessionID: sessionID,
+				ChatID:    agentSessionID,
+				Provider:  "claude",
+				Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+				Outcome:   "ROTATION_OUTCOME_ROTATED",
+				CreatedAt: now.Add(time.Hour),
+			}},
+		}},
+		accountLabeler: fakeStreamAccountLabeler{},
+		logger:         zerolog.Nop(),
 	}
 	tracker.SetOnStalledChange(func(id string) {
 		publishAgentMarkerSessionDelta(ctx, id, hydrator, bus, zerolog.Nop())
 	})
 
 	tracker.SetAuthFailed(agentSessionID, true) // no hook wired: publishes nothing
+	tracker.SetAuthFailed(agentSessionID, true)
 	tracker.SetStalled(agentSessionID, true)
 	session := requireSessionDelta(t, nextStreamEvent(t, events))
 	if got := session.GetAttentionStatus().GetReason(); got != bossanovav1.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {

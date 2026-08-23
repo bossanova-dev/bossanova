@@ -61,35 +61,37 @@ When the gate is **false**, **skip `registerWatch` entirely and use `fallbackPol
 documented no-op below, never a failed wait — and **report why**: `callbacksUnavailableReason(env)`
 returns the failing conjunct (`BOSS_SESSION_ID is unset`, or the binary rejection naming
 `BOSS_BIN`/`PATH`/`./bin/boss`), so the log records "polling, because …" rather than degrading
-silently. When it is **true**, arm the group as described. This is an up-front check, not a "did the
-CLI happen to fail at runtime" guess.
+silently. When it is **true**, arm the per-trigger watches as described. This is an up-front check,
+not a "did the CLI happen to fail at runtime" guess.
 
 The capability contract is the callback-notifier adapter (`toolbox/callback/adapter.mjs`, default
 `CALLBACK=boss`). The boss reference (`toolbox/callback/boss.mjs`) maps three capabilities onto the
 generic `boss callback` CLI and carries the watch policy:
 
-| Capability      | `boss callback` command | Purpose                                                       |
-| --------------- | ----------------------- | ------------------------------------------------------------- |
-| `registerWatch` | `boss callback add`     | Arm a one-shot watch for one trigger (grouped with siblings). |
-| `listWatches`   | `boss callback list`    | Reconciliation read: enumerate live watches, dedup by id.     |
-| `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when the wait ends.   |
+| Capability      | `boss callback` command | Purpose                                                                       |
+| --------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| `registerWatch` | `boss callback add`     | Arm a one-shot watch for one trigger; group only mutually exclusive triggers. |
+| `listWatches`   | `boss callback list`    | Reconciliation read: enumerate live watches, dedup by id.                     |
+| `removeWatch`   | `boss callback remove`  | Tear a stale/duplicate watch down by id when the wait ends.                   |
 
 `policy.watchTriggers` = `checks_passed`, `checks_failed`, `merged`. `policy.defaultExpiresIn` = `24h`.
 `policy.fallbackPoll` = `gh pr checks --watch --fail-fast`.
 
 ## Protocol
 
-1. **Arm on wait entry.** When a step begins waiting on CI/PR state, register the three triggers as a
-   single **group** so the first to fire cancels its siblings — the run wakes exactly once whether CI
-   went green, went red, or the PR merged out from under it. The `--message` is the wake payload
-   (a secret — never echoed by `list`); `--expires-in` bounds the watch so an abandoned run's watch
-   self-expires. Record the returned callback/group ids in your working notes for re-arm and cleanup.
+1. **Arm on wait entry.** When a step begins waiting on CI/PR state, register the three triggers with
+   separate per-trigger groups. Group two triggers only when at most one of them can ever be
+   satisfied for a given PR, such as `merged` versus `closed`; triggers that can be satisfied at
+   different times or re-satisfied after a push each need their own group. The `--message` is the
+   wake payload (a secret — never echoed by `list`); `--expires-in` bounds the watch so an abandoned
+   run's watch self-expires. Record the returned callback/group ids in your working notes for re-arm
+   and cleanup.
 
    ```bash
    PR="$PR_NUMBER"
    MSG="boss-build: CI/PR state changed for PR #$PR — reconcile and continue."
    for T in checks_passed checks_failed merged; do
-     boss callback add "$PR" "$T" --group "buildwait-$PR" --message "$MSG" --expires-in 24h --json
+     boss callback add "$PR" "$T" --group "buildwait-$PR-$T" --message "$MSG" --expires-in 24h --json
    done
    ```
 
@@ -109,19 +111,38 @@ generic `boss callback` CLI and carries the watch policy:
    gh pr view  "$PR" --json state,isDraft,mergedAt,mergeStateStatus
    ```
 
-   Decide from that real state, not from the trigger name: green + mergeable → continue to ready;
-   red → route back to **Step 8 (boss-repair)**; `merged`/`closed` → the PR left this workflow's
-   hands, stop via **Stop cleanly** without re-opening or re-pushing.
+   Decide from that real state, not from the trigger name, and record which conjunct declined:
+
+   - `ready` — the rollup was read successfully, is non-empty, every entry is terminal, none failed,
+     the PR is open and not a draft, and `mergeStateStatus == "CLEAN"`.
+   - `not-yet` — the read succeeded, but one of the `ready` conjuncts is false. Keep waiting unless
+     the PR is red or left this workflow's hands.
+   - `could-not-evaluate` — the rollup could not be read, the rollup was empty, or
+     `mergeStateStatus` is `UNKNOWN`/unreadable. Report this outcome by name; never fold it into
+     `not-yet`, and never let it reach `ready`.
+
+   A check count of zero is not a pass. An empty commit that skips CI can produce a head SHA with no
+   merge workflow runs; a rollup containing only third-party checks can satisfy a bare non-empty
+   check test while nothing required to merge has run. `ready` therefore needs both the non-empty
+   all-terminal rollup and GitHub's `CLEAN` merge-state signal. Red routes back to **Step 8
+   (boss-repair)**; `merged`/`closed` means the PR left this workflow's hands, so stop via
+   **Stop cleanly** without re-opening or re-pushing.
 
 3. **Dedup — delivery is at-least-once.** Callbacks may deliver more than once. Guard every state
    change on real PR state (step 2) and on the callback id: a wake whose reconciliation shows the
    action already happened (PR already ready, already merged, checks already green) is a **no-op**.
    Never take an irreversible action (ready, comment, status move) purely because a wake arrived.
 
-4. **Re-arm while still waiting.** A one-shot watch is consumed when it fires. If reconciliation says
-   the wait must continue (e.g. woke on a partial/intermediate signal, or repaired red and are
-   waiting for the next CI run), re-register the group before blocking again. Use `boss callback list`
-   to see which triggers are still live and only re-arm the missing ones (avoids duplicate watches).
+4. **Re-arm while still waiting.** A one-shot watch is consumed when it fires. Re-arm a trigger only
+   when the reconcile in step 2 just read that trigger's condition as **false**. Re-arming a trigger
+   whose condition still holds fires it immediately and burns the watch. When a trigger is skipped
+   for this reason, record the skip by name, and state that the bounded `policy.fallbackPoll` is the
+   sole wait mechanism for that trigger until a later reconcile reads its condition as false; arm it
+   on that later reconcile. On `could-not-evaluate`, arm nothing and keep polling. This guard is
+   inherently racy — the condition can flip between the read and the arm — but the consequence is
+   bounded: a spurious immediate fire is absorbed by the dedup rule above, and the fallback poll
+   still covers the wait. Use `boss callback list` to see which triggers are still live and only
+   re-arm the missing, safe-to-arm ones (avoids duplicate watches).
 
 5. **Bounded fallback poll.** Whether or not a watch is armed, back the wait with a bounded
    `gh pr checks "$PR" --watch --fail-fast`. When callbacks are available it is a safety net for a
@@ -130,7 +151,7 @@ generic `boss callback` CLI and carries the watch policy:
    so the run never blocks unboundedly.
 
 6. **Clean up on wait exit.** When the wait phase ends (green + readied, or routed to BLOCKED/Stop),
-   remove the group's live watches where practical (`boss callback remove <id>`, or let
+   remove every live watch returned by the scoped list where practical (`boss callback remove <id>`, or let
    `--expires-in` reap them). Stale watches are harmless (their next fire just triggers another
    reconcile that finds nothing to do) but leaving them tidy avoids spurious wakes on a later run.
 
@@ -139,6 +160,8 @@ generic `boss callback` CLI and carries the watch policy:
 - **Reconcile before act, always** (`policy.reconcileBeforeAct`). No terminal action is driven by a
   callback trigger name alone.
 - **Idempotent under duplicate/late delivery** (`policy.dedupById`). Re-delivery is a no-op.
+- **Group only mutually exclusive triggers.** Sharing a group across triggers that can both hold
+  makes the first fire cancel a still-needed watch.
 - **Graceful degradation gated on `callbacksAvailable`.** Gate false ⇒ skip `registerWatch`, use
   `fallbackPoll` — an explicit no-op, never a failed wait. The gate, not a runtime CLI failure,
   decides. The gate **verifies the `boss` executable** (an existing executable file, by stat) as

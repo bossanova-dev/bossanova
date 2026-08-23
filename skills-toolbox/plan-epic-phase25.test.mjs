@@ -23,7 +23,8 @@ import {
 import {
   REQUIRED_TRACKER_OPERATIONS,
   OPTIONAL_TRACKER_OPERATIONS,
-} from './tracker/adapter-core.mjs'
+  assertWritePlanEntryExecutable,
+} from './tracker/adapter.mjs'
 import { buildLinearOperationMap } from './tracker/linear.mjs'
 
 const PARENT_ID = 'BOS-999'
@@ -456,17 +457,9 @@ test('S2: every adapter-backed op emits the adapter’s OWN arg keys, and names 
   // plan of plausible-looking WRONG keys replayed perfectly green. Cross-check
   // against the adapter's own summaries instead of a restated literal, so a
   // rename or a new required argument breaks here.
-  const opMap = buildLinearOperationMap('t')
-  // The keys each op's summary declares, e.g. '{issue, assetUrl, title} -> …'.
-  const declaredKeys = (op) =>
-    new Set(
-      (opMap[op].summary.match(/^\{([^}]*)\}/)?.[1] ?? '')
-        .split(',')
-        .map((part) => part.trim().split(/[=:(]/)[0].trim())
-        .filter(Boolean),
-    )
+  const adapter = { operationMap: buildLinearOperationMap('t') }
 
-  // EMPTY, and it must stay that way. The first version of this check exempted
+  // No BEYOND_SUMMARY option exists, and it must stay that way. The first version of this check exempted
   // `moveState: {removeLabels}` — and that single exception was exactly the size
   // of a real bug: `save_issue` has no `removeLabels` argument (its `labels`
   // REPLACES the set, which is why SKILL.md tells the executor to read and
@@ -481,43 +474,18 @@ test('S2: every adapter-backed op emits the adapter’s OWN arg keys, and names 
   // sequence moves the parent out of unplanned (parent-repurpose-last). Pinned
   // here rather than blanket-exempting, so any OTHER uncovered argument — one
   // an executor would silently omit — still fails.
-  const DELIBERATELY_OMITTED = { moveState: new Set(['state']) }
+  const DELIBERATELY_OMITTED = { moveState: ['state'] }
 
   const adapterBacked = phase25Plan().filter((entry) => !NON_ADAPTER_OPS.includes(entry.op))
   assert.ok(adapterBacked.length >= 4, 'expected the adapter-backed ops to be exercised')
 
   for (const entry of adapterBacked) {
-    const declared = declaredKeys(entry.op)
-    assert.ok(declared.size > 0, `${entry.op}: could not read declared args from its summary`)
-
-    // (a) Every key emitted is one the adapter actually accepts.
-    for (const key of Object.keys(entry.args)) {
-      assert.ok(
-        declared.has(key) || BEYOND_SUMMARY[entry.op]?.has(key),
-        `${entry.op}: emits "${key}", which its adapter summary does not declare (${[...declared].join(', ')})`,
-      )
-    }
-    // (b) Every runtimeArg is a real argument too — not an invented placeholder.
-    for (const key of entry.runtimeArgs) {
-      assert.ok(declared.has(key), `${entry.op}: runtimeArg "${key}" is not a declared argument`)
-    }
-    // (c) Together they COVER the op — an argument that is neither emitted nor
-    //     declared runtime is one an executor would silently omit.
-    const covered = new Set([...Object.keys(entry.args), ...entry.runtimeArgs])
-    for (const key of declared) {
-      if (DELIBERATELY_OMITTED[entry.op]?.has(key)) {
-        assert.ok(
-          !(key in entry.args),
-          `${entry.op}: "${key}" is pinned as deliberately omitted but is emitted`,
-        )
-        continue
-      }
-      assert.ok(
-        covered.has(key),
-        `${entry.op}: declared argument "${key}" is neither emitted nor listed in runtimeArgs`,
-      )
-    }
-    assert.ok(Array.isArray(entry.runtimeArgs), `${entry.op}: runtimeArgs must always be present`)
+    assert.doesNotThrow(() =>
+      assertWritePlanEntryExecutable(entry, adapter, {
+        nonAdapterOps: NON_ADAPTER_OPS,
+        deliberatelyOmitted: DELIBERATELY_OMITTED,
+      }),
+    )
   }
 
   // The raw PUT is not an adapter op, but it is the one whose arguments are

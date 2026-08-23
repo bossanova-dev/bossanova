@@ -6,8 +6,10 @@
 //
 //   node tracker/cli.mjs claim-token
 //     -> prints a fresh run token (stdout), tracker-agnostic 32-char hex
-//   node tracker/cli.mjs claim-verdict --me <token> --comments <json-array>
-//     -> exit 0 WON (my token is the first writer), exit 3 LOST
+//   node tracker/cli.mjs claim-comment --token <token> [--session-id <id>]
+//     -> prints the tracker-specific claim comment body; defaults session id to BOSS_SESSION_ID
+//   node tracker/cli.mjs claim-verdict --me <token> --comments <json-array> [--liveness <json>]
+//     -> exit 0 WON (my token is the first writer), exit 3 LOST, exit 4 NO_WINNER
 //   node tracker/cli.mjs states
 //     -> stdout: {"planned":"<name>","inProgress":"<name>|null","inReview":"<name>|null"}
 //     The adapter is the PRIMARY authority for the tracker's workflow-state names, so a
@@ -21,7 +23,8 @@
 //     drivers never issue raw GraphQL for the single-comment progress protocol.
 //
 // Verdict delegates to the resolved adapter's resolveClaim capability; the
-// Linear reference impl computes first-writer-wins over the claim comments, unchanged.
+// Linear reference impl computes first-writer-wins over the claim comments, optionally after
+// liveness evidence forfeits claims whose owners are provably inactive.
 
 import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -40,6 +43,15 @@ function parseFlags(rest) {
   const flags = {}
   for (let i = 0; i < rest.length; i += 2) flags[rest[i]?.replace(/^--/, '')] = rest[i + 1]
   return flags
+}
+
+function parseJsonFlag(value, label, errWrite) {
+  try {
+    return JSON.parse(value)
+  } catch (err) {
+    errWrite(`${label}: malformed JSON: ${err.message}\n`)
+    return undefined
+  }
 }
 
 /**
@@ -67,8 +79,23 @@ export function runCli(
     write(generateClaimToken() + '\n')
     return 0
   }
+  if (cmd === 'claim-comment') {
+    const { token, 'session-id': sessionId } = parseFlags(rest)
+    if (!token) {
+      errWrite('claim-comment: --token <token> is required\n')
+      return 2
+    }
+    const adapter = resolveAdapter({ env })
+    try {
+      write(adapter.formatClaimComment(token, sessionId ?? env.BOSS_SESSION_ID ?? null) + '\n')
+    } catch (err) {
+      errWrite(`claim-comment: could not format claim comment: ${err?.message ?? err}\n`)
+      return 2
+    }
+    return 0
+  }
   if (cmd === 'claim-verdict') {
-    const { me, comments } = parseFlags(rest)
+    const { me, comments, liveness } = parseFlags(rest)
     if (!me) {
       errWrite('claim-verdict: --me <token> is required\n')
       return 2
@@ -79,8 +106,25 @@ export function runCli(
       errWrite('claim-verdict: --comments <json-array> is required\n')
       return 2
     }
+    const parsedComments = parseJsonFlag(comments, 'claim-verdict: --comments', errWrite)
+    if (parsedComments === undefined) return 2
+    let livenessOptions = null
+    if (liveness !== undefined) {
+      livenessOptions = parseJsonFlag(liveness, 'claim-verdict: --liveness', errWrite)
+      if (livenessOptions === undefined) return 2
+    }
     const adapter = resolveAdapter({ env })
-    const won = adapter.resolveClaim(JSON.parse(comments), me)
+    let won
+    try {
+      won = adapter.resolveClaim(parsedComments, me, livenessOptions)
+    } catch (err) {
+      errWrite(`claim-verdict: claim arbitration failed: ${err?.message ?? err}\n`)
+      return 2
+    }
+    if (won === null) {
+      write('NO_WINNER\n')
+      return 4
+    }
     return won ? 0 : 3
   }
   if (cmd === 'states') {

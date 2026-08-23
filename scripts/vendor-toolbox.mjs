@@ -144,7 +144,9 @@ export const VENDOR_MAP = {
   // image-parity STOP gate), plan-contract-guard.mjs (BOS-741: the producer-side plan-contract
   // STOP gate — missing/unknown/out-of-order sections, placeholder residue, a description that is
   // not the plan, and tool-call residue in the plan file; it imports skill-config.mjs and
-  // main-module.mjs, both already vendored here), plan-deps-lib.mjs (BOS-776: the entire Phase 4
+  // main-module.mjs, both already vendored here), plan-run-guards.mjs (BOS-769: idempotence,
+  // bounded-metadata and premise-drift guards; boss-plan needs its own published copy because a
+  // consuming repo has no repo-root skills-toolbox/), plan-deps-lib.mjs (BOS-776: the entire Phase 4
   // step 5 dependency decision — key-change area extraction, the overlap predicate and the
   // seven-rung edge ladder — lifted out of prose an agent could skip; it imports skill-config.mjs
   // and nothing else, which is what keeps this published payload's import closure inside
@@ -161,7 +163,9 @@ export const VENDOR_MAP = {
     'plan-epic-phase25.mjs',
     'plan-image-guard.mjs',
     'plan-contract-guard.mjs',
+    'plan-run-guards.mjs',
     'plan-deps-lib.mjs',
+    'plan-scratch-reap.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree

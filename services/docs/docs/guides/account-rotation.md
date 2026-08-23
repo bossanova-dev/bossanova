@@ -273,6 +273,65 @@ expiry across your accounts. The session resumes automatically at that earliest
 reset, and you get **one notification per episode** — Bossanova will not spam you
 on every poll while the accounts remain capped.
 
+## Credential injection failures
+
+When a session is bound to a managed account, Bossanova materializes that
+account's credentials and injects them into the agent process. If that
+injection **fails**, the agent still starts — but it starts on the CLI's own
+ambient login (`~/.codex`, `~/.claude`) instead of the account you bound. The
+session keeps working, which is exactly what makes the failure easy to miss:
+the usage lands on whichever account happens to be logged in locally, and the
+bound account's usage stays at zero.
+
+Bossanova records that downgrade on the account itself. An account whose
+credentials could not be injected shows:
+
+- **HEALTH `failed`** in the TUI Accounts list, on the account detail screen,
+  and in `boss account ls`;
+- a **LAST TEST** reason beginning `credential injection failed:`, which is what
+  distinguishes it from a rejected credential;
+- the provider's **"no eligible account"** hint in `boss account ls`, because
+  rotation cannot select a `failed`-health account.
+
+The daemon log carries the matching line at `ERROR`, naming the account id and
+provider.
+
+**What to do — often nothing.** The reason string names the entry that could
+not be projected, most often a file the agent itself wrote into the managed
+account home. The record is withdrawn automatically on the next spawn that
+materializes successfully: health returns to `ok` and the reason is cleared.
+Only injection failures clear this way — a genuine account-test failure or a
+confirmed suspension is left untouched, so a real credential problem never
+disappears behind a successful spawn.
+
+That automatic path needs a next spawn on **that** account, which a
+`failed`-health account will not normally get: rotation does not select one. It
+is reached when the account is the provider's only active one, or when a chat
+is already bound to it. With several healthy accounts for the provider, expect
+to clear it by hand instead.
+
+**Do not reach for `boss account test` first.** The prefixed reason is the only
+thing that marks the failure as self-clearing, and `boss account test` records
+its own outcome into that same field. A _passing_ test therefore overwrites the
+prefix while leaving `health = failed`, and nothing clears that health
+automatically afterwards — the account stays out of rotation with a blank
+reason. Run the test when you suspect the credential itself; for a credential
+**injection** failure, let the next spawn clear it.
+
+**To clear it by hand**, re-save the credential — that is what restores health
+directly. `boss account refresh` always writes a credential, so it needs one of
+`--token` or `--credential-file` (`--credential-file -` reads stdin); it will
+not run without one:
+
+<CommandTabs
+chat='"refresh account <account-id>"'
+cli="boss account refresh <account-id> --credential-file -"
+/>
+
+The refresh restores `health = ok`; the `credential injection failed:` reason
+stays on the row as the last recorded LAST TEST result until the next
+`boss account test` overwrites it.
+
 ## Audit trail
 
 Every rotation decision is recorded as a rotation event — including the ones

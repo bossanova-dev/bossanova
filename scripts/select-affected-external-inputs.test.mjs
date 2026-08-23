@@ -97,6 +97,20 @@ test('services/web/src/api.ts still runs the apiversion ledger row', () => {
   assert.ok(all || modules.includes('lib/bossalib'), 'api.ts must select the bossalib row')
 })
 
+test('services/docs/openapi specs still run the apiversion ledger row', () => {
+  for (const f of [
+    'services/docs/openapi/base.openapi.yaml',
+    'services/docs/openapi/bossanova.v1.openapi.yaml',
+  ]) {
+    const { all, modules } = selectLedgerModules([f])
+    assert.ok(all || modules.includes('lib/bossalib'), `${f} must select the bossalib row`)
+
+    const { full, patterns } = selectBazelAffected([f])
+    assert.equal(full, false, `${f} must not force a Bazel graph run`)
+    assert.deepEqual(patterns, [], `${f} feeds only the manual native ledger row`)
+  }
+})
+
 test('published skill trees and their prose still run the skillinstall ledger row', () => {
   for (const f of [
     'plugins/bossd-plugin-claude/skilldata/skills/boss-plan/SKILL.md',

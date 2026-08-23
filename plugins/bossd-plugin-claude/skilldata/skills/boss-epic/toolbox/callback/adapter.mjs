@@ -84,7 +84,7 @@ export function resolveCallbackAdapter(env = process.env) {
 
 /**
  * Validate that an adapter exposes every callback capability plus the callback-watch
- * policy the spine depends on (grouped triggers, reconcile-before-act, re-arm).
+ * policy the spine depends on (trigger list, mutually exclusive grouping, reconcile-before-act, re-arm).
  * @returns the adapter, for chaining.
  */
 export function assertConforms(adapter) {

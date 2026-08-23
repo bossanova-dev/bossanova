@@ -150,7 +150,7 @@ func (m NewSessionModel) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case "esc":
 		if m.prFilter.Applied() {
-			m.prFilter.Deactivate()
+			m.prFilter.Reset()
 			m.prTable.SetCursor(0)
 			m.buildPRTable()
 			if len(m.prTable.Rows()) > 0 {
@@ -182,12 +182,12 @@ func (m NewSessionModel) keyPRFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		if !m.prFilter.Commit() {
-			m.prFilter.Deactivate()
+			m.prFilter.Dismiss()
 			m.buildPRTable()
 		}
 		return m, nil
 	case "esc":
-		m.prFilter.Deactivate()
+		m.prFilter.Reset()
 		m.prTable.SetCursor(0)
 		m.buildPRTable()
 		if len(m.prTable.Rows()) > 0 {
@@ -257,7 +257,8 @@ func (m NewSessionModel) keyIssueFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		// Clear the filter and refetch the unfiltered list. The
 		// seq bump invalidates any in-flight tick or fetch.
-		m.issueFilter.Deactivate()
+		m.issueFilter.Reset()
+		m.err = nil
 		m.issueSearchSeq++
 		m.issueSearchQuery = ""
 		m.issuesFetching = true

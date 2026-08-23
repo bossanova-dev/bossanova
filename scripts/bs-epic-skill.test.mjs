@@ -33,6 +33,9 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 const abs = (rel) => fileURLToPath(new URL(rel, import.meta.url))
 
 const CLAUDE = read('../services/boss/internal/skillinstall/skills/boss-epic/SKILL.md')
+const CALLBACKS = read(
+  '../services/boss/internal/skillinstall/skills/boss-epic/references/callback-watches.md',
+)
 
 // BOS-495: the up-front callback reflex + the single `callbacksAvailable` gate must
 // be present in BOTH Go mirrors (byte-identical), and boss-epic must carry its own
@@ -198,7 +201,14 @@ test('size ratchet', () => {
   // bodies, growing this one by 13 B. That is a correctness rewrite of code the body must
   // carry, not new prose, so the pin absorbs exactly it. Re-pinned 56253 → 56266, the exact
   // measured body, re-measured 2026-08-19 (BOS-768).
-  const RATCHET = 56266
+  // BOS-908 banks 56266 → 56261 by tightening the getSession CLI partial prose.
+  // BOS-755 re-baselines 56261 → 57368 for resident epic orchestration rails: repair terminal-line
+  // outcome classification, remote-head push/no-work disambiguation, external-blocker best-case
+  // accounting (including the cannot-evaluate-here non-mergeable bucket), and the fail-isolated
+  // teardown exception. Re-measured 2026-08-22.
+  // BOS-752 banks 57368 → 57353 by replacing the stale per-child callback group contract with the
+  // per-trigger watch contract; detailed mechanics remain in callback-watches.md.
+  const RATCHET = 57353
 
   // Seven separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
   // would leave every one of them asserting against a single mirror with nothing going red
@@ -216,6 +226,73 @@ test('size ratchet', () => {
       'the references/ files the body routes to, and the plugin mirror — this pin measures the ' +
       'canonical skillinstall copy only',
   })
+})
+
+test('repair terminal-line outcome is read and classified (BOS-755)', () => {
+  assert.ok(
+    CLAUDE.includes("Read the repair skill's final terminal line from the tracked repair chat"),
+    'boss-epic must read boss-repair terminal outcome',
+  )
+  assert.ok(
+    CLAUDE.includes('Normalize the token by') &&
+      CLAUDE.includes('stripping backticks, emphasis, any leading label'),
+    'boss-epic must normalize the repair terminal token',
+  )
+  assert.ok(
+    CLAUDE.includes('`inner-cap-exhausted`') && CLAUDE.includes('is not `no-progress`'),
+    'boss-epic must branch inner-cap exhaustion away from no-progress',
+  )
+  assert.ok(
+    CLAUDE.includes('`repair-unclassifiable`, counts') && CLAUDE.includes('is never success'),
+    'boss-epic must count unclassifiable repair outcomes without treating them as success',
+  )
+})
+
+test('child progress distinguishes unmoving head causes (BOS-755)', () => {
+  assert.ok(
+    CLAUDE.includes('An unmoving remote head means') &&
+      CLAUDE.includes(
+        'either the child produced no commit or it has local commits that never pushed',
+      ),
+    'boss-epic must name both causes of an unmoving remote head',
+  )
+  assert.ok(
+    /establish\s+whether\s+a\s+push\s+happened\s+before\s+reading\s+the\s+head,\s+and\s+record\s+which\s+cause\s+was\s+observed/.test(
+      CLAUDE,
+    ),
+    'boss-epic must establish push state first and record the observed cause',
+  )
+})
+
+test('external blocker reporting includes best-case count and cannot-evaluate state (BOS-755)', () => {
+  assert.ok(
+    CLAUDE.includes('record the best-case merge') &&
+      CLAUDE.includes(
+        'eligible - uncleared-external-blocked - cannot-evaluate-here - cascade-skipped',
+      ),
+    'boss-epic must record the up-front best-case merge count',
+  )
+  assert.ok(
+    CLAUDE.includes('reported as `cannot-evaluate-here`') &&
+      CLAUDE.includes('distinct from both cleared and blocked'),
+    'boss-epic must carry a third state for blockers outside this epic',
+  )
+})
+
+test('teardown preserves fail-isolated live sessions in resident and callback reference (BOS-755)', () => {
+  for (const [label, body] of [
+    ['resident', CLAUDE],
+    ['callback reference', CALLBACKS],
+  ]) {
+    assert.ok(
+      body.includes('fail-isolated session is still live'),
+      `${label} must name the fail-isolated live-session exception`,
+    )
+    assert.ok(
+      body.includes('cron/callback') && /settled\s+child\s+watches/.test(body),
+      `${label} must keep only needed cron/callback teardown and settled watches`,
+    )
+  }
 })
 
 test('frontmatter identifies the skill', () => {
@@ -296,7 +373,7 @@ test('Phase 3 adopts one-shot callbacks with authoritative reconciliation (BOS-4
   )
   assert.match(
     CLAUDE,
-    /re-arm\s+the\s+child's\s+group\s+while\s+it\s+is\s+still\s+in\s+flight/i,
+    /re-arm\s+the\s+child's\s+consumed\s+watches\s+while\s+it\s+is\s+still\s+in\s+flight/i,
     'boss-epic must re-arm the consumed one-shot watch while the child is still in flight',
   )
 })
@@ -470,24 +547,49 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
       `${dir} no-target branch must retain mandatory reconciliation and fallback polling`,
     )
 
-    // Register, re-arm, and reconciliation list calls carry both scopes.
-    assert.match(
-      ref,
-      /boss[ ]callback[ ]add[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
-      `${dir} register example must scope --chat and --repo`,
+    // The selected repo is normalized by the target selector. Every fenced block
+    // that consumes the value is a fresh shell, so each block derives CALLBACK_REPO
+    // from CALLBACK_TARGET_JSON before calling the callback CLI.
+    const repoDerivations = ref.match(/CALLBACK_REPO="\$\([\s\S]{0,300}target\?\.repo/g) ?? []
+    assert.equal(
+      repoDerivations.length,
+      3,
+      `${dir} must derive CALLBACK_REPO in each register, re-arm/list, and cleanup block`,
     )
     assert.match(
       ref,
-      /boss[ ]callback[ ]list[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CHILD_PR_REPOSITORY"/,
-      `${dir} list/re-arm example must scope --chat and --repo`,
+      /process\.stdout\.write\(typeof[ ]target\?\.repo === "string" \? target\.repo : ""\)/,
+      `${dir} bridge must emit the selected normalized repository or empty output`,
+    )
+
+    // Register, re-arm, and reconciliation list calls carry both scopes.
+    assert.match(
+      ref,
+      /boss[ ]callback[ ]add[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CALLBACK_REPO"/,
+      `${dir} register example must scope --chat and selected --repo`,
+    )
+    assert.match(
+      ref,
+      /boss[ ]callback[ ]list[^\n]*--chat "\$CALLBACK_CHAT"[^\n]*--repo "\$CALLBACK_REPO"/,
+      `${dir} list/re-arm example must scope --chat and selected --repo`,
+    )
+    assert.match(
+      ref.replace(/\s+/g, ' '),
+      /`registerWatch`\s+and\s+`listWatches`\s+require\s+both\s+`--chat "\$CALLBACK_CHAT"`\s+and\s+`--repo "\$CALLBACK_REPO"`/,
+      `${dir} capability contract prose must require the selected callback repo`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /--repo "\$CHILD_PR_REPOSITORY"/,
+      `${dir} must not pass the raw child PR repository as a callback --repo argument`,
     )
     for (const command of ['add', 'list', 'remove']) {
       assert.match(
         ref,
         new RegExp(
-          `if \\[ -n "\\$CALLBACK_CHAT" \\]; then[\\s\\S]*?boss callback ${command}[\\s\\S]*?fi`,
+          `if \\[ -n "\\$CALLBACK_CHAT" \\](?: && \\[ -n "\\$CALLBACK_REPO" \\])?; then[\\s\\S]*?boss callback ${command}[\\s\\S]*?fi`,
         ),
-        `${dir} callback ${command} commands must be guarded by a verified chat`,
+        `${dir} callback ${command} commands must be guarded by a verified chat and repo when repo is required`,
       )
     }
 
@@ -502,6 +604,82 @@ test('BOS-614: callbacks use a verified scoped target and safe cleanup (both mir
       ref,
       /boss\s+callback\s+remove[^\n]*--repo/,
       `${dir} cleanup must not invent unsupported callback remove --repo`,
+    )
+  }
+})
+
+test('BOS-752: epic callback waits use per-trigger groups, guarded re-arm, and three-way reconcile (both mirrors)', () => {
+  for (const dir of EPIC_MIRRORS) {
+    const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
+    const ref = readFileSync(
+      new URL(`${dir}/references/callback-watches.md`, import.meta.url),
+      'utf8',
+    )
+    const prose = `${skill}\n${ref}`.replace(/\s+/g, ' ')
+
+    assert.match(
+      skill,
+      /armed\s+under\s+per-trigger\s+groups/i,
+      `${dir}/SKILL.md must say child PR callback triggers use per-trigger groups`,
+    )
+    assert.doesNotMatch(
+      skill,
+      /one-shot\s+callback\s+group/i,
+      `${dir}/SKILL.md must not describe the child PR wait as one shared callback group`,
+    )
+    assert.match(
+      ref,
+      /--group "epicwait-\$PR-\$T"/,
+      `${dir}/references/callback-watches.md must arm each trigger with a per-trigger group`,
+    )
+    assert.doesNotMatch(
+      ref,
+      /--group "epicwait-\$PR"(?!-\$T)/,
+      `${dir}/references/callback-watches.md must not use one shared epicwait group`,
+    )
+    assert.match(
+      prose,
+      /group\s+(?:two\s+)?triggers\s+only\s+when\s+at\s+most\s+one\s+of\s+them\s+can\s+ever\s+be\s+satisfied/i,
+      `${dir} must state the mutual-exclusivity rule for callback groups`,
+    )
+
+    for (const outcome of ['ready', 'not-yet', 'could-not-evaluate']) {
+      assert.match(
+        ref,
+        new RegExp(`\\b${outcome}\\b`),
+        `${dir}/references/callback-watches.md must define the ${outcome} reconcile outcome`,
+      )
+    }
+    assert.match(
+      ref,
+      /mergeStateStatus\s*==\s*"CLEAN"/,
+      `${dir}/references/callback-watches.md ready outcome must require mergeStateStatus == "CLEAN"`,
+    )
+    assert.match(
+      ref,
+      /check\s+count\s+of\s+zero\s+is\s+not\s+a\s+pass/i,
+      `${dir}/references/callback-watches.md must say an empty rollup is not green`,
+    )
+    assert.match(
+      ref,
+      /empty\s+commit\s+that\s+skips\s+CI/i,
+      `${dir}/references/callback-watches.md must name the project-agnostic vacuous-green motivation`,
+    )
+
+    assert.match(
+      ref,
+      /Re-arm\s+a\s+trigger\s+only\s+when[\s\S]{0,180}condition\s+as\s+\*\*false\*\*/i,
+      `${dir}/references/callback-watches.md must guard re-arm on a false condition`,
+    )
+    assert.match(
+      ref,
+      /record\s+the\s+skip\s+by\s+name/i,
+      `${dir}/references/callback-watches.md must record skipped re-arm triggers by name`,
+    )
+    assert.match(
+      ref,
+      /could-not-evaluate[\s\S]{0,80}arm\s+nothing/i,
+      `${dir}/references/callback-watches.md must arm nothing when reconcile could not evaluate`,
     )
   }
 })

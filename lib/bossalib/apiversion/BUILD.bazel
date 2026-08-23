@@ -1,9 +1,13 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:exclude openapiversion_test.go
+# gazelle:exclude webversion_test.go
+
 go_library(
     name = "apiversion",
     srcs = [
         "interceptor.go",
+        "procedureset.go",
         "released.go",
         "transform.go",
         "version.go",
@@ -16,6 +20,7 @@ go_library(
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -23,19 +28,24 @@ go_test(
     name = "apiversion_test",
     srcs = [
         "interceptor_test.go",
+        "procedureset_test.go",
+        "production_coverage_test.go",
         "released_test.go",
         "transform_test.go",
         "version_test.go",
-        "webversion_test.go",
     ],
-    # keep: webversion_test.go reads services/web/src/api.ts, which escapes the
-    # bossalib module and is absent from the Bazel sandbox. Excluded from `bazel
-    # test`; still covered by `make test`. See docs/solutions/build-systems/bazel-sandbox-patterns.md.
+    embed = [":apiversion"],
+    # keep: webversion_test.go reads services/web/src/api.ts and
+    # openapiversion_test.go reads services/docs/openapi/*.yaml; both escape the
+    # bossalib module and are absent from the Bazel sandbox. Excluded from `bazel test`;
+    # still covered by `make test`. See docs/solutions/build-systems/bazel-sandbox-patterns.md.
     tags = ["manual"],
     deps = [
-        ":apiversion",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )

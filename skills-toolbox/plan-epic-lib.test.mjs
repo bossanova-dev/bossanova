@@ -524,6 +524,12 @@ test('stableChildKey: empty/symbol-only titles fall back to "child"', () => {
   assert.equal(stableChildKey({}, seen), 'child-3')
 })
 
+test('stableChildKey: rejects non-object child inputs with a named error', () => {
+  for (const value of ['title', null, 3]) {
+    assert.throws(() => stableChildKey(value), /stableChildKey: child must be an object/)
+  }
+})
+
 test('stableChildKey: never returns the reserved "parent" key', () => {
   assert.equal(stableChildKey({ title: 'Parent' }), 'parent-2')
 })

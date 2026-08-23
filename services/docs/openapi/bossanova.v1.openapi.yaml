@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-08-16'
+  version: '2026-08-21'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -4144,6 +4144,18 @@ components:
           description: Short machine-readable reason for inactive cloud access.
       title: CloudAccessStatus
       additionalProperties: false
+    bossanova.v1.CommandCancel:
+      type: object
+      properties:
+        commandId:
+          type: string
+          title: command_id
+      title: CommandCancel
+      additionalProperties: false
+      description: |-
+        CommandCancel asks the daemon to cancel an in-flight command whose original
+         OrchestratorCommand.command_id matches command_id. Old daemons ignore the
+         unknown oneof arm, so callers must still bound their own wait locally.
     bossanova.v1.CommandResult:
       type: object
       allOf:
@@ -4520,6 +4532,8 @@ components:
         - ERROR_CODE_NOT_FOUND
         - ERROR_CODE_FAILED_PRECONDITION
         - ERROR_CODE_INVALID_ARGUMENT
+        - ERROR_CODE_DEADLINE_EXCEEDED
+        - ERROR_CODE_CANCELED
       description: |-
         ErrorCode is a typed channel for failure-mode signalling so bosso can
          map daemon errors back to ConnectRPC codes without parsing the human-
@@ -5376,6 +5390,10 @@ components:
              branch, or pull request, because the run is expected to produce no repo
              changes. Persisted and echoed back only — nothing honours it yet, so a job
              with this set still fires exactly as it does today (BOS-543).
+        lastRunAgentName:
+          type: string
+          title: last_run_agent_name
+          description: resolved agent used by the last spawned run; empty = unknown/legacy
       title: CronJob
       additionalProperties: false
       description: |-
@@ -8339,6 +8357,17 @@ components:
                 - closeSession
             - type: object
               properties:
+                commandCancel:
+                  title: command_cancel
+                  description: |-
+                    bosso → daemon: cancel a previously-sent command by command_id. No
+                     CommandResult is emitted for the cancellation command itself.
+                  $ref: '#/components/schemas/bossanova.v1.CommandCancel'
+              title: command_cancel
+              required:
+                - commandCancel
+            - type: object
+              properties:
                 createCronJob:
                   title: create_cron_job
                   description: 'bosso → daemon: create a cron job. Replies CommandResult{create_cron_job}.'
@@ -10653,6 +10682,13 @@ components:
              switch intercepted before delivery) instead of forwarding to the agent. On
              that path delivered is false; callers must read notice_text. Additive,
              backward-compatible response field. Empty for an ordinary delivered message.
+        deliveryState:
+          title: delivery_state
+          description: |-
+            delivery_state mirrors SendChatMessageResponse.delivery_state. Additive,
+             backward-compatible response field; older bosso builds leave it
+             UNSPECIFIED, so callers still fall back to notice_text guidance.
+          $ref: '#/components/schemas/bossanova.v1.SendChatMessageResponse.DeliveryState'
       title: ProxySendChatMessageResponse
       additionalProperties: false
       description: ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
@@ -11378,6 +11414,30 @@ components:
           title: status
           $ref: '#/components/schemas/bossanova.v1.CloudAccessStatus'
       title: RefreshCloudEntitlementsResponse
+      additionalProperties: false
+    bossanova.v1.RefreshSessionPRRequest:
+      type: object
+      properties:
+        id:
+          type:
+            - string
+            - "null"
+          title: id
+        prNumber:
+          type:
+            - integer
+            - "null"
+          title: pr_number
+          format: int32
+      title: RefreshSessionPRRequest
+      additionalProperties: false
+    bossanova.v1.RefreshSessionPRResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: RefreshSessionPRResponse
       additionalProperties: false
     bossanova.v1.RegisterDaemonRequest:
       type: object
@@ -12407,6 +12467,13 @@ components:
           type: boolean
           title: submit
           description: when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+        shouldObserveTurnStart:
+          type: boolean
+          title: should_observe_turn_start
+          description: |-
+            should_observe_turn_start asks bossd to wait briefly after a submit and report
+             whether the agent began a substantive turn for this message. It is
+             downstream of delivery and never authorizes a resend.
       title: SendChatMessageRequest
       additionalProperties: false
     bossanova.v1.SendChatMessageResponse:
@@ -12439,6 +12506,12 @@ components:
              NOT_SUBMITTED never appears on a response (that outcome is an error whose
              message names it).
           $ref: '#/components/schemas/bossanova.v1.SendChatMessageResponse.DeliveryState'
+        turnStartState:
+          title: turn_start_state
+          description: |-
+            turn_start_state is UNSPECIFIED unless should_observe_turn_start was true. When
+             requested, every response path sets a non-UNSPECIFIED value.
+          $ref: '#/components/schemas/bossanova.v1.SendChatMessageResponse.TurnStartState'
       title: SendChatMessageResponse
       additionalProperties: false
     bossanova.v1.SendChatMessageResponse.DeliveryState:
@@ -12454,6 +12527,18 @@ components:
         DeliveryState reports what the submit verifier actually observed, so a caller
          can tell "confirmed not submitted" (retrying is safe and necessary) from
          "could not confirm" (retrying may double-type) without scraping tmux.
+    bossanova.v1.SendChatMessageResponse.TurnStartState:
+      type: string
+      title: TurnStartState
+      enum:
+        - TURN_START_STATE_UNSPECIFIED
+        - TURN_START_STATE_OBSERVED
+        - TURN_START_STATE_NOT_OBSERVED
+        - TURN_START_STATE_UNOBSERVABLE
+      description: |-
+        TurnStartState reports the optional, bounded post-submit observation of
+         whether the agent began work after this message was submitted. It is not a
+         delivery receipt: delivered and delivery_state remain authoritative.
     bossanova.v1.Session:
       type: object
       properties:

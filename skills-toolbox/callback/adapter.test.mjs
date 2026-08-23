@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   resolveCallbackAdapter,
@@ -178,6 +179,41 @@ test('the message body is a secret: it is never echoed in ANY capability respons
 test('policy names the grouped green/red/merged triggers', () => {
   const { policy } = resolveCallbackAdapter({})
   assert.deepEqual(policy.watchTriggers, ['checks_passed', 'checks_failed', 'merged'])
+})
+
+test('boss callback policy comments require mutually exclusive groups', () => {
+  const source = readFileSync(new URL('./boss.mjs', import.meta.url), 'utf8')
+  const prose = source.replace(/\/\/\s?/g, ' ').replace(/\s+/g, ' ')
+  assert.match(
+    prose,
+    /group\s+only\s+mutually\s+exclusive\s+triggers/i,
+    'boss callback policy must say groups are only for mutually exclusive triggers',
+  )
+  assert.match(
+    prose,
+    /checks_passed[\s\S]{0,120}checks_failed[\s\S]{0,120}merged[\s\S]{0,220}separate\s+group/i,
+    'boss callback policy must say the default PR wait triggers need separate groups',
+  )
+  assert.doesNotMatch(
+    source,
+    /first\s+to\s+fire\s+cancels\s+(?:the\s+)?siblings/i,
+    'boss callback policy must not teach non-exclusive sibling cancellation as the default',
+  )
+})
+
+test('boss callback policy comments guard re-arm on false trigger state', () => {
+  const source = readFileSync(new URL('./boss.mjs', import.meta.url), 'utf8')
+  const prose = source.replace(/\/\/\s?/g, ' ').replace(/\s+/g, ' ')
+  assert.match(
+    prose,
+    /re-arm\s+it\s+only\s+after\s+reconciliation\s+reads\s+that\s+trigger's\s+condition\s+as\s+false/i,
+    'boss callback policy must not teach unconditional re-arm while waiting',
+  )
+  assert.doesNotMatch(
+    prose,
+    /re-arm\s+it\s+whenever\s+the\s+workflow\s+must\s+keep\s+waiting/i,
+    'boss callback policy must not preserve the old level-trigger re-arm rule',
+  )
 })
 
 test('policy enables reconcile-before-act, re-arm-while-waiting, dedup, and a fallback poll', () => {

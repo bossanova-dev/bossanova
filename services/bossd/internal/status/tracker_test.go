@@ -222,8 +222,13 @@ func TestSetAuthFailed_and_AuthFailed(t *testing.T) {
 	}
 
 	tr.SetAuthFailed("chat-1", true)
+	if tr.AuthFailed("chat-1") {
+		t.Fatal("AuthFailed after one SetAuthFailed(true) = true, want false")
+	}
+
+	tr.SetAuthFailed("chat-1", true)
 	if !tr.AuthFailed("chat-1") {
-		t.Fatal("AuthFailed after SetAuthFailed(true) = false, want true")
+		t.Fatal("AuthFailed after two consecutive SetAuthFailed(true) = false, want true")
 	}
 
 	// Clearing removes the marker immediately.
@@ -243,11 +248,12 @@ func TestSetAuthFailed_FiresOnAuthChangeOnlyOnTransition(t *testing.T) {
 		mu.Unlock()
 	})
 
-	// absent → failed: a transition, fires once.
+	// absent → first observation: not yet effective, no transition.
+	tr.SetAuthFailed("chat-1", true)
+	// first → effective failed: a transition, fires once.
 	tr.SetAuthFailed("chat-1", true)
 	// failed → failed (the poller re-observes login-required every tick): no
 	// transition, must NOT re-fire and storm the stream.
-	tr.SetAuthFailed("chat-1", true)
 	tr.SetAuthFailed("chat-1", true)
 	// failed → cleared: a transition, fires once.
 	tr.SetAuthFailed("chat-1", false)
@@ -267,6 +273,28 @@ func TestSetAuthFailed_FiresOnAuthChangeOnlyOnTransition(t *testing.T) {
 	}
 }
 
+func TestAuthFailedSinceStaysAtEffectiveTransition(t *testing.T) {
+	tr := NewTracker()
+	tr.SetAuthFailed("chat-1", true)
+	if _, ok := tr.AuthFailedSince("chat-1"); ok {
+		t.Fatal("AuthFailedSince after one observation = true, want false")
+	}
+	tr.SetAuthFailed("chat-1", true)
+	since, ok := tr.AuthFailedSince("chat-1")
+	if !ok {
+		t.Fatal("AuthFailedSince after effective transition = false, want true")
+	}
+	time.Sleep(time.Millisecond)
+	tr.SetAuthFailed("chat-1", true)
+	again, ok := tr.AuthFailedSince("chat-1")
+	if !ok {
+		t.Fatal("AuthFailedSince after repeated observation = false, want true")
+	}
+	if !again.Equal(since) {
+		t.Fatalf("AuthFailedSince moved from %v to %v; want stable episode start", since, again)
+	}
+}
+
 func TestSetAuthFailed_StaleMarkerCountsAsTransition(t *testing.T) {
 	tr := NewTracker()
 	var fires int
@@ -277,14 +305,18 @@ func TestSetAuthFailed_StaleMarkerCountsAsTransition(t *testing.T) {
 		mu.Unlock()
 	})
 
-	tr.SetAuthFailed("chat-1", true) // fire 1 (absent → fresh)
+	tr.SetAuthFailed("chat-1", true) // no fire yet (first observation)
+	tr.SetAuthFailed("chat-1", true) // fire 1 (second consecutive observation)
 
 	// Age the marker past StaleThreshold: effectively absent per AuthFailed.
 	tr.mu.Lock()
-	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	marker := tr.authFailed["chat-1"]
+	marker.observedAt = time.Now().Add(-StaleThreshold - time.Second)
+	tr.authFailed["chat-1"] = marker
 	tr.mu.Unlock()
 
-	tr.SetAuthFailed("chat-1", true) // fire 2 (stale/effectively-absent → fresh)
+	tr.SetAuthFailed("chat-1", true) // first observation after stale marker, no fire
+	tr.SetAuthFailed("chat-1", true) // fire 2 (stale/effectively-absent → effective)
 
 	mu.Lock()
 	got := fires
@@ -304,9 +336,12 @@ func TestSetAuthFailed_FalseClearsStaleMarkerWithAuthChange(t *testing.T) {
 		mu.Unlock()
 	})
 
-	tr.SetAuthFailed("chat-1", true) // fire 1 (absent -> fresh)
+	tr.SetAuthFailed("chat-1", true)
+	tr.SetAuthFailed("chat-1", true) // fire 1 (absent -> effective)
 	tr.mu.Lock()
-	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	marker := tr.authFailed["chat-1"]
+	marker.observedAt = time.Now().Add(-StaleThreshold - time.Second)
+	tr.authFailed["chat-1"] = marker
 	tr.mu.Unlock()
 
 	// Even though the stale marker already reads as AuthFailed=false locally,
@@ -325,11 +360,14 @@ func TestSetAuthFailed_FalseClearsStaleMarkerWithAuthChange(t *testing.T) {
 func TestAuthFailed_Stale(t *testing.T) {
 	tr := NewTracker()
 	tr.SetAuthFailed("chat-1", true)
+	tr.SetAuthFailed("chat-1", true)
 
 	// Backdate the marker beyond StaleThreshold: a stale marker must read as
 	// absent (fail toward not flagging).
 	tr.mu.Lock()
-	tr.authFailed["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	marker := tr.authFailed["chat-1"]
+	marker.observedAt = time.Now().Add(-StaleThreshold - time.Second)
+	tr.authFailed["chat-1"] = marker
 	tr.mu.Unlock()
 
 	if tr.AuthFailed("chat-1") {
@@ -339,6 +377,7 @@ func TestAuthFailed_Stale(t *testing.T) {
 
 func TestRemove_ClearsAuthFailed(t *testing.T) {
 	tr := NewTracker()
+	tr.SetAuthFailed("chat-1", true)
 	tr.SetAuthFailed("chat-1", true)
 	tr.Remove("chat-1")
 	if tr.AuthFailed("chat-1") {
@@ -356,6 +395,7 @@ func TestRemove_FiresOnAuthChangeWhenMarkerCleared(t *testing.T) {
 		mu.Unlock()
 	})
 
+	tr.SetAuthFailed("chat-1", true)
 	tr.SetAuthFailed("chat-1", true) // set transition
 	tr.Remove("chat-1")              // clear transition
 	tr.Remove("chat-1")              // no marker left, no extra transition
@@ -445,9 +485,13 @@ func TestUpdate_LimitEventFiresOncePerTransition(t *testing.T) {
 func TestCleanup_RemovesStaleAuthFailed(t *testing.T) {
 	tr := NewTracker()
 	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("stale", true)
 	tr.SetAuthFailed("stale", true)
 	tr.mu.Lock()
-	tr.authFailed["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	marker := tr.authFailed["stale"]
+	marker.observedAt = time.Now().Add(-StaleThreshold - time.Second)
+	tr.authFailed["stale"] = marker
 	tr.mu.Unlock()
 
 	tr.Cleanup()
@@ -475,9 +519,13 @@ func TestCleanup_FiresOnAuthChangeForRemovedStaleAuthMarkers(t *testing.T) {
 	})
 
 	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("fresh", true)
+	tr.SetAuthFailed("stale", true)
 	tr.SetAuthFailed("stale", true)
 	tr.mu.Lock()
-	tr.authFailed["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	marker := tr.authFailed["stale"]
+	marker.observedAt = time.Now().Add(-StaleThreshold - time.Second)
+	tr.authFailed["stale"] = marker
 	tr.mu.Unlock()
 
 	tr.Cleanup()
@@ -486,7 +534,7 @@ func TestCleanup_FiresOnAuthChangeForRemovedStaleAuthMarkers(t *testing.T) {
 	got := append([]string(nil), fired...)
 	mu.Unlock()
 	if len(got) != 3 {
-		t.Fatalf("onAuthChange fired %d times (%v), want 3 (two sets + stale clear)", len(got), got)
+		t.Fatalf("onAuthChange fired %d times (%v), want 3 (two effective sets + stale clear)", len(got), got)
 	}
 	if got[2] != "stale" {
 		t.Fatalf("cleanup clear fired for %q, want stale", got[2])
@@ -995,6 +1043,36 @@ func TestTracker_LivenessUnknownChat(t *testing.T) {
 	if spinnerPresent || seeded || !substantiveAt.IsZero() {
 		t.Errorf("Liveness(unknown) = (%v, %v, %v), want (false, zero, false)",
 			spinnerPresent, substantiveAt, seeded)
+	}
+}
+
+func TestTracker_LivenessObservation(t *testing.T) {
+	tracker := NewTracker()
+	substantiveAt := time.Now().Add(-time.Minute)
+
+	if got := tracker.LivenessObservation("chat-1"); got.Present {
+		t.Fatal("unknown chat observation Present = true, want false")
+	}
+
+	tracker.SetLiveness("chat-1", false, substantiveAt, true)
+	first := tracker.LivenessObservation("chat-1")
+	if !first.Present {
+		t.Fatal("known chat observation Present = false, want true")
+	}
+	if first.ObservedAt.IsZero() {
+		t.Fatal("ObservedAt is zero")
+	}
+	if !first.LastSubstantiveOutputAt.Equal(substantiveAt) {
+		t.Errorf("LastSubstantiveOutputAt = %v, want %v", first.LastSubstantiveOutputAt, substantiveAt)
+	}
+	if !first.LastSubstantiveOutputSeed {
+		t.Error("LastSubstantiveOutputSeed = false, want true")
+	}
+
+	tracker.SetLiveness("chat-1", false, substantiveAt, true)
+	second := tracker.LivenessObservation("chat-1")
+	if !second.ObservedAt.After(first.ObservedAt) {
+		t.Errorf("ObservedAt did not advance on identical liveness write: first=%v second=%v", first.ObservedAt, second.ObservedAt)
 	}
 }
 

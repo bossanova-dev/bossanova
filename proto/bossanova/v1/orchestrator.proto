@@ -499,6 +499,10 @@ message ProxySendChatMessageResponse {
   // that path delivered is false; callers must read notice_text. Additive,
   // backward-compatible response field. Empty for an ordinary delivered message.
   string notice_text = 3;
+  // delivery_state mirrors SendChatMessageResponse.delivery_state. Additive,
+  // backward-compatible response field; older bosso builds leave it
+  // UNSPECIFIED, so callers still fall back to notice_text guidance.
+  SendChatMessageResponse.DeliveryState delivery_state = 4;
 }
 
 // AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for

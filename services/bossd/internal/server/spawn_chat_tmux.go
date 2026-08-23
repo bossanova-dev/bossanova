@@ -13,6 +13,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -92,7 +93,7 @@ type tmuxSpawner interface {
 	// rather than delivered into (BOS-600). It is passed per call because it
 	// varies per agent while the underlying client is shared by every chat. A nil
 	// detector disables the check.
-	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error
+	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error
 	// PanePID returns the login-shell PID of the named session's first pane, so
 	// the codex provider-session resolver can bind a chat to the rollout its own
 	// process holds open (BOS-290). Errors are non-fatal to the caller, which
@@ -239,10 +240,6 @@ func freshFallbackReason(chat *models.AgentChat, forceFresh bool, hasProviderSes
 	return WakeFallbackReasonTranscriptMissing
 }
 
-// chatPaneRollbackTimeout bounds a rollback kill. The kill runs on a context
-// detached from the caller's, so it needs a deadline of its own.
-const chatPaneRollbackTimeout = 5 * time.Second
-
 // killSpawnedChatPaneBestEffort destroys a chat pane this attempt created but
 // could not finish claiming, and never fails the caller: the error being rolled
 // back is the one worth reporting, and a kill that could not run leaves the
@@ -256,14 +253,12 @@ const chatPaneRollbackTimeout = 5 * time.Second
 // makes "pane exists" and "row names the pane" a single atomic outcome (BOS-845).
 // The invariant the rollback upholds: no live chat pane without a recorded name.
 //
-// The rollback context is deliberately detached from the caller's with
-// context.WithoutCancel: the failure being rolled back is frequently a context
+// Why it is detached: the failure being rolled back is frequently a context
 // failure itself (the original production case was a DeadlineExceeded out of
-// ResolveInteractiveSessionID; the row writes below can fail the same way), and
-// issuing the kill on an already-dead context would fail immediately — leaking
-// exactly the pane this exists to reclaim. This is the one deliberate deviation
-// from the shape of the sibling helper Lifecycle.killTmuxChatBestEffort, which
-// is only reached on live contexts.
+// ResolveInteractiveSessionID; the row writes below can fail the same way), so
+// on the caller's own context the kill would fail immediately — leaking exactly
+// the pane this exists to reclaim. detach.Cleanup owns that derivation and the
+// budget it runs under; see its package doc.
 //
 // # Audited return paths between pane creation and the name write (BOS-845)
 //
@@ -311,14 +306,14 @@ func killSpawnedChatPaneBestEffort(ctx context.Context, spawner tmuxSpawner, log
 	if spawner == nil || tmuxName == "" {
 		return
 	}
-	killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatPaneRollbackTimeout)
-	defer cancel()
-	if err := spawner.KillSession(killCtx, tmuxName); err != nil {
-		logger.Warn().Err(err).
-			Str("agentSessionID", agentSessionID).
-			Str("tmuxSession", tmuxName).
-			Msg("failed to kill orphaned chat tmux pane during spawn rollback")
-	}
+	detach.Cleanup(ctx, detach.CleanupBudget, func(killCtx context.Context) {
+		if err := spawner.KillSession(killCtx, tmuxName); err != nil {
+			logger.Warn().Err(err).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Msg("failed to kill orphaned chat tmux pane during spawn rollback")
+		}
+	})
 }
 
 // spawnChatTmux is the single source of truth for "ensure a tmux pane
@@ -531,8 +526,8 @@ func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir st
 // SendMessage delivers text into a live chat composer, routing on submit intent
 // (verified single-line submit vs. paste-only prefill) and payload shape, and
 // refusing to deliver at all when modal reports the pane is showing a menu.
-func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error {
-	return l.c.SendMessageWithModal(ctx, sessionName, text, submit, readyMarker, modal)
+func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error {
+	return l.c.SendMessageWithModalBeforeSubmit(ctx, sessionName, text, submit, readyMarker, modal, beforeSubmit)
 }
 
 // PanePID returns the first pane's login-shell pid for the named session.

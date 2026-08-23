@@ -150,6 +150,7 @@ export const DEFAULT_CONFIG = Object.freeze({
       { heading: '## Key changes', required: 'always' },
       { heading: '## Testing', required: 'always' },
       { heading: '## Risks / unknowns', required: 'always' },
+      { heading: '## Premises', required: 'optional' },
       { heading: '## Acceptance criteria', required: 'always' },
       { heading: '## Required proof', required: 'always' },
       { heading: '## Proof harness analysis', required: 'optional' },
@@ -823,9 +824,13 @@ export function trackerConfigFor(config, adapter = adapterFor(config, 'tracker')
   return tc && typeof tc === 'object' ? tc : null
 }
 
-function trackerRoleName(config, field, role) {
+function trackerRoleName(config, field, role, required = true) {
   const adapter = adapterFor(config, 'tracker')
-  const value = trackerConfigFor(config, adapter)?.[field]?.[role]
+  const roleMap = trackerConfigFor(config, adapter)?.[field]
+  const hasRole =
+    roleMap && typeof roleMap === 'object' && Object.prototype.hasOwnProperty.call(roleMap, role)
+  if (!hasRole && !required) return null
+  const value = hasRole ? roleMap[role] : undefined
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(
       `skill-config: trackerConfig.${adapter}.${field}.${role} must be configured as a non-empty string`,
@@ -844,9 +849,132 @@ export function labelName(config, role) {
   return trackerRoleName(config, 'labels', role)
 }
 
+/**
+ * Resolve an optional Linear issue-label display name by its stable role.
+ * Content-taxonomy labels are legitimately unmapped in some repos, so absence returns null.
+ * @returns {string|null}
+ */
+export function optionalLabelName(config, role) {
+  return trackerRoleName(config, 'labels', role, false)
+}
+
 /** Resolve a configured GitHub PR-label display name by its stable role. */
 export function githubLabelName(config, role) {
   return trackerRoleName(config, 'githubLabels', role)
+}
+
+// --- Skill prose tracker-config claim scanner ------------------------------
+
+const CLAIM_IGNORE_MARKER = '<!-- skill-config-claim: ignore -->'
+const ROLE_TOKEN = '[A-Za-z][A-Za-z0-9_-]*'
+const ROLE_NAME = '(?:`|\\*\\*)?(?<role>' + ROLE_TOKEN + ')(?:`|\\*\\*)?'
+const ROLE_PROSE_PATTERNS = [
+  {
+    pattern: new RegExp(
+      `\\b(?:the\\s+)?${ROLE_NAME}\\s+role\\s+(?:(?:is|was)\\s+)?(?:deliberately\\s+unmapped|unmapped|unavailable|not\\s+mapped)\\b`,
+      'gi',
+    ),
+    field: null,
+  },
+  {
+    pattern: new RegExp(
+      `\\b(?:the\\s+)?${ROLE_NAME}\\s+label\\s+role\\s+(?:(?:is|was)\\s+)?(?:deliberately\\s+unmapped|unmapped|unavailable|not\\s+mapped)\\b`,
+      'gi',
+    ),
+    field: 'labels',
+  },
+  {
+    pattern: new RegExp(
+      `\\b(?:the\\s+)?${ROLE_NAME}\\s+state\\s+role\\s+(?:(?:is|was)\\s+)?(?:deliberately\\s+unmapped|unmapped|unavailable|not\\s+mapped)\\b`,
+      'gi',
+    ),
+    field: 'states',
+  },
+  {
+    pattern: new RegExp(
+      `\\blabelName\\(\\s*config\\s*,\\s*['"]${ROLE_NAME}['"]\\s*\\)` + '`?\\s+throws\\b',
+      'gi',
+    ),
+    field: 'labels',
+  },
+  {
+    pattern: new RegExp(
+      `\\bstateName\\(\\s*config\\s*,\\s*['"]${ROLE_NAME}['"]\\s*\\)` + '`?\\s+throws\\b',
+      'gi',
+    ),
+    field: 'states',
+  },
+]
+
+function lineNumberAt(text, index) {
+  let line = 1
+  for (let i = 0; i < index; i += 1) {
+    if (text.charCodeAt(i) === 10) line += 1
+  }
+  return line
+}
+
+function claimQuote(text, start, end) {
+  const scope = claimScope(text, start, end)
+  return scope.replace(/\s+/g, ' ').trim()
+}
+
+function claimScope(text, start, end) {
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1
+  const lineEndIndex = text.indexOf('\n', start)
+  const lineEnd = lineEndIndex === -1 ? text.length : lineEndIndex
+  const line = text.slice(lineStart, lineEnd)
+  if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) {
+    let to = lineEnd
+    while (to < text.length) {
+      const nextLineStart = to + 1
+      const nextLineEndIndex = text.indexOf('\n', nextLineStart)
+      const nextLineEnd = nextLineEndIndex === -1 ? text.length : nextLineEndIndex
+      const nextLine = text.slice(nextLineStart, nextLineEnd)
+      if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(nextLine)) break
+      to = nextLineEnd
+    }
+    return text.slice(lineStart, to)
+  }
+  const before = text.lastIndexOf('\n\n', start)
+  const after = text.indexOf('\n\n', end)
+  const from = before === -1 ? 0 : before + 2
+  const to = after === -1 ? text.length : after
+  return text.slice(from, to)
+}
+
+/**
+ * Find bounded prose claims that a tracker-config role is unmapped/unavailable/throwing.
+ *
+ * This is intentionally not full NLU. It catches the phrasing families that have caused real
+ * drift, including line-wrapped claims, and returns enough location data for a tree-wide test to
+ * compare each named role against the committed tracker config. A rare legitimate claim can opt out
+ * by placing `<!-- skill-config-claim: ignore -->` in the same paragraph or list item.
+ * @returns {{ role: string, line: number, quote: string, field?: string }[]}
+ */
+export function scanUnmappedRoleClaims(body) {
+  const text = String(body ?? '')
+  const claims = []
+  for (const { pattern, field } of ROLE_PROSE_PATTERNS) {
+    pattern.lastIndex = 0
+    for (const match of text.matchAll(pattern)) {
+      if (field === null && /^(?:label|state)$/i.test(match.groups.role)) continue
+      const matchEnd = match.index + match[0].length
+      if (claimScope(text, match.index, matchEnd).includes(CLAIM_IGNORE_MARKER)) continue
+      claims.push({
+        role: match.groups.role,
+        line: lineNumberAt(text, match.index),
+        quote: claimQuote(text, match.index, matchEnd),
+        field,
+        index: match.index,
+      })
+    }
+  }
+  return claims
+    .sort((a, b) => a.index - b.index)
+    .map(({ role, line, quote, field }) =>
+      field === null ? { role, line, quote } : { role, line, quote, field },
+    )
 }
 
 /**
@@ -917,6 +1045,33 @@ export function requiredPlanSections(config) {
   return config.planContract.sections.filter((s) => s.required === 'always').map((s) => s.heading)
 }
 
+const EPIC_PARENT_PLAN_SECTIONS = Object.freeze([
+  Object.freeze({ heading: '## Summary', required: 'always' }),
+  Object.freeze({ heading: '## Child tickets', required: 'always' }),
+  Object.freeze({ heading: '## Planning', required: 'always' }),
+  Object.freeze({ heading: '## Original notes', required: 'always' }),
+])
+
+function normalisePlanDescriptionMode(mode) {
+  const selected = mode || 'child-plan'
+  if (selected === 'child-plan') return selected
+  if (selected === 'epic-parent') return selected
+  console.warn(
+    `skill-config: validatePlanDescription unknown mode "${selected}" — falling back to child-plan`,
+  )
+  return 'child-plan'
+}
+
+function planSectionsForDescriptionMode(config, mode) {
+  return mode === 'epic-parent' ? EPIC_PARENT_PLAN_SECTIONS : planSections(config)
+}
+
+function requiredSectionsForDescriptionMode(config, mode) {
+  return planSectionsForDescriptionMode(config, mode)
+    .filter((s) => s.required === 'always')
+    .map((s) => s.heading)
+}
+
 /**
  * One pass over `text`, returning the lines OUTSIDE fenced code blocks (`{ line, index }`, 0-based)
  * and whether a fence was still open at EOF. Both facts come from the same scan so they can never
@@ -985,8 +1140,7 @@ export function scanFences(text) {
  * section rule instead of re-deriving it — a duplicate splitter would drift from the validator.
  * @returns {{ heading: string, bodyLines: string[] }[]}
  */
-export function planDescriptionSections(config, description) {
-  const contractSections = planSections(config)
+function splitPlanDescriptionSections(contractSections, description) {
   const terminalHeading = contractSections[contractSections.length - 1]?.heading
   const outside = new Set(scanFences(description).lines.map(({ index }) => index))
   const sections = []
@@ -1005,6 +1159,10 @@ export function planDescriptionSections(config, description) {
     if (current) current.bodyLines.push(line)
   }
   return sections
+}
+
+export function planDescriptionSections(config, description) {
+  return splitPlanDescriptionSections(planSections(config), description)
 }
 
 /**
@@ -1030,9 +1188,14 @@ export function planDescriptionSections(config, description) {
  * **additive** and does NOT flip `ok`: consumers (boss-build) gate on `ok`, and folding `unknown`
  * into it would newly block already-planned tickets. Producer-side strictness belongs in the
  * producer's own guard, which reads `unknown` directly.
+ * The optional third argument selects the document shape. Default `child-plan` is the existing
+ * implementation-plan contract. `epic-parent` validates the parent overview shape emitted when an
+ * oversized ticket becomes an epic parent. Unknown modes warn and fall back to `child-plan`, because
+ * installed toolbox copies can lag behind plan prose.
+ *
  * @returns {{ ok: boolean, version: number | null, missing: string[], unknown: string[], unsupportedVersion: boolean }}
  */
-export function validatePlanDescription(config, description) {
+export function validatePlanDescription(config, description, { mode = 'child-plan' } = {}) {
   // A config is an object carrying a planContract object; a description is a string. That makes the
   // swapped call unambiguously detectable, so diagnose it here instead of failing obscurely below.
   if (typeof config === 'string' || !config || typeof config !== 'object' || !config.planContract) {
@@ -1040,10 +1203,14 @@ export function validatePlanDescription(config, description) {
       'skill-config: validatePlanDescription(config, description) — arguments look swapped; pass the config first',
     )
   }
-  const sections = planDescriptionSections(config, description)
+  const resolvedMode = normalisePlanDescriptionMode(mode)
+  const contractSections = planSectionsForDescriptionMode(config, resolvedMode)
+  const sections = splitPlanDescriptionSections(contractSections, description)
   const present = new Set(sections.map((s) => s.heading))
-  const missing = requiredPlanSections(config).filter((heading) => !present.has(heading))
-  const recognised = new Set(planSections(config).map((s) => s.heading))
+  const missing = requiredSectionsForDescriptionMode(config, resolvedMode).filter(
+    (heading) => !present.has(heading),
+  )
+  const recognised = new Set(contractSections.map((s) => s.heading))
   const unknown = [...new Set(sections.map((s) => s.heading))].filter((h) => !recognised.has(h))
 
   const planning = sections.find((s) => s.heading === '## Planning')
@@ -1091,6 +1258,10 @@ export const VERIFY_ONLY_RESULT = ' → '
 
 /** The `## Acceptance criteria` contract heading these helpers parse. */
 const ACCEPTANCE_HEADING = '## Acceptance criteria'
+
+/** The optional `## Premises` contract heading. */
+const PREMISES_HEADING = '## Premises'
+const CENTRAL_PREMISE_MARKER_RE = /^(?:\*\*|__|\*|_)?\(central\)(?:\*\*|__|\*|_)?\s*/i
 
 /** A markdown checkbox list item: `- [ ] text` / `- [x] text` (either box case, any list marker). */
 const CRITERION_RE = /^[-*+]\s+\[([ xX])\]\s*(.*)$/
@@ -1181,11 +1352,9 @@ function stripEmphasis(value) {
  *   not yet discharged. An empty clause yields `''`, never `null` — the difference between "absent"
  *   and "empty" is what the evidence gate turns on.
  */
-export function parseAcceptanceCriteria(config, description) {
-  assertConfigFirst(config, 'parseAcceptanceCriteria')
-  const section = planDescriptionSections(config, description).find(
-    (s) => s.heading === ACCEPTANCE_HEADING,
-  )
+function parseCheckboxSection(config, description, heading, fn) {
+  assertConfigFirst(config, fn)
+  const section = planDescriptionSections(config, description).find((s) => s.heading === heading)
   if (!section) return []
 
   const body = section.bodyLines.join('\n')
@@ -1263,6 +1432,43 @@ export function parseAcceptanceCriteria(config, description) {
       result,
     }
   })
+}
+
+export function parseAcceptanceCriteria(config, description) {
+  return parseCheckboxSection(config, description, ACCEPTANCE_HEADING, 'parseAcceptanceCriteria')
+}
+
+/**
+ * Parse the optional `## Premises` section into structured premise bullets.
+ *
+ * Premises deliberately reuse the acceptance-criterion bullet grammar and check-clause notation so
+ * the consumer can discharge them with the same evidence shape. A premise is central only when its
+ * claim starts with the literal `(central)` marker, after optional markdown emphasis; two central
+ * premises are reported in-band so callers cannot silently pick the last one.
+ *
+ * @returns {{ text: string, claim: string, check: string | null, central: boolean, duplicateCentral: boolean }[]}
+ */
+export function parsePremises(config, description) {
+  const premises = parseCheckboxSection(config, description, PREMISES_HEADING, 'parsePremises').map(
+    (premise) => {
+      const central = CENTRAL_PREMISE_MARKER_RE.test(premise.text)
+      const claim = (central ? premise.text.replace(CENTRAL_PREMISE_MARKER_RE, '') : premise.text)
+        .replace(VERIFY_ONLY_CHECK + (premise.check === null ? '' : `\`${premise.check}\``), '')
+        .trim()
+      return {
+        text: premise.text,
+        claim,
+        check: premise.check,
+        central,
+        duplicateCentral: false,
+      }
+    },
+  )
+  const central = premises.filter((premise) => premise.central)
+  if (central.length > 1) {
+    for (const premise of central) premise.duplicateCentral = true
+  }
+  return premises
 }
 
 /**

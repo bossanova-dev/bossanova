@@ -1,5 +1,6 @@
 // Shared, dependency-free helpers for tracker-hosted implementation plans.
-import { readFileSync } from 'node:fs'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import { isMainModule } from './main-module.mjs'
 
@@ -21,23 +22,54 @@ function isMarkdown(attachment) {
   return type === 'text/markdown' || /\.md(?:$|[?#])/i.test(filename)
 }
 
+function planAttachmentTitle(issueID) {
+  return `Implementation plan (${issueID})`
+}
+
+function matchesImplementationPlanAttachment(attachment, issueID, { mode }) {
+  const title = planAttachmentTitle(issueID)
+  if (mode === 'exact') return attachment?.title === title
+  return (
+    isMarkdown(attachment) &&
+    typeof attachment?.title === 'string' &&
+    attachment.title.includes(issueID)
+  )
+}
+
 /**
  * Select a canonical plan attachment. Exact title wins; the Markdown fallback
  * keeps older tracker payloads usable while never treating arbitrary files as plans.
  */
 export function selectImplementationPlanAttachment(attachments, issueID) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : []
-  const title = `Implementation plan (${issueID})`
-  const exact = list.filter((attachment) => attachment.title === title)
+  const exact = list.filter((attachment) =>
+    matchesImplementationPlanAttachment(attachment, issueID, { mode: 'exact' }),
+  )
   if (exact.length > 0) return newest(exact)
   return newest(
-    list.filter(
-      (attachment) =>
-        isMarkdown(attachment) &&
-        typeof attachment.title === 'string' &&
-        attachment.title.includes(issueID),
+    list.filter((attachment) =>
+      matchesImplementationPlanAttachment(attachment, issueID, { mode: 'permissive' }),
     ),
   )
+}
+
+/**
+ * Select duplicate canonical implementation plan attachments that are safe to
+ * delete after a newer attachment for the same issue has been read back.
+ */
+export function selectSupersededPlanAttachments(attachments, { issueID, keepAttachmentId }) {
+  const list = Array.isArray(attachments) ? attachments.filter(Boolean) : []
+  const keep = list.find((attachment) => attachment.id === keepAttachmentId)
+  if (!keep) return []
+  const keepCreatedAt = createdAt(keep)
+  return list
+    .filter(
+      (attachment) =>
+        attachment.id !== keepAttachmentId &&
+        matchesImplementationPlanAttachment(attachment, issueID, { mode: 'exact' }) &&
+        createdAt(attachment) < keepCreatedAt,
+    )
+    .map((attachment) => attachment.id)
 }
 
 /** Put one raw plan file to a tracker-provided signed URL. */
@@ -56,22 +88,99 @@ export async function putPlanAttachment({ file, uploadURL, headers, fetchImpl = 
   return status
 }
 
+function asUtf8String(body) {
+  if (Buffer.isBuffer(body)) return body.toString('utf8')
+  return String(body ?? '')
+}
+
+/**
+ * Decode a tracker-returned epic spec attachment body into plain JSON text.
+ *
+ * Some tracker attachment reads return the JSON file body base64-encoded, while newer paths may
+ * hand back the plain JSON bytes directly. Accept both and validate by feeding the resulting text to
+ * JSON.parse so an invalid/transcribed body fails as a named attachment error instead of being
+ * written as corrupted spec input for parseEpicSpec().
+ */
+export function decodeSpecAttachmentBody(body) {
+  const raw = asUtf8String(body)
+  const trimmed = raw.trim()
+  if (!trimmed) throw new Error('plan-attachment: empty spec attachment body')
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      JSON.parse(raw)
+      return raw
+    } catch (error) {
+      throw new Error(`plan-attachment: invalid plain JSON spec attachment body: ${error.message}`)
+    }
+  }
+  let decoded
+  const compact = trimmed.replace(/\s+/g, '')
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length % 4 === 1) {
+    throw new Error('plan-attachment: invalid base64 spec attachment body')
+  }
+  try {
+    decoded = Buffer.from(compact, 'base64').toString('utf8')
+  } catch (error) {
+    throw new Error(`plan-attachment: invalid base64 spec attachment body: ${error.message}`)
+  }
+  const encoded = Buffer.from(decoded, 'utf8').toString('base64')
+  if (compact.replace(/=+$/, '') !== encoded.replace(/=+$/, '')) {
+    throw new Error('plan-attachment: invalid base64 spec attachment body')
+  }
+  try {
+    JSON.parse(decoded)
+  } catch (error) {
+    throw new Error(
+      `plan-attachment: spec attachment body is neither plain JSON nor base64 JSON: ${error.message}`,
+    )
+  }
+  return decoded
+}
+
+function writeFileAtomic(file, data) {
+  const temporary = join(dirname(file), `.${process.pid}.${Date.now()}.tmp`)
+  writeFileSync(temporary, data)
+  renameSync(temporary, file)
+}
+
 // Detect direct CLI entry with isMainModule(), never the runtime's own entry-point flag: that
 // flag reads `undefined` on runtimes older than the 22.x backport, which made this whole block
 // dead code — the CLI exited 0 having uploaded nothing. isMainModule() compares process.argv[1]
 // against this module's path instead, so entry detection is runtime-independent.
 if (isMainModule(import.meta.url)) {
-  const [, , command, file, uploadURL, headersFile] = process.argv
-  if (command !== 'put' || !file || !uploadURL || !headersFile) {
-    process.stderr.write('usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n')
-    process.exitCode = 2
-  } else {
-    const headers = JSON.parse(readFileSync(headersFile, 'utf8'))
-    putPlanAttachment({ file, uploadURL, headers })
-      .then((status) => process.stdout.write(`${status}\n`))
-      .catch((error) => {
+  const [, , command, ...args] = process.argv
+  const usage =
+    'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
+    '       plan-attachment.mjs decode <in-file> <out-file>\n'
+  if (command === 'put') {
+    const [file, uploadURL, headersFile] = args
+    if (!file || !uploadURL || !headersFile) {
+      process.stderr.write(usage)
+      process.exitCode = 2
+    } else {
+      const headers = JSON.parse(readFileSync(headersFile, 'utf8'))
+      putPlanAttachment({ file, uploadURL, headers })
+        .then((status) => process.stdout.write(`${status}\n`))
+        .catch((error) => {
+          process.stderr.write(`${error.message}\n`)
+          process.exitCode = 1
+        })
+    }
+  } else if (command === 'decode') {
+    const [inFile, outFile] = args
+    if (!inFile || !outFile) {
+      process.stderr.write(usage)
+      process.exitCode = 2
+    } else {
+      try {
+        writeFileAtomic(outFile, decodeSpecAttachmentBody(readFileSync(inFile, 'utf8')))
+      } catch (error) {
         process.stderr.write(`${error.message}\n`)
         process.exitCode = 1
-      })
+      }
+    }
+  } else {
+    process.stderr.write(usage)
+    process.exitCode = 2
   }
 }

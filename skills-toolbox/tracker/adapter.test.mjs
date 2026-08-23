@@ -10,6 +10,8 @@ import {
   REQUIRED_TRACKER_OPERATIONS,
   resolveTrackerAdapter,
   assertConforms,
+  declaredOperationArgKeys,
+  assertWritePlanEntryExecutable,
 } from './adapter.mjs'
 
 // The contract itself is tested in adapter-core.test.mjs. This suite covers what
@@ -112,4 +114,168 @@ test('assertConforms passes for the Linear adapter, with all 16 operations decla
   for (const key of [...REQUIRED_TRACKER_OPERATIONS, ...OPTIONAL_TRACKER_OPERATIONS]) {
     assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)
   }
+})
+
+test('declaredOperationArgKeys reads the leading summary arg block', () => {
+  assert.deepEqual(
+    [
+      ...declaredOperationArgKeys({
+        tool: 't',
+        summary: '{issue, contentType="text/markdown", size} -> upload',
+      }),
+    ],
+    ['issue', 'contentType', 'size'],
+  )
+})
+
+const executableAdapter = {
+  operationMap: {
+    preparePlanAttachment: {
+      tool: 't',
+      summary: '{issue, filename, contentType="text/markdown", size} -> signed upload',
+    },
+    moveState: {
+      tool: 't',
+      summary: '{id, state} -> transition',
+    },
+    noArgs: {
+      tool: 't',
+      summary: 'id -> summary without a leading block',
+    },
+    getIssue: {
+      tool: 't',
+      summary: '{id} -> issue',
+    },
+  },
+}
+
+test('assertWritePlanEntryExecutable accepts declared args plus runtime coverage', () => {
+  assert.doesNotThrow(() =>
+    assertWritePlanEntryExecutable(
+      {
+        op: 'preparePlanAttachment',
+        args: { issue: 'BOS-1', filename: 'plan.md', contentType: 'text/markdown' },
+        runtimeArgs: ['size'],
+      },
+      executableAdapter,
+    ),
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects an undeclared args key with the specific message', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'preparePlanAttachment',
+          args: { issueId: 'BOS-1', filename: 'plan.md', contentType: 'text/markdown' },
+          runtimeArgs: ['size'],
+        },
+        executableAdapter,
+      ),
+    /preparePlanAttachment: emits "issueId", which its adapter summary does not declare \(issue, filename, contentType, size\)/,
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects an undeclared runtimeArgs name', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'preparePlanAttachment',
+          args: { issue: 'BOS-1', filename: 'plan.md', contentType: 'text/markdown' },
+          runtimeArgs: ['assetUrl'],
+        },
+        executableAdapter,
+      ),
+    /preparePlanAttachment: runtimeArg "assetUrl" is not a declared argument/,
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects a declared key covered by neither args nor runtimeArgs', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'preparePlanAttachment',
+          args: { issue: 'BOS-1', filename: 'plan.md' },
+          runtimeArgs: ['size'],
+        },
+        executableAdapter,
+      ),
+    /preparePlanAttachment: declared argument "contentType" is neither emitted nor listed in runtimeArgs/,
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects non-array runtimeArgs', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'preparePlanAttachment',
+          args: { issue: 'BOS-1', filename: 'plan.md', contentType: 'text/markdown' },
+          runtimeArgs: 'size',
+        },
+        executableAdapter,
+      ),
+    /preparePlanAttachment: runtimeArgs must always be present/,
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects an adapter op whose summary declares zero args', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'noArgs',
+          args: {},
+          runtimeArgs: [],
+        },
+        executableAdapter,
+      ),
+    /noArgs: could not read declared args from its summary/,
+  )
+})
+
+test('assertWritePlanEntryExecutable rejects nonAdapterOps that are adapter operations', () => {
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'preparePlanAttachment',
+          args: { issue: 'BOS-1', filename: 'plan.md', contentType: 'text/markdown' },
+          runtimeArgs: ['size'],
+        },
+        executableAdapter,
+        { nonAdapterOps: ['getIssue'] },
+      ),
+    /getIssue is now an adapter operation — re-partition/,
+  )
+})
+
+test('assertWritePlanEntryExecutable lets deliberatelyOmitted cover only missing declared keys', () => {
+  assert.doesNotThrow(() =>
+    assertWritePlanEntryExecutable(
+      {
+        op: 'moveState',
+        args: { id: 'BOS-1' },
+        runtimeArgs: [],
+      },
+      executableAdapter,
+      { deliberatelyOmitted: { moveState: ['state'] } },
+    ),
+  )
+  assert.throws(
+    () =>
+      assertWritePlanEntryExecutable(
+        {
+          op: 'moveState',
+          args: { id: 'BOS-1', state: 'Todo' },
+          runtimeArgs: [],
+        },
+        executableAdapter,
+        { deliberatelyOmitted: { moveState: ['state'] } },
+      ),
+    /moveState: "state" is pinned as deliberately omitted but is emitted/,
+  )
 })

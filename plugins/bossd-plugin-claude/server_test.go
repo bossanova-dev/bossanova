@@ -245,6 +245,9 @@ func TestServer_StopRun_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
+	if startResp.SessionId != "sid-stop" {
+		t.Fatalf("StartRun.SessionId = %q, want caller-provided sid-stop", startResp.SessionId)
+	}
 
 	runningResp, err := srv.IsRunning(context.Background(), &bossanovav1.IsAgentRunningRequest{SessionId: startResp.SessionId})
 	if err != nil || !runningResp.Running {
@@ -270,6 +273,9 @@ func TestServer_ExitStatus(t *testing.T) {
 	startResp, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, SessionId: "sid-exit", LogPath: logPath,
 	})
+	if startResp.SessionId != "sid-exit" {
+		t.Fatalf("StartRun.SessionId = %q, want caller-provided sid-exit", startResp.SessionId)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	var exit *bossanovav1.AgentExitStatusResponse

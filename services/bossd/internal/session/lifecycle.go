@@ -1342,6 +1342,13 @@ type StartSessionOpts struct {
 	ZeroOutput bool
 }
 
+func writeSetupProgress(w io.Writer, text string) {
+	if w == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(w, text)
+}
+
 // BootstrapTimeout is the overall deadline for a session bootstrap — everything
 // StartSession does between the session row existing and the agent running:
 // fetch, branch probe, worktree add, setup script, agent start, hook config.
@@ -1734,6 +1741,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Msg("starting zero-output cron session without worktree")
 	} else {
 		l.logger.Info().Str("session", sessionID).Str("repo", repo.LocalPath).Msg("creating worktree")
+		writeSetupProgress(setupOutput, "creating worktree")
 	}
 
 	// Determine setup script — skip it when the flag is set (e.g. dependabot PRs).
@@ -1821,6 +1829,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Dur("worktree_add_ms", result.WorktreeAddDuration).
 			Dur("setup_script_ms", result.SetupScriptDuration).
 			Msg("worktree startup complete")
+		writeSetupProgress(setupOutput, "worktree startup complete")
 	}
 
 	// A setup-script failure is non-fatal: the worktree is valid, so the

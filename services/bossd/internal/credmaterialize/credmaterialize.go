@@ -68,6 +68,18 @@ const (
 
 var errSymlinkOutsideBase = errors.New("symlink resolves outside base home")
 
+// errForeignAccountEntry marks the refusal to touch an account-home entry this
+// package did not create. Codex runs with CODEX_HOME set to the account home
+// and atomically rewrites config.toml and recreates skills/ there on every run,
+// so foreign state at a projected name is the NORMAL steady state, not a
+// corruption signal. The refusal itself is the safety invariant and is
+// unchanged — such an entry is never deleted or replaced. What this sentinel
+// buys is that projectCodexBaseHome can skip that one entry and keep going
+// instead of failing the whole materialization: a failed materialize degrades
+// the spawn to the ambient CLI login (BOS-973), which is strictly worse than an
+// account home whose config has stopped tracking the base home.
+var errForeignAccountEntry = errors.New("existing entry is not a symlink")
+
 // Materialized is the result of materializing one account's credentials.
 type Materialized struct {
 	// Env is the environment overlay the agent subprocess needs
@@ -229,7 +241,7 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 			return Materialized{}, nil, fmt.Errorf("enforce 0700 on codex dir %q: %w", d, err)
 		}
 	}
-	if err := projectCodexBaseHome(dir); err != nil {
+	if err := m.projectCodexBaseHome(dir); err != nil {
 		return Materialized{}, nil, fmt.Errorf("project codex base home: %w", err)
 	}
 
@@ -302,7 +314,13 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 // through a base entry that now leaves the validated base home. An entry that
 // disappears from the base home entirely is not returned by os.ReadDir and so is
 // out of this loop's reach — a separate, lower-severity gap.
-func projectCodexBaseHome(accountHome string) error {
+//
+// An account-home entry this package did not create (a real file or directory
+// codex itself wrote there) is LEFT ALONE, NEVER DELETED, and NEVER FATAL: the
+// entry is skipped with a WARN and the rest of the projection proceeds. Before
+// BOS-973 it aborted the whole materialization, and the resolver's degrade path
+// then ran the session on the ambient ~/.codex login with no durable trace.
+func (m *Materializer) projectCodexBaseHome(accountHome string) error {
 	baseHome, err := codexBaseHome()
 	if err != nil {
 		return err
@@ -341,7 +359,10 @@ func projectCodexBaseHome(accountHome string) error {
 			// An entry that was projected while safe must also be withdrawn, or the
 			// account home keeps resolving through the now-unsafe base entry.
 			if err := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); err != nil {
-				return err
+				if !errors.Is(err, errForeignAccountEntry) {
+					return err
+				}
+				m.warnForeignAccountEntry(entry.Name(), err)
 			}
 			continue
 		}
@@ -359,17 +380,35 @@ func projectCodexBaseHome(accountHome string) error {
 				if removeErr := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); removeErr != nil {
 					// Keep the errSymlinkOutsideBase diagnosis: it names why the entry
 					// went unsafe, which the removal error alone does not say.
-					return fmt.Errorf("withdraw stale projection for base home entry %q: %w", entry.Name(), errors.Join(err, removeErr))
+					joined := errors.Join(err, removeErr)
+					if !errors.Is(removeErr, errForeignAccountEntry) {
+						return fmt.Errorf("withdraw stale projection for base home entry %q: %w", entry.Name(), joined)
+					}
+					m.warnForeignAccountEntry(entry.Name(), joined)
 				}
 				continue
 			}
 			return fmt.Errorf("validate base home entry %q: %w", entry.Name(), err)
 		}
 		if err := ensureProjectedSymlink(filepath.Join(accountHome, entry.Name()), source, canonicalBase, canonicalAuth); err != nil {
-			return err
+			if !errors.Is(err, errForeignAccountEntry) {
+				return err
+			}
+			m.warnForeignAccountEntry(entry.Name(), err)
 		}
 	}
 	return nil
+}
+
+// warnForeignAccountEntry records that agent-created state at a projected name
+// was left in place and its base-home projection skipped. It is a WARN, not an
+// error, precisely because the alternative — failing the materialization —
+// silently downgrades the spawn to the ambient CLI login (BOS-973). The
+// operator-visible signal for a materialization that DID fail is the account
+// row's health, written by the resolver.
+func (m *Materializer) warnForeignAccountEntry(name string, err error) {
+	m.logger.Warn().Err(err).Str("entry", name).
+		Msg("credmaterialize: account home holds agent-created state at a projected name; leaving it alone and skipping this entry")
 }
 
 // canonicalBaseAuth resolves the base auth file so aliases to it can never be
@@ -540,7 +579,9 @@ func isWithinCanonicalBase(canonicalBase, candidate string) (bool, error) {
 // ensureProjectedSymlink creates a single validated account-home symlink. A
 // previously-created safe in-base projection may be atomically retargeted when
 // its base-home entry changes. Non-symlink, auth, external, or auth-alias
-// destinations are never replaced.
+// destinations are never replaced. A non-symlink destination is reported as
+// errForeignAccountEntry so the caller skips that entry rather than failing the
+// whole materialization (BOS-973).
 func ensureProjectedSymlink(accountPath, source, canonicalBase, canonicalAuth string) error {
 	info, err := os.Lstat(accountPath)
 	if err != nil {
@@ -553,7 +594,7 @@ func ensureProjectedSymlink(accountPath, source, canonicalBase, canonicalAuth st
 		return nil
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("refusing account projection %q: existing entry is not a symlink", accountPath)
+		return fmt.Errorf("refusing account projection %q: %w", accountPath, errForeignAccountEntry)
 	}
 	resolved, err := filepath.EvalSymlinks(accountPath)
 	if err != nil {
@@ -576,10 +617,12 @@ func ensureProjectedSymlink(accountPath, source, canonicalBase, canonicalAuth st
 // removeStaleProjection withdraws an account-home projection whose base-home
 // entry is no longer safe to project. It unlinks the symlink itself and never
 // follows it, so the base-home target is untouched. Anything that is not a
-// symlink this package created is foreign state: it is refused rather than
+// symlink this package created is foreign state: it is left alone rather than
 // deleted, because a real file or directory at a projected name was not put
 // there by the materializer, and neither was a symlink aimed anywhere other
-// than into the base home. Provenance is proved from the link text alone
+// than into the base home. That refusal is reported as errForeignAccountEntry
+// so the caller can skip the entry instead of failing the materialization; the
+// non-deletion itself is absolute either way. Provenance is proved from the link text alone
 // (os.Readlink plus lexical containment, never EvalSymlinks): what makes an
 // entry stale is that resolving it now leaves the base home, so a resolving
 // check would refuse exactly the projections that must be withdrawn — and it
@@ -600,7 +643,7 @@ func removeStaleProjection(accountPath, canonicalBase string) error {
 		return fmt.Errorf("refusing to remove account projection %q: auth.json must remain local", accountPath)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("refusing to remove account projection %q: existing entry is not a symlink", accountPath)
+		return fmt.Errorf("refusing to remove account projection %q: %w", accountPath, errForeignAccountEntry)
 	}
 	target, err := os.Readlink(accountPath)
 	if err != nil {

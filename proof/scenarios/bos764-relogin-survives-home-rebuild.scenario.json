@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "title": "BOS-764 — retained re-login warning survives a Home rebuild after visiting Settings",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "returning from Settings rebuilds Home without losing the retained re-login state",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Sign in required",
+            "match": "normalized",
+            "label": "the seeded retained re-login warning is visible before navigation"
+          },
+          "timeoutMs": 15000,
+          "caption": "Home starts in the flagged auth state."
+        },
+        { "key": "s", "caption": "Open Settings to leave Home." },
+        {
+          "waitFor": {
+            "text": "Settings",
+            "match": "normalized",
+            "label": "Settings screen is visible"
+          },
+          "timeoutMs": 10000,
+          "caption": "The view switch replaces the active Home model."
+        },
+        { "key": "esc", "caption": "Return to Home and force a Home rebuild." },
+        {
+          "expect": [
+            {
+              "text": "Sign in required",
+              "match": "normalized",
+              "label": "the retained re-login warning survived the rebuilt Home frame"
+            },
+            {
+              "text": "[l]ogin",
+              "match": "normalized",
+              "label": "the login remedy remains available after the rebuild"
+            }
+          ],
+          "caption": "The immediate returned Home frame still treats the user as a signed-out account holder, not a guest."
+        }
+      ]
+    }
+  ]
+}

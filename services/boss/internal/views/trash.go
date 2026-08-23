@@ -121,7 +121,7 @@ func (m *TrashModel) buildTable() {
 	if len(m.sessions) == 0 {
 		// Nothing left to filter; drop any applied query so the view does not
 		// strand an invisible filter that swallows the first esc.
-		m.filter.Deactivate()
+		m.filter.Reset()
 		m.filteredSessions = nil
 		m.filter.SetCounts(0, 0)
 		m.table.SetRows(nil)
@@ -407,12 +407,12 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				if !m.filter.Commit() {
-					m.filter.Deactivate()
+					m.filter.Dismiss()
 					m.buildTable()
 				}
 				return m, nil
 			case "esc":
-				m.filter.Deactivate()
+				m.filter.Reset()
 				m.buildTable()
 				m.table.SetCursor(0)
 				updateCursorColumn(&m.table)
@@ -437,7 +437,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case "esc":
 			if m.filter.Applied() {
-				m.filter.Deactivate()
+				m.filter.Reset()
 				m.buildTable()
 				m.table.SetCursor(0)
 				updateCursorColumn(&m.table)

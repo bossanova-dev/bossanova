@@ -1650,6 +1650,21 @@ func (m *MockDaemon) LinkSessionPR(_ context.Context, req *connect.Request[pb.Li
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
 }
 
+func (m *MockDaemon) RefreshSessionPR(_ context.Context, req *connect.Request[pb.RefreshSessionPRRequest]) (*connect.Response[pb.RefreshSessionPRResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		if req.Msg.GetId() != "" && s.Id != req.Msg.GetId() {
+			continue
+		}
+		if req.Msg.PrNumber != nil && s.GetPrNumber() != req.Msg.GetPrNumber() {
+			continue
+		}
+		return connect.NewResponse(&pb.RefreshSessionPRResponse{Session: s}), nil
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session PR target not found"))
+}
+
 func (m *MockDaemon) SwitchSessionAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

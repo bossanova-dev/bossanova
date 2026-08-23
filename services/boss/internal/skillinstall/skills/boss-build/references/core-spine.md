@@ -27,7 +27,8 @@ never "merged" or "done" — terminal success is a review-ready pull request han
   state: the ticket stays in its in-progress state, visibly incomplete.
 - **no-change** — there was no eligible candidate, the claim was lost with no runner-up, a foreign
   branch already carried real work that is not this ticket's, a peer already held the workspace
-  lock, or nothing committable remained after claiming (restore the ticket to its planned state).
+  lock, or nothing committable remained after claiming (restore the ticket to the entry state captured
+  before session-start sync or the run's own first tracker move).
 
 The invariant that keeps the states honest: **a deferred _required_ item forces blocked, never
 review-ready.** Required means a change the project's own gates treat as mandatory (an observable
@@ -50,12 +51,23 @@ This keeps each task's reasoning isolated and prevents one task's context from c
 next.
 
 Each task subagent returns a **fixed, short contract** — the task id, the files it touched, the
-tests it added and their pass state, the interface signatures it produced, any residual risk, the
-decisions it recorded (decision + rationale), and the commits it made (short SHA + subject, or an
-explicit _no commit — verification only_ note).
+tests it added and their pass state, the interface signatures it produced, any residual risk
+cross-checked against the prior art the subagent itself cited, the decisions it recorded (decision +
+rationale), and the commits it made (short SHA + subject, or an explicit _no commit — verification
+only_ note). A risk the cited prior art already settles is cleared and not reported; a risk that
+survives is reported with the check that failed to clear it.
 The orchestrator threads only that short contract into the next task's brief; it never pastes a
 prior task's full transcript forward. Larger hand-offs (the task brief, a report file, a review
 package) travel as files, not as inline text.
+
+`git commit --only -- <paths>` narrows the commit, but it does not make unknown paths known to git.
+A brand-new file needs `git add <path>` first or git dies with
+`pathspec ... did not match any file(s) known to git`. For tracked files, `--only` commits the
+working-tree bytes for those paths while the repo's husky staged-file formatter can re-stage its
+formatted output, leaving an `MM` index/working-tree split; if formatting is the only delta, the
+commit can become empty. The stable contract is therefore: `git add` exactly the owned files first,
+then `git commit --only -m "..." -- <same files>`, and inspect `git status --porcelain` after the
+hook.
 
 **A prose task's blast radius is wider than the lines the plan quotes.** When a task edits a skill
 body, a contract doc, or any other prose the repo gates on, the brief carries these three rules:

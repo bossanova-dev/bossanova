@@ -11,6 +11,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -19,6 +20,17 @@ import (
 func listOneSession(t *testing.T, sess *models.Session, chats map[string][]*models.AgentChat, chatStatus *status.Tracker) *pb.Session {
 	t.Helper()
 	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, chats, nil, chatStatus)
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	return onlySession(t, resp.Msg.Sessions)
+}
+
+func listOneSessionWithRotationEvents(t *testing.T, sess *models.Session, chats map[string][]*models.AgentChat, chatStatus *status.Tracker, events []db.RotationEvent) *pb.Session {
+	t.Helper()
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, chats, nil, chatStatus)
+	s.rotationEvents = fakeRotationEventStore{events: events}
 	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
@@ -39,6 +51,102 @@ func implementingSessionWithChat(agentSessionID string) (*models.Session, map[st
 		sess.ID: {{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}},
 	}
 	return sess, chats
+}
+
+type fakeRotationEventStore struct {
+	db.RotationEventStore
+	events []db.RotationEvent
+}
+
+func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
+	var out []db.RotationEvent
+	for _, ev := range f.events {
+		if ev.SessionID == sessionID {
+			out = append(out, ev)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f fakeRotationEventStore) ConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
+	for _, ev := range f.events {
+		if ev.SessionID == sessionID &&
+			ev.ChatID == chatID &&
+			ev.Trigger == "ROTATION_TRIGGER_AUTH_INVALIDATED" &&
+			ev.Outcome != "" &&
+			ev.Outcome != "ROTATION_OUTCOME_UNSPECIFIED" &&
+			ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_DISABLED" &&
+			!ev.CreatedAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func confirmedAuthRotationEvent(sessionID, chatID string) db.RotationEvent {
+	return db.RotationEvent{
+		ID:        "rot-confirmed",
+		SessionID: sessionID,
+		ChatID:    chatID,
+		Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+		Outcome:   "ROTATION_OUTCOME_ROTATED",
+		CreatedAt: time.Now(),
+	}
+}
+
+func unconfirmedAuthRotationEvent(sessionID, chatID string) db.RotationEvent {
+	return db.RotationEvent{
+		ID:        "rot-unconfirmed",
+		SessionID: sessionID,
+		ChatID:    chatID,
+		Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+		Outcome:   "ROTATION_OUTCOME_STATUS_ONLY_PROBE_UNCONFIRMED",
+		Detail:    "auth probe did not confirm invalidation",
+		CreatedAt: time.Now(),
+	}
+}
+
+func confirmedAuthRotationProto(chatID ...string) *pb.RotationEvent {
+	id := "agent-1"
+	if len(chatID) > 0 {
+		id = chatID[0]
+	}
+	return confirmedAuthRotationProtoAt(id, time.Now())
+}
+
+func confirmedAuthRotationProtoAt(chatID string, createdAt time.Time) *pb.RotationEvent {
+	return &pb.RotationEvent{
+		ChatId:    chatID,
+		Trigger:   pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED,
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
+		CreatedAt: timestamppb.New(createdAt),
+	}
+}
+
+func unconfirmedAuthRotationProto(chatID ...string) *pb.RotationEvent {
+	id := "agent-1"
+	if len(chatID) > 0 {
+		id = chatID[0]
+	}
+	return unconfirmedAuthRotationProtoAt(id, time.Now())
+}
+
+func unconfirmedAuthRotationProtoAt(chatID string, createdAt time.Time) *pb.RotationEvent {
+	return &pb.RotationEvent{
+		ChatId:    chatID,
+		Trigger:   pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED,
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
+		Detail:    "auth probe did not confirm invalidation",
+		CreatedAt: timestamppb.New(createdAt),
+	}
+}
+
+func setPersistentAuthFailed(tracker *status.Tracker, agentSessionID string) {
+	tracker.SetAuthFailed(agentSessionID, true)
+	tracker.SetAuthFailed(agentSessionID, true)
 }
 
 func TestListSessions_HeartbeatAdvancesOnChatOutput(t *testing.T) {
@@ -117,9 +225,11 @@ func TestListSessions_AuthFailedOverlaySetsAttention(t *testing.T) {
 	agentSessionID := "agent-1"
 	sess, chats := implementingSessionWithChat(agentSessionID)
 	tracker := status.NewTracker()
-	tracker.SetAuthFailed(agentSessionID, true)
+	setPersistentAuthFailed(tracker, agentSessionID)
 
-	got := listOneSession(t, sess, chats, tracker)
+	got := listOneSessionWithRotationEvents(t, sess, chats, tracker, []db.RotationEvent{
+		confirmedAuthRotationEvent(sess.ID, agentSessionID),
+	})
 
 	if got.GetAttentionStatus() == nil {
 		t.Fatal("attention_status = nil, want AGENT_AUTH_FAILED")
@@ -152,6 +262,223 @@ func TestListSessions_NoAuthFlagOnNormalOutput(t *testing.T) {
 	}
 }
 
+func TestHydrateAgentObservability_AuthFailedRequiresRotationCorroboration(t *testing.T) {
+	agentSessionID := "agent-1"
+	chats := []*models.AgentChat{{ID: "chat-1", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+	tests := []struct {
+		name           string
+		events         func() []*pb.RotationEvent
+		wantReason     pb.AttentionReason
+		wantBlockedRsn string
+	}{
+		{
+			name:       "missing rotation event suppresses overlay",
+			wantReason: pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED,
+		},
+		{
+			name:       "unconfirmed auth probe suppresses overlay",
+			events:     func() []*pb.RotationEvent { return []*pb.RotationEvent{unconfirmedAuthRotationProto()} },
+			wantReason: pb.AttentionReason_ATTENTION_REASON_UNSPECIFIED,
+		},
+		{
+			name:           "confirmed auth invalidation applies overlay",
+			events:         func() []*pb.RotationEvent { return []*pb.RotationEvent{confirmedAuthRotationProto()} },
+			wantReason:     pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+			wantBlockedRsn: agentAuthFailedBlockedReason,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := status.NewTracker()
+			setPersistentAuthFailed(tracker, agentSessionID)
+
+			var events []*pb.RotationEvent
+			if tt.events != nil {
+				events = tt.events()
+			}
+			p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now()), RotationEvents: events}
+			HydrateAgentObservability(tracker, p, chats)
+
+			if got := p.GetAttentionStatus().GetReason(); got != tt.wantReason {
+				t.Errorf("attention reason = %v, want %v", got, tt.wantReason)
+			}
+			if got := p.GetBlockedReason(); got != tt.wantBlockedRsn {
+				t.Errorf("blocked_reason = %q, want %q", got, tt.wantBlockedRsn)
+			}
+		})
+	}
+}
+
+func TestHydrateAgentObservability_AuthCorroborationMustMatchFailedChat(t *testing.T) {
+	currentAgentSessionID := "agent-current"
+	otherAgentSessionID := "agent-old"
+	chats := []*models.AgentChat{
+		{ID: "chat-current", SessionID: "sess-1", AgentSessionID: currentAgentSessionID},
+		{ID: "chat-old", SessionID: "sess-1", AgentSessionID: otherAgentSessionID},
+	}
+	tracker := status.NewTracker()
+	setPersistentAuthFailed(tracker, currentAgentSessionID)
+
+	p := &pb.Session{
+		Id:        "sess-1",
+		UpdatedAt: timestamppb.New(time.Now()),
+		RotationEvents: []*pb.RotationEvent{
+			confirmedAuthRotationProto(otherAgentSessionID),
+			unconfirmedAuthRotationProto(currentAgentSessionID),
+		},
+	}
+	HydrateAgentObservability(tracker, p, chats)
+	if p.GetAttentionStatus() != nil {
+		t.Fatalf("attention_status = %+v, want nil when only another chat has confirmed auth audit", p.GetAttentionStatus())
+	}
+
+	p.RotationEvents = append([]*pb.RotationEvent{confirmedAuthRotationProto(currentAgentSessionID)}, p.GetRotationEvents()...)
+	HydrateAgentObservability(tracker, p, chats)
+	if got := p.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED after current chat is corroborated", got)
+	}
+}
+
+func TestHydrateAgentObservability_AuthCorroborationIgnoresEarlierEpisode(t *testing.T) {
+	agentSessionID := "agent-current"
+	chats := []*models.AgentChat{{ID: "chat-current", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+	tracker := status.NewTracker()
+	setPersistentAuthFailed(tracker, agentSessionID)
+	since, ok := tracker.AuthFailedSince(agentSessionID)
+	if !ok {
+		t.Fatal("AuthFailedSince = false, want current auth episode")
+	}
+
+	p := &pb.Session{
+		Id:        "sess-1",
+		UpdatedAt: timestamppb.New(time.Now()),
+		RotationEvents: []*pb.RotationEvent{
+			confirmedAuthRotationProtoAt(agentSessionID, since.Add(-time.Second)),
+		},
+	}
+	HydrateAgentObservability(tracker, p, chats)
+	if p.GetAttentionStatus() != nil {
+		t.Fatalf("attention_status = %+v, want nil for audit before current auth episode", p.GetAttentionStatus())
+	}
+
+	p.RotationEvents = append([]*pb.RotationEvent{confirmedAuthRotationProtoAt(agentSessionID, since.Add(time.Second))}, p.GetRotationEvents()...)
+	HydrateAgentObservability(tracker, p, chats)
+	if got := p.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED after current episode is corroborated", got)
+	}
+}
+
+func TestHydrateAgentObservability_AuthCorroborationComparesAtRotationEventPrecision(t *testing.T) {
+	agentSessionID := "agent-current"
+	chats := []*models.AgentChat{{ID: "chat-current", SessionID: "sess-1", AgentSessionID: agentSessionID}}
+	var (
+		tracker   *status.Tracker
+		since     time.Time
+		createdAt time.Time
+		ok        bool
+	)
+	for i := 0; i < 100; i++ {
+		tracker = status.NewTracker()
+		setPersistentAuthFailed(tracker, agentSessionID)
+		since, ok = tracker.AuthFailedSince(agentSessionID)
+		if !ok {
+			t.Fatal("AuthFailedSince = false, want current auth episode")
+		}
+		createdAt = rotationEventComparableTime(since)
+		if createdAt.Before(since) {
+			break
+		}
+		time.Sleep(time.Microsecond)
+	}
+	if !createdAt.Before(since) {
+		t.Fatalf("could not create fractional-millisecond auth episode timestamp after retries; since=%v", since)
+	}
+
+	p := &pb.Session{
+		Id:        "sess-1",
+		UpdatedAt: timestamppb.New(time.Now()),
+		RotationEvents: []*pb.RotationEvent{
+			confirmedAuthRotationProtoAt(agentSessionID, createdAt),
+		},
+	}
+	HydrateAgentObservability(tracker, p, chats)
+	if got := p.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED for same-millisecond corroboration", got)
+	}
+}
+
+func TestHydrateAgentObservability_AuthCorroborationChecksNewestEventPerFailedChat(t *testing.T) {
+	chatA := "agent-a"
+	chatB := "agent-b"
+	chats := []*models.AgentChat{
+		{ID: "chat-a", SessionID: "sess-1", AgentSessionID: chatA},
+		{ID: "chat-b", SessionID: "sess-1", AgentSessionID: chatB},
+	}
+	tracker := status.NewTracker()
+	setPersistentAuthFailed(tracker, chatA)
+	setPersistentAuthFailed(tracker, chatB)
+	sinceA, ok := tracker.AuthFailedSince(chatA)
+	if !ok {
+		t.Fatal("AuthFailedSince(chatA) = false, want current auth episode")
+	}
+	sinceB, ok := tracker.AuthFailedSince(chatB)
+	if !ok {
+		t.Fatal("AuthFailedSince(chatB) = false, want current auth episode")
+	}
+
+	p := &pb.Session{
+		Id:        "sess-1",
+		UpdatedAt: timestamppb.New(time.Now()),
+		RotationEvents: []*pb.RotationEvent{
+			unconfirmedAuthRotationProtoAt(chatA, sinceA.Add(2*time.Second)),
+			confirmedAuthRotationProtoAt(chatB, sinceB.Add(time.Second)),
+		},
+	}
+	HydrateAgentObservability(tracker, p, chats)
+	if got := p.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED from chat B despite newer unconfirmed chat A event", got)
+	}
+}
+
+func TestListSessions_AuthCorroborationSurvivesRotationHistoryCap(t *testing.T) {
+	agentSessionID := "agent-current"
+	sess, chats := implementingSessionWithChat(agentSessionID)
+	tracker := status.NewTracker()
+	setPersistentAuthFailed(tracker, agentSessionID)
+	since, ok := tracker.AuthFailedSince(agentSessionID)
+	if !ok {
+		t.Fatal("AuthFailedSince = false, want current auth episode")
+	}
+
+	events := make([]db.RotationEvent, 0, rotationEventsCap+1)
+	for i := 0; i < rotationEventsCap; i++ {
+		events = append(events, db.RotationEvent{
+			ID:        "newer-unrelated",
+			SessionID: sess.ID,
+			ChatID:    "agent-other",
+			Trigger:   "ROTATION_TRIGGER_USAGE_LIMITED",
+			Outcome:   "ROTATION_OUTCOME_ROTATED",
+			CreatedAt: since.Add(time.Duration(rotationEventsCap-i) * time.Second),
+		})
+	}
+	events = append(events, db.RotationEvent{
+		ID:        "older-current-auth",
+		SessionID: sess.ID,
+		ChatID:    agentSessionID,
+		Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+		Outcome:   "ROTATION_OUTCOME_ROTATED",
+		CreatedAt: since.Add(time.Millisecond),
+	})
+
+	got := listOneSessionWithRotationEvents(t, sess, chats, tracker, events)
+	if gotEvents := got.GetRotationEvents(); len(gotEvents) != rotationEventsCap {
+		t.Fatalf("rotation events = %d, want capped history only", len(gotEvents))
+	}
+	if got := got.GetAttentionStatus().GetReason(); got != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
+		t.Fatalf("attention reason = %v, want AGENT_AUTH_FAILED from uncapped corroboration lookup", got)
+	}
+}
+
 // TestHydrateAgentObservability_StandaloneAppliesOverlay locks the reverse-stream
 // contract: the standalone overlay (used by cmd/main.go for snapshot + session
 // deltas) applies AGENT_AUTH_FAILED and last_agent_activity_at to a bare Session
@@ -163,9 +490,9 @@ func TestHydrateAgentObservability_StandaloneAppliesOverlay(t *testing.T) {
 	tracker := status.NewTracker()
 	lastOutput := time.Now().Add(-2 * time.Second)
 	tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, lastOutput)
-	tracker.SetAuthFailed(agentSessionID, true)
+	setPersistentAuthFailed(tracker, agentSessionID)
 
-	p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now())}
+	p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now()), RotationEvents: []*pb.RotationEvent{confirmedAuthRotationProto()}}
 	HydrateAgentObservability(tracker, p, chats)
 
 	if p.GetLastAgentActivityAt() == nil || !p.GetLastAgentActivityAt().AsTime().Equal(lastOutput) {
@@ -201,7 +528,7 @@ func TestHydrateBaseAttention_PreservesBlockedReasonUnderAuthOverlay(t *testing.
 	repo := &models.Repo{ID: "repo-1"}
 	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
 	tracker := status.NewTracker()
-	tracker.SetAuthFailed(agentSessionID, true) // auth marker present, but session is Blocked
+	setPersistentAuthFailed(tracker, agentSessionID) // auth marker present, but session is Blocked
 
 	// Reverse-stream projection order: bare proto -> base attention -> overlay.
 	p := SessionToProto(sess)
@@ -236,9 +563,10 @@ func TestHydrateBaseAttention_AuthOverlayStillAppliesWhenNoBaseAttention(t *test
 	repo := &models.Repo{ID: "repo-1"}
 	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
 	tracker := status.NewTracker()
-	tracker.SetAuthFailed(agentSessionID, true)
+	setPersistentAuthFailed(tracker, agentSessionID)
 
 	p := SessionToProto(sess)
+	p.RotationEvents = []*pb.RotationEvent{confirmedAuthRotationProto()}
 	HydrateBaseAttention(p, sess, repo)
 	HydrateAgentObservability(tracker, p, chats)
 
@@ -271,12 +599,13 @@ func TestHydrateBaseAttention_FixingChecksNoAutoRepairDoesNotResurrectStaleConfl
 	repo := &models.Repo{ID: "repo-1", CanAutoRepair: false}
 	chats := []*models.AgentChat{{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}}
 	tracker := status.NewTracker()
-	tracker.SetAuthFailed(agentSessionID, true)
+	setPersistentAuthFailed(tracker, agentSessionID)
 
 	// Reverse-stream projection: bare proto (no display status) -> base attention
 	// -> overlay. The display tracker has moved out of conflict (nothing hydrated
 	// it here), so the conflict reason is stale and must not be resurrected.
 	p := SessionToProto(sess)
+	p.RotationEvents = []*pb.RotationEvent{confirmedAuthRotationProto()}
 	HydrateBaseAttention(p, sess, repo)
 	HydrateAgentObservability(tracker, p, chats)
 
@@ -321,7 +650,7 @@ func TestListSessions_AuthFailedDoesNotOverrideUnrelatedReason(t *testing.T) {
 		sess.ID: {{ID: "chat-1", SessionID: sess.ID, AgentSessionID: agentSessionID}},
 	}
 	tracker := status.NewTracker()
-	tracker.SetAuthFailed(agentSessionID, true) // auth marker present, but session is already Blocked
+	setPersistentAuthFailed(tracker, agentSessionID) // auth marker present, but session is already Blocked
 
 	got := listOneSession(t, sess, chats, tracker)
 
@@ -382,9 +711,14 @@ func TestHydrateAgentObservability_StalledOverlay(t *testing.T) {
 			tracker := status.NewTracker()
 			tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
 			tracker.SetStalled(agentSessionID, tt.stalled)
-			tracker.SetAuthFailed(agentSessionID, tt.authFailed)
+			if tt.authFailed {
+				setPersistentAuthFailed(tracker, agentSessionID)
+			}
 
 			p := &pb.Session{Id: "sess-1", UpdatedAt: timestamppb.New(time.Now()), AttentionStatus: tt.preAttention}
+			if tt.authFailed {
+				p.RotationEvents = []*pb.RotationEvent{confirmedAuthRotationProto()}
+			}
 			HydrateAgentObservability(tracker, p, chats)
 
 			if got := p.GetAttentionStatus().GetReason(); got != tt.wantReason {

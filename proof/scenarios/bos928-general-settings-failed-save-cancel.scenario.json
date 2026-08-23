@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "title": "BOS-928 General Settings failed save cancel rollback",
+  "fixture": {
+    "preset": "demo",
+    "env": {
+      "BOSS_PROOF_SETTINGS_EVENT_TRACING": "1",
+      "BOSS_PROOF_SETTINGS_POSTHOG_HOST": "https://k.bossanova.dev",
+      "BOSS_PROOF_SETTINGS_SAVE_FAILURE": "1"
+    }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open the PostHog host editor in General Settings",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings menu" },
+        { "key": "g", "caption": "Open General Settings from the Settings menu" },
+        {
+          "waitFor": "PostHog host",
+          "timeoutMs": 10000,
+          "caption": "General Settings lists the editable PostHog host row"
+        },
+        { "key": "down", "caption": "Move to poll interval" },
+        { "key": "down", "caption": "Move to daemon name" },
+        { "key": "down", "caption": "Move to automatic account rotation" },
+        { "key": "down", "caption": "Move to desktop notifications" },
+        { "key": "down", "caption": "Move to default agent" },
+        { "key": "down", "caption": "Move to the first agent enabled row" },
+        { "key": "down", "caption": "Move through the first agent setting" },
+        { "key": "down", "caption": "Move to the second agent enabled row" },
+        { "key": "down", "caption": "Move through the second agent sandbox setting" },
+        { "key": "down", "caption": "Move through the second agent approval setting" },
+        { "key": "down", "caption": "Move through the second agent model setting" },
+        { "key": "down", "caption": "Move through the second agent dangerous toggle" },
+        { "key": "down", "caption": "Move to event tracing" },
+        { "key": "down", "caption": "Move to error tracking" },
+        { "key": "down", "caption": "Move to PostHog project token" },
+        { "key": "down", "caption": "Select the PostHog host row" },
+        { "key": "enter", "caption": "Open the PostHog host editor" },
+        {
+          "waitFor": "PostHog host:",
+          "timeoutMs": 10000,
+          "caption": "The inline text editor is active"
+        },
+        {
+          "expect": [
+            {
+              "text": "https://k.bossanova.dev",
+              "match": "normalized",
+              "label": "the editor opened on the seeded PostHog host value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "a failed save keeps the candidate only in the editor",
+      "steps": [
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "key": "backspace", "caption": "Clear the seeded host value" },
+        { "type": "https://unsaved.example", "caption": "Type an unsaved PostHog host candidate" },
+        {
+          "key": "enter",
+          "caption": "Attempt to save against the proof-forced failing settings store"
+        },
+        {
+          "waitFor": "proof settings save failure",
+          "timeoutMs": 10000,
+          "caption": "The failed save is visible and the editor remains open"
+        },
+        {
+          "expect": [
+            {
+              "text": "https://unsaved.example",
+              "match": "normalized",
+              "label": "unsaved candidate remains available for retry while editing"
+            },
+            {
+              "text": "proof settings save failure",
+              "match": "normalized",
+              "label": "failed save error banner"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "cancel after the failed save restores the PostHog host row",
+      "steps": [
+        { "key": "esc", "caption": "Cancel the failed edit" },
+        {
+          "waitFor": "PostHog host",
+          "timeoutMs": 10000,
+          "caption": "The settings list is restored after cancelling"
+        },
+        {
+          "expect": [
+            {
+              "text": "PostHog host",
+              "match": "normalized",
+              "label": "PostHog host setting label"
+            },
+            {
+              "text": "https://k.bossanova.dev",
+              "match": "normalized",
+              "label": "resting row uses the previously persisted PostHog host fallback"
+            },
+            {
+              "text": "^(?![\\s\\S]*https://unsaved\\.example)[\\s\\S]*PostHog host[\\s\\S]*$",
+              "match": "regex",
+              "label": "typed candidate is absent after cancel"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

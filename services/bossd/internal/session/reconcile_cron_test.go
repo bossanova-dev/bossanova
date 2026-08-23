@@ -109,6 +109,21 @@ func (f fakeSessionLiveness) SessionLiveness(_ context.Context, sessionID string
 func TestCronActivityChecker_RunActive_MissingLogFallsBackToSessionLiveness(t *testing.T) {
 	dir := t.TempDir()
 	c := NewCronActivityChecker(dir, fakeSessionLiveness{running: map[string]bool{"sess-live": true}})
+	recent := time.Now().Add(-time.Minute)
+	stale := time.Now().Add(-preAgentReapGrace - time.Minute)
+
+	// A pre-agent bootstrap has no AgentSessionID yet, and process liveness can
+	// be unavailable before the pane exists. Live or recent rows still suppress
+	// overlap conservatively.
+	if !c.RunActive(&models.Session{ID: "sess-live", State: machine.CreatingWorktree, AgentName: "claude", CreatedAt: stale}) {
+		t.Fatal("pre-agent session: want active")
+	}
+	if !c.RunActive(&models.Session{ID: "sess-recent", State: machine.StartingAgent, AgentName: "claude", CreatedAt: recent}) {
+		t.Fatal("recent pre-agent session with dead liveness: want active")
+	}
+	if c.RunActive(&models.Session{ID: "sess-stale", State: machine.StartingAgent, AgentName: "claude", CreatedAt: stale}) {
+		t.Fatal("stale pre-agent session with dead liveness: want not active")
+	}
 
 	// Missing log + session still live through chat/tmux liveness (e.g.
 	// pipe-pane failed at start) -> active, so overlap suppression stays in

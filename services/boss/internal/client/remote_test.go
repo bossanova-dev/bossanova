@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // fakeChatOrchestrator records the proxy chat calls it receives and returns
@@ -220,6 +221,119 @@ func TestRemoteClient_SendChatMessage_ThreadsNoticeText(t *testing.T) {
 	}
 	if resp.GetNoticeText() != "switched to work — resumed" {
 		t.Errorf("NoticeText = %q, want the notice threaded from the proxy response", resp.GetNoticeText())
+	}
+}
+
+func TestRemoteClient_SendChatMessage_ThreadsDeliveryState(t *testing.T) {
+	t.Parallel()
+	for _, state := range sendChatMessageDeliveryStates(t) {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			fake.sendResp = &pb.ProxySendChatMessageResponse{
+				TmuxSessionName: "tmux-x",
+				Delivered:       true,
+				NoticeText:      "notice",
+				DeliveryState:   state,
+			}
+
+			resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+				AgentSessionId: "agent-9",
+				Message:        "hello",
+			})
+			if err != nil {
+				t.Fatalf("SendChatMessage: %v", err)
+			}
+			if got := resp.GetDeliveryState(); got != state {
+				t.Fatalf("DeliveryState = %v, want %v", got, state)
+			}
+		})
+	}
+}
+
+func TestRemoteClient_SendChatMessage_CopiesSharedProxyResponseFields(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.sendResp = sendChatProxyResponseWithSharedFields(t)
+
+	resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+		AgentSessionId: "agent-9",
+		Message:        "hello",
+	})
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	assertSharedSendChatMessageFieldsCopied(t, fake.sendResp, resp)
+}
+
+func sendChatMessageDeliveryStates(t *testing.T) []pb.SendChatMessageResponse_DeliveryState {
+	t.Helper()
+	values := pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED.Descriptor().Values()
+	states := make([]pb.SendChatMessageResponse_DeliveryState, 0, values.Len())
+	for i := 0; i < values.Len(); i++ {
+		states = append(states, pb.SendChatMessageResponse_DeliveryState(values.Get(i).Number()))
+	}
+	return states
+}
+
+func sendChatProxyResponseWithSharedFields(t *testing.T) *pb.ProxySendChatMessageResponse {
+	t.Helper()
+	resp := &pb.ProxySendChatMessageResponse{}
+	msg := resp.ProtoReflect()
+	for _, sendField := range sharedSendChatMessageResponseFields(t) {
+		proxyField := msg.Descriptor().Fields().ByName(sendField.Name())
+		if proxyField == nil {
+			t.Fatalf("ProxySendChatMessageResponse missing shared field %q", sendField.FullName())
+		}
+		setSharedSendChatTestValue(t, msg, proxyField)
+	}
+	return resp
+}
+
+func assertSharedSendChatMessageFieldsCopied(t *testing.T, source *pb.ProxySendChatMessageResponse, got *pb.SendChatMessageResponse) {
+	t.Helper()
+	sourceMessage := source.ProtoReflect()
+	gotMessage := got.ProtoReflect()
+	for _, gotField := range sharedSendChatMessageResponseFields(t) {
+		sourceField := sourceMessage.Descriptor().Fields().ByName(gotField.Name())
+		if sourceField == nil {
+			t.Fatalf("ProxySendChatMessageResponse missing shared field %q", gotField.FullName())
+		}
+		if sourceMessage.Get(sourceField).Interface() != gotMessage.Get(gotField).Interface() {
+			t.Fatalf("field %s = %v, want %v", gotField.Name(), gotMessage.Get(gotField), sourceMessage.Get(sourceField))
+		}
+	}
+}
+
+func sharedSendChatMessageResponseFields(t *testing.T) []protoreflect.FieldDescriptor {
+	t.Helper()
+	sendFields := (&pb.SendChatMessageResponse{}).ProtoReflect().Descriptor().Fields()
+	proxyFields := (&pb.ProxySendChatMessageResponse{}).ProtoReflect().Descriptor().Fields()
+	shared := make([]protoreflect.FieldDescriptor, 0, sendFields.Len())
+	for i := 0; i < sendFields.Len(); i++ {
+		field := sendFields.Get(i)
+		if proxyFields.ByName(field.Name()) != nil {
+			shared = append(shared, field)
+		}
+	}
+	return shared
+}
+
+func setSharedSendChatTestValue(t *testing.T, msg protoreflect.Message, field protoreflect.FieldDescriptor) {
+	t.Helper()
+	switch field.Kind() {
+	case protoreflect.StringKind:
+		msg.Set(field, protoreflect.ValueOfString("shared-value"))
+	case protoreflect.BoolKind:
+		msg.Set(field, protoreflect.ValueOfBool(true))
+	case protoreflect.EnumKind:
+		values := field.Enum().Values()
+		if values.Len() < 2 {
+			t.Fatalf("enum field %s has no non-zero test value", field.FullName())
+		}
+		msg.Set(field, protoreflect.ValueOfEnum(values.Get(values.Len()-1).Number()))
+	default:
+		t.Fatalf("shared field %s has unsupported test kind %s", field.FullName(), field.Kind())
 	}
 }
 

@@ -35,11 +35,12 @@ type fakeTmuxClient struct {
 	createdN   int
 	// slowCreate, when true, sleeps briefly inside NewSessionWithCmd so
 	// concurrent goroutines actually contend on singleflight.Do.
-	slowCreate     bool
-	lastName       string
-	lastEnv        map[string]string
-	sentMessages   []sentMessage
-	sendMessageErr error
+	slowCreate             bool
+	lastName               string
+	lastEnv                map[string]string
+	sentMessages           []sentMessage
+	sendMessageErr         error
+	beforeSubmitSideEffect func()
 	// panePID / panePIDByName / panePIDErr model tmux list-panes for the
 	// codex provider-session fd resolver (BOS-290).
 	panePID       int
@@ -72,6 +73,9 @@ type sentMessage struct {
 	// a detector at all — nil here means the readiness gate would have run with
 	// the modal check disabled (BOS-600).
 	modal tmux.ModalDetector
+	// beforeSubmitPresent records whether this delivery carried a turn-start
+	// baseline hook.
+	beforeSubmitPresent bool
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -96,18 +100,25 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	f.hasSession = true
 	return nil
 }
-func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector) error {
+func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendMessageErr != nil {
 		return f.sendMessageErr
 	}
+	if f.beforeSubmitSideEffect != nil {
+		f.beforeSubmitSideEffect()
+	}
+	if beforeSubmit != nil {
+		beforeSubmit()
+	}
 	f.sentMessages = append(f.sentMessages, sentMessage{
-		sessionName: sessionName,
-		text:        text,
-		submit:      submit,
-		readyMarker: readyMarker,
-		modal:       modal,
+		sessionName:         sessionName,
+		text:                text,
+		submit:              submit,
+		readyMarker:         readyMarker,
+		modal:               modal,
+		beforeSubmitPresent: beforeSubmit != nil,
 	})
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
+	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
@@ -36,35 +37,39 @@ import (
 // both are ceilings, so the shorter of the two always wins.
 const DefaultRPCTimeout = 30 * time.Second
 
-// StartChatRunRPCTimeout is the per-call ceiling for StartChatRun, which is
-// exempt from DefaultRPCTimeout. It is a property of the RPC, not of the
-// client, so it does not consult the client's configured default.
+// StartChatRunRPCTimeout is the default per-call ceiling for StartChatRun,
+// derived from the default session-start readiness deadline. The repair plugin
+// overrides this per client with the host's configured readiness deadline.
 //
 // StartChatRun spans a whole session start on the host side, not a single
 // daemon round-trip. Its worst case is the repair path's replace branch: a
 // cheap first StartTmuxChat that returns AlreadyExists, the replacement and
 // cleanup of the blocking chat, then a full fresh launch — spawn, DB row,
 // finalize-hook wiring, the composer-readiness wait
-// (tmux.DefaultSessionStartReadyDeadline, 45s), the submit verifier (+2s) and
-// the fresh-provider-session-ID resolve (+2s). That is roughly 49s of hard
-// tail before overhead, which the shared 30s guard cannot cover — it would cut
-// the call off mid-readiness and return a bare context error instead of the
-// host's readiness diagnostic with its pane capture.
+// (config.DefaultSessionStartReadyDeadline, 45s), the submit verifier (+2s) and
+// the fresh-provider-session-ID resolve (+2s). The budget is
+// readiness + max(readiness, 4s): 90s at the default, and 600s for a host
+// configured at 300s. The shared 30s guard cannot cover this path — it would cut
+// the call off mid-readiness, and the readiness wait would then run for whatever
+// the ceiling had left rather than the deadline it was configured with. What is
+// lost there is the CONFIGURED wait, not the diagnostic: session start is the
+// multi-attempt path, so waitForReadyMarkerWithAttempts clamps the attempt to
+// fit and the failure still arrives as the ready-marker error carrying its pane
+// capture. Losing the diagnostic outright to a bare context error is the
+// single-attempt established-send path's failure mode, which is handed its
+// context unclamped.
 //
-// 90s clears that tail with headroom, and matches the value this repo already
-// uses for its one legitimately-long unary RPC in the mirror direction
-// (pollTasksRPCTimeout, services/bossd/internal/plugin/grpc_plugins.go).
 // The relationship to the readiness deadline is pinned from the other end by
-// TestSessionStartReadinessFitsStartChatRunBudget in
-// services/bossd/internal/tmux/tmux_budget_test.go, so this value is not free
-// to move downward on its own.
+// TestSessionStartReadinessFitsStartChatRunBudget in services/bossd/internal/
+// tmux/tmux_budget_test.go, so this default-derived value is not free to move
+// downward on its own.
 //
 // StartChatRun has exactly one caller today: the repair plugin's
 // (*repairMonitor).runRepairAttempt (plugins/bossd-plugin-repair/server.go,
 // declared at :1523), which issues the RPC at :1631 and, if that returns
 // AlreadyExists and the stale chat is reclaimed, again at :1661. Each call
 // gets its own ceiling; the plugin wraps neither in an outer deadline.
-const StartChatRunRPCTimeout = 90 * time.Second
+var StartChatRunRPCTimeout = config.StartChatRunBudgetFor(config.DefaultSessionStartReadyDeadline)
 
 // brokerDialTimeout bounds how long NewEagerClient waits for broker.Dial(1)
 // to return before abandoning the wait with an error. The go-plugin broker's
@@ -77,7 +82,8 @@ const brokerDialTimeout = 10 * time.Second
 type ClientOption func(*clientOptions)
 
 type clientOptions struct {
-	rpcTimeout time.Duration
+	rpcTimeout          time.Duration
+	startChatRunTimeout time.Duration
 }
 
 // WithTimeout overrides the default per-call RPC timeout applied to unary
@@ -85,19 +91,31 @@ type clientOptions struct {
 // construct a dedicated client with WithTimeout, or pass a context with a
 // later deadline (which will still be clamped by the default).
 //
-// It does not reach every RPC. StartChatRun ignores the client's configured
-// value and always takes StartChatRunRPCTimeout, because its budget is a
-// property of the RPC rather than of the client; WaitAgentRun and WaitChatRun
-// take no client-side timeout at all. Tightening the budget here therefore
-// leaves those three unaffected.
+// It does not reach every RPC. StartChatRun ignores this shared unary value and
+// takes StartChatRunRPCTimeout unless WithStartChatRunTimeout provides a
+// per-client StartChatRun ceiling; WaitAgentRun and WaitChatRun take no
+// client-side timeout at all. Tightening the budget here therefore leaves those
+// three unaffected.
 func WithTimeout(d time.Duration) ClientOption {
 	return func(o *clientOptions) { o.rpcTimeout = d }
 }
 
+// WithStartChatRunTimeout overrides the StartChatRun ceiling for this client.
+// Non-positive values are treated as unset and fall back to StartChatRunRPCTimeout.
+func WithStartChatRunTimeout(d time.Duration) ClientOption {
+	return func(o *clientOptions) { o.startChatRunTimeout = d }
+}
+
 func resolveOptions(opts []ClientOption) clientOptions {
-	o := clientOptions{rpcTimeout: DefaultRPCTimeout}
+	o := clientOptions{
+		rpcTimeout:          DefaultRPCTimeout,
+		startChatRunTimeout: StartChatRunRPCTimeout,
+	}
 	for _, fn := range opts {
 		fn(&o)
+	}
+	if o.startChatRunTimeout <= 0 {
+		o.startChatRunTimeout = StartChatRunRPCTimeout
 	}
 	return o
 }
@@ -139,15 +157,16 @@ type Client interface {
 // DirectClient wraps a gRPC connection to the daemon's HostService,
 // providing typed methods for the plugin to call back into the host.
 type DirectClient struct {
-	conn              *grpc.ClientConn
-	defaultRPCTimeout time.Duration
+	conn                *grpc.ClientConn
+	defaultRPCTimeout   time.Duration
+	startChatRunTimeout time.Duration
 }
 
 // NewDirectClient creates a new host service client from a gRPC connection.
 // Pass WithTimeout(d) to override the default per-call RPC timeout.
 func NewDirectClient(conn *grpc.ClientConn, opts ...ClientOption) *DirectClient {
 	o := resolveOptions(opts)
-	return &DirectClient{conn: conn, defaultRPCTimeout: o.rpcTimeout}
+	return &DirectClient{conn: conn, defaultRPCTimeout: o.rpcTimeout, startChatRunTimeout: o.startChatRunTimeout}
 }
 
 // EagerClient starts broker.Dial(1) in a background goroutine
@@ -157,11 +176,12 @@ func NewDirectClient(conn *grpc.ClientConn, opts ...ClientOption) *DirectClient 
 // pending connection info after 5 seconds, so we must start the Dial
 // eagerly rather than deferring to the first RPC call.
 type EagerClient struct {
-	logger            zerolog.Logger
-	inner             *DirectClient
-	err               error
-	ready             chan struct{}
-	defaultRPCTimeout time.Duration
+	logger              zerolog.Logger
+	inner               *DirectClient
+	err                 error
+	ready               chan struct{}
+	defaultRPCTimeout   time.Duration
+	startChatRunTimeout time.Duration
 }
 
 // NewEagerClient creates a new eager host service client that dials the host
@@ -193,9 +213,10 @@ func NewEagerClientWithBrokerID(broker *goplugin.GRPCBroker, logger zerolog.Logg
 func newEagerClientFromDialer(dial func() (*grpc.ClientConn, error), logger zerolog.Logger, opts ...ClientOption) *EagerClient {
 	o := resolveOptions(opts)
 	c := &EagerClient{
-		logger:            logger,
-		ready:             make(chan struct{}),
-		defaultRPCTimeout: o.rpcTimeout,
+		logger:              logger,
+		ready:               make(chan struct{}),
+		defaultRPCTimeout:   o.rpcTimeout,
+		startChatRunTimeout: o.startChatRunTimeout,
 	}
 	go func() {
 		defer close(c.ready)
@@ -205,7 +226,7 @@ func newEagerClientFromDialer(dial func() (*grpc.ClientConn, error), logger zero
 			c.logger.Error().Err(c.err).Dur("timeout", brokerDialTimeout).Msg("failed to connect to host service via broker")
 			return
 		}
-		c.inner = NewDirectClient(conn, WithTimeout(c.defaultRPCTimeout))
+		c.inner = NewDirectClient(conn, WithTimeout(c.defaultRPCTimeout), WithStartChatRunTimeout(c.startChatRunTimeout))
 		c.logger.Info().Msg("connected to host service via broker")
 	}()
 	return c
@@ -405,13 +426,13 @@ func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAg
 	return resp, nil
 }
 
-// StartChatRun takes StartChatRunRPCTimeout rather than the client's configured
-// default: it spans a whole session start on the host side, so the shared
+// StartChatRun takes the client's StartChatRun ceiling rather than the shared
+// unary default: it spans a whole session start on the host side, so the shared
 // hung-daemon guard is too tight for it. See StartChatRunRPCTimeout for the
-// sizing and for the guard test that pins it against the readiness deadline.
+// default sizing and the guard test that pins it against the readiness deadline.
 func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
 	resp := &bossanovav1.StartChatRunHostResponse{}
-	if err := c.invokeUnaryWithTimeout(ctx, StartChatRunRPCTimeout, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
+	if err := c.invokeUnaryWithTimeout(ctx, c.startChatRunTimeout, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

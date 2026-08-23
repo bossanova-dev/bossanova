@@ -29,7 +29,7 @@ func TestListFilter_InitialStateIsIdle(t *testing.T) {
 	}
 }
 
-func TestListFilter_ActivateDeactivate(t *testing.T) {
+func TestListFilter_ActivateReset(t *testing.T) {
 	f := newListFilter()
 	_ = f.Activate()
 	if !f.Active() || !f.Engaged() {
@@ -40,13 +40,70 @@ func TestListFilter_ActivateDeactivate(t *testing.T) {
 	}
 
 	f.input.SetValue("abc")
-	f.Deactivate()
+	f.Reset()
 	if f.Active() || f.Applied() || f.Engaged() {
-		t.Errorf("after Deactivate: Active=%v Applied=%v Engaged=%v, want all false",
+		t.Errorf("after Reset: Active=%v Applied=%v Engaged=%v, want all false",
 			f.Active(), f.Applied(), f.Engaged())
 	}
 	if f.Query() != "" {
-		t.Errorf("Deactivate should clear query, got %q", f.Query())
+		t.Errorf("Reset should clear query, got %q", f.Query())
+	}
+}
+
+func TestListFilter_DismissPreservesRawInput(t *testing.T) {
+	f := newListFilter()
+	_ = f.Activate()
+	f.input.SetValue("  abc  ")
+	f.Dismiss()
+	if f.Active() || f.Applied() || f.Engaged() {
+		t.Errorf("after Dismiss: Active=%v Applied=%v Engaged=%v, want all false",
+			f.Active(), f.Applied(), f.Engaged())
+	}
+	if got := f.input.Value(); got != "  abc  " {
+		t.Fatalf("Dismiss raw input = %q, want byte-identical value", got)
+	}
+	if got := f.Query(); got != "abc" {
+		t.Fatalf("Dismiss Query() = %q, want trimmed query", got)
+	}
+}
+
+func TestListFilter_FalseCommitResetAndDismiss(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		value    string
+		resetRaw string
+		dismiss  string
+	}{
+		{name: "empty", value: "", resetRaw: "", dismiss: ""},
+		{name: "whitespace", value: "   ", resetRaw: "", dismiss: "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reset := newListFilter()
+			_ = reset.Activate()
+			reset.input.SetValue(tc.value)
+			if reset.Commit() {
+				t.Fatal("Commit() = true, want false")
+			}
+			reset.Reset()
+			if got := reset.input.Value(); got != tc.resetRaw {
+				t.Fatalf("Reset raw input after false Commit() = %q, want %q", got, tc.resetRaw)
+			}
+
+			dismiss := newListFilter()
+			_ = dismiss.Activate()
+			dismiss.input.SetValue(tc.value)
+			if dismiss.Commit() {
+				t.Fatal("Commit() = true, want false")
+			}
+			dismiss.Dismiss()
+			if got := dismiss.input.Value(); got != tc.dismiss {
+				t.Fatalf("Dismiss raw input after false Commit() = %q, want %q", got, tc.dismiss)
+			}
+			if dismiss.Active() || dismiss.Applied() || dismiss.Engaged() {
+				t.Fatalf("Dismiss state after false Commit(): Active=%v Applied=%v Engaged=%v, want all false",
+					dismiss.Active(), dismiss.Applied(), dismiss.Engaged())
+			}
+		})
 	}
 }
 

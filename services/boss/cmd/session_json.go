@@ -37,11 +37,15 @@ type sessionJSON struct {
 	Agent  string `json:"agent"`
 	// PrNumber is null rather than 0 for a session with no PR, so a caller can
 	// tell "no PR yet" from a hypothetical PR #0.
-	PrNumber  *int32 `json:"pr_number"`
-	PrURL     string `json:"pr_url"`
-	Branch    string `json:"branch"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	PrNumber  *int32  `json:"pr_number"`
+	PrURL     string  `json:"pr_url"`
+	Branch    string  `json:"branch"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
+	TrackerID *string `json:"tracker_id"`
+	// LastAgentActivityAt is empty when no agent output/activity has been
+	// observed, matching the absent timestamp rendering used by CreatedAt.
+	LastAgentActivityAt string `json:"last_agent_activity_at"`
 }
 
 // sessionDetailJSON is `boss show --json`: an ls row plus the detail runShow
@@ -83,19 +87,24 @@ type sessionRepairJSON struct {
 // different, much narrower shape.
 func newSessionRowJSON(s *pb.Session) sessionJSON {
 	row := sessionJSON{
-		ID:        s.GetId(),
-		Title:     s.GetTitle(),
-		State:     strings.TrimPrefix(s.GetState().String(), "SESSION_STATE_"),
-		RepoID:    s.GetRepoId(),
-		Agent:     s.GetAgentName(),
-		PrURL:     s.GetPrUrl(),
-		Branch:    s.GetBranchName(),
-		CreatedAt: rfc3339OrEmpty(s.GetCreatedAt()),
-		UpdatedAt: rfc3339OrEmpty(s.GetUpdatedAt()),
+		ID:                  s.GetId(),
+		Title:               s.GetTitle(),
+		State:               strings.TrimPrefix(s.GetState().String(), "SESSION_STATE_"),
+		RepoID:              s.GetRepoId(),
+		Agent:               s.GetAgentName(),
+		PrURL:               s.GetPrUrl(),
+		Branch:              s.GetBranchName(),
+		CreatedAt:           rfc3339OrEmpty(s.GetCreatedAt()),
+		UpdatedAt:           rfc3339OrEmpty(s.GetUpdatedAt()),
+		LastAgentActivityAt: rfc3339OrEmpty(s.GetLastAgentActivityAt()),
 	}
 	if s.PrNumber != nil {
 		pr := s.GetPrNumber()
 		row.PrNumber = &pr
+	}
+	if s.TrackerId != nil {
+		trackerID := s.GetTrackerId()
+		row.TrackerID = &trackerID
 	}
 	return row
 }

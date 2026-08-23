@@ -158,17 +158,18 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 	return s.Get(ctx, id)
 }
 
-func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id string, sessionID string, firedAt time.Time, nextRunAt *time.Time) error {
+func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id string, sessionID string, agentName string, firedAt time.Time, nextRunAt *time.Time) error {
 	now := sqlutil.TimeNow()
 	firedAtStr := firedAt.UTC().Format("2006-01-02T15:04:05.000Z")
 
 	sets := []string{
 		"last_run_session_id = ?",
+		"last_run_agent_name = ?",
 		"last_run_at = ?",
 		"last_run_outcome = NULL",
 		"updated_at = ?",
 	}
-	args := []any{sessionID, firedAtStr, now}
+	args := []any{sessionID, strings.TrimSpace(agentName), firedAtStr, now}
 
 	if nextRunAt == nil {
 		sets = append(sets, "next_run_at = NULL")
@@ -255,7 +256,7 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 
 const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
 	gate_command, should_run_setup_command, is_zero_output,
-	last_run_session_id, last_run_at, last_run_outcome, next_run_at,
+	last_run_session_id, last_run_agent_name, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
 
@@ -275,13 +276,13 @@ func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
 func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	var j models.CronJob
 	var enabledInt, runSetupInt, zeroOutputInt int
-	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
+	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAgentName, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
 		&timezone, &agentName, &model, &enabledInt,
 		&gateCommand, &runSetupInt, &zeroOutputInt,
-		&lastRunSessionID, &lastRunAt, &lastRunOutcome, &nextRunAt,
+		&lastRunSessionID, &lastRunAgentName, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -300,6 +301,9 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	if lastRunSessionID.Valid {
 		s := lastRunSessionID.String
 		j.LastRunSessionID = &s
+	}
+	if lastRunAgentName.Valid {
+		j.LastRunAgentName = lastRunAgentName.String
 	}
 	if lastRunAt.Valid {
 		t := sqlutil.ParseTime(lastRunAt.String)

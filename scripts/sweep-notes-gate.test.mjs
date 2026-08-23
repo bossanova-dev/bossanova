@@ -3,6 +3,7 @@ import { test } from 'node:test'
 
 import {
   DEFAULT_CAP,
+  DEFAULT_STALE_DAYS,
   KEY_DIGEST_LENGTH,
   MARKED_ISSUES_QUERY,
   MAX_SLUG_SEGMENT,
@@ -15,6 +16,7 @@ import {
   rankClusters,
   renderClusterMarkers,
   resolveCap,
+  resolveStaleDays,
   retiredNoteIds,
   runCli,
   selectClusters,
@@ -22,6 +24,7 @@ import {
 } from './sweep-notes-gate.mjs'
 
 const note = (id, body) => ({ id, body, created_at: `2026-07-2${id}T00:00:00Z` })
+const FRESH_SELECTION_NOW = Date.parse('2026-08-01T00:00:00Z')
 
 test('parseNote extracts structured fields while retaining a free-form statement', () => {
   assert.deepEqual(
@@ -107,7 +110,9 @@ test('clusterNotes gives colliding slugs distinct stable marker keys', () => {
     reversed.map((cluster) => cluster.key),
   )
 
-  const marked = selectClusters(first, [{ description: `Notes: ${first[0].key}` }])
+  const marked = selectClusters(first, [{ description: `Notes: ${first[0].key}` }], {
+    now: FRESH_SELECTION_NOW,
+  })
   assert.deepEqual(
     marked.dropped.map((entry) => entry.cluster.key),
     [first[0].key],
@@ -237,7 +242,7 @@ test('rankClusters puts corroboration before alphabetical order', () => {
   assert.match(ranked[1].statement, /Alpha/)
 
   // selectClusters must rank internally rather than trusting its caller.
-  const output = selectClusters(merged, [], { cap: 1 })
+  const output = selectClusters(merged, [], { cap: 1, now: FRESH_SELECTION_NOW })
   assert.match(output.selected[0].cluster.statement, /Zulu/)
   assert.deepEqual(
     output.deferred.map((entry) => entry.reason),
@@ -257,7 +262,9 @@ test('merged issue markers dedupe a later singleton alias recurrence', () => {
 
   assert.deepEqual(issueDescription.split('\n'), [`Notes: ${aliasKey}`, `Notes: ${merged.key}`])
   const laterSingleton = firstRun.filter((cluster) => cluster.key === aliasKey)
-  const output = selectClusters(laterSingleton, [{ description: issueDescription }])
+  const output = selectClusters(laterSingleton, [{ description: issueDescription }], {
+    now: FRESH_SELECTION_NOW,
+  })
   assert.deepEqual(
     output.dropped.map((entry) => entry.cluster.key),
     [aliasKey],
@@ -273,7 +280,9 @@ test('selectClusters recognizes every source-key alias on a merged cluster', () 
   const merged = mergeClusters(clusters, [clusters.map((cluster) => cluster.key)])[0]
   const aliasKey = merged.sourceKeys.find((key) => key !== merged.key)
 
-  const output = selectClusters([merged], [{ description: `Notes: ${aliasKey}` }])
+  const output = selectClusters([merged], [{ description: `Notes: ${aliasKey}` }], {
+    now: FRESH_SELECTION_NOW,
+  })
 
   assert.deepEqual(
     output.dropped.map((entry) => entry.cluster.key),
@@ -286,7 +295,9 @@ test('selectClusters drops an existing identity marker after a new slug collisio
   const firstRun = clusterNotes([note('1', 'foo/bar\nWhere: a')])
   const laterRun = clusterNotes([note('1', 'foo/bar\nWhere: a'), note('2', 'foo bar\nWhere: a')])
 
-  const output = selectClusters(laterRun, [{ description: `Notes: ${firstRun[0].key}` }])
+  const output = selectClusters(laterRun, [{ description: `Notes: ${firstRun[0].key}` }], {
+    now: FRESH_SELECTION_NOW,
+  })
   assert.deepEqual(
     output.dropped.map((entry) => entry.cluster.statement),
     ['foo/bar'],
@@ -303,11 +314,15 @@ test('selectClusters line-anchors Notes markers and accounts for every input', (
     note('2', 'Beta problem\nWhere: b.go'),
     note('3', 'Gamma problem\nWhere: c.go'),
   ])
-  const output = selectClusters(clusters, [
-    { description: `Notes: ${clusters[0].key}` },
-    { description: `See Notes: ${clusters[1].key} for detail` },
-    { description: `Notes: ${clusters[2].key}-extra` },
-  ])
+  const output = selectClusters(
+    clusters,
+    [
+      { description: `Notes: ${clusters[0].key}` },
+      { description: `See Notes: ${clusters[1].key} for detail` },
+      { description: `Notes: ${clusters[2].key}-extra` },
+    ],
+    { now: FRESH_SELECTION_NOW },
+  )
   assert.deepEqual(
     output.selected.map((entry) => entry.cluster.key),
     [clusters[1].key, clusters[2].key],
@@ -317,7 +332,8 @@ test('selectClusters line-anchors Notes markers and accounts for every input', (
     [[clusters[0].key, 'already-tracked']],
   )
   assert.deepEqual(output.deferred, [])
-  const accounted = [...output.selected, ...output.deferred, ...output.dropped]
+  assert.deepEqual(output.expired, [])
+  const accounted = [...output.selected, ...output.deferred, ...output.dropped, ...output.expired]
   assert.equal(accounted.length, clusters.length)
   assert.ok(accounted.every((entry) => typeof entry.reason === 'string' && entry.reason.length > 0))
 })
@@ -328,13 +344,77 @@ test('selectClusters defaults to the documented cap and defers overflow', () => 
       note(String(index), `problem number ${index}`),
     ),
   )
-  const output = selectClusters(clusters, [])
+  const output = selectClusters(clusters, [], { now: FRESH_SELECTION_NOW })
   assert.equal(output.selected.length, DEFAULT_CAP)
   assert.deepEqual(
     output.deferred.map((entry) => entry.reason),
     ['over-cap'],
   )
   assert.deepEqual(output.dropped, [])
+  assert.deepEqual(output.expired, [])
+})
+
+test('selectClusters expires themes by newest parseable note timestamp', () => {
+  const oldOnly = clusterNotes([
+    { id: '1', body: 'Old problem\nWhere: a.go', created_at: '2026-07-01T00:00:00Z' },
+  ])
+  const recurringClusters = clusterNotes([
+    { id: '2', body: 'Recurring problem\nWhere: b.go', created_at: '2026-07-01T00:00:00Z' },
+    { id: '3', body: 'Recurring problem\nWhere: b.go', created_at: '2026-08-15T00:00:00Z' },
+  ])
+  const recurring = mergeClusters(recurringClusters, [
+    recurringClusters.map((cluster) => cluster.key),
+  ])
+  const unknown = [
+    {
+      key: 'unknown',
+      statement: 'Unknown timestamp',
+      where: 'c.go',
+      notes: [{ id: '4', body: 'Unknown timestamp\nWhere: c.go', created_at: 'not-a-date' }],
+    },
+  ]
+
+  const output = selectClusters([...oldOnly, ...recurring, ...unknown], [], {
+    cap: 10,
+    staleDays: 30,
+    now: Date.parse('2026-08-20T00:00:00Z'),
+  })
+
+  assert.deepEqual(
+    output.expired.map((entry) => [entry.cluster.statement, entry.reason]),
+    [['Old problem', 'expired']],
+  )
+  assert.deepEqual(
+    output.selected.map((entry) => entry.cluster.statement),
+    ['Recurring problem', 'Unknown timestamp'],
+  )
+})
+
+test('selectClusters applies already-tracked before expiry and expiry before cap', () => {
+  const clusters = clusterNotes([
+    { id: '1', body: 'Tracked old\nWhere: a.go', created_at: '2026-07-01T00:00:00Z' },
+    { id: '2', body: 'Expired old\nWhere: b.go', created_at: '2026-07-01T00:00:00Z' },
+    { id: '3', body: 'Fresh one\nWhere: c.go', created_at: '2026-08-19T00:00:00Z' },
+  ])
+  const tracked = clusters.find((cluster) => cluster.statement === 'Tracked old')
+  const output = selectClusters(clusters, [{ description: `Notes: ${tracked.key}` }], {
+    cap: 0,
+    staleDays: 30,
+    now: Date.parse('2026-08-20T00:00:00Z'),
+  })
+
+  assert.deepEqual(
+    output.dropped.map((entry) => [entry.cluster.statement, entry.reason]),
+    [['Tracked old', 'already-tracked']],
+  )
+  assert.deepEqual(
+    output.expired.map((entry) => [entry.cluster.statement, entry.reason]),
+    [['Expired old', 'expired']],
+  )
+  assert.deepEqual(
+    output.deferred.map((entry) => [entry.cluster.statement, entry.reason]),
+    [['Fresh one', 'over-cap']],
+  )
 })
 
 test('resolveCap prefers an argument, then the environment, then the default', () => {
@@ -350,9 +430,24 @@ test('resolveCap prefers an argument, then the environment, then the default', (
   assert.equal(resolveCap('3.9', {}), 3)
 })
 
+test('resolveStaleDays prefers an argument, then the environment, then the default', () => {
+  assert.equal(resolveStaleDays('45', {}), 45)
+  assert.equal(resolveStaleDays(undefined, { BS_SWEEP_NOTES_STALE_DAYS: '45' }), 45)
+  assert.equal(resolveStaleDays('7', { BS_SWEEP_NOTES_STALE_DAYS: '45' }), 7)
+  assert.equal(resolveStaleDays(undefined, {}), DEFAULT_STALE_DAYS)
+  assert.equal(resolveStaleDays('', { BS_SWEEP_NOTES_STALE_DAYS: '' }), DEFAULT_STALE_DAYS)
+  assert.equal(resolveStaleDays('nonsense', {}), DEFAULT_STALE_DAYS)
+  assert.equal(resolveStaleDays('-4', {}), DEFAULT_STALE_DAYS)
+  assert.equal(resolveStaleDays('3.9', {}), 3)
+})
+
 test('runCli select honours the environment cap without a shell expansion', () => {
   const clusters = clusterNotes(
-    Array.from({ length: 4 }, (_, index) => note(String(index), `problem number ${index}`)),
+    Array.from({ length: 4 }, (_, index) => ({
+      id: String(index),
+      body: `problem number ${index}`,
+      created_at: '2026-08-20T00:00:00Z',
+    })),
   )
   const files = { 'c.json': JSON.stringify(clusters), 'l.json': '[]' }
   const read = (file) => files[file]
@@ -362,7 +457,7 @@ test('runCli select honours the environment cap without a shell expansion', () =
   const viaEnv = JSON.parse(
     runCli(['select', 'c.json', 'l.json'], {
       readFile: read,
-      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2' },
+      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2', BS_SWEEP_NOTES_STALE_DAYS: '100000' },
     }),
   )
   assert.equal(viaEnv.selected.length, 2)
@@ -371,15 +466,46 @@ test('runCli select honours the environment cap without a shell expansion', () =
   const viaArg = JSON.parse(
     runCli(['select', 'c.json', 'l.json', '1'], {
       readFile: read,
-      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2' },
+      env: { BS_SWEEP_NOTES_MAX_ISSUES: '2', BS_SWEEP_NOTES_STALE_DAYS: '100000' },
     }),
   )
   assert.equal(viaArg.selected.length, 1)
 
   const viaDefault = JSON.parse(
-    runCli(['select', 'c.json', 'l.json'], { readFile: read, env: {} }),
+    runCli(['select', 'c.json', 'l.json'], {
+      readFile: read,
+      env: { BS_SWEEP_NOTES_STALE_DAYS: '100000' },
+    }),
   )
   assert.equal(viaDefault.selected.length, 4)
+})
+
+test('runCli select honours the stale-days environment without a shell expansion', () => {
+  const clusters = clusterNotes([
+    { id: '1', body: 'Old problem\nWhere: a.go', created_at: '2026-07-01T00:00:00Z' },
+  ])
+  const files = { 'c.json': JSON.stringify(clusters), 'l.json': '[]' }
+  const read = (file) => files[file]
+
+  const viaEnv = JSON.parse(
+    runCli(['select', 'c.json', 'l.json'], {
+      readFile: read,
+      env: {
+        BS_SWEEP_NOTES_STALE_DAYS: '100000',
+      },
+    }),
+  )
+  assert.equal(viaEnv.selected.length, 1)
+  assert.equal(viaEnv.expired.length, 0)
+
+  const viaArg = JSON.parse(
+    runCli(['select', 'c.json', 'l.json', '', '0'], {
+      readFile: read,
+      env: { BS_SWEEP_NOTES_STALE_DAYS: '100000' },
+    }),
+  )
+  assert.equal(viaArg.selected.length, 0)
+  assert.equal(viaArg.expired.length, 1)
 })
 
 test('stalenessSignals reports missing and post-note-change paths, never a verdict', () => {
@@ -505,17 +631,29 @@ test('a live theme can retire individual fixed members', () => {
   // The whole point: the theme stays live and still gets filed, but the member
   // whose defect is provably gone is retired anyway.
   const buckets = applyVerdicts(theme, [
-    { key: theme[0].key, verdict: 'live', evidence: 'internal/a.go:12 now guards it', fixedNotes: [ids[0]] },
+    {
+      key: theme[0].key,
+      verdict: 'live',
+      evidence: 'internal/a.go:12 now guards it',
+      fixedNotes: [ids[0]],
+    },
   ])
   assert.equal(buckets.live.length, 1)
   assert.deepEqual(buckets.live[0].fixedNoteIds, [ids[0]])
   assert.deepEqual(retiredNoteIds(buckets), [ids[0]])
+  assert.deepEqual(
+    retiredNoteIds(buckets, { expired: [{ cluster: theme[0], reason: 'expired' }] }),
+    [...ids].sort((a, b) => a.localeCompare(b)),
+  )
 
   // A wholly fixed theme retires all of its notes without naming them.
   const whole = applyVerdicts(theme, [
     { key: theme[0].key, verdict: 'fixed', evidence: 'internal/a.go:12' },
   ])
-  assert.deepEqual(retiredNoteIds(whole), [...ids].sort((a, b) => a.localeCompare(b)))
+  assert.deepEqual(
+    retiredNoteIds(whole),
+    [...ids].sort((a, b) => a.localeCompare(b)),
+  )
 
   // Nothing is retired by default.
   const none = applyVerdicts(theme, [{ key: theme[0].key, verdict: 'live' }])

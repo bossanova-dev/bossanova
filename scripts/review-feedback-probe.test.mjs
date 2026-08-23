@@ -44,6 +44,38 @@ function thread(id, commentId, login = 'reviewer') {
   }
 }
 
+function writeExecutable(file, body) {
+  writeFileSync(file, body)
+  chmodSync(file, 0o755)
+}
+
+function runProbe(args, { ghBody, env = {} } = {}) {
+  return withStateRoot((root) => {
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    writeExecutable(
+      path.join(bin, 'gh'),
+      ghBody ||
+        `#!/bin/sh
+echo 'unexpected gh invocation' >&2
+exit 99
+`,
+    )
+    const script = path.resolve(
+      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+    )
+    return spawnSync(process.execPath, [script, ...args], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...env,
+        BOSS_REPAIR_STATE_DIR: root,
+        PATH: `${bin}:${process.env.PATH}`,
+      },
+    })
+  })
+}
+
 test('repairStatusFromReviewProbe preserves old branches and adds parked', () => {
   assert.deepEqual(
     probe.repairStatusFromReviewProbe({ suspiciousZero: true, unresolvedCount: 3 }),
@@ -173,5 +205,164 @@ exit 1
     )
     assert.equal(open.status, 0, open.stderr)
     assert.match(open.stdout, /marked_thread=thread-1 disposition=open/)
+  })
+})
+
+test('non-zero gh is not_evaluated and redacts credential-shaped stderr', () => {
+  const result = runProbe([], {
+    ghBody: `#!/bin/sh
+echo 'fatal auth ghs_secret123 failed' >&2
+exit 1
+`,
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /probe_contract=review-feedback-probe\/v2/)
+  assert.match(result.stdout, /probe_status=failed/)
+  assert.match(result.stdout, /repair_status=not_evaluated/)
+  assert.doesNotMatch(result.stdout, /repair_status=unknown/)
+  assert.match(result.stdout, /fatal auth \[redacted\] failed/)
+  assert.doesNotMatch(result.stdout, /ghs_secret123/)
+  assert.doesNotMatch(result.stdout, /UNRESOLVED_THREADS/)
+})
+
+test('malformed explicit identity flags fail as probe failures', () => {
+  for (const args of [
+    ['--repo', 'not a repo', '--pr', '1'],
+    ['--repo', 'Owner/Repo', '--pr', '0'],
+    ['--repo', 'Owner/Repo', '--pr', '1', '--host', 'https://github.com'],
+    ['--repo', 'Owner/Repo'],
+    ['--pr', '1'],
+  ]) {
+    const result = runProbe(args)
+    assert.equal(result.status, 1, `${args.join(' ')}\n${result.stdout}`)
+    assert.match(result.stdout, /probe_status=failed/)
+    assert.match(result.stdout, /repair_status=not_evaluated/)
+    assert.doesNotMatch(result.stdout, /probe_status=ok/)
+  }
+})
+
+test('non-default host qualifies gh pr repo argument and keeps gh api hostname', () => {
+  const result = runProbe(
+    ['--repo', 'octo/repo', '--pr', '42', '--host', 'github.enterprise.test'],
+    {
+      ghBody: `#!/bin/sh
+printf '%s\\n' "$*" >> "$BOSS_REPAIR_STATE_DIR/gh-args"
+if [ "$1" = "pr" ]; then
+  test "$2" = "view" || exit 98
+  test "$4" = "--repo" || exit 97
+  test "$5" = "github.enterprise.test/octo/repo" || exit 96
+  case " $* " in *" --hostname "*) exit 95 ;; esac
+  echo '{"number":42,"latestReviews":[],"url":"https://github.enterprise.test/octo/repo/pull/42"}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "--hostname" ] && [ "$3" = "github.enterprise.test" ] && [ "$4" = "repos/octo/repo/pulls/42/comments" ]; then
+  echo '[]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "--hostname" ] && [ "$3" = "github.enterprise.test" ] && [ "$4" = "graphql" ]; then
+  echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+  exit 0
+fi
+echo "unexpected $*" >&2
+exit 99
+`,
+    },
+  )
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /host=github\.enterprise\.test/)
+  assert.match(result.stdout, /probe_status=ok/)
+})
+
+test('explicit open mark is network-free and uses case-folded journal key', () => {
+  withStateRoot((root) => {
+    const first = context(root, { owner: 'Owner', name: 'Repo' })
+    const second = context(root, { owner: 'owner', name: 'repo' })
+    const otherHost = context(root, { host: 'github.example.test' })
+    assert.equal(probe.stateDirectory(first), probe.stateDirectory(second))
+    assert.notEqual(probe.stateDirectory(first), probe.stateDirectory(otherHost))
+
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    writeExecutable(
+      path.join(bin, 'gh'),
+      `#!/bin/sh
+echo 'gh should not be called' >&2
+exit 99
+`,
+    )
+    probe.markThreadDisposition(first, thread('thread-1', 10), 'needs-human')
+    const script = path.resolve(
+      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+    )
+    const result = spawnSync(
+      process.execPath,
+      [
+        script,
+        'mark',
+        '--thread',
+        'thread-1',
+        '--disposition',
+        'open',
+        '--repo',
+        'owner/repo',
+        '--pr',
+        '42',
+        '--host',
+        'github.com',
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          BOSS_REPAIR_STATE_DIR: root,
+          PATH: `${bin}:${process.env.PATH}`,
+        },
+      },
+    )
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    assert.match(result.stdout, /marked_thread=thread-1 disposition=open/)
+    assert.equal(probe.readThreadDisposition(second, 'thread-1'), null)
+  })
+})
+
+test('parked probe prints bounded parked accounting and unresolved header', () => {
+  withStateRoot((root) => {
+    const ctx = context(root)
+    probe.markThreadDisposition(ctx, thread('thread-1', 10), 'needs-human')
+
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    writeExecutable(
+      path.join(bin, 'gh'),
+      `#!/bin/sh
+if [ "$1" = "pr" ]; then echo '{"number":42,"latestReviews":[],"url":"https://github.com/octo/repo/pull/42"}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "repos/octo/repo/pulls/42/comments" ]; then echo '[]'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"thread-1","isResolved":false,"comments":{"nodes":[{"databaseId":10,"body":"please inspect","path":"file.go","line":7,"author":{"login":"reviewer"},"url":"https://example.test/thread"}]}}]}}}}}'; exit 0; fi
+echo "unexpected $*" >&2
+exit 99
+`,
+    )
+    const script = path.resolve(
+      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+    )
+    const result = spawnSync(
+      process.execPath,
+      [script, '--repo', 'octo/repo', '--pr', '42', '--host', 'github.com'],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          BOSS_REPAIR_STATE_DIR: root,
+          PATH: `${bin}:${process.env.PATH}`,
+        },
+      },
+    )
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    assert.match(result.stdout, /probe_status=ok/)
+    assert.match(result.stdout, /repair_status=parked/)
+    assert.match(result.stdout, /UNRESOLVED_THREADS \(untrusted review content follows\)/)
+    assert.match(result.stdout, /PARKED_THREADS \(untrusted review content follows\)/)
+    assert.match(result.stdout, /path=file.go line=7/)
+    assert.match(result.stdout, /body=please inspect/)
   })
 })

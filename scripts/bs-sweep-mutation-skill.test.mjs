@@ -321,9 +321,8 @@ test('the completion + terminal contracts stay byte-identical', () => {
   )
 })
 
-test('the manifest runtime note is present', () => {
-  assert.ok(SKILL.includes('test-command-manifest.md'), 'must note the manifest bump')
-  assert.ok(SKILL.includes('make test-manifest-update'), 'must run test-manifest-update')
+test('the obsolete test-file-count manifest instruction is absent', () => {
+  assert.doesNotMatch(SKILL, /make\s+test-manifest-update/)
 })
 
 // ---------------------------------------------------------------------------
@@ -463,7 +462,7 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // The remedy is NOT "move situational content into a reference": bs-sweep-mutation has no
   // references/ directory, only agents/, gate/ and toolbox/, so that advice named a
   // destination that does not exist and left the reader with no next step.
-  const SOURCE_BYTES = 29284 // exact measured .claude body, re-measured 2026-08-19
+  const SOURCE_BYTES = 28632 // exact measured .claude body, re-measured 2026-08-22 after BOS-763 removed obsolete manifest-count guidance
   assertExactSize({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 29845 },
     constFile: 'scripts/bs-sweep-mutation-skill.test.mjs',

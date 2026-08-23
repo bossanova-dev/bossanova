@@ -328,3 +328,37 @@ func TestAccountLSTableShowsUsageAndNeverProbedDash(t *testing.T) {
 		t.Fatalf("unspecified usage should render util dashes, not 0%%: %s", got)
 	}
 }
+
+// TestAccountLSSurfacesInjectionFailedAccount pins BOS-973 on the CLI surface:
+// an account whose credentials could not be materialized for a spawn is
+// health=failed, so `boss account ls` prints `failed` in the HEALTH column and
+// — because active-but-unhealthy is not eligible — fires the existing
+// no-eligible-account hint for that provider. Before BOS-973 the same account
+// showed HEALTH=ok while every session silently ran on the ambient CLI login.
+func TestAccountLSSurfacesInjectionFailedAccount(t *testing.T) {
+	ls := findLSSubcommand(t)
+	var out bytes.Buffer
+	ls.SetOut(&out)
+	stub := &accountLSStub{accounts: []*pb.Account{{
+		Id:       "acct-codex-2",
+		Provider: "codex",
+		Label:    "team-codex",
+		Status:   "active",
+		Health:   "failed",
+		LastTestError: "credential injection failed: materialize codex account: " +
+			"project codex base home: existing entry is not a symlink",
+	}}}
+	if err := accountLS(ls, stub); err != nil {
+		t.Fatalf("accountLS: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "HEALTH") || !strings.Contains(got, "failed") {
+		t.Fatalf("HEALTH column must show failed:\n%s", got)
+	}
+	if !strings.Contains(got, "no eligible account") {
+		t.Fatalf("no-eligible-account hint must fire for the injection-failed provider:\n%s", got)
+	}
+	if !strings.Contains(got, "codex") {
+		t.Fatalf("hint must name the codex provider:\n%s", got)
+	}
+}

@@ -27,6 +27,7 @@ func testCronJobs() []*pb.CronJob {
 			ShouldRunSetupCommand: true,
 			IsZeroOutput:          true,
 			LastRunSessionId:      "sess-aaa-111",
+			LastRunAgentName:      "claude",
 			LastRunAt:             timestamppb.New(timestampDaysAgo(1)),
 			LastRunOutcome:        "pr_created",
 			NextRunAt:             timestamppb.New(timestampDaysAgo(-1)),
@@ -59,6 +60,7 @@ type cronJSON struct {
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
 	IsZeroOutput          bool   `json:"zero_output"`
 	LastRunSessionID      string `json:"last_run_session_id"`
+	LastRunAgentName      string `json:"last_run_agent_name"`
 	LastRunAt             string `json:"last_run_at"`
 	LastRunOutcome        string `json:"last_run_outcome"`
 	NextRunAt             string `json:"next_run_at"`
@@ -71,7 +73,7 @@ func TestCLI_Cron_Ls(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	for _, want := range []string{"cron-aaa", "nightly-debt", "cron-bbb", "weekly-mutation"} {
+	for _, want := range []string{"cron-aaa", "nightly-debt", "claude", "cron-bbb", "weekly-mutation", "unknown"} {
 		if !strings.Contains(res.Stdout, want) {
 			t.Errorf("stdout missing %q\n%s", want, res.Stdout)
 		}
@@ -143,6 +145,9 @@ func TestCLI_Cron_Ls_JSON(t *testing.T) {
 	if first.LastRunSessionID != "sess-aaa-111" || first.LastRunOutcome != "pr_created" {
 		t.Errorf("unexpected last-run fields: %+v", first)
 	}
+	if first.LastRunAgentName != "claude" {
+		t.Errorf("unexpected last_run_agent_name: %+v", first)
+	}
 	if first.LastRunAt == "" || first.NextRunAt == "" {
 		t.Errorf("expected RFC3339 timestamps, got last=%q next=%q", first.LastRunAt, first.NextRunAt)
 	}
@@ -165,6 +170,35 @@ func TestCLI_Cron_Show(t *testing.T) {
 		if !strings.Contains(res.Stdout, want) {
 			t.Errorf("stdout missing %q\n%s", want, res.Stdout)
 		}
+	}
+}
+
+func TestCLI_Cron_Show_LabelsLastRunAgentMismatch(t *testing.T) {
+	jobs := testCronJobs()
+	jobs[0].AgentName = "codex"
+	jobs[0].LastRunAgentName = "claude"
+	h := clitest.New(t, clitest.WithCronJobs(jobs...))
+	res := h.Run("cron", "show", "cron-aaa")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "Last run agent:      claude (mismatch: job codex)") {
+		t.Fatalf("stdout missing mismatch label:\n%s", res.Stdout)
+	}
+}
+
+func TestCLI_Cron_Show_LabelsUnknownLastRunAgent(t *testing.T) {
+	jobs := testCronJobs()
+	jobs[0].LastRunAgentName = ""
+	h := clitest.New(t, clitest.WithCronJobs(jobs...))
+	res := h.Run("cron", "show", "cron-aaa")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "Last run agent:      unknown") {
+		t.Fatalf("stdout missing unknown last-run agent:\n%s", res.Stdout)
 	}
 }
 

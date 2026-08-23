@@ -7,11 +7,18 @@ import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { putPlanAttachment, selectImplementationPlanAttachment } from './plan-attachment.mjs'
+import {
+  decodeSpecAttachmentBody,
+  putPlanAttachment,
+  selectImplementationPlanAttachment,
+  selectSupersededPlanAttachments,
+} from './plan-attachment.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./plan-attachment.mjs', import.meta.url))
 const TOOLBOX_ROOT = fileURLToPath(new URL('.', import.meta.url))
-const USAGE = 'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n'
+const USAGE =
+  'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
+  '       plan-attachment.mjs decode <in-file> <out-file>\n'
 
 // Built by concatenation so this file is not itself a match for the scan below.
 const FORBIDDEN_GUARD = ['import', 'meta', 'main'].join('.')
@@ -81,6 +88,83 @@ test('selectImplementationPlanAttachment returns null for non-plan attachments',
   )
 })
 
+test('selectSupersededPlanAttachments returns exact-title plans older than the kept attachment', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'old', title: 'Implementation plan (BOS-999)', createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    ['old'],
+  )
+})
+
+test('selectSupersededPlanAttachments keeps exact-title plans newer than the kept attachment', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' },
+        { id: 'new', title: 'Implementation plan (BOS-999)', createdAt: '2026-03-01T00:00:00Z' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    [],
+  )
+})
+
+test('selectSupersededPlanAttachments never deletes Markdown fallback title matches', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        {
+          id: 'notes',
+          title: 'BOS-999 design notes',
+          contentType: 'text/markdown',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    [],
+  )
+})
+
+test('selectSupersededPlanAttachments ignores other issues and the kept id itself', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [
+        { id: 'other', title: 'Implementation plan (BOS-123)', createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' },
+      ],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    [],
+  )
+})
+
+test('selectSupersededPlanAttachments fails closed when the keep attachment is missing', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [{ id: 'old', title: 'Implementation plan (BOS-999)', createdAt: '2026-01-01T00:00:00Z' }],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    [],
+  )
+})
+
+test('selectSupersededPlanAttachments returns empty when there is no older plan attachment', () => {
+  assert.deepEqual(
+    selectSupersededPlanAttachments(
+      [{ id: 'keep', title: 'Implementation plan (BOS-999)', createdAt: '2026-02-01T00:00:00Z' }],
+      { issueID: 'BOS-999', keepAttachmentId: 'keep' },
+    ),
+    [],
+  )
+})
+
 test('putPlanAttachment sends raw bytes and every signed header verbatim', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-'))
   const file = join(directory, 'plan.md')
@@ -129,6 +213,35 @@ test('putPlanAttachment reports a rejected signed upload', async () => {
   }
 })
 
+test('decodeSpecAttachmentBody passes plain JSON through unchanged', () => {
+  const body = '{\n  "schemaVersion": 1,\n  "parentId": "BOS-1"\n}\n'
+  assert.equal(decodeSpecAttachmentBody(body), body)
+})
+
+test('decodeSpecAttachmentBody decodes base64 JSON and preserves decoded text', () => {
+  const decoded = '{\n  "schemaVersion": 1,\n  "parentId": "BOS-2"\n}\n'
+  assert.equal(decodeSpecAttachmentBody(Buffer.from(decoded).toString('base64')), decoded)
+})
+
+test('decodeSpecAttachmentBody throws a named error for non-JSON attachment text', () => {
+  assert.throws(
+    () => decodeSpecAttachmentBody('not-json-and-not-base64-json'),
+    /plan-attachment: invalid base64 spec attachment body/,
+  )
+})
+
+test('decodeSpecAttachmentBody rejects base64 bodies that do not round-trip cleanly', () => {
+  const encoded = Buffer.from('{"schemaVersion":1}').toString('base64')
+  assert.throws(
+    () => decodeSpecAttachmentBody(`${encoded}!!!!`),
+    /plan-attachment: invalid base64 spec attachment body/,
+  )
+  assert.throws(
+    () => decodeSpecAttachmentBody(`${encoded.slice(0, 4)} !!!! ${encoded.slice(4)}`),
+    /plan-attachment: invalid base64 spec attachment body/,
+  )
+})
+
 // The entry point below is the defect BOS-872 fixes: guarded by a property that reads
 // `undefined` on older runtimes, the whole CLI block was dead code that exited 0 having
 // uploaded nothing. These spawn the file for real, so a dead guard cannot pass them.
@@ -148,6 +261,28 @@ test('CLI runs the entry point: put with a missing operand exits 2 with the usag
 test('CLI runs the entry point: an unrecognised command exits non-zero, never 0', () => {
   const result = runCli(['bogus'])
   assert.notEqual(result.status, 0)
+  assert.equal(result.status, 2)
+  assert.equal(result.stderr, USAGE)
+})
+
+test('CLI decode writes decoded JSON to the output path', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-attachment-decode-'))
+  const input = join(directory, 'body.txt')
+  const output = join(directory, 'spec.json')
+  const decoded = '{\n  "schemaVersion": 1,\n  "parentId": "BOS-3"\n}\n'
+  writeFileSync(input, Buffer.from(decoded).toString('base64'))
+  try {
+    const result = runCli(['decode', input, output])
+    assert.equal(result.status, 0)
+    assert.equal(result.stderr, '')
+    assert.equal(readFileSync(output, 'utf8'), decoded)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('CLI decode with a missing operand exits 2 with the usage line', () => {
+  const result = runCli(['decode', 'body.txt'])
   assert.equal(result.status, 2)
   assert.equal(result.stderr, USAGE)
 })

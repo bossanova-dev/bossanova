@@ -130,12 +130,71 @@ test('production triage pins Linear injection and the full gate pipeline', () =>
   // expand it before a VAR=n prefix reaches the gate, silently yielding the default.
   assert.doesNotMatch(SKILL, /select[^\n]*BS_SWEEP_NOTES_MAX_ISSUES/)
   assert.match(SKILL, /read\s+from `BS_SWEEP_NOTES_MAX_ISSUES` inside\s+the\s+gate\s+process/)
+  assert.match(SKILL, /read\s+from `BS_SWEEP_NOTES_STALE_DAYS` inside\s+the\s+gate\s+process/)
+  assert.match(SKILL, /defaulting\s+to\s+30\s+days/)
+  assert.doesNotMatch(SKILL, /select[^\n]*BS_SWEEP_NOTES_STALE_DAYS/)
   assert.match(SKILL, /[Ee]very\s+mechanical\s+cluster\s+key\s+must\s+appear\s+exactly\s+once/)
   assert.match(
     SKILL,
     /If\s+either\s+dispatch\s+errors, stop\s+with\s+no\s+writes, deletions\s+or\s+retags/,
   )
   assert.doesNotMatch(SKILL, /dispatch.*inline\s+fallback/i)
+})
+
+test('terminal cleanliness is attributed to this run instead of requiring a globally clean tree', () => {
+  assert.match(
+    SKILL,
+    /The\s+sweep's\s+own\s+write\s+surface\s+is\s+the\s+scratch\s+directory\s+\(`RUN_DIR`, outside\s+the\s+worktree\)\s+and\s+the\s+repo-scoped\s+lock\s+directory\s+under\s+the\s+git\s+common\s+directory/,
+  )
+  assert.match(
+    SKILL,
+    /if\s+a\s+future\s+change\s+adds\s+another\s+write\s+target,\s+update\s+this\s+list\s+and\s+the\s+Phase\s+5\s+attribution\s+rule\s+in\s+the\s+same\s+change/,
+  )
+  assert.doesNotMatch(SKILL, /BLOCKED:\s+worktree\s+is\s+dirty/)
+  assert.match(
+    SKILL,
+    /git\s+status\s+--porcelain\s+>"\$STATUS_BASELINE"/,
+    'Phase 0 must capture a porcelain baseline',
+  )
+  assert.match(
+    SKILL,
+    /if\s+\[\s+-s\s+"\$STATUS_BASELINE"\s+\];\s+then[\s\S]{0,120}worktree\s+baseline\s+observed/,
+    'Phase 0 must report non-empty baseline context without blocking',
+  )
+  assert.match(
+    SKILL,
+    /LC_ALL=C\s+comm\s+-23\s+"\$STATUS_AFTER_SORTED"\s+"\$STATUS_BASELINE_SORTED"\s+>"\$STATUS_NEW"/,
+    'Phase 5 must compute records added since baseline',
+  )
+  assert.match(
+    SKILL,
+    /LC_ALL=C\s+comm\s+-13\s+"\$STATUS_AFTER_SORTED"\s+"\$STATUS_BASELINE_SORTED"\s+>"\$STATUS_DISAPPEARED"/,
+    'Phase 5 must compute baseline records that disappeared',
+  )
+  assert.match(
+    SKILL,
+    /foreign\s+writer\s+delta\s+\(non-fatal\)/,
+    'Phase 5 must label non-attributable deltas as foreign writers',
+  )
+  assert.match(
+    SKILL,
+    /baseline\s+entries\s+disappeared\s+\(non-fatal\)/,
+    'Phase 5 must not fail on baseline entries that disappeared',
+  )
+  assert.match(
+    SKILL,
+    /Compare\s+whole\s+porcelain\s+records\s+as\s+opaque\s+lines/,
+    'Phase 5 must avoid hand-parsing porcelain paths',
+  )
+  assert.match(
+    SKILL,
+    /unclassifiable\s+status\s+delta\s+is\s+attributed\s+to\s+this\s+run\s+and\s+fails/,
+    'Phase 5 must fail closed when attribution is uncertain',
+  )
+  assert.match(
+    SKILL,
+    /\*\*Terminal\s+cleanup\.\*\*[\s\S]{0,240}leaves\s+no\s+residue\s+of\s+this\s+run/,
+  )
 })
 
 test('theming allows a cross-target merge and bounds the one authored field', () => {
@@ -209,6 +268,7 @@ test('a live theme can still retire individually fixed member notes', () => {
   // The retirement set must come from the gate, not from prose unioning buckets.
   assert.ok(SKILL.includes('node "$GATE" retired "$BUCKETS_JSON"'))
   assert.match(SKILL, /rather\s+than\s+unioning\s+buckets\s+by\s+hand/)
+  assert.ok(SKILL.includes('node "$GATE" retired "$BUCKETS_JSON" "$SEL_FILE"'))
   assert.match(
     SKILL,
     /can\s+be\s+both\s+filed\s+as\s+a\s+child\s+and\s+have\s+some\s+of\s+its\s+notes\s+retired/,
@@ -236,6 +296,8 @@ test('fixed themes are retagged rather than deleted, and nothing else is touched
   assert.match(SKILL, /`--tag` REPLACES\s+the\s+whole\s+tag\s+set/)
   assert.match(SKILL, /Deletion\s+is\s+not\s+used\s+here/)
   assert.match(SKILL, /`boss\s+notes\s+rm` is\s+permanent/)
+  assert.match(SKILL, /Expired\s+themes\s+are\s+retagged\s+`stale`,\s+never\s+deleted/)
+  assert.match(SKILL, /Do\s+not\s+use `boss\s+notes\s+rm` on\s+an\s+expired\s+note/)
   assert.match(SKILL, /Every\s+id\s+must\s+appear\s+in `snapshot-ids`/)
   assert.match(SKILL, /every\s+initial `dropped` theme\s+whose\s+reason\s+is `already-tracked`/)
   // Deliberately narrower than the old blanket rule: an `unverifiable` theme may
@@ -249,6 +311,27 @@ test('fixed themes are retagged rather than deleted, and nothing else is touched
     SKILL,
     /\*\*Deletion\s+wins\*\*: subtract\s+the\s+delete\s+set\s+above\s+before\s+retagging/,
   )
+})
+
+test('selection and reporting document expiry and convergence arithmetic', () => {
+  assert.match(SKILL, /fresh\s+JSON\s+with\s+exactly\s+those\s+four\s+array\s+buckets/)
+  assert.match(SKILL, /`selected`, `deferred` \(`over-cap`\), `dropped`[\s\S]{0,80}`expired`/)
+  assert.match(SKILL, /`already-tracked` wins\s+before\s+expiry/)
+  assert.match(SKILL, /expiry\s+wins\s+before\s+the\s+cap/)
+  assert.match(SKILL, /newest\s+parseable\s+note\s+timestamp\s+is\s+older/)
+  assert.match(SKILL, /no\s+parseable\s+timestamp\s+remains\s+live/)
+  for (const pattern of [
+    /snapshot\s+window\s+in\s+days/,
+    /arrival\s+rate\s+over\s+that\s+window/,
+    /cap\s+in\s+force/,
+    /implied\s+drain\s+rate/,
+    /expired\s+count/,
+    /whether\s+the\s+backlog\s+converges/,
+  ]) {
+    assert.match(SKILL, pattern)
+  }
+  assert.match(SKILL, /rate\s+is\s+not\s+computable/)
+  assert.match(SKILL, /rather\s+than\s+fabricating\s+a\s+divide-by-zero\s+rate/)
 })
 
 test('both gate mirrors carry the same cron name and fixture-capable fail-closed probe', () => {

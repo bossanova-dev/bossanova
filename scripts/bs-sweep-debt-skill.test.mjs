@@ -21,7 +21,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DISPATCH_FAILURE } from '../skills-toolbox/bs-run-sentinel.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
-import { parseDetectorFindings, candidateKey } from './bs-sweep-debt-survey.mjs'
+import {
+  parseDetectorFindings,
+  candidateKey,
+  validateSurveyCandidate,
+} from './bs-sweep-debt-survey.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
 import {
   assertArtifactSet,
@@ -320,6 +324,121 @@ test('survey loss check: every detector finding surfaces as a candidate (no drop
   assert.ok(new Set(expected.map((c) => c.category)).size >= 2, 'fixture must span >=2 categories')
 })
 
+test('survey candidates carry module attribution, repo-root path, and confirmation evidence', () => {
+  const output = read('scripts/fixtures/bs-sweep-debt/detector-output.txt')
+  const surfaced = parseDetectorFindings(output)
+
+  const bossd = surfaced.find((c) => c.path === 'services/bossd/internal/foo/foo.go')
+  assert.deepEqual(
+    {
+      module: bossd.module,
+      path: bossd.path,
+      confirmationCommand: bossd.confirmationCommand,
+      findingLine: bossd.findingLine,
+    },
+    {
+      module: 'bossd',
+      path: 'services/bossd/internal/foo/foo.go',
+      confirmationCommand: 'make debt-deadcode-bossd',
+      findingLine: 'services/bossd/internal/foo/foo.go:42:6: unreachable func: helperUnused',
+    },
+  )
+
+  const filesize = surfaced.find((c) => c.path === 'services/boss/internal/views/home.go')
+  assert.equal(filesize.module, 'boss')
+  assert.equal(filesize.confirmationCommand, 'make debt-filesize-boss')
+  assert.equal(
+    filesize.excluded,
+    'file-axis decomposition candidate: 1778 lines exceeds 2x limit 800',
+  )
+})
+
+test('survey candidate validation accepts only existing paths inside the declared module', () => {
+  const repoRoot = fs.mkdtempSync(path.join(rootDir, '.tmp-bs-sweep-debt-'))
+  try {
+    fs.mkdirSync(path.join(repoRoot, 'services/bossd/internal/server'), { recursive: true })
+    fs.mkdirSync(path.join(repoRoot, 'services/bosso/internal/server'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, 'services/bossd/internal/server/proxy.go'), '')
+    fs.writeFileSync(path.join(repoRoot, 'services/bosso/internal/server/proxy.go'), '')
+
+    const base = { module: 'bossd', path: 'services/bossd/internal/server/proxy.go' }
+    assert.deepEqual(validateSurveyCandidate(base, { repoRoot }), { ok: true, reason: null })
+    assert.deepEqual(
+      validateSurveyCandidate(
+        { module: 'bossd', file: 'services/bossd/internal/server/proxy.go' },
+        { repoRoot },
+      ),
+      { ok: false, reason: 'missing path' },
+    )
+
+    assert.deepEqual(
+      validateSurveyCandidate(
+        { module: 'bossd', path: 'services/bosso/internal/server/proxy.go' },
+        { repoRoot },
+      ),
+      { ok: false, reason: 'path is outside declared module bossd' },
+    )
+    assert.deepEqual(
+      validateSurveyCandidate(
+        { module: 'bossd', path: 'services/bossd/internal/server/missing.go' },
+        { repoRoot },
+      ),
+      { ok: false, reason: 'path does not exist at repo root' },
+    )
+    assert.deepEqual(
+      validateSurveyCandidate({ module: 'bossd', path: 'internal/server/proxy.go' }, { repoRoot }),
+      { ok: false, reason: 'path does not exist at repo root' },
+    )
+  } finally {
+    fs.rmSync(repoRoot, { force: true, recursive: true })
+  }
+})
+
+test('survey dispatch contract requires module-attributed confirmed candidates and validation', () => {
+  for (const dir of skillDirs) {
+    const skill = read(path.join(dir, 'SKILL.md'))
+    const dispatch = read(path.join(dir, 'references/subagent-dispatch.md'))
+    const survey = dispatchSection(dispatch, 'Phase 3')
+    assert.match(survey, /required `module` field/i, `${dir} must require module`)
+    assert.match(survey, /repo-root-relative `path`/i, `${dir} must require repo-root path`)
+    assert.match(
+      survey,
+      /`confirmationCommand`.*`findingLine`/s,
+      `${dir} must require reconfirmation command and literal finding line`,
+    )
+    assert.match(
+      survey,
+      /module.*path.*confirmationCommand.*findingLine/s,
+      `${dir} jq example must emit the new candidate fields`,
+    )
+    assert.match(
+      survey,
+      /drops?\s+.*candidate.*recorded\s+reason/s,
+      `${dir} consumer must drop invalid candidates with a recorded reason`,
+    )
+    assert.match(
+      skill,
+      /recent\s+`Debt-Area:`\s+trailers[\s\S]{0,500}file-axis[\s\S]{0,120}bounded\s+sweep\s+work/i,
+      `${dir} exclusion clause must sit with the Debt-Area rotation exclusion`,
+    )
+    assert.match(
+      skill,
+      /bounded\s+diff\s+is\s+filtered\s+before\s+it\s+is\s+scored/i,
+      `${dir} Phase 4 must say bounded diff is filtered before scoring`,
+    )
+    assert.match(
+      dispatch,
+      /Every\s+candidate\s+present\s+in\s*>\s*the\s+detector\s+output\s+must\s+appear/s,
+      `${dir} excluded candidates must remain reported for fixture-loss parity`,
+    )
+    assert.match(
+      dispatch,
+      /excluded`\s+reason,\s+so\s+fixture-loss\s+parity\s+remains\s+intact/,
+      `${dir} excluded candidates must carry a reason and stay in the payload`,
+    )
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Detector wiring (BOS-525) — the file-size detector the complexity-hotspot
 // playbook points at exists, and its threshold knob is not silently inert.
@@ -468,7 +587,10 @@ test('the always-resident body is pinned at its exact post-split size', () => {
   // Rebased onto main at 5978bd850: #2090 rewrote the awk whole-record positionals out of the
   // published bodies, growing this one by 110 B. That is a correctness rewrite of code the body
   // must carry, not new prose, so the pin absorbs exactly it.
-  const SOURCE_BYTES = 30321 // exact measured .claude body, re-measured 2026-08-19
+  //
+  // BOS-918 adds a resident pre-ranking exclusion rule beside the Debt-Area rotation rule,
+  // then trims surrounding wording so the body still stays below the pre-extraction bound.
+  const SOURCE_BYTES = 30663 // exact measured .claude body, re-measured 2026-08-22
 
   // Seven separate gates in this file index or iterate skillDirs, and this pin reads
   // skillDirs[0]. A list that silently shortened would leave every one of them asserting

@@ -78,6 +78,12 @@ func TestRunnerEndToEndWithFakeCodex(t *testing.T) {
 	if exitErr := r.ExitError(sid); exitErr != nil {
 		t.Fatalf("ExitError = %v, want nil for clean fake_codex exit", exitErr)
 	}
+	if r.IsRunning("sess-1") != r.IsRunning(sid) {
+		t.Errorf("caller hint IsRunning = %v, discovered IsRunning = %v", r.IsRunning("sess-1"), r.IsRunning(sid))
+	}
+	if got, want := r.ExitError("sess-1"), r.ExitError(sid); got != want {
+		t.Errorf("caller hint ExitError = %v, discovered ExitError = %v", got, want)
+	}
 
 	logBytes, err := os.ReadFile(logPath)
 	if err != nil {

@@ -215,3 +215,138 @@ func TestTmuxDeliveryConfig_OverflowingSecondsStayInContract(t *testing.T) {
 		}
 	}
 }
+
+// TestSwitchRespawnBudgetFor_FloorsNonPositiveReadiness pins the low edge of
+// the switch budget's derivation (BOS-948).
+//
+// SwitchRespawnBudgetFor takes the RESOLVED readiness rather than the config
+// struct, so it cannot lean on SessionStartReadyDeadline's own floor: a caller
+// that hands it a zero — a client with nothing configured, a nil-client
+// fallback — would otherwise get a budget made of allowances alone, roughly
+// half the shipped default, and the readiness wait it bounds would be clamped
+// on the very path that configured nothing. Floor it here instead, so both
+// sides of the seam answer a non-positive value the same way.
+func TestSwitchRespawnBudgetFor_FloorsNonPositiveReadiness(t *testing.T) {
+	t.Parallel()
+
+	want := SwitchRespawnBudgetFor(DefaultSessionStartReadyDeadline)
+	tests := []struct {
+		name      string
+		readiness time.Duration
+	}{
+		{name: "zero is the unconfigured client", readiness: 0},
+		{name: "a negative never becomes a shorter budget", readiness: -60 * time.Second},
+		{name: "the default itself is the reference", readiness: DefaultSessionStartReadyDeadline},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := SwitchRespawnBudgetFor(tt.readiness); got != want {
+				t.Errorf("SwitchRespawnBudgetFor(%v) = %v, want the default-derived %v", tt.readiness, got, want)
+			}
+		})
+	}
+}
+
+// TestSwitchRespawnBudgetFor_SaturatesRatherThanWrapping pins the high edge,
+// and the direction of the choice is the point.
+//
+// A readiness within one allowance of time.Duration's ceiling makes the sum
+// wrap negative. Falling back to the default there — the obvious defensive move,
+// and what SessionStartReadyDeadline does with an overflowing SECONDS value —
+// would re-create this ticket's bug at the extreme: the largest configured
+// readiness would receive the smallest budget, clamping the wait hardest
+// exactly where the operator asked for the most room. Saturating keeps the
+// function monotonic in its input.
+//
+// The companion assertion is that the accessor never actually produces such a
+// value: an overflowing session_start_ready_deadline_seconds is answered with
+// the default before the derivation is ever reached, so this edge is reachable
+// only by an in-process caller, not by settings.json.
+func TestSwitchRespawnBudgetFor_SaturatesRatherThanWrapping(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = time.Duration(math.MaxInt64)
+	for _, readiness := range []time.Duration{ceiling, ceiling - time.Second, ceiling - switchPolicyMargin} {
+		got := SwitchRespawnBudgetFor(readiness)
+		if got <= 0 {
+			t.Errorf("SwitchRespawnBudgetFor(%v) = %v: the sum wrapped instead of saturating", readiness, got)
+		}
+		if got < readiness {
+			t.Errorf("SwitchRespawnBudgetFor(%v) = %v, which is SHORTER than the readiness it must fund — "+
+				"the largest configured value must not receive the smallest budget", readiness, got)
+		}
+	}
+
+	// The settings.json route stops short of the edge on its own.
+	overflowSeconds := math.MaxInt64/int64(time.Second) + 1
+	if overflowSeconds > int64(math.MaxInt) {
+		t.Skipf("int is too narrow on this platform to express an overflowing seconds value (%d)", overflowSeconds)
+	}
+	cfg := TmuxDeliveryConfig{SessionStartReadyDeadlineSeconds: int(overflowSeconds)}
+	if got := SwitchRespawnBudgetFor(cfg.SessionStartReadyDeadline()); got != SwitchRespawnBudgetFor(DefaultSessionStartReadyDeadline) {
+		t.Errorf("an overflowing configured seconds value produced %v; the accessor must answer with its "+
+			"default before the derivation is reached", got)
+	}
+}
+
+func TestStartChatRunBudgetFor(t *testing.T) {
+	t.Parallel()
+
+	tail := StartChatRunInRPCTail
+	tests := []struct {
+		name      string
+		readiness time.Duration
+		want      time.Duration
+	}{
+		{name: "1s floors the tail term", readiness: time.Second, want: time.Second + tail},
+		{name: "4s exactly matches the tail floor", readiness: 4 * time.Second, want: 8 * time.Second},
+		{name: "30s preserves the 2x ratio", readiness: 30 * time.Second, want: 60 * time.Second},
+		{name: "45s default remains 90s", readiness: 45 * time.Second, want: 90 * time.Second},
+		{name: "120s derives a 240s ceiling", readiness: 120 * time.Second, want: 240 * time.Second},
+		{name: "300s derives a 600s ceiling", readiness: 300 * time.Second, want: 600 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := StartChatRunBudgetFor(tt.readiness)
+			if got != tt.want {
+				t.Fatalf("StartChatRunBudgetFor(%v) = %v, want %v", tt.readiness, got, tt.want)
+			}
+			if got <= tt.readiness+StartChatRunSubmitVerifierTail {
+				t.Fatalf("StartChatRunBudgetFor(%v) = %v does not fund readiness plus submit verifier %v",
+					tt.readiness, got, StartChatRunSubmitVerifierTail)
+			}
+			if got-tt.readiness < tt.readiness && tt.readiness >= tail {
+				t.Fatalf("StartChatRunBudgetFor(%v) = %v breaks the 2x policy ratio", tt.readiness, got)
+			}
+		})
+	}
+}
+
+func TestStartChatRunBudgetFor_DefaultCompatibilityAndFallbacks(t *testing.T) {
+	t.Parallel()
+
+	const want = 90 * time.Second
+	if got := StartChatRunBudgetFor(DefaultSessionStartReadyDeadline); got != want {
+		t.Fatalf("StartChatRunBudgetFor(DefaultSessionStartReadyDeadline) = %v, want %v", got, want)
+	}
+	for _, readiness := range []time.Duration{0, -time.Second} {
+		if got := StartChatRunBudgetFor(readiness); got != want {
+			t.Errorf("StartChatRunBudgetFor(%v) = %v, want default-derived %v", readiness, got, want)
+		}
+	}
+}
+
+func TestStartChatRunBudgetFor_SaturatesRatherThanWrapping(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = time.Duration(math.MaxInt64)
+	for _, readiness := range []time.Duration{ceiling, ceiling - time.Second} {
+		got := StartChatRunBudgetFor(readiness)
+		if got != ceiling {
+			t.Errorf("StartChatRunBudgetFor(%v) = %v, want saturated %v", readiness, got, ceiling)
+		}
+	}
+}

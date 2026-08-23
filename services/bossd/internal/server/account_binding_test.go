@@ -42,6 +42,12 @@ type accountBindingStore struct {
 func (s accountBindingStore) Create(context.Context, db.CreateAccountParams) (*models.Account, error) {
 	return nil, errors.New("not implemented")
 }
+func (s accountBindingStore) RecordInjectionFailure(context.Context, string, string) error {
+	return errors.New("not implemented")
+}
+func (s accountBindingStore) ClearInjectionFailure(context.Context, string) error {
+	return errors.New("not implemented")
+}
 func (s accountBindingStore) Get(context.Context, string) (*models.Account, error) {
 	return nil, sql.ErrNoRows
 }

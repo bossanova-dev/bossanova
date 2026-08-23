@@ -687,6 +687,19 @@ type mockAgentChatStore struct {
 type markStartFailedCall struct {
 	agentSessionID string
 	reason         string
+	// ctxErr is the caller context's Err() at the moment the write was
+	// attempted. It is the seam that lets a test tell a stamp that ran on a
+	// live context from one that was issued on a context already dead — the
+	// two are indistinguishable from the call list alone, and the best-effort
+	// stamps deliberately swallow their own errors, so without this field
+	// every "the stamp still ran" assertion passes whether or not the write
+	// was detached from a cancelled caller (BOS-897).
+	ctxErr error
+	// deadline is the caller context's Deadline() at the moment the write was
+	// attempted, zero when it carried none. It pins the BUDGET the detached
+	// write runs under: ctxErr alone proves the context was live, not that it
+	// was bounded, and an unbounded detached write can outlive the process.
+	deadline time.Time
 }
 
 type tmuxNameUpdate struct {
@@ -866,10 +879,22 @@ func (m *mockAgentChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, 
 	return nil
 }
 
-func (m *mockAgentChatStore) MarkStartFailed(_ context.Context, agentSessionID, reason string) error {
+func (m *mockAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
+	// Record the attempt WITH the caller context's liveness, then honour
+	// cancellation the way the real SQLite store does: a write issued on a dead
+	// context fails without touching the row. Recording before refusing is
+	// deliberate — a test needs to distinguish "never attempted" from
+	// "attempted on a context that could not carry it", and only the recorded
+	// ctxErr can tell those apart (mirrors UpdateTmuxSessionName, which refuses
+	// the same way).
+	ctxErr := ctx.Err()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.markStartFailedCalls = append(m.markStartFailedCalls, markStartFailedCall{agentSessionID: agentSessionID, reason: reason})
+	deadline, _ := ctx.Deadline()
+	m.markStartFailedCalls = append(m.markStartFailedCalls, markStartFailedCall{agentSessionID: agentSessionID, reason: reason, ctxErr: ctxErr, deadline: deadline})
+	if ctxErr != nil {
+		return ctxErr
+	}
 	for _, chats := range m.chatsBySession {
 		for _, chat := range chats {
 			if chat.AgentSessionID == agentSessionID {
@@ -7010,6 +7035,19 @@ func TestLinkPR_URLRejectsWrongRepo(t *testing.T) {
 type recordedTmuxCall struct {
 	subcommand string
 	args       []string
+	// ctxErr is the invoking context's Err() at the moment the command was
+	// built. It matters because the factory records BEFORE the command runs,
+	// so presence in the call list proves only that the call site was reached
+	// — a subcommand built on an already-dead context is recorded identically
+	// to one that actually executed (exec.CommandContext refuses to start it).
+	// Best-effort teardown swallows that failure, so without this field every
+	// "the cleanup kill still ran" assertion is vacuously green whether or not
+	// the kill was detached from a cancelled caller (BOS-897).
+	ctxErr error
+	// deadline is the invoking context's Deadline() when the command was
+	// built, zero when it carried none. Same reason as markStartFailedCall's:
+	// it pins the budget the detached kill runs under, which ctxErr cannot.
+	deadline time.Time
 }
 
 // fakeTmux drives a *tmux.Client via WithCommandFactory so cron tmux tests
@@ -7055,7 +7093,8 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		return exec.CommandContext(ctx, "true")
 	}
 
-	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+	deadline, _ := ctx.Deadline()
+	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...), ctxErr: ctx.Err(), deadline: deadline})
 
 	if f.failSubcommand[subcommand] {
 		if stderr := f.failStderr[subcommand]; stderr != "" {
@@ -7067,6 +7106,24 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		return exec.CommandContext(ctx, "printf", "%s", f.capturePaneOutput)
 	}
 	return exec.CommandContext(ctx, "true")
+}
+
+// lastCall returns the most recent recorded invocation of a subcommand, or
+// nil. The LAST one is what the teardown assertions need: a switch issues
+// kill-session twice — once for the STOP that precedes the respawn, on a
+// context still comfortably live, and again from the failure cleanup after the
+// respawn has burned the whole budget. Reading the first would report the STOP
+// and say nothing at all about the cleanup.
+func (f *fakeTmux) lastCall(name string) *recordedTmuxCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.calls) - 1; i >= 0; i-- {
+		if f.calls[i].subcommand == name {
+			c := f.calls[i]
+			return &c
+		}
+	}
+	return nil
 }
 
 func (f *fakeTmux) hasSubcommand(name string) bool {

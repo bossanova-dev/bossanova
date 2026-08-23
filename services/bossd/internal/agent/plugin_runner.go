@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // AgentRunnerClient is the bossd-side wrapper around the AgentRunnerService
@@ -108,12 +109,21 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, w
 }
 
 func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	logKey := sessionID
+	if logKey == "" {
+		var err error
+		logKey, err = sqlutil.NewID()
+		if err != nil {
+			return "", fmt.Errorf("mint log key: %w", err)
+		}
+	}
+	logPath := r.logPathFor(logKey)
 	req := &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   workDir,
 		Plan:                      plan,
 		ResumeId:                  resume,
 		SessionId:                 sessionID,
-		LogPath:                   r.logPathFor(sessionID),
+		LogPath:                   logPath,
 		Model:                     model,
 		ExtraEnv:                  extraEnv,
 		HeadlessCapabilityProfile: profile,
@@ -122,8 +132,8 @@ func (r *PluginRunner) start(ctx context.Context, workDir, plan string, resume *
 	if err != nil {
 		return "", fmt.Errorf("plugin StartRun: %w", err)
 	}
-	// Open the tailer on the resolved session ID.
-	logPath := r.logPathFor(resp.SessionId)
+	// Index the tail under the resolved session ID, but open the path the plugin
+	// was asked to write.
 	if err := r.tailer.Open(resp.SessionId, logPath); err != nil {
 		// Plugin already started; we can't easily roll back. Log and continue.
 		r.logger.Warn().Err(err).Str("session", resp.SessionId).Msg("tailer.Open failed; AttachSession output will be empty")

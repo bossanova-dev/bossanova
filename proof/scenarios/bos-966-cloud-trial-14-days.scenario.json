@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "title": "BOS-966 Settings Cloud block offers a 14-day free trial",
+  "fixture": {
+    "preset": "demo",
+    "env": { "BOSS_AUTH_E2E_NEEDS_RELOGIN": "refresh_outcome_unknown" }
+  },
+  "terminal": { "cols": 100, "rows": 36 },
+  "scenes": [
+    {
+      "id": "cloud-settings-trial",
+      "title": "Settings shows the Cloud trial length alongside the local-mode reassurance",
+      "steps": [
+        { "key": "s", "caption": "Open the Settings hub" },
+        {
+          "waitFor": "Settings",
+          "timeoutMs": 10000,
+          "caption": "Settings screen visible"
+        },
+        {
+          "waitFor": "Bossanova Cloud",
+          "timeoutMs": 10000,
+          "caption": "The optional Cloud settings block is visible"
+        },
+        {
+          "expect": [
+            {
+              "text": "14-day free trial",
+              "match": "normalized",
+              "label": "Cloud CTA promises a 14-day free trial"
+            },
+            {
+              "text": "local mode stays free",
+              "match": "normalized",
+              "label": "Local mode reassurance remains visible"
+            }
+          ],
+          "caption": "The Cloud offer and local-mode reassurance render together"
+        }
+      ]
+    }
+  ]
+}

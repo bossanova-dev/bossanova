@@ -243,6 +243,17 @@ const publishedSpine = (root, core) =>
 
 test('fresh notes workers receive only a bounded completed-run observation artifact', () => {
   const root = path.resolve(import.meta.dirname, '..')
+  const contract = fs.readFileSync(
+    path.join(root, 'docs', 'skills', 'extension-contract.md'),
+    'utf8',
+  )
+
+  assert.match(
+    contract,
+    /observationPath/,
+    'the extension contract doc no longer documents the key the cores send',
+  )
+
   for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
     const published = publishedSpine(root, core)
     const extension = fs.readFileSync(

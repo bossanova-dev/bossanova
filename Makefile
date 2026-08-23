@@ -9,6 +9,7 @@
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
+	lint-proto-breaking post-rebase-check \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -132,6 +133,10 @@ LDFLAGS := -s -w \
 
 # Proto source files — stamp regenerates when these change
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum
+# Non-proto generator inputs: the hand-authored OpenAPI base document that
+# protoc-gen-connect-openapi merges (buf.gen.yaml `base=`), and buf's module
+# config, which every `buf generate` reads.
+OPENAPI_SOURCES := services/docs/openapi/base.openapi.yaml buf.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
 
@@ -378,7 +383,7 @@ setup-worktree:
 	@# provision it. Without this step a fresh worktree fails `make lint` / `make
 	@# test` at "==> Linting services/docs" with `sh: tsc: command not found` even
 	@# though the diff is Go-only. Delegate to the docs package's own `deps` target
-	@# so the --ignore-workspace knowledge stays single-sourced there. Best-effort,
+	@# so the standalone-install knowledge stays single-sourced there. Best-effort,
 	@# mirroring the root install: a docs dep failure must not abort worktree setup.
 	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/docs" ]; then \
 		echo "==> Installing services/docs deps (standalone, outside the workspace)"; \
@@ -387,18 +392,18 @@ setup-worktree:
 	else \
 		echo "pnpm or services/docs missing — skipping docs dep install (non-fatal)"; \
 	fi
-	@# Install the Playwright Chromium the boss-proof pipeline drives (BOS-138). Best
+	@# Install the Playwright headless Chromium shell the boss-proof pipeline drives. Best
 	@# effort: guarded on pnpm + web node_modules and NEVER fatal — a worktree that
 	@# can't fetch Chromium still provisions; `node scripts/proof.mjs doctor` reports
 	@# the gap at run time (env-unavailable, not a crash). Host-level tools the proof
 	@# video path needs are NOT installable here: run `brew install agg ffmpeg`
 	@# (macOS) / your distro equivalent on the host once; doctor reports their absence.
 	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/web/node_modules" ]; then \
-		echo "==> Installing Playwright Chromium (boss-proof, best-effort)"; \
-		( cd "$$WORKTREE_DIR" && pnpm exec playwright install chromium ) \
-			|| echo "playwright install chromium failed — proof web/recipe capture unavailable (non-fatal)"; \
+		echo "==> Installing Playwright chrome-headless-shell (boss-proof, best-effort)"; \
+		( cd "$$WORKTREE_DIR/services/web" && pnpm exec playwright install chromium-headless-shell ) \
+			|| echo "playwright install chromium-headless-shell failed — proof web/recipe capture unavailable (non-fatal)"; \
 	else \
-		echo "pnpm or services/web/node_modules missing — skipping Playwright Chromium install (non-fatal)"; \
+		echo "pnpm or services/web/node_modules missing — skipping Playwright chrome-headless-shell install (non-fatal)"; \
 	fi
 	@# Prebuild the TUI-proof bridge + boss-e2e binaries so a proof run in this
 	@# worktree reuses them instead of building inside the capture budget (BOS-215).
@@ -452,7 +457,7 @@ gen-skill:
 generate: buf-check-version $(GEN_STAMP)
 
 # Make web deps and buf conditional — public repo has committed gen code and no web/
-GEN_DEPS := $(PROTO_SOURCES)
+GEN_DEPS := $(PROTO_SOURCES) $(OPENAPI_SOURCES)
 ifneq ($(wildcard services/web/package.json),)
 GEN_DEPS += $(WEB_DEPS_STAMP)
 endif
@@ -596,11 +601,11 @@ endif
 ifneq ($(wildcard services/web/package.json),)
 ## test-web-e2e: Opt-in/release-tier web Playwright Tier-1 faked E2E suite (incl. smoke spec).
 ## NOT part of the default test/test-web/test-smoke graph — it rebuilds the VITE_E2E
-## bundle and needs a Chromium browser, so it stays opt-in and matches the release-only CI job.
+## bundle and needs chrome-headless-shell, so it stays opt-in and matches the release-only CI job.
 test-web-e2e: $(WEB_DEPS_STAMP)
-	@# Best-effort Chromium install (mirrors setup-worktree) — never fatal so the
+	@# Best-effort chrome-headless-shell install (mirrors setup-worktree) — never fatal so the
 	@# target itself is correct even where the browser can't be fetched.
-	( cd services/web && pnpm exec playwright install chromium ) || echo "playwright install chromium failed (non-fatal)";
+	( cd services/web && pnpm exec playwright install chromium-headless-shell ) || echo "playwright install chromium-headless-shell failed (non-fatal)";
 	$(MAKE) -C services/web test-e2e
 endif
 
@@ -865,6 +870,15 @@ lint-go-fmt:
 ## Per-module lint targets
 lint-proto:
 	buf lint
+
+BUF_BREAKING_BASE ?= .git\#branch=origin/main
+
+## lint-proto-breaking: Check proto wire compatibility against the base branch.
+lint-proto-breaking:
+	buf breaking --against '$(BUF_BREAKING_BASE)'
+
+## post-rebase-check: Re-run deterministic checks that a clean rebase can silently stale.
+post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test
 
 lint-bossalib: lint-check-version
 	node scripts/lint-affected.mjs --module lib/bossalib

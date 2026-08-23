@@ -33,7 +33,12 @@ const requiredFiles = [
 // must carry for the same reason it already carries its neighbours.
 // BOS-768 converted the comparison from `<=` to exact equality without moving the number: 176
 // was already the measured line count, so the conversion changed the gate's reach, not its pin.
-const CLAUDE_MD_MAX_LINES = 176
+// Raised to 178 for BOS-763, which added two one-line "Commands whose result lies" bullets for
+// incidental go.work.sum churn and gofmt-after-scripted-Go-edits drift.
+// Raised to 177 for BOS-771, which added one "Commands whose result lies" bullet: a clean
+// git rebase exit proves textual mergeability only and must be followed by post-rebase gates.
+// Rebased together, those additive bullets make the measured count 179.
+const CLAUDE_MD_MAX_LINES = 179
 
 test('agent guidance points to the generated test command manifest', () => {
   for (const file of requiredFiles) {

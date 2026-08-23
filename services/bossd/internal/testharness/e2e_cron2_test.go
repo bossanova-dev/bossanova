@@ -167,7 +167,7 @@ func TestE2ECron_FinalizingRecovery(t *testing.T) {
 	// reaches Finalizing after its fire was recorded, and the recovery write is
 	// guarded with ExpectedSessionID=last run — without this seed the guard
 	// treats the write as superseded and skips the failed_recovered outcome.
-	if err := h.CronJobs.MarkFireStarted(ctx, job.ID, sess.ID, time.Now(), nil); err != nil {
+	if err := h.CronJobs.MarkFireStarted(ctx, job.ID, sess.ID, sess.AgentName, time.Now(), nil); err != nil {
 		t.Fatalf("mark fire started: %v", err)
 	}
 

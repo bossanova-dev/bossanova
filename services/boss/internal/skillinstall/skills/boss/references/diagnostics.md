@@ -94,6 +94,14 @@ Show which MCP servers this chat's agent actually resolved, with tools and sourc
 - `--json` — Emit a stable JSON schema instead of text
 - `--tools` — Include each server's resolved tool names
 
+### `boss session refresh-pr [session-id] [flags]`
+
+Refresh one session's cached pull request status
+
+**Flags:**
+
+- `--pr` — Pull request number to refresh (default: 0)
+
 ### `boss tail [source...] [flags]`
 
 Tail daemon and agent logs

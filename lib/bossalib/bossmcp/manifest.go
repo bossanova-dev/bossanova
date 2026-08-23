@@ -36,8 +36,8 @@ var writeToolNames = []string{
 	// mutating
 	"register_repo", "clone_and_register_repo", "update_repo", "create_session",
 	"stop_session", "pause_session", "resume_session", "retry_session",
-	"update_session", "link_session_pr", "start_chat", "record_chat", "update_chat_title",
-	"wake_chat", "report_chat_status", "create_cron_job", "update_cron_job",
+	"update_session", "link_session_pr", "refresh_session_pr", "start_chat", "record_chat",
+	"update_chat_title", "wake_chat", "report_chat_status", "create_cron_job", "update_cron_job",
 	"run_cron_job_now", "add_account", "refresh_account", "update_account",
 	"test_account", "send_chat_message", "switch_account", "update_settings",
 	"start_repair_workflow", "register_github_callback",

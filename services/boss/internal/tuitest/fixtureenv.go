@@ -49,6 +49,21 @@ func SeedSettingsAcknowledged(home, worktreeBaseDir string) error {
 	return WriteSeedSettings(home, settings)
 }
 
+// SeedSettingsAcknowledgedWithOverrides writes acknowledged settings plus
+// validated proof-only overrides supplied by a scenario fixture.
+func SeedSettingsAcknowledgedWithOverrides(home, worktreeBaseDir string, overrides map[string]any) error {
+	settings := map[string]any{
+		"providers_acknowledged": true,
+	}
+	if worktreeBaseDir != "" {
+		settings["worktree_base_dir"] = worktreeBaseDir
+	}
+	for key, value := range overrides {
+		settings[key] = value
+	}
+	return WriteSeedSettings(home, settings)
+}
+
 // SeedFirstRunSettings writes a settings.json that points boss at the test
 // daemon socket but leaves providers unacknowledged. This makes the first-run
 // onboarding gate fire (boss skips the daemon-startup preflight only when
@@ -77,6 +92,14 @@ func SeedFirstRunSettings(home, socketPath string) error {
 // cares about, so forwarding them from an agent-authored scenario is safe.
 var ProofEnvWhitelist = []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_PROOF_UPGRADE_"}
 
+// ProofEnvAllowedKeys are exact proof-only env keys whose behavior is narrow
+// enough to expose to agent-authored scenarios without admitting a whole family.
+var ProofEnvAllowedKeys = []string{
+	"BOSS_PROOF_SETTINGS_EVENT_TRACING",
+	"BOSS_PROOF_SETTINGS_POSTHOG_HOST",
+	"BOSS_PROOF_SETTINGS_SAVE_FAILURE",
+}
+
 // FilterProofEnv splits a requested env map into allowed (keys that prefix-match
 // ProofEnvWhitelist) and rejected (keys that don't). Env validation lives ONLY
 // in Go — the Node side forwards raw — so there is a single source of truth (the
@@ -88,6 +111,12 @@ func FilterProofEnv(requested map[string]string) (allowed map[string]string, rej
 		ok := false
 		for _, prefix := range ProofEnvWhitelist {
 			if strings.HasPrefix(k, prefix) {
+				ok = true
+				break
+			}
+		}
+		for _, allowedKey := range ProofEnvAllowedKeys {
+			if k == allowedKey {
 				ok = true
 				break
 			}
@@ -161,6 +190,7 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
 			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
+			strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue

@@ -39,6 +39,10 @@ service DaemonService {
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
+  // RefreshSessionPR fetches one linked PR from the VCS provider immediately,
+  // updates the daemon's cached/display PR state, and returns the refreshed
+  // session snapshot. It accepts a session id, a PR number, or both.
+  rpc RefreshSessionPR(RefreshSessionPRRequest) returns (RefreshSessionPRResponse);
   // SwitchSessionAccount stops the session's live chat, rebinds the session to
   // the chosen rotation account, and brings the chat back up under it —
   // resuming the prior conversation cross-account when feasible, else fresh.
@@ -660,6 +664,15 @@ message LinkSessionPRResponse {
   Session session = 1;
 }
 
+message RefreshSessionPRRequest {
+  optional string id = 1;
+  optional int32 pr_number = 2;
+}
+
+message RefreshSessionPRResponse {
+  Session session = 1;
+}
+
 message SwitchSessionAccountRequest {
   string session_id = 1;
   string account_id = 2;                 // target account id; "" = system default ("account 0")
@@ -839,6 +852,10 @@ message SendChatMessageRequest {
   string message = 2;           // text to deliver to the agent
   bool wake_if_asleep = 3;      // when true, wake an asleep chat before pasting
   bool submit = 4;               // when true, submit (press Enter + verify) a single-line command; default (false) prefills the composer without submitting
+  // should_observe_turn_start asks bossd to wait briefly after a submit and report
+  // whether the agent began a substantive turn for this message. It is
+  // downstream of delivery and never authorizes a resend.
+  bool should_observe_turn_start = 5;
 }
 message SendChatMessageResponse {
   string tmux_session_name = 1;
@@ -882,6 +899,28 @@ message SendChatMessageResponse {
   // NOT_SUBMITTED never appears on a response (that outcome is an error whose
   // message names it).
   DeliveryState delivery_state = 4;
+
+  // TurnStartState reports the optional, bounded post-submit observation of
+  // whether the agent began work after this message was submitted. It is not a
+  // delivery receipt: delivered and delivery_state remain authoritative.
+  enum TurnStartState {
+    // Unset: the caller did not ask for turn-start observation.
+    TURN_START_STATE_UNSPECIFIED = 0;
+    // A substantive, non-seeded pane change was observed after the send.
+    TURN_START_STATE_OBSERVED = 1;
+    // The chat was observed during the window, but no substantive turn-start
+    // signal appeared. This does not mean the message was not delivered, and a
+    // caller MUST NOT resend based on this value.
+    TURN_START_STATE_NOT_OBSERVED = 2;
+    // bossd could not evaluate turn start: for example, no poller observation
+    // landed, the chat had no baseline liveness marker, the tracker was absent,
+    // the request was cancelled, or this call did not submit. A caller MUST NOT
+    // resend based on this value.
+    TURN_START_STATE_UNOBSERVABLE = 3;
+  }
+  // turn_start_state is UNSPECIFIED unless should_observe_turn_start was true. When
+  // requested, every response path sets a non-UNSPECIFIED value.
+  TurnStartState turn_start_state = 5;
 }
 
 // --- Chat Status (cross-client heartbeat sharing) ---

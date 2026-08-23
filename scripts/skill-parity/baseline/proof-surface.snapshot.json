@@ -17,6 +17,10 @@
       "surface": "marketing"
     },
     {
+      "id": "marketing-cloud",
+      "surface": "marketing"
+    },
+    {
       "id": "marketing-home",
       "surface": "marketing"
     },

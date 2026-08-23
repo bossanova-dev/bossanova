@@ -36,6 +36,18 @@ func (f *fakeStreamingHandlerConn) Send(msg any) error           { f.sent = msg;
 func (f *fakeStreamingHandlerConn) ResponseHeader() http.Header  { return f.responseHeader }
 func (f *fakeStreamingHandlerConn) ResponseTrailer() http.Header { return make(http.Header) }
 
+type closeableFakeStreamingHandlerConn struct {
+	*fakeStreamingHandlerConn
+	closeCalls int
+	closeErr   error
+}
+
+func (f *closeableFakeStreamingHandlerConn) Close(err error) error {
+	f.closeCalls++
+	f.closeErr = err
+	return nil
+}
+
 // fakeStreamingClientConn is a minimal connect.StreamingClientConn test double.
 type fakeStreamingClientConn struct {
 	requestHeader http.Header
@@ -596,5 +608,200 @@ func TestClientInterceptor_WrapStreamingHandler_PassThrough(t *testing.T) {
 func TestHeaderName(t *testing.T) {
 	if apiversion.HeaderName != "Bossanova-Version" {
 		t.Errorf("HeaderName = %q, want %q", apiversion.HeaderName, "Bossanova-Version")
+	}
+}
+
+// --- Error-path hook (V20260820 / BOS-947) --------------------------------
+//
+// These pin the interceptor's half of the error-path seam: that WrapUnary calls
+// Changes.ApplyError on the failure branch, with the SAME resolved version the
+// success branch uses, and returns what it threads back.
+//
+// They deliberately use the method-agnostic errOnlyChange double rather than the
+// production SwitchDeadlineCodeChange: a connect.Request built in a test carries
+// an empty Spec().Procedure and connect.AnyRequest cannot be implemented outside
+// the connect package (it has unexported methods), so procedure matching is not
+// observable here. Procedure discrimination is pinned in transform_test.go, and
+// the fully wired served stack — real procedure, real interceptor — is pinned by
+// TestE2E_APIVersion_SwitchDeadline_* in services/bosso/internal/server.
+
+// TestInterceptor_UnaryErrorTransform_OlderVersion_Applied verifies the error
+// returned by the handler is replaced for a client resolved older than the
+// change. Without the WrapUnary hook this fails: the bare `if err != nil {
+// return nil, err }` short-circuit returned the handler's error untouched.
+func TestInterceptor_UnaryErrorTransform_OlderVersion_Applied(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var errCalls, respCalls int
+	replaced := connect.NewError(connect.CodeAborted, errors.New("down-converted"))
+	changes, err := apiversion.NewChanges(reg, &errOnlyChange{
+		version:    apiversion.V20260820,
+		errCalls:   &errCalls,
+		respCalls:  &respCalls,
+		replaceErr: replaced,
+	})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	interceptor := apiversion.Interceptor(reg, changes)
+
+	next := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("budget exhausted"))
+	}
+
+	req := connect.NewRequest(&struct{}{})
+	req.Header().Set(apiversion.HeaderName, apiversion.Baseline.String())
+
+	_, gotErr := interceptor.WrapUnary(next)(context.Background(), req)
+	if connect.CodeOf(gotErr) != connect.CodeAborted {
+		t.Errorf("code = %v, want CodeAborted (error transform not applied by WrapUnary)", connect.CodeOf(gotErr))
+	}
+	if errCalls != 1 {
+		t.Errorf("TransformError calls = %d, want 1", errCalls)
+	}
+}
+
+// TestInterceptor_UnaryErrorTransform_CurrentVersion_NotApplied is the other
+// half: a client on Current runs zero error transforms.
+func TestInterceptor_UnaryErrorTransform_CurrentVersion_NotApplied(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var errCalls, respCalls int
+	changes, err := apiversion.NewChanges(reg, &errOnlyChange{
+		version:    apiversion.V20260820,
+		errCalls:   &errCalls,
+		respCalls:  &respCalls,
+		replaceErr: connect.NewError(connect.CodeAborted, errors.New("down-converted")),
+	})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	interceptor := apiversion.Interceptor(reg, changes)
+
+	next := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("budget exhausted"))
+	}
+
+	req := connect.NewRequest(&struct{}{})
+	req.Header().Set(apiversion.HeaderName, reg.Current().String())
+
+	_, gotErr := interceptor.WrapUnary(next)(context.Background(), req)
+	if connect.CodeOf(gotErr) != connect.CodeDeadlineExceeded {
+		t.Errorf("code = %v, want CodeDeadlineExceeded (unchanged at Current)", connect.CodeOf(gotErr))
+	}
+	if errCalls != 0 {
+		t.Errorf("TransformError calls = %d, want 0 at Current", errCalls)
+	}
+}
+
+// TestInterceptor_UnaryErrorTransform_VersionResolutionErrorIsNotTransformed
+// pins that the interceptor's OWN rejection of a malformed version header is
+// returned before any transform runs — that error is about the negotiation
+// itself, so down-converting it would be nonsense.
+func TestInterceptor_UnaryErrorTransform_VersionResolutionErrorIsNotTransformed(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var errCalls, respCalls int
+	changes, err := apiversion.NewChanges(reg, &errOnlyChange{
+		version:    apiversion.V20260820,
+		errCalls:   &errCalls,
+		respCalls:  &respCalls,
+		replaceErr: connect.NewError(connect.CodeAborted, errors.New("down-converted")),
+	})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	interceptor := apiversion.Interceptor(reg, changes)
+
+	next := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		t.Fatal("handler must not be reached for a malformed version header")
+		return nil, nil
+	}
+
+	req := connect.NewRequest(&struct{}{})
+	req.Header().Set(apiversion.HeaderName, "garbage")
+
+	_, gotErr := interceptor.WrapUnary(next)(context.Background(), req)
+	if connect.CodeOf(gotErr) != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want CodeInvalidArgument", connect.CodeOf(gotErr))
+	}
+	if errCalls != 0 {
+		t.Errorf("TransformError calls = %d, want 0 for a version-resolution error", errCalls)
+	}
+}
+
+// TestApplyError_StreamingHandlerErrorIsNotTransformed pins the error-path
+// seam's UNARY-ONLY scope as a recorded decision rather than an accident.
+//
+// WrapStreamingHandler wraps the conn for Send-side response transforms and
+// returns the handler's error raw — there is no ApplyError call and
+// transformingStreamingHandlerConn has no error hook — so an ErrorTransform
+// written for a streaming procedure is a silent no-op with no compile error and
+// no other failing test. This is the signal. If someone widens the seam to
+// streaming, this test goes red and they delete it deliberately, having read
+// the SCOPE note on ErrorTransform; today its redness would instead mean the
+// boundary moved by accident.
+func TestApplyError_StreamingHandlerErrorIsNotTransformed(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var errCalls, respCalls int
+	changes, err := apiversion.NewChanges(reg, &errOnlyChange{
+		version:    apiversion.V20260820,
+		errCalls:   &errCalls,
+		respCalls:  &respCalls,
+		replaceErr: connect.NewError(connect.CodeAborted, errors.New("down-converted")),
+	})
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+	interceptor := apiversion.Interceptor(reg, changes)
+
+	handlerErr := connect.NewError(connect.CodeDeadlineExceeded, errors.New("budget exhausted"))
+	next := func(context.Context, connect.StreamingHandlerConn) error { return handlerErr }
+
+	conn := newFakeStreamConn(http.Header{apiversion.HeaderName: []string{apiversion.Baseline.String()}})
+	gotErr := interceptor.WrapStreamingHandler(next)(context.Background(), conn)
+
+	if !errors.Is(gotErr, error(handlerErr)) {
+		t.Errorf("streaming error = %v, want the handler's own error returned raw", gotErr)
+	}
+	if code := connect.CodeOf(gotErr); code != connect.CodeDeadlineExceeded {
+		t.Errorf("streaming code = %v, want DeadlineExceeded (unary-only seam must not fire here)", code)
+	}
+	if errCalls != 0 {
+		t.Errorf("TransformError ran on the streaming path %d times, want 0", errCalls)
+	}
+	// The handler returned before sending, so no response transform ran either.
+	// Asserting this is what makes the test say "response transforms ARE wired
+	// into this path (via transformingStreamingHandlerConn.Send) and error
+	// transforms are NOT" rather than only the second half.
+	if respCalls != 0 {
+		t.Errorf("TransformResponse ran %d times, want 0 (the handler sent nothing)", respCalls)
+	}
+}
+
+func TestInterceptor_StreamingHandlerPreservesCloseCapabilityThroughTransformWrapper(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	interceptor := apiversion.Interceptor(reg, apiversion.ProductionChanges())
+	conn := &closeableFakeStreamingHandlerConn{
+		fakeStreamingHandlerConn: newFakeStreamConn(http.Header{}),
+	}
+	closeErr := errors.New("cancel transport")
+
+	next := func(_ context.Context, conn connect.StreamingHandlerConn) error {
+		closer, ok := conn.(interface{ Close(error) error })
+		if !ok {
+			t.Fatal("wrapped streaming handler connection does not expose Close")
+		}
+		if err := closer.Close(closeErr); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		return nil
+	}
+
+	if err := interceptor.WrapStreamingHandler(next)(context.Background(), conn); err != nil {
+		t.Fatalf("WrapStreamingHandler: %v", err)
+	}
+	if conn.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", conn.closeCalls)
+	}
+	if !errors.Is(conn.closeErr, closeErr) {
+		t.Fatalf("close err = %v, want %v", conn.closeErr, closeErr)
 	}
 }

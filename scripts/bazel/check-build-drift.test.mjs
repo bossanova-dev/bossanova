@@ -19,6 +19,13 @@ test('build-drift diagnostics do not use globally shared temporary files', () =>
   )
 })
 
+test('gazelle drift failure names the remedy command', () => {
+  const script = fs.readFileSync(scriptPath, 'utf8')
+
+  assert.match(script, /ERROR: BUILD files are out of sync with 'bazel run \/\/:gazelle':/)
+  assert.equal([...script.matchAll(/bazel run \/\/:gazelle/g)].length, 3)
+})
+
 // BOS-582: this guard shipped as dead code — referenced by no Make target and no CI
 // workflow — so BUILD drift went unchallenged for months. These assertions ratchet the
 // wiring itself so it cannot silently become dead code a second time. Presence of the
@@ -73,4 +80,11 @@ test('the bazel CI go-test job runs make build-drift-check in a live step', () =
     liveStep,
     "bazel.yml's go-test job must have an uncommented `run: make build-drift-check` step",
   )
+})
+
+test('the bazel CI affected target list is published as a notice from the selected targets', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'bazel.yml'), 'utf8')
+
+  assert.match(workflow, /echo "Affected bazel targets: \$TARGETS"/)
+  assert.match(workflow, /echo "::notice title=Affected bazel targets::\$TARGETS"/)
 })

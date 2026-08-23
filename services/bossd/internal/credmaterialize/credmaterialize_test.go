@@ -2874,10 +2874,15 @@ func TestMaterializeCodexKeepsFailingClosedWhenRequiredBaseEntryBecomesUnsafe(t 
 	}
 }
 
-// TestMaterializeCodexRefusesToRemoveForeignAccountEntry proves the safety
+// TestMaterializeCodexLeavesForeignAccountEntryIntact proves the safety
 // property: real state at a projected name is not something this package
-// created, so an unsafe base entry fails materialization rather than deleting it.
-func TestMaterializeCodexRefusesToRemoveForeignAccountEntry(t *testing.T) {
+// created, so it is never deleted or rewritten. Since BOS-973 that refusal is
+// SCOPED to the entry — materialization still succeeds — because failing the
+// whole materialize silently downgrades the spawn to the ambient CLI login,
+// which is strictly worse than one account-home entry that has stopped
+// tracking the base home. removeStaleProjection itself still refuses the entry
+// (see TestRemoveStaleProjectionContract); only the escalation is gone.
+func TestMaterializeCodexLeavesForeignAccountEntryIntact(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")
 	}
@@ -2899,8 +2904,8 @@ func TestMaterializeCodexRefusesToRemoveForeignAccountEntry(t *testing.T) {
 		t.Fatalf("add nested external skills symlink: %v", err)
 	}
 
-	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err == nil {
-		t.Fatal("MaterializeCodex accepted foreign account state at a projected name")
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("MaterializeCodex failed on foreign account state at a projected name: %v", err)
 	}
 	got, err := os.ReadFile(accountSkills)
 	if err != nil {
@@ -2908,5 +2913,250 @@ func TestMaterializeCodexRefusesToRemoveForeignAccountEntry(t *testing.T) {
 	}
 	if string(got) != "foreign" {
 		t.Fatalf("foreign account entry content changed: %q", got)
+	}
+}
+
+// --- BOS-973: agent-created account-home state must never be fatal ----------
+//
+// Codex runs with CODEX_HOME pointed at the account home and atomically
+// rewrites config.toml and recreates skills/ there on every run. Before
+// BOS-973 the reconciler escalated "I do not own this entry" into "this
+// account cannot be materialized at all", and the resolver's degrade path then
+// silently ran the session on the ambient ~/.codex login. The safety invariant
+// is unchanged — foreign state is still never deleted or replaced — but it is
+// now skipped rather than fatal.
+
+func TestProjectCodexBaseHomeSkipsForeignRequiredFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseHome, "config.toml"), []byte("base = true\n"), 0o600); err != nil {
+		t.Fatalf("write base config.toml: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	// config.toml is a REQUIRED entry, and it is exactly the entry the observed
+	// production failure hit: codex had rewritten it as a real file.
+	accountHome := t.TempDir()
+	accountConfig := filepath.Join(accountHome, "config.toml")
+	const agentWritten = "model = \"agent-written\"\n"
+	if err := os.WriteFile(accountConfig, []byte(agentWritten), 0o600); err != nil {
+		t.Fatalf("write account config.toml: %v", err)
+	}
+
+	if err := m.projectCodexBaseHome(accountHome); err != nil {
+		t.Fatalf("projectCodexBaseHome with a real account-home config.toml: %v", err)
+	}
+
+	got, err := os.ReadFile(accountConfig)
+	if err != nil {
+		t.Fatalf("read account config.toml after projection: %v", err)
+	}
+	if string(got) != agentWritten {
+		t.Fatalf("account config.toml was rewritten: got %q want %q", string(got), agentWritten)
+	}
+	info, err := os.Lstat(accountConfig)
+	if err != nil {
+		t.Fatalf("lstat account config.toml: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("foreign account config.toml was replaced by a projection")
+	}
+}
+
+func TestProjectCodexBaseHomeSkipsForeignOptionalDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "ETHOS.md"), []byte("tool-managed\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	baseSkills := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(baseSkills, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	// The real-world shape: ~/.codex/skills holds symlinks into tool-managed
+	// trees outside the base home, so the entry is unprojectable and the
+	// reconciler tries to WITHDRAW any projection at that name.
+	if err := os.Symlink(filepath.Join(outside, "ETHOS.md"), filepath.Join(baseSkills, "ETHOS.md")); err != nil {
+		t.Fatalf("create escaping skill link: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	accountHome := t.TempDir()
+	accountSkills := filepath.Join(accountHome, "skills")
+	if err := os.MkdirAll(accountSkills, 0o700); err != nil {
+		t.Fatalf("mkdir account skills: %v", err)
+	}
+	marker := filepath.Join(accountSkills, "agent-created.md")
+	if err := os.WriteFile(marker, []byte("recreated on every codex run\n"), 0o600); err != nil {
+		t.Fatalf("write account skill marker: %v", err)
+	}
+
+	if err := m.projectCodexBaseHome(accountHome); err != nil {
+		t.Fatalf("projectCodexBaseHome with a real account-home skills dir: %v", err)
+	}
+
+	info, err := os.Lstat(accountSkills)
+	if err != nil {
+		t.Fatalf("lstat account skills after projection: %v", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("foreign account skills dir was replaced: mode %v", info.Mode())
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("agent-created skill file was removed: %v", err)
+	}
+}
+
+func TestMaterializeCodexTwiceWithEscapingOptionalBaseEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseHome, "config.toml"), []byte("base = true\n"), 0o600); err != nil {
+		t.Fatalf("write base config.toml: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "ETHOS.md"), []byte("tool-managed\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	baseSkills := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(baseSkills, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "ETHOS.md"), filepath.Join(baseSkills, "ETHOS.md")); err != nil {
+		t.Fatalf("create escaping skill link: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	accountDir := m.codexAccountDir("acct-1")
+	first, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("first MaterializeCodex: %v", err)
+	}
+	if got := first.Env["CODEX_HOME"]; got != accountDir {
+		t.Fatalf("first CODEX_HOME = %q, want %q", got, accountDir)
+	}
+
+	// Simulate the codex run the first materialization enabled: it rewrites
+	// config.toml as a real file and recreates skills/ as a real directory in
+	// the account home. This is what made the failure RECUR — each run
+	// re-broke the next materialization, permanently disabling injection.
+	accountConfig := filepath.Join(accountDir, "config.toml")
+	if err := os.Remove(accountConfig); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove projected config.toml: %v", err)
+	}
+	if err := os.WriteFile(accountConfig, []byte("model = \"agent-written\"\n"), 0o600); err != nil {
+		t.Fatalf("simulate agent config write: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(accountDir, "skills"), 0o700); err != nil {
+		t.Fatalf("simulate agent skills recreate: %v", err)
+	}
+
+	second, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("second MaterializeCodex (the BOS-973 recurrence): %v", err)
+	}
+	if got := second.Env["CODEX_HOME"]; got != accountDir {
+		t.Fatalf("second CODEX_HOME = %q, want %q", got, accountDir)
+	}
+}
+
+// newTestMaterializerWithLogger is newTestMaterializerWithCodexHome with the
+// logger exposed, so a test can assert on what the reconciler actually told the
+// operator. The WARN is the ONLY signal a projected entry was skipped, so an
+// unasserted one can be deleted by a future refactor without a test noticing.
+func newTestMaterializerWithLogger(t *testing.T, store CredentialStore, codexHome string, out *bytes.Buffer) *Materializer {
+	t.Helper()
+	t.Setenv("CODEX_HOME", codexHome)
+	m, err := New(store, zerolog.New(out), WithBaseDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return m
+}
+
+// TestProjectCodexBaseHomeWarnsWhenSkippingForeignEntry pins the operator
+// signal for the skip introduced by BOS-973. Skipping is quieter than the old
+// hard failure by design, so the WARN — naming the entry — is what stops the
+// drift it permits from being invisible.
+func TestProjectCodexBaseHomeWarnsWhenSkippingForeignEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseHome, "config.toml"), []byte("base = true\n"), 0o600); err != nil {
+		t.Fatalf("write base config.toml: %v", err)
+	}
+	var logs bytes.Buffer
+	m := newTestMaterializerWithLogger(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome, &logs)
+
+	accountHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(accountHome, "config.toml"), []byte("model = \"agent\"\n"), 0o600); err != nil {
+		t.Fatalf("write account config.toml: %v", err)
+	}
+	if err := m.projectCodexBaseHome(accountHome); err != nil {
+		t.Fatalf("projectCodexBaseHome: %v", err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"level":"warn"`) {
+		t.Fatalf("skipping a foreign entry must WARN:\n%s", out)
+	}
+	if !strings.Contains(out, `"entry":"config.toml"`) {
+		t.Fatalf("the WARN must name the skipped entry:\n%s", out)
+	}
+}
+
+// TestProjectCodexBaseHomeFailsOnNonForeignWithdrawalError is the negative of
+// the errors.Join branch. That branch joins the errSymlinkOutsideBase diagnosis
+// with the withdrawal error and must decide fatality from the WITHDRAWAL error
+// alone: a `errors.Is(joined, errForeignAccountEntry)` refactor would look
+// identical on the skip path and silently swallow a real removal failure here.
+func TestProjectCodexBaseHomeFailsOnNonForeignWithdrawalError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	baseHome := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "ETHOS.md"), []byte("tool-managed\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	baseSkills := filepath.Join(baseHome, "skills")
+	if err := os.MkdirAll(baseSkills, 0o700); err != nil {
+		t.Fatalf("mkdir base skills: %v", err)
+	}
+	// Makes `skills` projectable-but-unsafe, so the reconciler reaches the
+	// withdrawal branch that joins the two errors.
+	if err := os.Symlink(filepath.Join(outside, "ETHOS.md"), filepath.Join(baseSkills, "ETHOS.md")); err != nil {
+		t.Fatalf("create escaping skill link: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	// A RELATIVE link text is refused by removeStaleProjection with a plain
+	// error — not errForeignAccountEntry — so it must still be fatal.
+	accountHome := t.TempDir()
+	if err := os.Symlink("relative/elsewhere", filepath.Join(accountHome, "skills")); err != nil {
+		t.Fatalf("create relative account projection: %v", err)
+	}
+
+	err := m.projectCodexBaseHome(accountHome)
+	if err == nil {
+		t.Fatal("a non-foreign withdrawal failure must stay fatal, not be skipped with a WARN")
+	}
+	if errors.Is(err, errForeignAccountEntry) {
+		t.Fatalf("error must not be classified as foreign account state: %v", err)
+	}
+	if !strings.Contains(err.Error(), "withdraw stale projection") {
+		t.Fatalf("error = %v, want the withdrawal diagnosis", err)
+	}
+	// The joined errSymlinkOutsideBase diagnosis must survive — it names WHY
+	// the entry went unsafe, which the removal error alone does not say.
+	if !errors.Is(err, errSymlinkOutsideBase) {
+		t.Fatalf("error = %v, want the errSymlinkOutsideBase diagnosis preserved in the join", err)
 	}
 }

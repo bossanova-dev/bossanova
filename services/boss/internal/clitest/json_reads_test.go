@@ -30,16 +30,18 @@ type showEnvelope struct {
 }
 
 type sessionRow struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	State     string `json:"state"`
-	RepoID    string `json:"repo_id"`
-	Agent     string `json:"agent"`
-	PRNumber  *int32 `json:"pr_number"`
-	PRURL     string `json:"pr_url"`
-	Branch    string `json:"branch"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID                  string  `json:"id"`
+	Title               string  `json:"title"`
+	State               string  `json:"state"`
+	RepoID              string  `json:"repo_id"`
+	Agent               string  `json:"agent"`
+	PRNumber            *int32  `json:"pr_number"`
+	PRURL               string  `json:"pr_url"`
+	Branch              string  `json:"branch"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+	TrackerID           *string `json:"tracker_id"`
+	LastAgentActivityAt string  `json:"last_agent_activity_at"`
 
 	// show-only detail
 	RepoDisplayName string `json:"repo_display_name"`
@@ -84,28 +86,32 @@ func jsonReadSessions() []*pb.Session {
 	updated := time.Date(2026, 3, 2, 11, 45, 0, 0, time.UTC)
 	prNumber := int32(1234)
 	prURL := "https://github.com/acme/my-app/pull/1234"
+	trackerID := "BOS-908"
 	accountID := "acct-1"
 	accountLabel := "work"
+	lastAgentActivity := time.Date(2026, 3, 2, 12, 15, 0, 0, time.UTC)
 
 	return []*pb.Session{
 		{
-			Id:              "sess-json-111",
-			RepoId:          "repo-1",
-			RepoDisplayName: "my-app",
-			Title:           "Add JSON reads",
-			BranchName:      "boss/add-json-reads",
-			BaseBranch:      "main",
-			WorktreePath:    "/tmp/worktrees/sess-json-111",
-			State:           pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
-			AgentName:       "claude",
-			AccountId:       &accountID,
-			AccountLabel:    &accountLabel,
-			PrNumber:        &prNumber,
-			PrUrl:           &prURL,
-			DisplayStatus:   pb.DisplayStatus_DISPLAY_STATUS_PASSING,
-			LastCheckState:  pb.ChecksOverall_CHECKS_OVERALL_PASSED,
-			CreatedAt:       timestamppb.New(created),
-			UpdatedAt:       timestamppb.New(updated),
+			Id:                  "sess-json-111",
+			RepoId:              "repo-1",
+			RepoDisplayName:     "my-app",
+			Title:               "Add JSON reads",
+			BranchName:          "boss/add-json-reads",
+			BaseBranch:          "main",
+			WorktreePath:        "/tmp/worktrees/sess-json-111",
+			State:               pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+			AgentName:           "claude",
+			AccountId:           &accountID,
+			AccountLabel:        &accountLabel,
+			PrNumber:            &prNumber,
+			PrUrl:               &prURL,
+			TrackerId:           &trackerID,
+			DisplayStatus:       pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+			LastCheckState:      pb.ChecksOverall_CHECKS_OVERALL_PASSED,
+			CreatedAt:           timestamppb.New(created),
+			UpdatedAt:           timestamppb.New(updated),
+			LastAgentActivityAt: timestamppb.New(lastAgentActivity),
 		},
 		{
 			Id:              "sess-json-222",
@@ -177,9 +183,13 @@ func TestCLI_JSONReads_Ls(t *testing.T) {
 	if got.PRURL != "https://github.com/acme/my-app/pull/1234" {
 		t.Errorf("pr_url = %q", got.PRURL)
 	}
+	if got.TrackerID == nil || *got.TrackerID != "BOS-908" {
+		t.Errorf("tracker_id = %v, want BOS-908", got.TrackerID)
+	}
 	for _, tc := range []struct{ name, value string }{
 		{"created_at", got.CreatedAt},
 		{"updated_at", got.UpdatedAt},
+		{"last_agent_activity_at", got.LastAgentActivityAt},
 	} {
 		if _, err := time.Parse(time.RFC3339, tc.value); err != nil {
 			t.Errorf("%s = %q is not RFC3339: %v", tc.name, tc.value, err)
@@ -290,6 +300,12 @@ func TestCLI_JSONReads_Show(t *testing.T) {
 	}
 	if s.LastCheckState != "PASSED" {
 		t.Errorf("last_check_state = %q, want %q", s.LastCheckState, "PASSED")
+	}
+	if s.TrackerID == nil || *s.TrackerID != "BOS-908" {
+		t.Errorf("tracker_id = %v, want BOS-908", s.TrackerID)
+	}
+	if s.LastAgentActivityAt != "2026-03-02T12:15:00Z" {
+		t.Errorf("last_agent_activity_at = %q, want %q", s.LastAgentActivityAt, "2026-03-02T12:15:00Z")
 	}
 }
 

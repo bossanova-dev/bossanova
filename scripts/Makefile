@@ -11,8 +11,9 @@ format:
 	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs'
 
 ## lint: Check script syntax (content-hash stamped; skips unchanged trees) +
-## skill-tree shell fences + docs mcp props + docs absolute self-links +
-## template-literal comment backticks + prose-pin whitespace
+## skill-tree shell fences + docs mcp props/counts + docs absolute self-links +
+## template-literal comment backticks + proto bool prefixes +
+## prose-pin whitespace + settings readiness figure + exec WaitDelay verdicts
 # lint-scripts.mjs `node --check`s the same .cjs/.mjs set the old shell loop did,
 # but stamps the file-set content in a machine-wide dir so a warm re-run over an
 # unchanged tree skips ~200 per-file node spawns. LINT_FORCE=1 bypasses.
@@ -24,6 +25,9 @@ format:
 # lint-scripts.mjs on purpose: that script's stamp key covers script-file content
 # only, so a docs-only or bossmcp-only change would hit a warm stamp and skip this
 # gate entirely. Unstamped and cheap (~30ms, node built-ins only).
+# check-docs-tool-counts.mjs asserts the live-doc local-catalog MCP tool-count claims
+# match the same registered set. It deliberately checks an allowlist rather than
+# historical docs under docs/plans and docs/solutions, where old counts are dated records.
 # check-docs-absolute-selflinks.mjs forbids a docs page linking to another docs page
 # by absolute https://docs.bossanova.dev/ URL — Docusaurus's onBrokenLinks:'throw'
 # only resolves relative links, so an absolute self-link is never checked and a dead
@@ -35,6 +39,10 @@ format:
 # reformat. It reuses lint-scripts.mjs's own resolveScriptFiles() so the two gates
 # cannot drift apart on what "the repo's scripts" are, but is unstamped like
 # check-skill-shell.mjs — string scanning only, ~150ms over ~300 files (296 today).
+# check-proto-bool-prefix.mjs enforces the DB/proto boolean naming rule for new
+# bossanova.v1 fields while allowlisting the legacy fields that predate it. It is
+# unstamped because it reads proto files outside scripts/, and it ratchets: a stale
+# allowlist entry fails once the corresponding field is renamed.
 # check-prose-pin-whitespace.mjs forbids a regex literal that pins a multi-word phrase
 # with literal spaces in a skill-content gate file (BOS-797). Prettier is not what moves
 # that prose: the root .prettierrc sets no proseWrap, so markdown paragraphs keep the
@@ -48,13 +56,33 @@ format:
 # scripts/*skill*.test.mjs rather than a hand-list, so a new gate file is covered without
 # editing it, and it is unstamped like the two gates above — string scanning only, ~80ms
 # over the 20 files that glob matches today.
+# check-settings-readiness-figure.mjs asserts the worst-case session-start figure on
+# services/docs/docs/reference/settings.md equals the product the three Go constants
+# compose — DefaultSessionStartReadyDeadline (lib/bossalib/config), plus
+# sessionStartReadyAttempts and modalProbeTimeout (services/bossd/internal/tmux), which
+# no single module can import together (BOS-949). Unstamped for the same reason as
+# check-docs-mcp-props.mjs, and the reason is load-bearing here rather than incidental:
+# every input this gate reads lives OUTSIDE scripts/, so a lint-scripts.mjs stamp keyed on
+# script-file content is warm on precisely the docs-only and Go-only edits that produce the
+# drift. That is the drift it exists to catch — the page had already gone stale under a
+# manual "keep these in step" comment before this gate existed. Cheap (~25ms, node
+# built-ins only, four files read).
+# check-exec-waitdelay.mjs enforces the BOS-927 inherited-pipe invariant for Go exec.Cmd
+# sites that capture stdout/stderr into non-*os.File writers. It is unstamped because the
+# inputs are Go files outside scripts/, and it intentionally fails closed on command
+# variables it cannot locally resolve.
 lint:
 	@node lint-scripts.mjs
 	@node check-skill-shell.mjs
+	@node check-skill-node-fences.mjs
 	@node check-docs-mcp-props.mjs
+	@node check-docs-tool-counts.mjs
 	@node check-docs-absolute-selflinks.mjs
 	@node check-template-literal-comments.mjs
+	@node check-proto-bool-prefix.mjs
 	@node check-prose-pin-whitespace.mjs
+	@node check-settings-readiness-figure.mjs
+	@node check-exec-waitdelay.mjs
 
 ## test: Run script tests
 test:

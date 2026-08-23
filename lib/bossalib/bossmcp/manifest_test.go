@@ -179,16 +179,18 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// what their own jsonschema argument tags already say to the same caller in
 	// the same definition. That de-duplication paid for the caveats outright.
 	//
-	// Review then found get_session naming the push oracle WITHOUT a fetch,
-	// which reads a stale remote-tracking ref and reports 0 for work that was
-	// pushed — the exact inverse of the bug this ticket fixes. Spelling the
-	// command as `git fetch origin && …` costs 30 bytes here, not 20: Go's JSON
-	// encoder escapes each `&` to `\u0026`. The fetch requirement is therefore
-	// carried as the prose "(fetch first)" and the redundant "so both change"
-	// clause was dropped, which lands one byte UNDER the previous pin.
+	// BOS-806 intentionally adds one mutating refresh_session_pr tool because a
+	// live reconcile operation is not meaningfully foldable into a read path or
+	// an existing mutator without hiding provider fetch failures. Its prompt
+	// surface was kept to a short description plus two terse selector fields.
+	//
+	// RE-PINNED DOWN 2026-08-22 (BOS-937): 70 tools / 58,968 bytes, same
+	// method. The turn-start caveat on send_chat_message and create_session was
+	// funded out of create_session prose that duplicated argument tags already
+	// shown in the same tool definition.
 	const (
-		maxToolCount   = 69
-		maxSchemaBytes = 58491
+		maxToolCount   = 70
+		maxSchemaBytes = 58968
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."

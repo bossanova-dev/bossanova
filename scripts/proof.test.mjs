@@ -29,6 +29,8 @@ import {
 } from './proof.mjs'
 
 const repoRootForTest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const HEADLESS_SHELL_INSTALL_COMMAND =
+  'pnpm --dir services/web exec playwright install chromium-headless-shell'
 import {
   DEFAULT_TOTAL_PROOF_BUDGET_MS,
   TUI_REPLAY_EXTRA_MS,
@@ -72,6 +74,10 @@ function preflightLookups(present) {
     env: (key) => (has(key) ? 'x' : undefined),
     hasBin: (bin) => has(bin),
     chromiumPresent: () => has('chromium'),
+    chromiumUnavailableReason: () => ({
+      status: 'missing',
+      detail: has('chromium') ? undefined : `${HEADLESS_SHELL_INSTALL_COMMAND}\nfixture detail`,
+    }),
     webDepsPresent: () => has('web-node-modules'),
     goToolchainPresent: () => has('go-toolchain'),
     ghAuthOk: () => has('gh-auth'),
@@ -173,6 +179,69 @@ test('evaluateRunPreflight: dry-run drops upload/push creds from the required se
     env: {},
   })
   assert.equal(decision, null, 'a dry-run must not defer on missing R2/gh credentials')
+})
+
+test('evaluateRunPreflight threads chromium detail and status into the report', () => {
+  const present = new Set(PREFLIGHT_IDS)
+  present.delete('chromium')
+  const decision = evaluateRunPreflight({
+    surface: 'web',
+    shouldUpload: false,
+    lookups: preflightLookups(present),
+    env: {},
+  })
+  assert.ok(decision)
+  const check = decision.report.checks.find((c) => c.id === 'chromium')
+  assert.equal(check.status, 'missing')
+  assert.equal(check.detail.split('\n')[0], HEADLESS_SHELL_INSTALL_COMMAND)
+})
+
+test('proof doctor CLI prints chromium detail on the real formatted stream', () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-cli-cache-'))
+  fs.rmSync(cacheDir, { recursive: true, force: true })
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/proof.mjs', 'doctor', '--surface', 'web'],
+      {
+        cwd: repoRootForTest,
+        encoding: 'utf8',
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: cacheDir },
+      },
+    )
+    assert.equal(result.status, 1)
+    assert.match(result.stdout, /Playwright chrome-headless-shell/)
+    assert.match(result.stdout, new RegExp(HEADLESS_SHELL_INSTALL_COMMAND.replaceAll('/', '\\/')))
+    assert.match(
+      result.stdout,
+      /^    pnpm --dir services\/web exec playwright install chromium-headless-shell/m,
+    )
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
+})
+
+test('proof doctor --json emits chromium detail and status', () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-cli-cache-'))
+  fs.rmSync(cacheDir, { recursive: true, force: true })
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/proof.mjs', 'doctor', '--surface', 'web', '--json'],
+      {
+        cwd: repoRootForTest,
+        encoding: 'utf8',
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: cacheDir },
+      },
+    )
+    assert.equal(result.status, 1)
+    const report = JSON.parse(result.stdout)
+    const check = report.checks.find((c) => c.id === 'chromium')
+    assert.equal(check.status, 'missing')
+    assert.ok(check.detail.includes(HEADLESS_SHELL_INSTALL_COMMAND))
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
 })
 
 // ── agentSurface() routing ────────────────────────────────────────────────────

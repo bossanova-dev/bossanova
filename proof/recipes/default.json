@@ -166,6 +166,29 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-subscribe",
+      "surface": "web",
+      "title": "Web Cloud Subscribe",
+      "description": "Signed-in Subscribe page CTA showing the 14-day Cloud free trial and the $7/month cancellation terms.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/subscribe",
+      "selector": ".subscribe-actions",
+      "viewport": { "width": 1024, "height": 768 }
+    },
+    {
+      "id": "web-subscribe-no-notification-prompt",
+      "surface": "web",
+      "title": "Web Subscribe Without Notification Prompt",
+      "description": "Signed-in Subscribe page with notification permission still unset: the trial page CTA and pricing terms are visible with no browser-notification priming modal or dimming backdrop covering them.",
+      "privacy": "fixture",
+      "capture": "still",
+      "route": "/subscribe",
+      "selector": ".subscribe-page",
+      "cropToSelector": ".subscribe-page",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-chat-terminal",
       "surface": "web",
       "title": "Web Chat Terminal",
@@ -933,6 +956,36 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "marketing-cloud",
+      "surface": "marketing",
+      "title": "Marketing Cloud CTA",
+      "description": "The closing /cloud call to action, scrolled into view to show the 14-day free trial.",
+      "privacy": "fixture",
+      "capture": "video",
+      "slowMo": 350,
+      "viewport": { "width": 1024, "height": 768 },
+      "steps": [
+        {
+          "action": "goto",
+          "route": "/cloud",
+          "label": "Open Cloud",
+          "caption": "Open the Bossanova Cloud page"
+        },
+        {
+          "action": "scroll",
+          "toSelector": "section[aria-labelledby=\"final-cta-heading\"]",
+          "label": "Cloud trial CTA",
+          "caption": "Scroll to the closing Cloud trial call to action"
+        },
+        {
+          "action": "wait",
+          "selector": "section[aria-labelledby=\"final-cta-heading\"]",
+          "label": "14-day trial CTA",
+          "caption": "The closing CTA offers a 14-day free trial"
+        }
+      ]
+    },
+    {
       "id": "marketing-changelog",
       "surface": "marketing",
       "title": "Marketing Changelog",
@@ -1293,13 +1346,13 @@
           "toSelector": "section[aria-labelledby=\"agent-coordination-heading\"]",
           "caption": "Agents that coordinate themselves in light mode"
         },
-        { "action": "wait", "timeoutMs": 700 },
+        { "action": "wait", "timeoutMs": 150 },
         {
           "action": "click",
           "selector": "[data-testid='theme-toggle']",
           "caption": "Theme: dark"
         },
-        { "action": "wait", "timeoutMs": 700 },
+        { "action": "wait", "timeoutMs": 150 },
         {
           "action": "click",
           "selector": "[data-testid='theme-toggle']",
@@ -1361,11 +1414,10 @@
       "id": "docs-github-callbacks-guide",
       "surface": "docs",
       "title": "Docs — GitHub Callbacks Guide",
-      "description": "Rendered GitHub PR callbacks guide page (services/docs/docs/guides/github-callbacks.md), scrolled to the first <CommandTabs> example and switched to the shared Chat tab so the still shows a quoted natural-language prompt instead of the default boss CLI command.",
+      "description": "Rendered GitHub PR callbacks guide page (services/docs/docs/guides/github-callbacks.md), covering the lifecycle table, the first <CommandTabs> example, and the boss callback list JSON-key section.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
-      "cropToSelector": ".theme-tabs-container",
       "viewport": { "width": 1280, "height": 1000 },
       "steps": [
         {
@@ -1373,21 +1425,30 @@
           "route": "/guides/github-callbacks",
           "caption": "GitHub PR callbacks guide"
         },
-        { "action": "wait", "selector": ".theme-tabs-container" },
+        {
+          "action": "scroll",
+          "toSelector": "h2#lifecycle",
+          "caption": "Lifecycle table with callback delivery states"
+        },
+        { "action": "wait", "selector": "h2#lifecycle" },
         {
           "action": "scroll",
           "toSelector": ".theme-tabs-container",
           "caption": "boss callback add example, CLI selected by default"
         },
         { "action": "wait", "selector": "[data-testid='command-tab-cli'][aria-selected='true']" },
-        { "action": "wait", "timeoutMs": 700 },
         {
           "action": "click",
           "selector": "[data-testid='command-tab-chat']",
           "caption": "Chat tab selected — quoted natural-language prompt"
         },
         { "action": "wait", "selector": "[data-testid='command-tab-chat'][aria-selected='true']" },
-        { "action": "wait", "timeoutMs": 700 }
+        {
+          "action": "scroll",
+          "toSelector": "h3#boss-callback-list",
+          "caption": "boss callback list JSON output contract"
+        },
+        { "action": "wait", "selector": "h3#boss-callback-list" }
       ]
     },
     {
@@ -1631,6 +1692,8 @@
         "web-account-add-form",
         "web-account-remove",
         "web-account",
+        "web-subscribe",
+        "web-subscribe-no-notification-prompt",
         "web-chat-terminal",
         "web-chat-terminal-reconnecting",
         "web-chat-terminal-stop-icon",
@@ -1653,6 +1716,7 @@
       "recipeIds": [
         "marketing-home",
         "marketing-pricing",
+        "marketing-cloud",
         "marketing-changelog",
         "marketing-home-scroll",
         "marketing-theme-toggle",

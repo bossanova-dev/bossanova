@@ -33,6 +33,17 @@ import (
 // directly so any future caller (repair, interactive UI button) gets the
 // same coverage.
 
+func TestStartChatRunFreshSessionIDResolveTailMatchesResolveDeadline(t *testing.T) {
+	t.Parallel()
+
+	if config.StartChatRunFreshSessionIDResolveTail != freshProviderSessionIDResolveDeadline {
+		t.Fatalf("config.StartChatRunFreshSessionIDResolveTail = %v, but freshProviderSessionIDResolveDeadline = %v.\n"+
+			"StartChatRunBudgetFor sizes the plugin→host RPC around this tail from bossalib, "+
+			"which cannot import services/bossd/internal/session; update the shared term and this guard together.",
+			config.StartChatRunFreshSessionIDResolveTail, freshProviderSessionIDResolveDeadline)
+	}
+}
+
 func TestChatInputRenderCommandUsesAgentPrefix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")

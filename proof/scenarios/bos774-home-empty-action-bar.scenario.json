@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "title": "BOS-774 home empty state keeps the no-repos action bar usable",
+  "fixture": { "preset": "empty" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "No repositories empty state",
+      "steps": [
+        {
+          "waitFor": "Welcome to Bossanova",
+          "timeoutMs": 10000,
+          "caption": "The empty fixture boots into the first-run no-repositories home state"
+        },
+        {
+          "expect": [
+            {
+              "text": "Welcome to Bossanova",
+              "match": "normalized",
+              "label": "no-repositories welcome header"
+            },
+            {
+              "text": "[enter] add repository",
+              "match": "normalized",
+              "label": "primary action is add repository"
+            },
+            {
+              "text": "[q]uit",
+              "match": "normalized",
+              "label": "quit remains available from the empty state"
+            },
+            {
+              "text": "^(?![\\s\\S]*\\[n\\]ew session)[\\s\\S]*\\[enter\\] add repository",
+              "match": "regex",
+              "label": "new-session action is absent when no repos exist"
+            },
+            {
+              "text": "^(?![\\s\\S]*\\[s\\]ettings)[\\s\\S]*\\[enter\\] add repository",
+              "match": "regex",
+              "label": "settings action is absent from the no-repositories action bar"
+            }
+          ],
+          "caption": "The no-repositories action bar offers add repository and quit, without session-list actions"
+        }
+      ]
+    }
+  ]
+}

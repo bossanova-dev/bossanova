@@ -40,9 +40,32 @@ const readIfExists = (rel) => {
 }
 
 const CORE = '../services/boss/internal/skillinstall/skills/boss-plan'
+const PLUGIN_COPY = '../plugins/bossd-plugin-claude/skilldata/skills/boss-plan'
 const SKILL = read(`${CORE}/SKILL.md`)
 const INTERACTIVE = read(`${CORE}/references/interactive-mode.md`)
 const BRIEF = read(`${CORE}/references/headless-drafting-brief.md`)
+const EXTENSION_REVIEWERS = read(`${CORE}/references/extension-reviewers.md`)
+const PLAN_STORAGE = read(`${CORE}/references/plan-storage.md`)
+const PAYLOAD_REFERENCES = [
+  ['SKILL.md', SKILL],
+  ['references/headless-drafting-brief.md', BRIEF],
+  ['references/extension-reviewers.md', EXTENSION_REVIEWERS],
+  ['references/interactive-mode.md', INTERACTIVE],
+  ['references/plan-storage.md', PLAN_STORAGE],
+]
+const PAYLOAD_TEXT = PAYLOAD_REFERENCES.map(([, body]) => body).join('\n')
+const PAYLOAD_COPIES = [
+  {
+    name: 'skillinstall',
+    skill: SKILL,
+    brief: BRIEF,
+  },
+  {
+    name: 'plugin mirror',
+    skill: read(`${PLUGIN_COPY}/SKILL.md`),
+    brief: read(`${PLUGIN_COPY}/references/headless-drafting-brief.md`),
+  },
+]
 const DRAFT_NAME = 'boss-plan-compound-engineering'
 const DRAFT = readIfExists(`../.claude/skills/${DRAFT_NAME}/SKILL.md`)
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -74,6 +97,85 @@ const PHASE_4_SECTION = sectionBetween(
   '## Phase 4 — Finalize the plan attachment and write back to the tracker',
   '\n## Phase 5',
 )
+const TOOLBOX_PREAMBLE = [
+  'if [ -z "${BOSS_SKILLS_HOME:-}" ]; then',
+  'for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do',
+  'if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi',
+  'test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }',
+  'BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"',
+]
+
+function fencedBashBlocks(body) {
+  return [...body.matchAll(/```bash\n([\s\S]*?)\n```/g)].map((match) => match[1])
+}
+
+function normalizeShell(body) {
+  return body
+    .split('\n')
+    .map((line) => line.replace(/^>\s?/, '').trim())
+    .join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Toolbox path contract — every shell block resolves the same installed helper.
+// ---------------------------------------------------------------------------
+
+test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () => {
+  const assignments = [...PAYLOAD_TEXT.matchAll(/BOSS_PLAN_TOOLBOX="([^"]*)"/g)].map(
+    (match) => match[1],
+  )
+  assert.deepEqual(
+    [...new Set(assignments)].sort(),
+    ['$BOSS_SKILLS_HOME/boss-plan/toolbox'],
+    'every BOSS_PLAN_TOOLBOX assignment in the payload must be byte-identical',
+  )
+
+  for (const staleRoot of ['.claude/skills/bossanova', '.codex/skills/bossanova']) {
+    assert.equal(PAYLOAD_TEXT.includes(staleRoot), false, `payload must not mention ${staleRoot}`)
+  }
+
+  for (const [name, body] of PAYLOAD_REFERENCES) {
+    for (const [index, block] of fencedBashBlocks(body).entries()) {
+      if (!block.includes('$BOSS_PLAN_TOOLBOX')) continue
+      if (!block.includes('BOSS_PLAN_TOOLBOX=') && !block.includes('"${BOSS_PLAN_TOOLBOX:?}"')) {
+        continue
+      }
+      const normalized = normalizeShell(block)
+      for (const line of TOOLBOX_PREAMBLE) {
+        assert.ok(
+          normalized.includes(line),
+          `${name} fenced bash block ${index + 1} uses $BOSS_PLAN_TOOLBOX without the canonical preamble line: ${line}`,
+        )
+      }
+    }
+  }
+
+  assert.match(SKILL, /This\s+block\s+is\s+the\s+\*\*toolbox\s+preamble\*\*/)
+  assert.match(SKILL, /\(drift\s+helper\s+not\s+installed\)/)
+  assert.match(SKILL, /prints\s+the\s+realpath/)
+  assert.match(SKILL, /loadSkillConfig\(\{ cwd \}\)/)
+  assert.match(
+    SKILL,
+    /conventional\s+tracker-adapter\s+operations\s+declared\s+in\s+the\s+adapter\s+`operationMap`/,
+  )
+
+  for (const [needle, body] of [
+    ['"${BOSS_PLAN_TOOLBOX:?}"` after running the toolbox preamble first', SKILL],
+    ['"${BOSS_PLAN_TOOLBOX:?}"`\n  after running the toolbox preamble first', BRIEF],
+    [
+      'discover --core boss-plan --role draft --json`\nafter running the toolbox preamble first',
+      BRIEF,
+    ],
+    [
+      'discover --core boss-plan --role draft --json`\nafter running the toolbox preamble first',
+      INTERACTIVE,
+    ],
+    ['<headers-json-file>` after running the toolbox preamble first', PLAN_STORAGE],
+    ['validate --role notes --file\n"<outPath>"` after running the toolbox preamble first', SKILL],
+  ]) {
+    assert.ok(body.includes(needle), `missing inline toolbox-preamble citation: ${needle}`)
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Headless dispatch directive — ONE awaited general-purpose subagent, tier: opus.
@@ -221,6 +323,154 @@ test('an ok sentinel accepts only a path that resolves to the expected non-empty
   )
 })
 
+test('headless Phase 2 measures on-disk artifacts instead of trusting reported sizes in both payload copies', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const headless = sectionBetween(
+      payload.skill,
+      '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
+      '\n## Phase 2.5',
+    )
+    assert.match(
+      headless,
+      /orchestrator\s+measures\s+on-disk\s+artifacts/i,
+      `${payload.name}: headless Phase 2 must state the orchestrator measures artifacts`,
+    )
+    assert.match(
+      headless,
+      /reported\s+size\s+is\s+never\s+the\s+(?:source|input)/i,
+      `${payload.name}: reported size must not be a decision input`,
+    )
+    assert.match(
+      headless,
+      /\b(stat|wc -c)\b/,
+      `${payload.name}: the rule must name a concrete byte measurement command`,
+    )
+  }
+})
+
+test('post-sentinel re-verification covers all dispatch artifacts while retaining dispatch-failure shape in both payload copies', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const headless = sectionBetween(
+      payload.skill,
+      '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
+      '\n## Phase 2.5',
+    )
+    assert.match(
+      headless,
+      /every\s+orchestrator-consumed\s+artifact/i,
+      `${payload.name}: post-sentinel check must cover every consumed artifact`,
+    )
+    assert.match(
+      headless,
+      /guard,\s+child-plan\s+and\s+epic-spec\s+scratch/i,
+      `${payload.name}: post-sentinel check must name guard, child-plan, and epic-spec scratch`,
+    )
+    assert.match(
+      headless,
+      /child-plan/i,
+      `${payload.name}: post-sentinel check must name child plan files`,
+    )
+    assert.match(
+      headless,
+      /\$DISPATCH_FAILURE:\s+sentinel\s+ok\s+but\s+artifact\s+missing\/empty\s+or\s+wrong\s+path/,
+      `${payload.name}: widened check must retain the dispatch-failure abort-message shape`,
+    )
+    assert.match(
+      headless,
+      // prose-pin: literal-space ok — this pins a minified JavaScript code construct.
+      /O=p\.resolve\(D,`\$\{R\}\.epic-spec\.json`\)/,
+      `${payload.name}: post-sentinel check must bind the serialized spec to the canonical parent artifact`,
+    )
+    assert.doesNotMatch(
+      headless,
+      /T\(c\.id\)/,
+      `${payload.name}: serialized epic specs intentionally omit child ids, so the verifier must not read c.id`,
+    )
+    assert.match(
+      headless,
+      // prose-pin: literal-space ok — this pins a minified JavaScript code construct.
+      /T\(q\.parentId\)!==R/,
+      `${payload.name}: post-sentinel check must validate serialized spec parentId against the epic parent`,
+    )
+    assert.match(
+      headless,
+      // prose-pin: literal-space ok — this pins a minified JavaScript code construct.
+      /U=new Set[\s\S]*A\.findIndex\(y=>p\.basename\(c\)===`\$\{R\}-child-\$\{y\[0\]\}-\$\{n\(id,y\[1\]\)\}\.md`\);if\(j<0\|\|U\.has\(j\)\)E\(c\);else U\.add\(j\)/,
+      `${payload.name}: post-sentinel check must bind child paths bijectively to exact canonical parent/key/id/title artifacts without spec child ids`,
+    )
+    assert.match(
+      headless,
+      /else\s+if\(!v\("planPath"\)\.some\(T\)\)E\("planPath"\)/,
+      `${payload.name}: post-sentinel check must still require single-ticket planPath`,
+    )
+    assert.match(
+      headless,
+      /z===P0\|\|p\.dirname\(z\)===D/,
+      `${payload.name}: post-sentinel check must allow PLAN_PATH or direct .linear-plans children by resolved path`,
+    )
+  }
+})
+
+test('the epic sentinel carries required artifact paths in both payload copies', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    assert.match(
+      payload.brief,
+      /childPlanPaths:\{\(\$childId\):\$childPlan\}/,
+      `${payload.name}: epic sentinel must carry child plan paths keyed by child id`,
+    )
+    assert.match(
+      payload.brief,
+      /childIds:\$childIds/,
+      `${payload.name}: epic sentinel must carry child ids for manifest cardinality`,
+    )
+    assert.match(
+      payload.brief,
+      /epicSpecPaths:\$epicSpecPaths/,
+      `${payload.name}: epic sentinel must carry optional epic spec body scratch paths`,
+    )
+    assert.doesNotMatch(
+      payload.brief,
+      /childPlanKeysById:\{/,
+      `${payload.name}: epic sentinel must not carry child keys from the drafting worker`,
+    )
+    assert.match(
+      payload.brief,
+      /maps\s+each\s+actual\s+child\s+id\s+to\s+that\s+child's\s+actual\s+plan\s+path/i,
+      `${payload.name}: epic brief must bind child plan paths to child ids`,
+    )
+    assert.match(
+      payload.brief,
+      /Do\s+not\s+copy\s+child\s+keys\s+into\s+the\s+sentinel\s+payload/i,
+      `${payload.name}: epic brief must require spec-derived child keys`,
+    )
+    assert.match(
+      payload.brief,
+      /prefix\s+does\s+not\s+satisfy\s+a\s+missing\s+child/i,
+      `${payload.name}: epic brief must reject unrelated paths as child-plan substitutes`,
+    )
+    assert.match(
+      payload.brief,
+      /refuses\s+an\s+epic\s+sentinel\s+that\s+omits\s+the\s+required\s+epic\s+artifact\s+paths/i,
+      `${payload.name}: epic brief must state that artifact paths are required`,
+    )
+  }
+})
+
+test('the headless drafting brief requires measured reported sizes in both payload copies', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    assert.match(
+      payload.brief,
+      /any\s+(?:byte\s+count|size).{0,80}reports?.{0,80}measured.{0,80}(?:stat|wc\s+-c)/is,
+      `${payload.name}: the drafter must measure any size it reports`,
+    )
+    assert.match(
+      payload.brief,
+      /unmeasurable\s+size.{0,80}unmeasured|cannot\s+measure.{0,80}unmeasured/is,
+      `${payload.name}: unmeasurable sizes must be reported as unmeasured`,
+    )
+  }
+})
+
 test('Phase 4 step 5 supplies the three inputs the library cannot derive for itself', () => {
   // Each of these is a SILENT failure in the shipped glue rather than an error.
   // A logical verdict with no direction lets the library orient a declared
@@ -236,7 +486,7 @@ test('Phase 4 step 5 supplies the three inputs the library cannot derive for its
   )
   assert.match(
     PHASE_4_SECTION,
-    /`blockedBy`\s+\(the\s+default[^)]*\)\s+or `blocks`/,
+    /`blockedBy`\s+\(the\s+default[^)]*\)\s+or\s+`blocks`/,
     'step 5(b) must name both directions and say which one a bare verdict means',
   )
   assert.ok(
@@ -250,7 +500,7 @@ test('Phase 4 step 5 supplies the three inputs the library cannot derive for its
   )
   assert.match(
     PHASE_4_SECTION,
-    /add\s+every\s+parent\s+id\s+you\s+have\s+already\s+expanded\s+to `excludeIds`/,
+    /add\s+every\s+parent\s+id\s+you\s+have\s+already\s+expanded\s+to\s+`excludeIds`/,
     'step 5(d) must bound the documented epic re-run loop, which resets the library depth cap',
   )
 })
@@ -283,17 +533,17 @@ test('Phase 4 step 5 warns when an auto-linked blocker is itself transitively bl
   )
   assert.match(
     PHASE_4_SECTION,
-    /`DEFAULT_CLEARED_STATE_TYPES` \/ `DEFAULT_CANCELED_STATE_TYPES` rule\s+in\s+`toolbox\/plan-deps-lib\.mjs`,\s+the\s+single\s+source/,
+    /`DEFAULT_CLEARED_STATE_TYPES`\s+\/\s+`DEFAULT_CANCELED_STATE_TYPES`\s+rule\s+in\s+`toolbox\/plan-deps-lib\.mjs`,\s+the\s+single\s+source/,
     'the cleared definition must cite the library constants as its single source, not restate states in prose',
   )
   assert.match(
     PHASE_4_SECTION,
-    /treat\s+a\s+blocker's\s+blocker\s+as \*\*still\s+blocking\*\* unless\s+its\s+state\s+type\s+is\s+cleared\s+or\s+canceled/,
+    /treat\s+a\s+blocker's\s+blocker\s+as\s+\*\*still\s+blocking\*\*\s+unless\s+its\s+state\s+type\s+is\s+cleared\s+or\s+canceled/,
     'the warning must keep the still-blocking-until-cleared rule it exists to apply',
   )
   assert.match(
     PHASE_4_SECTION,
-    /Detection\s+only — never\s+auto-prune/,
+    /Detection\s+only\s+—\s+never\s+auto-prune/,
     'the transitive-block warning must stay detection-only',
   )
 })
@@ -306,23 +556,23 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   const flat = PHASE_4_SECTION.replace(/\s+/g, ' ')
   assert.match(
     flat,
-    /tracker\s+full-text\s+search\s+is \*\*fuzzy\s+and\s+must\s+never\s+decide\s+overlap\*\*/,
+    /tracker\s+full-text\s+search\s+is\s+\*\*fuzzy\s+and\s+must\s+never\s+decide\s+overlap\*\*/,
     'step 5 must state that fuzzy tracker search never decides overlap (the ## Key changes section is the oracle)',
   )
   assert.match(
     flat,
-    /\*\*explicit\s+field\s+list\*\*: `description, labels, priority, createdAt, state`/,
+    /\*\*explicit\s+field\s+list\*\*:\s+`description,\s+labels,\s+priority,\s+createdAt,\s+state`/,
     'the candidate fetch must name the explicit field list — the default field set omits them and yields a silent zero-link run',
   )
   assert.match(
     flat,
-    /\*\*by\s+id, regardless\s+of\s+state\*\* — `selectPlanned` never\s+returns\s+a\s+cleared\s+ticket/,
+    /\*\*by\s+id,\s+regardless\s+of\s+state\*\*\s+—\s+`selectPlanned`\s+never\s+returns\s+a\s+cleared\s+ticket/,
     'declared relations must be fetched by id regardless of state, or a cleared prerequisite is never reachable',
   )
   // Both appendRelatedTo branches, written as instructions rather than as an aside.
   assert.match(
     flat,
-    /if\s+the\s+adapter\s+does\s+not\s+declare `appendRelatedTo` \(it\s+is\s+optional\), record\s+the\s+relation\s+as\s+a `## Planning` note\s+instead; if\s+a\s+declared\s+one\s+fails, log\s+the\s+reason\s+and\s+continue/,
+    /if\s+the\s+adapter\s+does\s+not\s+declare\s+`appendRelatedTo`\s+\(it\s+is\s+optional\),\s+record\s+the\s+relation\s+as\s+a\s+`##\s+Planning`\s+note\s+instead;\s+if\s+a\s+declared\s+one\s+fails,\s+log\s+the\s+reason\s+and\s+continue/,
     'step 5 must write BOTH appendRelatedTo branches (undeclared, and declared-but-failed) as instructions',
   )
   // Cycle safety after the downgrade, scoped to blocking edges. Ordering is the whole point: a
@@ -339,7 +589,7 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   )
   assert.match(
     PHASE_4_SECTION,
-    /`relatedTo` is\s+symmetric\s+and\s+non-blocking\s+and\s+cannot\s+form\s+a\s+cycle/,
+    /`relatedTo`\s+is\s+symmetric\s+and\s+non-blocking\s+and\s+cannot\s+form\s+a\s+cycle/,
     'cycle safety must be scoped to blocking writes only',
   )
   // The library is invoked, not paraphrased — and through the CommonJS pathToFileURL spelling the
@@ -360,26 +610,26 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   // linked nothing, for a reason no per-candidate note distinguishes from having found nothing.
   assert.match(
     flat,
-    /`subject` needs\s+the\s+SAME\s+fields\s+as\s+a\s+candidate, its\s+own `state` included/,
+    /`subject`\s+needs\s+the\s+SAME\s+fields\s+as\s+a\s+candidate,\s+its\s+own\s+`state`\s+included/,
     'step 5 must require the subject payload to carry its own state, or every edge downgrades',
   )
   // The prefilter is a context-scale measure. Read as an overlap filter it re-introduces the
   // missed-prerequisite defect one layer above the oracle.
   assert.match(
     flat,
-    /prefilter\s+is\s+a \*\*context-scale\s+measure\s+only, never\s+an\s+overlap\s+decision\*\*/,
+    /prefilter\s+is\s+a\s+\*\*context-scale\s+measure\s+only,\s+never\s+an\s+overlap\s+decision\*\*/,
     'the title+label prefilter must be bounded, or it silently decides overlap ahead of the oracle',
   )
   // The run's only post-dependency save. Gated on relations alone it discards every zero-relation
   // outcome the library went to the trouble of raising.
   assert.match(
     flat,
-    /Record\s+what\s+step\s+5\s+found — \*\*whenever \(d\) produced ≥1\s+relation, note, or\s+question\*\*/,
+    /Record\s+what\s+step\s+5\s+found\s+—\s+\*\*whenever\s+\(d\)\s+produced\s+≥1\s+relation,\s+note,\s+or\s+question\*\*/,
     'the recording save must fire on a note or a question too, not on relations alone',
   )
   assert.match(
     flat,
-    /union\s+it\s+into\s+the\s+set\s+Step\s+4\s+saved, because `labels` \*\*replaces\*\* the\s+whole\s+set/,
+    /union\s+it\s+into\s+the\s+set\s+Step\s+4\s+saved,\s+because\s+`labels`\s+\*\*replaces\*\*\s+the\s+whole\s+set/,
     'the agent-question write must state the union rule — a bare labels write clobbers Step 4 labels',
   )
 })
@@ -478,6 +728,57 @@ test('the resident body documents the config-first validatePlanDescription signa
   )
 })
 
+test('epic reverify decodes spec attachments and rejects missing childIds distinctly (BOS-755)', () => {
+  for (const copy of PAYLOAD_COPIES) {
+    assert.ok(
+      copy.skill.includes(
+        'node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" decode <in-file> <out-file>',
+      ),
+      `${copy.name} must name the plan-attachment decode verb before parseEpicSpec`,
+    )
+    assert.ok(
+      copy.skill.includes('missing/empty childIds is a sentinel-shape failure'),
+      `${copy.name} must reject a sentinel that omits childIds`,
+    )
+    assert.ok(
+      copy.skill.includes('rejected separately from a child-reconciliation miss'),
+      `${copy.name} must name sentinel and child-reconciliation failures separately`,
+    )
+  }
+})
+
+test('epic wiring prose names the reserved parent id entry (BOS-755)', () => {
+  assert.ok(
+    SKILL.includes('created-id map passed to') &&
+      SKILL.includes('must include the reserved `parent` entry beside every child id'),
+    'Phase 2.5 step 4 must name the reserved parent entry expected by epicWiringPlan',
+  )
+})
+
+test('epic parent validation mode is documented (BOS-755)', () => {
+  assert.ok(
+    SKILL.includes("validatePlanDescription(config, description, {mode:'epic-parent'})"),
+    'boss-plan must document the explicit epic-parent validatePlanDescription mode',
+  )
+  assert.ok(
+    SKILL.includes('with `## Summary`, `## Child tickets`, `## Planning`, and `## Original notes`'),
+    'boss-plan must list the epic-parent overview section set',
+  )
+  assert.ok(
+    SKILL.includes('Unknown modes warn and fall back to child-plan'),
+    'boss-plan must document unknown validation mode fallback',
+  )
+})
+
+test('epic sentinel childIds are required in the drafting brief (BOS-755)', () => {
+  for (const copy of PAYLOAD_COPIES) {
+    assert.ok(
+      copy.brief.includes('childIds:     ["<ISSUE-ID>", ...]    // REQUIRED'),
+      `${copy.name} drafting brief must declare childIds required`,
+    )
+  }
+})
+
 test('the drafting brief runs the contract guard before the ok sentinel (BOS-741)', () => {
   assert.match(
     BRIEF,
@@ -491,6 +792,118 @@ test('the drafting brief runs the contract guard before the ok sentinel (BOS-741
   )
   const guardAt = BRIEF.indexOf('plan-contract-guard.mjs')
   assert.ok(guardAt > 0 && guardAt < BRIEF.indexOf('## Step 9'), 'the guard runs inside Step 8')
+})
+
+test('BOS-769: Phase 1 carries the idempotence precheck and clean no-op', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    assert.match(
+      payload.skill,
+      /planIdempotencePrecheck\(\.\.\.\)[\s\S]{0,120}plan-run-guards\.mjs/,
+      `${payload.name}: Phase 1 must cite the idempotence guard export`,
+    )
+    assert.match(
+      payload.skill,
+      /plan-run-guards\.mjs" idempotence "\$PRECHECK"/,
+      `${payload.name}: Phase 1 must run the idempotence CLI`,
+    )
+    assert.match(
+      payload.skill,
+      /exit\s+\*\*0\*\*[\s\S]{0,80}\*\*zero\s+tracker\s+writes\*\*/,
+      `${payload.name}: idempotence noop must be a clean zero-write exit`,
+    )
+  }
+})
+
+test('BOS-769: headless Phase 2 snapshots the description before dispatch', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const headless = sectionBetween(
+      payload.skill,
+      '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
+      '\n## Phase 2.5',
+    )
+    assert.match(
+      headless,
+      /\.linear-plans\/<ISSUE-ID>\.image-guard-orig\.md[\s\S]{0,240}single\s+raw-description\s+snapshot/,
+      `${payload.name}: Phase 2 must write the raw description snapshot before dispatch`,
+    )
+    assert.match(
+      headless,
+      /description\s+snapshot\s+path[\s\S]{0,120}PLAN_PATH/,
+      `${payload.name}: dispatch input must pass the snapshot path to the worker`,
+    )
+  }
+  assert.match(
+    BRIEF,
+    /DESCRIPTION_SNAPSHOT_PATH[\s\S]{0,240}Build\s+`## Original\s+notes`\s+from\s+this\s+file\s+only/,
+    'brief must name the snapshot file as the sole description source',
+  )
+})
+
+test('BOS-769: headless Phase 2 validates bounded metadata before Phase 3.5', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    const headless = sectionBetween(
+      payload.skill,
+      '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
+      '\n## Phase 2.5',
+    )
+    const metadataAt = headless.indexOf('plan-run-guards.mjs" metadata "$METADATA"')
+    const phase35At = payload.skill.indexOf('## Phase 3.5')
+    assert.ok(metadataAt > 0, `${payload.name}: metadata guard must be present`)
+    assert.ok(
+      payload.skill.indexOf('plan-run-guards.mjs" metadata "$METADATA"') < phase35At,
+      `${payload.name}: metadata guard must precede Phase 3.5`,
+    )
+    assert.match(
+      headless,
+      new RegExp(`\\$DISPATCH_FAILURE: draft metadata failed plan-run-guards\\.mjs metadata`),
+      `${payload.name}: metadata failure must route through DISPATCH_FAILURE`,
+    )
+  }
+})
+
+test('BOS-769: premises ride the sentinel and Phase 4 re-verifies them', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    assert.match(
+      payload.skill,
+      /PREMISES="\$\(printf '%s' "\$READ" \| jq -c '\.payload\.premises \/\/ \[\]'\)"/,
+      `${payload.name}: Phase 2 must capture premises from the sentinel payload`,
+    )
+    assert.match(
+      payload.skill,
+      /STOP\s+—\s+premise\s+re-verification/,
+      `${payload.name}: Phase 4 must run the premises guard`,
+    )
+    assert.match(
+      payload.skill,
+      /plan-run-guards\.mjs" premises "\$PREMISES_FILE" "\$LIVE_STATES_FILE"/,
+      `${payload.name}: Phase 4 must invoke the premises CLI`,
+    )
+    assert.match(
+      payload.skill,
+      /PREMISE_REPORT="\$\(node[\s\S]{0,220}PREMISE_RC=\$\?/,
+      `${payload.name}: Phase 4 must capture premise drift output without conflating it with an abort`,
+    )
+    assert.match(
+      payload.skill,
+      /-\s+Premise\s+drift:\s+<ticket>\s+was\s+<state\s+at\s+recon>,\s+is\s+now\s+<current\s+state>/,
+      `${payload.name}: Phase 4 must document the drift annotation line`,
+    )
+  }
+  assert.ok(BRIEF.includes('Include `premises` in the sentinel payload'))
+  assert.ok(BRIEF.includes('It rides the run-file sentinel'))
+})
+
+test('BOS-769: headless drafting defers resolution to the shared Fallback contract', () => {
+  assert.match(
+    SKILL,
+    /Draft-resolution\s+\(shared\s+Fallback\s+contract\)[\s\S]{0,160}Resolve\s+drafting\s+by\s+the\s+Fallback\s+contract/,
+    'resident skill must keep the single draft-resolution source of truth',
+  )
+  assert.match(
+    HEADLESS_SECTION,
+    /headless-specific\s+mechanics|sentinel\s+context|description\s+snapshot\s+path/i,
+    'headless section should describe mechanics rather than restating a competing concrete resolver',
+  )
 })
 
 test('the drafting brief pins the cased ## Open Questions heading and plan-body-only rule (BOS-741)', () => {
@@ -554,6 +967,72 @@ test('Phase 4 deletes guard scratch before every failed-gate exit (BOS-702)', ()
       `failed-gate exit #${i + 1} must delete all four scratch paths — $ORIG may carry sensitive content and Phase 5 never runs after exit 1`,
     )
   }
+})
+
+test('plan storage supersedes stale duplicate attachments only after verified read-back (BOS-773)', () => {
+  const flat = PLAN_STORAGE.replace(/\s+/g, ' ')
+  assert.match(
+    flat,
+    /After\s+the\s+read-back\s+succeeds,\s+take\s+a\s+\*\*single\s+fresh\*\*\s+attachment\s+list/,
+    'supersede must use one fresh post-read-back attachment list',
+  )
+  assert.match(
+    flat,
+    /selectSupersededPlanAttachments[\s\S]{0,160}freshly\s+finalized\s+id\s+as\s+`keepAttachmentId`/,
+    'plan storage must call the exact-title supersede predicate with the retained id',
+  )
+  assert.match(
+    flat,
+    /A\s+failed\s+supersede\s+list\s+takes\s+the\s+SAFE\s+branch[\s\S]{0,160}does\s+not\s+roll\s+back\s+the\s+successful\s+publish/,
+    'supersede failures must not destroy or roll back the freshly verified artifact',
+  )
+  assert.match(
+    flat,
+    /Retry\s+each\s+failed\s+`deletePlanAttachment`\s+once/,
+    'failed duplicate deletes must retry once',
+  )
+  assert.match(
+    flat,
+    /surviving\s+duplicate\s+attachment\s+id/,
+    'a delete that still fails must be reported as a surviving duplicate',
+  )
+  assert.match(
+    flat,
+    /deleted\s+attachment\s+id\s+and\s+exact\s+title/,
+    'each supersede deletion must be logged with id and exact title',
+  )
+})
+
+test('Phase 4 asserts exactly one canonical plan attachment remains after publish (BOS-773)', () => {
+  const flat = PHASE_4_SECTION.replace(/\s+/g, ' ')
+  assert.match(
+    flat,
+    /After\s+`references\/plan-storage\.md`\s+returns\s+success[\s\S]{0,220}exactly\s+one\s+`Implementation\s+plan\s+\(<ISSUE-ID>\)`\s+attachment\s+remains/,
+    'Phase 4 must assert canonical plan attachment cardinality after storage success',
+  )
+  assert.match(
+    flat,
+    /more\s+than\s+one\s+exact-title\s+attachment\s+takes\s+the\s+SAFE\s+branch/,
+    'duplicate canonical plan attachments must block metadata/state writeback',
+  )
+  assert.match(
+    flat,
+    /no\s+plan\s+metadata\/state\s+write/,
+    'the duplicate branch must preserve the existing no-write safety contract',
+  )
+})
+
+test('the headless drafting brief forbids tracker writes on the non-EPIC path (BOS-773)', () => {
+  assert.match(
+    BRIEF,
+    /non-EPIC\s+path[\s\S]{0,140}zero\s+tracker\s+writes/i,
+    'the drafting worker must be explicitly read-only for tracker writes on single-ticket plans',
+  )
+  assert.match(
+    BRIEF,
+    /Only\s+the\s+EPIC\s+path\s+may\s+perform\s+tracker\s+writes/i,
+    'the exception must be limited to the existing epic decomposition path',
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -1263,6 +1742,42 @@ test('the shared drafting spec (plan-body requirements + template) lives in the 
   )
 })
 
+test('BOS-926: sibling-class enumeration and file-count cap rules are pinned in both drafting payloads', () => {
+  for (const payload of PAYLOAD_COPIES) {
+    for (const [label, body] of [
+      ['SKILL.md', payload.skill],
+      ['headless-drafting-brief.md', payload.brief],
+    ]) {
+      const where = `${payload.name} ${label}`
+      assert.match(
+        body,
+        /specific\s+call\s+site,\s+construct,\s+literal\s+claim,\s+or\s+other\s+mechanism[\s\S]{0,220}repo-wide\s+sibling-class\s+enumeration/i,
+        `${where}: must require enumeration when a named mechanism could recur`,
+      )
+      assert.match(
+        body,
+        /every\s+site\s+the\s+search\s+returns[\s\S]{0,180}verdict\s+\(`fix`\s+or\s+`not\s+a\s+defect`\)[\s\S]{0,120}reason/i,
+        `${where}: must require a per-site verdict with a reason`,
+      )
+      assert.match(
+        body,
+        /adjudicate\s+the\s+class\s+per\s+site\s+rather\s+than\s+sweeping\s+every\s+match\s+wholesale/i,
+        `${where}: must forbid sweeping the whole class`,
+      )
+      assert.match(
+        body,
+        /discriminator[\s\S]{0,120}where\s+the\s+branch\s+actually\s+lives/i,
+        `${where}: must name the branch-location discriminator example`,
+      )
+      assert.match(
+        body,
+        /(?:acceptance\s+criterion[\s\S]{0,100}must\s+not[\s\S]{0,100}cap\s+the\s+number\s+of\s+changed\s+files|Do\s+not[\s\S]{0,100}acceptance\s+criterion[\s\S]{0,100}caps\s+the\s+number\s+of\s+changed\s+files)/i,
+        `${where}: must forbid changed-file-count acceptance criteria`,
+      )
+    }
+  }
+})
+
 test('the resident body does not duplicate the full drafting spec', () => {
   for (const marker of [
     'A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md`',
@@ -1730,6 +2245,7 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
   // pattern and left the other scratch behind. The fix is one `find … -delete` per pattern.
   // Without this guard the property is prose only, and the next prose-shrinking edit
   // recollapses it silently: the failure is invisible on the happy path.
+  const SITES = 4
   const lines = SKILL.split('\n')
   // Deletion lines only. The residual `-print` sweep added below deliberately carries all three
   // patterns on one line (it is a post-condition check, not a deletion), so key on `-delete`.
@@ -1741,19 +2257,25 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
       line.includes('-delete'),
   )
   assert.ok(
-    globCleanupLines.length >= 9,
-    `expected at least 9 glob cleanup lines (3 sites x child-plan/image-guard/attachment-headers), got ${globCleanupLines.length}`,
+    globCleanupLines.length >= 12,
+    `expected at least 12 glob cleanup lines (4 sites x child-plan/image-guard/attachment-headers), got ${globCleanupLines.length}`,
   )
   const SAFE_SOURCE = '<ISSUE-ID>*.attachment-guard-orig.md'
   assert.equal(
     lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}' -delete`)).length,
-    3,
+    4,
     'every cleanup path must delete the redacted safe-source scratch file',
   )
   assert.equal(
     lines.filter((l) => l.includes(`-name '${SAFE_SOURCE}'`) && l.includes('-print)')).length,
-    3,
+    4,
     'every residual sweep must detect a surviving redacted safe-source scratch file',
+  )
+  assert.ok(
+    lines.filter((l) =>
+      l.includes('.linear-plans/<ISSUE-ID>.{precheck,draft-metadata,premises,premise-states}.json'),
+    ).length >= SITES,
+    'every cleanup path must delete precheck, draft-metadata, premises, and premise-state scratch',
   )
   for (const line of globCleanupLines) {
     assert.match(
@@ -1777,7 +2299,6 @@ test('every glob-bearing scratch-cleanup line carries exactly one pattern', () =
   // hits EACCES, so the accumulator alone still misses it — hence the residual `-print` sweep,
   // which checks the post-condition instead of trusting any find's exit status. Both were
   // verified against /usr/bin/find; drop either and a real failure reports success again.
-  const SITES = 3
   assert.equal(
     lines.filter((l) => l.trim() === 'CLEANUP_RC=0').length,
     SITES,
@@ -1817,7 +2338,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // together, which is the failure the exact pin below cannot see. It is passed as `below`, so
   // a violation now names both readings — pin raised toward the baseline, or baseline overdue
   // for re-derivation — instead of prescribing one cause.
-  const PRE_SPLIT_BASELINE = 93143
+  const PRE_SPLIT_BASELINE = 104031
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -1890,7 +2411,56 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // to `$BOSS_PLAN_TOOLBOX/plan-deps-lib.mjs`: the shipped-toolbox gate keys on that adjacency,
   // and the concatenated invocation it had instead left the file this step depends on able to
   // drop out of the payload with every gate green.
-  const RATCHET = 93127 // exact measured resident body, re-measured 2026-08-19 (BOS-768)
+  // Re-baselined a further +566 (93127 -> 93693) for BOS-907, carrying
+  // PRE_SPLIT_BASELINE with it to keep the 16-byte guard margin. Headless Phase 2 now carries the
+  // resident measurement-trust rule: the orchestrator measures on-disk artifacts with `stat` or
+  // `wc -c`, never decides from reported sizes, and widens post-sentinel reverify to all consumed
+  // dispatch artifacts. This belongs in the resident orchestrator section because the failure is the
+  // orchestrator trusting a dispatch report before it opens any drafting reference.
+  // Review repair settled at +783 B (92594 -> 93377) to require epic child-plan manifest
+  // paths to be keyed by child id, so an unrelated .linear-plans file cannot cover a missing child.
+  // Review repair settled at +1809 B (93377 -> 95186) to bind those child-id entries to
+  // canonical parent/key child-plan artifacts and to run the same scratch cleanup when the widened
+  // artifact verifier fails. These bytes are resident because they execute in the headless
+  // orchestrator path before any reference can be consulted.
+  // Review repair spent +89 B (94997 -> 95086) to derive child plan keys from the epic spec
+  // artifact instead of the untrusted sentinel payload.
+  // Review repair settled at +93 B (95086 -> 95179) to require resumed epics to rehydrate spec
+  // validation scratch and to bind child plan paths to the exact parent/key/id/title filename
+  // without reading child ids from the serialized spec, which deliberately omits them.
+  // Review repair settled at +7 B (95179 -> 95186) to require the rehydrated epic spec path to be
+  // `.linear-plans/<parent>.epic-spec.json` with a matching `parentId`, closing fabricated-spec
+  // child metadata from the resident headless verifier.
+  // Review repair settled at +13 B (95186 -> 95199) to require full spec-child coverage and the
+  // complete parent/child guard manifest in the resident headless verifier.
+  // Review repair settled at +2 B (95199 -> 95201) to require a spec-child bijection and direct
+  // `.linear-plans` scratch artifacts while keeping the pre-split ceiling.
+  // Rebased BOS-773 onto BOS-907 and banked the merged -37 B resident shrink.
+  // BOS-775 banks 95164 -> 95082 (-82 B): content labels now use optionalLabelName with literal
+  // fallback and Phase 4 strips agent-plan itself; the wording is tighter than the old taxonomy
+  // paragraph it replaces, so preserve the shrink rather than leaving silent headroom.
+  // Re-baselined +4607 B (95082 -> 99689) for BOS-769 after the BOS-775 shrink: the resident
+  // orchestrator section gained
+  // three run-boundary guards that execute before any reference can be consulted — Phase 1
+  // idempotence, Phase 2 metadata validation/premise capture, and Phase 4 premise re-verification.
+  // The review repair bytes are included here: premise drift stays non-aborting while still
+  // deleting the new run-boundary JSON scratch on every abort/success cleanup path.
+  // BOS-755 re-baselines 99689 -> 100577 after the BOS-769 rebase and carries
+  // PRE_SPLIT_BASELINE to keep the 98-byte guard margin. Resident bytes name the
+  // spec-attachment decode verb, required childIds rejection, the reserved parent wiring key, and
+  // the epic-parent validation mode. Re-measured 2026-08-22.
+  // BOS-759 re-baselines 100577 -> 103382 (+2805 B): cleanup now names the single-ticket,
+  // run-boundary, attachment-header, and description scratch files explicitly in every resident
+  // terminal path, with checked fixed-path deletion beside the one-pattern-per-line find sweep.
+  // BOS-757 banks 103382 -> 103310 (-72 B): the new optional Premises pointer is folded into
+  // tighter drafting-spec prose, so preserve the shrink rather than leaving silent headroom.
+  // BOS-754 re-baselines 103310 -> 103902 and carries PRE_SPLIT_BASELINE with it to keep
+  // the 129-byte guard margin. The resident Phase 0 and post-terminal notes blocks now carry the
+  // same fail-loud toolbox preamble as the sibling cores, plus the missing drift-helper branch and
+  // the operation-map/signature notes that must run before any drafting reference is opened.
+  // BOS-926 re-baselines 103902 -> 104003 (+101 B): the sibling-class enumeration rule is resident
+  // as well as in the headless brief, with Phase 3 prose kept under the pre-split baseline.
+  const RATCHET = 104003 // exact measured resident body, re-measured 2026-08-23 (BOS-926 rebase)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',
@@ -1903,6 +2473,34 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
       'the references/ files the body routes to, and whether the resident prose is worth its ' +
       'bytes — this pin only knows how many there are',
   })
+})
+
+test('BOS-775: content labels use the optional resolver and Phase 4 strips agent-plan', () => {
+  assert.match(
+    SKILL,
+    /Content-taxonomy\s+labels[\s\S]{0,700}optionalLabelName\(config, '<role>'\)[\s\S]{0,180}if\s+it\s+returns\s+`null`,\s+apply\s+the\s+literal\s+display\s+name[\s\S]{0,80}Never\s+create\s+labels/,
+    'content taxonomy labels must use optionalLabelName with literal fallback',
+  )
+  assert.doesNotMatch(
+    SKILL,
+    /taxonomy\s+name\s+through\s+`labelName`/,
+    'taxonomy prose must not send optional labels through labelName',
+  )
+  assert.match(
+    SKILL,
+    /existing ∪ additions ∖ strips/,
+    'Phase 4 must compute labels as merge minus strip set',
+  )
+  assert.match(
+    SKILL,
+    /Set\s+`stripLabels`\s+to\s+`agent-plan`\s+on\s+a\s+successful\s+plan[\s\S]{0,160}do\s+not\s+strip\s+it/,
+    'successful planning must strip agent-plan while preserving agent-question',
+  )
+  assert.match(
+    SKILL,
+    /`labels`:\s+the\s+merged-minus-stripped\s+set\s+\(names\)/,
+    'the saved labels field must send the merged-minus-stripped set',
+  )
 })
 
 test('the resident body cross-references how to dispatch a zero-change planning session', () => {

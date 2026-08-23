@@ -3,9 +3,12 @@
 ## all: Clean, format, and test
 all: clean format test
 
-## deps: Install dependencies (docs is standalone, not part of the pnpm workspace)
+## deps: Install dependencies (docs is its own workspace root, not part of the
+## root pnpm workspace). pnpm-workspace.yaml here stops pnpm's upward search at
+## services/docs and carries the overrides/minimumReleaseAge/allowBuilds this
+## install needs; --ignore-workspace would discard it.
 deps:
-	pnpm install --ignore-workspace
+	pnpm install
 
 ## format: Format markdown, TypeScript, and CSS via prettier
 format:

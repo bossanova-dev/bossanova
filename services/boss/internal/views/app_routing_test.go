@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -686,6 +687,123 @@ func TestNewHomeModelPreservesQuestionState(t *testing.T) {
 	}}})
 	if cmd != nil {
 		t.Fatal("recreated Home returned a notification command for an unchanged question")
+	}
+}
+
+// TestNewHomeModelPreservesRetainedReloginState guards that returning to Home
+// does not hide the retained-login warning or show the guest cloud promo again.
+func TestNewHomeModelPreservesRetainedReloginState(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.needsRelogin = true
+	a.home.reloginReason = auth.ReloginReasonRefreshOutcomeUnknown
+
+	rebuilt := a.newHomeModel()
+
+	if line := rebuilt.authReloginLine(); !strings.Contains(line, "Sign in required") {
+		t.Fatalf("rebuilt authReloginLine() = %q, want Sign in required", line)
+	}
+	if rebuilt.reloginReason != auth.ReloginReasonRefreshOutcomeUnknown {
+		t.Fatalf("rebuilt reloginReason = %q, want %q", rebuilt.reloginReason, auth.ReloginReasonRefreshOutcomeUnknown)
+	}
+	if rebuilt.guestCloudOfferVisible() {
+		t.Fatal("rebuilt Home shows the guest cloud promo while re-login is required")
+	}
+
+	unflaggedApp := NewApp(nil, nil)
+	unflagged := unflaggedApp.newHomeModel()
+	if line := unflagged.authReloginLine(); line != "" {
+		t.Fatalf("unflagged authReloginLine() = %q, want empty", line)
+	}
+}
+
+func TestUpdateLoginClearsRetainedReloginAfterSuccess(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewLogin
+	a.home.needsRelogin = true
+	a.home.reloginReason = auth.ReloginReasonRefreshOutcomeUnknown
+	a.home.authStatusGeneration = 7
+	a.login.done = true
+	a.login.verification = auth.LoginVerification{Outcome: auth.LoginVerified}
+
+	model, _ := a.updateLogin(nil)
+	got := model.(App)
+
+	if got.home.needsRelogin || got.home.reloginReason != "" {
+		t.Fatalf("successful login retained relogin state: needsRelogin=%v reason=%q", got.home.needsRelogin, got.home.reloginReason)
+	}
+	if line := got.home.authReloginLine(); line != "" {
+		t.Fatalf("successful login Home warning = %q, want empty", line)
+	}
+	if got.home.authStatusGeneration != 8 {
+		t.Fatalf("successful login generation = %d, want 8", got.home.authStatusGeneration)
+	}
+}
+
+func TestUpdateLoginClearsVerifiedReloginAfterSubscriptionCancel(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewLogin
+	a.home.needsRelogin = true
+	a.home.reloginReason = auth.ReloginReasonRefreshOutcomeUnknown
+	a.home.authStatusGeneration = 3
+	a.login.cancelled = true
+	a.login.done = true
+	a.login.verification = auth.LoginVerification{Outcome: auth.LoginVerified}
+
+	model, _ := a.updateLogin(nil)
+	got := model.(App)
+
+	if got.home.needsRelogin || got.home.reloginReason != "" {
+		t.Fatalf("verified subscription cancel retained relogin state: needsRelogin=%v reason=%q", got.home.needsRelogin, got.home.reloginReason)
+	}
+	if got.home.authStatusGeneration != 4 {
+		t.Fatalf("verified subscription cancel generation = %d, want 4", got.home.authStatusGeneration)
+	}
+}
+
+func TestUpdateLoginPreservesRetainedReloginAfterDismissedError(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewLogin
+	a.home.needsRelogin = true
+	a.home.reloginReason = auth.ReloginReasonRefreshOutcomeUnknown
+	a.login.done = true
+
+	model, _ := a.updateLogin(nil)
+	got := model.(App)
+
+	if !got.home.needsRelogin || got.home.reloginReason != auth.ReloginReasonRefreshOutcomeUnknown {
+		t.Fatalf("dismissed login error relogin state: needsRelogin=%v reason=%q", got.home.needsRelogin, got.home.reloginReason)
+	}
+	if line := got.home.authReloginLine(); !strings.Contains(line, "Sign in required") {
+		t.Fatalf("dismissed login error Home warning = %q, want Sign in required", line)
+	}
+}
+
+func TestUpdateLoginInvalidatesPreLoginAuthStatus(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewLogin
+	a.home.needsRelogin = true
+	a.home.reloginReason = auth.ReloginReasonRefreshOutcomeUnknown
+	a.login.done = true
+	a.login.verification = auth.LoginVerification{Outcome: auth.LoginVerified}
+
+	model, _ := a.updateLogin(nil)
+	got := model.(App)
+	staleGeneration := got.home.authStatusGeneration - 1
+
+	updated, _ := got.home.Update(authStatusMsg{
+		generation:    staleGeneration,
+		loggedIn:      false,
+		email:         "dev@example.com",
+		needsRelogin:  true,
+		reloginReason: auth.ReloginReasonRefreshOutcomeUnknown,
+	})
+	home := updated.(HomeModel)
+
+	if home.needsRelogin || home.reloginReason != "" {
+		t.Fatalf("stale auth status restored relogin state: needsRelogin=%v reason=%q", home.needsRelogin, home.reloginReason)
+	}
+	if line := home.authReloginLine(); line != "" {
+		t.Fatalf("stale auth status restored Home warning = %q, want empty", line)
 	}
 }
 

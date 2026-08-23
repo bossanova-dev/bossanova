@@ -12,6 +12,7 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -564,5 +565,45 @@ func TestAccountsList_CredentialSafety(t *testing.T) {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("rendered accounts view leaked secret-shaped token %q\n%s", forbidden, content)
 		}
+	}
+}
+
+// TestAccountLastTestCellMasksInjectionFailure pins BOS-973 on the TUI surface:
+// the recorded credential-injection reason reaches the LAST TEST cell ONLY
+// through maskTestError, so it is redacted, collapsed to one line, and
+// truncated to the column — never rendered raw. The reason is a materialize
+// error carrying filesystem paths, so masking is what keeps a future,
+// less-careful reason string from leaking anything secret-shaped.
+func TestAccountLastTestCellMasksInjectionFailure(t *testing.T) {
+	const reason = "credential injection failed: materialize codex account: " +
+		"project codex base home: refusing account projection\n" +
+		"\t\"~/.config/accounts/codex/acct-codex-2/config.toml\": existing entry is not a symlink"
+	a := &pb.Account{Id: "acct-codex-2", Provider: "codex", Health: "failed", LastTestError: reason}
+
+	got := accountLastTestCell(a)
+	if got == reason {
+		t.Fatal("LAST TEST cell rendered the raw reason; it must go through maskTestError")
+	}
+	if strings.ContainsAny(got, "\n\t") {
+		t.Fatalf("LAST TEST cell is not collapsed to one line: %q", got)
+	}
+	if lipgloss.Width(got) > 22 {
+		t.Fatalf("LAST TEST cell width %d exceeds the column budget: %q", lipgloss.Width(got), got)
+	}
+	// The operator must still be able to tell this apart from a login failure:
+	// the injection prefix is what leads the cell.
+	if !strings.HasPrefix(got, "credential inject") {
+		t.Fatalf("LAST TEST cell = %q, want it to lead with the injection prefix", got)
+	}
+
+	// The detail screen has a wider budget and shows the full prefix, which is
+	// what tells the operator this is an injection failure rather than a
+	// rejected credential.
+	detail := accountLastTestedDetail(a)
+	if !strings.Contains(detail, "credential injection failed") {
+		t.Fatalf("detail health line = %q, want the full injection prefix", detail)
+	}
+	if !strings.HasPrefix(detail, "failed · ") {
+		t.Fatalf("detail last-tested line = %q, want the failed framing", detail)
 	}
 }

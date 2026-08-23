@@ -38,5 +38,5 @@ Clone found (javascript):
  - services/web/src/components/B.tsx [14:1 - 32:1]
 
 $ make debt-filesize-boss
-services/boss/internal/views/home.go:1717: file length is 1378 lines, which exceeds the limit of 800
+services/boss/internal/views/home.go:1717: file length is 1778 lines, which exceeds the limit of 800
 services/boss/internal/views/app.go:1055: file length is 858 lines, which exceeds the limit of 800

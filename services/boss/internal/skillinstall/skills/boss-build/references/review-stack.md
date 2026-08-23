@@ -21,15 +21,53 @@ transcripts, diffs, Codex output, `boss-review` lens output — stays in the sub
 **NOT** pasted back.
 
 **Write your terminal verdict to the run file (the run-file sentinel convention) — this, not your returned prose, is
-what the orchestrator routes on.** The orchestrator provisioned a per-run sentinel context and passed
-you `RUN_DIR` and `RUN_ID`. As your **last action**, write the terminal sentinel line to that run
-file:
+what the orchestrator routes on.** The orchestrator provisioned a per-run sentinel context, passed
+you `RUN_DIR` and `RUN_ID`, and **seeded** that file with a provisional pessimistic `capped 1`
+before it dispatched you. Write the real line **the moment the blocking verdict is determined**, and
+re-affirm the same line as your **last action**:
 
 ```bash
 SENTINEL="$RUN_SENTINEL"
 CAPS="$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs"
-node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review "$(node "$CAPS" sentinel clean)"   # clean; or: sentinel capped <N>
+node "$SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
+  "$(node "$CAPS" sentinel clean)" '{"provisional":false}'   # clean; or: sentinel capped <N>
 ```
+
+**Write it when it is known — a last-action-only write is the defect, not the contract.** Deferring
+the write to the end makes it one unguarded step at the close of a long, expensive dispatch, so
+anything that ends you between _verdict determined_ and _verdict written_ destroys a verdict for
+work that was really done, and the run is forced to BLOCKED publishing `coverage unknown`. Write at
+each point below, then re-affirm at the end. Rewriting is always safe: the writer replaces the run
+file wholesale rather than appending to it or refusing a second write, so re-stating a value costs
+nothing and replacing one with a different value is equally well defined.
+
+- **Step 6 loop clean exit** (loop step 3 — zero must-fix), and the mechanical-remediation
+  extension's own clean exit → write `sentinel clean` **there**, before going on to Step 6b.
+- **Step 6 capped paths** — the oscillation guard (loop step 6), round overflow (loop step 7), a
+  non-positive leg budget, and the mechanical-remediation extension's own capped exit → write
+  `sentinel capped <N>` **there**, `<N>` = the rounds reached.
+- **Step 6b §3 re-review** — the only pass that can still change the blocking verdict → **when its
+  fix leg runs** (the outside voice surfaced must-fix), write **twice**: `capped <N>` before that
+  fix leg, demoting the loop's `clean` for the interval in which an un-reviewed outside-voice fix
+  sits on the branch, then `clean` once the one confirming round came back clean, or `capped <N>`
+  when it did not or its budget went non-positive. When the outside voice surfaced **nothing**, §3
+  writes nothing at all and the loop's `clean` stands.
+- **Step 6c** → **never** touches the run file, at any point, for any outcome — and, unlike §3, it
+  is **not** demoted before it runs either. That asymmetry is reasoned, not overlooked. §3 must
+  demote because a death mid-§3 would ship a fix the **blocking** gate demanded and never confirmed.
+  Step 6c is advisory, and its findings are already permitted to stay open: a `boss-review` that
+  caps proceeds to Step 7 with the coverage token still `full`. So a death mid-6c leaves the branch
+  in a state the protocol already accepts on its **success** path, not one the gate refused — and
+  6c's edits are committed, so Step 8's CI still measures them. A pass that cannot settle the
+  verdict may not unsettle one either; the residual is accepted here rather than left unstated.
+
+Every one of those writes carries `'{"provisional":false}'`. The marker is always present and
+explicit rather than inferred from absence, so the orchestrator can tell a cap a reviewer earned
+from the seed nobody upgraded — see §BLOCKED-route publication's third bullet for what the latter
+publishes. Read `false` for exactly what it says: something **after** the dispatch authored this
+line. It is not on its own evidence that a reviewer earned it — the below-floor route and the
+degraded tier's did-not-report path write `false` too, and no lens ran on either. Whether a lens
+ran is §PARTIAL-route publication's T1 question, not the marker's.
 
 Emit `sentinel clean` when the blocking Step 6/6b path exited clean (zero open must-fix, including any
 outside-voice-triggered re-review); emit `sentinel capped <N>` (N = the rounds reached) only when the
@@ -38,9 +76,19 @@ detected one (there `<N>` is the number of rounds that tier actually reached: `1
 detection round is all that ran, `2` when its bounded repair pass ran as well). Do **not** copy the
 Step 6c
 `boss-review` sentinel into this run-file verdict: Step 6c is advisory and returns report text/status for
-Step 7. The orchestrator classifies this file with `matchSentinel` and never reads your reply — so if
-you write nothing (a crash or watchdog kill), a **missing** sentinel becomes a `dispatch-failure` → the
-safe non-clean (BLOCKED) branch, never clean.
+Step 7.
+
+**The worked case that rule leaves open: Step 6/6b clean + Step 6c capped ⇒ write `sentinel clean`.**
+"Do not copy the Step 6c sentinel" says what not to write, never what to write instead — and a
+run holding an advisory `bs-review capped:` line in hand, with the blocking path long since clean,
+has to be told. The run-file verdict records the **blocking** path only, so a `boss-review` that
+caps changes it not at all: write (or leave) `clean`, keep `boss-review: capped` in the run log, and
+let Step 6c's own coverage suffix carry the open advisory items. The mirror case holds too — Step 6
+or Step 6b capped and Step 6c came back clean ⇒ the verdict is still `capped <N>`.
+
+The orchestrator classifies this file with `matchSentinel` and never reads your reply — so if
+you write nothing (a crash or watchdog kill), the orchestrator's provisional seed is what it reads,
+which routes to the safe non-clean (BLOCKED) branch, never clean.
 
 ## Step 6 entry — review tier selection
 
@@ -208,7 +256,7 @@ writer** — run the whole command, not either half:
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)"
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":false}'
 ```
 
 Both halves are load bearing, and dropping either lands on the **same** wrong outcome from opposite
@@ -228,6 +276,19 @@ The choice is **recorded either way** — see the `## Review coverage` token bel
 chosen for any other reason: it is not an operator preference, not a shortcut for a large diff, and
 not something a reviewer's own findings can trigger. Anchoring it to a stated threshold and
 publishing the result is what stops the cheap path from being the invisible default.
+
+**Allowance-disclosure rule — a per-step allowance that declines work must name two numbers.**
+Most gates in this reference are bounded by a **per-step allowance** stamped from the run's clock,
+not by the run's clock itself: `STEP_6C_DEADLINE`, Step 6b's budget gate and its §3 re-review clamp,
+Step 6's per-round leg clamps. Whenever one of those **declines work** — refuses a fix round, skips
+a pass, stops a loop early — whatever it publishes must state, as **two separate numbers**, the
+**allowance** that actually declined it and the **remaining Preflight clock** at that moment. And it
+must never phrase an inner box as the run being out of time: "the deadline left 412s and a fix round
+costs 1200s" is simultaneously true of a 15-minute advisory allowance and false of the 215 minutes
+the run still held, so a reader who is shown only one number files a designed bound as a budget bug
+and the next run re-prices a formula that was never wrong. This is the enclosing-ceiling failure —
+**the clamp costs the diagnostic, not just the budget** — and the remedy is disclosure, not
+re-pricing: locate every enclosing ceiling before tuning an inner deadline.
 
 ### Degraded tier (minimal)
 
@@ -315,7 +376,7 @@ generate-and-persist command the below-floor route uses, with `sentinel capped 1
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)"
+  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":false}'
 ```
 
 That routes to **BLOCKED**; name the failure in the `## Review coverage` reason. Both halves matter
@@ -364,10 +425,12 @@ Step 7, so a reader never mistakes silence for full coverage:
   whose sentinel was **present but unmatchable** and whose subagent returned nothing usable. A tier
   may well have run here, so this says the verdict could not be read — never that no review happened.
 - `none: review coverage unknown (<reason>)` — the orchestrator's token for a `dispatch-failure`
-  whose sentinel is **missing or stale**. The stack was entered and then wrote no readable verdict;
-  because the sentinel write is the subagent's **last** action, a kill, timeout, or crash anywhere in
-  the stack lands here — including one that struck after a reviewer, or several, had already
-  reported. So neither `full`/`degraded:` (no tier is known to have finished) nor `did not run` (no
+  whose sentinel is **missing or stale**. The stack was entered and then left no readable verdict;
+  the orchestrator's pre-dispatch seed makes that unreachable from a subagent death alone, so
+  arriving here means the seed itself never landed or the run dir was lost — and a kill, timeout, or
+  crash anywhere in the stack lands here just the same, including one that struck after a reviewer,
+  or several, had already reported. So neither `full`/`degraded:` (no tier is known to have
+  finished) nor `did not run` (no
   tier is known to have been skipped) is honest, and this token publishes the uncertainty itself. The
   subagent cannot emit it either — it wrote nothing, which is why you are here.
 - `none: review stack did not run (<reason>)` — the orchestrator's token for the route where the
@@ -385,6 +448,16 @@ Step 7, so a reader never mistakes silence for full coverage:
   and labelling a stack that never started as a tier claims a reviewer ran. That route is BLOCKED,
   never REVIEW_READY, and this token is what says so in the PR body instead of leaving the section
   absent.
+
+**A verdict without a token is not `full`.** The run-file verdict and these returned tokens are two
+different channels, and because the blocking verdict is now written the moment it is determined
+rather than last, a `clean` on disk no longer implies the dispatch survived to report. When the
+verdict is `clean` but the dispatch returned **no** `## Review coverage` token, do not improvise
+`full`: an invented token claims a coverage nobody measured, on a run whose stack demonstrably did
+not finish. Publish `none: review coverage unknown (<reason>)`, with `## Cross-model review` =
+`error: <reason>`, exactly as the missing-sentinel route does. This governs only what is
+**published**. It is **not** a routing rule and must never become one — routing reads the run file
+and nothing else, so that `clean` still proceeds; it simply proceeds saying what it actually knows.
 
 Emit a `full` token on a full-tier run too — the token is never omitted. On a resume, the orchestrator
 **replaces** this section rather than appending a duplicate.
@@ -534,7 +607,11 @@ ran** — so re-check it here, against this route's own artifact:
   itself, rather than one a reviewer earned, therefore **fails T1 by construction** and is
   `BLOCKED`. A run that satisfied **zero** criteria is `BLOCKED`, never `PARTIAL`: `0/<total>` is
   the universal soft landing this state exists to refuse, and an agent's own assertion that a
-  criterion is done is never certification.
+  criterion is done is never certification. The orchestrator's **provisional seed** — a `capped`
+  whose payload carries `provisional` = `true` — is named here explicitly so it cannot be reasoned
+  around: it was authored **before the dispatch**, so no lens ran, no reviewer authored anything,
+  and all three conjuncts are unestablishable at once. A provisional-survived verdict is therefore
+  **never eligible for `PARTIAL`** and takes §BLOCKED-route publication's third bullet.
 - **T2 — the branch is green.** Step 9's watch never ran on this route, so take the reading here,
   **after** the push and the ready below and against the PR this section publishes:
   `gh pr checks "$PR_NUMBER" --watch --fail-fast`. Red, or a rollup you cannot resolve, is
@@ -1212,10 +1289,11 @@ Which token depends on **which** `dispatch-failure` sub-case fired, and they are
 **Neither** of them is `none: review stack did not run`: both fire only _after_ the stack was
 entered, and a sentinel that never arrived is not evidence that no reviewer ran.
 
-- **Missing/stale sentinel** — the subagent wrote nothing, so it returned no tokens either. It was
-  still dispatched, and the sentinel write is its **last** action, so a kill, timeout, or crash
-  anywhere in the stack lands here — including one that struck after a reviewer, or several, had
-  already reported. Nothing here proves coverage either way, so publish the uncertainty: write
+- **Missing/stale sentinel** — nothing readable is in the run file at all, not even the provisional
+  seed, so the seed write itself failed or the run dir was lost. The subagent was still dispatched
+  and returned no tokens, and a kill, timeout, or crash anywhere in the stack lands here — including
+  one that struck after a reviewer, or several, had already reported. Nothing here proves coverage
+  either way, so publish the uncertainty: write
   `## Review coverage` = `none: review coverage unknown (<reason>)` and `## Cross-model review` =
   `error: <reason>`. Do **not** write `did not run` — it asserts an absence the evidence does not
   support and hides partial coverage, the exact ambiguity this section exists to expose.
@@ -1224,6 +1302,18 @@ entered, and a sentinel that never arrived is not evidence that no reviewer ran.
   honesty, and a reader who believes it will not go looking for the review that happened. Keep the
   tokens it returned and annotate the coverage one with the unreadable verdict; only if it returned
   nothing usable, write `none: review verdict unreadable (<reason>)`.
+- **Provisional sentinel that survived** (`matchSentinel` → `capped`, **and** the payload's
+  `provisional` is `true`) — the orchestrator's own pre-dispatch seed came back exactly as written,
+  so the stack was entered and nothing inside it ever settled a verdict. Publish the same
+  uncertainty the first bullet does, with the cause named: `## Review coverage` =
+  `none: review coverage unknown (review stack entered; provisional verdict never upgraded — <reason>)`
+  and `## Cross-model review` = `error: <reason>`. Deliberately the **same** head token rather than a
+  sixth form — nothing about coverage is known here either, and the enumeration Step 7 copies is
+  resident, where bytes are scarce. What changed is that the **routing survives**: the seed is why
+  this run reaches a terminal state at all instead of an empty file. Decide this bullet from the
+  **payload marker alone** — never from the kind string, the round count, or the returned prose, all
+  of which a genuine reviewer-earned cap matches byte for byte. It is **not** eligible for `PARTIAL`
+  either; see §PARTIAL-route publication's T1.
 
 `none: review stack did not run (<reason>)` belongs to neither bullet — it is the **third** route,
 the one where the stack was **never entered**: no review subagent was dispatched and the inline
@@ -1296,7 +1386,13 @@ round:
    reviewable, so a settled item resting on a factually false premise is re-opened rather than
    inherited. The reviewer only reports — it writes nothing.
 2. **Categorize.** must-fix = all Critical + Important; deferred = Minor.
-3. **Clean check.** Zero must-fix → **clean exit**: leave the loop, proceed to Step 6b (outside voice).
+3. **Clean check.** Zero must-fix → **clean exit**: run the conditional API-surface check below
+   (§API-surface check) **first** — it belongs to the gate, not to coverage, and an unrun required
+   API gate cannot produce a clean verdict in either tier — then
+   **write `sentinel clean` to the run file here**,
+   with `'{"provisional":false}'` — the blocking verdict is determined at this line and the
+   write-when-known contract at the top of this reference says to persist it at the line that
+   determines it, not after Step 6c — then leave the loop and proceed to Step 6b (outside voice).
 4. **Fix (awaited).** Fix the must-fix items following the
    [receiving-code-review discipline](receiving-code-review.md) (inline, or via an awaited fix
    subagent — never backgrounded). Bound it the same way: a dispatched fix subagent carries
@@ -1304,8 +1400,12 @@ round:
    tagless.
 5. **Gate.** Re-run the change gate + relevant `make` targets; fix churn is expected.
 6. **Oscillation guard.** If the same `file:line` was must-fix this round **and** the immediately
-   preceding round and was neither fixed nor verified, stop looping now and take the capped path.
-7. **Increment.** round++; if > `$MAX_ROUNDS`, take the capped path.
+   preceding round and was neither fixed nor verified, stop looping now and take the capped path:
+   **write `sentinel capped <N>` to the run file here**, `<N>` = the rounds reached, with
+   `'{"provisional":false}'`.
+7. **Increment.** round++; if > `$MAX_ROUNDS`, take the capped path — and **write
+   `sentinel capped <N>` to the run file here** too, on the same terms as step 6. Both capped exits
+   persist the verdict at the line that decides it; neither defers it to the end of the dispatch.
 
 **Bound both awaited legs of every round — the tier formula priced them, and nothing else enforces
 them.** `FULL_TIER_MINUTES` charges each round a flat `20`: ten minutes of reviewer and ten of
@@ -1373,8 +1473,9 @@ buys extra rounds, never a wider per-round budget, which is why the formula pric
 `40` and not at whatever is left — and a non-positive leg budget **is** that breaker tripping.
 
 In each extension round, fix only those recorded findings, commit tagless, run their focused tests,
-then dispatch one fresh independent reviewer over the whole branch. A clean result proceeds to Step
-6b normally. A new Critical finding, a finding outside this eligibility set, an oscillation, an
+then dispatch one fresh independent reviewer over the whole branch. A clean result **writes
+`sentinel clean` to the run file here**, with `'{"provisional":false}'` and after the same
+API-surface check loop step 3 owes, then proceeds to Step 6b normally. A new Critical finding, a finding outside this eligibility set, an oscillation, an
 unresolved must-fix after the two extra rounds, or insufficient wall-clock budget takes the normal
 `capped` → `BLOCKED` path. Record each extension-round disposition in the finding ledger. Never use
 this extension to defer a required item or to broaden the ticket — the `PARTIAL` carve-out does
@@ -1629,6 +1730,35 @@ Bounded: **at most one** outside-voice-triggered review round. If that round sur
 would re-trigger, fall to the existing **capped/`BLOCKED`** path (record unresolved findings in the PR
 body) — never loop unbounded.
 
+**Demote the run-file verdict before you fix, and re-affirm it the moment this settles.** This
+applies **only when §3's fix leg actually runs** — that is, when the outside voice surfaced must-fix
+findings. When it surfaced none there is no fix, no confirming round and nothing to demote: §3
+changes the branch not at all, the Step 6 loop's `clean` is still justified, and it **stands
+untouched**. Demoting on that path would strand a `capped` with no confirming round left to lift it,
+recreating this reference's own headline defect — a sound run forced to BLOCKED — on the most
+frequent path there is.
+
+When the fix leg **does** run, §3 is the only pass that can still move the blocking verdict after the
+Step 6 loop wrote it, and it is the one interval where that loop's `clean` sits on disk while the
+branch carries an outside-voice fix **nothing has reviewed yet**. Writing only on the way out would
+make a death inside this section publish that stale `clean` — shipping an unverified fix as a clean
+run, the exact self-certification the mandatory confirming round exists to prevent, and a strictly
+worse outcome than the missing sentinel the last-action-only contract used to leave here. So write
+**twice**:
+
+- **Before the fix leg** — once the findings are in hand and ahead of any edit — write
+  `sentinel capped <N>` with `'{"provisional":false}'`, `<N>` = the rounds the **Step 6 loop**
+  reached. A rewrite is cheap and idempotent, so on the happy path this costs nothing and is
+  overwritten seconds later.
+- **After the one confirming round returns** — `sentinel clean` when it came back clean,
+  `sentinel capped <N>` when it did not or the clamp below went non-positive, always with
+  `'{"provisional":false}'`. `<N>` is the same number as above: it counts the Step 6 loop's rounds,
+  and §3's single confirming round is not one of them.
+
+The order is the whole point: the pessimistic value is on disk for exactly the interval in which the
+branch cannot yet justify a clean one. Nothing downstream of the second write may change the
+verdict, so nothing downstream is a legitimate place to defer it to.
+
 **Bound it on the clock too — the formula's `+ 20` is a cap, not an estimate.** "At most one round"
 bounds the count, not the duration, and both legs here are awaited and unpreemptable, so an
 unclamped re-review spends the post-review reserve at the very end of the review stack, where
@@ -1773,6 +1903,11 @@ fi
   is the one that fixes — not a bound that quietly does nothing. Raising the allowance to make
   rounds fit would mean raising `STEP_6C_MINUTES` and re-pricing `FULL_TIER_MINUTES` with it, which
   is a deliberate change to the tier formula, not a local tweak here.
+  So a report reading "the caller's Step 6c deadline left 412s, and a fix round costs 1200s" is
+  **this bound working as designed**, not a mis-derived deadline: 900s of allowance less the ~10
+  minutes the initial pass spends leaves roughly that, and 1200s is `FIX_ROUND_MINUTES`. Recognise
+  it, disclose it through the suffix above, and do not re-file it as a budget bug or re-price the
+  formula to make it go away.
 - **Exit gate.** When the call returns, compare `date +%s` against `$STEP_6C_DEADLINE`. At or past
   it, do **nothing further** in this step — no additional fix round, no re-invocation — and go
   straight to Step 7 with the report it produced.
@@ -1782,5 +1917,16 @@ fi
   of these — it ran. Record `boss-review: capped` and leave the coverage token as `full`. The
   zero-fix-round default above is that case, so do **not** stamp `skipped: Step 6c boss-review` on
   every full-tier run.
+  A capped pass does still owe the **allowance-disclosure rule** above, so append a **suffix** to
+  that `full` token — a suffix, never a new head form, so the resident enumeration Step 7 copies
+  stays untouched:
+  `full (advisory: boss-review capped — <N> open must-fix reported; its <M>-minute allowance funds 0 fix rounds, <R> minutes remained on the run)`.
+  `<M>` is `STEP_6C_MINUTES` and `<R>` is the whole minutes still left against `PREFLIGHT_DEADLINE`
+  — the two separate numbers that rule requires, so a reader sees an inner box decline the work
+  rather than the run running out of it. Publish the suffix on the `## Review coverage` token the
+  orchestrator writes in Step 7. That step's `|`-separated list enumerates **head** forms, not the
+  whole string space, so a `full` carrying this suffix **is** the `full` head it already admits:
+  copy the suffix through verbatim rather than normalising it back to a bare `full`, which would
+  delete the only disclosure this rule produces.
 
 Off switch: if `BOSS_BS_REVIEW=0`, skip entirely and record `boss-review: skipped (disabled)`.

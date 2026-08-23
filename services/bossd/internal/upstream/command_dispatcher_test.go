@@ -85,6 +85,10 @@ type fakeCommandHandler struct {
 	switchAgentID     string // last agentSessionID passed to SwitchAccount
 	switchAccountID   string // last accountID passed to SwitchAccount
 	switchForce       bool   // last force flag passed to SwitchAccount
+	// switchBlock, when non-nil, makes SwitchAccount block until the channel
+	// is closed. Used to prove a slow switch no longer wedges the command
+	// reader (BOS-897).
+	switchBlock chan struct{}
 	// GetChatTranscript / SendChatMessage knobs.
 	transcript        *pb.GetChatTranscriptResponse
 	transcriptSession string // last sessionID passed to GetChatTranscript
@@ -171,7 +175,14 @@ func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.W
 	f.wakeCalls.Add(1)
 	return f.wakeOutcome, f.wakeTmuxName, f.wakeReason, f.wakeErrorCode, f.wakeErr
 }
-func (f *fakeCommandHandler) SwitchAccount(_ context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+func (f *fakeCommandHandler) SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+	if f.switchBlock != nil {
+		select {
+		case <-f.switchBlock:
+		case <-ctx.Done():
+			return false, "", "", pb.CommandResult_ERROR_CODE_CANCELED, ctx.Err()
+		}
+	}
 	f.switchCalls.Add(1)
 	f.switchSessionID = sessionID
 	f.switchAgentID = agentSessionID
@@ -1122,7 +1133,12 @@ func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
 		switchNoticeText:  "Switched to Account B",
 	}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	// The switch is dispatched asynchronously (BOS-897): it now runs under a
+	// real respawn budget, which must not be spent on the command reader. The
+	// payload below is byte-for-byte the synchronous form's — only the delivery
+	// channel changed.
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-s1",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
@@ -1133,7 +1149,10 @@ func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
 					Force:          true,
 				},
 			},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	if handler.switchCalls.Load() != 1 {
 		t.Fatalf("switch calls = %d, want 1", handler.switchCalls.Load())
 	}
@@ -1154,19 +1173,151 @@ func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
 	}
 }
 
+func TestDispatchCommand_SwitchAccount_CommandCancelCancelsInFlightSwitch(t *testing.T) {
+	handler := &fakeCommandHandler{switchBlock: make(chan struct{})}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: "c-switch-cancel",
+			Cmd: &pb.OrchestratorCommand_SwitchAccount{
+				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
+	}
+	waitFor(t, "switch cancel registered", func() bool {
+		client.asyncMu.Lock()
+		_, ok := client.asyncCancels["c-switch-cancel"]
+		client.asyncMu.Unlock()
+		return ok
+	})
+	if ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: "c-switch-cancel",
+			Cmd: &pb.OrchestratorCommand_CommandCancel{
+				CommandCancel: &pb.CommandCancel{CommandId: "c-switch-cancel"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil result for command cancel, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected failed switch result, got %+v", ev)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_CANCELED {
+		t.Fatalf("error_code = %v, want CANCELED", r.GetErrorCode())
+	}
+	if !strings.Contains(r.GetError(), "context canceled") {
+		t.Fatalf("error = %q, want context canceled", r.GetError())
+	}
+}
+
+func TestDispatchCommand_SwitchAccount_CommandCancelBeforeSwitchCancelsWhenSwitchArrives(t *testing.T) {
+	handler := &fakeCommandHandler{switchBlock: make(chan struct{})}
+	client := newDispatcherClient(handler, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: "c-switch-early-cancel",
+			Cmd: &pb.OrchestratorCommand_CommandCancel{
+				CommandCancel: &pb.CommandCancel{CommandId: "c-switch-early-cancel"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil result for command cancel, got %+v", ev)
+	}
+	if ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: "c-switch-early-cancel",
+			Cmd: &pb.OrchestratorCommand_SwitchAccount{
+				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+			},
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected failed switch result, got %+v", ev)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_CANCELED {
+		t.Fatalf("error_code = %v, want CANCELED", r.GetErrorCode())
+	}
+	if !strings.Contains(r.GetError(), "context canceled") {
+		t.Fatalf("error = %q, want context canceled", r.GetError())
+	}
+}
+
+func TestRunCancelableAsyncCommand_TeardownWaitsForWorker(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil)
+	out := make(chan *pb.DaemonEvent, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	if ev := client.runCancelableAsyncCommand(ctx, "c-switch-teardown", out, func(context.Context) *pb.DaemonEvent {
+		close(entered)
+		<-release
+		return commandOK("c-switch-teardown", nil)
+	}); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+	<-entered
+	cancel()
+
+	waitDone := make(chan struct{})
+	go func() {
+		client.cancelAndWaitAsyncCommands()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatal("teardown returned before async worker exited")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("teardown did not return after async worker exited")
+	}
+	client.asyncMu.Lock()
+	defer client.asyncMu.Unlock()
+	if len(client.asyncCancels) != 0 {
+		t.Fatalf("asyncCancels length = %d, want 0", len(client.asyncCancels))
+	}
+	if len(client.asyncDone) != 0 {
+		t.Fatalf("asyncDone length = %d, want 0", len(client.asyncDone))
+	}
+}
+
 func TestDispatchCommand_SwitchAccount_FailedPreconditionSetsErrorCode(t *testing.T) {
 	handler := &fakeCommandHandler{
 		switchErrorCode: pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION,
 		switchErr:       errors.New("target account is cooling down"),
 	}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-s2",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
 				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
 			},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	r := ev.GetResult()
 	if r == nil || r.GetOk() {
 		t.Fatalf("expected error result, got %+v", ev)
@@ -1176,6 +1327,48 @@ func TestDispatchCommand_SwitchAccount_FailedPreconditionSetsErrorCode(t *testin
 	}
 	if r.GetError() != "target account is cooling down" {
 		t.Fatalf("error message = %q", r.GetError())
+	}
+}
+
+// TestHandleCommand_SlowSwitchDoesNotBlockReader is R7. A switch respawns the
+// chat's pane and waits for its composer, and BOS-897 grants it a legitimate
+// respawn budget to do it in. handleCommand runs inline on the
+// single-threaded Receive loop, which also services the heartbeat, so spending
+// that budget there is connection-fatal rather than merely slow. A fast Stop
+// dispatched right behind a wedged switch must complete without waiting for it.
+func TestHandleCommand_SlowSwitchDoesNotBlockReader(t *testing.T) {
+	release := make(chan struct{})
+	fake := &fakeCommandHandler{
+		session:     &pb.Session{Id: "s1"},
+		switchBlock: release,
+	}
+	client := newDispatcherClient(fake, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	ctx := context.Background()
+
+	client.handleCommand(ctx, &pb.OrchestratorCommand{
+		CommandId: "slow-switch",
+		Cmd: &pb.OrchestratorCommand_SwitchAccount{SwitchAccount: &pb.SwitchAccountCommand{
+			SessionId: "sess-1", AgentSessionId: "agent-1", AccountId: "acct-b",
+		}},
+	}, out)
+
+	client.handleCommand(ctx, &pb.OrchestratorCommand{
+		CommandId: "fast",
+		Cmd:       &pb.OrchestratorCommand_Stop{Stop: &pb.StopSessionCommand{SessionId: "s1"}},
+	}, out)
+
+	ev := recvEvent(t, out)
+	if got := ev.GetResult().GetCommandId(); got != "fast" {
+		t.Fatalf("expected fast command result first, got %q (the switch wedged the reader)", got)
+	}
+
+	// Let the switch finish so its goroutine doesn't leak, and confirm the
+	// result still arrives on outbound afterwards.
+	close(release)
+	ev = recvEvent(t, out)
+	if got := ev.GetResult().GetCommandId(); got != "slow-switch" {
+		t.Fatalf("expected the switch result after release, got %q", got)
 	}
 }
 
@@ -2774,5 +2967,128 @@ func TestClassifyBroadcastCommandErrorIsScopedToBroadcast(t *testing.T) {
 		if got := classifyCommandError(tc.err); got != tc.want {
 			t.Errorf("%s: shared classifier got %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestClassifySwitchCommandErrorIsScopedToSwitch pins the API-compatibility
+// boundary BOS-947 and BOS-958 deliberately drew, mirroring
+// TestClassifyBroadcastCommandErrorIsScopedToBroadcast above: the
+// DEADLINE_EXCEEDED and CANCELED arms belong to the switch command ALONE.
+//
+// A deadline or cancellation reads as verb-independent, which is exactly what
+// makes widening the shared classifier tempting. But the shared classifier is
+// reached by every other inbound command, and any of those handlers can surface
+// connect.CodeDeadlineExceeded or connect.CodeCanceled from a context ending — a
+// slow upstream call, a cancelled parent. Those classify as UNSPECIFIED, which
+// bosso renders as CodeAborted. Teaching the shared classifier either arm would
+// silently re-render all of them on the bossanova.v1 surface, a change in the
+// meaning of an existing response that needs its own apiversion bump plus a
+// down-convert transform.
+//
+// V20260820 / SwitchDeadlineCodeChange and V20260821 /
+// SwitchCanceledCodeChange version these changes for the switch and for nothing
+// else. This test fails the moment someone widens them, so the next such change
+// cannot ride in unversioned.
+func TestClassifySwitchCommandErrorIsScopedToSwitch(t *testing.T) {
+	t.Parallel()
+
+	deadline := connect.NewError(connect.CodeDeadlineExceeded, errors.New("switch respawn budget exhausted"))
+	canceled := connect.NewError(connect.CodeCanceled, errors.New("context canceled"))
+
+	if got := classifySwitchCommandError(deadline); got != pb.CommandResult_ERROR_CODE_DEADLINE_EXCEEDED {
+		t.Fatalf("switch classifier: want ERROR_CODE_DEADLINE_EXCEEDED, got %v", got)
+	}
+	if got := classifySwitchCommandError(canceled); got != pb.CommandResult_ERROR_CODE_CANCELED {
+		t.Fatalf("switch classifier: want ERROR_CODE_CANCELED, got %v", got)
+	}
+	// The api-compat pin: unchanged for every non-switch command.
+	if got := classifyCommandError(deadline); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("shared classifier must stay UNSPECIFIED for CodeDeadlineExceeded "+
+			"(widening it is an unversioned bossanova.v1 behaviour change); got %v", got)
+	}
+	if got := classifyCommandError(canceled); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("shared classifier must stay UNSPECIFIED for CodeCanceled "+
+			"(widening it is an unversioned bossanova.v1 behaviour change); got %v", got)
+	}
+	// The broadcast classifier is a sibling scope, not a superset: it must not
+	// have acquired the deadline or cancellation arms either.
+	if got := classifyBroadcastCommandError(deadline); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("broadcast classifier must stay UNSPECIFIED for CodeDeadlineExceeded; got %v", got)
+	}
+	if got := classifyBroadcastCommandError(canceled); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("broadcast classifier must stay UNSPECIFIED for CodeCanceled; got %v", got)
+	}
+	// Conversely, the switch classifier must not have acquired the broadcast's
+	// INVALID_ARGUMENT arm — each scope carries exactly its own.
+	invalid := connect.NewError(connect.CodeInvalidArgument, errors.New("malformed"))
+	if got := classifySwitchCommandError(invalid); got != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+		t.Fatalf("switch classifier must stay UNSPECIFIED for CodeInvalidArgument; got %v", got)
+	}
+	// The arms both classifiers share must keep agreeing.
+	for _, tc := range []struct {
+		name string
+		err  error
+		want pb.CommandResult_ErrorCode
+	}{
+		{"not found", connect.NewError(connect.CodeNotFound, errors.New("gone")), pb.CommandResult_ERROR_CODE_NOT_FOUND},
+		{"failed precondition", connect.NewError(connect.CodeFailedPrecondition, errors.New("bad state")), pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION},
+		{"unmapped code", connect.NewError(connect.CodeResourceExhausted, errors.New("quota")), pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+		{"untyped", errors.New("boom"), pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+	} {
+		if got := classifySwitchCommandError(tc.err); got != tc.want {
+			t.Errorf("%s: switch classifier got %v, want %v", tc.name, got, tc.want)
+		}
+		if got := classifyCommandError(tc.err); got != tc.want {
+			t.Errorf("%s: shared classifier got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSwitchCommandResultForTestUsesProductionSwitchFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantCode   pb.CommandResult_ErrorCode
+		wantText   string
+		forbidText string
+	}{
+		{
+			name:     "deadline",
+			err:      connect.NewError(connect.CodeDeadlineExceeded, errors.New("context deadline exceeded")),
+			wantCode: pb.CommandResult_ERROR_CODE_DEADLINE_EXCEEDED,
+			wantText: "switch session account: deadline_exceeded: context deadline exceeded",
+		},
+		{
+			name:       "non deadline",
+			err:        connect.NewError(connect.CodeFailedPrecondition, errors.New("cooling")),
+			wantCode:   pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION,
+			wantText:   "switch session account: failed_precondition: cooling",
+			forbidText: "deadline",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := SwitchCommandResultForTest("cmd-switch", tt.err)
+			if got.GetOk() {
+				t.Fatal("result ok = true, want failure")
+			}
+			if got.GetCommandId() != "cmd-switch" {
+				t.Fatalf("command id = %q, want cmd-switch", got.GetCommandId())
+			}
+			if got.GetErrorCode() != tt.wantCode {
+				t.Fatalf("error code = %v, want %v", got.GetErrorCode(), tt.wantCode)
+			}
+			if !strings.Contains(got.GetError(), tt.wantText) {
+				t.Fatalf("error = %q, want %q", got.GetError(), tt.wantText)
+			}
+			if tt.forbidText != "" && strings.Contains(got.GetError(), tt.forbidText) {
+				t.Fatalf("error = %q, did not expect %q", got.GetError(), tt.forbidText)
+			}
+		})
 	}
 }

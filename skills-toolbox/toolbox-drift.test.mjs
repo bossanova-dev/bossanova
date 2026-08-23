@@ -192,9 +192,9 @@ test('an explicit source path that does not exist is silent, not an error', (t) 
   assert.equal(stderr.text(), '')
 })
 
-// Installed skill homes are routinely reached through a symlink; printing the path as typed
-// invites an investigation into two names for one directory.
-test('the drift line names the resolved installed directory, not the symlink', (t) => {
+// Installed skill homes are routinely reached through a symlink; print both forms only
+// when they differ so the warning explains the equivalence instead of hiding it.
+test('the drift line names both resolved and configured directories for a symlink', (t) => {
   const fx = scratch(t)
   fx.both('skill-config.mjs', 'export const a = 1\n')
   fx.write(fx.installedDir, 'skill-config.mjs', 'export const a = 2\n')
@@ -205,7 +205,22 @@ test('the drift line names the resolved installed directory, not the symlink', (
   assert.equal(main(['check', '--toolbox', link, '--source', fx.sourceDir], { stderr }), 0)
   // Substring, not a RegExp: a temp path carries regex metacharacters on some platforms.
   assert.ok(stderr.text().includes(`installed=${fs.realpathSync(fx.installedDir)} `))
-  assert.doesNotMatch(stderr.text(), /linked-toolbox/)
+  assert.ok(stderr.text().includes(`configured=${link} `))
+})
+
+test('the drift line omits configured when it matches the resolved installed directory', (t) => {
+  const fx = scratch(t)
+  fx.both('skill-config.mjs', 'export const a = 1\n')
+  fx.write(fx.installedDir, 'skill-config.mjs', 'export const a = 2\n')
+  const installedRealpath = fs.realpathSync(fx.installedDir)
+
+  const stderr = capture()
+  assert.equal(
+    main(['check', '--toolbox', installedRealpath, '--source', fx.sourceDir], { stderr }),
+    0,
+  )
+  assert.ok(stderr.text().includes(`installed=${installedRealpath} `))
+  assert.doesNotMatch(stderr.text(), / configured=/)
 })
 
 test('an unreadable installed toolbox exits 0 without a warning', (t) => {

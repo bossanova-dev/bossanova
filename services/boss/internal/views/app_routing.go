@@ -275,6 +275,10 @@ func (a *App) newHomeModel() HomeModel {
 	home.logoutError = a.home.logoutError
 	home.loggedIn = a.home.loggedIn
 	home.loggedInEmail = a.home.loggedInEmail
+	// Preserve retained re-login state so a Home rebuild cannot blank the
+	// warning or resurrect the guest cloud promo while auth remains paused.
+	home.needsRelogin = a.home.needsRelogin
+	home.reloginReason = a.home.reloginReason
 	// Preserve focus state and any pending question so a rebuild between the
 	// notification and the user's click doesn't drop the auto-open (BOS-459).
 	home.focused = a.home.focused

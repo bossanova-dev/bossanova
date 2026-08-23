@@ -62,6 +62,13 @@ func TestStartRunReturnsDiscoveredSessionID(t *testing.T) {
 		t.Errorf("StartRun.SessionId = %q, want the echoed ses_wired0001abcd (not the caller hint)", start.SessionId)
 	}
 	waitExit(t, srv, start.SessionId)
+	hintExit, err := srv.ExitStatus(context.Background(), &bossanovav1.AgentExitStatusRequest{SessionId: "caller-hint-ignored"})
+	if err != nil {
+		t.Fatalf("ExitStatus caller hint: %v", err)
+	}
+	if !hintExit.GetIsComplete() || hintExit.GetExitError() != "" {
+		t.Fatalf("ExitStatus caller hint = %+v, want clean completed state", hintExit)
+	}
 }
 
 func TestExitStatusPropagatesAuthInvalidated(t *testing.T) {

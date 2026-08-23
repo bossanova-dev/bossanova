@@ -254,10 +254,10 @@ func (m ChatPickerModel) canRename() bool {
 	return m.selectedChat() != nil
 }
 
-// textEntryActive reports whether the inline rename prompt is focused, so App
-// leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660): inside a text
-// field Esc cancels the edit, and ctrl+x is a line-editing key.
-func (m ChatPickerModel) textEntryActive() bool { return m.renaming }
+// textEntryActive reports whether the inline rename prompt is focused and on
+// screen, so App leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660):
+// inside a text field Esc cancels the edit, and ctrl+x is a line-editing key.
+func (m ChatPickerModel) textEntryActive() bool { return m.err == nil && m.renaming }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
 func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {

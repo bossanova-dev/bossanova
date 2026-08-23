@@ -329,6 +329,21 @@ func sessionCmd() *cobra.Command {
 			return runSessionLinkPR(cmd, args[0], args[1])
 		},
 	})
+	refreshPR := &cobra.Command{
+		Use:   "refresh-pr [session-id]",
+		Short: "Refresh one session's cached pull request status",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prNumber, _ := cmd.Flags().GetInt32("pr")
+			sessionID := ""
+			if len(args) > 0 {
+				sessionID = args[0]
+			}
+			return runSessionRefreshPR(cmd, sessionID, prNumber)
+		},
+	}
+	refreshPR.Flags().Int32("pr", 0, "Pull request number to refresh")
+	cmd.AddCommand(refreshPR)
 	return cmd
 }
 
@@ -422,9 +437,10 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
 	cmd.Flags().String("account", "", "Account id or label to run this session under (empty = system default)")
 	cmd.Flags().Bool("detach", false,
-		"Exit immediately after creating the session; print session-id and chat-id. "+
-			"The non-interactive --repo + --prompt path always detaches, so the flag is a "+
-			"no-op there; --tmux-unattended is the distinct durable-pane option")
+		"A no-op on the non-interactive --repo + --prompt path, which always runs "+
+			"headlessly, prints session-id as soon as the session exists, prints chat-id later "+
+			"if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the "+
+			"distinct durable-pane option")
 	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
 	cmd.Flags().Bool("tmux-unattended", false,
 		"Host the session in a durable tmux pane that survives a daemon restart and is "+

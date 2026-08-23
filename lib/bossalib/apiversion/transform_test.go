@@ -1,7 +1,12 @@
 package apiversion_test
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/apiversion"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -1263,8 +1268,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260816 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260816)
+	if got := reg.Current(); got != apiversion.V20260821 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260821)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -1589,6 +1594,7 @@ func waitingResponseCases() []struct {
 // even if waitingResponseCases() is edited in lockstep, because the procedure
 // list is taken from stalledResponseCases().
 func TestWaitingChatStatusChange_CoversSameProceduresAsAgentStalledChange(t *testing.T) {
+	assertSessionResponseCasesMatchDerivedProcedures(t, "waitingResponseCases", waitingResponseCases())
 	waitingMethods := make(map[string]struct{}, len(waitingResponseCases()))
 	for _, tc := range waitingResponseCases() {
 		waitingMethods[tc.method] = struct{}{}
@@ -2420,6 +2426,7 @@ func stalledResponseCases() []struct {
 // back neutralized — so dropping a case from AgentStalledChange's switch reds
 // this test even if stalledResponseCases() is edited in lockstep.
 func TestAgentStalledChange_CoversSameProceduresAsErroredStatusChange(t *testing.T) {
+	assertSessionResponseCasesMatchDerivedProcedures(t, "stalledResponseCases", stalledResponseCases())
 	sc := apiversion.AgentStalledChange{}
 	for _, tc := range stalledResponseCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2445,6 +2452,31 @@ func TestAgentStalledChange_CoversSameProceduresAsErroredStatusChange(t *testing
 				t.Errorf("%s: blocked_reason = %q, want empty", tc.name, got)
 			}
 		})
+	}
+}
+
+func assertSessionResponseCasesMatchDerivedProcedures(t *testing.T, tableName string, cases []struct {
+	name   string
+	method string
+	build  func() any
+	get    func(any) *pb.Session
+}) {
+	t.Helper()
+	got := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		got[tc.method] = tc.name
+	}
+	derived := apiversion.UnaryProceduresContainingCarrier(
+		(&pb.Session{}).ProtoReflect().Descriptor().FullName(),
+		"OrchestratorService",
+	)
+	if len(got) != len(derived) {
+		t.Fatalf("%s has %d procedures, descriptor-derived Session set has %d: %v", tableName, len(got), len(derived), derived)
+	}
+	for _, procedure := range derived {
+		if _, ok := got[procedure]; !ok {
+			t.Fatalf("%s is missing descriptor-derived Session procedure %s", tableName, procedure)
+		}
 	}
 }
 
@@ -3213,5 +3245,615 @@ func TestGateFailedOutcomeChange_NoOpForUnrelatedMethods(t *testing.T) {
 	gc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg)
 	if msg.GetCronJob().GetLastRunOutcome() != "gate_failed" {
 		t.Error("transform fired on an unrelated procedure path")
+	}
+}
+
+// --- SwitchDeadlineCodeChange (V20260820, BOS-947) ------------------------
+//
+// The mechanism's first ERROR-path transform, so this block also carries the
+// ApplyError fan-out evidence (capability opt-in, both directions) that no
+// response-path change could exercise.
+
+const switchProcedure = bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure
+
+// relayedSwitchDeadline builds the CURRENT (V20260820+) error for a relayed
+// switch that the DAEMON's own budget ended: connect.CodeDeadlineExceeded
+// carrying the relayed-daemon-deadline marker, exactly as bosso's
+// validateCommandResult produces it.
+func relayedSwitchDeadline(msg string) error {
+	return apiversion.MarkRelayedDaemonDeadline(
+		connect.NewError(connect.CodeDeadlineExceeded, errors.New(msg)),
+	)
+}
+
+func TestSwitchDeadlineCodeChange_Version(t *testing.T) {
+	if got := (apiversion.SwitchDeadlineCodeChange{}).Version(); got != apiversion.V20260820 {
+		t.Errorf("SwitchDeadlineCodeChange.Version() = %q, want %q", got, apiversion.V20260820)
+	}
+}
+
+// TestSwitchDeadlineCodeChange_DownConvertsForOlderClients is the contract: a
+// client pinned below V20260820 sees exactly what the pre-BOS-947 server served
+// for a relayed switch deadline — connect.CodeAborted, message intact.
+func TestSwitchDeadlineCodeChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	const msg = "switch respawn budget exhausted"
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260718, apiversion.V20260816} {
+		t.Run(string(older), func(t *testing.T) {
+			got := changes.ApplyError(switchProcedure, relayedSwitchDeadline(msg), older)
+			if code := connect.CodeOf(got); code != connect.CodeAborted {
+				t.Errorf("code = %v, want CodeAborted for a client pinned to %s", code, older)
+			}
+			if !strings.Contains(got.Error(), msg) {
+				t.Errorf("message = %q, want it to preserve %q", got.Error(), msg)
+			}
+			// The down-converted error must be a plain Connect error again: an
+			// old client is being told this WAS the historical Aborted, so the
+			// marker has no business riding along.
+			if apiversion.IsRelayedDaemonDeadline(got) {
+				t.Errorf("down-converted error still carries the relayed-daemon-deadline marker")
+			}
+		})
+	}
+}
+
+func TestSwitchDeadlineCodeChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes := apiversion.ProductionChanges()
+	got := changes.ApplyError(switchProcedure, relayedSwitchDeadline("budget exhausted"), reg.Current())
+	if code := connect.CodeOf(got); code != connect.CodeDeadlineExceeded {
+		t.Errorf("code = %v, want CodeDeadlineExceeded (unchanged at Current)", code)
+	}
+}
+
+// TestSwitchDeadlineCodeChange_DoesNotWidenIsThe reason the marker exists.
+//
+// The unmarked case is bosso's OWN commandDeadline/switchCommandDeadline expiry
+// on this same procedure, which has returned CodeDeadlineExceeded since long
+// before V20260820. Down-converting it would hand an old client a CodeAborted
+// the server never used to send — a regression manufactured by the
+// compatibility layer itself. If this test ever goes red because the match was
+// broadened to the procedure alone, that is the bug, not the test.
+func TestSwitchDeadlineCodeChange_DoesNotWiden(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, tc := range []struct {
+		name   string
+		method string
+		err    error
+		want   connect.Code
+	}{
+		{
+			name:   "unmarked deadline on the same procedure (bosso's own relay timeout)",
+			method: switchProcedure,
+			err:    connect.NewError(connect.CodeDeadlineExceeded, errors.New("command timed out after 30s")),
+			want:   connect.CodeDeadlineExceeded,
+		},
+		{
+			name:   "marked deadline on a different procedure",
+			method: bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			err:    relayedSwitchDeadline("budget exhausted"),
+			want:   connect.CodeDeadlineExceeded,
+		},
+		{
+			name:   "a different code on the same procedure",
+			method: switchProcedure,
+			err:    connect.NewError(connect.CodeFailedPrecondition, errors.New("target account is cooling down")),
+			want:   connect.CodeFailedPrecondition,
+		},
+		{
+			name:   "non-Connect error on the same procedure",
+			method: switchProcedure,
+			err:    errors.New("boom"),
+			want:   connect.CodeUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Baseline is the most aggressive resolution: every transform runs.
+			got := changes.ApplyError(tc.method, tc.err, apiversion.Baseline)
+			if code := connect.CodeOf(got); code != tc.want {
+				t.Errorf("code = %v, want %v (transform must not widen)", code, tc.want)
+			}
+		})
+	}
+}
+
+func TestSwitchDeadlineCodeChange_NilErrorIsUntouched(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	if got := changes.ApplyError(switchProcedure, nil, apiversion.Baseline); got != nil {
+		t.Errorf("ApplyError(nil) = %v, want nil", got)
+	}
+	// The change itself must tolerate a nil too, not just the fan-out.
+	if got := (apiversion.SwitchDeadlineCodeChange{}).TransformError(switchProcedure, nil); got != nil {
+		t.Errorf("TransformError(nil) = %v, want nil", got)
+	}
+}
+
+// TestRelayedDaemonDeadline_MarkerIsUnconstructibleOutsideThePackage pins the
+// visibility decision that removes the zero-value hazard instead of guarding
+// it. The marker type is unexported, so &relayedDaemonDeadline{} — a composite
+// literal naming no fields, which is legal from any package even when every
+// field is unexported — simply cannot be written here. MarkRelayedDaemonDeadline
+// is therefore the only way a marker exists, and it never produces one with a
+// nil inner error, which is why Error and Unwrap carry no nil branches.
+//
+// What an external caller CAN do is ask the predicate, so that is what this
+// pins, over every shape the production path actually walks.
+func TestRelayedDaemonDeadline_MarkerIsUnconstructibleOutsideThePackage(t *testing.T) {
+	// The constructor is nil-safe, so callers may wrap unconditionally.
+	if got := apiversion.MarkRelayedDaemonDeadline(nil); got != nil {
+		t.Errorf("MarkRelayedDaemonDeadline(nil) = %v, want nil", got)
+	}
+	// The predicate is total: nil, unmarked, and wrapped-marked all answer.
+	if apiversion.IsRelayedDaemonDeadline(nil) {
+		t.Error("IsRelayedDaemonDeadline(nil) = true, want false")
+	}
+	plain := connect.NewError(connect.CodeDeadlineExceeded, errors.New("bosso's own relay timeout"))
+	if apiversion.IsRelayedDaemonDeadline(plain) {
+		t.Error("an unmarked CodeDeadlineExceeded reads as marked; the transform would widen")
+	}
+	marked := apiversion.MarkRelayedDaemonDeadline(plain)
+	if !apiversion.IsRelayedDaemonDeadline(marked) {
+		t.Error("a marked error does not read as marked")
+	}
+	// The marker is transparent: it must not change what an unversioned caller
+	// sees, only what the transform can recognise.
+	if got := connect.CodeOf(marked); got != connect.CodeDeadlineExceeded {
+		t.Errorf("marked code = %v, want DeadlineExceeded (the wrapper must be transparent)", got)
+	}
+	if marked.Error() != plain.Error() {
+		t.Errorf("marked message = %q, want the wrapped message %q", marked.Error(), plain.Error())
+	}
+	// And it survives further wrapping, which is how it reaches the interceptor.
+	if !apiversion.IsRelayedDaemonDeadline(fmt.Errorf("dispatch: %w", marked)) {
+		t.Error("the marker did not survive an fmt.Errorf %w wrap")
+	}
+}
+
+// TestSwitchDeadlineCodeChange_TransformResponseIsANoOp pins the other half of
+// the split: an error-path change must never touch a success response.
+func TestSwitchDeadlineCodeChange_TransformResponseIsANoOp(t *testing.T) {
+	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	apiversion.SwitchDeadlineCodeChange{}.TransformResponse(switchProcedure, msg)
+	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
+		t.Errorf("TransformResponse mutated the response: %+v", msg)
+	}
+}
+
+// --- SwitchResultCeilingMessageChange (V20260821, BOS-960) ---------------
+
+const legacySwitchResultCeilingMessage = "command timed out after 2m0s"
+
+func switchResultCeilingError(msg string) error {
+	return apiversion.MarkSwitchResultCeilingExceeded(
+		connect.NewError(connect.CodeDeadlineExceeded, errors.New(msg)),
+	)
+}
+
+func TestSwitchResultCeilingMessageChange_Version(t *testing.T) {
+	if got := (apiversion.SwitchResultCeilingMessageChange{}).Version(); got != apiversion.V20260821 {
+		t.Errorf("SwitchResultCeilingMessageChange.Version() = %q, want %q", got, apiversion.V20260821)
+	}
+}
+
+func TestSwitchResultCeilingMessageChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	currentMsg := "this request stopped waiting after 2m0s without receiving a daemon verdict"
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260816, apiversion.V20260820} {
+		t.Run(string(older), func(t *testing.T) {
+			got := changes.ApplyError(switchProcedure, switchResultCeilingError(currentMsg), older)
+			if code := connect.CodeOf(got); code != connect.CodeDeadlineExceeded {
+				t.Errorf("code = %v, want DeadlineExceeded", code)
+			}
+			if !strings.Contains(got.Error(), legacySwitchResultCeilingMessage) {
+				t.Errorf("error = %q, want legacy timeout text %q", got.Error(), legacySwitchResultCeilingMessage)
+			}
+			if strings.Contains(got.Error(), "without receiving a daemon verdict") {
+				t.Errorf("error = %q, want self-describing text removed for older clients", got.Error())
+			}
+			if apiversion.IsSwitchResultCeilingExceeded(got) {
+				t.Errorf("down-converted error still carries the switch-result-ceiling marker")
+			}
+		})
+	}
+}
+
+func TestSwitchResultCeilingMessageChange_NoOpAtCurrent(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	const currentMsg = "this request stopped waiting after 2m0s without receiving a daemon verdict"
+	got := changes.ApplyError(switchProcedure, switchResultCeilingError(currentMsg), apiversion.DefaultRegistry().Current())
+	if code := connect.CodeOf(got); code != connect.CodeDeadlineExceeded {
+		t.Errorf("code = %v, want DeadlineExceeded", code)
+	}
+	if !strings.Contains(got.Error(), currentMsg) {
+		t.Errorf("error = %q, want current message %q", got.Error(), currentMsg)
+	}
+}
+
+func TestSwitchResultCeilingMessageChange_DoesNotWiden(t *testing.T) {
+	ch := apiversion.SwitchResultCeilingMessageChange{}
+	for _, tc := range []struct {
+		name   string
+		method string
+		err    error
+		want   string
+	}{
+		{
+			name:   "unmarked deadline on the same procedure",
+			method: switchProcedure,
+			err:    connect.NewError(connect.CodeDeadlineExceeded, errors.New("command timed out after 30s")),
+			want:   "command timed out after 30s",
+		},
+		{
+			name:   "marked deadline on a different procedure",
+			method: bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			err:    switchResultCeilingError("current result ceiling text"),
+			want:   "current result ceiling text",
+		},
+		{
+			name:   "different code on same procedure",
+			method: switchProcedure,
+			err: apiversion.MarkSwitchResultCeilingExceeded(
+				connect.NewError(connect.CodeCanceled, errors.New("caller canceled")),
+			),
+			want: "caller canceled",
+		},
+		{
+			name:   "relayed daemon deadline",
+			method: switchProcedure,
+			err:    relayedSwitchDeadline("switch respawn budget exhausted"),
+			want:   "switch respawn budget exhausted",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ch.TransformError(tc.method, tc.err)
+			if !strings.Contains(got.Error(), tc.want) {
+				t.Errorf("error = %q, want unchanged text containing %q", got.Error(), tc.want)
+			}
+			if strings.Contains(got.Error(), legacySwitchResultCeilingMessage) && !strings.Contains(tc.want, legacySwitchResultCeilingMessage) {
+				t.Errorf("transform widened to legacy result-ceiling text: %q", got.Error())
+			}
+		})
+	}
+}
+
+func TestSwitchResultCeilingMessageChange_NilErrorIsUntouched(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	if got := changes.ApplyError(switchProcedure, nil, apiversion.Baseline); got != nil {
+		t.Errorf("ApplyError(nil) = %v, want nil", got)
+	}
+	if got := (apiversion.SwitchResultCeilingMessageChange{}).TransformError(switchProcedure, nil); got != nil {
+		t.Errorf("TransformError(nil) = %v, want nil", got)
+	}
+}
+
+func TestSwitchResultCeilingExceeded_MarkerIsTransparent(t *testing.T) {
+	if got := apiversion.MarkSwitchResultCeilingExceeded(nil); got != nil {
+		t.Errorf("MarkSwitchResultCeilingExceeded(nil) = %v, want nil", got)
+	}
+	if apiversion.IsSwitchResultCeilingExceeded(nil) {
+		t.Error("IsSwitchResultCeilingExceeded(nil) = true, want false")
+	}
+	plain := connect.NewError(connect.CodeDeadlineExceeded, errors.New("current result ceiling text"))
+	marked := apiversion.MarkSwitchResultCeilingExceeded(plain)
+	if !apiversion.IsSwitchResultCeilingExceeded(marked) {
+		t.Fatal("marked error does not read as marked")
+	}
+	if got := connect.CodeOf(marked); got != connect.CodeDeadlineExceeded {
+		t.Errorf("marked code = %v, want DeadlineExceeded", got)
+	}
+	if marked.Error() != plain.Error() {
+		t.Errorf("marked message = %q, want wrapped message %q", marked.Error(), plain.Error())
+	}
+	if !apiversion.IsSwitchResultCeilingExceeded(fmt.Errorf("handler: %w", marked)) {
+		t.Error("the marker did not survive an fmt.Errorf %w wrap")
+	}
+}
+
+func TestSwitchResultCeilingMessageChange_TransformResponseIsANoOp(t *testing.T) {
+	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	apiversion.SwitchResultCeilingMessageChange{}.TransformResponse(switchProcedure, msg)
+	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
+		t.Errorf("TransformResponse mutated the response: %+v", msg)
+	}
+}
+
+// --- SwitchCanceledCodeChange (V20260821, BOS-958) ------------------------
+
+// relayedSwitchCanceled builds the CURRENT (V20260821+) error for a relayed
+// switch that the caller cancelled while the DAEMON was executing it:
+// connect.CodeCanceled carrying the relayed-daemon-canceled marker, exactly as
+// bosso's validateCommandResult produces it.
+func relayedSwitchCanceled(msg string) error {
+	return apiversion.MarkRelayedDaemonCanceled(
+		connect.NewError(connect.CodeCanceled, errors.New(msg)),
+	)
+}
+
+func TestSwitchCanceledCodeChange_Version(t *testing.T) {
+	if got := (apiversion.SwitchCanceledCodeChange{}).Version(); got != apiversion.V20260821 {
+		t.Errorf("SwitchCanceledCodeChange.Version() = %q, want %q", got, apiversion.V20260821)
+	}
+}
+
+// TestSwitchCanceledCodeChange_DownConvertsForOlderClients is the contract: a
+// client pinned below V20260821 sees exactly what the pre-BOS-958 server served
+// for a relayed switch cancellation — connect.CodeAborted, message intact.
+func TestSwitchCanceledCodeChange_DownConvertsForOlderClients(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	const msg = "context canceled"
+	for _, older := range []apiversion.Version{apiversion.Baseline, apiversion.V20260816, apiversion.V20260820} {
+		t.Run(string(older), func(t *testing.T) {
+			got := changes.ApplyError(switchProcedure, relayedSwitchCanceled(msg), older)
+			if code := connect.CodeOf(got); code != connect.CodeAborted {
+				t.Errorf("code = %v, want CodeAborted for a client pinned to %s", code, older)
+			}
+			if !strings.Contains(got.Error(), msg) {
+				t.Errorf("message = %q, want it to preserve %q", got.Error(), msg)
+			}
+			if apiversion.IsRelayedDaemonCanceled(got) {
+				t.Errorf("down-converted error still carries the relayed-daemon-canceled marker")
+			}
+		})
+	}
+}
+
+func TestSwitchCanceledCodeChange_NoOpAtCurrent(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	changes := apiversion.ProductionChanges()
+	got := changes.ApplyError(switchProcedure, relayedSwitchCanceled("switch canceled by caller"), reg.Current())
+	if code := connect.CodeOf(got); code != connect.CodeCanceled {
+		t.Errorf("code = %v, want CodeCanceled (unchanged at Current)", code)
+	}
+}
+
+func TestSwitchCanceledCodeChange_DoesNotWiden(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	for _, tc := range []struct {
+		name   string
+		method string
+		err    error
+		want   connect.Code
+	}{
+		{
+			name:   "unmarked cancellation on the same procedure (bosso's own canceled context)",
+			method: switchProcedure,
+			err:    connect.NewError(connect.CodeCanceled, errors.New("context canceled")),
+			want:   connect.CodeCanceled,
+		},
+		{
+			name:   "marked cancellation on a different procedure",
+			method: bossanovav1connect.OrchestratorServiceProxyStopSessionProcedure,
+			err:    relayedSwitchCanceled("caller went away"),
+			want:   connect.CodeCanceled,
+		},
+		{
+			name:   "a different code on the same procedure",
+			method: switchProcedure,
+			err:    connect.NewError(connect.CodeFailedPrecondition, errors.New("target account is cooling down")),
+			want:   connect.CodeFailedPrecondition,
+		},
+		{
+			name:   "non-Connect error on the same procedure",
+			method: switchProcedure,
+			err:    errors.New("boom"),
+			want:   connect.CodeUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := changes.ApplyError(tc.method, tc.err, apiversion.Baseline)
+			if code := connect.CodeOf(got); code != tc.want {
+				t.Errorf("code = %v, want %v (transform must not widen)", code, tc.want)
+			}
+		})
+	}
+}
+
+func TestSwitchCanceledCodeChange_NilErrorIsUntouched(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+	if got := changes.ApplyError(switchProcedure, nil, apiversion.Baseline); got != nil {
+		t.Errorf("ApplyError(nil) = %v, want nil", got)
+	}
+	if got := (apiversion.SwitchCanceledCodeChange{}).TransformError(switchProcedure, nil); got != nil {
+		t.Errorf("TransformError(nil) = %v, want nil", got)
+	}
+}
+
+func TestRelayedDaemonCanceled_MarkerIsUnconstructibleOutsideThePackage(t *testing.T) {
+	if got := apiversion.MarkRelayedDaemonCanceled(nil); got != nil {
+		t.Errorf("MarkRelayedDaemonCanceled(nil) = %v, want nil", got)
+	}
+	if apiversion.IsRelayedDaemonCanceled(nil) {
+		t.Error("IsRelayedDaemonCanceled(nil) = true, want false")
+	}
+	plain := connect.NewError(connect.CodeCanceled, errors.New("bosso's own cancellation"))
+	if apiversion.IsRelayedDaemonCanceled(plain) {
+		t.Error("an unmarked CodeCanceled reads as marked; the transform would widen")
+	}
+	marked := apiversion.MarkRelayedDaemonCanceled(plain)
+	if !apiversion.IsRelayedDaemonCanceled(marked) {
+		t.Error("a marked error does not read as marked")
+	}
+	if got := connect.CodeOf(marked); got != connect.CodeCanceled {
+		t.Errorf("marked code = %v, want Canceled (the wrapper must be transparent)", got)
+	}
+	if marked.Error() != plain.Error() {
+		t.Errorf("marked message = %q, want the wrapped message %q", marked.Error(), plain.Error())
+	}
+	if !apiversion.IsRelayedDaemonCanceled(fmt.Errorf("dispatch: %w", marked)) {
+		t.Error("the marker did not survive an fmt.Errorf %w wrap")
+	}
+}
+
+func TestSwitchCanceledCodeChange_TransformResponseIsANoOp(t *testing.T) {
+	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	apiversion.SwitchCanceledCodeChange{}.TransformResponse(switchProcedure, msg)
+	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
+		t.Errorf("TransformResponse mutated the response: %+v", msg)
+	}
+}
+
+func TestProductionChanges_ErrorPathCanceledDeadlineAndCeilingDoNotCrossTalk(t *testing.T) {
+	changes := apiversion.ProductionChanges()
+
+	canceledMsg := "context canceled"
+	canceled := changes.ApplyError(switchProcedure, relayedSwitchCanceled(canceledMsg), apiversion.Baseline)
+	if code := connect.CodeOf(canceled); code != connect.CodeAborted {
+		t.Fatalf("canceled chain code = %v, want Aborted", code)
+	}
+	if !strings.Contains(canceled.Error(), canceledMsg) {
+		t.Fatalf("canceled chain error = %q, want message %q preserved", canceled.Error(), canceledMsg)
+	}
+
+	deadlineMsg := "switch respawn budget exhausted"
+	deadline := changes.ApplyError(switchProcedure, relayedSwitchDeadline(deadlineMsg), apiversion.Baseline)
+	if code := connect.CodeOf(deadline); code != connect.CodeAborted {
+		t.Fatalf("deadline chain code = %v, want Aborted", code)
+	}
+	if !strings.Contains(deadline.Error(), deadlineMsg) {
+		t.Fatalf("deadline chain error = %q, want message %q preserved", deadline.Error(), deadlineMsg)
+	}
+
+	ceiling := changes.ApplyError(switchProcedure, switchResultCeilingError("current result ceiling text"), apiversion.Baseline)
+	if code := connect.CodeOf(ceiling); code != connect.CodeDeadlineExceeded {
+		t.Fatalf("ceiling chain code = %v, want DeadlineExceeded", code)
+	}
+	if !strings.Contains(ceiling.Error(), legacySwitchResultCeilingMessage) {
+		t.Fatalf("ceiling chain error = %q, want legacy message %q", ceiling.Error(), legacySwitchResultCeilingMessage)
+	}
+}
+
+// errOnlyChange implements VersionChange plus the optional ErrorTransform.
+// respOnlyChange implements VersionChange alone. Together they prove ApplyError
+// and Apply each consult only the capability they are about.
+type errOnlyChange struct {
+	version    apiversion.Version
+	errCalls   *int
+	respCalls  *int
+	replaceErr error
+	// sawErr, when non-nil, records the error this change was HANDED. It is
+	// what makes fan-out order observable from outside: a change can only have
+	// seen another change's replacement if that other change ran first.
+	sawErr *error
+}
+
+func (c *errOnlyChange) Version() apiversion.Version { return c.version }
+
+func (c *errOnlyChange) TransformResponse(string, any) { *c.respCalls++ }
+
+func (c *errOnlyChange) TransformError(_ string, err error) error {
+	*c.errCalls++
+	if c.sawErr != nil {
+		*c.sawErr = err
+	}
+	if c.replaceErr != nil {
+		return c.replaceErr
+	}
+	return err
+}
+
+type respOnlyChange struct {
+	version   apiversion.Version
+	respCalls *int
+}
+
+func (c *respOnlyChange) Version() apiversion.Version { return c.version }
+
+func (c *respOnlyChange) TransformResponse(string, any) { *c.respCalls++ }
+
+// TestApplyError_SkipsChangesWithoutTheCapability is the fan-out contract: a
+// change that implements only TransformResponse is invisible to ApplyError, and
+// a change that implements TransformError still has its TransformResponse left
+// alone by Apply's own path. Opting in to one path must never opt in to both.
+func TestApplyError_SkipsChangesWithoutTheCapability(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var errCalls, errChangeRespCalls, respOnlyCalls int
+
+	changes, err := apiversion.NewChanges(reg,
+		&respOnlyChange{version: apiversion.V20260704, respCalls: &respOnlyCalls},
+		&errOnlyChange{version: apiversion.V20260718, errCalls: &errCalls, respCalls: &errChangeRespCalls},
+	)
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+
+	// Error path: only the capability-implementing change is consulted.
+	in := connect.NewError(connect.CodeInternal, errors.New("boom"))
+	if got := changes.ApplyError(switchProcedure, in, apiversion.Baseline); got != error(in) {
+		t.Errorf("ApplyError returned %v, want the input error unchanged", got)
+	}
+	if errCalls != 1 {
+		t.Errorf("TransformError calls = %d, want 1", errCalls)
+	}
+	if respOnlyCalls != 0 {
+		t.Errorf("response-only change was called on the error path %d times, want 0", respOnlyCalls)
+	}
+	if errChangeRespCalls != 0 {
+		t.Errorf("error change's TransformResponse ran on the error path %d times, want 0", errChangeRespCalls)
+	}
+
+	// Success path: TransformResponse runs for BOTH (VersionChange is required
+	// for membership), and TransformError runs for neither.
+	changes.Apply(switchProcedure, &pb.ProxySwitchSessionAccountResponse{}, apiversion.Baseline)
+	if respOnlyCalls != 1 || errChangeRespCalls != 1 {
+		t.Errorf("Apply calls = (respOnly %d, errChange %d), want (1, 1)", respOnlyCalls, errChangeRespCalls)
+	}
+	if errCalls != 1 {
+		t.Errorf("TransformError ran on the success path; calls = %d, want still 1", errCalls)
+	}
+}
+
+// TestApplyError_RespectsResolvedVersionAndOrder pins the same newest→oldest
+// fan-out Apply uses, and the same "strictly newer than resolved" gate.
+//
+// The order half is asserted through what the OLDER change was handed, not
+// through the final result. A final-result assertion alone does not
+// discriminate the order at all when only one change replaces the error: an
+// oldest→newest fan-out would produce the identical final error and the
+// identical call counts, so the test would pass against the very bug it names.
+// The older change seeing the newer one's replacement is only possible if the
+// newer one ran first, so this single assertion pins the order AND the
+// threading together.
+func TestApplyError_RespectsResolvedVersionAndOrder(t *testing.T) {
+	reg := apiversion.DefaultRegistry()
+	var oldCalls, oldResp, newCalls, newResp int
+	var oldSaw, newSaw error
+
+	// The newer change replaces the error; the older one then sees the
+	// replacement, proving the result is threaded rather than discarded.
+	replaced := connect.NewError(connect.CodeAborted, errors.New("replaced"))
+	changes, err := apiversion.NewChanges(reg,
+		&errOnlyChange{version: apiversion.V20260704, errCalls: &oldCalls, respCalls: &oldResp, sawErr: &oldSaw},
+		&errOnlyChange{version: apiversion.V20260812, errCalls: &newCalls, respCalls: &newResp, replaceErr: replaced, sawErr: &newSaw},
+	)
+	if err != nil {
+		t.Fatalf("NewChanges: %v", err)
+	}
+
+	in0 := connect.NewError(connect.CodeInternal, errors.New("in"))
+	got := changes.ApplyError(switchProcedure, in0, apiversion.Baseline)
+	if got != error(replaced) {
+		t.Errorf("ApplyError = %v, want the newer change's replacement threaded through", got)
+	}
+	if oldCalls != 1 || newCalls != 1 {
+		t.Errorf("calls = (old %d, new %d), want (1, 1) at Baseline", oldCalls, newCalls)
+	}
+	// The order assertion. Newest→oldest means the NEWER change is handed the
+	// caller's original error and the OLDER change is handed the newer one's
+	// replacement. Reverse the fan-out and both of these flip.
+	if newSaw != error(in0) {
+		t.Errorf("newer change saw %v, want the caller's original error (it must run first)", newSaw)
+	}
+	if oldSaw != error(replaced) {
+		t.Errorf("older change saw %v, want the newer change's replacement (fan-out must be newest→oldest)", oldSaw)
+	}
+
+	// Resolved at V20260812: only changes strictly newer run — neither is.
+	oldCalls, newCalls = 0, 0
+	in := connect.NewError(connect.CodeInternal, errors.New("in"))
+	if got := changes.ApplyError(switchProcedure, in, apiversion.V20260812); got != error(in) {
+		t.Errorf("ApplyError at V20260812 = %v, want unchanged", got)
+	}
+	if oldCalls != 0 || newCalls != 0 {
+		t.Errorf("calls at V20260812 = (old %d, new %d), want (0, 0)", oldCalls, newCalls)
 	}
 }

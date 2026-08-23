@@ -420,6 +420,28 @@ test('checkDocMakeTargets names the offending doc and line for an undefined targ
   )
 })
 
+test('checkDocMakeTargets validates generated test-command manifest targets', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  fs.mkdirSync(path.join(repoRoot, 'docs', 'testing'), { recursive: true })
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
+  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
+  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  fs.writeFileSync(path.join(repoRoot, 'docs', 'build-and-ci.md'), '')
+  fs.writeFileSync(
+    path.join(repoRoot, 'docs', 'testing', 'test-command-manifest.md'),
+    '| Module | Target |\n| --- | --- |\n| `services/demo` | `make ghost` |\n',
+  )
+
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.ok(
+    stderr.includes('docs/testing/test-command-manifest.md:3: make ghost'),
+    `expected generated manifest target to be checked, got:\n${stderr}`,
+  )
+})
+
 test('checkDocMakeTargets sorts offenders by doc, then line numerically, then target', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
   fs.mkdirSync(path.join(repoRoot, 'docs'))

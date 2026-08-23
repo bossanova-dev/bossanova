@@ -1095,6 +1095,63 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	})
 }
 
+func TestRefreshSessionPRForwardsSelectors(t *testing.T) {
+	cases := []struct {
+		name      string
+		sessionID string
+		prNumber  int32
+		wantID    string
+		wantPR    int32
+	}{
+		{name: "session id only", sessionID: "sess-1", wantID: "sess-1"},
+		{name: "PR only", prNumber: 42, wantPR: 42},
+		{name: "both", sessionID: "sess-1", prNumber: 42, wantID: "sess-1", wantPR: 42},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionPR := int32(42)
+			stub := &refreshPRStub{session: &pb.Session{
+				Id:            "sess-1",
+				PrNumber:      &sessionPR,
+				DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+			}}
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if err := refreshSessionPR(cmd, stub, tc.sessionID, tc.prNumber); err != nil {
+				t.Fatalf("refreshSessionPR: %v", err)
+			}
+			if got := stub.req.GetId(); got != tc.wantID {
+				t.Fatalf("id = %q, want %q", got, tc.wantID)
+			}
+			if got := stub.req.GetPrNumber(); got != tc.wantPR {
+				t.Fatalf("pr_number = %d, want %d", got, tc.wantPR)
+			}
+			if !strings.Contains(out.String(), "refreshed PR") || !strings.Contains(out.String(), "passing") {
+				t.Fatalf("output = %q, want refreshed PR passing line", out.String())
+			}
+		})
+	}
+}
+
+func TestRefreshSessionPRRequiresSelector(t *testing.T) {
+	err := refreshSessionPR(&cobra.Command{}, &refreshPRStub{}, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "session id or --pr is required") {
+		t.Fatalf("error = %v, want missing selector error", err)
+	}
+}
+
+type refreshPRStub struct {
+	req     *pb.RefreshSessionPRRequest
+	session *pb.Session
+}
+
+func (s *refreshPRStub) RefreshSessionPR(_ context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	s.req = req
+	return s.session, nil
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

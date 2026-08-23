@@ -211,7 +211,7 @@ func TestAppSettingsNotificationToggleAppliesToHomeImmediately(t *testing.T) {
 	}
 }
 
-func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureAppliesToHome(t *testing.T) {
+func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureKeepsSavedNotificationValue(t *testing.T) {
 	withTempConfigHome(t)
 
 	a := NewApp(nil, nil)
@@ -247,11 +247,11 @@ func TestAppSettingsSuccessfulOtherSaveAfterNotificationFailureAppliesToHome(t *
 	if got.generalSettings.err != nil {
 		t.Fatalf("successful other save retained stale error: %v", got.generalSettings.err)
 	}
-	if config.NotificationsEnabled(got.userSettings) {
-		t.Fatal("successful other save did not update App.userSettings notification setting")
+	if !config.NotificationsEnabled(got.userSettings) {
+		t.Fatal("successful other save persisted the rolled-back App.userSettings notification setting")
 	}
-	if config.NotificationsEnabled(got.home.settings) {
-		t.Fatal("successful other save did not update HomeModel notification setting")
+	if !config.NotificationsEnabled(got.home.settings) {
+		t.Fatal("successful other save persisted the rolled-back HomeModel notification setting")
 	}
 	if !got.home.settings.ErrorTrackingEnabled {
 		t.Fatal("successful other save did not update HomeModel changed setting")

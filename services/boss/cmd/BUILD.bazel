@@ -123,6 +123,7 @@ go_test(
         "notes_test.go",
         "proof_test.go",
         "repo_resolve_test.go",
+        "session_json_test.go",
         "session_mcp_test.go",
         "settings_rotation_test.go",
         "skill_coverage_test.go",

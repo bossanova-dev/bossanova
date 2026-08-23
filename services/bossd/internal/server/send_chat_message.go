@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -32,6 +33,8 @@ const unconfirmedResendGuidance = chatdelivery.ResendGuidance
 // runs twice. It comes from the same package for the same reason — surfaces
 // match on the sentence to recover a delivery_state the proxy dropped.
 const queuedGuidance = chatdelivery.QueuedGuidance
+
+const turnStartNoResendGuidance = "turn start observation does not change delivery; do not resend based on this verdict"
 
 // modalDetectorFor returns the "is this pane showing a menu rather than a
 // composer?" check for one agent, or nil when it cannot be answered.
@@ -142,7 +145,12 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// scope here and is covered by S3 (auto-rotate on 401).
 	if req.Msg.GetSubmit() {
 		if cmd, ok := session.ParseBossControlCommand(req.Msg.GetMessage()); ok {
-			return s.handleBossSwitchInterception(ctx, chat, sess, cmd)
+			resp, err := s.handleBossSwitchInterception(ctx, chat, sess, cmd)
+			if err != nil {
+				return nil, err
+			}
+			s.applyTurnStartVerdict(req.Msg, resp.Msg, status.TurnStartUnobservable)
+			return resp, nil
 		}
 	}
 
@@ -209,7 +217,16 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// The modal detector is resolved from the same agent, so the readiness gate
 	// can tell that agent's approval menu / question picker from its composer and
 	// refuse rather than fire an Enter into it (BOS-600).
-	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName)); err != nil {
+	shouldObserveTurnStart := req.Msg.GetShouldObserveTurnStart()
+	willSubmit := tmux.WillSubmit(req.Msg.GetSubmit(), message)
+	baseline := status.TurnStartBaseline{}
+	var beforeSubmit func()
+	if shouldObserveTurnStart && willSubmit {
+		beforeSubmit = func() {
+			baseline = status.CaptureTurnStartBaseline(s.chatStatus, chat.AgentSessionID)
+		}
+	}
+	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName), beforeSubmit); err != nil {
 		// Three outcomes, three answers (BOS-598). Only the verifier classifies an
 		// error; everything else (ready-marker timeout, a tmux command that failed
 		// to run) stays OutcomeUnclassified and keeps the pre-existing CodeInternal.
@@ -229,7 +246,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			// delivery_state), so a caller reached over the proxy would otherwise be
 			// told delivery is unconfirmed without being told that resending may
 			// double-type into the composer.
-			return connect.NewResponse(&pb.SendChatMessageResponse{
+			resp := &pb.SendChatMessageResponse{
 				TmuxSessionName: tmuxName,
 				Delivered:       false,
 				DeliveryState:   pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED,
@@ -241,7 +258,9 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 				// line "delivery unconfirmed" itself, twice over. Carry the
 				// observation and the guidance, once each.
 				NoticeText: fmt.Sprintf("%v; %s", err, unconfirmedResendGuidance),
-			}), nil
+			}
+			s.applyTurnStartVerdict(req.Msg, resp, status.TurnStartUnobservable)
+			return connect.NewResponse(resp), nil
 		case tmux.OutcomeQueued:
 			// The payload left the composer into the agent's own visible message
 			// queue, so it will run when the current turn ends. That IS delivery —
@@ -255,12 +274,14 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			// field the hand-rolled converters forward (remote.go and
 			// proxybackend.go both drop delivery_state), so a proxied caller is
 			// still told not to resend.
-			return connect.NewResponse(&pb.SendChatMessageResponse{
+			resp := &pb.SendChatMessageResponse{
 				TmuxSessionName: tmuxName,
 				Delivered:       true,
 				DeliveryState:   pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED,
 				NoticeText:      fmt.Sprintf("%v; %s", err, queuedGuidance),
-			}), nil
+			}
+			s.applyTurnStartVerdict(req.Msg, resp, status.TurnStartUnobservable)
+			return connect.NewResponse(resp), nil
 		case tmux.OutcomeBlockedByModal:
 			// The pane was showing a modal, so nothing was typed and no Enter was
 			// sent. FailedPrecondition, not Internal: the daemon is healthy and the
@@ -292,14 +313,48 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// PREFILL path there (no Enter, no verification) even with submit=true. It
 	// reads the rendered `message`, which is what is actually delivered.
 	deliveryState := pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED
-	if tmux.WillSubmit(req.Msg.GetSubmit(), message) {
+	if willSubmit {
 		deliveryState = pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED
 	}
-	return connect.NewResponse(&pb.SendChatMessageResponse{
+	resp := &pb.SendChatMessageResponse{
 		TmuxSessionName: tmuxName,
 		Delivered:       true,
 		DeliveryState:   deliveryState,
-	}), nil
+	}
+	if shouldObserveTurnStart {
+		verdict := status.TurnStartUnobservable
+		if willSubmit {
+			verdict = status.AwaitTurnStart(ctx, s.chatStatus, chat.AgentSessionID, baseline)
+		}
+		s.applyTurnStartVerdict(req.Msg, resp, verdict)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) applyTurnStartVerdict(req *pb.SendChatMessageRequest, resp *pb.SendChatMessageResponse, verdict status.TurnStartVerdict) {
+	if !req.GetShouldObserveTurnStart() {
+		return
+	}
+	switch verdict {
+	case status.TurnStartObserved:
+		resp.TurnStartState = pb.SendChatMessageResponse_TURN_START_STATE_OBSERVED
+	case status.TurnStartNotObserved:
+		resp.TurnStartState = pb.SendChatMessageResponse_TURN_START_STATE_NOT_OBSERVED
+		resp.NoticeText = appendNotice(resp.NoticeText, fmt.Sprintf("turn start not observed; %s", turnStartNoResendGuidance))
+	case status.TurnStartUnobservable:
+		resp.TurnStartState = pb.SendChatMessageResponse_TURN_START_STATE_UNOBSERVABLE
+		resp.NoticeText = appendNotice(resp.NoticeText, fmt.Sprintf("turn start unobservable; %s", turnStartNoResendGuidance))
+	default:
+		resp.TurnStartState = pb.SendChatMessageResponse_TURN_START_STATE_UNOBSERVABLE
+		resp.NoticeText = appendNotice(resp.NoticeText, fmt.Sprintf("turn start unobservable; %s", turnStartNoResendGuidance))
+	}
+}
+
+func appendNotice(existing, extra string) string {
+	if existing == "" {
+		return extra
+	}
+	return fmt.Sprintf("%s; %s", existing, extra)
 }
 
 // handleBossSwitchInterception executes a mechanically-parsed "/boss switch"

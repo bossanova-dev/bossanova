@@ -29,6 +29,8 @@ import (
 // its deterministic heuristic.
 const suggestPRTitleTimeout = 30 * time.Second
 
+const suggestPRTitleWaitDelay = 5 * time.Second
+
 // suggestedTitleMaxLen caps a suggested PR title (GitHub renders long titles
 // poorly and the daemon expects a single headline line).
 const suggestedTitleMaxLen = 80
@@ -304,6 +306,7 @@ func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string) (
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = suggestPRTitleWaitDelay
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("claude one-shot: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}

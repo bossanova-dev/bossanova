@@ -2,12 +2,21 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/session"
 )
+
+const duplicateSessionPlanSummaryLimit = 80
+
+type activeSessionMatch struct {
+	id   string
+	plan string
+}
 
 // activeSessionKeys holds the identifying keys of every active (non-archived)
 // session for a repo. The New Session pickers use it to hide PRs and tracker
@@ -22,9 +31,9 @@ import (
 // "taken" if its tracker id, its plugin-matched PR number, or that PR's branch
 // is present.
 type activeSessionKeys struct {
-	prNumbers  map[int]string    // pr number  → session id
-	branches   map[string]string // branch     → session id
-	trackerIDs map[string]string // tracker id → session id
+	prNumbers  map[int]activeSessionMatch    // pr number  → session
+	branches   map[string]activeSessionMatch // branch     → session
+	trackerIDs map[string]activeSessionMatch // tracker id → session
 }
 
 // newActiveSessionKeys indexes a session list by the three keys we can match a
@@ -32,9 +41,9 @@ type activeSessionKeys struct {
 // nil sessions and empty/nil fields are skipped.
 func newActiveSessionKeys(sessions []*models.Session) activeSessionKeys {
 	keys := activeSessionKeys{
-		prNumbers:  make(map[int]string),
-		branches:   make(map[string]string),
-		trackerIDs: make(map[string]string),
+		prNumbers:  make(map[int]activeSessionMatch),
+		branches:   make(map[string]activeSessionMatch),
+		trackerIDs: make(map[string]activeSessionMatch),
 	}
 	for _, sess := range sessions {
 		if sess == nil {
@@ -43,14 +52,15 @@ func newActiveSessionKeys(sessions []*models.Session) activeSessionKeys {
 		if !session.StateBlocksDuplicateTarget(sess.State) {
 			continue
 		}
+		match := activeSessionMatch{id: sess.ID, plan: sess.Plan}
 		if sess.PRNumber != nil {
-			keys.prNumbers[*sess.PRNumber] = sess.ID
+			keys.prNumbers[*sess.PRNumber] = match
 		}
 		if sess.BranchName != "" {
-			keys.branches[sess.BranchName] = sess.ID
+			keys.branches[sess.BranchName] = match
 		}
-		if sess.TrackerID != nil && *sess.TrackerID != "" {
-			keys.trackerIDs[*sess.TrackerID] = sess.ID
+		if sess.TrackerID != nil && *sess.TrackerID != "" && !session.IsPlanningSessionPlan(sess.Plan) {
+			keys.trackerIDs[*sess.TrackerID] = match
 		}
 	}
 	return keys
@@ -112,23 +122,43 @@ func (k activeSessionKeys) excludeIssues(issues []*pb.TrackerIssue) []*pb.Tracke
 // with no tracker/PR/branch never false-hits. The returned kind names the
 // dimension that matched ("tracker issue", "PR", or "branch") so callers can
 // report an honest error rather than always blaming the tracker issue.
-func (k activeSessionKeys) duplicateSessionID(trackerID *string, prNumber *int, branch string) (id, kind string, ok bool) {
+func (k activeSessionKeys) duplicateSessionID(trackerID *string, prNumber *int, branch string) (id, plan, kind string, ok bool) {
 	if trackerID != nil && *trackerID != "" {
-		if id, ok := k.trackerIDs[*trackerID]; ok {
-			return id, "tracker issue", true
+		if match, ok := k.trackerIDs[*trackerID]; ok {
+			return match.id, match.plan, "tracker issue", true
 		}
 	}
 	if prNumber != nil {
-		if id, ok := k.prNumbers[*prNumber]; ok {
-			return id, "PR", true
+		if match, ok := k.prNumbers[*prNumber]; ok {
+			return match.id, match.plan, "PR", true
 		}
 	}
 	if branch != "" {
-		if id, ok := k.branches[branch]; ok {
-			return id, "branch", true
+		if match, ok := k.branches[branch]; ok {
+			return match.id, match.plan, "branch", true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
+}
+
+func duplicateSessionAlreadyExistsError(existingID, plan, kind, repoID string) error {
+	return fmt.Errorf("active session %s (plan: %s) already exists for this %s in repo %s; pass force to create another",
+		existingID, summarizeDuplicateSessionPlan(plan), kind, repoID)
+}
+
+func summarizeDuplicateSessionPlan(plan string) string {
+	firstLine := plan
+	if end := strings.IndexFunc(plan, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}); end >= 0 {
+		firstLine = plan[:end]
+	}
+
+	runes := []rune(firstLine)
+	if len(runes) <= duplicateSessionPlanSummaryLimit {
+		return firstLine
+	}
+	return string(runes[:duplicateSessionPlanSummaryLimit]) + "..."
 }
 
 // activeSessionKeysForRepo loads the active sessions for a repo and indexes

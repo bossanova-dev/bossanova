@@ -30,11 +30,13 @@
 // CLI: node plan-contract-guard.mjs --description <file> [--plan <file>]
 
 import { readFileSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 
 import { isMainModule } from './main-module.mjs'
 import {
   DEFAULT_CONFIG,
   loadSkillConfig,
+  parseAcceptanceCriteria,
   planDescriptionSections,
   planSections,
   scanFences,
@@ -94,8 +96,19 @@ const SCAFFOLDING_CLOSING_TAG = new RegExp(
 // A minimum plausible size for a real plan description. A whole-field self-describing placeholder
 // ("the full markdown plan description") and a three-line paraphrase both land well under this.
 const MIN_DESCRIPTION_BYTES = 200
+const PREMISES_HEADING = '## Premises'
+const ACCEPTANCE_HEADING = '## Acceptance criteria'
+const CITATION_PATTERN = String.raw`(?<![\w:/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9_-]+):(\d+)(?![\w.-])`
+const CITATION = new RegExp(CITATION_PATTERN, 'g')
+const CITATION_ONCE = new RegExp(CITATION_PATTERN)
+const PR_BODY = /\b(?:PR|pull[- ]request)\s+body\b/i
+const ORCHESTRATOR_OWNED = /\borchestrator-owned\b/i
 
 function violation(code, message) {
+  return { code, message: `plan-contract-guard: ${message}` }
+}
+
+function couldNotEvaluate(code, message) {
   return { code, message: `plan-contract-guard: ${message}` }
 }
 
@@ -217,20 +230,215 @@ export function planFileResidue(plan) {
   return null
 }
 
+function sectionText(config, description, heading) {
+  const section = planDescriptionSections(config, description).find((s) => s.heading === heading)
+  return section ? section.bodyLines.join('\n') : ''
+}
+
+function scanCitationSections(config, description) {
+  return [PREMISES_HEADING, ACCEPTANCE_HEADING]
+    .flatMap((heading) =>
+      linesOutsideFences(sectionText(config, description, heading)).map(({ line, index }) => ({
+        heading,
+        line,
+        index,
+      })),
+    )
+    .flatMap(({ heading, line, index }) => {
+      const hits = []
+      for (const match of line.matchAll(CITATION)) {
+        hits.push({
+          heading,
+          citation: match[0],
+          file: match[1],
+          line: Number(match[2]),
+          sectionLine: index + 1,
+        })
+      }
+      return hits
+    })
+}
+
+function tokenizeSimpleShell(command) {
+  const tokens = []
+  let current = ''
+  let quote = null
+  for (let index = 0; index < String(command ?? '').length; index += 1) {
+    const char = command[index]
+    if (quote) {
+      if (char === quote) quote = null
+      else current += char
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+    } else if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current)
+        current = ''
+      }
+    } else {
+      current += char
+    }
+  }
+  if (current) tokens.push(current)
+  return tokens
+}
+
+function fixedStringNeedle(command) {
+  const tokens = tokenizeSimpleShell(command)
+  const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
+  if (commandIndex < 0) return null
+  let fixed = false
+  for (let index = commandIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '--') return fixed ? (tokens[index + 1] ?? null) : null
+    if (token === '-e' || token === '--regexp') {
+      index += 1
+      continue
+    }
+    if (token === '-F' || token === '--fixed-strings' || token === '--fixed-regexp') {
+      fixed = true
+      continue
+    }
+    if (/^-[A-Za-z]+$/.test(token) && token.includes('F')) {
+      fixed = true
+      continue
+    }
+    if (token.startsWith('-')) continue
+    return fixed ? token : null
+  }
+  return null
+}
+
+function resolveCitationPath(root, file) {
+  const resolvedRoot = resolve(root)
+  const resolvedFile = resolve(resolvedRoot, file)
+  const rel = relative(resolvedRoot, resolvedFile)
+  if (rel === '' || rel.startsWith('..') || rel.split(/[\\/]/).includes('..')) return null
+  return resolvedFile
+}
+
+export function checkPlanCitations(
+  config,
+  description,
+  { cwd = undefined, fs = { readFileSync } } = {},
+) {
+  const violations = []
+  const couldNotEvaluateItems = []
+  let root
+  try {
+    root = cwd ?? process.cwd()
+  } catch (error) {
+    couldNotEvaluateItems.push(
+      couldNotEvaluate(
+        'citation-could-not-evaluate',
+        `citation check could not resolve the working tree root: ${error.message}`,
+      ),
+    )
+    return { violations, couldNotEvaluate: couldNotEvaluateItems }
+  }
+  if (typeof root !== 'string' || root.length === 0) {
+    couldNotEvaluateItems.push(
+      couldNotEvaluate(
+        'citation-could-not-evaluate',
+        'citation check could not resolve the working tree root',
+      ),
+    )
+    return { violations, couldNotEvaluate: couldNotEvaluateItems }
+  }
+  for (const hit of scanCitationSections(config, description)) {
+    const resolved = resolveCitationPath(root, hit.file)
+    if (!resolved) {
+      violations.push(
+        violation(
+          'unresolvable-citation',
+          `${hit.heading} cites ${hit.citation}, but ${hit.file} escapes the working tree root`,
+        ),
+      )
+      continue
+    }
+    let body
+    try {
+      body = fs.readFileSync(resolved, 'utf8')
+    } catch (error) {
+      violations.push(
+        violation(
+          'unresolvable-citation',
+          `${hit.heading} cites ${hit.citation}, but ${hit.file} could not be read: ${error.message}`,
+        ),
+      )
+      continue
+    }
+    const lineCount = body.split('\n').length
+    if (hit.line > lineCount) {
+      violations.push(
+        violation(
+          'unresolvable-citation',
+          `${hit.heading} cites ${hit.citation}, but ${hit.file} has only ${lineCount} line(s)`,
+        ),
+      )
+    }
+  }
+  return { violations, couldNotEvaluate: couldNotEvaluateItems }
+}
+
+export function checkSelfFalsifiedLiteralSearch(config, description) {
+  const violations = []
+  for (const criterion of parseAcceptanceCriteria(config, description)) {
+    if (!criterion.check) continue
+    const needle = fixedStringNeedle(criterion.check)
+    if (!needle) continue
+    const elsewhere = description.replace(criterion.text, '')
+    if (!elsewhere.includes(needle)) continue
+    violations.push(
+      violation(
+        'self-falsified-literal-search',
+        `criterion "${criterion.text}" searches for "${needle}", but the plan itself also mandates that string`,
+      ),
+    )
+  }
+  return violations
+}
+
+export function checkPrBodyOnlyEvidence(config, description) {
+  return parseAcceptanceCriteria(config, description)
+    .filter((criterion) => {
+      if (criterion.verifyOnly || ORCHESTRATOR_OWNED.test(criterion.text)) return false
+      if (!(PR_BODY.test(criterion.text) || (criterion.check && PR_BODY.test(criterion.check))))
+        return false
+      return !CITATION_ONCE.test(criterion.text)
+    })
+    .map((criterion) =>
+      violation(
+        'pr-body-only-evidence',
+        `criterion "${criterion.text}" names the pull-request body as its only evidence location`,
+      ),
+    )
+}
+
 /**
- * checkPlanContract({ description, plan, config }) -> { ok, violations: [{ code, message }] }
+ * checkPlanContract({ description, plan, config }) -> { ok, violations, couldNotEvaluate }
  *
  * `description` is the composed plan description about to be written to the tracker. `plan` is the
  * optional plan-file body about to be attached; omit it (or pass null/undefined) to skip the
- * `plan-file-residue` check. `config` defaults to DEFAULT_CONFIG.
+ * `plan-file-residue` check. `config` defaults to DEFAULT_CONFIG. `citationCwd` and `citationFs`
+ * are dependency-injection hooks for tests; production callers should leave them unset.
  */
-export function checkPlanContract({ description, plan = null, config = DEFAULT_CONFIG } = {}) {
+export function checkPlanContract({
+  description,
+  plan = null,
+  config = DEFAULT_CONFIG,
+  citationCwd = undefined,
+  citationFs = undefined,
+} = {}) {
   if (typeof description !== 'string') {
     throw new Error(
       'plan-contract-guard: checkPlanContract({ description, plan, config }) — description must be the markdown string; arguments look swapped',
     )
   }
   const violations = []
+  const couldNotEvaluateResults = []
 
   // An unclosed fence makes every heading after it invisible to the splitter, so the STRUCTURAL
   // checks below would all misreport: one missing backtick line was reported as six missing
@@ -327,7 +535,20 @@ export function checkPlanContract({ description, plan = null, config = DEFAULT_C
     if (residue) violations.push(violation('plan-file-residue', residue))
   }
 
-  return { ok: violations.length === 0, violations }
+  violations.push(...checkSelfFalsifiedLiteralSearch(config, description))
+  const citation = checkPlanCitations(config, description, {
+    cwd: citationCwd,
+    ...(citationFs ? { fs: citationFs } : {}),
+  })
+  violations.push(...citation.violations)
+  couldNotEvaluateResults.push(...citation.couldNotEvaluate)
+  violations.push(...checkPrBodyOnlyEvidence(config, description))
+
+  return {
+    ok: violations.length === 0 && couldNotEvaluateResults.length === 0,
+    violations,
+    couldNotEvaluate: couldNotEvaluateResults,
+  }
 }
 
 export function parseContractGuardArgs(argv) {
@@ -374,16 +595,24 @@ function main() {
   }
 
   const config = loadSkillConfig({ cwd: process.cwd() })
-  const { ok, violations } = checkPlanContract({
+  const { ok, violations, couldNotEvaluate } = checkPlanContract({
     description: descriptionText,
     plan: planText,
     config,
+    citationCwd: process.env.PLAN_CONTRACT_GUARD_CWD,
   })
+  for (const { code, message } of couldNotEvaluate) {
+    console.error(`${message} [${code}]`)
+  }
   if (ok) return
   for (const { code, message } of violations) {
     console.error(`${message} [${code}]`)
   }
-  console.error(`plan-contract-guard: ${violations.length} contract violation(s) — do not write`)
+  const unknown = couldNotEvaluate.length
+  const suffix = unknown ? `; ${unknown} check(s) could not be evaluated` : ''
+  console.error(
+    `plan-contract-guard: ${violations.length} contract violation(s)${suffix} — do not write`,
+  )
   process.exitCode = 1
 }
 

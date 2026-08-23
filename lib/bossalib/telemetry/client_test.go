@@ -277,14 +277,16 @@ func TestTelemetryDocumentationMatchesWebAnalyticsEvents(t *testing.T) {
 	}
 
 	webEvents := webAnalyticsEvents(t)
-	for event := range webEvents {
+	for event, properties := range webEvents {
 		if _, ok := documentedWebEvents[event]; !ok {
 			t.Errorf("web analytics event %q is missing from documentation", event)
+			continue
 		}
+		assertPropertySetsEqual(t, event, documented[event].properties, properties)
 	}
 	for event := range documentedWebEvents {
 		if _, ok := webEvents[event]; !ok {
-			t.Errorf("documentation includes web event %q missing from ANALYTICS_EVENTS", event)
+			t.Errorf("documentation includes web event %q missing from ANALYTICS_EVENT_PROPERTIES", event)
 		}
 	}
 }
@@ -414,7 +416,7 @@ func propertySetDifference(left, right map[string]struct{}) []string {
 	return difference
 }
 
-func webAnalyticsEvents(t *testing.T) map[Event]struct{} {
+func webAnalyticsEvents(t *testing.T) map[Event]map[string]struct{} {
 	t.Helper()
 
 	contents, err := os.ReadFile(filepath.Join(telemetryRepoRoot(t), "services", "web", "src", "analytics", "events.ts"))
@@ -433,18 +435,127 @@ func webAnalyticsEvents(t *testing.T) map[Event]struct{} {
 	}
 
 	events := make(map[Event]struct{})
+	eventByKey := make(map[string]Event)
 	for _, line := range strings.Split(list[:end], "\n") {
 		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
 		if len(parts) != 2 {
 			continue
 		}
+		key := strings.TrimSpace(parts[0])
 		event := strings.Trim(strings.TrimSpace(parts[1]), "',")
 		if event == "" {
 			continue
 		}
 		events[Event(event)] = struct{}{}
+		eventByKey[key] = Event(event)
 	}
-	return events
+	properties := webAnalyticsEventProperties(t, string(contents), eventByKey)
+	for event := range events {
+		if _, ok := properties[event]; !ok {
+			t.Errorf("ANALYTICS_EVENT_PROPERTIES does not declare properties for %q", event)
+		}
+	}
+	for event := range properties {
+		if _, ok := events[event]; !ok {
+			t.Errorf("ANALYTICS_EVENT_PROPERTIES declares unknown web event %q", event)
+		}
+	}
+	return properties
+}
+
+func webAnalyticsEventProperties(t *testing.T, contents string, eventByKey map[string]Event) map[Event]map[string]struct{} {
+	t.Helper()
+
+	const declaration = "export const ANALYTICS_EVENT_PROPERTIES = ["
+	start := strings.Index(contents, declaration)
+	if start < 0 {
+		t.Fatalf("ANALYTICS_EVENT_PROPERTIES declaration not found")
+	}
+	list := contents[start+len(declaration):]
+	end := strings.Index(list, "] as const")
+	if end < 0 {
+		t.Fatalf("ANALYTICS_EVENT_PROPERTIES closing declaration not found")
+	}
+
+	properties := make(map[Event]map[string]struct{})
+	currentEvent := Event("")
+	for _, line := range strings.Split(list[:end], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "event: ANALYTICS_EVENT.") {
+			key := strings.TrimPrefix(trimmed, "event: ANALYTICS_EVENT.")
+			key = strings.TrimSuffix(key, ",")
+			event, ok := eventByKey[key]
+			if !ok {
+				t.Errorf("ANALYTICS_EVENT_PROPERTIES references unknown ANALYTICS_EVENT key %q", key)
+				currentEvent = ""
+				continue
+			}
+			currentEvent = event
+			properties[currentEvent] = make(map[string]struct{})
+			continue
+		}
+		if strings.HasPrefix(trimmed, "properties: [") {
+			if currentEvent == "" {
+				t.Errorf("ANALYTICS_EVENT_PROPERTIES has properties before event")
+				continue
+			}
+			if strings.Contains(trimmed, "]") {
+				properties[currentEvent] = propertySetFromWebDeclaration(strings.TrimPrefix(trimmed, "properties: "))
+				currentEvent = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "properties:") && strings.HasSuffix(trimmed, "[") {
+			if currentEvent == "" {
+				t.Errorf("ANALYTICS_EVENT_PROPERTIES has properties before event")
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "]") {
+			if currentEvent != "" {
+				currentEvent = ""
+			}
+			continue
+		}
+		if currentEvent == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "'") || strings.HasPrefix(trimmed, `"`) {
+			property := strings.Trim(strings.TrimSpace(trimmed), `"',`)
+			if property != "" {
+				properties[currentEvent][property] = struct{}{}
+			}
+			continue
+		}
+		if strings.Contains(trimmed, ": [") && strings.Contains(trimmed, "]") {
+			parts := strings.SplitN(trimmed, ":", 2)
+			event := strings.Trim(strings.TrimSpace(parts[0]), `"'`)
+			if event != "" {
+				currentEvent = Event(event)
+				properties[currentEvent] = propertySetFromWebDeclaration(parts[1])
+			}
+			continue
+		}
+	}
+	return properties
+}
+
+func propertySetFromWebDeclaration(propertiesList string) map[string]struct{} {
+	set := make(map[string]struct{})
+	propertiesList = strings.TrimSpace(propertiesList)
+	propertiesList = strings.TrimPrefix(propertiesList, "[")
+	propertiesList = strings.TrimSuffix(propertiesList, ",")
+	propertiesList = strings.TrimSuffix(propertiesList, "]")
+	for _, property := range strings.Split(propertiesList, ",") {
+		property = strings.Trim(strings.TrimSpace(property), `"'`)
+		if property != "" {
+			set[property] = struct{}{}
+		}
+	}
+	return set
 }
 
 func TestRegistryCoversEveryEventConstant(t *testing.T) {
@@ -593,6 +704,7 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventCloudAccessDenied, billingTelemetryProperties()},
 		{EventCloudCheckoutStarted, billingTelemetryProperties()},
 		{EventCloudCheckoutReturned, billingTelemetryProperties()},
+		{EventCloudTrialEnrollmentFailed, billingTelemetryProperties()},
 		{EventSignupUserCreated, map[string]any{"source": "auth_jit", "step": "user_created"}},
 		{EventBillingAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
 		{EventCloudActionInvoked, map[string]any{"command": "ProxyStopSession", "error_code": "unavailable", "product_area": "sessions", "source": "cloud", "status": "error"}},

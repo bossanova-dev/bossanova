@@ -42,6 +42,13 @@ type AccountStore interface {
 	List(ctx context.Context) ([]*models.Account, error)
 	Get(ctx context.Context, id string) (*models.Account, error)
 	Update(ctx context.Context, id string, params db.UpdateAccountParams) (*models.Account, error)
+	// RecordInjectionFailure / ClearInjectionFailure back the resolver's
+	// optional injection-health seam (BOS-973): a spawn whose credentials
+	// cannot be materialized silently runs on the agent CLI's ambient login,
+	// so the downgrade is recorded on the account row every operator surface
+	// already renders, and withdrawn on the next successful spawn.
+	RecordInjectionFailure(ctx context.Context, id string, reason string) error
+	ClearInjectionFailure(ctx context.Context, id string) error
 }
 
 type usageProbeStore interface {
@@ -197,6 +204,25 @@ func (a *registryAdapter) TouchLastUsed(ctx context.Context, id string, at time.
 	tp := &at
 	_, err := a.store.Update(ctx, id, db.UpdateAccountParams{LastUsedAt: &tp})
 	return err
+}
+
+// RecordInjectionFailure and ClearInjectionFailure satisfy the resolver's
+// optional injection-health seam. They are the same shape as the
+// MarkSuspendedIfConfirmed reaction point above: a narrow, single-purpose
+// health write the store owns end to end. A nil store is a no-op, matching
+// every other method here.
+func (a *registryAdapter) RecordInjectionFailure(ctx context.Context, id string, reason string) error {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.RecordInjectionFailure(ctx, id, reason)
+}
+
+func (a *registryAdapter) ClearInjectionFailure(ctx context.Context, id string) error {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.ClearInjectionFailure(ctx, id)
 }
 
 func toMeta(a *models.Account) account.AccountMeta {
@@ -732,10 +758,15 @@ func (r *SpawnEnvResolver) Resolve(ctx context.Context, sess *models.Session) ma
 	if r == nil || r.resolver == nil || sess == nil {
 		return nil
 	}
-	env, err := r.resolver.ResolveSpawnEnv(ctx, deref(sess.AccountID), sess.AgentName, time.Now())
+	accountID := deref(sess.AccountID)
+	env, err := r.resolver.ResolveSpawnEnv(ctx, accountID, sess.AgentName, time.Now())
 	if err != nil {
-		r.log.Warn().Err(err).Str("agent", sess.AgentName).
-			Msg("account: resolve spawn env failed; using system default")
+		// ERROR, not WARN: this is a silent downgrade to the agent CLI's ambient
+		// login — the session runs on a credential nobody chose (BOS-973). The
+		// durable signal is the account row's health, written by the resolver.
+		r.log.Error().Err(err).Str("agent", sess.AgentName).
+			Str("account_id", accountID).Str("provider", sess.AgentName).
+			Msg("account: resolve spawn env failed; using system default (ambient CLI login)")
 		return nil
 	}
 	return env

@@ -6,8 +6,8 @@ write a plan link. Before any description, labels, estimate, priority, or state 
 1. Call `preparePlanAttachment` with issue id, Markdown filename, `text/markdown`, and byte size.
 2. Save `uploadRequest.headers` in a private scratch JSON file, retain its exact path until the PUT
    returns, then invoke `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" put "$PLAN_FILE" <uploadRequest.url>
-<headers-json-file>`. Delete that exact scratch file immediately after the PUT returns, whether it
-   succeeds or fails; keep its path for terminal cleanup as a defense-in-depth fallback.
+<headers-json-file>` after running the toolbox preamble first. Delete that exact scratch file immediately after the PUT returns,
+   whether it succeeds or fails; keep its path for terminal cleanup as a defense-in-depth fallback.
    **A successful PUT writes the HTTP status line to stdout, and that line is the proof of work.**
    Treat an exit 0 that printed **no** status line on stdout as a **failed PUT**, never a success:
    a helper whose entry-point guard does not fire exits 0 having uploaded nothing, and finalization
@@ -28,8 +28,17 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    run. Delete that orphaned row with `deletePlanAttachment` on the retained id, then take the SAFE
    branch. Delete only on a confirmed-unreadable read — never on a transport error, which would
    destroy a healthy artifact.
+6. **Supersede stale duplicate plan attachments only after verified read-back.** After the
+   read-back succeeds, take a **single fresh** attachment list and call
+   `selectSupersededPlanAttachments` with the freshly finalized id as `keepAttachmentId`. Delete
+   each returned exact-title attachment id with `deletePlanAttachment`. A failed supersede list takes
+   the SAFE branch: no plan metadata/state write, no deletes from stale state, and it does not roll
+   back the successful publish. Retry each failed `deletePlanAttachment` once; if it still fails,
+   report the surviving duplicate attachment id in the completion report and continue with the
+   retained attachment as canonical. Every successful supersede deletion logs the deleted attachment
+   id and exact title to stderr and carries both into the completion report next to the retained id.
 
-Any prepare, PUT, finalization, **or read-back** failure means **no plan metadata/state write**. If a
+Any prepare, PUT, finalization, **read-back**, or supersede-list failure means **no plan metadata/state write**. If a
 PUT succeeds but finalization fails, report the orphaned upload; do not invent an attachment URL. The
 SAFE branch on every failure edge is the same: **no plan metadata/state write**, a one-line stderr
 reason, and a non-zero exit, leaving the ticket in its pre-run state for the next sweep to re-pick.

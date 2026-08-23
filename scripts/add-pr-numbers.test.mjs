@@ -69,9 +69,9 @@ function git(cwd, ...args) {
 
 // Build a fixture repo with a real `origin` (the script always runs
 // `git fetch origin "$BASE_BRANCH"`), a `feature` branch carrying `commits`,
-// and `hook` installed as the native .git/hooks/commit-msg (not husky).
-// Branch commits are made with --no-verify so only the amends are hook-gated.
-function makeRepo({ hook, commits }) {
+// and native .git/hooks entries (not husky). Branch commits are made with
+// --no-verify so only the amends are hook-gated.
+function makeRepo({ hook, hooks, commits }) {
   const bare = tempDir('pr-tag-origin-')
   execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q', '--bare', bare], {
     env: gitEnv,
@@ -91,13 +91,20 @@ function makeRepo({ hook, commits }) {
   git(repo, 'checkout', '-q', '-b', 'feature')
 
   commits.forEach((commit, index) => {
-    fs.writeFileSync(path.join(repo, `file-${index}.txt`), `${index}\n`)
-    git(repo, 'add', `file-${index}.txt`)
     const message = commit.body ? `${commit.subject}\n\n${commit.body}` : commit.subject
-    git(repo, 'commit', '--no-verify', '-q', '-m', message)
+    if (commit.empty) {
+      git(repo, 'commit', '--no-verify', '--allow-empty', '-q', '-m', message)
+    } else {
+      fs.writeFileSync(path.join(repo, `file-${index}.txt`), `${index}\n`)
+      git(repo, 'add', `file-${index}.txt`)
+      git(repo, 'commit', '--no-verify', '-q', '-m', message)
+    }
   })
 
-  fs.writeFileSync(path.join(repo, '.git', 'hooks', 'commit-msg'), hook, { mode: 0o755 })
+  const installedHooks = hooks ?? { 'commit-msg': hook }
+  for (const [name, body] of Object.entries(installedHooks)) {
+    fs.writeFileSync(path.join(repo, '.git', 'hooks', name), body, { mode: 0o755 })
+  }
   return repo
 }
 
@@ -139,6 +146,10 @@ function shortShaFor(repo, subject) {
     if (rest.join('\t') === subject) return sha
   }
   throw new Error(`no commit with subject ${JSON.stringify(subject)} in:\n${out}`)
+}
+
+function occurrences(haystack, needle) {
+  return haystack.split(needle).length - 1
 }
 
 after(() => {
@@ -281,31 +292,144 @@ test('add-pr-numbers case 4: an over-long tagged subject fails as loudly as an o
   )
 })
 
-// The script must not name a cause it never checked. An amend can also be refused by git
-// itself — here, amending a commit that would become empty — while the commit-msg hook is
-// perfectly happy. Claiming "the commit-msg hook rejected the amend" there sends an operator
-// to edit a message that can never be the problem.
-test('add-pr-numbers case 8: a non-hook amend failure reports git’s own reason', () => {
-  const repo = makeRepo({ hook: PERMISSIVE_HOOK, commits: [{ subject: 'feat(core): add thing' }] })
-  git(repo, 'commit', '--no-verify', '-q', '--allow-empty', '-m', 'chore: an empty commit')
+// The script must not name a cause it never checked. An amend can be refused by a hook
+// other than commit-msg, while the commit-msg hook is perfectly happy. Claiming "the
+// commit-msg hook rejected the amend" there sends an operator to edit the wrong policy.
+test('add-pr-numbers case 8: a non-commit-msg amend failure reports the hook’s own reason', () => {
+  const rejected = 'feat(core): add thing'
+  const repo = makeRepo({
+    hooks: {
+      'commit-msg': PERMISSIVE_HOOK,
+      'pre-commit': '#!/bin/sh\necho "pre-commit: amend not allowed" >&2\nexit 1\n',
+    },
+    commits: [{ subject: rejected }],
+  })
 
   const r = runScript(repo)
   assert.notEqual(r.code, 0, `expected a non-zero exit:\n${r.stdout}\n${r.stderr}`)
 
-  const short = shortShaFor(repo, 'chore: an empty commit')
+  const short = shortShaFor(repo, rejected)
   assert.ok(
-    r.stderr.includes(`WARNING: could not amend ${short} chore: an empty commit:`),
+    r.stderr.includes(`WARNING: could not amend ${short} ${rejected}:`),
     `stderr must name the commit it could not amend: ${r.stderr}`,
   )
   assert.match(
     r.stderr,
-    /\(amend rejected: [^)]*empty/,
-    `the skip list must carry git's own reason, not an assumed one: ${r.stderr}`,
+    /\(amend rejected: [^)]*pre-commit: amend not allowed/,
+    `the skip list must carry the hook's own reason, not an assumed one: ${r.stderr}`,
   )
   assert.doesNotMatch(
     r.stderr,
     /commit-msg hook rejected/,
     `must not blame the commit-msg hook, which passed: ${r.stderr}`,
+  )
+})
+
+test('add-pr-numbers case 12: empty commits are skipped while real commits are tagged', () => {
+  const empty1 = 'chore: [skip ci] create pull request'
+  const empty2 = 'chore: another empty marker'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [
+      { subject: empty1, empty: true },
+      { subject: 'feat(core): add thing' },
+      { subject: empty2, empty: true },
+      { subject: 'fix: repair thing' },
+    ],
+  })
+  const beforeShort1 = shortShaFor(repo, empty1)
+  const beforeShort2 = shortShaFor(repo, empty2)
+
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `expected success:\n${r.stdout}\n${r.stderr}`)
+  assert.doesNotMatch(r.stderr, /WARNING:/, `empty commits must not reach amend: ${r.stderr}`)
+  assert.doesNotMatch(
+    r.stderr,
+    /amend rejected/,
+    `empty commits must not be skip-report rows: ${r.stderr}`,
+  )
+  assert.doesNotMatch(r.stderr, /untagged/, `empty commits must not be error-listed: ${r.stderr}`)
+
+  const after12 = subjects(repo)
+  assert.equal(after12.length, 4)
+  assert.equal(after12[0], empty1, 'first empty commit subject must be byte-identical')
+  assert.ok(after12[1].includes(TAG), `first real commit must be tagged: ${after12[1]}`)
+  assert.equal(after12[2], empty2, 'second empty commit subject must be byte-identical')
+  assert.ok(after12[3].includes(TAG), `second real commit must be tagged: ${after12[3]}`)
+
+  assert.equal(occurrences(r.stdout, `Skipped empty commit ${beforeShort1} ${empty1}`), 1, r.stdout)
+  assert.equal(occurrences(r.stdout, `Skipped empty commit ${beforeShort2} ${empty2}`), 1, r.stdout)
+})
+
+test('add-pr-numbers case 13: an all-empty range exits 0 without an untagged error', () => {
+  const empty1 = 'chore: empty one'
+  const empty2 = 'chore: empty two'
+  const repo = makeRepo({
+    hook: PERMISSIVE_HOOK,
+    commits: [
+      { subject: empty1, empty: true },
+      { subject: empty2, empty: true },
+    ],
+  })
+  const beforeShort1 = shortShaFor(repo, empty1)
+  const beforeShort2 = shortShaFor(repo, empty2)
+
+  const r = runScript(repo)
+  assert.equal(r.code, 0, `expected success:\n${r.stdout}\n${r.stderr}`)
+  assert.deepEqual(subjects(repo), [empty1, empty2], 'empty subjects must stay untagged')
+  assert.doesNotMatch(r.stderr, /ERROR: these commits were left untagged:/, r.stderr)
+  assert.equal(occurrences(r.stdout, `Skipped empty commit ${beforeShort1} ${empty1}`), 1, r.stdout)
+  assert.equal(occurrences(r.stdout, `Skipped empty commit ${beforeShort2} ${empty2}`), 1, r.stdout)
+})
+
+test('add-pr-numbers case 14: empty predicates and fail-closed scans stay pinned', () => {
+  const script = fs.readFileSync(scriptPath, 'utf8')
+  assert.equal(
+    (script.match(/^is_empty_commit\(\) \{$/gm) ?? []).length,
+    2,
+    'inner helper and outer scan must each define the empty-commit predicate',
+  )
+  assert.match(script, /git hash-object -t tree \/dev\/null/, 'empty tree must be computed by git')
+  assert.match(
+    script,
+    /^current_commit\(\) \{$/m,
+    'inner helper must inspect rebase state for the commit currently under --exec',
+  )
+  assert.match(
+    script,
+    /git rev-parse --git-path rebase-merge\/done/,
+    'inner helper must read the rebase done file before falling back to HEAD',
+  )
+  assert.match(
+    script,
+    /CURRENT_COMMIT=\$\(current_commit\)\nif is_empty_commit "\$CURRENT_COMMIT"; then/,
+    'empty-commit skip must classify the current rebase pick, not only HEAD',
+  )
+  assert.match(
+    script,
+    /if printf '%s' "\$AMEND_ERR" \| grep -q "would make it empty"; then/,
+    'git amend empty-commit rejection must be converted to an empty skip, not a skip-report row',
+  )
+  assert.equal(
+    (script.match(/git rev-parse --verify "\$commit\^"/g) ?? []).length,
+    2,
+    'parent probe must use --verify so root commits reach the empty-tree fallback',
+  )
+  assert.doesNotMatch(script, /4b825dc642cb6eb9a060e54bf8d69288fbee4904/, 'no SHA-1 literal')
+  assert.match(
+    script,
+    /ERROR: could not read \$BASE_COMMIT\.\.HEAD/,
+    'unreadable range fails closed',
+  )
+  assert.match(
+    script,
+    /ERROR: no commits found in \$BASE_COMMIT\.\.HEAD, but \$COMMIT_COUNT were expected\./,
+    'empty scan with a positive commit count fails closed',
+  )
+  assert.doesNotMatch(
+    script,
+    /amending a commit into an empty one/,
+    'empty commits are not amend failures',
   )
 })
 

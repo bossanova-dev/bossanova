@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/migrate"
@@ -54,8 +55,21 @@ func TestServerListenSetsWriteTimeout(t *testing.T) {
 		_ = os.Remove(socketPath)
 	})
 
-	if got := s.srv.WriteTimeout; got != 120*time.Second {
-		t.Fatalf("WriteTimeout = %v, want %v", got, 120*time.Second)
+	got := s.srv.WriteTimeout
+	want := config.SwitchResultCeiling
+	if got <= 0 || want <= 0 {
+		t.Fatalf("invalid non-positive timeout operand: http.Server WriteTimeout (services/bossd/internal/server/server.go) = %v, "+
+			"config.SwitchResultCeiling (lib/bossalib/config/config.go) = %v", got, want)
+	}
+	if got != want {
+		t.Fatalf("http.Server WriteTimeout (services/bossd/internal/server/server.go) = %v, want config.SwitchResultCeiling "+
+			"(lib/bossalib/config/config.go) = %v.\n"+
+			"This equality pins the generic daemon write ceiling to the account-switch result ceiling. If WriteTimeout rises, "+
+			"move SwitchResultCeiling and the settings-reference crossover with it; if SwitchResultCeiling moves, keep "+
+			"WriteTimeout equal or document why daemon writes can now expire at a different boundary.\n"+
+			"This guard cannot see an operator's runtime session_start_ready_deadline_seconds; it only holds the compiled "+
+			"result ceiling that the derived switch budget crosses.",
+			got, want)
 	}
 }
 
@@ -99,7 +113,7 @@ func (w *deadlineCaptureResponseWriter) SetWriteDeadline(deadline time.Time) err
 	return nil
 }
 
-func TestCreateSessionStreamsSetupOutputBeforeSessionCreated(t *testing.T) {
+func TestCreateSessionStreamsSetupProgressBeforeSettledSessionCreated(t *testing.T) {
 	t.Parallel()
 
 	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{
@@ -113,23 +127,54 @@ func TestCreateSessionStreamsSetupOutputBeforeSessionCreated(t *testing.T) {
 	// Since BOS-720 the stream opens with the accepted SessionCreated frame, so
 	// the setup output sits BETWEEN the accepted and settled frames rather than
 	// before a single one.
+	if len(events) != 6 {
+		t.Fatalf("events len = %d, want 6", len(events))
+	}
+	if events[0].GetSessionCreated() == nil {
+		t.Fatalf("event[0] = %T, want the accepted SessionCreated", events[0].GetEvent())
+	}
+	if got := events[1].GetSetupOutput().Text; got != "creating worktree" {
+		t.Fatalf("event[1] setup output = %q, want %q", got, "creating worktree")
+	}
+	if got := events[2].GetSetupOutput().Text; got != "first line" {
+		t.Fatalf("event[2] setup output = %q, want %q", got, "first line")
+	}
+	if got := events[3].GetSetupOutput().Text; got != "second line" {
+		t.Fatalf("event[3] setup output = %q, want %q", got, "second line")
+	}
+	if got := events[4].GetSetupOutput().Text; got != "worktree startup complete" {
+		t.Fatalf("event[4] setup output = %q, want %q", got, "worktree startup complete")
+	}
+	if events[5].GetSessionCreated() == nil {
+		t.Fatalf("event[5] = %T, want SessionCreated", events[5].GetEvent())
+	}
+	if events[5].GetSessionCreated().GetAttachedExisting() {
+		t.Fatal("genuine create AttachedExisting = true, want false")
+	}
+}
+
+func TestCreateSessionStreamsLifecycleSetupProgressWithoutSetupScriptOutput(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+
+	events, err := h.createSession(t, "silent setup")
+	if err != nil {
+		t.Fatalf("CreateSession stream error = %v", err)
+	}
 	if len(events) != 4 {
 		t.Fatalf("events len = %d, want 4", len(events))
 	}
 	if events[0].GetSessionCreated() == nil {
 		t.Fatalf("event[0] = %T, want the accepted SessionCreated", events[0].GetEvent())
 	}
-	if got := events[1].GetSetupOutput().Text; got != "first line" {
-		t.Fatalf("event[1] setup output = %q, want %q", got, "first line")
-	}
-	if got := events[2].GetSetupOutput().Text; got != "second line" {
-		t.Fatalf("event[2] setup output = %q, want %q", got, "second line")
+	for i, want := range []string{"creating worktree", "worktree startup complete"} {
+		if got := events[i+1].GetSetupOutput().Text; got != want {
+			t.Fatalf("event[%d] setup output = %q, want %q", i+1, got, want)
+		}
 	}
 	if events[3].GetSessionCreated() == nil {
 		t.Fatalf("event[3] = %T, want SessionCreated", events[3].GetEvent())
-	}
-	if events[3].GetSessionCreated().GetAttachedExisting() {
-		t.Fatal("genuine create AttachedExisting = true, want false")
 	}
 }
 
@@ -293,14 +338,20 @@ func TestCreateSessionStreamsLongSetupOutputLine(t *testing.T) {
 		t.Fatalf("CreateSession stream error = %v", err)
 	}
 	// events[0] is the BOS-720 accepted frame.
-	if len(events) != 3 {
-		t.Fatalf("events len = %d, want 3", len(events))
+	if len(events) != 5 {
+		t.Fatalf("events len = %d, want 5", len(events))
 	}
-	if got := events[1].GetSetupOutput().Text; got != longLine {
+	if got := events[1].GetSetupOutput().Text; got != "creating worktree" {
+		t.Fatalf("event[1] setup output = %q, want %q", got, "creating worktree")
+	}
+	if got := events[2].GetSetupOutput().Text; got != longLine {
 		t.Fatalf("long setup output length = %d, want %d", len(got), len(longLine))
 	}
-	if events[2].GetSessionCreated() == nil {
-		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
+	if got := events[3].GetSetupOutput().Text; got != "worktree startup complete" {
+		t.Fatalf("event[3] setup output = %q, want %q", got, "worktree startup complete")
+	}
+	if events[4].GetSessionCreated() == nil {
+		t.Fatalf("event[4] = %T, want SessionCreated", events[4].GetEvent())
 	}
 }
 
@@ -399,14 +450,17 @@ func TestCreateSessionSurvivesAnOversizedSetupOutputLine(t *testing.T) {
 		t.Fatalf("CreateSession stream error = %v, want nil", err)
 	}
 	// events[0] is the BOS-720 accepted frame.
-	if len(events) != 3 {
-		t.Fatalf("events len = %d, want 3", len(events))
+	if len(events) != 4 {
+		t.Fatalf("events len = %d, want 4", len(events))
 	}
-	if got := len(events[1].GetSetupOutput().Text); got != maxSetupOutputLineBytes {
+	if got := events[1].GetSetupOutput().Text; got != "creating worktree" {
+		t.Fatalf("event[1] setup output = %q, want %q", got, "creating worktree")
+	}
+	if got := len(events[2].GetSetupOutput().Text); got != maxSetupOutputLineBytes {
 		t.Fatalf("setup output length = %d, want it truncated to %d", got, maxSetupOutputLineBytes)
 	}
-	if events[2].GetSessionCreated() == nil {
-		t.Fatalf("event[2] = %T, want SessionCreated", events[2].GetEvent())
+	if events[3].GetSessionCreated() == nil {
+		t.Fatalf("event[3] = %T, want SessionCreated", events[3].GetEvent())
 	}
 	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
 	if listErr != nil {
@@ -435,15 +489,17 @@ func TestCreateSessionStartErrorAfterSetupOutputReturnsConnectError(t *testing.T
 		t.Fatalf("error contains protocol framing failure: %v", err)
 	}
 	// The accepted frame lands before the bootstrap fails, so the client keeps
-	// the session id even on the error path; the setup line follows it.
-	if len(events) != 2 {
-		t.Fatalf("events len = %d, want 2", len(events))
+	// the session id even on the error path; lifecycle and setup output follow it.
+	if len(events) != 4 {
+		t.Fatalf("events len = %d, want 4", len(events))
 	}
 	if events[0].GetSessionCreated() == nil {
 		t.Fatalf("event[0] = %T, want the accepted SessionCreated", events[0].GetEvent())
 	}
-	if got := events[1].GetSetupOutput().Text; got != "setup before failure" {
-		t.Fatalf("setup output = %q, want %q", got, "setup before failure")
+	for i, want := range []string{"creating worktree", "setup before failure", "worktree startup complete"} {
+		if got := events[i+1].GetSetupOutput().Text; got != want {
+			t.Fatalf("event[%d] setup output = %q, want %q", i+1, got, want)
+		}
 	}
 }
 

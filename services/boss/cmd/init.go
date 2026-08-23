@@ -31,6 +31,8 @@ const skillConfigModulePath = "skills/boss-plan/toolbox/skill-config.mjs"
 // a handful of marker files and returns; anything slower is a hang, not work.
 const nodeBridgeTimeout = 60 * time.Second
 
+const nodeBridgeWaitDelay = 5 * time.Second
+
 // The Go->Node seam is fail-open by default, so every way it can fail to
 // deliver an answer is its own named error. In particular a zero exit with
 // empty stdout is NEVER "detected nothing": node prints nothing when a module's
@@ -657,6 +659,7 @@ func (b *nodeBridge) run(script, what string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = nodeBridgeWaitDelay
 
 	if err := cmd.Run(); err != nil {
 		// A hung bridge and a bridge that ran and failed call for different

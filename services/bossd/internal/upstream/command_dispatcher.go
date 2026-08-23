@@ -16,6 +16,10 @@ import (
 // timed out, so a later refresh cannot overlap stale work.
 var listAccountsRefreshDeadline = 120 * time.Second
 
+const asyncCancelTombstoneLimit = 1024
+
+var asyncCancelTombstoneTTL = 5 * time.Minute
+
 // dispatchCommand routes an inbound OrchestratorCommand to the matching
 // daemon handler and returns the DaemonEvent that should be sent back
 // on the stream. For stop/pause/resume/webhook the response fits in a
@@ -61,7 +65,7 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_WakeChat:
 		return c.dispatchWakeChat(ctx, cmdID, cmd.GetWakeChat())
 	case *pb.OrchestratorCommand_SwitchAccount:
-		return c.dispatchSwitchAccount(ctx, cmdID, cmd.GetSwitchAccount())
+		return c.dispatchSwitchAccount(ctx, cmdID, cmd.GetSwitchAccount(), outbound)
 	case *pb.OrchestratorCommand_Merge:
 		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge(), outbound)
 	case *pb.OrchestratorCommand_Archive:
@@ -160,6 +164,9 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchRemoveSession(ctx, cmdID, cmd.GetRemoveSession(), outbound)
 	case *pb.OrchestratorCommand_EmptyTrash:
 		return c.dispatchEmptyTrash(ctx, cmdID, cmd.GetEmptyTrash(), outbound)
+	case *pb.OrchestratorCommand_CommandCancel:
+		c.cancelAsyncCommand(cmd.GetCommandCancel().GetCommandId())
+		return nil
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -418,28 +425,105 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 // CommandResult{SwitchAccountResult} payload. Failures attach the
 // handler-classified ErrorCode so bosso can map back to the right ConnectRPC
 // code (CodeFailedPrecondition, CodeNotFound, …) without parsing the
-// human-readable `error` string. Mirrors dispatchWakeChat.
-func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAccountCommand) *pb.DaemonEvent {
+// human-readable `error` string.
+//
+// Dispatched asynchronously (BOS-897), which is what dispatchMerge already does
+// and for the same reason. A switch respawns the chat's pane and waits for its
+// composer, and it is now granted a legitimate respawn budget
+// (config.SwitchRespawnBudgetFor) to do it in; running that inline would wedge
+// the single-threaded command reader (runCommandReader, stream.go) for the
+// whole budget. That loop also services the heartbeat, so blocking it is
+// connection-fatal rather than merely slow.
+// Payload and error codes are identical to the old synchronous form — only the
+// delivery channel changed (mirrors dispatchMerge / dispatchRemoveSession).
+func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAccount(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
-	if err != nil {
-		return commandErrCode(cmdID, err.Error(), errorCode)
-	}
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{
-			CommandId: cmdID,
-			Ok:        true,
-			Payload: &pb.CommandResult_SwitchAccount{
-				SwitchAccount: &pb.SwitchAccountResult{
-					Resumed:     resumed,
-					TargetLabel: targetLabel,
-					NoticeText:  noticeText,
+	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
+		resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAccount(commandCtx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), errorCode)
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+			Result: &pb.CommandResult{
+				CommandId: cmdID,
+				Ok:        true,
+				Payload: &pb.CommandResult_SwitchAccount{
+					SwitchAccount: &pb.SwitchAccountResult{
+						Resumed:     resumed,
+						TargetLabel: targetLabel,
+						NoticeText:  noticeText,
+					},
 				},
 			},
-		},
-	}}
+		}}
+	})
+}
+
+func (c *StreamClient) cancelAsyncCommand(commandID string) {
+	if commandID == "" {
+		return
+	}
+	now := time.Now()
+	dropped := false
+	c.asyncMu.Lock()
+	cancel := c.asyncCancels[commandID]
+	if cancel == nil {
+		if c.asyncCanceled == nil {
+			c.asyncCanceled = make(map[string]time.Time)
+		}
+		c.pruneAsyncCanceledLocked(now)
+		if len(c.asyncCanceled) < asyncCancelTombstoneLimit {
+			c.asyncCanceled[commandID] = now
+		} else {
+			dropped = true
+		}
+	}
+	c.asyncMu.Unlock()
+	if cancel != nil {
+		cancel()
+	} else if dropped {
+		c.logger.Warn().
+			Str("command_id", commandID).
+			Int("limit", asyncCancelTombstoneLimit).
+			Msg("async cancellation tombstone limit reached; dropping CommandCancel")
+	}
+}
+
+func (c *StreamClient) cancelAndWaitAsyncCommands() {
+	c.asyncMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(c.asyncCancels))
+	dones := make([]<-chan struct{}, 0, len(c.asyncDone))
+	for _, cancel := range c.asyncCancels {
+		cancels = append(cancels, cancel)
+	}
+	for _, done := range c.asyncDone {
+		dones = append(dones, done)
+	}
+	c.asyncMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	for _, done := range dones {
+		<-done
+	}
+}
+
+func (c *StreamClient) pruneAsyncCanceledLocked(now time.Time) {
+	for commandID, canceledAt := range c.asyncCanceled {
+		if now.Sub(canceledAt) > asyncCancelTombstoneTTL {
+			delete(c.asyncCanceled, commandID)
+		}
+	}
+}
+
+// SwitchCommandResultForTest packages a switch command failure with the same
+// classification and message wrapping the stream adapter uses in production.
+func SwitchCommandResultForTest(commandID string, err error) *pb.CommandResult {
+	errorCode, wrappedErr := switchCommandFailure(err)
+	return commandErrCode(commandID, wrappedErr.Error(), errorCode).GetResult()
 }
 
 // dispatchMerge routes a MergeSessionCommand to the handler. Dispatched
@@ -671,6 +755,53 @@ func classifyBroadcastCommandError(err error) pb.CommandResult_ErrorCode {
 	return classifyCommandError(err)
 }
 
+// classifySwitchCommandError is classifyCommandError plus the DEADLINE_EXCEEDED
+// and CANCELED arms, and — exactly like classifyBroadcastCommandError above — it is
+// deliberately SCOPED TO THE SWITCH COMMAND rather than folded into the shared
+// classifier.
+//
+// The same reasoning applies, for the same reason. A deadline is a deadline and
+// a cancellation is a cancellation whatever the verb, so teaching
+// classifyCommandError the arms looks obviously right. But that classifier is
+// shared by every inbound command, and the ~170 handler sites behind it can
+// return connect.CodeDeadlineExceeded or connect.CodeCanceled for any context
+// that happens to expire or be cancelled — an upstream HTTP call, a slow query,
+// a cancelled parent. Those errors currently classify as UNSPECIFIED, which
+// bosso's validateCommandResult renders as CodeAborted. Widening the shared
+// classifier would silently re-render every one of them as CodeDeadlineExceeded
+// or CodeCanceled on the bossanova.v1 surface: a change in the MEANING of an
+// existing response, which the api-design skill puts squarely in "bump the API
+// version and ship a down-convert transform" territory.
+//
+// BOS-947 and BOS-958 ARE those deliberate, separately-versioned changes — but
+// only for the switch. Confining the arms here is what keeps the blast radius
+// equal to the one command whose renderings the accompanying V20260820 and
+// V20260821 transforms actually down-convert (SwitchDeadlineCodeChange and
+// SwitchCanceledCodeChange in lib/bossalib/apiversion). Widening either later
+// is a fresh version bump with its own transform, never a quiet edit here;
+// classifyCommandError's own UNSPECIFIED-for-DeadlineExceeded/CodeCanceled
+// behavior is pinned by tests so that edit cannot pass silently.
+func classifySwitchCommandError(err error) pb.CommandResult_ErrorCode {
+	code := connect.CodeOf(err)
+	if code == connect.CodeDeadlineExceeded {
+		// "Do not retry" — see the enum's comment. The switch reaches this when
+		// its own respawn budget (config.SwitchRespawnBudgetFor, derived from
+		// the configured composer-readiness deadline) ends the stop+swap+resume
+		// before the composer settles.
+		return pb.CommandResult_ERROR_CODE_DEADLINE_EXCEEDED
+	}
+	if code == connect.CodeCanceled {
+		// "Do not retry" — see the enum's comment. The switch reaches this when
+		// the caller abandons the request before the stop+swap+resume finishes.
+		return pb.CommandResult_ERROR_CODE_CANCELED
+	}
+	return classifyCommandError(err)
+}
+
+func switchCommandFailure(err error) (pb.CommandResult_ErrorCode, error) {
+	return classifySwitchCommandError(err), fmt.Errorf("switch session account: %w", err)
+}
+
 // runAsyncCommand executes a blocking, network-bound command handler in a
 // background goroutine so the single-threaded command reader (runCommandReader)
 // keeps draining subsequent commands instead of wedging behind one slow call.
@@ -696,6 +827,58 @@ func (c *StreamClient) runAsyncCommand(
 		case outbound <- ev:
 		}
 	})
+	return nil
+}
+
+func (c *StreamClient) runCancelableAsyncCommand(
+	ctx context.Context,
+	cmdID string,
+	outbound chan<- *pb.DaemonEvent,
+	build func(context.Context) *pb.DaemonEvent,
+) *pb.DaemonEvent {
+	commandCtx, cancel := context.WithCancel(ctx)
+	c.asyncMu.Lock()
+	if c.asyncCancels == nil {
+		c.asyncCancels = make(map[string]context.CancelFunc)
+	}
+	c.asyncCancels[cmdID] = cancel
+	canceledAt, preCanceled := c.asyncCanceled[cmdID]
+	if preCanceled && time.Since(canceledAt) > asyncCancelTombstoneTTL {
+		preCanceled = false
+		delete(c.asyncCanceled, cmdID)
+	} else if preCanceled {
+		delete(c.asyncCanceled, cmdID)
+	}
+	c.asyncMu.Unlock()
+	if preCanceled {
+		cancel()
+	}
+	start := make(chan struct{})
+	done := safego.Go(c.logger, func() {
+		<-start
+		defer func() {
+			c.asyncMu.Lock()
+			delete(c.asyncCancels, cmdID)
+			delete(c.asyncDone, cmdID)
+			c.asyncMu.Unlock()
+			cancel()
+		}()
+		ev := build(commandCtx)
+		if ev == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case outbound <- ev:
+		}
+	})
+	c.asyncMu.Lock()
+	if c.asyncDone == nil {
+		c.asyncDone = make(map[string]<-chan struct{})
+	}
+	c.asyncDone[cmdID] = done
+	c.asyncMu.Unlock()
+	close(start)
 	return nil
 }
 

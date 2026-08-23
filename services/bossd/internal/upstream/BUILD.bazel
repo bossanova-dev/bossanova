@@ -61,6 +61,7 @@ go_test(
         "coalescer_test.go",
         "command_dispatcher_test.go",
         "daemon_id_test.go",
+        "dochan_ratchet_test.go",
         "event_forwarding_test.go",
         "httpclient_test.go",
         "logout_stream_test.go",
@@ -81,7 +82,10 @@ go_test(
         "webhook_events_test.go",
         "wiring_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + glob(
+        ["*.go"],
+        exclude = ["*_test.go"],
+    ),  # keep: TestNoRawDoChanCallInThisPackage parses this package's own sources from disk
     embed = [":upstream"],
     deps = [
         "//lib/bossalib/broadcast",
@@ -90,6 +94,7 @@ go_test(
         "//lib/bossalib/vcs",
         "//services/bossd/internal/broadcast",
         "//services/bossd/internal/chatupload",
+        "//services/bossd/internal/detach/detachgate",
         "//services/bossd/internal/tmux",
         "@com_connectrpc_connect//:connect",
         "@com_github_99designs_keyring//:keyring",

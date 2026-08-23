@@ -12,8 +12,10 @@
 export const bossCallbackOperationMap = {
   registerWatch: {
     command: 'boss callback add',
-    // `<pr> <trigger>` are positional. --group ties siblings so the first to fire
-    // cancels the rest (a green / red / merged PR each wakes the run exactly once).
+    // `<pr> <trigger>` are positional. --group is safe only for mutually exclusive
+    // triggers, where at most one can ever hold for the PR, such as merged vs closed.
+    // Non-exclusive waits such as green / red / merged use a separate group per
+    // trigger so one state does not cancel the other still-needed watches.
     // --message is the wake payload delivered to the target chat; it is a SECRET —
     // never echoed back by `list`, so it is deliberately absent from every response
     // below. --expires-in bounds the durable watch; --repo/--chat scope it; --json
@@ -51,9 +53,9 @@ export const bossCallbackOperationMap = {
 // the register/reconcile/re-arm/fallback behaviour is named in one place rather than
 // re-derived in prose. Frozen so a consumer can read but not mutate it.
 export const bossCallbackPolicy = Object.freeze({
-  // The grouped one-shot triggers registered when a PR/CI wait begins. The first to
-  // fire cancels its siblings (group semantics), so the run wakes once whether CI
-  // passed, CI failed, or the PR merged out from under it.
+  // The default one-shot triggers registered when a PR/CI wait begins. Group only
+  // mutually exclusive triggers; checks_passed, checks_failed, and merged are not
+  // mutually exclusive over a PR's lifetime, so callers register them in separate groups.
   watchTriggers: Object.freeze(['checks_passed', 'checks_failed', 'merged']),
   // Durable-watch lifetime; bounded so an abandoned run's watch self-expires rather
   // than lingering for the 30d hard cap.
@@ -61,8 +63,9 @@ export const bossCallbackPolicy = Object.freeze({
   // Every callback wake is advisory: reconcile against real PR state (gh pr checks /
   // gh pr view) before changing course — a callback is a nudge, not a verdict.
   reconcileBeforeAct: true,
-  // A one-shot watch is consumed when it fires; re-arm it whenever the workflow must
-  // keep waiting after reconciling.
+  // A one-shot watch is consumed when it fires; re-arm it only after reconciliation
+  // reads that trigger's condition as false. A still-true state fires immediately
+  // and burns the replacement watch.
   rearmWhileWaiting: true,
   // At-least-once delivery: dedup by callback id and guard every state change on real
   // state, so a duplicate delivery is a no-op.

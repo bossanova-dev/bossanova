@@ -230,6 +230,15 @@ func injectLoginShell(pluginName string, cfg map[string]string, settings config.
 	return next
 }
 
+func injectSessionStartReadyDeadline(cfg map[string]string, settings config.Settings) map[string]string {
+	next := make(map[string]string, len(cfg)+1)
+	for k, v := range cfg {
+		next[k] = v
+	}
+	next[config.SessionStartReadyDeadlinePluginKey] = fmt.Sprintf("%d", int(settings.TmuxDelivery.SessionStartReadyDeadline()/time.Second))
+	return next
+}
+
 func isAgentProviderPlugin(pluginName string, settings config.Settings) bool {
 	if pluginName == "codex" || pluginName == "claude" {
 		return true
@@ -244,6 +253,9 @@ func isAgentProviderPlugin(pluginName string, settings config.Settings) bool {
 
 func preparePluginConfigForStart(cfg config.PluginConfig, settings config.Settings) config.PluginConfig {
 	cfg.Config = injectLoginShell(cfg.Name, cfg.Config, settings)
+	// Repair is not an agent provider, but its StartChatRun ceiling must track
+	// the daemon's resolved readiness deadline too.
+	cfg.Config = injectSessionStartReadyDeadline(cfg.Config, settings)
 	return cfg
 }
 

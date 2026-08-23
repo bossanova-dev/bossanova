@@ -69,7 +69,7 @@
     "category": "complexity-hotspot",
     "area": "services/boss",
     "file": "services/boss/internal/views/home.go",
-    "evidence": "1378 lines (limit 800)"
+    "evidence": "1778 lines (limit 800)"
   },
   {
     "category": "complexity-hotspot",

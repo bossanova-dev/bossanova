@@ -54,6 +54,27 @@ type Registry interface {
 	TouchLastUsed(ctx context.Context, id string, at time.Time) error
 }
 
+// injectionHealthRecorder is an OPTIONAL seam the resolver type-asserts off its
+// Registry. When the registry implements it, a materialize failure on a real
+// spawn is recorded durably on the account row and a later success withdraws
+// it. A registry that does not implement it degrades to the pre-BOS-973
+// behaviour (log only), matching the resolver's nil-dependency discipline.
+//
+// Why it lives here and not at the call sites: four separate paths degrade a
+// resolver error to "use the ambient CLI login"
+// (server.resolveAccountEnv, server.resolveChatAccountEnvForSpawn,
+// accountwiring.SpawnEnvResolver.Resolve, plugin host service). They all funnel
+// through resolveSpawnEnv, so recording once here cannot drift the way four
+// copies would.
+//
+// reason is the MaterializeAccount error string and nothing else. It carries
+// filesystem paths, never credential material, and no implementation may widen
+// it.
+type injectionHealthRecorder interface {
+	RecordInjectionFailure(ctx context.Context, id string, reason string) error
+	ClearInjectionFailure(ctx context.Context, id string) error
+}
+
 // Materializer turns a bound account into concrete spawn environment via the
 // agent-runner plugin. SupportsRotation reports whether the provider's plugin
 // can materialize credentials at all; when false the resolver degrades to
@@ -385,8 +406,13 @@ func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider stri
 // probe path, by design: the probe must run under the credentials a real spawn
 // would get.
 //
-// Side effect this path SKIPS: TouchLastUsed. That is the only one, and it is
-// pure bookkeeping — nothing about the returned env depends on it.
+// Side effects this path SKIPS: TouchLastUsed, and the BOS-973 injection-health
+// record/clear. Both are pure bookkeeping — nothing about the returned env
+// depends on either — and both write a ROTATION-SELECTION KEY that a diagnostic
+// must not skew: LastUsedAt is the LRU key, and health is what
+// rotation.isSelectable gates on. A probe that failed an account's health would
+// change which account the next real session is handed, which is precisely the
+// class of side effect this entry point exists to avoid.
 //
 // now is accepted for signature symmetry with ResolveSpawnEnv and is unused
 // beyond the shared body's degrade paths; it must not become a second way for
@@ -440,15 +466,70 @@ func (r *Resolver) resolveSpawnEnv(
 
 	env, err := r.mat.MaterializeAccount(ctx, acct.ID)
 	if err != nil {
+		// recordLastUsed also gates the health write, and for the same reason it
+		// gates TouchLastUsed: health is a rotation-selection key
+		// (rotation.isSelectable), so the read-only probe path must not skew it.
+		// See ResolveSpawnEnvForProbe's contract.
+		if recordLastUsed {
+			r.recordInjectionFailure(ctx, acct.ID, provider, err)
+		}
+		// The error is returned UNCHANGED: every caller's degrade-to-nil policy
+		// is deliberately untouched by BOS-973 — only its observability changes.
 		return nil, err
 	}
 	if recordLastUsed {
+		r.clearInjectionFailure(ctx, acct.ID)
 		if touchErr := r.reg.TouchLastUsed(ctx, acct.ID, now); touchErr != nil {
 			r.logWarn().Err(touchErr).Str("account_id", acct.ID).
 				Msg("account: failed to record last-used; continuing")
 		}
 	}
 	return env, nil
+}
+
+// injectionHealthWriteTimeout bounds the detached injection-health writes. They
+// run on context.WithoutCancel because the ctx they inherit is the SPAWN's, and
+// the spawn is failing: when the materialize error IS a context error (a
+// cancelled spawn, a plugin-RPC deadline, a hung agent plugin), reusing that ctx
+// guarantees the health UPDATE fails too. The write would then be swallowed as a
+// WARN and reproduce the exact BOS-973 silent degrade for the whole
+// timeout/cancel class — the failure most likely to strand an operator with no
+// signal. Detaching keeps request-scoped logging values while surviving the
+// cancellation; the timeout keeps a detached write from outliving the daemon's
+// interest in it.
+const injectionHealthWriteTimeout = 5 * time.Second
+
+// recordInjectionFailure durably marks the account unhealthy so the downgrade to
+// the agent CLI's ambient login is visible on the surfaces an operator already
+// reads. A registry without the optional seam, or a failing write, only logs:
+// the spawn's outcome must never depend on the bookkeeping.
+func (r *Resolver) recordInjectionFailure(ctx context.Context, accountID, provider string, cause error) {
+	rec, ok := r.reg.(injectionHealthRecorder)
+	if !ok {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), injectionHealthWriteTimeout)
+	defer cancel()
+	if err := rec.RecordInjectionFailure(writeCtx, accountID, cause.Error()); err != nil {
+		r.logWarn().Err(err).Str("account_id", accountID).Str("provider", provider).
+			Msg("account: failed to record credential-injection failure; continuing")
+	}
+}
+
+// clearInjectionFailure withdraws a previously recorded injection failure so a
+// transient failure self-heals on the next successful spawn. The store scopes
+// the clear to its own prefix, so a genuine account-test failure survives.
+func (r *Resolver) clearInjectionFailure(ctx context.Context, accountID string) {
+	rec, ok := r.reg.(injectionHealthRecorder)
+	if !ok {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), injectionHealthWriteTimeout)
+	defer cancel()
+	if err := rec.ClearInjectionFailure(writeCtx, accountID); err != nil {
+		r.logWarn().Err(err).Str("account_id", accountID).
+			Msg("account: failed to clear credential-injection failure; continuing")
+	}
 }
 
 // Label returns a human-friendly label for accountID. "" ⇒ "Unmanaged local credentials".

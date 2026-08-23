@@ -3,8 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -15,6 +20,7 @@ import (
 // records the request and returns the configured response/error.
 type fakeAgentClient struct {
 	startResp    *bossanovav1.StartAgentRunResponse
+	startFn      func(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	startErr     error
 	startReq     atomic.Pointer[bossanovav1.StartAgentRunRequest]
 	preflightErr error
@@ -28,6 +34,9 @@ func (f *fakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, err
 }
 func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.startReq.Store(req)
+	if f.startFn != nil {
+		return f.startFn(context.Background(), req)
+	}
 	return f.startResp, f.startErr
 }
 func (f *fakeAgentClient) PreflightHeadlessRun(_ context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
@@ -99,7 +108,11 @@ func (f *fakeAgentClient) MaterializeAccount(context.Context, *bossanovav1.Mater
 func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
 	tl := NewTailer(zerolog.Nop())
-	pr := NewPluginRunner(fc, tl, t.TempDir(), zerolog.Nop())
+	logDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(logDir, "explicit-sid.log"), nil, 0o600); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+	pr := NewPluginRunner(fc, tl, logDir, zerolog.Nop())
 
 	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", nil)
 	if err != nil {
@@ -115,8 +128,82 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	if got.WorkDir != "/work" || got.Plan != "plan" || got.SessionId != "explicit-sid" {
 		t.Errorf("unexpected req: %+v", got)
 	}
-	if got.LogPath == "" {
-		t.Error("LogPath empty — pluginRunner must set it")
+	if got.LogPath != filepath.Join(logDir, "explicit-sid.log") {
+		t.Errorf("LogPath = %q, want explicit session path", got.LogPath)
+	}
+}
+
+func TestPluginRunner_Start_TailsRequestLogPathUnderReturnedSessionID(t *testing.T) {
+	const lineText = "line written to requested path"
+	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+	fc.startFn = func(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+		line := fmt.Sprintf(`{"ts":"2026-08-22T17:00:00Z","text":%q}`+"\n", lineText)
+		if err := os.WriteFile(req.LogPath, []byte(line), 0o600); err != nil {
+			return nil, err
+		}
+		return fc.startResp, nil
+	}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+
+	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if sid != "sid" {
+		t.Fatalf("sid = %q, want sid", sid)
+	}
+	if _, err := pr.Subscribe(context.Background(), sid); err != nil {
+		t.Fatalf("Subscribe returned id: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range pr.History(sid) {
+			if line.Text == lineText {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("History(%q) never observed %q; got %#v", sid, lineText, pr.History(sid))
+}
+
+func TestPluginRunner_Start_EmptySessionIDUsesDistinctLogPaths(t *testing.T) {
+	logDir := t.TempDir()
+	var starts atomic.Int64
+	paths := make(chan string, 2)
+	fc := &fakeAgentClient{}
+	fc.startFn = func(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+		if err := os.WriteFile(req.LogPath, nil, 0o600); err != nil {
+			return nil, err
+		}
+		paths <- req.LogPath
+		return &bossanovav1.StartAgentRunResponse{SessionId: fmt.Sprintf("sid-%d", starts.Add(1))}, nil
+	}
+	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), logDir, zerolog.Nop())
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := pr.Start(context.Background(), "/work", "plan", nil, "", "", nil)
+			errs <- err
+		}()
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+	first, second := <-paths, <-paths
+	if first == second {
+		t.Fatalf("empty-session starts used same LogPath %q", first)
+	}
+	for _, path := range []string{first, second} {
+		if path == filepath.Join(logDir, ".log") {
+			t.Fatalf("empty-session start used collision path %q", path)
+		}
+		if !strings.HasPrefix(path, logDir+string(os.PathSeparator)) {
+			t.Fatalf("LogPath %q is outside log dir %q", path, logDir)
+		}
 	}
 }
 

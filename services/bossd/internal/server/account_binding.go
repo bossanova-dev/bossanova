@@ -8,8 +8,10 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -156,10 +158,15 @@ func (s *Server) resolveAccountEnv(ctx context.Context, sess *models.Session) ma
 	if s.resolver == nil || sess == nil {
 		return nil
 	}
-	env, err := s.resolver.ResolveSpawnEnv(ctx, derefAccountID(sess.AccountID), sess.AgentName, time.Now())
+	accountID := derefAccountID(sess.AccountID)
+	env, err := s.resolver.ResolveSpawnEnv(ctx, accountID, sess.AgentName, time.Now())
 	if err != nil {
-		s.logger.Warn().Err(err).Str("agent", sess.AgentName).
-			Msg("account: resolve spawn env failed for chat spawn; using system default")
+		// ERROR, not WARN: the spawn silently runs on the agent CLI's ambient
+		// login instead of the bound account (BOS-973). The durable operator
+		// signal is the account row's health, written by the resolver.
+		s.logger.Error().Err(err).Str("agent", sess.AgentName).
+			Str("account_id", accountID).Str("provider", sess.AgentName).
+			Msg("account: resolve spawn env failed for chat spawn; using system default (ambient CLI login)")
 		return nil
 	}
 	return env
@@ -216,8 +223,11 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	}
 	env, err := resolve(ctx, accountID, chat.AgentName, time.Now())
 	if err != nil {
-		s.logger.Warn().Err(err).Str("agent", chat.AgentName).
-			Msg("account: resolve chat spawn env failed; using system default")
+		// ERROR, not WARN: see resolveAccountEnv. This is the site whose WRN
+		// line hid a month of ambient-login spawns.
+		s.logger.Error().Err(err).Str("agent", chat.AgentName).
+			Str("account_id", accountID).Str("provider", chat.AgentName).
+			Msg("account: resolve chat spawn env failed; using system default (ambient CLI login)")
 		return nil
 	}
 	if sameAgentSessionChat(sess, chat) && chat.AccountID == nil && sess != nil && sess.AccountID != nil {
@@ -429,6 +439,10 @@ func (s *Server) withRotationEvents(ctx context.Context, p *pb.Session, session 
 	HydrateRotationEvents(ctx, s.rotationEvents, s.logger, p, session.ID)
 }
 
+func (s *Server) authInvalidationCorroborated(ctx context.Context, p *pb.Session, chats []*models.AgentChat) bool {
+	return AuthInvalidationCorroboratedFromStore(ctx, s.rotationEvents, s.chatStatus, s.logger, p, chats)
+}
+
 // HydrateRotationEvents hydrates recent rotation audit events onto p for code
 // paths outside Server that still publish full Session replacements (notably the
 // reverse stream). Best-effort: nil inputs or read errors leave the field empty.
@@ -442,6 +456,51 @@ func HydrateRotationEvents(ctx context.Context, store db.RotationEventStore, log
 		return
 	}
 	p.RotationEvents = rotationEventsToProto(evs)
+}
+
+// AuthInvalidationCorroboratedFromStore checks uncapped persisted audit history
+// for a currently auth-failed chat when the normal recent-history hydration did
+// not already include a corroborating event. The proto history remains capped
+// for display, but the auth overlay must not disappear just because newer events
+// pushed the current episode's audit row out of that display slice.
+func AuthInvalidationCorroboratedFromStore(ctx context.Context, store db.RotationEventStore, tracker *status.Tracker, logger zerolog.Logger, p *pb.Session, chats []*models.AgentChat) bool {
+	if store == nil || tracker == nil || p == nil || p.GetId() == "" {
+		return false
+	}
+	for _, chat := range chats {
+		since, ok := tracker.AuthFailedSince(chat.AgentSessionID)
+		if !ok || rotationEventsContainCurrentAuthCorroboration(p.GetRotationEvents(), chat.AgentSessionID, since) {
+			continue
+		}
+		comparableSince := sqlutil.ParseTime(sqlutil.FormatTime(since))
+		ok, err := store.ConfirmedAuthInvalidationSince(ctx, p.GetId(), chat.AgentSessionID, comparableSince)
+		if err != nil {
+			logger.Warn().Err(err).Str("session", p.GetId()).Str("chat", chat.AgentSessionID).
+				Msg("rotation events: failed to hydrate auth corroboration")
+			continue
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+func rotationEventsContainCurrentAuthCorroboration(events []*pb.RotationEvent, chatID string, since time.Time) bool {
+	comparableSince := sqlutil.ParseTime(sqlutil.FormatTime(since))
+	for _, ev := range events {
+		if ev.GetChatId() != chatID ||
+			ev.GetTrigger() != pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED ||
+			ev.GetCreatedAt() == nil ||
+			ev.GetCreatedAt().AsTime().Before(comparableSince) {
+			continue
+		}
+		if ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED &&
+			ev.GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED {
+			return true
+		}
+	}
+	return false
 }
 
 // rotationEventsToProto converts persisted audit rows to their proto form,

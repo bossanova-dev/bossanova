@@ -87,3 +87,64 @@ func TestRotationEventStore_NilResetAndOtherSession(t *testing.T) {
 		t.Fatalf("want 0 events for other session, got %d", len(other))
 	}
 }
+
+func TestRotationEventStore_ConfirmedAuthInvalidationSince(t *testing.T) {
+	store := NewRotationEventStore(setupTestDB(t))
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Second)
+
+	events := []RotationEvent{
+		{
+			ID:        "before-current-episode",
+			SessionID: "sess-1",
+			ChatID:    "agent-1",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_ROTATED",
+			CreatedAt: base.Add(-time.Second),
+		},
+		{
+			ID:        "unconfirmed-current-episode",
+			SessionID: "sess-1",
+			ChatID:    "agent-1",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_STATUS_ONLY_DISABLED",
+			CreatedAt: base.Add(time.Second),
+		},
+		{
+			ID:        "other-chat-current-episode",
+			SessionID: "sess-1",
+			ChatID:    "agent-2",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_ROTATED",
+			CreatedAt: base.Add(time.Second),
+		},
+		{
+			ID:        "confirmed-current-episode",
+			SessionID: "sess-1",
+			ChatID:    "agent-1",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_ROTATED",
+			CreatedAt: base.Add(2 * time.Second),
+		},
+	}
+	for _, ev := range events {
+		if err := store.Insert(ctx, ev); err != nil {
+			t.Fatalf("Insert(%s): %v", ev.ID, err)
+		}
+	}
+
+	ok, err := store.ConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base)
+	if err != nil {
+		t.Fatalf("ConfirmedAuthInvalidationSince: %v", err)
+	}
+	if !ok {
+		t.Fatal("ConfirmedAuthInvalidationSince = false, want true for confirmed current episode")
+	}
+	ok, err = store.ConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("ConfirmedAuthInvalidationSince later: %v", err)
+	}
+	if ok {
+		t.Fatal("ConfirmedAuthInvalidationSince later = true, want false after confirmed event")
+	}
+}

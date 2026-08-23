@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "switchdispatchtest",
+    srcs = ["switchdispatchtest.go"],
+    importpath = "github.com/recurser/bossd/switchdispatchtest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/bossd/internal/server",
+        "//services/bossd/internal/upstream",
+    ],
+)

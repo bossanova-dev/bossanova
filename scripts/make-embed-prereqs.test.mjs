@@ -9,20 +9,23 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-// BOS-676: several binaries embed non-Go payload files via `go:embed`. Go's build
-// cache keys on those file contents, but `make` does not: if the payload files are
-// not prerequisites of the binary's rule, editing one leaves the linked binary
-// untouched and `make build` silently ships a stale payload. This gate walks the
-// live payload directories on disk and asserts every discovered file is a
-// prerequisite of the target that embeds it, so a payload file added under a
-// known directory (or a misspelled `find` path that expands to nothing) fails
-// loudly instead of quietly dropping the edge from the build graph.
+// BOS-676 and BOS-954: several binaries embed non-Go payload files via `go:embed`,
+// and code generation reads non-proto inputs. Go's build cache keys on embedded file
+// contents, and buf reads its config/base documents, but `make` does not know any of
+// that unless those files are prerequisites of the rule that consumes them. If the
+// payload or generator inputs are absent from the rule, editing one leaves the target
+// untouched and the command silently ships stale output. This gate walks the live
+// payload directories on disk and selected codegen declarations, then asserts every
+// discovered file is a prerequisite of the target that consumes it, so a payload file
+// or generator input added under a known declaration fails loudly instead of quietly
+// dropping the edge from the build graph.
 //
 // That per-target walk only covers the embed sites named in `embedTargets`
-// below, so a brand-new `go:embed` somewhere else would reintroduce the bug with
-// this gate still green. `embedSites` closes that hole: it pins the complete set
-// of `go:embed` directives in the tree, so adding a seventh site reds here until
-// it is either wired into the build graph or consciously recorded as exempt.
+// below, and the codegen check only covers the OpenAPI base inputs named by
+// buf.gen.yaml plus buf.yaml. `embedSites` closes the first hole by pinning the
+// complete set of `go:embed` directives in the tree. A green here proves those
+// named inputs are present in make's graph; it does not prove every possible
+// non-proto generator input has been discovered.
 
 const bossoGoMod = path.join(repoRoot, 'services/bosso/go.mod')
 // services/bosso is stripped from the public mirror of this repo, so its rule
@@ -64,6 +67,7 @@ const embedTargets = [
 const goals = [
   ...embedTargets.filter((entry) => hasBosso || !entry.requiresBosso).map((entry) => entry.target),
   'bin/bossd-plugin-claude',
+  '.generate.stamp',
 ]
 
 /**
@@ -110,6 +114,20 @@ function prerequisitesFor(target) {
   assert.ok(match, `make rule database has no stanza for ${target}`)
   const [before] = match[1].split('|')
   return new Set(before.trim().split(/\s+/).filter(Boolean))
+}
+
+function openAPIBaseInputs() {
+  const bufGen = fs.readFileSync(path.join(repoRoot, 'buf.gen.yaml'), 'utf8')
+  const found = bufGen
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .flatMap((line) => [...line.matchAll(/\bbase=([^,\s]+)/g)].map((m) => m[1]))
+    .sort()
+  assert.ok(
+    found.length > 0,
+    'buf.gen.yaml has no protoc-gen-connect-openapi base= option; update this gate if the option moved or was renamed',
+  )
+  return found
 }
 
 /** Repo-root-relative POSIX path, the form make prints prerequisites in. */
@@ -224,6 +242,18 @@ for (const entry of embedTargets) {
     )
   })
 }
+
+test('.generate.stamp lists every non-proto generator input as a prerequisite', () => {
+  const discovered = [...openAPIBaseInputs(), 'buf.yaml'].sort()
+  const prerequisites = prerequisitesFor('.generate.stamp')
+  const missing = discovered.filter((file) => !prerequisites.has(file))
+  assert.deepEqual(
+    missing,
+    [],
+    `.generate.stamp omits ${missing.length} non-proto generator input(s), so editing them can leave ` +
+      `make generate as a silent no-op:\n${missing.map((file) => `  ${file}`).join('\n')}`,
+  )
+})
 
 /**
  * Every `go:embed` directive in the tree, as `<package dir> :: <patterns>`. This

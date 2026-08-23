@@ -10,18 +10,24 @@ thread.** The default headless orchestrator path reads neither this brief nor
 You are drafting a complete, implementation-ready plan for one Linear ticket, unattended. No human
 is watching — **never call `AskUserQuestion`.** Decide every fork yourself with reasonable defaults
 grounded in the ticket and the codebase, and record the controversial ones as open questions (see
-below). Keep the full recon + drafting context inside your own context; you return only a small
-metadata object.
+below). On the non-EPIC path, make zero tracker writes: draft only the local plan file and terminal
+sentinel. Only the EPIC path may perform tracker writes, under the guarded decompose-and-auto-create
+sequence below. Keep the full recon + drafting context inside your own context; you return only a
+small metadata object.
 
 ## Inputs the orchestrator hands you
 
-- `ISSUE-ID`, `title`, and the ticket `description` (verbatim, may be empty).
+- `ISSUE-ID`, `title`, and `DESCRIPTION_SNAPSHOT_PATH` —
+  `.linear-plans/<ISSUE-ID>.image-guard-orig.md`, the byte-exact Phase 1 description snapshot
+  written by the orchestrator before this dispatch. Build `## Original notes` from this file only.
+  Do not re-read the tracker description; signed upload URLs can rotate and make the parity gate
+  fail even when the prose is otherwise unchanged. The file may be empty.
 - `PLAN_PATH` — the exact file to write the plan to: `.linear-plans/<ISSUE-ID>-<slug>.md`
   (gitignored scratch; the slug is the issue id + hyphenated title). The orchestrator computed it
   with
   `node -e 'import(require("node:url").pathToFileURL(process.argv[3]+"/plan-slug.mjs").href).then(m=>console.log(m.issueSlug(process.argv[1],process.argv[2])))' <ISSUE-ID> "<title>" "${BOSS_PLAN_TOOLBOX:?}"`
-  — the toolbox dir is passed in as an argument, re-derived in the calling block, so the command
-  never depends on an inherited export.
+  after running the toolbox preamble first — the toolbox dir is passed in as an argument,
+  re-derived in the calling block, so the command never depends on an inherited export.
 - `RUN_SENTINEL`, `RUN_DIR`, `RUN_ID` — the run-file sentinel context you write your terminal
   decision to (see "Write the terminal sentinel" below).
 
@@ -189,8 +195,9 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
      or more `Epic spec (…)` attachments ⇒ abort loudly** (never guess which is current); otherwise
      **either** store present ⇒ **skip
      this stage**, and stage 3 with it (the step-7 flip re-runs that same prefix-scoped strip);
-     discard the spec just drafted and continue on the idempotent resume path against **the stored**
-     one (a crash after stage 2
+     discard the spec just drafted, rehydrate the stored spec body into a fresh local
+     `.linear-plans/<ISSUE-ID>.epic-spec.json` validation scratch file for the terminal sentinel, and
+     continue on the idempotent resume path against **the stored** one (a crash after stage 2
      leaves exactly this state and the parent is still unplanned, so the sweep re-picks it here). A
      legacy-sourced resume writes **no** attachment — it keeps its inline marker, carried verbatim
      through the step-6 save. Otherwise upload — first **set `spec.parentId` to this ticket's id**,
@@ -244,7 +251,11 @@ false`** (the recursion guard — a child is never itself decomposed), writing a
    `Implementation plan (<child id>)`** (matching the single-ticket convention): `boss-epic`'s
    `normalizeTicket` recognizes a plan only via a link/attachment whose title **starts with**
    `Implementation plan`, so an attachment under any other title is exposed `agent-friendly` yet
-   silently skipped by `boss-epic` as "missing a plan". **On resume, first inspect every adopted
+   silently skipped by `boss-epic` as "missing a plan". After tracker creation returns the child id,
+   rename that child's local plan scratch file to
+   `.linear-plans/<PARENT>-child-<key>-<issueSlug(child-id, child-title)>.md`; do not prepend the
+   child id a second time to the `issueSlug` output. The sentinel verifier requires
+   that exact basename, not only the `<PARENT>-child-<key>-` prefix. **On resume, first inspect every adopted
    shell for that exact canonical attachment. If it is missing, **always redraft** that synthetic
    child from its persisted spec metadata with `allowEpic:false`, re-run the child secret and
    image-parity gates, and run prepare → PUT → finalize before any planned-state or exposure write.
@@ -433,8 +444,8 @@ noise defeats the signal). These become the `openQuestions` you return and the p
 
 ## Step 5 — Resolve drafting, then write the polished plan
 
-First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json`. If
-that helper is missing in an installed public skill payload, treat discovery as
+First run `node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --json`
+after running the toolbox preamble first. If that helper is missing in an installed public skill payload, treat discovery as
 `{"extensions":[],"skipped":[]}` so the portable fallback tiers still run.
 
 Record every `skipped` entry whose `deliberate` is `false` as
@@ -525,6 +536,15 @@ Include, in the plan body, all of the following (scaled to triage):
 
 - A first development step: **"Copy this plan to `docs/plans/<ISSUE-ID>-<slug>.md` and commit it in
   the implementation PR."**
+- When the ticket names a specific call site, construct, literal claim, or other mechanism that could
+  recur elsewhere, record a repo-wide sibling-class enumeration before fixing implementation scope.
+  List every site the search returns, give each row a verdict (`fix` or `not a defect`) and a
+  reason, and adjudicate the class per site rather than sweeping every match wholesale. The row's
+  reason should name the discriminator that makes the site equivalent or different, such as where the
+  branch actually lives. A one-row table saying the search found only the named site is a complete
+  discharge. Do not write an acceptance criterion that caps the number of changed files. Examples:
+  `exactly two files`, `only these paths`, or equivalent. Scope comes from the enumeration and its
+  verdicts, not from a pre-search file count.
 - A **## Acceptance criteria** section: concrete, testable pass/fail conditions. **Prefer an
   assertion**: a claim worth verifying once is usually worth pinning, so write each criterion so a
   test or a gate demonstrates it. Only where the invariant genuinely cannot be pinned that way —
@@ -537,6 +557,17 @@ Include, in the plan body, all of the following (scaled to triage):
   reviewer could paste, not an intention. **Wrap the command in backticks**: the run's discharge
   form is parsed with the backticks as delimiters, so that an arrow inside the command is never
   mistaken for the `→` that introduces the result.
+- A **## Premises** section when the plan rests on load-bearing facts that are not themselves
+  acceptance criteria. Write premise bullets with the same checkbox and `— check: `<command>``notation, and mark exactly one central premise with `(central)` when the ticket's goal depends on
+it. Example:``- [ ] (central) the target helper does not already reject stale citations — check:
+  `rg -n "stale citation" skills-toolbox` ``. Do not use premises as a dumping ground for source
+  notes; name only facts the implementer must re-check before dispatch or before review-ready.
+- For semantic failure shapes the guard cannot decide safely, write the required judgement into the
+  plan instead of pretending a green check proves it: state-mutating proof needs an offline
+  equivalent named at plan time or a human-only marking; an absence assertion must be shown able to
+  fire; a library option must quote its own scope caveats and name the loaded implementation; a
+  specification CI does not run on a feature branch is not evidenced by a green check set; and a
+  named termination mechanism must cite the code that produces it.
 - A **## Required proof** section: a checklist of artifacts the implementer must produce to pass
   review, each paired with what it must demonstrate. Proof is captured with the existing `boss-proof`
   skill (`node scripts/proof.mjs run`), which uploads **stills and video** to the configured public publish store and
@@ -640,6 +671,10 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 
 - <bullets>
 
+## Premises
+
+- [ ] (central) <load-bearing premise the implementer must re-check> — check: `<command a reviewer can re-run>`
+
 ## Acceptance criteria
 
 - [ ] <testable pass/fail condition>
@@ -675,6 +710,9 @@ contract so consumers (boss-build, bs-sweep-plan) can validate compatibility. Ke
 <verbatim prior description if the ticket had one — preserved, never discarded>
 ```
 
+For headless runs, the prior description above comes from `DESCRIPTION_SNAPSHOT_PATH` only. Do not
+fetch or reconstruct it from any other source.
+
 **Preserve every image reference.** When composing `## Original notes`, copy every image reference
 the ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
 `uploads.linear.app`/attachment URLs — byte-for-byte except that an upload URL may, and a signed
@@ -696,15 +734,18 @@ and attachment differ, because the attachment is uploaded as raw bytes.
 
 Once the plan file is written and non-empty, record your terminal decision to the run-file sentinel
 so the orchestrator can classify the dispatch outcome **from the file only** (never from your
-returned prose):
+returned prose). Include `premises` in the sentinel payload as an array of at most `PREMISE_LIMIT`
+`{id, state}` entries for tracker issues whose current state your plan relies on. Emit `[]` when
+there are no such dependencies; do not omit the key.
 
 ```bash
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
-  "$(jq -nc --arg p "$PLAN_PATH" '{planPath:$p}')"
+  "$(jq -nc --arg p "$PLAN_PATH" --argjson premises '[]' '{planPath:$p,premises:$premises}')"
 ```
 
-Write this **only after** the plan file exists. If you cannot produce the plan, do **not** write an
-`ok` sentinel — leave it absent so the orchestrator reads `missing` and takes the safe branch.
+The sentinel payload's `planPath` is the relative `PLAN_PATH` the orchestrator supplied. Write this
+**only after** the plan file exists. If you cannot produce the plan, do **not** write an `ok`
+sentinel — leave it absent so the orchestrator reads `missing` and takes the safe branch.
 
 **Epic variant.** On an EPIC run (Step 1 triage = EPIC, decompose-and-auto-create completed) there is
 NO single-ticket plan file — you already did every Linear write yourself. Write a **distinct** epic
@@ -714,26 +755,56 @@ the orchestrator branches past Phase 3.5 / Phase 4 straight to cleanup + report:
 ```bash
 ISSUE_ID="<ISSUE-ID>"   # the id the orchestrator handed you (the actual issue id, not the literal <ISSUE-ID>); no shell export exists, so initialize it here before the write
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
-  "$(jq -nc --arg id "$ISSUE_ID" '{epic:true, epicParentId:$id}')"
+  "$(jq -nc \
+    --arg id "$ISSUE_ID" \
+    --arg childId "<child-id>" \
+    --arg childPlan ".linear-plans/<child-plan-path>.md" \
+    --argjson childIds '["<child-id>"]' \
+    --argjson epicSpecPaths '[]' \
+    --argjson guardScratchPaths '[".linear-plans/<ISSUE-ID>.image-guard-orig.md",".linear-plans/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/<ISSUE-ID>.image-guard-new.md",".linear-plans/<child-id>.image-guard-orig.md",".linear-plans/<child-id>.attachment-guard-orig.md",".linear-plans/<child-id>.image-guard-new.md"]' \
+    '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 ```
 
 `ISSUE_ID` is **not** a shell variable the orchestrator exports (its input is the placeholder
 `<ISSUE-ID>`), so set it explicitly to the actual issue id above — otherwise `$ISSUE_ID` is unset,
 the sentinel records `epicParentId:""`, and the orchestrator's epic reverify reads an empty parent
-id and fails/cleans up as a failed run even though the parent was already repurposed. Write it only
-after the epic is fully created + wired and the parent repurposed. If the epic guards
+id and fails/cleans up as a failed run even though the parent was already repurposed. Replace the
+placeholder path values with **every actual child id**, a `childPlanPaths` object that maps each
+actual child id to that child's actual plan path, and the canonical `.linear-plans/<PARENT>.epic-spec.json`
+scratch file whose `parentId` matches the epic parent and whose spec contains every child's stable
+key and title. Do not copy child keys into the sentinel payload; the orchestrator derives key/title
+pairs from the parent-bound spec scratch and matches each reported child id by the exact canonical
+filename. Every `childIds` entry must have its own distinct non-empty child plan path
+whose basename exactly equals `<PARENT>-child-<key>-<issueSlug(CHILD-ID, child-title)>.md`; an unrelated
+non-empty file with the same prefix does not satisfy a missing child. Replace
+the example `guardScratchPaths` array with every child and parent image-parity / safe-source guard
+scratch path this epic created; the field is mandatory even when the array is empty. Include the
+mandatory `epicSpecPaths` field, and put the local epic spec body scratch path in that array whether
+stage 2 uploaded a new spec in this run or rehydrated the durable stored spec during resume. Do
+**not** report attachment header scratch
+paths here: the attachment contract deletes them immediately after their PUT returns, so their
+existence is verified at the PUT boundary rather than by the terminal sentinel. The orchestrator
+refuses an epic sentinel that omits the required epic artifact paths, and still verifies every
+scratch path the sentinel reports.
+Write it only after the epic is fully created + wired and the parent repurposed. If the epic guards
 failed and you fell back to a single-ticket plan, write the single-ticket sentinel above instead.
 
-Before writing the sentinel, **self-verify image parity**: first make a safe copy of the ticket's
-original description with the same mandatory secret/PII redactions and upload-signature stripping
+Before writing the sentinel, **self-verify image parity**: first make a safe copy of
+`DESCRIPTION_SNAPSHOT_PATH` with the same mandatory secret/PII redactions and upload-signature stripping
 required for `descriptionSummary`, then confirm every image URL in that safe source (inline
 `![](…)`, `<img>`, `uploads.linear.app`/attachment URLs) survives verbatim in
 `descriptionSummary`'s `## Original notes`. Run the guard against that safe source — re-deriving the
 toolbox dir in the same block, because this Bash call inherits nothing:
 
 ```bash
-BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
 node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --original <safe-orig.md> --rewritten <new.md> \
   --require-verbatim --require-unsigned-uploads
@@ -745,7 +816,7 @@ unsigned-upload check rejects a signature query before the tracker write. Never 
 `descriptionSummary` against the raw source: required redaction is not a parity failure.
 
 The guard **refuses** an empty or whitespace-only original (exit 1, `cannot verify image parity`)
-rather than certify a comparison it cannot make. Your `description` input may legitimately be empty
+rather than certify a comparison it cannot make. `DESCRIPTION_SNAPSHOT_PATH` may legitimately be empty
 (see Inputs), and that is the one case where the refusal is a false alarm: pass
 `--allow-empty-original` then, and only then. If the description was **not** empty, an empty
 `<orig.md>` means your own extraction broke — fix the extraction, never silence it with the flag.
@@ -759,8 +830,14 @@ merge it into the block above. Write the composed `descriptionSummary` to a scra
 contract guard over it and the plan file:
 
 ```bash
-BOSS_PLAN_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills/bossanova}/boss-plan/toolbox"
-if [ ! -d "$BOSS_PLAN_TOOLBOX" ]; then BOSS_PLAN_TOOLBOX="$HOME/.codex/skills/bossanova/boss-plan/toolbox"; fi
+if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-plan/toolbox" ]; then BOSS_SKILLS_HOME="$candidate"; break; fi
+  done
+fi
+test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
+BOSS_PLAN_TOOLBOX="$BOSS_SKILLS_HOME/boss-plan/toolbox"
+export BOSS_SKILLS_HOME BOSS_PLAN_TOOLBOX
 node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <new.md> --plan "$PLAN_PATH"
 ```
 
@@ -773,6 +850,10 @@ safe branch.
 Running it here as well as in the orchestrator's Phase 4 is deliberate, not redundant: failing fast
 here turns an orchestrator-side abort into a self-describing dispatch failure, while the Phase 4
 gate remains the authoritative pre-write gate that does not trust this subagent.
+
+Any byte count or size you report must be one you just measured from disk with `stat` or `wc -c`.
+Do not estimate or infer sizes from editor output, returned prose, or intended content. If you
+cannot measure a size, report that size as `unmeasured` rather than inventing a number.
 
 ## Step 9 — Return only bounded metadata (never the plan content)
 
@@ -792,6 +873,9 @@ return, and it is bounded (a summary, not the plan):
 }
 ```
 
+`premises` is deliberately absent from this returned metadata object. It rides the run-file sentinel
+payload instead, where the orchestrator already classifies trusted dispatch outcomes.
+
 The orchestrator derives the mutually-exclusive `agent-friendly`/`needs-human` label from
 `agentFriendly`, and unions `agent-question` iff `openQuestions` is non-empty — the label-application
 contract stays orchestrator-owned. Choose the estimate and priority per the guidance in SKILL.md
@@ -805,6 +889,6 @@ on each child and left the parent deliberately unlabeled):
 {
   outcome:      "epic",
   epicParentId: "<ISSUE-ID>",          // the repurposed original ticket
-  childIds:     ["<ISSUE-ID>", ...]    // the created children, in topo order
+  childIds:     ["<ISSUE-ID>", ...]    // REQUIRED: the created children, in topo order
 }
 ```

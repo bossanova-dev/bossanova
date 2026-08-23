@@ -182,6 +182,9 @@ func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*
 func (s *stubClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
@@ -1632,6 +1635,61 @@ func TestNewSession_IssueFilterAcceptsPasteAndSchedulesSearch(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected debounced issue search command after paste")
+	}
+}
+
+func TestNewSession_IssueFilterEscClearsErrorOverlay(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+	}})
+	m = sendKey(t, m, '/')
+	m.err = fmt.Errorf("issue fetch failed")
+
+	m = sendSpecialKey(t, m, tea.KeyEsc)
+	if m.err != nil {
+		t.Fatalf("err = %v after issue-filter esc, want nil", m.err)
+	}
+	view := m.View().Content
+	if strings.Contains(view, "Error: issue fetch failed") {
+		t.Fatalf("View() still rendered the stale error overlay:\n%s", view)
+	}
+	if !strings.Contains(view, "ENG-1") {
+		t.Fatalf("View() after issue-filter esc = %q, want usable issue picker", view)
+	}
+}
+
+func TestNewSession_IssueSuccessClearsPreviousErrorOverlay(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{err: fmt.Errorf("issue fetch failed")})
+	if m.err == nil {
+		t.Fatal("premise broken: error issuesMsg did not set err")
+	}
+
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+	}, seq: m.issueSearchSeq})
+	if m.err != nil {
+		t.Fatalf("err = %v after successful issuesMsg, want nil", m.err)
+	}
+	view := m.View().Content
+	if strings.Contains(view, "Error: issue fetch failed") {
+		t.Fatalf("View() still rendered the stale error overlay:\n%s", view)
+	}
+	if !strings.Contains(view, "ENG-1") {
+		t.Fatalf("View() after successful issuesMsg = %q, want issue table", view)
 	}
 }
 

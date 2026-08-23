@@ -50,6 +50,11 @@ import (
 // carrier var).
 const seedEnvVar = "BOSS_PROOF_TUI_SEED_ENV"
 
+const (
+	proofSettingsEventTracingEnv = "BOSS_PROOF_SETTINGS_EVENT_TRACING"
+	proofSettingsPostHogHostEnv  = "BOSS_PROOF_SETTINGS_POSTHOG_HOST"
+)
+
 // maxSeedBytes caps the -seed overlay file so a runaway/hostile file cannot
 // exhaust memory at boot. 1 MiB is far above any legitimate display overlay.
 const maxSeedBytes = 1 << 20
@@ -230,7 +235,7 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	// the bridge — not the fixtures package — maps kind -> helper.
 	switch preset.SeedKind {
 	case fixtures.SeedAcknowledged:
-		if err := tuitest.SeedSettingsAcknowledged(home, worktreeBaseDir); err != nil {
+		if err := tuitest.SeedSettingsAcknowledgedWithOverrides(home, worktreeBaseDir, proofSettingsSeedOverrides(allowedEnv)); err != nil {
 			return fmt.Errorf("seed settings: %w", err)
 		}
 	case fixtures.SeedFirstRun:
@@ -367,6 +372,17 @@ func readSeedOverlay(path string) (fixtures.Overlay, error) {
 	return overlay, nil
 }
 
+func proofSettingsSeedOverrides(allowedEnv map[string]string) map[string]any {
+	overrides := map[string]any{}
+	if allowedEnv[proofSettingsEventTracingEnv] == "1" {
+		overrides["event_tracing_enabled"] = true
+	}
+	if host := strings.TrimSpace(allowedEnv[proofSettingsPostHogHostEnv]); host != "" {
+		overrides["posthog_host"] = host
+	}
+	return overrides
+}
+
 // validatedSeedEnv parses the RAW scenario env JSON (from seedEnvVar) and returns
 // only the whitelisted subset. A non-whitelisted key aborts boot with an error
 // listing every rejected key by name — a required-proof deliverable. An empty
@@ -381,8 +397,8 @@ func validatedSeedEnv(seedEnvJSON string) (map[string]string, error) {
 	}
 	allowed, rejected := tuitest.FilterProofEnv(requested)
 	if len(rejected) > 0 {
-		return nil, fmt.Errorf("%s: rejected non-whitelisted env key(s): %s (allowed prefixes: %s)",
-			seedEnvVar, strings.Join(rejected, ", "), strings.Join(tuitest.ProofEnvWhitelist, ", "))
+		return nil, fmt.Errorf("%s: rejected non-whitelisted env key(s): %s (allowed prefixes: %s; allowed exact keys: %s)",
+			seedEnvVar, strings.Join(rejected, ", "), strings.Join(tuitest.ProofEnvWhitelist, ", "), strings.Join(tuitest.ProofEnvAllowedKeys, ", "))
 	}
 	return allowed, nil
 }

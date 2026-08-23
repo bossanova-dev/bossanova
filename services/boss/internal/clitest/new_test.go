@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/recurser/boss/internal/clitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -87,6 +88,147 @@ func TestCLI_New_TwoLineOutputUnchanged(t *testing.T) {
 	const want = "session-id: sess-new-999\nchat-id:    chat-new-888\n"
 	if res.Stdout != want {
 		t.Errorf("stdout = %q, want %q", res.Stdout, want)
+	}
+}
+
+// TestCLI_New_PrintsIDsBeforeSetupCompletes pins BOS-803: callers get the
+// session and chat ids as soon as SessionCreated arrives, even while later setup
+// output is still pending. The delayed setup frame proves stdout was surfaced
+// before the stream completed.
+func TestCLI_New_PrintsIDsBeforeSetupCompletes(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	h.Daemon.SetCreateSessionScript([]*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-early-123",
+				RepoId:          "repo-1",
+				AgentSessionId:  proto.String("chat-early-456"),
+				State:           pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+				RepoDisplayName: "my-app",
+			}},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "still setting up\n"},
+		}},
+	}, 2*time.Second)
+
+	running := h.Start("new", "--repo", "repo-1", "--prompt", "add a thing", "--detach")
+	waited := false
+	defer func() {
+		if !waited {
+			_ = running.Wait()
+		}
+	}()
+
+	const want = "session-id: sess-early-123\nchat-id:    chat-early-456\n"
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(running.Stdout(), want) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := running.Stdout(); got != want {
+		t.Fatalf("stdout before setup completion = %q, want %q", got, want)
+	}
+	if strings.Contains(running.Stderr(), "still setting up") {
+		t.Fatalf("setup output already arrived; test no longer proves early id emission (stderr=%q)", running.Stderr())
+	}
+
+	res := running.Wait()
+	waited = true
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "still setting up") {
+		t.Errorf("final stderr = %q, want setup progress", res.Stderr)
+	}
+}
+
+func TestCLI_New_SetupOutputFramesAreLineDelimited(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	h.Daemon.SetCreateSessionScript([]*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-progress-123",
+				RepoId:          "repo-1",
+				AgentSessionId:  proto.String("chat-progress-456"),
+				State:           pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+				RepoDisplayName: "my-app",
+			}},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "creating worktree"},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "installing deps"},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "worktree startup complete"},
+		}},
+	}, 0)
+
+	res := h.Run("new", "--repo", "repo-1", "--prompt", "add a thing", "--detach")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+
+	const want = "creating worktree\ninstalling deps\nworktree startup complete\n"
+	if !strings.HasSuffix(res.Stderr, want) {
+		t.Errorf("stderr = %q, want line-delimited setup progress suffix %q", res.Stderr, want)
+	}
+}
+
+func TestCLI_New_PrintsSessionIDBeforeSettledChatID(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	h.Daemon.SetCreateSessionScript([]*pb.CreateSessionResponse{
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-late-chat-123",
+				RepoId:          "repo-1",
+				State:           pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
+				RepoDisplayName: "my-app",
+			}},
+		}},
+		{Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "still setting up\n"},
+		}},
+		{Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{Session: &pb.Session{
+				Id:              "sess-late-chat-123",
+				RepoId:          "repo-1",
+				AgentSessionId:  proto.String("chat-late-456"),
+				State:           pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+				RepoDisplayName: "my-app",
+			}},
+		}},
+	}, 2*time.Second)
+
+	running := h.Start("new", "--repo", "repo-1", "--prompt", "add a thing", "--detach")
+	waited := false
+	defer func() {
+		if !waited {
+			_ = running.Wait()
+		}
+	}()
+
+	const early = "session-id: sess-late-chat-123\n"
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && running.Stdout() != early {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := running.Stdout(); got != early {
+		t.Fatalf("stdout before setup completion = %q, want only %q", got, early)
+	}
+	if strings.Contains(running.Stdout(), "chat-id:") {
+		t.Fatalf("chat-id was printed before it was populated: %q", running.Stdout())
+	}
+
+	res := running.Wait()
+	waited = true
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	const want = "session-id: sess-late-chat-123\nchat-id:    chat-late-456\n"
+	if res.Stdout != want {
+		t.Errorf("final stdout = %q, want %q", res.Stdout, want)
 	}
 }
 

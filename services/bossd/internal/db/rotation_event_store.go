@@ -29,6 +29,7 @@ type RotationEvent struct {
 type RotationEventStore interface {
 	Insert(ctx context.Context, ev RotationEvent) error
 	RecentBySession(ctx context.Context, sessionID string, limit int) ([]RotationEvent, error)
+	ConfirmedAuthInvalidationSince(ctx context.Context, sessionID, chatID string, since time.Time) (bool, error)
 }
 
 // SQLiteRotationEventStore is the SQLite-backed implementation.
@@ -105,4 +106,28 @@ func (s *SQLiteRotationEventStore) RecentBySession(ctx context.Context, sessionI
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// ConfirmedAuthInvalidationSince reports whether the session has a corroborating
+// auth-invalidation audit row for the current auth-failed episode of chatID.
+func (s *SQLiteRotationEventStore) ConfirmedAuthInvalidationSince(ctx context.Context, sessionID, chatID string, since time.Time) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1
+		 FROM rotation_events
+		 WHERE session_id = ?
+		   AND chat_id = ?
+		   AND trigger_kind = 'ROTATION_TRIGGER_AUTH_INVALIDATED'
+		   AND outcome NOT IN ('', 'ROTATION_OUTCOME_UNSPECIFIED', 'ROTATION_OUTCOME_STATUS_ONLY_DISABLED')
+		   AND created_at >= ?
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT 1`,
+		sessionID, chatID, sqlutil.FormatTime(since)).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find confirmed auth invalidation: %w", err)
+	}
+	return true, nil
 }

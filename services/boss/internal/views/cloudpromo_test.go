@@ -35,7 +35,7 @@ func TestCloudSettingsBlock(t *testing.T) {
 	block := cloudSettingsBlock()
 	for _, want := range []string{
 		"Bossanova Cloud",
-		"7-day free trial",
+		"14-day free trial",
 		"press [l]ogin from Home",
 		"local mode stays free",
 		"optional",

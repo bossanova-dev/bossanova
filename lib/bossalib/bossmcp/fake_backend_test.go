@@ -35,6 +35,7 @@ type fakeBackend struct {
 	removeSession        func(ctx context.Context, id string) error
 	updateSession        func(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	linkSessionPR        func(ctx context.Context, id, pr string) (*pb.Session, error)
+	refreshSessionPR     func(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
 	archiveSession       func(ctx context.Context, id string) (*pb.Session, error)
 	resurrectSession     func(ctx context.Context, id string) (*pb.Session, error)
 	emptyTrash           func(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
@@ -239,6 +240,13 @@ func (f *fakeBackend) UpdateSession(ctx context.Context, req *pb.UpdateSessionRe
 func (f *fakeBackend) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	if f.linkSessionPR != nil {
 		return f.linkSessionPR(ctx, id, pr)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error) {
+	if f.refreshSessionPR != nil {
+		return f.refreshSessionPR(ctx, req)
 	}
 	return nil, errNotImpl
 }

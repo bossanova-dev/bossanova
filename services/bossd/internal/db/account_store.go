@@ -217,6 +217,113 @@ func (s *SQLiteAccountStore) MarkAccountSuspended(ctx context.Context, id string
 	return nil
 }
 
+// InjectionFailureReasonPrefix marks a last_test_error that was written by the
+// credential-injection path rather than by an operator-run account test. It is
+// the ONLY thing that makes the failure self-clearing: ClearInjectionFailure
+// scopes its guarded UPDATE to this prefix, so a successful materialize can
+// never erase a genuine RecordTestResult failure. Changing the string changes
+// that contract — a previously recorded failure would stop clearing itself.
+const InjectionFailureReasonPrefix = "credential injection failed: "
+
+// RecordInjectionFailure fails an account's health because its credentials
+// could not be materialized for a spawn. Without it the spawn silently falls
+// back to the agent CLI's ambient login and nothing durable says so (BOS-973);
+// with it the account row that every operator surface already renders — the TUI
+// Accounts list, `boss account ls`, and the rotation-eligibility hint — reports
+// the downgrade. reason is the materialize error string, prefixed with
+// InjectionFailureReasonPrefix; it carries filesystem paths, never credential
+// material, and callers must not widen what they pass. Returns sql.ErrNoRows
+// when the row does not exist.
+//
+// Unlike MarkAccountSuspended this write is NON-DESTRUCTIVE, in two ways, and
+// both exist so ClearInjectionFailure can put the row back exactly as it found
+// it. Anything this record destroys is destroyed permanently, because the
+// withdrawal has nothing to restore it from.
+//
+//   - last_test_ok_at is PRESERVED. A suspension means the credential itself is
+//     dead, so the last-verified-good timestamp is a stale claim; an injection
+//     failure is a LOCAL materialization failure that says nothing about the
+//     credential, which usually still tests fine. Clearing it would leave a
+//     self-healed account reporting health=ok while every surface rendered it
+//     as never tested.
+//
+//   - A last_test_error written by anything else is PRESERVED, and health still
+//     goes to failed — but ONLY while that failure is still LIVE, i.e. the row's
+//     pre-update health is already failed. Overwriting a live one would convert a
+//     protected failure into a self-clearing one: an operator's failing
+//     `boss account test` result, or a confirmed suspension, would be replaced by
+//     this prefixed reason, and the next successful materialize would then clear
+//     it and return a known-bad-credential account to rotation looking healthy.
+//     Materialization is a local filesystem operation and never re-validates the
+//     credential, so it may not be read as evidence that a live failure is
+//     resolved.
+//
+//     The health precondition is load-bearing, not defensive. restoreAccountHealth
+//     (services/bossd/internal/server/account.go) sets health=ok WITHOUT clearing
+//     last_test_error, so a healthy row routinely carries a stale, non-prefixed
+//     reason from a failure that is already resolved. Preserving that string would
+//     leave the row failed with a reason ClearInjectionFailure can never match,
+//     and the account would stay out of rotation permanently — reintroducing the
+//     stuck-account class this whole change exists to remove. A reason on a
+//     healthy row is history, not protection.
+func (s *SQLiteAccountStore) RecordInjectionFailure(ctx context.Context, id string, reason string) error {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		// SQLite evaluates every SET expression against the ORIGINAL row, so the
+		// `health = ?` inside the CASE reads the PRE-update health.
+		`UPDATE accounts
+		 SET health = ?,
+		     last_test_error = CASE
+		       WHEN health = ? AND last_test_error <> '' AND last_test_error NOT LIKE ?
+		         THEN last_test_error
+		       ELSE ?
+		     END,
+		     updated_at = ?
+		 WHERE id = ?`,
+		string(models.AccountHealthFailed),
+		string(models.AccountHealthFailed), InjectionFailureReasonPrefix+"%",
+		InjectionFailureReasonPrefix+reason,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("record account injection failure: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// sql.ErrNoRows travels unwrapped: call sites compare it with ==.
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ClearInjectionFailure withdraws a previously recorded injection failure after
+// a successful materialize, restoring health=ok and emptying last_test_error.
+// The UPDATE is guarded on the prefix so it is a strict no-op against a row
+// whose failure came from anywhere else — an operator's `boss account test`
+// failure or a confirmed suspension both survive it — and the guard lives in
+// the WHERE clause rather than a read-modify-write, so there is no race. It
+// runs on every successful spawn and therefore matches no row in the normal
+// case: an unmatched row (including an unknown id) is success, NOT
+// sql.ErrNoRows.
+//
+// It restores nothing beyond health and the reason because
+// RecordInjectionFailure destroys nothing else: it preserves last_test_ok_at
+// and never overwrites a foreign last_test_error, so the pair leaves the row
+// exactly as it found it. That is what makes "self-clearing" mean
+// self-clearing — and it is why a row this record never wrote to (health failed
+// for another reason) is untouched at both ends.
+func (s *SQLiteAccountStore) ClearInjectionFailure(ctx context.Context, id string) error {
+	now := sqlutil.TimeNow()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET health = ?, last_test_error = '', updated_at = ?
+		 WHERE id = ? AND health = ? AND last_test_error LIKE ?`,
+		string(models.AccountHealthOK), now, id,
+		string(models.AccountHealthFailed), InjectionFailureReasonPrefix+"%")
+	if err != nil {
+		return fmt.Errorf("clear account injection failure: %w", err)
+	}
+	return nil
+}
+
 // RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
 // for a row. It never stores credential material. Returns sql.ErrNoRows when
 // the row does not exist.

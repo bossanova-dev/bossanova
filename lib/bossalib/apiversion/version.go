@@ -137,8 +137,8 @@ const V20260804 Version = "2026-08-04"
 // deliberately exempt from the accompanying recessive treatment.
 const V20260812 Version = "2026-08-12"
 
-// V20260816 is the current production API version. It ships the
-// GateFailedOutcomeChange transform: at V20260816 the OrchestratorService began
+// V20260816 ships the GateFailedOutcomeChange transform (it was current until
+// V20260820 superseded it): at V20260816 the OrchestratorService began
 // distinguishing a cron gate that could NOT be evaluated from one that ran and
 // decided there was no work (BOS-881). A gate that timed out, could not be
 // launched, or was reported missing/unrunnable by the shell (exit 127 / 126)
@@ -153,6 +153,64 @@ const V20260812 Version = "2026-08-12"
 // down-converted back to outcome "gated", CRON_JOB_STATUS_GATED, and the
 // "gated" skip reason.
 const V20260816 Version = "2026-08-16"
+
+// V20260820 ships the SwitchDeadlineCodeChange transform (it was current until
+// V20260821 superseded it): at V20260820 the OrchestratorService
+// began serving connect.CodeDeadlineExceeded for a ProxySwitchSessionAccount
+// whose switch was ended by its own daemon-side budget (BOS-947). Before this
+// change the daemon had no wire value for "a deadline stopped this", so the
+// relayed CommandResult carried ERROR_CODE_UNSPECIFIED and bosso's
+// validateCommandResult fell through to connect.CodeAborted.
+//
+// CodeAborted was the wrong answer, not merely a vaguer one: it invites a
+// retry, and BOS-747's rule is that a request killed by its own deadline must
+// not be retried. The daemon now emits the new
+// CommandResult.ERROR_CODE_DEADLINE_EXCEEDED for that case (see
+// classifySwitchCommandError in services/bossd) and bosso renders it as
+// CodeDeadlineExceeded.
+//
+// The change is in the VALUE served on an existing procedure, not the schema.
+// Clients pinned to an older version were built when this case read as
+// CodeAborted, so for any request resolved older than V20260820 the transform
+// restores that code, message intact.
+//
+// It down-converts ONLY the relayed daemon deadline, matched by the typed
+// relayed-daemon-deadline marker. bosso's own commandDeadline expiry on the same
+// procedure already returned CodeDeadlineExceeded long before this version, and
+// a procedure-scoped transform would have regressed that correct, pre-existing
+// answer for old clients — a regression introduced by the compatibility layer
+// itself. See SwitchDeadlineCodeChange in transform.go.
+const V20260820 Version = "2026-08-20"
+
+// V20260821 is the current production API version. It ships two
+// ProxySwitchSessionAccount error-path transforms.
+//
+// SwitchResultCeilingMessageChange: ProxySwitchSessionAccount began using a
+// self-describing message when bosso's own result ceiling stops waiting before a
+// daemon verdict arrives. The code remains connect.CodeDeadlineExceeded, but
+// current clients now see that the account switch may still be running and that
+// the request did not cancel or tear it down. Clients pinned to an older version
+// were built against the historical relay timeout text, so they are
+// down-converted to "command timed out after 2m0s".
+//
+// The transform targets ONLY the typed handler-owned result-ceiling marker.
+// Relayed daemon deadlines keep using SwitchDeadlineCodeChange, and bosso's
+// generic dispatchOwnerCommand relay timeout remains unchanged for older
+// clients.
+//
+// SwitchCanceledCodeChange: ProxySwitchSessionAccount began serving
+// connect.CodeCanceled for a switch ended by caller cancellation relayed from the
+// daemon (BOS-958). Before this change the daemon had no wire value for "the
+// caller cancelled this", so the relayed CommandResult carried
+// ERROR_CODE_UNSPECIFIED and bosso's validateCommandResult fell through to
+// connect.CodeAborted. Clients pinned to an older version are down-converted
+// back to CodeAborted, message intact.
+//
+// The cancellation transform targets ONLY the typed relayed-daemon-canceled
+// marker. bosso's own context.Canceled mapping on the same procedure already
+// returned CodeCanceled before this version, so a procedure-scoped transform
+// would regress that correct, pre-existing answer for old clients.
+const V20260821 Version = "2026-08-21"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -255,11 +313,11 @@ func (r *Registry) Newer(a, b Version) bool {
 
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
-// V20260711, V20260718, V20260723, V20260803, V20260804, V20260812 and
-// V20260816. Current is V20260816 (the newest released behavior) while Default
-// stays Baseline (the oldest supported version), so a header-less caller is
-// pinned to Baseline and is down-converted by ProductionChanges, and a client
-// that negotiates V20260816 runs zero transforms.
+// V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816,
+// V20260820 and V20260821. Current is V20260821 (the newest released behavior) while
+// Default stays Baseline (the oldest supported version), so a header-less caller
+// is pinned to Baseline and is down-converted by ProductionChanges, and a client
+// that negotiates V20260821 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -270,8 +328,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816},
-		V20260816,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821},
+		V20260821,
 		Baseline,
 	)
 	if err != nil {

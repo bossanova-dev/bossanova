@@ -30,13 +30,52 @@ var (
 // TestCtrlXMatchesEscapeForBackNavigation runs the same scenario twice — once
 // with Escape, once with Ctrl+X — and requires both to land on the same view.
 func TestCtrlXMatchesEscapeForBackNavigation(t *testing.T) {
-	for _, tc := range []struct {
+	cases := []struct {
 		name  string
 		build func(t *testing.T) App
 		// want is the activeView expected after the key (and after applying any
 		// switchViewMsg the key produced).
 		want View
 	}{
+		{
+			name: "new-session error overlay hides a focused issue filter",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewNewSession
+				m := NewNewSessionModel(&stubClient{
+					trackerIssues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}},
+				}, a.ctx)
+				m.phase = newSessionPhaseIssueSelect
+				m.issueFilter.Activate()
+				m.issueFilter.input.SetValue("bos")
+				m.err = errors.New("issue fetch failed")
+				if m.textEntryActive() {
+					t.Fatal("premise broken: an error overlay must not report text entry")
+				}
+				a.newSession = m
+				return a
+			},
+			want: ViewNewSession,
+		},
+		{
+			name: "chat picker error overlay hides the rename prompt",
+			build: func(t *testing.T) App {
+				t.Helper()
+				a := NewApp(nil, nil)
+				a.activeView = ViewChatPicker
+				m := NewChatPickerModel(nil, a.ctx, "sess-1", "")
+				m.loading = false
+				m.renaming = true
+				m.err = errors.New("rename failed")
+				if m.textEntryActive() {
+					t.Fatal("premise broken: an error overlay must not report text entry")
+				}
+				a.chatPicker = m
+				return a
+			},
+			want: ViewHome,
+		},
 		{
 			name: "general settings returns to the settings hub",
 			build: func(t *testing.T) App {
@@ -156,7 +195,11 @@ func TestCtrlXMatchesEscapeForBackNavigation(t *testing.T) {
 			// TestCtrlXIsForwardedUnchanged below.
 			want: ViewChatPicker,
 		},
-	} {
+	}
+	if len(cases) != 9 {
+		t.Fatalf("ctrl+x alias cases = %d, want 9", len(cases))
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "attach detaches to the chat picker on escape only" {
 				got := settleView(t, tc.build(t), escKey)
@@ -534,7 +577,7 @@ func TestCtrlXIsConsumedByVisibleToast(t *testing.T) {
 // text/filter input (or the PTY) owns Ctrl+X must see it verbatim, with no
 // cancel/back transition and no loss of typed state.
 func TestCtrlXIsForwardedUnchanged(t *testing.T) {
-	for _, tc := range []struct {
+	cases := []struct {
 		name   string
 		build  func(t *testing.T) App
 		verify func(t *testing.T, got App)
@@ -587,6 +630,9 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				m = updated.(ChatPickerModel)
 				if !m.renaming {
 					t.Fatal("premise broken: r did not open the rename prompt")
+				}
+				if !m.textEntryActive() {
+					t.Fatal("premise broken: open rename prompt without error must report text entry")
 				}
 				a.chatPicker = m
 				return a
@@ -766,6 +812,9 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				m.phase = newSessionPhaseIssueSelect
 				m.issueFilter.Activate()
 				m.issueFilter.input.SetValue("bos")
+				if !m.textEntryActive() {
+					t.Fatal("premise broken: focused issue filter without error must report text entry")
+				}
 				a.newSession = m
 				return a
 			},
@@ -935,7 +984,11 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				}
 			},
 		},
-	} {
+	}
+	if len(cases) != 15 {
+		t.Fatalf("ctrl+x forwarding cases = %d, want 15", len(cases))
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.verify(t, applyKey(t, tc.build(t), ctrlXKey))
 		})

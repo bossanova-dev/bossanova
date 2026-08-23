@@ -60,6 +60,16 @@ with a nil handler and never ran, so those toggles
 (`CanAutoAddressReviews` / `CanAutoResolveConflicts` / `CanAutoFixChecks`) gated
 dead code and were collapsed into `CanAutoRepair`.
 
+### Draft PR placeholder commit
+
+An empty scaffolding commit whose only job is to make a draft pull request possible before a branch has reviewable work. It is not evidence of user work, and commit-message policy must treat it differently from non-empty work commits.
+
+The placeholder may carry stale PR-number tags from earlier tooling, but those tags do not change its identity. Guards that ask whether a branch has real work must classify the placeholder by its semantic role rather than by a single literal subject shape.
+
+### PR tag
+
+A pull-request number marker embedded in a commit subject so repository automation and humans can associate branch commits with their review surface. It belongs on non-empty work commits; scaffolding commits that carry no work are exempt even when the branch as a whole needs tagged commits.
+
 ## Authentication state
 
 ### AuthState
@@ -79,6 +89,18 @@ The daemon's own answer to "did that login actually leave me able to talk upstre
 The verdict is an enumerated non-secret outcome plus, only when the record was flagged, the enumerated re-login reason — never token material. Its outcomes separate causes that have opposite remedies: usable credentials with the auth gate cleared; a record still carrying a persisted re-login marker; a record with neither a token nor a marker, meaning the login's credentials never reached this process; and clean credentials whose gate was cleared but whose proactive re-register failed, which is reported rather than fatal because the reactive path remains the backstop. The outcome's zero value means "nothing was evaluated" — what a logout, an absent notifier, or a daemon too old to have a verdict reports — and it must render as silence rather than as a false success, so a newer CLI against an older daemon degrades to saying nothing instead of claiming an OK the daemon never gave.
 
 ## Chat / session status
+
+### Duplicate target
+
+The work identity a live session reserves so another session cannot start the same work at the same time. A target can be a tracker issue, a pull request, or a branch; dead or terminal sessions release their targets, while active sessions keep them reserved.
+
+The target kind matters. A session can reserve one kind without reserving another, so carve-outs must be made at the target-key level rather than by treating the whole session as either blocking or non-blocking.
+
+### Planning session
+
+A session whose plan is to draft or refresh a tracker issue rather than implement it. It may carry the tracker context that the eventual build session will use, but that context is a handoff record, not proof that implementation work already owns the issue.
+
+A planning session should not reserve its tracker issue as a **Duplicate target**. If it has a concrete pull request or branch target, those targets still reserve normally because they represent specific work surfaces rather than the planning handoff itself.
 
 ### Liveness signal
 
@@ -116,6 +138,12 @@ the latter reads a **Liveness signal**, together with the separate markers a pol
 substantive output and for a still-unobserved seed. Because the collision case makes a staleness
 comparison unsatisfiable rather than merely wrong, a rail built on a floor fails as a silent stall,
 which is indistinguishable from ordinary waiting.
+
+### Delivery state
+
+The machine-readable outcome of attempting to submit a message into an agent chat. It distinguishes a confirmed submit, a confirmed non-submit, an unconfirmed submit, and a queued message from paths where no submit verifier ran, so callers do not have to infer retry policy from human notice text.
+
+A queued delivery is successful but deferred behind the agent's current turn, so callers must not resend it. An unconfirmed delivery is explicitly unknown: the pane could not be verified, so the user should inspect before retrying. Older proxy paths can omit the state, in which case callers fall back to notice guidance rather than treating the missing state as a clean result.
 
 ### usage-limited
 
@@ -357,6 +385,17 @@ one tried and why it lost: a tool that cannot be located is otherwise indistingu
 capability the environment does not have, and that confusion turns a missing file into a silent,
 permanent degrade (see **Callback**).
 
+## Boss-build runs
+
+### NO_CHANGE
+
+A `boss-build` terminal state meaning the run intentionally produced no implementation change because
+there was no eligible work it could safely own, such as no candidate, a lost claim, or foreign work.
+
+`NO_CHANGE` is evidence-bearing: when a run has touched tracker state, it must preserve a short
+diagnostic breadcrumb and restore only state that the run itself produced, so a later run can tell a
+healthy yield from an untouched ticket without clobbering a third-party owner.
+
 ## Scheduled sessions (cron)
 
 ### Cron gate
@@ -391,7 +430,8 @@ job's recorded history.
 
 A gate outcome is served to API clients, not merely logged, so moving a case from one verdict to the
 other changes an existing client's observable answer even when no schema field changes — a
-behavioural API change that must be versioned and down-converted for older clients.
+behavioural API change that must be versioned and served through a **Down-convert transform** for
+older clients.
 
 ## Epic runs (boss-epic)
 
@@ -492,6 +532,17 @@ written before stamping existed is read as the first version. Adding or renaming
 the contract; registering a section as recognised-but-never-required does not newly require it of
 plans already stamped against an earlier version.
 
+### Implementation plan
+
+The durable plan artifact attached to a tracker issue by the planning skill, containing the
+implementation-ready guidance a later build session consumes.
+
+An Implementation plan is a prerequisite for planning completion, not completion by itself: the
+ticket is planned only once the artifact and the accompanying tracker metadata have both committed.
+A ticket that still carries the planning queue signal remains retryable even if an Implementation
+plan artifact already exists, because the artifact may have been written before the metadata commit
+point.
+
 ## Agent runtime gating
 
 ### Agent runner
@@ -528,11 +579,29 @@ a runtime the caller cannot actually drive.
 
 ### Account
 
-A registered provider credential (Claude or Codex) that Bossanova can run sessions under: a label plus metadata (status, priority, cooldown) in the daemon store, with the secret itself in the OS keyring. The user's pre-existing `~/.claude`/`~/.codex` login is the implicit system-default account 0 — never imported, never injected.
+A registered provider credential (Claude or Codex) that Bossanova can run sessions under: a label plus metadata (status, health, priority, cooldown) in the daemon store, with the secret itself in the OS keyring. The user's pre-existing `~/.claude`/`~/.codex` login is the implicit system-default account 0 — never imported, never injected.
+
+### Account home
+
+The per-account agent home a session's agent is pointed at instead of the machine's own, so the credential it discovers there is the bound Account's rather than the ambient login's. It is assembled from the machine's shared agent home rather than copied wholesale: the credential file is account-local, while the remaining top-level entries are projected in as links back to the shared home so shared configuration stays shared and keeps tracking its source.
+
+That projection is a reconciliation repeated before every spawn, and it does not own the directory it reconciles — the agent runs _with_ the account home as its own home and rewrites configuration and regenerates state inside it on every run. Entries the projection did not create are therefore its normal steady state rather than a corruption signal: such an entry is never deleted or replaced, and meeting one is a reason to leave that entry alone, not to abandon the rest of the projection.
+
+### Credential injection
+
+Realising a bound Account's credential into the environment an agent process is actually started with — assembling the Account home and handing the process the environment pointing at it. Injection is best-effort by policy: a failure does not block the spawn, it degrades it to the implicit system-default account, so the session runs normally to completion under a credential nobody selected and the bound account records no usage at all.
+
+That outcome is indistinguishable from success at the moment it happens, and stays indistinguishable for as long as the ambient login happens to hold the same credential that was intended — so a degrade that is announced only in a log is, in practice, not announced. A failed injection is therefore recorded on the Account itself, where every surface that already lists accounts renders it.
+
+### Account health
+
+Whether an Account is currently usable, as distinct from whether an operator has enabled it: Rotation selects only an account that is both enabled and healthy. Several unrelated events write it — a credential the provider rejected, a confirmed suspension, a Credential injection that could not be completed — and each records a reason alongside it saying which, because the remedies differ and the health value alone does not separate them.
+
+The writers differ in what they prove, so they differ in how their records may be withdrawn. A failure that indicts the credential itself must stand until something re-establishes the credential, and no later success on an unrelated path may clear it. A Credential injection failure is a local condition that says nothing about the credential, so it withdraws itself on the next injection that succeeds — but only its own record: a reason another writer left is preserved, and each writer's automatic clear is scoped to the reasons attributable to it, so no writer can launder another's diagnosis into a self-clearing one. A record that erased state it could not restore would not be withdrawable at all, which is why a self-clearing writer must leave everything outside its own reason untouched. Withdrawal also depends on a later attempt actually being made, and an unhealthy account is one Rotation will not normally select — so the automatic clear is a convenience, not a guarantee.
 
 ### Rotation
 
-The daemon's automatic response to a usage-capped account: put the limited account on cooldown, select the next eligible account for the provider (active, not cooling, lowest priority first), and respawn/resume the interrupted session under it — posting an in-chat notice, and never auto-resending the interrupted prompt. On by default once extra accounts are registered, with per-repo opt-outs; `managed_accounts.enabled=false` (set via `boss settings --no-managed-accounts`; `--no-rotation` is a deprecated alias) is the global kill-switch that halts all automatic rotation, re-read live per decision, while manual `boss account switch` keeps working. Every decision is audit-logged as a rotation event (labels only, never credentials).
+The daemon's automatic response to a usage-capped account: put the limited account on cooldown, select the next eligible account for the provider (active, healthy, not cooling, lowest priority first), and respawn/resume the interrupted session under it — posting an in-chat notice, and never auto-resending the interrupted prompt. On by default once extra accounts are registered, with per-repo opt-outs; `managed_accounts.enabled=false` (set via `boss settings --no-managed-accounts`; `--no-rotation` is a deprecated alias) is the global kill-switch that halts all automatic rotation, re-read live per decision, while manual `boss account switch` keeps working. Every decision is audit-logged as a rotation event (labels only, never credentials).
 
 ### Failover proxy
 
@@ -637,6 +706,15 @@ The `make` → `bazel` delegation (BOS-339): `make test` and its smoke/per-modul
 
 The reconciliation between what `bazel test //...` runs and what `make` must still cover natively. A small set of tests are tagged out of the sandbox (`manual`/`local`); the ledger (`scripts/bazel/ledger.json`, mirrored in the sandbox-patterns doc) records each exclusion and its native fallback so `make test` runs them as an extra `go test` pass and no coverage is lost.
 
+### Test command manifest
+
+A generated inventory of the repository's test commands, module targets, and expected test-file
+surface, used by agents and reviewers to choose appropriately scoped verification and to notice when
+a branch changes what the test graph is supposed to cover. It is evidence about the intended
+verification surface, not the runner itself: a stale manifest can mislead review even when the
+underlying build target is correct, and a correct manifest cannot make a missing build-target entry
+execute.
+
 ### Stamp
 
 A content-hash gate over a step's inputs: the step is skipped when the hash is unchanged. Used for cached lint/gen layers (e.g. `GEN_STAMP`, the cached-lint stamp) so unchanged inputs don't re-trigger expensive work.
@@ -697,7 +775,12 @@ fact. Where a passing pin and the prose around it disagree, the pin is the truth
 drifted. Because a red pin does not say which of its two halves moved, its failure message is part of
 the mechanism rather than decoration: it states what the number covers and what it does not, names a
 remedy the artifact can actually perform, and says how to check the pin's own provenance before
-assuming the artifact changed.
+assuming the artifact changed. Where that remedy refuses a class of growth as **policy** rather than
+as arithmetic, it owes its own scope as well — which growth it refuses and which it would accept —
+because the reader who trips a blanket refusal is usually the one case it was never aimed at, and
+because a per-pin refusal is concatenated with the generic re-pin instruction rather than replacing
+it, so the two contradict each other in a single message unless the narrower one says which case is
+which.
 
 Size is not a **sync** check. Where a mirror is generated from a source, generation may add bytes
 unconditionally, so "larger than its source" is not evidence of drift; exact regeneration equality is.
@@ -757,6 +840,37 @@ would eventually clean on its own if the daemon stopped sweeping. Deletion is co
 delivery being _known_ to have failed: a delivery whose outcome could not be confirmed retains the
 file, because the path may already be in front of the agent.
 
+## API compatibility
+
+### Dated API version
+
+A date-stamped label naming one fixed set of observable answers the orchestrator API serves, so a
+client can pin the behaviour it was built against and keep receiving it after the server's behaviour
+moves on. Versions are ordered by their date, with a baseline standing for "older than every recorded
+change" and a current version standing for the server's present behaviour; a request that names no
+version resolves to the baseline.
+
+A new version is owed whenever an existing procedure's _observable_ answer changes — a different
+status value, a different error code, a different default, a narrowed validation — even when no
+schema field is added, removed, or retyped. Adding a new field or a new enum member is not on its own
+a versioned change; changing what an existing caller already reads is.
+
+### Down-convert transform
+
+The rewrite that restores an older **Dated API version**'s answer, applied on the way out to a client
+pinned below the version that changed the behaviour. Transforms are registered against the version
+that introduced the change and fan out newest-to-oldest, so a client several versions back is walked
+through every intervening rewrite in order.
+
+A transform must be discriminated as narrowly as the behaviour it compensates for. Matching on the
+procedure alone also rewrites answers that procedure was already giving for other reasons, which
+turns the compatibility layer into a source of the very regression it exists to prevent — and that
+regression is invisible, because the pre-existing answer is the one no test was watching. On the
+error path the discriminator is an in-process marker attached where the new behaviour is produced,
+and it does not survive serialization; an assertion that a transform fired is therefore a **Vacuous
+gate** unless it is made on the producing side rather than over an error a client reconstructed from
+the wire.
+
 ## Review and verification
 
 ### Vacuous gate
@@ -781,6 +895,13 @@ with itself; and its input discovery, when the set of subjects it scans comes ba
 emptiness is reported as a pass rather than as an inability to evaluate. The failure is silent by
 construction, because a gate's job is to be quiet when nothing is wrong.
 
+Discovery can come back empty without the discovery expression being wrong. Where a check reads its
+subjects off disk rather than carrying them, the corpus is assembled by whichever runner executes
+the check, and runners differ both in what they place within reach and in where they start looking.
+One unchanged check is then sound under the runner an author invokes by hand and empty under the
+runner that gates the merge — so which runner produced a green is part of the verdict, and a green
+from the convenient one is not evidence about the deciding one.
+
 The first and last layers are the two a **Falsification** usually cannot reach, and so the ones that
 most need checking by hand: the other, mis-answering layers each mis-answer a value that arrives at
 the check, while a reach gap means no value ever arrives, and no adversarial input you can construct will demonstrate
@@ -790,8 +911,11 @@ is settled the same way, by a pair of subjects that agree on the declaration and
 resolution. Direction decides
 the discipline: a narrowed surface is established by measurement, a widened one by construction. A
 gate therefore owes a floor on how many subjects it found, asserted inside the artifact that
-actually blocks a merge rather than only in its tests. Its cheapest tell is a single check that
-bails loudly on one missing input while returning an empty success on another: two opposite policies
+actually blocks a merge rather than only in its tests, and measured under the runner that does the
+blocking. Where that runner assembles the corpus, satisfying the floor is a two-artifact obligation:
+the assertion inside the check, and the staging declaration that puts the subjects within its reach
+— and the second half lives in a build file no one reading the check will open. Its cheapest tell
+is a single check that bails loudly on one missing input while returning an empty success on another: two opposite policies
 for one class of missing input means the quiet branch was never considered.
 
 A further way is not a layer inside the check at all: the check is correct, non-vacuous by every test
@@ -970,6 +1094,20 @@ policy margin it also encodes, saying which is which, so that a drift meaning "t
 re-deciding together" is not read as a correctness break — and, for the same reason, record the cases
 it cannot see at all, chiefly operator-configurable values that replace a compiled default at runtime,
 where someone about to trust it will read them.
+
+Recording that blind spot makes it findable; it is not coverage. Where the operand is a setting an
+operator may raise without a ceiling, the relation can hold at the default and invert past a
+threshold named in no comment, no test and no setting reference, so a guard reading the compiled
+default is green across the whole broken range by construction. Closing it has two halves and
+neither works alone: the constant on the other side stops being a compiled number and becomes a
+function of the setting, because a fixed value cannot stay in relation to one that moves; and the
+guard ranges over configured values chosen to straddle the threshold rather than over the default.
+Two cautions attach to the second half. The quantity compared must be what the guarded step actually
+receives rather than the whole budget it is carved from, or the guard stays green while that step is
+already being shortened. And rows over configured values may be algebraically identical against a
+correct derivation, which makes them a regression tripwire rather than independent checks — their
+value is established only by reverting the derivation and confirming that the rows past the
+threshold, and only those, go red.
 
 ### Scan surface
 

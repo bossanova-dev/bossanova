@@ -21,7 +21,10 @@ import {
   parseGoFiles,
   chunk,
   GO_BATCH,
+  BIOME_FORMAT_DRIFT_MARKER,
   prettierReportedDrift,
+  syncpackReportedDrift,
+  SYNCPACK_DRIFT_MARKER,
 } from './sweep-prettify-gate.mjs'
 import { hasOpenCronPR } from './cron-open-pr.mjs'
 import { rewriteClaudeSkillMarkdown } from './sync-codex-skills.mjs'
@@ -148,6 +151,52 @@ test('NO_CHANGE gate and staging exclude bossd-managed dirty files', () => {
   }
   assert.match(SKILL, /grep -Ev/, 'NO_CHANGE gate must filter managed paths from porcelain')
   assert.match(SKILL, /git[ ]reset -q --/, 'staging must unstage managed files after git add -A')
+})
+
+test('Phase 0 switches off the default branch before deriving BASE_BRANCH', () => {
+  const startIndex = SKILL.indexOf('START_SHA="$(git rev-parse HEAD)"')
+  const defaultBranchIndex = SKILL.indexOf(
+    'DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)" || exit 1',
+  )
+  const switchIndex = SKILL.indexOf('git switch -c "$SESSION_BRANCH" || exit 1')
+  const baseBranchIndex = SKILL.indexOf('BASE_BRANCH="$(\n  git rev-parse --abbrev-ref')
+  const pushIndex = SKILL.indexOf('git push -u origin "$SESSION_BRANCH"')
+
+  assert.ok(startIndex !== -1, 'Phase 0 captures START_SHA')
+  assert.ok(defaultBranchIndex !== -1, 'Phase 0 resolves the repo default branch')
+  assert.ok(switchIndex !== -1, 'Phase 0 creates the sweep branch')
+  assert.ok(baseBranchIndex !== -1, 'Phase 0 derives BASE_BRANCH')
+  assert.ok(pushIndex !== -1, 'Phase 4 pushes SESSION_BRANCH')
+
+  assert.ok(startIndex < defaultBranchIndex, 'START_SHA is captured before the branch step')
+  assert.ok(defaultBranchIndex < switchIndex, 'default branch is resolved before branch creation')
+  assert.ok(switchIndex < baseBranchIndex, 'branch creation precedes BASE_BRANCH derivation')
+  assert.ok(baseBranchIndex < pushIndex, 'BASE_BRANCH derivation precedes the Phase 4 push')
+})
+
+test('Phase 0 branch step is default-branch-only and collision-safe', () => {
+  assert.ok(
+    SKILL.includes('if [ "$SESSION_BRANCH" = "$DEFAULT_BRANCH" ]; then'),
+    'branch creation must be conditional on the current branch being the default',
+  )
+  assert.ok(
+    SKILL.includes('SESSION_BRANCH="bs-sweep-prettify/$(date -u +%Y%m%dT%H%M%SZ)"'),
+    'created branch must carry the bs-sweep-prettify/ prefix',
+  )
+  assert.ok(
+    SKILL.includes('git switch -c "$SESSION_BRANCH" || exit 1'),
+    'branch creation failure, including a collision, must stop the run',
+  )
+  assert.ok(
+    SKILL.includes(
+      'DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)" || exit 1',
+    ),
+    'default branch resolution failure must stop the run',
+  )
+  assert.ok(
+    !SKILL.includes('git switch "$SESSION_BRANCH"'),
+    'the branch step must not adopt an existing branch',
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -278,10 +327,19 @@ test('the .codex mirror carries the same terminal + gate tokens', () => {
 /** Build a fake `run(cmd, args)` from a { cmd: result } map (result may be a fn). */
 function fakeRunner(map) {
   return (cmd, args) => {
-    const r = map[cmd]
+    const key = `${cmd} ${(args ?? []).join(' ')}`
+    const r = map[key] ?? map[cmd]
     return typeof r === 'function' ? r(args) : r
   }
 }
+
+const SYNCPACK_LINT_KEY = 'pnpm syncpack lint'
+const SYNCPACK_FORMAT_KEY = 'pnpm syncpack format --check'
+const SCRIPTS_PRETTIER_KEY =
+  'pnpm exec prettier --check scripts/*.{cjs,mjs} scripts/bazel/*.mjs scripts/changelog/*.{cjs,mjs} scripts/skill-parity/*.{cjs,mjs} skills-toolbox/*.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs} .claude/skills/*/gate/*.mjs'
+const DOCS_PRETTIER_KEY = 'pnpm --dir services/docs run lint'
+const WEB_BIOME_KEY = 'pnpm --dir services/web run lint'
+const ROOT_PRETTIER_KEY = 'pnpm run lint:docs'
 
 const CLEAN = {
   make: { status: 0, stdout: '' }, // `make lint-check-version` prereq passes
@@ -329,9 +387,109 @@ const PRETTIER_DRIFT = {
   stderr:
     '[warn] docs/x.md\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n',
 }
+const SYNCPACK_DRIFT = {
+  status: 1,
+  stdout: '',
+  stderr: `${SYNCPACK_DRIFT_MARKER} dependencies differ from syncpack policy\n`,
+}
+const BIOME_FORMAT_DRIFT = {
+  status: 1,
+  stdout: 'Checked 248 files in 208ms. No fixes applied.\nFound 1 error.\n',
+  stderr: `example.ts format ━━━━━━━━━\n\n  × ${BIOME_FORMAT_DRIFT_MARKER} the following content:\n`,
+}
+
+test('syncpackReportedDrift matches syncpack findings marker only', () => {
+  assert.equal(syncpackReportedDrift(SYNCPACK_DRIFT), true)
+  assert.equal(syncpackReportedDrift({ status: 1, stderr: '✓ No issues found' }), false)
+  assert.equal(syncpackReportedDrift({ status: 1, stderr: '✗ error: unexpected argument' }), false)
+  assert.equal(syncpackReportedDrift({}), false)
+})
+
+for (const { name, key, label, reason, drift } of [
+  {
+    name: 'syncpack lint',
+    key: SYNCPACK_LINT_KEY,
+    label: 'syncpack lint',
+    reason: 'syncpack',
+    drift: SYNCPACK_DRIFT,
+  },
+  {
+    name: 'syncpack format',
+    key: SYNCPACK_FORMAT_KEY,
+    label: 'syncpack format',
+    reason: 'syncpack',
+    drift: SYNCPACK_DRIFT,
+  },
+  {
+    name: 'scripts prettier',
+    key: SCRIPTS_PRETTIER_KEY,
+    label: 'scripts prettier',
+    reason: 'scripts-prettier',
+    drift: PRETTIER_DRIFT,
+  },
+  {
+    name: 'docs prettier',
+    key: DOCS_PRETTIER_KEY,
+    label: 'docs prettier',
+    reason: 'docs-prettier',
+    drift: PRETTIER_DRIFT,
+  },
+  {
+    name: 'web biome',
+    key: WEB_BIOME_KEY,
+    label: 'web biome',
+    reason: 'web-biome',
+    drift: BIOME_FORMAT_DRIFT,
+  },
+]) {
+  test(`${name} clean result contributes no drift reason`, () => {
+    const res = detectDrift(fakeRunner({ ...CLEAN, [key]: { status: 0, stdout: '' } }), {
+      goFiles: [],
+    })
+    assert.equal(res.drift, false)
+    assert.ok(!res.reasons.includes(reason))
+  })
+
+  test(`${name} findings result reports drift with reason ${reason}`, () => {
+    const res = detectDrift(fakeRunner({ ...CLEAN, [key]: drift }), { goFiles })
+    assert.equal(res.drift, true)
+    assert.deepEqual(res.reasons, [reason])
+  })
+
+  test(`${name} spawn error fails closed`, () => {
+    assert.throws(
+      () =>
+        detectDrift(fakeRunner({ ...CLEAN, [key]: { error: new Error(`no ${name}`) } }), {
+          goFiles,
+        }),
+      new RegExp(`${label.replaceAll(' ', '\\s+')}\\s+probe\\s+failed\\s+to\\s+run`),
+    )
+  })
+
+  test(`${name} exit 1 without findings marker fails closed`, () => {
+    assert.throws(
+      () =>
+        detectDrift(fakeRunner({ ...CLEAN, [key]: { status: 1, stderr: 'tool failed' } }), {
+          goFiles,
+        }),
+      new RegExp(`${label.replaceAll(' ', '\\s+')}\\s+probe\\s+errored \\(exit\\s+1\\)`),
+    )
+  })
+
+  for (const status of [2, 127]) {
+    test(`${name} exit ${status} fails closed`, () => {
+      assert.throws(
+        () => detectDrift(fakeRunner({ ...CLEAN, [key]: { status, stderr: '' } }), { goFiles }),
+        new RegExp(`${label.replaceAll(' ', '\\s+')}\\s+probe\\s+errored \\(exit\\s+${status}\\)`),
+      )
+    })
+  }
+}
 
 test('prettier drift (exit 1 WITH its --check marker) -> run, reason prettier-docs', () => {
-  const res = detectDrift(fakeRunner({ ...CLEAN, pnpm: PRETTIER_DRIFT }), { goFiles })
+  const res = detectDrift(fakeRunner({ ...CLEAN, [ROOT_PRETTIER_KEY]: PRETTIER_DRIFT }), {
+    goFiles,
+  })
   assert.equal(res.drift, true)
   assert.ok(res.reasons.includes('prettier-docs'))
 })
@@ -348,7 +506,7 @@ test('pnpm/Corepack exit 1 without the drift marker fails closed (throws)', () =
       'Internal Error: Server answered with HTTP 404 while fetching pnpm\n ELIFECYCLE  Command failed.\n',
   }
   assert.throws(
-    () => detectDrift(fakeRunner({ ...CLEAN, pnpm: toolingFail }), { goFiles }),
+    () => detectDrift(fakeRunner({ ...CLEAN, [ROOT_PRETTIER_KEY]: toolingFail }), { goFiles }),
     /prettier\s+probe\s+errored \(exit\s+1\)/,
   )
 })
@@ -372,14 +530,20 @@ test('prettierReportedDrift matches the --check marker on either stream, else fa
 // an agent run in a dependency-free worktree where prettier is absent.
 test('prettier error exit (2) fails closed (throws), not counted as drift', () => {
   assert.throws(
-    () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { status: 2, stdout: '' } }), { goFiles }),
+    () =>
+      detectDrift(fakeRunner({ ...CLEAN, [ROOT_PRETTIER_KEY]: { status: 2, stdout: '' } }), {
+        goFiles,
+      }),
     /prettier\s+probe\s+errored \(exit\s+2\)/,
   )
 })
 
 test('prettier missing-binary exit (127) fails closed (throws)', () => {
   assert.throws(
-    () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { status: 127, stdout: '' } }), { goFiles }),
+    () =>
+      detectDrift(fakeRunner({ ...CLEAN, [ROOT_PRETTIER_KEY]: { status: 127, stdout: '' } }), {
+        goFiles,
+      }),
     /prettier\s+probe\s+errored \(exit\s+127\)/,
   )
 })
@@ -390,6 +554,45 @@ test('gofmt drift (listed file) -> run, reason gofmt', () => {
   })
   assert.equal(res.drift, true)
   assert.ok(res.reasons.includes('gofmt'))
+})
+
+test('detectDrift short-circuits after the first drift probe', () => {
+  const calls = []
+  const res = detectDrift(
+    (cmd, args) => {
+      const key = `${cmd} ${(args ?? []).join(' ')}`
+      calls.push(key)
+      if (cmd === 'make') return { status: 0, stdout: '' }
+      if (key === SYNCPACK_LINT_KEY) return SYNCPACK_DRIFT
+      throw new Error(`unexpected later probe ${key}`)
+    },
+    { goFiles },
+  )
+  assert.equal(res.drift, true)
+  assert.deepEqual(res.reasons, ['syncpack'])
+  assert.deepEqual(calls, ['make lint-check-version', SYNCPACK_LINT_KEY])
+})
+
+test('detectDrift uses check-mode commands only', () => {
+  const calls = []
+  detectDrift(
+    (cmd, args = []) => {
+      calls.push([cmd, args])
+      return { status: 0, stdout: '' }
+    },
+    { goFiles },
+  )
+
+  for (const [cmd, args] of calls) {
+    assert.ok(!args.includes('--write'), `${cmd} ${args.join(' ')} must not write`)
+    assert.ok(!args.includes('-w'), `${cmd} ${args.join(' ')} must not write`)
+  }
+
+  const syncpackCalls = calls.filter(([cmd, args]) => cmd === 'pnpm' && args[0] === 'syncpack')
+  assert.deepEqual(syncpackCalls, [
+    ['pnpm', ['syncpack', 'lint']],
+    ['pnpm', ['syncpack', 'format', '--check']],
+  ])
 })
 
 // goimports is intentionally NOT probed: each module's `format` target runs plain
@@ -409,7 +612,10 @@ test('goimports-only drift does NOT run, and `go` is never probed', () => {
 
 test('required prettier probe spawn error fails closed (throws)', () => {
   assert.throws(
-    () => detectDrift(fakeRunner({ ...CLEAN, pnpm: { error: new Error('no pnpm') } }), { goFiles }),
+    () =>
+      detectDrift(fakeRunner({ ...CLEAN, [ROOT_PRETTIER_KEY]: { error: new Error('no pnpm') } }), {
+        goFiles,
+      }),
     /prettier\s+probe\s+failed\s+to\s+run/,
   )
 })
@@ -441,7 +647,11 @@ test('no Go files: gofmt is not probed', () => {
   }
   const res = detectDrift(run, { goFiles: [] })
   assert.equal(res.drift, false)
-  assert.equal(calls, 2, 'only the make prereq + prettier probes run when there are no Go files')
+  assert.equal(
+    calls,
+    7,
+    'only the make prereq + non-Go formatter probes run when there are no Go files',
+  )
 })
 
 test('chunk batches Go files under GO_BATCH to stay within ARG_MAX', () => {
@@ -547,7 +757,15 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   //
   // The remedy is NOT "move situational content into a reference": bs-sweep-prettify has no
   // references/ directory, only gate/, so that advice named a destination that does not exist.
-  const SOURCE_BYTES = 17001 // exact measured .claude body, re-measured 2026-08-19
+  //
+  // BOS-917 repins 17001 -> 17324 for the Phase 0 default-branch safety step. This is
+  // resident because the executable preflight fence must create the sweep branch before
+  // BASE_BRANCH derivation; moving it out would leave the unsafe push path documented here.
+  //
+  // BOS-916 repins 17324 -> 17191 while updating the cron-gate prose from a deliberate
+  // sound-subset claim to the expanded check-mode formatter mirror. The change banks the
+  // shorter wording alongside the functional gate probes.
+  const SOURCE_BYTES = 17191 // exact measured .claude body, re-measured 2026-08-23
   assertExactSize({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 17365 },
     constFile: 'scripts/bs-sweep-prettify-skill.test.mjs',

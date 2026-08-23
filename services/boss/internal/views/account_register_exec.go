@@ -13,6 +13,8 @@ import (
 	"github.com/recurser/boss/internal/accountflow"
 )
 
+const handoffWaitDelay = 5 * time.Second
+
 // --- the terminal handoff (BOS-848) ----------------------------------------
 //
 // WHY THIS EXISTS — the mechanism, confirmed rather than assumed.
@@ -334,6 +336,7 @@ func newHandoffCommand(ctx context.Context, req execRequest, tee io.Writer) (*ex
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+	cmd.WaitDelay = handoffWaitDelay
 	// cmd.Stdin intentionally nil — see the doc comment.
 
 	proc := &handoffProc{cmd: cmd, lines: make(chan string, 64), waited: make(chan struct{})}

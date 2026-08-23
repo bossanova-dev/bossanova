@@ -638,7 +638,12 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	if err != nil {
 		return
 	}
-	server.HydrateAgentObservability(h.chatStatusTracker, pbSess, chats)
+	server.HydrateAgentObservabilityWithAuthCorroboration(
+		h.chatStatusTracker,
+		pbSess,
+		chats,
+		server.AuthInvalidationCorroboratedFromStore(ctx, h.rotationEvents, h.chatStatusTracker, h.logger, pbSess, chats),
+	)
 }
 
 // publishAgentMarkerSessionDelta re-hydrates the session owning agentSessionID
@@ -2088,6 +2093,11 @@ func run(opts runOpts) error {
 	chatRotator = rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:   log.Logger,
 		Recorder: rotationRecorder,
+		OnAuthDecisionComplete: func(agentSessionID string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			publishAgentMarkerSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
+		},
 		LoadConfig: func() (config.ManagedAccountsConfig, error) {
 			loaded, err := config.Load()
 			if err != nil {

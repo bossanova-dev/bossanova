@@ -311,6 +311,13 @@ func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID str
 // nil (proto3 optional) so the daemon resolves the session's primary live chat;
 // on error it classifies the connect code so the dispatcher can attach a typed
 // CommandResult.error_code (mirrors the WakeChat / merge typed-code paths).
+//
+// It classifies through classifySwitchCommandError, not the shared
+// classifyCommandError: the switch is the one command whose deadline is
+// rendered as CodeDeadlineExceeded rather than CodeAborted (BOS-947), and that
+// scoping is what bounds the accompanying V20260820 down-convert to this
+// procedure. See classifySwitchCommandError for why the shared classifier is
+// not widened.
 func (a *CommandHandlerAdapter) SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
 	if sessionID == "" {
 		return false, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("switch_account: session_id required")
@@ -329,7 +336,8 @@ func (a *CommandHandlerAdapter) SwitchAccount(ctx context.Context, sessionID, ag
 		Force:          force,
 	}))
 	if err != nil {
-		return false, "", "", classifyCommandError(err), fmt.Errorf("switch session account: %w", err)
+		errorCode, wrappedErr := switchCommandFailure(err)
+		return false, "", "", errorCode, wrappedErr
 	}
 	return resp.Msg.GetResumed(), resp.Msg.GetTargetLabel(), resp.Msg.GetNoticeText(), pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 }

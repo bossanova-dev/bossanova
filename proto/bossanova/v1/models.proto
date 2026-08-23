@@ -755,6 +755,7 @@ message CronJob {
   // changes. Persisted and echoed back only — nothing honours it yet, so a job
   // with this set still fires exactly as it does today (BOS-543).
   bool   is_zero_output = 19;
+  string last_run_agent_name = 20;  // resolved agent used by the last spawned run; empty = unknown/legacy
 }
 
 // GithubCallback is a durable one-shot registration that delivers a chat

@@ -298,6 +298,12 @@ func (s *HostServiceServer) SetAccountEnvResolver(r accountEnvResolver) { s.acco
 
 // resolveAccountEnv returns the account env overlay for sess, or nil when no
 // resolver is wired or the session is unbound. Never logs values.
+//
+// The degrade-to-nil (and its ERROR log naming the account id and provider —
+// this path's spawn silently falls back to the agent CLI's ambient login,
+// BOS-973) both live in the concrete resolver,
+// accountwiring.SpawnEnvResolver.Resolve. Keeping them there rather than
+// duplicating a log here is why all four degrade sites report identically.
 func (s *HostServiceServer) resolveAccountEnv(ctx context.Context, sess *models.Session) map[string]string {
 	if s.accountEnv == nil {
 		return nil

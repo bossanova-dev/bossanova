@@ -2,6 +2,7 @@ package views
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
 )
 
 // updateSub routes msg to a sub-model stored on the App, writing the updated
@@ -280,9 +281,23 @@ func (a App) updateAttach(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := updateSub(&a.login, msg)
 	if a.login.Cancelled() || a.login.Done() {
+		a.clearRetainedReloginAfterVerifiedLogin()
 		return a, a.switchToHome()
 	}
 	return a, cmd
+}
+
+func (a *App) clearRetainedReloginAfterVerifiedLogin() {
+	if a.login.verification.Outcome != auth.LoginVerified {
+		return
+	}
+	// A successful login immediately supersedes the retained re-login warning.
+	// Clear it before Home is rebuilt; the follow-up auth poll will refresh the
+	// signed-in snapshot. Bump the generation so stale auth-status commands from
+	// the pre-login Home cannot restore the retained warning after this point.
+	a.home.needsRelogin = false
+	a.home.reloginReason = ""
+	a.home.authStatusGeneration++
 }
 
 func (a App) updateBugReport(msg tea.Msg) (tea.Model, tea.Cmd) {

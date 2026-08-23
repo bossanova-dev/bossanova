@@ -92,6 +92,14 @@ CLI. Validate whichever the runtime actually exposes and BLOCK only when **neith
 runtime with no MCP server but a working `boss` binary repairs perfectly well, and stopping it would
 be a self-inflicted outage.
 
+Resolve the toolbox in this block before reading the helper, because shell variables do not survive
+between tool calls:
+
+```bash
+BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+```
+
 Enumerate the available boss MCP tool names and `boss` subcommands, then diff both at once with
 `bossEpicTransportPreflight({availableTools, availableCliCommands})` from
 `$BOSS_REPAIR_TOOLBOX/session/boss.mjs`, which returns `{ ok, transport, missing, degraded,
@@ -118,7 +126,7 @@ reader believing the run consulted them.
 
 A capability the CLI covers only _partially_ still has a transport and is **not** degraded, which is
 why `partial` is a separate list rather than an extension of that one. Today it holds `getSession`:
-`boss show --json` carries the lifecycle state but none of `last_agent_activity_at`,
+`boss show --json` carries the lifecycle state and `last_agent_activity_at`, but lacks
 `repair_active`, `attention_status.reason`, `pr_mergeable` or `merge_block`. Where a `partial` entry
 names a routing signal the CLI cannot supply, treat that signal as **not settled**, never as a pass
 — `pr_mergeable` and `merge_block` in particular are how a repair run would otherwise mistake a
@@ -145,6 +153,30 @@ git log --oneline -5          # Recent commits
 gh pr view                    # PR details, checks, and review status
 ```
 
+**1.1a Read any work already in the tree**
+
+When `git status` is not clean, read the actual change before authoring anything:
+
+```bash
+git status --porcelain
+git diff
+git diff --cached
+```
+
+An interrupted earlier round routinely leaves a complete, coherent fix behind, so for each
+unresolved review thread you are about to repair, check whether that pre-existing diff **already
+addresses it**.
+
+- **It does.** Validate it — run the repo gates discovered in step 1.3 against it — and commit
+  **that** work rather than authoring a replacement; authoring a parallel fix on top of an existing
+  one duplicates or regresses it. Commit only the files that belong to the thread under repair, and
+  say in the [Repair Summary](#repair-summary) that **pre-existing uncommitted work was adopted**,
+  naming those files, so a reviewer can tell adopted work from work this pass authored.
+- **It does not** — the diff is partial, incoherent, or unrelated to the thread. Then do **not**
+  commit it and do **not** reset it: leave it exactly where it is and record it as a residual.
+  Another agent may be writing in this worktree right now, so discarding it is destructive and
+  committing it publishes a half-edit.
+
 **1.2 Identify Problem Type**
 
 Based on the output, categorize the issue:
@@ -152,7 +184,7 @@ Based on the output, categorize the issue:
 - **Merge Conflict**: Git reports conflicts in files
 - **Failing Checks**: PR checks show failures (tests, lint, build)
 - **Review Feedback**: PR has requested changes or comments
-- **No problem**: every signal is already clear — checks passing with none pending, `repair_status=clean`, and `mergeable` not `CONFLICTING`. This is a **valid categorization result**, not a failure to categorize: route straight to the **nothing to repair** outcome in [Terminal outcomes](#terminal-outcomes) and select no strategy.
+- **No problem**: every signal is already clear — checks passing with none pending, `repair_status=clean`, and `mergeable` not `CONFLICTING`. `repair_status=not_evaluated` is not clean and never selects this category. This is a **valid categorization result**, not a failure to categorize: route straight to the **nothing to repair** outcome in [Terminal outcomes](#terminal-outcomes) and select no strategy.
 
 **1.3 Identify Project Gate Commands**
 
@@ -177,6 +209,25 @@ Read that blanket instruction against its own condition before routing on it. A 
 
 A dispatch stays on the orchestrator's model (Opus): conflict resolution, failing-check code fixes, and review-feedback reasoning are all judgment, so no cheaper `model:` override is applied. The subagent keeps the bulk material (diffs, CI logs, `gh run view` output, review threads) inside its own context; only the summary returns to the orchestrator, which stays thin. This is orchestration framing only: Strategy A/B/C below are unchanged and are exactly what runs, dispatched or inline. A dispatch is awaited (**never** `run_in_background`) and its failure is a tool error, not a repair failure — it routes to the inline branch above and must never turn a would-be clean exit into a nonzero one.
 
+**Gate summaries are quoted, not restated.** When a strategy claims it ran a gate, its short summary
+must include the gate runner's **authoritative completion evidence** plus the **verbatim final
+summary line** as printed — the test runner's own summary line, the linter's own summary line, or
+the runner's closest equivalent. For a multi-command gate, the aggregate command's completed exit
+status or status file is the authority; an early subcommand's passing summary is not. A gate figure
+that is not backed by both the completion evidence and quoted line is **unverified** and must be
+reported as unverified rather than as a result. The reason is mechanical: a restated number and a
+fabricated number have the same shape, so quoting the line byte-for-byte and tying it to the
+completed runner is the cheap check that separates a measurement from a guess. Carry those quoted
+lines and the completion evidence into the [Repair Summary](#repair-summary)'s `**Gate results**`
+field.
+
+**Verdicts and cited evidence are trusted separately.** Before acting on a failed gate summary,
+re-derive the failure identity from the test log itself: which tests failed, which package or file
+owned the failure, and why the failure belongs to this branch. Assess the returned verdict and the
+evidence it cites independently. A correct verdict supported by a mis-cited line is still a
+mis-citation; a wrong verdict attached to a correctly quoted line still tells you what the log said.
+Never promote narrative to authority when the log is available.
+
 **Round freshness — capture the head SHA before reading PR state.** The first thing a round does,
 before reading review threads, check runs, or mergeability, is record the commit the **PR head**
 points at — the commit every check run is attached to. That capture is
@@ -197,6 +248,22 @@ freshness test without a recorded baseline, do not cancel and do not proceed on 
 read: re-capture the PR head and re-read the check runs against it, so the view you act on is
 coherent with a baseline you hold. A missing baseline is never on its own a reason to cancel.
 
+**Four baselines, four questions — no one of them substitutes for another.** A round holds more
+than one piece of state, and each piece answers a different question about a different actor:
+
+| name             | value                                                                      | question it answers                         |
+| ---------------- | -------------------------------------------------------------------------- | ------------------------------------------- |
+| `ROUND_HEAD`     | the PR head at round start (`gh pr view --json headRefOid -q .headRefOid`) | did the PR head move mid-round?             |
+| `PUSHED_HEAD`    | the SHA this run authored and sent, captured before the push               | is this run's own work still on the branch? |
+| `PREV_PASS_HEAD` | the PR head the previous [Watch Mode](#watch-mode) pass started from       | was the branch replaced since my last pass? |
+| `$BEFORE`        | the local tip before a [Watch Mode](#watch-mode) pass                      | did _this pass_ make progress?              |
+
+They are **four different questions**, so an answer to one is never an answer to another: a
+`ROUND_HEAD` that still matches does not prove your commit survived, a local tip that moved does not
+prove _this pass_ pushed, and a fast-forward since the last pass does not make an earlier pass's
+verdict current. Record each one in your own notes as you obtain it, for the reason the paragraph
+above already gives — shell state does not survive between tool calls.
+
 **Handle review feedback before CI failures.** Thread content is stable: a reviewer's words mean the
 same thing whether or not another commit has landed since they were written, so feedback can be
 acted on exactly as read. Check runs are volatile — each describes one specific commit, and a push
@@ -212,8 +279,9 @@ Check the head once more immediately before you push a CI fix, too: the window b
 act and pushing is small but not empty, and a head that moved inside it supersedes the fix you are
 about to send. Cancel the CI half then as well rather than force-pushing over the newer commit.
 Keep the commit you already made — do not reset it — and name it in the residual as built but unpushed;
-the branch being ahead of origin is expected in this one case, so Phase 3's clean-tree check and
-Watch Mode's no-progress comparison both read it as the cancellation it is, not as progress.
+the branch being ahead of origin is expected in this one case, so Phase 3's clean-tree check,
+Watch Mode's no-progress comparison, and the `PUSHED_HEAD` survival assertion below all read it as
+the cancellation it is, not as progress and not as a clobber.
 Skip only the CI half of the round — any conflict repair or review work this round still owes is
 unaffected and is still due first; end the pass only once that work is done.
 Report the superseded CI view as a residual and **exit zero**, per
@@ -246,6 +314,77 @@ Mode: to the next poll) rather than falling back on the pre-push results. `$BEFO
 [Watch Mode](#watch-mode) step 1 is a different baseline for a different question — it is the local
 tip and detects whether _this_ pass made progress, while `ROUND_HEAD` is the PR head and detects a
 push this round did not make. They are not interchangeable.
+
+**Record `PUSHED_HEAD`, and verify this run's own commit survived.** `PUSHED_HEAD` is the SHA **this
+run authored and sent** — capture it from your own commit (`git rev-parse HEAD` immediately after
+`git commit` and **before** the `git push` that sends it) and record it in your own notes rather than
+only in a shell variable. Do **not** take it from the post-push re-baselining above: that read is
+right for `ROUND_HEAD` and wrong for this one, because a concurrent writer sharing this worktree can
+move local HEAD onto its own commit before your push runs, and a post-push read would then record the
+clobbering commit as this run's — so the survival assertion below would pass on precisely the failure
+it exists to catch. The two values are equal whenever the push was genuinely this run's and diverge
+the moment anyone else's commit is at the head, and it is `PUSHED_HEAD` — never `ROUND_HEAD` — that
+answers whether this run's work is still on the branch.
+
+**A commit you deliberately withheld never sets `PUSHED_HEAD`.** The stale-SHA cancellation above
+keeps its commit and does not push it, so there is nothing sent for the survival check to be about:
+leave `PUSHED_HEAD` unset there and report that commit as built but unpushed. Setting it anyway
+would make the assertion below fail — the commit is not on origin, because you chose not to send it
+— and print a concurrent writer that does not exist. The same holds when a push you did attempt was
+**rejected**: nothing was sent, so unset `PUSHED_HEAD` and report the rejection, rather than letting
+the assertion describe a commit that was never replaced because it never arrived.
+
+`git push` printing `Everything up-to-date` is **not** proof your commit is on the branch. It proves
+only that local HEAD already equals the remote ref, which is equally true when another writer
+sharing this worktree moved local HEAD there — exactly what a force-push over this run's work looks
+like from inside the worktree. Treat it as an unresolved signal, never as a successful push.
+
+Before reporting a fix as landed in [Phase 3](#phase-3-verify-and-monitor), assert your work is
+still reachable by **ancestry, not equality** — once for **every** SHA your notes recorded, not only
+the most recent. A [Watch Mode](#watch-mode) round sends one per pass that pushed, and a clobber of
+an earlier pass's commit is just as much a false report as a clobber of the last one.
+
+**Re-hydrate the list from your notes before you read it.** No shell variable set by the push — or by
+any earlier tool call in this round — is still in scope here, so the round-wide record lives in your
+notes and is pasted back into `SENT_SHAS` at the point of use. A block that instead read a bare
+`$PUSHED_HEAD` left over from the push would find it empty on every pass, take the "sent nothing"
+arm, and report a clean survival for a round whose commit had in fact been replaced:
+
+```bash
+BRANCH=$(git branch --show-current) || exit 1
+[ -n "$BRANCH" ] || exit 1
+git fetch origin "$BRANCH" || exit 1
+# Re-hydrated from your notes: every SHA this round sent, one per pass that pushed, oldest first.
+SENT_SHAS="<paste the SHAs your notes recorded, space-separated; empty if this round sent none>"
+if [ -z "$SENT_SHAS" ]; then
+  echo "this round sent nothing — nothing of this run's to verify (a commit withheld by the stale-SHA cancellation is reported as built but unpushed, not as a survival failure)"
+else
+  for SENT_SHA in $SENT_SHAS; do
+    if git merge-base --is-ancestor "$SENT_SHA" "origin/$BRANCH"; then
+      echo "this run's commit is still on the branch ($SENT_SHA)"
+    else
+      echo "RESIDUAL: a concurrent writer replaced this run's commit ($SENT_SHA is no longer an ancestor of origin/$BRANCH)"
+    fi
+  done
+fi
+```
+
+Every substitution is checked, and both empty operands are handled rather than left to fall through:
+`git branch --show-current` exits **zero with empty output** on a detached HEAD, so `|| exit 1` alone
+does not catch it, and an empty `SENT_SHAS` would run the `for` **zero times** — printing nothing at
+all, which reads downstream as "no residual found" rather than as "nothing was checked". The explicit
+`[ -z ]` arm is what makes a round that pushed nothing say so out loud.
+
+**Every** entry is checked and reported, not just the newest. Stopping at the first survivor would
+miss exactly the case the round-wide record exists for — pass 2 landing cleanly while a peer
+force-pushed away what pass 1 sent — and a single residual anywhere in the list means the repair did
+not fully land.
+
+Ancestry rather than equality is load-bearing in both directions. Equality would fire on every
+benign advance — a peer adding commits **on top** of yours is not a clobber — while a plain
+head-SHA match cannot see that your commit is gone at all, because the commit that replaced it is a
+perfectly valid new head. When the assertion fails: **do not re-push and do not force-push over the
+newer commit.** Report it as a **residual** naming both SHAs, and do not claim the repair landed.
 
 #### Strategy A: Merge Conflicts
 
@@ -338,6 +477,11 @@ push this round did not make. They are not interchangeable.
    - Understand both versions. During rebase conflicts, Git labels can feel
      reversed from a merge: `ours` is the upstream/base branch being rebased
      onto, and `theirs` is the replayed PR commit.
+   - If the conflict is in a generated artifact, resolve the source inputs and
+     regenerate the artifact; never hand-edit the generated hunk as the fix.
+   - If the conflict is additive-vs-additive in an append-only registry, keep
+     BOTH sides unless a documented uniqueness rule says one entry supersedes
+     the other.
    - Resolve by:
      - Keeping both changes if they're independent
      - Choosing the correct version if they conflict
@@ -377,6 +521,14 @@ push this round did not make. They are not interchangeable.
    go test ./...
    cargo test
    ```
+
+   After the whole rebase completes, run the project's configured
+   `commands.postRebase` check once. Do this after the final replayed commit,
+   not at the individual conflicting commit: a later replay can silently stale
+   a regenerated artifact again with no second conflict marker. If the branch
+   refactored a call shape, grep the post-rebase tree for the OLD shape before
+   trusting the clean rebase exit, explicitly including files the base added
+   that this branch never touched, then run the affected module's tests.
 
 6. Run the merge-commit preflight, then push the rebased branch:
    ```bash
@@ -467,37 +619,54 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    Do not rely on `gh pr view --comments` or `gh pr view --json comments` for this step. Those only cover PR conversation comments and can miss inline review comments with URLs like `#discussion_r...`.
 
-   First, run the review feedback probe from this skill directory. This script uses both required GitHub APIs and prints a compact summary, so a blank result cannot be mistaken for "no comments."
+   First, run the review feedback probe from the session worktree, using the installed skill script
+   by absolute path. This script uses both required GitHub APIs and prints a compact summary, so a
+   blank result cannot be mistaken for "no comments."
 
    ```bash
-   node scripts/review-feedback-probe.js
+   BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+   if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+   node "$BOSS_REPAIR_PROBE"
    ```
 
    Probe interpretation rules:
+   - The first line is a probe contract version. Treat an unrecognised contract version as
+     `repair_status=not_evaluated`, never as a content verdict.
    - `probe_status=failed`: the probe failed. Fix the command or auth issue; do not report "no review feedback."
-   - `probe_status=suspicious_zero`: `latestReviews` contains `COMMENTED`, but both probes found zero comments. Retry with the explicit repo and PR number before concluding there is no review feedback.
-   - Empty stdout from any wrapped/batched command is a probe failure, not a zero-comment result.
-   - Trust `repair_status` as the normalized result when `probe_status=ok`.
+   - `probe_status=suspicious_zero`: `latestReviews` contains `COMMENTED`, but both probes found zero comments. Treat this as not evaluated for repair routing; do not conclude no feedback exists.
+   - Empty stdout, or stdout without a `probe_status=` line, is a probe failure, not a zero-comment result.
+   - Trust `repair_status` as the normalized result only when `probe_status=ok`.
    - `repair_status=clean`: there are no unresolved review threads. Historical REST `inline_comments`, resolved GraphQL `review_threads`, and `COMMENTED` latest reviews do not require action by themselves.
    - `repair_status=needs_repair`: handle every printed unresolved thread.
    - `repair_status=parked`: every unresolved thread is waiting on a human. Do not re-dispatch repair work unless a later probe reports `needs_repair`.
+   - `repair_status=not_evaluated`: review state was not successfully observed. It is never
+     `clean`. A repository or PR unreadable because of auth or a real 404 is a true stop; a wrong
+     probe path, rate limit, transient service failure, or other tooling failure is a reported
+     residual.
 
      A park keys on the **reviewer's last-comment identity**, not on the branch head, so the branch can move underneath a park and address the complaint without ever unparking it. **Never carry a prior pass's parked verdict forward.** Before reporting a parked thread as a residual, **re-derive its premise against current HEAD**: grep the files the parked comment names for the feature keyword it disputes. That check is decisive in both directions — the same files and keyword that established the premise settle whether it still holds. If the premise no longer holds, clear the park, reply citing the file and line that now satisfies it, and resolve the thread:
 
      ```bash
-     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition open
+     BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+     if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+     node "$BOSS_REPAIR_PROBE" mark --thread THREAD_ID --disposition open --repo OWNER/REPO --pr PR_NUM --host HOST
      ```
 
-   - `repair_status=unknown`: REST and GraphQL disagree or thread state is unavailable. Retry with explicit repo/pr before concluding there is no review feedback.
+   - `repair_status=unknown`: REST and GraphQL disagree or thread state is unavailable after a
+     successful observation. Do not treat reviews as clean.
 
-2. For each unresolved thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is the finding factually true against the tree? — and then the **remedy** — must the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless.
+2. Group the unresolved threads by the file each thread anchors to, then triage every thread in each group. A thread with no file anchor goes into a single `no file` group, so the rule is total. When the Phase 2 dispatch branch is available, dispatch one worker per file group for **verdict-only** analysis; that worker returns a **separate verdict per thread** in its group, using the four categories below, and may propose a patch shape but must not edit, commit, push, reply, or resolve. When the documented inline branch is active because the awaited subagent tool is absent or dispatch failed, the orchestrator triages each group itself using the same four categories and still records a separate verdict per thread. The orchestrator serializes all repository-mutating work after verdicts are known: apply any fixes, run gates, commit, push, reply, and resolve threads from one owner. The file is the first conflict unit, but shared helpers, generated artifacts, lockfiles, the Git index, and the branch tip are repository-wide; verdict-only workers keep parallel triage from becoming concurrent writers while still letting the orchestrator resolve or decline each thread independently.
+
+   For each thread, triage into one of four categories. The triage turns on two axes, in this order: the **premise** — is the finding factually true against the tree? — and then the **remedy** — must the suggested change be applied as written? A true premise does **not** by itself license implementing the suggestion, and grading only the premise is what leaves a correct finding with an unbuildable remedy homeless.
 
    **a) Actionable — fix it:**
    - Read the relevant code/files
    - Implement the requested change
    - Mark the thread as dispatched before acting on it:
      ```bash
-     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition dispatched
+     BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+     if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+     node "$BOSS_REPAIR_PROBE" mark --thread THREAD_ID --disposition dispatched --repo OWNER/REPO --pr PR_NUM --host HOST
      ```
    - Add a reply comment on the thread explaining what was fixed:
      Reply bodies are Markdown and must never be shell-interpolated. `-F` is selected here because
@@ -514,7 +683,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      Use the agent's file-editing tool to write the exact reply text to the printed path, then:
      ```bash
      REPLY_BODY="/the/path/printed/above"
-     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY" -q .html_url; then
        rm -f "$REPLY_BODY"
      else
        GH_STATUS=$?
@@ -545,7 +714,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      Submit that same path after the file-editing tool has written the reply:
      ```bash
      REPLY_BODY="/the/path/printed/above"
-     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY" -q .html_url; then
        rm -f "$REPLY_BODY"
      else
        GH_STATUS=$?
@@ -583,7 +752,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
      Submit that same path after the file-editing tool has written the reply:
      ```bash
      REPLY_BODY="/the/path/printed/above"
-     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY"; then
+     if gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -F body=@"$REPLY_BODY" -q .html_url; then
        rm -f "$REPLY_BODY"
      else
        GH_STATUS=$?
@@ -595,7 +764,9 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
    - Mark it `needs-human` after posting the clarification, so later repair rounds park it until the
      reviewer's last-comment identity changes:
      ```bash
-     node scripts/review-feedback-probe.js mark --thread THREAD_ID --disposition needs-human
+     BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+     if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+     node "$BOSS_REPAIR_PROBE" mark --thread THREAD_ID --disposition needs-human --repo OWNER/REPO --pr PR_NUM --host HOST
      ```
    - A thread left open this way is a **residual**: record it in the Repair Summary alongside the
      rest, per [Residuals vs true stops](#residuals-vs-true-stops). It does not fail the pass.
@@ -604,6 +775,7 @@ The A/B/C ordering here is presentational, not an execution order. If review fee
 
    - **Verify each link of a multi-step causal claim separately.** When a finding asserts a chain — this call does X, so Y follows, therefore Z is broken — check each link independently against the code instead of grading the comment as a whole. The reply must state which links held and which were restated or corrected. Answering wholesale goes wrong in both directions: a blanket accept commits the run to a false statement in the PR record, and a blanket reject discards the real defect the chain was built around.
    - **Settle a flagged documentation claim against the adjacent code comment and the nearest test.** When a finding says a documented claim is wrong, read the code comment beside the implementation — and the package doc comment — and the **name** of the nearest test before re-deriving the behaviour from the implementation or treating it as a code defect. When those two agree with each other and contradict the doc, the fix is prose-only and **no code change is in scope** — this is what stops a round "fixing" behaviour that was already correct.
+   - **Run a sibling-class sweep before writing the fix.** Once you understand the finding's mechanism, search the repository for that mechanism before editing the cited site. Enumerate every site the search returns and record a verdict for each one: `fixed in this pass`, or `not a defect` with the reason; a one-row result is a complete discharge when the search finds only the cited site. The class is never fixed wholesale on the strength of the search alone: a predicate guarded by an error check can have many correct matches that render an error banner while the affected view remains interactive, and one defective match whose error branch replaces the view and swallows input; the discriminator is where the branch lives, not whether the pattern matched. The same sweep covers same-site siblings too: when one message drives both an observer and view state, relocating only the observer can leave the view half of the defect behind. Put the verdict table in the PR body or Repair Summary so the enumeration is reviewable.
    - **Find the sibling constant before designing a tunable-constant fix.** Before implementing a timeout, deadline, retry count, limit, or any other tunable constant in response to an open-ended suggestion, grep the containing package for sibling constants and follow the naming and test-seam shape already established there. An open-ended suggestion invites an invented mechanism; a sibling turns the fix into a mechanical, reviewable change with a ready-made test shape.
    - **Grep upstream before treating a skill-prose finding as single-site.** Before accepting that a finding quoting one line of skill prose is fixable at that line, grep the quoted remedy across the whole skills tree **and** the contract docs those skills are copied from. Treat the cited line as the symptom and fix the upstream contract passage in the same commit — it costs one grep, and a quoted-line-only fix leaves the contract re-seeding the identical prose into the next skill copied from it.
    - **Sweep the rationale, not only the restatements.** When the fix edits a prose contract rule, re-read the passages around it before you reply and correct any that cite the **old** rule as their **reason**, not only the ones that restate it. A restatement is greppable and a rationale is not, so the half that rots is the half no grep hands you — a fix scoped to the flagged sentence ships a contradiction one paragraph away.
@@ -680,21 +852,73 @@ After applying the repair:
    git status     # Should show clean working tree
    ```
 
-2. Verify the committed fix is pushed to origin:
+   One case legitimately leaves the tree dirty: the pre-existing work
+   [Phase 1](#phase-1-assess-current-state) step 1.1a found and deliberately did not touch. That step
+   commits only the files belonging to the thread under repair and leaves partial, incoherent or
+   unrelated changes exactly where they are, because a peer may be mid-edit in this worktree. A tree
+   still dirty for that reason is **expected** here and is reported as the residual 1.1a already
+   requires — do **not** commit it to make this check green, and do **not** reset it. Anything else
+   dirty is this round's own unfinished work and must be resolved before reporting.
+
+2. Verify the committed fix is pushed to origin. Re-derive this from a fresh fetch at the moment you
+   need the answer — an `[ahead N]` count observed earlier in the pass is never sufficient, because
+   it is computed against the remote-tracking ref, which is only as fresh as the last fetch, and a
+   peer session sharing this branch may have already pushed the very commits this round produced:
 
    ```bash
-   git status -sb  # Branch should not be ahead of origin
+   # Branch should not be left ahead of origin — derive that fresh, never from an earlier read.
+   BRANCH=$(git branch --show-current) || exit 1
+   [ -n "$BRANCH" ] || exit 1
+   git fetch origin "$BRANCH" || exit 1
+   LOCAL=$(git rev-parse HEAD) || exit 1
+   REMOTE=$(git rev-parse "origin/$BRANCH") || exit 1
+   if [ "$LOCAL" = "$REMOTE" ]; then
+     echo "already published — no push owed"
+   elif git merge-base --is-ancestor "$LOCAL" "$REMOTE"; then
+     echo "remote is ahead of this worktree — do not push; re-derive the round from the new head"
+   elif git merge-base --is-ancestor "$REMOTE" "$LOCAL"; then
+     echo "push owed — unless this commit was withheld by the stale-SHA cancellation, in which case report it and do not push"
+   else
+     echo "diverged — a concurrent writer rewrote the branch; do not push and do not force-push, report a residual and re-derive the round from the new head"
+   fi
    ```
+
+   Compare the two SHAs as **strings**, with `|| exit 1` on each substitution, per the fail-closed
+   style the [Linear-History Invariant](#linear-history-invariant) already mandates: an empty
+   substitution comparing equal under `-eq` is precisely the fail-open form that section forbids.
+
+   **Four arms, because "not equal" is three different situations.** Only the third owes a push. The
+   fourth is **divergence, not a routine push**: local and remote share nothing newer than an older
+   base, because a concurrent writer rewrote the branch. A plain `git push` is rejected there and a
+   force-push clobbers that writer's work, so this is the same concurrent-writer case the
+   `PUSHED_HEAD` assertion in [Phase 2](#phase-2-execute-repair-strategy) forbids resolving by force
+   — report it as a residual and re-derive the round from the new head. Collapsing the last two arms
+   back into one `else` reads a clobber as ordinary unpushed work, which is the failure this whole
+   section exists to prevent.
+
+   One case legitimately leaves the branch ahead of origin: the stale-SHA cancellation above, where
+   the CI half was cancelled and its commit was built but deliberately not pushed. A branch ahead of
+   origin is **expected** there and is reported as that cancellation, not pushed — this check must
+   read it the same way the clean-tree check does.
 
 3. Poll the remote PR state, then report the final PR state (default mode performs one post-push poll; in Watch Mode you loop per the [Watch Mode](#watch-mode) section):
 
    ```bash
    gh pr checks --json bucket
-   node scripts/review-feedback-probe.js
+   BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+   if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+   node "$BOSS_REPAIR_PROBE"
    gh pr view --json mergeable -q .mergeable
    ```
 
-4. If `repair_status=needs_repair` or `repair_status=unknown`, handle or retry the review feedback before exiting; do not treat unknown review status as clean. If checks are still pending, failed, or timed out after known review feedback is handled, note that in output. In default mode, still **exit cleanly (zero)** after the push even when checks are pending or failed — report the status but do not exit nonzero. The repair plugin only enters its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
+4. If `repair_status=needs_repair`, `repair_status=unknown`, or `repair_status=not_evaluated`, handle
+   or report the review feedback before exiting; do not treat unknown or not-evaluated review status
+   as clean. If checks are still pending, failed, or timed out after known review feedback is handled,
+   note that in output. In default mode, still **exit cleanly (zero)** after the push even when checks
+   are pending or failed — report the status but do not exit nonzero. The repair plugin only enters
+   its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and
+   fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the
+   matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
 
    Dispatching Strategy A/B/C investigation into an awaited subagent (see the Phase 2 lead-in and the [Watch Mode](#watch-mode) section) is internal orchestration bookkeeping for a single repair pass only. It MUST NOT change this default-mode contract — one pass, push, a single poll, and a clean zero exit even when checks are pending, so the repair plugin keeps owning retries — nor the default-vs-watch distinction described above.
 
@@ -723,6 +947,9 @@ Provide a concise summary:
 **Status**:
 - Changes pushed to origin
 - [Checks are now passing | Checks are pending | Awaiting review]
+
+**Gate results**:
+- [Each gate run with authoritative completion evidence plus its quoted final summary line | `unverified` for any gate missing either the completion evidence or quoted line | none]
 
 **Residuals**:
 - [What this pass could not resolve and why the round stopped short | none]
@@ -753,8 +980,10 @@ and each outcome records which existing token it maps to.
   zero actionable threads, so no strategy fires and no mandated dispatch was skipped.
   The parked thread or threads are the residual. Exit zero. Watch token: `parked`.
 - **residual** — the pass ran and something remains: pending CI, the bounded-pass limit, review
-  feedback that arrived after the final push, a superseded CI view, a re-rolled flake, or an
-  escalated edge case. Report it and exit zero, per
+  feedback that arrived after the final push, `repair_status=not_evaluated` for a probe/tooling
+  failure that is not repository/PR unreadability, a superseded CI view, a re-rolled flake, a concurrent
+  writer that replaced the branch or this run's commit, or an escalated edge case.
+  Report it and exit zero, per
   [Residuals vs true stops](#residuals-vs-true-stops).
   Watch tokens: `no-progress` / `max-attempts` / `blocked`.
 - **true stop** — the worker could not run at all. Exit non-zero; the definition stays in
@@ -774,8 +1003,9 @@ choosing an exit code.
   residual is always a _reported_ outcome, never a silent one; leaving it out of the report is the
   real failure.
 - **True stop** — the worker could not run at all: required tooling is missing, the repository or PR
-  is unreadable, or an unexpected exception aborted the pass. There is no repair outcome to report,
-  so **exit non-zero** and let the breakage surface loudly.
+  is unreadable, `repair_status=not_evaluated` because auth or a real repository or PR 404 prevented
+  observation, or an unexpected exception aborted the pass. There is no repair outcome to report, so
+  **exit non-zero** and let the breakage surface loudly.
 
 Both outcomes describe how the **pass itself** ends. The `exit 1` guards inside the command snippets
 above are narrower: they abort that step — refusing to push a branch that would poison the PR, or a
@@ -857,7 +1087,7 @@ If the repair requires information not available (e.g., design decisions, extern
    review threads into the orchestrator's context — that bulk is re-charged on every later turn. The
    Phase 2 strategy subagent reads them in its own context and returns only a summary; when working
    inline, filter to the few relevant lines (`gh pr checks --json name,state,bucket`,
-   `gh run view <run-id> --log-failed | tail`, `node scripts/review-feedback-probe.js`'s compact
+   `gh run view <run-id> --log-failed | tail`, `${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js`'s compact
    summary) instead of dumping.
 8. **Treat an Omission-Justifying Comment as a Hypothesis**: A comment explaining why something
    was deliberately left undone may be over-conservative — the stated premise can be true while the
@@ -985,32 +1215,87 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
 1. Record the current commit before each repair pass, and refresh this baseline after every pushed repair before returning to the poll loop:
 
    ```bash
-   BEFORE=$(git rev-parse HEAD)
+   BEFORE=$(git rev-parse HEAD) || exit 1
    ```
+
+   **Key every sent-SHA note entry to its pass number.** The record in your notes is the single
+   carrier: one entry per pass that pushed, `pass <n>: <sha>`, never overwritten and never erased. It
+   must keep **every SHA this round sent**, one entry per pass that pushed, because Phase 2's
+   survival assertion runs over all of them — pass 2 polling while a peer force-pushes away what pass
+   1 landed is exactly the clobber that assertion exists to catch, and a round that kept only the
+   current pass's value would report "sent nothing" and never look.
+
+   **Do not carry a sent-SHA in a shell variable across the pass.** A shell variable does not survive
+   between the tool calls a pass is made of, so a later step reading a bare `$PUSHED_HEAD` finds it
+   empty however the pass went, and both readers below would be answering from an empty value rather
+   than from the record. Both derive from the notes instead: step 9 reads **this pass's own entry**
+   (absent ⇒ this pass pushed nothing), and Phase 2's assertion reads **all** entries. Keying by pass
+   number is what keeps those two readings apart without erasing anything — clearing a shell variable
+   answered step 9 only by destroying the record Phase 2 needs.
+
+   **Pass freshness — re-read the PR head at the start of every pass.** Record it as this pass's
+   `ROUND_HEAD` and compare it against `PREV_PASS_HEAD`, the value the previous pass recorded. Then
+   **record this pass's `ROUND_HEAD` as `PREV_PASS_HEAD` for the next pass** straight away — the
+   baseline the next pass needs is the head _this_ pass started from — in your own notes rather than
+   only in a shell variable, since no shell state survives between passes. Nothing else supplies that
+   baseline: a pass that omits the hand-off leaves the next one with no way to see a rewrite. The
+   **first** pass has no previous value, and an unset `PREV_PASS_HEAD` is **not** a rewrite:
+
+   ```bash
+   BRANCH=$(git branch --show-current) || exit 1
+   [ -n "$BRANCH" ] || exit 1
+   git fetch origin "$BRANCH" || exit 1
+   ROUND_HEAD=$(gh pr view --json headRefOid -q .headRefOid) || exit 1
+   if [ -z "$PREV_PASS_HEAD" ]; then
+     echo "first pass — no previous baseline, nothing is invalidated"
+   elif git merge-base --is-ancestor "$PREV_PASS_HEAD" "$ROUND_HEAD"; then
+     echo "fast-forward since the previous pass"
+   else
+     echo "NON-FAST-FORWARD: the branch was rewritten since the previous pass; every earlier premise is void"
+   fi
+   PREV_PASS_HEAD=$ROUND_HEAD   # hand this pass's head to the next pass; record it in your notes too
+   ```
+
+   The empty-`PREV_PASS_HEAD` arm is not decoration. Without it `merge-base` is handed an empty
+   operand, errors, and falls into the `else`, so pass 1 would announce a rewrite that did not happen
+   and order the agent to discard the triage it had just completed.
+
+   A **non-fast-forward** move means another writer rewrote or rebased the branch, and every
+   conclusion carried from an earlier pass is then **invalid outright** — not stale-but-reportable.
+   Discard the prior triage, discard any carried `parked` verdict, and re-derive every premise
+   (checks, threads, mergeability) against the new head before acting. Do **not** re-report an
+   earlier pass's finding against a tree that no longer exists.
+
+   Even a **fast-forward** move made by a writer other than this pass invalidates carried check
+   verdicts; only re-derived reads may be acted on. This is the same head-scoping the
+   `repair_status=clean` paragraph in step 8 already establishes for review probes, applied to the
+   rest of the pass's premises.
 
 2. Poll all repair signals before every sleep:
 
    ```bash
    gh pr checks --json bucket
-   node scripts/review-feedback-probe.js
+   BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js"
+   if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
+   node "$BOSS_REPAIR_PROBE"
    gh pr view --json mergeable -q .mergeable
    ```
 
 3. Interpret the full PR state:
 
    - **Checks:** `gh pr checks --json bucket` — all checks pass only when every bucket is passing/successful and none are pending, skipped-required, cancelled, timed out, or failed.
-   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `parked`, `needs_repair`, `unknown`) using the same interpretation rules as Strategy C above.
+   - **Review threads:** `${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `parked`, `needs_repair`, `unknown`, `not_evaluated`) using the same interpretation rules as Strategy C above.
    - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
 
-4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then start the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then start the next poll. Only true clarification requests may remain unresolved. If `repair_status=parked`, no action is due until a reviewer replies. If `repair_status=unknown`, retry with explicit repo/pr and do not treat reviews as clean.
+4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll. Only true clarification requests may remain unresolved. If `repair_status=parked`, no action is due until a reviewer replies. If `repair_status=unknown` or `repair_status=not_evaluated`, do not treat reviews as clean; report the unreadable state or route true repository/PR unreadability as a true stop.
 
-5. **Conflicts next:** if mergeable is `CONFLICTING`, repair the conflict, commit, push, then start the next poll.
+5. **Conflicts next:** if mergeable is `CONFLICTING`, repair the conflict, commit, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
 6. **Pending checks:** if checks are pending, sleep 30–60 seconds, then poll checks, review threads, and mergeability again. Do not wait on checks without probing reviews and mergeability first.
 
-7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then start the next poll.
+7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then return to step 1 — re-baseline and re-run the pass-freshness check — before the next poll.
 
-8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. Once all four hold, stop and exit zero.
+8. **Done — green or parked:** the loop has reached a non-repair terminal state only when checks pass AND (`repair_status=clean` **or** `repair_status=parked`) AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved. `repair_status=not_evaluated` is terminal only as a non-green unreadable-review state: record it as a residual unless the reason shows the repository or PR itself is unreadable, in which case it is a true stop. Once all four hold, stop and exit zero.
 
    `repair_status=clean` is **head-scoped**: it is clean only for the head it was read against, so a clean probe at the end of one round predicts nothing about the next. A reviewer who re-reviews every push opens fresh threads against this round's own fix, which means **new threads since the previous round's head are an expected steady state** — not a regression, and not a fresh failure.
 
@@ -1019,6 +1304,18 @@ Each of these repair passes dispatches its own fresh awaited subagent (per the P
    Once those four conditions hold, the round that reaches them is one that **stops pushing** — and there are **two distinct terminators** wearing that same shape: a round that arrives green and does nothing, reported as `green`, and a round that replied and **parked without pushing**, reported as `parked`. Neither shortcuts the four conditions above; they name which terminal a satisfied round is reporting. The parked terminator did substantive work — it read, triaged and answered threads — so it is **not** the no-progress stop of step 9, which describes a round that could not move an unchanged failing signal.
 
 9. **No-progress stop:** after a repair pass, if `git rev-parse HEAD` equals the `$BEFORE` value captured immediately before that pass (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
+
+   A raw `HEAD` comparison is not by itself the progress test, because HEAD moves for reasons this
+   pass did not author: a peer push moves it without this pass pushing, which reads as progress and
+   defeats the stop, and a peer force-push back to `$BEFORE` reads as no progress even though the
+   pass did push. So a pass made progress only when **this pass's own note entry exists** and the SHA
+   it records is an ancestor of the current `origin/$BRANCH`. Read that entry by **this pass's
+   number** from the record step 1 describes; an absent entry means this pass pushed nothing, which
+   is the no-progress arm. Do **not** read a shell `PUSHED_HEAD` here: no shell state survives from
+   the push to this point, so it is empty in every pass — including the ones that did push, where the
+   stop would then fire on a pass that had just landed a commit. Re-derive `$BRANCH` here as step 1's
+   fence does. A difference this pass did not author is neither progress nor no-progress —
+   it is a re-derivation trigger, per the pass-freshness rule in step 1.
 
 10. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
 

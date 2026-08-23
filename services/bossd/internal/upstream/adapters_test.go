@@ -1225,6 +1225,24 @@ func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
 		}
 	})
 
+	// The routing pin for BOS-947: SwitchAccount must classify through
+	// classifySwitchCommandError, not the shared classifyCommandError. Only the
+	// switch-scoped classifier emits DEADLINE_EXCEEDED, so this assertion is what
+	// fails if the call site is ever reverted to the shared one — at which point
+	// the daemon would flatten a budget-ended switch back to UNSPECIFIED and
+	// bosso would render the retry-inviting CodeAborted that BOS-747 forbids.
+	t.Run("deadline is classified through the switch-scoped classifier", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: connect.NewError(connect.CodeDeadlineExceeded, errors.New("switch respawn budget exhausted"))}}
+		_, _, _, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false)
+		if err == nil || !strings.Contains(err.Error(), "switch session account:") || !strings.Contains(err.Error(), "budget exhausted") {
+			t.Fatalf("SwitchAccount error = %v, want wrapped budget exhausted", err)
+		}
+		if code != pb.CommandResult_ERROR_CODE_DEADLINE_EXCEEDED {
+			t.Fatalf("error code = %v, want DEADLINE_EXCEEDED (SwitchAccount must route through classifySwitchCommandError)", code)
+		}
+	})
+
 	t.Run("forwards fields and maps empty agent id to nil", func(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{switchResp: &pb.SwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}}

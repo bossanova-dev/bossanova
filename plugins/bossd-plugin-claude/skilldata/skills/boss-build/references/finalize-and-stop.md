@@ -28,7 +28,13 @@ test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
 git fetch origin "$BASE_BRANCH"
 # Rebase all commits since the PR base and inject [#PR_NUMBER] into any missing it.
-BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
+# Run with a 600s tool timeout: this replays hooks once per commit, and multi-commit
+# branches can exceed the default. Redirect output to a file, never to head/tail; a
+# SIGPIPE during rebase can strand HEAD between commits. If the tool is killed or
+# times out, check $(git rev-parse --git-path rebase-merge) and rebase-apply before
+# retrying, then follow add-pr-numbers.sh cleanup_temp guidance to continue or abort.
+TAG_LOG="$(mktemp -t boss-build-inject-pr-tag.XXXXXX.log)"
+BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER" >"$TAG_LOG" 2>&1
 git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream
 ```
@@ -47,9 +53,10 @@ conflicts, and review comments — the green gate now runs on the already-tagged
 the work as a **draft** PR, leave the ticket **In Progress**, post a blocker comment (failing check
 name, `file:line`, what was attempted), then go to **Stop cleanly** with BLOCKED.
 
-Before blocking on this green gate, arm the one-shot callback **group** for the tagged head so the run
+Before blocking on this green gate, arm the one-shot callback watches for the tagged head so the run
 wakes the moment CI resolves or the PR merges/closes — `resolveCallbackAdapter(env)` `registerWatch`
-(`boss callback add "$PR_NUMBER" <trigger> --group ...`) for each `policy.watchTriggers`. On every
+(`boss callback add "$PR_NUMBER" <trigger> --group ...`) for each `policy.watchTriggers`, with each
+non-exclusive trigger under its own group. On every
 wake **reconcile against real state before acting** (`gh pr checks`/`gh pr view`), re-arm while still
 waiting, dedup by callback id, and back it with the bounded `gh pr checks --watch --fail-fast`
 fallback (used directly when callbacks are unavailable). Full protocol:
@@ -72,23 +79,66 @@ BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 test -f "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" || exit 1
 BASE_BRANCH="$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)"
 git fetch origin "$BASE_BRANCH"
-# Re-inject only if boss-repair added tagless commits; else no rewrite, no push, no second CI wait.
-if git log "origin/$BASE_BRANCH"..HEAD --oneline | grep -qv "\[#$PR_NUMBER\]"; then
+# Re-inject only if boss-repair added tagless non-empty commits; else no rewrite,
+# no push, no second CI wait. Empty bootstrap commits are exempt by tree equality,
+# not subject text, so a changed placeholder string cannot break this guard.
+UNTAGGED_NONEMPTY="$(
+  git log "origin/$BASE_BRANCH"..HEAD --format='%H%x09%s' |
+    while IFS=$'\t' read -r sha subject; do
+      if ! tree=$(git show -s --format=%T "$sha"); then exit 1; fi
+      parent=$(git rev-parse --verify "$sha^" 2>/dev/null || true)
+      if [ -n "$parent" ]; then
+        if ! parent_tree=$(git show -s --format=%T "$parent"); then exit 1; fi
+      else
+        if ! parent_tree=$(git hash-object -t tree /dev/null); then exit 1; fi
+      fi
+      if [ "$tree" = "$parent_tree" ]; then continue; fi
+      case "$subject" in *"[#$PR_NUMBER]"*) ;; *) printf '%s %s\n' "${sha:0:12}" "$subject";; esac
+    done
+)"
+if [ -n "$UNTAGGED_NONEMPTY" ]; then
   BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr-tag "$PR_NUMBER"
   git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse @{u})" || exit 1  # HEAD == upstream (lease rejected → re-fetch, re-run)
   gh pr checks "$PR_NUMBER" --watch --fail-fast            # red → route back to Step 8 (boss-repair)
 fi
+# Gate mergeability before readying. GitHub may report UNKNOWN briefly after a push, so poll with
+# a bound; CONFLICTING or any dirty mergeStateStatus means rebase onto the base, run the
+# configured commands.postRebase check, push, wait for checks, and re-read mergeability.
+for attempt in 1 2 3 4 5 6; do
+  PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
+  MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
+  MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
+  if [ "$MERGEABLE" != "UNKNOWN" ]; then break; fi
+  sleep 10
+done
+if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_STATE" = "BLOCKED" ]; then
+  git rebase "origin/$BASE_BRANCH"
+  POST_REBASE_CHECK="$(node --input-type=module -e 'import{pathToFileURL as u}from"node:url"; const m=await import(u(process.env.BOSS_BUILD_TOOLBOX+"/skill-config.mjs").href); process.stdout.write(m.command(m.loadSkillConfig({cwd:process.cwd()}),"postRebase")||"")')"
+  test -n "$POST_REBASE_CHECK" || { echo "commands.postRebase is not configured"; exit 1; }
+  sh -c "$POST_REBASE_CHECK"
+  git push --force-with-lease origin "$SESSION_BRANCH"
+  gh pr checks "$PR_NUMBER" --watch --fail-fast
+  PR_STATE="$(gh pr view "$PR_NUMBER" --json isDraft,mergeable,mergeStateStatus)"
+  MERGEABLE="$(printf '%s' "$PR_STATE" | jq -r .mergeable)"
+  MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
+  test "$MERGEABLE" = "MERGEABLE" || exit 1
+  test "$MERGE_STATE" != "DIRTY" || exit 1
+fi
 # Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
-if [ "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
+if [ "$(printf '%s' "$PR_STATE" | jq -r .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
 test "$(gh pr view "$PR_NUMBER" --json isDraft -q .isDraft)" = "false" || exit 1
 ```
 
 > If the re-inject branch's `gh pr checks --watch --fail-fast` goes red, route back to **Step 8
 > (boss-repair)**; never move the ticket to **In Review** with non-green checks. This wait may also be
-> driven by the one-shot callback group ([`callback-watches.md`](callback-watches.md)):
+> driven by the one-shot callback watches ([`callback-watches.md`](callback-watches.md)):
 > re-arm after the force-push, reconcile real check state on wake, and treat `--watch --fail-fast` as
-> the bounded fallback. Remove the group's live watches once the PR is readied.
+> the bounded fallback. Remove the live watches once the PR is readied.
+> The mergeability gate runs strictly before `gh pr ready`: readying itself can make GitHub report an
+> unstable merge state while review automation starts, and that post-ready state is not a conflict
+> signal. `UNKNOWN` is unsettled, never a pass; after the bounded poll it takes the same
+> rebase-then-re-verify path as a dirty state.
 
 Before readying, confirm **no required item was deferred** (Hard rules) — this now includes **every
 in-scope acceptance criterion being satisfied**: each `- [ ]` this ticket was scoped to close must be
@@ -139,6 +189,16 @@ would pass. That case is owned by the rule above — every in-scope criterion mu
 ticked — and the two compose: the completeness rule establishes that each criterion is _there_, and
 this gate establishes that each marked-and-ticked one is _evidenced_. Run both; neither substitutes
 for the other.
+
+### The premise discharge gate
+
+Before reporting `REVIEW_READY`, restate the plan's central premise from `## Premises` and the
+evidence that it still holds on this branch. If the central premise no longer holds, terminate
+BLOCKED with a written refutation even when every acceptance criterion is satisfied; a green
+checklist is not enough when the ticket's stated reason for the change is false. When merged work
+inverted the premise and the run took the documented-departure route, the PR body and tracker
+comment must name the criterion verbatim and the merged change that inverted it before the PR is
+readied.
 
 **Reclassification — the route out of an automatic BLOCK.** A plan written before this contract, or
 one whose drafter missed a verify-only criterion, still lands an in-scope criterion the diff cannot
@@ -200,14 +260,24 @@ entirely for `BLOCKED`, `PARTIAL`, draft, and `NO_CHANGE` — proof of an incomp
 misleading evidence. This step may **never** change the terminal state
 (BLOCKED is not reachable from here) and every failure is recorded and ignored.
 
-Classify the surface (`node scripts/proof.mjs plan`), then run `node scripts/proof.mjs run`.
-**`proof.mjs run`'s own PR comment — its structured deferred note — is the only proof channel.** Never
-hand-write skip prose or a "proof skipped: …" one-line note. When proof cannot run (no UI surface,
-missing prerequisite, pipeline bug), run `node scripts/proof.mjs run` anyway and let it post the honest
+Classify the surface (`node scripts/proof.mjs plan`), read `recipes`, `surfaces`, and `order`, then
+run browser recipes with explicit selection:
+
+```bash
+node scripts/proof.mjs run --recipe <id> --recipe <id>
+```
+
+Always select this change's browser recipes explicitly: a bare `run` executes the default preset, and
+an unrelated recipe failure still fails the aggregate process. **`proof.mjs run`'s own PR comment —
+its structured deferred note — is the only proof channel.** Never hand-write skip prose or a
+"proof skipped: …" one-line note. When proof cannot run (no UI surface, missing prerequisite,
+pipeline bug), run the proof pipeline anyway and let it post the honest
 `env-unavailable`/`pipeline-error` note (doctor output is embedded so a human can fix the env). The
 upload env is daemon-injected — do not source `.env`; run `node scripts/proof.mjs doctor` to see what
-is missing. A TUI diff lacking the scenario authored in Step 5 earns a `scenario-missing`
-note (exit 1 — proof is required for TUI). **Read [`proof-capture.md`](proof-capture.md)** for the full
+is missing. If it is a TUI diff, this step expects the Step 5 scenario to exist; TUI proof is
+scenario-driven, not `--recipe`-selectable. The intended missing-scenario policy contributes exit 1,
+but a green exit can still carry a downgraded stub; check the manifest's `clamped` array before
+treating the gallery as evidence. **Read [`proof-capture.md`](proof-capture.md)** for the full
 surface/doctor gates, outcome classes, and non-fatal contract. Do not run the finalize sequence here
 (it already ran in Steps 8–9).
 
@@ -220,6 +290,28 @@ Every terminal state that acquired the worktree lock (Step 1) — including the 
 Decide `OUTCOME` before the following optional post-terminal extension phase; it may not change that
 outcome, the exit code, any tracker or PR write, or the final
 `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE` line. Keep the worktree lock until the phase completes.
+
+When a ticket has been resolved, the run must carry the tracker state captured at session entry into
+Step 12. In bossd-managed runs, that value comes from the bootstrap/session payload captured before
+bossd's session-start sync moves the ticket; Step 12 must never recapture the current post-sync state
+and treat it as entry. In standalone/manual runs, capture the entry state before the first tracker move
+this run performs. On a `NO_CHANGE` exit — including a lost claim and the Step 2.5 `foreign` yield —
+restore that entry state with the tracker adapter's `moveState` capability when the ticket is not
+already there. Guard the restore: skip it when the current state is not one this run or its bootstrap
+produced, or when claim arbitration shows another runner still owns the ticket (for example, a `LOST`
+claim with the winning claim comment still present), because a third-party owner or state change is
+authoritative and must not be clobbered.
+A failed restore is reported as a warning and does not change the terminal outcome.
+
+Every `NO_CHANGE` exit for a resolved ticket also leaves exactly one durable breadcrumb tracker
+comment naming the `NO_CHANGE` branch that fired and the single fact that made it fire. This
+breadcrumb is not deleted with the claim comment; deleting the transient claim and preserving the
+diagnostic breadcrumb are separate acts with opposite intent. The breadcrumb is idempotent: if this
+run already posted one, update it rather than adding a duplicate, and make repeated `NO_CHANGE` exits
+on the same ticket visible as repeats. Keep the breadcrumb secret-hygienic: a short reason plus a
+file, skill, or command pointer only — never a transcript, command output, user-provided content,
+credentials, or tokens. Write the breadcrumb and perform the guarded state restore here in Step 12,
+before the optional post-terminal notes extensions phase, whose contract forbids tracker writes.
 
 ### Post-terminal notes extensions (repo opt-in)
 

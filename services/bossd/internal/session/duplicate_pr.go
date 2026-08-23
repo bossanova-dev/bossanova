@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossd/internal/db"
@@ -141,6 +143,25 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 func StateBlocksDuplicateTarget(state machine.State) bool {
 	return state != machine.Blocked && state != machine.Merged &&
 		state != machine.Closed && state != machine.Orphaned
+}
+
+// IsPlanningSessionPlan reports whether plan starts with the /boss-plan slash
+// command after leading whitespace. It deliberately does not infer intent from
+// prose or looser command lookalikes.
+func IsPlanningSessionPlan(plan string) bool {
+	const command = "/boss-plan"
+
+	trimmed := strings.TrimLeftFunc(plan, unicode.IsSpace)
+	if !strings.HasPrefix(trimmed, command) {
+		return false
+	}
+
+	rest := trimmed[len(command):]
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return unicode.IsSpace(r)
 }
 
 func duplicateSessionStateNeedsLiveness(state machine.State) bool {

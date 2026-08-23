@@ -211,7 +211,17 @@ message OrchestratorCommand {
     BroadcastCommand broadcast = 60;
     // bosso → daemon: per-chat status for one session. Replies CommandResult{get_chat_statuses}.
     GetChatStatusesCommand get_chat_statuses = 61;
+    // bosso → daemon: cancel a previously-sent command by command_id. No
+    // CommandResult is emitted for the cancellation command itself.
+    CommandCancel command_cancel = 62;
   }
+}
+
+// CommandCancel asks the daemon to cancel an in-flight command whose original
+// OrchestratorCommand.command_id matches command_id. Old daemons ignore the
+// unknown oneof arm, so callers must still bound their own wait locally.
+message CommandCancel {
+  string command_id = 1;
 }
 
 // --- Snapshot (first event on every connect) ---
@@ -356,6 +366,36 @@ message CommandResult {
     // forever. Emitted for an invalid inbound broadcast and an over-cap
     // broadcast selector (BOS-558).
     ERROR_CODE_INVALID_ARGUMENT = 3;
+    // A deadline ended the command before it could finish. Distinct from both
+    // of its neighbours: FAILED_PRECONDITION says "the state is wrong, fix it
+    // and retry" and INVALID_ARGUMENT says "these bytes are permanently
+    // unsatisfiable", whereas this says "the work may well have been fine —
+    // time simply ran out". The command's own budget expired daemon-side, so
+    // the daemon has already stopped waiting.
+    //
+    // A sender must NOT retry a request its own deadline killed (BOS-747's
+    // rule). The historical fallback for an unmodelled code is UNSPECIFIED,
+    // which bosso renders as CodeAborted — and CodeAborted invites exactly the
+    // retry this case forbids, which is the hazard this value exists to close.
+    // Re-sending would restart a budget that has already proven too short and,
+    // on an at-least-once stream, can stack a second attempt on top of work the
+    // first attempt may have partially completed.
+    //
+    // Emitted for a session account switch whose respawn budget expired
+    // (BOS-947); bosso renders it as CodeDeadlineExceeded.
+    ERROR_CODE_DEADLINE_EXCEEDED = 4;
+    // The caller abandoned the command before it could finish. Distinct from
+    // DEADLINE_EXCEEDED: time did not run out, the request context was
+    // cancelled. The daemon has stopped waiting, but the underlying command
+    // may already have partially completed.
+    //
+    // A sender must NOT retry a request its own caller cancelled. Retrying can
+    // stack duplicate work on top of that partially completed first attempt,
+    // which is exactly the retry hazard this value exists to avoid.
+    //
+    // Emitted for a session account switch whose caller context was cancelled
+    // (BOS-958); bosso renders it as CodeCanceled.
+    ERROR_CODE_CANCELED = 5;
   }
 
   string command_id = 1;

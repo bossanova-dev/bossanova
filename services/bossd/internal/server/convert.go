@@ -317,6 +317,7 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 		GateCommand:           c.GateCommand,
 		ShouldRunSetupCommand: c.ShouldRunSetupCommand,
 		IsZeroOutput:          c.IsZeroOutput,
+		LastRunAgentName:      protoString(c.LastRunAgentName),
 		CreatedAt:             timestamppb.New(c.CreatedAt),
 		UpdatedAt:             timestamppb.New(c.UpdatedAt),
 		LastRunStatus:         status,

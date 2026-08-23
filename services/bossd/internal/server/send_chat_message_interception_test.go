@@ -73,9 +73,10 @@ func TestSendChatMessage_Intercepts_NamedSwitch(t *testing.T) {
 	}
 
 	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
-		AgentSessionId: "agent-1",
-		Message:        "/boss switch work",
-		Submit:         true,
+		AgentSessionId:         "agent-1",
+		Message:                "/boss switch work",
+		Submit:                 true,
+		ShouldObserveTurnStart: true,
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -84,8 +85,14 @@ func TestSendChatMessage_Intercepts_NamedSwitch(t *testing.T) {
 	if resp.Msg.Delivered {
 		t.Error("Delivered = true, want false for an intercepted switch")
 	}
-	if resp.Msg.NoticeText != "switched to work — resumed" {
-		t.Errorf("NoticeText = %q, want the switch notice", resp.Msg.NoticeText)
+	if !strings.HasPrefix(resp.Msg.NoticeText, "switched to work — resumed") {
+		t.Errorf("NoticeText = %q, want it to start with the switch notice", resp.Msg.NoticeText)
+	}
+	if !strings.Contains(resp.Msg.NoticeText, "do not resend") {
+		t.Errorf("NoticeText = %q, want turn-start no-resend guidance", resp.Msg.NoticeText)
+	}
+	if got := resp.Msg.GetTurnStartState(); got != pb.SendChatMessageResponse_TURN_START_STATE_UNOBSERVABLE {
+		t.Errorf("TurnStartState = %v, want UNOBSERVABLE for intercepted switch", got)
 	}
 	if got := switcher.callCount(); got != 1 {
 		t.Fatalf("SwitchAccount calls = %d, want 1", got)

@@ -81,7 +81,7 @@ state:
 | `active`    | Registered, waiting for its trigger to be satisfied.                                                                                                                                                                                            |
 | `leased`    | An internal delivery claim on a still-`active` callback. The shipped worker never produces it — it leases already-`triggered` callbacks in place instead (see below) — so it stays a legal `--state` filter value you will not see in practice. |
 | `triggered` | Its trigger evaluated true; queued for delivery (or waiting on retry backoff).                                                                                                                                                                  |
-| `delivered` | The prompt was successfully delivered. Terminal.                                                                                                                                                                                                |
+| `delivered` | The send call reported success to the daemon. It does not prove the target chat or agent consumed the prompt. Terminal.                                                                                                                         |
 | `canceled`  | A sibling in the same daemon-local `--group` was selected for delivery first. Terminal.                                                                                                                                                         |
 | `expired`   | Past its expiry without a recorded successful delivery. Terminal (swept lazily, not the instant expiry hits).                                                                                                                                   |
 
@@ -94,9 +94,10 @@ the same moment. A
 claim as a lease (`lease_owner` / `lease_deadline_at`) on the row without
 changing its state — it stays `triggered` while an attempt is in flight;
 success moves it to `delivered`; failure schedules a retry with a backoff
-timer, leaving it `triggered`. A callback without a recorded successful
-delivery by its expiry is swept to `expired` the next time the expiry check
-runs.
+timer, leaving it `triggered`. A crash after the send call returns success but
+before the daemon records `delivered` can cause redelivery, not loss; consumers
+dedup on callback id. A callback without a recorded successful delivery by its
+expiry is swept to `expired` the next time the expiry check runs.
 
 **Expiry** defaults to 24 hours from creation and cannot be set beyond a 30-day
 ceiling — pass `--expires-in` to change it within that range (see
@@ -104,13 +105,16 @@ ceiling — pass `--expires-in` to change it within that range (see
 
 **`--group`** ties callbacks on one daemon together: when one member is
 selected for delivery, every sibling that is still waiting on its own trigger
-is canceled. Register `merged` and `closed` against the same PR in the same
-group, with target chats owned by the same daemon. If multiple group members
-are satisfied in one evaluation, the oldest registration wins (then id order),
-not the trigger that became true first. Use this for "notify me either way"
-registrations instead of manually tracking which one was selected. A failed
-delivery can still exhaust its retries, so a group can produce no successful
-delivery. Register the whole group before any member can fire: the two `add`
+is canceled. Share a group only when at most one member can ever be satisfied
+for the PR, such as `merged` versus `closed`; triggers that can be satisfied at
+different times, or re-satisfied after a push, need separate groups. Register
+`merged` and `closed` against the same PR in the same group, with target chats
+owned by the same daemon. If multiple group members are satisfied in one
+evaluation, the oldest registration wins (then id order), not the trigger that
+became true first. Use this for "notify me either way" registrations instead of
+manually tracking which one was selected. A failed delivery can still exhaust
+its retries, so a group can produce no successful delivery. Register the whole
+group before any member can fire: the two `add`
 commands below are separate registrations, not one atomic step, and
 cancellation only reaches the siblings that already exist and are still
 waiting at the moment a member is selected. A member registered after another
@@ -229,8 +233,8 @@ cli={`boss callback add https://github.com/acme/widget/pull/123 checks_failed \\
 mcp="register_github_callback"
 />
 
-To be notified either way — merged or closed — register both triggers
-against the same daemon-local `--group`, so at most one delivers:
+To be notified either way — merged or closed — register both mutually exclusive
+triggers against the same daemon-local `--group`, so at most one delivers:
 
 <CommandTabs
 chat='"tell me when PR #123 merges, in callback group pr-123-outcome"'
@@ -273,6 +277,14 @@ mcp="list_github_callbacks"
 Flags: `--chat` (filter by target chat), `--repo` (filter by `owner/repo`),
 `--trigger` (filter by one of the six trigger names), `--state` (filter by
 `active`, `leased`, `triggered`, `delivered`, `canceled`, `expired`), `--json`.
+
+With `--json`, the CLI emits the machine contract keys `id`, `group_id`,
+`target_chat_id`, `repo_owner`, `repo_name`, `pr_number`, `trigger`, `state`,
+`attempt_count`, `last_event`, `last_error`, `triggered_at`, `delivered_at`,
+`expires_at`, `created_at`, and `updated_at`. The group surfaces as `group_id`
+in the list output; the MCP registration input is spelled `group`, and both
+names are correct in their own direction. The message body is deliberately not
+emitted.
 
 ### `boss callback remove <callback-id>`
 

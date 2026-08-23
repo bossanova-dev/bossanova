@@ -137,26 +137,21 @@ export const bossSessionOperationMap = {
       'merge_block',
     ],
     // PARTIAL. `boss show --json` carries the lifecycle state (trimmed of its
-    // SESSION_STATE_ prefix, same vocabulary as the MCP enum) and, beyond the
-    // MCP response, `session.pr_number` / `session.pr_url` /
-    // `session.display_status` / `session.last_check_state` / `session.last_repair`.
-    // It carries NONE of get_session's routing signals, so those are named in
-    // missingResponse rather than left to read `undefined`: a CLI-mode run must
-    // detect hangs, auth death and conflict-after-green some other way (poll
-    // `session checks` for CI, treat an unreadable signal as not-settled) instead
-    // of silently routing on a missing field. A partial transport is still a
-    // transport, so getSession stays OUT of the degraded set.
+    // SESSION_STATE_ prefix, same vocabulary as the MCP enum) and
+    // `session.last_agent_activity_at`, plus `session.pr_number` /
+    // `session.pr_url` / `session.display_status` / `session.last_check_state` /
+    // `session.last_repair`. It still omits the remaining get_session routing
+    // signals, so those are named in missingResponse rather than left to read
+    // `undefined`: a CLI-mode run must detect auth death and
+    // conflict-after-green some other way (poll `session checks` for CI, treat
+    // an unreadable signal as not-settled) instead of silently routing on a
+    // missing field. A partial transport is still a transport, so getSession
+    // stays OUT of the degraded set.
     cli: {
       cmd: 'boss',
       args: ['show', '<id>', '--json'],
-      response: ['session.state'],
-      missingResponse: [
-        'last_agent_activity_at',
-        'repair_active',
-        'attention_status.reason',
-        'pr_mergeable',
-        'merge_block',
-      ],
+      response: ['session.state', 'session.last_agent_activity_at'],
+      missingResponse: ['repair_active', 'attention_status.reason', 'pr_mergeable', 'merge_block'],
     },
   },
   listSessions: {
@@ -173,7 +168,7 @@ export const bossSessionOperationMap = {
     cli: {
       cmd: 'boss',
       args: ['ls', '--repo', '<repo_id>', '--json'],
-      response: ['sessions'],
+      response: ['sessions', 'sessions[].last_agent_activity_at', 'sessions[].tracker_id'],
     },
   },
   listCheckSnapshots: {
@@ -442,11 +437,10 @@ export function bossCliDegradedCapabilities() {
  *
  * It exists because reporting only `degraded` understated the cost of the CLI
  * transport. `getSession` is the live case: `boss show --json` works,
- * so the run reports ok, but it carries none of the routing signals the MCP
- * response does — hang detection, auth-death routing and conflict-after-green
- * all silently stop working. Once the boss MCP server stopped being wired by
- * default, that silence became EVERY run's, so a CLI-transport run has to name
- * the signals it is flying without.
+ * so the run reports ok, but it still lacks some routing signals the MCP
+ * response carries — auth-death routing and conflict-after-green would
+ * silently stop working if the CLI transport did not name the signals it is
+ * flying without.
  *
  * Derived from the map rather than hand-kept, so a capability that later gains
  * a `missingResponse` is reported without editing a second list. Note the gate

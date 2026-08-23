@@ -18,6 +18,7 @@ go_library(
         "//lib/bossalib/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/safego",
+        "//lib/bossalib/sqlutil",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

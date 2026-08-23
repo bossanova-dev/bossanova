@@ -25,6 +25,36 @@ test('claim-token prints a fresh token and exits 0', () => {
   assert.match(out.trim(), /^[0-9a-f]{32}$/)
 })
 
+test('claim-comment prints a legacy claim body when no session id is available', () => {
+  let out = ''
+  const code = runCli(['claim-comment', '--token', won], {
+    write: (s) => (out += s),
+    env: {},
+  })
+  assert.equal(code, 0)
+  assert.equal(out.trim(), marker(won))
+})
+
+test('claim-comment defaults the owner suffix from BOSS_SESSION_ID', () => {
+  let out = ''
+  const code = runCli(['claim-comment', '--token', won], {
+    write: (s) => (out += s),
+    env: { BOSS_SESSION_ID: 'session-123' },
+  })
+  assert.equal(code, 0)
+  assert.equal(out.trim(), `${marker(won)} owner:session-123`)
+})
+
+test('claim-comment exits 2 when the session id cannot be recovered by the parser', () => {
+  let err = ''
+  const code = runCli(['claim-comment', '--token', won], {
+    errWrite: (s) => (err += s),
+    env: { BOSS_SESSION_ID: 'session/123' },
+  })
+  assert.equal(code, 2)
+  assert.match(err, /invalid claim session id/)
+})
+
 test('claim-verdict exits 0 when my token is the first writer (WON)', () => {
   const comments = JSON.stringify([
     { body: marker(won), createdAt: early },
@@ -41,6 +71,93 @@ test('claim-verdict exits 3 when another token wins first-writer (LOST)', () => 
   ])
   const code = runCli(['claim-verdict', '--me', lost, '--comments', comments], {})
   assert.equal(code, 3)
+})
+
+test('claim-verdict threads liveness evidence through resolveClaim', () => {
+  const comments = JSON.stringify([
+    { body: `${marker(won)} owner:dead-session`, createdAt: early },
+    { body: marker(lost), createdAt: late },
+  ])
+  const liveness = JSON.stringify({
+    now: '2026-01-02T00:10:00.000Z',
+    inactiveAfterMs: 60_000,
+    sessions: {
+      'dead-session': { lastActivityAt: '2026-01-01T00:00:00.000Z' },
+    },
+  })
+  const code = runCli(
+    ['claim-verdict', '--me', lost, '--comments', comments, '--liveness', liveness],
+    {},
+  )
+  assert.equal(code, 0)
+})
+
+test('claim-verdict exits 4 when forfeiture leaves no winner', () => {
+  const comments = JSON.stringify([{ body: `${marker(won)} owner:dead-session`, createdAt: early }])
+  const liveness = JSON.stringify({
+    now: '2026-01-02T00:10:00.000Z',
+    inactiveAfterMs: 60_000,
+    sessions: {
+      'dead-session': { lastActivityAt: '2026-01-01T00:00:00.000Z' },
+    },
+  })
+  let out = ''
+  const code = runCli(
+    ['claim-verdict', '--me', won, '--comments', comments, '--liveness', liveness],
+    { write: (s) => (out += s) },
+  )
+  assert.equal(code, 4)
+  assert.equal(out, 'NO_WINNER\n')
+})
+
+test('claim-verdict exits 2 for malformed liveness evidence', () => {
+  const comments = JSON.stringify([{ body: marker(won), createdAt: early }])
+  let err = ''
+  const code = runCli(['claim-verdict', '--me', won, '--comments', comments, '--liveness', '{'], {
+    errWrite: (s) => (err += s),
+  })
+  assert.equal(code, 2)
+  assert.match(err, /--liveness: malformed JSON/)
+})
+
+test('claim-verdict exits 2 for primitive liveness evidence', () => {
+  const comments = JSON.stringify([{ body: marker(won), createdAt: early }])
+  let err = ''
+  const code = runCli(
+    ['claim-verdict', '--me', won, '--comments', comments, '--liveness', 'true'],
+    {
+      errWrite: (s) => (err += s),
+    },
+  )
+  assert.equal(code, 2)
+  assert.match(err, /claim arbitration failed: claim liveness options must be an object/)
+})
+
+test('claim-verdict exits 2 for malformed comments evidence', () => {
+  let err = ''
+  const code = runCli(['claim-verdict', '--me', won, '--comments', '{'], {
+    errWrite: (s) => (err += s),
+  })
+  assert.equal(code, 2)
+  assert.match(err, /--comments: malformed JSON/)
+})
+
+test('claim-verdict exits 2 for invalid liveness evidence', () => {
+  const comments = JSON.stringify([{ body: `${marker(won)} owner:session-a`, createdAt: early }])
+  const liveness = JSON.stringify({
+    now: 'not-a-date',
+    inactiveAfterMs: 60_000,
+    sessions: {
+      'session-a': { lastActivityAt: early },
+    },
+  })
+  let err = ''
+  const code = runCli(
+    ['claim-verdict', '--me', won, '--comments', comments, '--liveness', liveness],
+    { errWrite: (s) => (err += s) },
+  )
+  assert.equal(code, 2)
+  assert.match(err, /claim arbitration failed: invalid claim liveness now/)
 })
 
 test('claim-verdict without --comments exits 2 (parity with the required arg)', () => {

@@ -1,17 +1,26 @@
 package fixtures
 
 import (
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	// Test-only import. The fixtures package itself stays on pb types (see the
+	// SeedKind comment); this is the guard below reading the real probe budget
+	// instead of duplicating the literal.
+	"github.com/recurser/boss/internal/preflight"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "respawn-history", "rotation-history", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
+var allPresetNames = []string{"archive-signal", "async-create", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "respawn-history", "rotation-history", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -314,5 +323,120 @@ func TestWedgedDaemonPresetSeedsAWorld(t *testing.T) {
 	// step's timeout budget; without it the scenario is unrunnable.
 	if got := p.DefaultEnv["BOSS_RPC_DEADLINE_E2E"]; got == "" {
 		t.Fatal("wedged-daemon must pin BOSS_RPC_DEADLINE_E2E; the 30s production bound outlasts the schema's step cap")
+	}
+}
+
+// TestSlowAgentProbePresetLiftsEveryPreflightShortCircuit guards the BOS-976
+// proof preset against the failure mode that makes a preflight scenario useless:
+// boss's agent probe is guarded by THREE independent short-circuits, and any one
+// of them left in place produces a boss that boots straight to the home board
+// while the scenario waits for a screen that will never render. Each assertion
+// below names the short-circuit it lifts, so a regression says which one came
+// back rather than just "the scenario timed out".
+func TestSlowAgentProbePresetLiftsEveryPreflightShortCircuit(t *testing.T) {
+	p, err := LookupPreset("slow-agent-probe")
+	if err != nil {
+		t.Fatalf("LookupPreset(slow-agent-probe): %v", err)
+	}
+
+	// 1. enabledAgentProviders intersects settings.Plugins with the daemon's
+	//    ListAgents inventory. MockDaemon answers with an empty list unless a
+	//    world seeds one, so without this every plugin is filtered out.
+	world := p.World()
+	var agentNames []string
+	for _, a := range world.Agents {
+		agentNames = append(agentNames, a.GetName())
+	}
+	if !slices.Contains(agentNames, "claude") {
+		t.Errorf("world must seed the claude agent for ListAgents; got %v", agentNames)
+	}
+
+	// 2. The same intersection needs the plugin ENABLED in settings.json. The
+	//    seeded acknowledged settings carry no plugins key at all.
+	plugins, ok := p.SettingsOverrides["plugins"].([]map[string]any)
+	if !ok {
+		t.Fatalf("SettingsOverrides[plugins] = %#v, want []map[string]any", p.SettingsOverrides["plugins"])
+	}
+	enabledClaude := false
+	for _, pl := range plugins {
+		if pl["name"] == "claude" && pl["enabled"] == true {
+			enabledClaude = true
+		}
+	}
+	if !enabledClaude {
+		t.Errorf("SettingsOverrides must enable the claude plugin; got %#v", plugins)
+	}
+
+	// 3. checkAgentResolvable returns nil immediately for an empty login shell,
+	//    and only bash sources $HOME/.bashrc (loginshell.CommandLine), which is
+	//    what the seeded rc relies on to be slow at all.
+	shell, _ := p.SettingsOverrides["login_shell"].(string)
+	if filepath.Base(shell) != "bash" {
+		t.Errorf("login_shell = %q, want a bash so the seeded .bashrc is sourced", shell)
+	}
+
+	// The rc itself must be seeded at the path bash's prologue sources.
+	rc, ok := p.HomeFiles[".bashrc"]
+	if !ok {
+		t.Fatalf("HomeFiles must seed .bashrc; got %v", p.HomeFiles)
+	}
+	if !strings.Contains(rc, "sleep") {
+		t.Errorf(".bashrc must block; got %q", rc)
+	}
+
+	// The bridge's first-frame wait has to outlast a startup that is slow BY
+	// DESIGN — boss paints nothing until the probe gives up, so a default
+	// BootWait would fail the bridge before the screen it is capturing exists.
+	if p.BootWait <= DefaultBootWait {
+		t.Errorf("BootWait = %s, want more than the default %s", p.BootWait, DefaultBootWait)
+	}
+}
+
+// TestSlowLoginShellRCOutlastsTheProbeBudget pins the ordering the whole proof
+// depends on. The rc sleep must still be running when the probe's deadline
+// fires: if it finished first, `command -v claude` would run and fail on a CI
+// box with no claude, and the scenario would capture the NOT-FOUND screen while
+// looking exactly as green as a correct run.
+//
+// The budget is READ from preflight rather than copied, because a local copy
+// opens this invariant permanently the first time either number moves: raising
+// preflight's constant reds its own TestAgentResolveTimeoutBudget, updating that
+// literal restores green, and a stale copy here would then let `sleep 45` finish
+// BEFORE the probe deadline — at which point `command -v claude` runs, fails on
+// a CI box with no claude, and the scenario captures the not-found screen while
+// looking exactly as green as a correct run.
+//
+// The import is test-only, so the fixtures package itself keeps its "pb types
+// only" dependency rule (see SeedKind); there was never an import cycle to avoid
+// either way, since preflight imports only bossalib.
+func TestSlowLoginShellRCOutlastsTheProbeBudget(t *testing.T) {
+	agentProbeBudget := preflight.AgentResolveTimeout
+
+	m := regexp.MustCompile(`(?m)^sleep (\d+)$`).FindStringSubmatch(SlowLoginShellRC)
+	if m == nil {
+		t.Fatalf("SlowLoginShellRC has no `sleep <n>` line: %q", SlowLoginShellRC)
+	}
+	secs, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("parsing sleep duration %q: %v", m[1], err)
+	}
+	if got := time.Duration(secs) * time.Second; got <= agentProbeBudget {
+		t.Errorf("rc sleeps %s, want longer than the %s probe budget", got, agentProbeBudget)
+	}
+}
+
+// TestPresetHomeFilesAreRelative pins the containment rule the bridge relies on
+// when it writes HomeFiles: every key is a path INSIDE the per-run HOME, so a
+// preset cannot reach the developer's real dotfiles.
+func TestPresetHomeFilesAreRelative(t *testing.T) {
+	for name, p := range Presets() {
+		for rel := range p.HomeFiles {
+			if filepath.IsAbs(rel) {
+				t.Errorf("preset %q: HomeFiles key %q is absolute", name, rel)
+			}
+			if rel == "" || strings.Contains(rel, "..") {
+				t.Errorf("preset %q: HomeFiles key %q must be a plain relative path", name, rel)
+			}
+		}
 	}
 }

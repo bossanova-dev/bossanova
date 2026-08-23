@@ -45,6 +45,12 @@ type World struct {
 	// observable if the intermediate frames arrive far enough apart to capture.
 	CreateSessionScript     []*pb.CreateSessionResponse
 	CreateSessionFrameDelay time.Duration
+	// Agents, when non-empty, is what the mock daemon's ListAgents answers.
+	// It is empty for almost every preset because the home board does not read
+	// it — but boss's agent preflight does (services/boss/cmd/handlers.go
+	// enabledAgentProviders), and an empty inventory means no agent is ever
+	// probed. A preset that needs to reach a startup agent check has to seed it.
+	Agents []*pb.AgentInfo
 }
 
 // Repos returns the registered repositories. The first entry (repo-1 / my-app)

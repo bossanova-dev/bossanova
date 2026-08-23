@@ -7,7 +7,9 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/loginshell",
+        "//lib/bossalib/safego",
         "//lib/bossalib/termnorm",
+        "@com_github_rs_zerolog//log",
     ],
 )
 

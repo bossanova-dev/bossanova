@@ -704,6 +704,92 @@ test("runTuiWithReplayFallback: threads the replayed scenario's terminal into th
   assert.equal('terminal' in seen.at(-1), false, 'no terminal key is invented')
 })
 
+test("runTuiWithReplayFallback: threads the replayed scenario's fixture preset and env into the leg deps (BOS-976)", async () => {
+  const { runTuiWithReplayFallback } = await import('./proof-tui-agent.mjs')
+  const seen = []
+  const fakeLeg = async (ctx) => {
+    seen.push(ctx.deps)
+    return {
+      surface: 'tui',
+      captureShapes: [],
+      brief: {},
+      agentResult: { passed: false, summary: '', evidence: [], steps: 0 },
+      hasFailure: true,
+      noSurface: false,
+      elapsedMs: 0,
+      reasonCode: null,
+    }
+  }
+  const baseDeps = {
+    runTuiAgentProof: fakeLeg,
+    agentUsable: false, // keyless ⇒ replay-only leg
+    runReplayLoop: async () => ({ agentResult: { passed: true }, finalScreen: '' }),
+    synthesizeBrief: () => ({ title: 't', description: 'd' }),
+    makeScenarioEvaluator: () => () => ({ passed: true }),
+  }
+  const ctx = {
+    prNumber: '1',
+    commit: 'abc1234',
+    changedFiles: ['proof/scenarios/preset.scenario.json'],
+    dryRun: true,
+    runContext: { collect: true, runId: 'r', token: 't', maxWallClockMs: 60_000 },
+    deps: { renderStill: 'sentinel' },
+  }
+
+  // The whole point: a scenario built on a purpose-made preset must replay against
+  // THAT preset. Before this the leg saw no fixture at all and the bridge defaulted
+  // to `demo`, so the scenario proved something about the wrong fixture.
+  await runTuiWithReplayFallback(ctx, {
+    ...baseDeps,
+    loadScenario: () => ({
+      scenario: {
+        title: 'slow probe',
+        fixture: { preset: 'slow-agent-probe', env: { BOSS_AUTH_E2E_EMAIL: 'a@b.c' } },
+        terminal: { cols: 72 },
+      },
+    }),
+  })
+  assert.deepEqual(seen.at(-1), {
+    renderStill: 'sentinel',
+    fixture: 'slow-agent-probe',
+    seedEnv: { BOSS_AUTH_E2E_EMAIL: 'a@b.c' },
+    terminal: { cols: 72 },
+  })
+
+  // A scenario object carrying no fixture at all contributes nothing — the deps bag
+  // is left byte-identical. This is the programmatic-caller shape; the PRODUCTION
+  // shape is the case below, and the two must be kept distinct or the assertion
+  // proves the wrong one.
+  await runTuiWithReplayFallback(ctx, {
+    ...baseDeps,
+    loadScenario: () => ({ scenario: { title: 'plain' } }),
+  })
+  assert.deepEqual(seen.at(-1), { renderStill: 'sentinel' })
+
+  // What loadScenario ACTUALLY hands back for a scenario declaring no fixture:
+  // scripts/proof-scenario.mjs defaults it to `{preset: 'demo'}`. So on the real
+  // path a pre-existing scenario contributes `fixture: 'demo'` and the spawn argv
+  // gains `--fixture demo` where it previously had none. That is the Go flag's own
+  // default (services/boss/cmd/proof-tui-agent/main.go), so the EFFECTIVE preset is
+  // unchanged — but the argv is not, and asserting only the hand-built shape above
+  // would leave that difference unmeasured.
+  await runTuiWithReplayFallback(ctx, {
+    ...baseDeps,
+    loadScenario: () => ({ scenario: { title: 'plain', fixture: { preset: 'demo' } } }),
+  })
+  assert.deepEqual(seen.at(-1), { renderStill: 'sentinel', fixture: 'demo' })
+
+  // An explicitly injected dep still wins over the scenario's declaration.
+  await runTuiWithReplayFallback(
+    { ...ctx, deps: { renderStill: 'sentinel', fixture: 'demo' } },
+    {
+      ...baseDeps,
+      loadScenario: () => ({ scenario: { title: 'x', fixture: { preset: 'slow-agent-probe' } } }),
+    },
+  )
+  assert.equal(seen.at(-1).fixture, 'demo')
+})
+
 // ── 4. zero-frame fallback ────────────────────────────────────────────────────
 
 test('runTuiAgentProof: no stills captured → exactly one fallback still', async () => {

@@ -43,6 +43,9 @@ go_test(
     ],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/fixtures",
+        "//services/boss/internal/tuitest",
+        "@com_connectrpc_connect//:connect",
         "@land_charm_bubbles_v2//spinner",
         "@land_charm_lipgloss_v2//:lipgloss",
     ],

@@ -47,7 +47,62 @@ type Preset struct {
 	// DefaultEnv is merged (as K=V) into the boss subprocess env. Always non-nil
 	// (possibly empty) so callers can range over it without a nil check.
 	DefaultEnv map[string]string
+	// HomeFiles are extra files the bridge writes into the per-run HOME before
+	// boss starts, keyed by a path RELATIVE to HOME. It exists so a preset can
+	// stage host state boss reads through a real code path rather than through a
+	// test hook — the slow-agent-probe preset seeds a `.bashrc` that sleeps,
+	// which is the same thing a slow interactive rc does on a real machine.
+	// Data, not a callback, so the fixtures package keeps its "pb types only"
+	// dependency rule (see SeedKind) and every preset stays unit-testable.
+	HomeFiles map[string]string
+	// SettingsOverrides are merged into the settings.json the bridge seeds for
+	// SeedAcknowledged presets, on top of the acknowledged/worktree defaults and
+	// underneath the scenario's own env-driven overrides. Keys are settings.json
+	// field names (config.Settings json tags), so a preset can turn on a plugin
+	// or pin a login shell without a new bridge flag per preset.
+	//
+	// SeedAcknowledged ONLY. The bridge merges this inside that branch of its
+	// seed switch (services/boss/cmd/proof-tui-agent/main.go), and SeedFirstRun
+	// seeds a fixed unacknowledged settings.json that ignores it. That is
+	// enforced, not merely documented: the bridge REFUSES to boot a first-run
+	// preset that sets this field (rejectUnhonouredFirstRunFields), because a
+	// silently mis-seeded run captures the wrong screen and looks exactly as
+	// green as a correct one. A first-run preset that needs overrides wants the
+	// bridge taught to honour them, not the guard removed.
+	SettingsOverrides map[string]any
+	// BootWait overrides how long the bridge waits for boss's first frame before
+	// giving up. Zero means DefaultBootWait. Only a preset that deliberately
+	// makes startup slow needs to raise it — slow-agent-probe blocks startup on a
+	// login-shell probe that must be allowed to run out its full budget, which is
+	// longer than the default wait.
+	//
+	// SeedAcknowledged ONLY, for the same reason and with the same enforcement:
+	// a first-run preset never renders the app shell, so the bridge skips the
+	// first-frame wait entirely and this value would be dropped.
+	BootWait time.Duration
 }
+
+// DefaultBootWait is how long the bridge waits for boss's first frame when a
+// preset does not raise it. Generous enough for a cold `-tags e2e` binary on a
+// loaded CI box, short enough that a preset which never paints fails fast.
+const DefaultBootWait = 10 * time.Second
+
+// SlowLoginShellRC is the interactive rc the slow-agent-probe preset seeds as
+// `.bashrc` in the per-run HOME. boss's probe runs `bash -l -c` with an explicit
+// `. "$HOME/.bashrc"` prologue (loginshell.CommandLine), so this sleep is paid
+// before `command -v` is ever reached — exactly the shape of the BOS-976
+// incident, where pyenv/nodenv PATH globbing cost ~44s inside the user's rc.
+//
+// The sleep outlasts the probe budget by a wide margin on purpose. If it ever
+// finished FIRST the probe would go on to run `command -v claude`, which fails
+// on a CI box with no claude installed, and the scenario would land on the
+// not-found screen — a green-looking capture of the wrong screen.
+const SlowLoginShellRC = "# proof fixture: a deliberately slow interactive rc (BOS-976)\nsleep 45\n"
+
+// slowAgentProbeShell is the login shell the slow-agent-probe preset pins. It
+// must be bash: loginshell.CommandLine only sources $HOME/.bashrc for bash, and
+// sourcing that seeded rc is what makes the probe slow.
+const slowAgentProbeShell = "/bin/bash"
 
 // emptyWorld builds a world with zero entities. Used by presets that boot boss
 // with no seeded domain data (login/onboarding/empty).
@@ -238,6 +293,32 @@ func Presets() map[string]Preset {
 				"BOSS_CLOUD_ACCESS_E2E_ERROR_MESSAGE": LongCloudAccessError,
 			},
 		},
+		// slow-agent-probe: the demo board behind a login shell that cannot answer
+		// inside the agent-probe budget, for the BOS-976 preflight proof. Every
+		// short-circuit ahead of the probe has to be lifted for the screen to be
+		// reachable at all: the world seeds an agent inventory (ListAgents is
+		// empty by default, so no agent is enabled), SettingsOverrides turns the
+		// claude plugin on and pins the login shell (an empty login_shell skips
+		// the check outright), and HomeFiles seeds the rc that makes that shell
+		// slow. Nothing here fakes the screen — boss runs its real probe against a
+		// real bash and really times out. BootWait covers the resulting startup
+		// pause, which is longer than the bridge's default first-frame wait by
+		// construction.
+		"slow-agent-probe": {
+			World:      SlowAgentProbeWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+			HomeFiles:  map[string]string{".bashrc": SlowLoginShellRC},
+			SettingsOverrides: map[string]any{
+				"login_shell": slowAgentProbeShell,
+				// enabledAgentProviders needs the plugin ENABLED in settings and
+				// PRESENT in the daemon's inventory; either alone probes nothing.
+				"plugins": []map[string]any{
+					{"name": "claude", "path": "bossd-plugin-claude", "enabled": true},
+				},
+			},
+			BootWait: 90 * time.Second,
+		},
 		// wedged-daemon: DemoWorld against a daemon the scenario can wedge on demand
 		// via the set_rpc_stall daemon action (BOS-723). The DefaultEnv shrinks the
 		// client's unary RPC bound for this e2e build so the bounded failure and the
@@ -259,6 +340,17 @@ func Presets() map[string]Preset {
 // produces a 243-column status line — far wider than the 120-column proof
 // terminal — so it is the fixture that makes the wrap visible.
 const LongCloudAccessError = `refresh token: token request: Post "https://api.workos.com/user_management/authenticate": dial tcp: lookup api.workos.com: no such host (run 'boss login' to re-authenticate)`
+
+// SlowAgentProbeWorld builds the BOS-976 preflight dataset: the full demo board
+// plus an agent inventory. The board matters even though the proof never shows
+// it — it is what boss WOULD render if the probe returned in time, so a capture
+// of the timeout screen is a capture of that screen replacing a working one
+// rather than of a boss that had nothing to draw.
+func SlowAgentProbeWorld() World {
+	w := DemoWorld()
+	w.Agents = []*pb.AgentInfo{{Name: "claude", Version: "1.0.0"}}
+	return w
+}
 
 // PresetNames returns the registry's preset names sorted alphabetically. Used
 // for the -fixture flag usage string and the unknown-name error message.

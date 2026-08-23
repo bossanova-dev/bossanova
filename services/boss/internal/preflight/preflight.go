@@ -5,6 +5,7 @@ package preflight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,10 +15,33 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/termnorm"
+	zlog "github.com/rs/zerolog/log"
 )
 
-const agentResolveTimeout = 5 * time.Second
+// AgentResolveTimeout bounds ONE `command -v <agent>` probe below. It is a
+// bound, not a fix: the probe runs the user's INTERACTIVE login shell by
+// deliberate design (loginshell.Flags), so it is always exposed to whatever the
+// user's rc costs. 5s was tighter than a healthy rc that initialises two version
+// managers, which made a slow-but-working shell indistinguishable from a missing
+// agent; 20s clears a cold-cache first run on a loaded machine while staying
+// well under the point where a user reads the TUI as hung.
+//
+// That last clause is about the WHOLE startup, which is what the user actually
+// waits through — and a startup can have more than one agent enabled. It holds
+// only because CheckAgentsResolvable probes them concurrently: claude and codex
+// together still cost about one budget of blank screen, not two. Serialising
+// them again would silently double the worst case.
+//
+// What makes an exceeded bound survivable at all is agentProbeTimedOutIssue,
+// which says the probe ran out of time instead of blaming a missing agent.
+//
+// Exported so a cross-package guard can derive from it instead of duplicating
+// the literal — see services/boss/internal/fixtures/presets_test.go, where a
+// stale copy would let the proof scenario capture the wrong screen and still
+// look green.
+const AgentResolveTimeout = 20 * time.Second
 
 var safeAgentCommandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
@@ -70,18 +94,81 @@ func CheckShellTools() *Issue {
 	}
 }
 
-// CheckAgentResolvable verifies the agent CLI resolves through the user's
-// login shell in the worktree, mirroring how the daemon launches it.
+// probeRunner runs line through shell with cwd=worktree and reports whether it
+// succeeded. It is the injected seam behind the agent probe; production passes
+// runShell, which execs a shell-specific `command -v <agent>` under its own
+// AgentResolveTimeout budget.
+//
+// CONTRACT: a runner that abandons the command on a deadline MUST return an
+// error that WRAPS context.DeadlineExceeded (fmt.Errorf with %w, the way
+// runShellWithTimeout does). checkAgentResolvable tells "the probe ran out of
+// time" apart from "the agent is missing" with errors.Is against exactly that
+// sentinel, and inspects nothing else about the error. A runner that returns a
+// bare "timed out" error therefore regresses BOS-976 in silence: the user is
+// sent hunting a PATH problem that does not exist, and every gate stays green.
+//
+// The contract lives here, on the seam, rather than in the branch that depends
+// on it, and TestRunShellWithTimeoutWrapsDeadlineExceeded pins the production
+// runner against it through a real exec rather than a hand-built error.
+type probeRunner func(shell, worktree, line string) error
+
+// CheckAgentsResolvable verifies that every enabled agent CLI resolves through
+// the user's login shell in the worktree, mirroring how the daemon launches it.
+//
+// The probes run concurrently on purpose. Each one owns a full
+// AgentResolveTimeout and this call blocks boss's first frame, so looping
+// serially would make the worst-case blank screen N budgets long — 40s for a
+// claude+codex setup. Started together they overlap, and a startup costs about
+// one budget however many agents are enabled.
+//
+// The Issue returned is the first one in agents ORDER, not the first to finish,
+// so which screen a user sees never depends on goroutine scheduling.
+func CheckAgentsResolvable(shell string, agents []string, worktree string) *Issue {
+	return checkAgentsResolvable(shell, agents, worktree, runShell)
+}
+
+// checkAgentsResolvable is the testable body of CheckAgentsResolvable; run is
+// the injected probeRunner seam (see its CONTRACT).
+func checkAgentsResolvable(shell string, agents []string, worktree string, run probeRunner) *Issue {
+	switch len(agents) {
+	case 0:
+		return nil
+	case 1:
+		// The overwhelmingly common shape. Left on the caller's goroutine so the
+		// single-agent path stays exactly what it was before concurrency arrived.
+		return checkAgentResolvable(shell, agents[0], worktree, run)
+	}
+	issues := make([]*Issue, len(agents))
+	dones := make([]<-chan struct{}, len(agents))
+	for i, agent := range agents {
+		dones[i] = safego.Go(zlog.Logger, func() {
+			issues[i] = checkAgentResolvable(shell, agent, worktree, run)
+		})
+	}
+	for _, done := range dones {
+		<-done
+	}
+	for _, issue := range issues {
+		if issue != nil {
+			return issue
+		}
+	}
+	return nil
+}
+
+// CheckAgentResolvable verifies a single agent CLI resolves through the user's
+// login shell in the worktree, mirroring how the daemon launches it. Callers
+// probing a whole startup's worth of agents want CheckAgentsResolvable, which
+// keeps the aggregate cost to one budget.
 func CheckAgentResolvable(shell, agent, worktree string) *Issue {
 	return checkAgentResolvable(shell, agent, worktree, runShell)
 }
 
 // checkAgentResolvable verifies the agent CLI resolves through the user's login
-// shell in the worktree, mirroring how the daemon launches it. runShell is
-// injected for testability; production passes runShell which execs a
-// shell-specific `command -v <agent>` probe with cwd=worktree for supported
-// shells.
-func checkAgentResolvable(shell, agent, worktree string, run func(shell, worktree, line string) error) *Issue {
+// shell in the worktree, mirroring how the daemon launches it. run is the
+// injected probeRunner seam — read its CONTRACT before passing anything other
+// than runShell, because the timeout branch below depends on it.
+func checkAgentResolvable(shell, agent, worktree string, run probeRunner) *Issue {
 	if !safeAgentCommandPattern.MatchString(agent) {
 		return &Issue{
 			Title: agent + " is not a valid agent command",
@@ -104,9 +191,38 @@ func checkAgentResolvable(shell, agent, worktree string, run func(shell, worktre
 	// agent provided purely as a shell function or alias could diverge from the
 	// `exec`-based launch wrap, but none do today.
 	if err := run(shell, worktree, "command -v "+agent); err != nil {
+		// A deadline is NOT a missing agent. Every probeRunner wraps the sentinel
+		// with %w for exactly this branch (see the CONTRACT on the type): without
+		// it a shell that is merely slow to start reports the agent as
+		// unresolvable and sends the user hunting a PATH problem that does not
+		// exist (BOS-976).
+		if errors.Is(err, context.DeadlineExceeded) {
+			return agentProbeTimedOutIssue(shell, agent, worktree, AgentResolveTimeout)
+		}
 		return agentNotFoundIssue(shell, agent, worktree)
 	}
 	return nil
+}
+
+// agentProbeTimedOutIssue renders the probe-timed-out screen. timeout is passed
+// in rather than read from AgentResolveTimeout here so the message cannot drift
+// from the budget that actually elapsed.
+func agentProbeTimedOutIssue(shell, agent, worktree string, timeout time.Duration) *Issue {
+	flags := strings.Join(loginshell.Flags(shell), " ")
+	line := loginshell.CommandLine(shell, "command -v "+agent)
+	return &Issue{
+		Title: "checking " + agent + " timed out after " + timeout.String(),
+		Detail: fmt.Sprintf(
+			"Boss checks %s by running it through your login shell (%s) in the worktree, "+
+				"but the shell did not answer within %s. This is your interactive shell "+
+				"startup being slow, not a missing %s — the check never got far enough to "+
+				"say either way.\n\nVersion managers that scan every PATH entry on startup "+
+				"(pyenv/nodenv/rbenv/asdf/mise) are the usual cause, and a single slow or "+
+				"permission-gated PATH directory can add tens of seconds on its own. Time it "+
+				"with:\n\n    time %s %s %q\n\nand trim whatever dominates, then restart "+
+				"boss. (checked in: %s)",
+			agent, shell, timeout, agent, shell, flags, line, worktree),
+	}
 }
 
 func agentNotFoundIssue(shell, agent, worktree string) *Issue {
@@ -124,18 +240,36 @@ func agentNotFoundIssue(shell, agent, worktree string) *Issue {
 }
 
 func runShell(shell, worktree, line string) error {
-	return runShellWithTimeout(shell, worktree, line, agentResolveTimeout)
+	return runShellWithTimeout(shell, worktree, line, AgentResolveTimeout)
 }
 
 func runShellWithTimeout(shell, worktree, line string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	err := runShellContext(ctx, shell, worktree, line)
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("shell command timed out after %s: %w", timeout, ctx.Err())
+	return classifyProbeResult(runShellContext(ctx, shell, worktree, line), ctx.Err(), timeout)
+}
+
+// classifyProbeResult turns a probe's exit status plus its context state into
+// the error checkAgentResolvable branches on. runErr is what the command
+// reported; ctxErr is ctx.Err() read after it returned.
+//
+// The runErr != nil guard is load-bearing, not defensive. A shell that answers
+// successfully in the last moments before the deadline leaves ctx.Err() ==
+// DeadlineExceeded behind it while the probe itself SUCCEEDED, and reporting
+// that as a timeout would put a blocking "checking claude timed out" screen in
+// front of a user whose agent resolves fine — the same misdiagnosis BOS-976
+// exists to remove, only pointed the other way.
+//
+// errors.Is rather than ==, because ctx.Err() is only documented to BE a
+// DeadlineExceeded, not to be the sentinel value itself.
+func classifyProbeResult(runErr, ctxErr error, timeout time.Duration) error {
+	if runErr != nil && errors.Is(ctxErr, context.DeadlineExceeded) {
+		// Wrapped with %w deliberately: that is what makes the timeout branch in
+		// checkAgentResolvable fire instead of the not-found one.
+		return fmt.Errorf("shell command timed out after %s: %w", timeout, ctxErr)
 	}
-	return err
+	return runErr
 }
 
 func runShellContext(ctx context.Context, shell, worktree, line string) error {

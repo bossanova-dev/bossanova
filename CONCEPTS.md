@@ -567,6 +567,26 @@ capability inventory, so a preflight must classify the empty case explicitly ins
 list of unmet requirements from it — otherwise every credential failure instructs the operator to
 repair a declaration that is already correct.
 
+Compare **Startup preflight**, which asks a similar question for the whole machine rather than for
+one gated run.
+
+### Startup preflight
+
+The boss CLI's own check, run before it will draw a session interface at all, that the external
+software and shell environment a session depends on are present and usable — replacing the interface
+with a single blocking explanation when one is not, rather than letting the gap surface later as a
+crash inside a feature that needed it. It answers for the machine the user is sitting at; a
+**Capability preflight** answers for the runtime one gated run will get.
+
+Some of its checks are bounded probes rather than lookups, because the only faithful way to ask
+whether a launched agent will resolve is to ask the user's interactive login shell, which exposes the
+check to however long that shell takes to start. A bounded check therefore has two outcomes that must
+be kept apart — what it observed, and whether it finished observing at all — and a check that ran out
+of time has to be reported as such rather than as a negative finding, because the two have unrelated
+remedies and the negative finding is the more confident-sounding of the pair. Since the check blocks
+the first frame, the wait a user actually experiences is the whole preflight's rather than any one
+probe's, so independent probes are run concurrently rather than in sequence.
+
 ### Headless capability profile
 
 A named, versioned contract naming the set of runtime operations an unattended run needs before it
@@ -630,6 +650,20 @@ By contract each window is a single fraction, but a provider does not always rep
 ### Probe throttle
 
 The provider's usage endpoint refusing the daemon's own polling rate. It is evidence about our request volume, not about the account's quota, so it is deliberately not a Cooldown and does not make an account Limited: nothing is written to the account's stored state and its real capacity is untouched. The only correct reaction is caller-side backoff before the next poll, applied in memory by the refresh loop and forgotten on restart. A retry horizon stated by the provider is treated as an unvalidated hint and bounded at both ends before use, since neither an absent value nor an implausibly long one may be honoured literally.
+
+## Daemon binary lifecycle
+
+### Staged daemon binary
+
+The copy of the daemon executable that the OS service manager actually launches, held at a stable per-user location rather than at the package manager's versioned install path. It exists because OS privacy grants follow an executable's _resolved real path_, so launching the installed binary directly — or a symlink to it — forfeits those grants on every package upgrade, while copying the same signed executable to one unchanging path preserves both the grant and the signing identity. Only platforms with that path-keyed grant behaviour need it; elsewhere the staged path is defined to be the installed path itself and nothing is copied.
+
+Staging creates an indirection, and the indirection is the whole hazard: the service definition names the staged copy, never the freshly installed build, so a package upgrade leaves the staged copy behind until something re-stages it. The obligation therefore belongs to the artifact rather than to any one command — every path that hands the service definition to the loader must refresh the staged copy first, or it starts the previous build and reports success. A sibling command that re-stages unconditionally does not cover the ones that do not; it only hides them, by making the stale start look like a workflow quirk that a restart fixes. Deciding whether a re-stage is needed is a content comparison rather than a timestamp check, and it is not free: answering "already current" requires digesting the source and the staged copy in full.
+
+### Daemon staleness
+
+Two independent questions about a daemon that must never collapse into one verdict: whether the _staged copy_ is behind the installed build, and whether the _running process_ is behind the staged copy. A re-stage not followed by a successful restart makes the first false and the second true — the file on disk is current while the live process still executes the old bytes — so a check answering only one of them can report a fully healthy daemon that is running different code than the file it names. Each answer carries its own "known" flag, so an input that cannot be determined reports as unknown rather than as healthy.
+
+Staleness is silent by construction: the service manager keeps something running, the socket comes up, and commands exit successfully, so the condition is indistinguishable from a healthy daemon at the call site and can persist for days. Only a change of process identity proves a restart actually replaced the running image, and a correct staleness signal written somewhere nobody reads is, in practice, no signal at all.
 
 ## Daemon shutdown
 
@@ -1280,6 +1314,11 @@ question with no signal about which is authoritative.
   calls as code; the sense in **Capability preflight** and **Headless capability profile** is an
   operation a coding-agent runtime must support before a gated run may start. Neither gates the
   other, and a conformant tracker adapter implies nothing about an agent runtime's profile.
+- "Preflight" carries two distinct senses answering for different scopes, and should not appear
+  unqualified. A **Startup preflight** is the boss CLI checking a machine's environment before it
+  will draw a session interface; a **Capability preflight** is an agent runner checking that one
+  gated run's runtime can do that run's work. The first blocks a person's interface, the second
+  fails a single run closed, and neither implies the other.
 - "Gate" carries several unrelated senses and should never appear unqualified. A **Cron gate** is a
   command a scheduled job runs to decide whether it has work; a **Repo automation flag** gates what
   the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a

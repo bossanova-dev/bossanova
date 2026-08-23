@@ -40,6 +40,18 @@ func expectedStagedBossdPath(t *testing.T) string {
 	return daemonbin.StagedPath(appDataDir)
 }
 
+// stubExecutableNextTo points executablePath at a sibling `boss` of sourcePath,
+// which is what makes ResolveBossdPath resolve sourcePath inside a hermetic
+// sandbox instead of falling through to the host's PATH.
+func stubExecutableNextTo(t *testing.T, sourcePath string) {
+	t.Helper()
+	original := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
+	}
+	t.Cleanup(func() { executablePath = original })
+}
+
 func TestPlatformInstallPointsPlistAtStagedPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -156,11 +168,7 @@ func TestPlatformRestartRestagesAndRewritesPlist(t *testing.T) {
 		t.Fatalf("write legacy plist: %v", err)
 	}
 
-	originalExecutablePath := executablePath
-	executablePath = func() (string, error) {
-		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
-	}
-	t.Cleanup(func() { executablePath = originalExecutablePath })
+	stubExecutableNextTo(t, sourcePath)
 
 	if err := platformRestart(); err != nil {
 		t.Fatalf("platformRestart: %v", err)
@@ -225,6 +233,287 @@ func TestPlatformEnsureRunningStagesFallbackDaemon(t *testing.T) {
 	}
 	if got, err := os.ReadFile(expectedStagedBossdPath(t)); err != nil || string(got) != "fallback version" {
 		t.Errorf("staged fallback contents = %q, err = %v", got, err)
+	}
+}
+
+// prepareEnsureRunningEnvironment installs a LaunchAgent whose plist names the
+// staged copy and leaves the daemon "installed but not running" — the state a
+// post-upgrade `boss daemon start` finds, and the only state in which
+// platformEnsureRunning takes its LaunchAgent branch.
+//
+// platformGetStatus reports Installed && !Running when the plist exists and
+// BOSS_DAEMON_SKIP_LAUNCHCTL is set. That skip does NOT cover
+// platformEnsureRunning's own `load`, so the load is still recorded.
+//
+// The installed build is always "version one"; a caller that needs the upgrade
+// case overwrites the returned sourcePath afterwards, which is what makes the
+// source-newer-than-staged state the point of the test rather than setup.
+func prepareEnsureRunningEnvironment(t *testing.T) (sourcePath, plistPath, socketPath string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+
+	sourcePath = writeFakeCellarBossd(t, home, "version one")
+	stubExecutableNextTo(t, sourcePath)
+
+	if err := platformInstall(sourcePath, false); err != nil {
+		t.Fatalf("platformInstall: %v", err)
+	}
+	var err error
+	if plistPath, err = platformServicePath(); err != nil {
+		t.Fatalf("platformServicePath: %v", err)
+	}
+
+	// Unix-domain sockets have a short path limit; t.TempDir() paths exceed it.
+	socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("bossd-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	return sourcePath, plistPath, socketPath
+}
+
+// stubLoadServesSocket installs a runLaunchctl fake whose `load` starts serving
+// socketPath, so platformEnsureRunning's waitForSocket returns at once instead
+// of burning LifecycleStartupTimeout. onLoad observes the world at the instant
+// the load is issued, which is what makes an ordering assertion possible.
+func stubLoadServesSocket(t *testing.T, socketPath string, onLoad func()) *[][]string {
+	t.Helper()
+	return stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		if args[0] != "load" {
+			return nil, nil
+		}
+		if onLoad != nil {
+			onLoad()
+		}
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Errorf("serve fake daemon socket: %v", err)
+			return nil, err
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		return nil, nil
+	})
+}
+
+// TestPlatformEnsureRunningStagesBeforeLoadingTheLaunchAgent is the BOS-977
+// regression. The plist names the STAGED copy, so a start that hands that plist
+// to launchctl before refreshing the copy brings up the previous build and
+// reports success — which is why every `brew upgrade` needed a manual
+// `boss daemon restart`.
+//
+// The assertion is deliberately about order, not occurrence: it reads the
+// staged file at the instant the load is issued. A "both happened" assertion
+// passes against the broken ordering this ticket exists to fix.
+func TestPlatformEnsureRunningStagesBeforeLoadingTheLaunchAgent(t *testing.T) {
+	sourcePath, _, socketPath := prepareEnsureRunningEnvironment(t)
+
+	// The upgrade: the installed source moves ahead of the staged copy.
+	if err := os.WriteFile(sourcePath, []byte("version two"), 0o755); err != nil {
+		t.Fatalf("upgrade source bossd: %v", err)
+	}
+
+	stagedPath := expectedStagedBossdPath(t)
+	var stagedAtLoad string
+	calls := stubLoadServesSocket(t, socketPath, func() {
+		contents, err := os.ReadFile(stagedPath)
+		if err != nil {
+			t.Errorf("read staged bossd at load time: %v", err)
+			return
+		}
+		stagedAtLoad = string(contents)
+	})
+
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
+		t.Fatalf("`launchctl load` invocations = %d, want 1", got)
+	}
+	if want := "version two"; stagedAtLoad != want {
+		t.Errorf("staged bossd when `launchctl load` was issued = %q, want the upgraded %q", stagedAtLoad, want)
+	}
+}
+
+// TestPlatformEnsureRunningDoesNotRestageACurrentBinary keeps the steady-state
+// cost of the fix a daemonbin.NeedsStage digest comparison rather than a 38 MB
+// copy on every cold start. That comparison is not free — NeedsStage reads both
+// files to SHA-256 them — so this pins the copy away, not the read.
+func TestPlatformEnsureRunningDoesNotRestageACurrentBinary(t *testing.T) {
+	_, _, socketPath := prepareEnsureRunningEnvironment(t)
+
+	stagedPath := expectedStagedBossdPath(t)
+	before, err := os.Stat(stagedPath)
+	if err != nil {
+		t.Fatalf("stat staged bossd before start: %v", err)
+	}
+
+	calls := stubLoadServesSocket(t, socketPath, nil)
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+
+	after, err := os.Stat(stagedPath)
+	if err != nil {
+		t.Fatalf("stat staged bossd after start: %v", err)
+	}
+	// daemonbin.Stage renames a fresh temp file into place, so a re-copy is a
+	// new inode. os.SameFile compares device+inode, which content equality
+	// (identical bytes either way) could never distinguish.
+	if !os.SameFile(before, after) {
+		t.Error("staged bossd was re-copied although it already matched the source")
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
+		t.Fatalf("`launchctl load` invocations = %d, want 1 — the load must still happen", got)
+	}
+}
+
+// TestPlatformEnsureRunningLoadsAnywayWhenStagingFails pins the no-regression
+// half of the fix. Before BOS-977 this path started the old binary; a staging
+// failure must therefore degrade back to exactly that, never to no start at all.
+func TestPlatformEnsureRunningLoadsAnywayWhenStagingFails(t *testing.T) {
+	_, _, socketPath := prepareEnsureRunningEnvironment(t)
+
+	// Break staging without inventing a seam: replace the staged bin DIRECTORY
+	// with a regular file, so daemonbin.NeedsStage's lstat of <bin>/bossd fails
+	// with ENOTDIR. That is the shape a corrupted app-data dir actually takes.
+	binDir := filepath.Dir(expectedStagedBossdPath(t))
+	if err := os.RemoveAll(binDir); err != nil {
+		t.Fatalf("remove staged bin dir: %v", err)
+	}
+	if err := os.WriteFile(binDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write file over staged bin dir: %v", err)
+	}
+
+	var warned error
+	originalWarn := warnDaemonRefreshFailed
+	warnDaemonRefreshFailed = func(err error) { warned = err }
+	t.Cleanup(func() { warnDaemonRefreshFailed = originalWarn })
+
+	calls := stubLoadServesSocket(t, socketPath, nil)
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("a staging failure turned a working start into a hard failure: %v", err)
+	}
+	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
+		t.Fatalf("`launchctl load` invocations = %d, want 1 — a staging failure must not stop the start", got)
+	}
+	if warned == nil {
+		t.Fatal("staging failure was swallowed; the operator is never told why the start used the old build")
+	}
+	// "staged" alone would also match the plist-refresh errors, which name the
+	// staged path; this pins the reason to the staging check that really failed.
+	if !strings.Contains(warned.Error(), "check staged bossd") {
+		t.Errorf("surfaced reason %q does not name the staging failure", warned.Error())
+	}
+}
+
+// TestPlatformEnsureRunningReusesTheRefreshedStagingForTheFallback pins that a
+// successful pre-load refresh is not thrown away when the `launchctl load`
+// fails and the direct-spawn fallback takes over. daemonbin.NeedsStage
+// short-circuits on a SHA-256 of both the source and the staged copy, so
+// resolving and staging a second time re-hashes ~38 MB twice rather than
+// re-running a stat.
+//
+// The discriminator is deliberately destructive: at the instant the load is
+// issued, the resolved source is replaced with a DIRECTORY. ResolveBossdPath
+// only stats its candidate, so it still resolves, but NeedsStage rejects a
+// non-regular source — meaning a second EnsureStaged fails outright and the
+// old shape returns a hard error instead of starting the copy it had already
+// staged. A "both paths work" assertion could not tell the two apart.
+func TestPlatformEnsureRunningReusesTheRefreshedStagingForTheFallback(t *testing.T) {
+	sourcePath, _, socketPath := prepareEnsureRunningEnvironment(t)
+
+	// Upgrade the source so the pre-load refresh definitely stages something.
+	if err := os.WriteFile(sourcePath, []byte("version two"), 0o755); err != nil {
+		t.Fatalf("upgrade source bossd: %v", err)
+	}
+
+	originalStartDetachedBossd := startDetachedBossd
+	var startedPath string
+	var listener net.Listener
+	startDetachedBossd = func(path string) error {
+		startedPath = path
+		var err error
+		listener, err = net.Listen("unix", socketPath)
+		return err
+	}
+	t.Cleanup(func() {
+		startDetachedBossd = originalStartDetachedBossd
+		if listener != nil {
+			_ = listener.Close()
+		}
+	})
+
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		if args[0] != "load" {
+			return nil, nil
+		}
+		if err := os.Remove(sourcePath); err != nil {
+			t.Errorf("remove source bossd: %v", err)
+			return nil, err
+		}
+		if err := os.Mkdir(sourcePath, 0o700); err != nil {
+			t.Errorf("replace source bossd with a directory: %v", err)
+			return nil, err
+		}
+		return []byte("Load failed"), fakeExitError(t, 1)
+	})
+
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("fallback re-resolved and re-staged instead of reusing the refresh it had just done: %v", err)
+	}
+	// The whole discriminating power of this test lives in the stub's `load`
+	// branch, which is where the source is sabotaged. If the LaunchAgent branch
+	// ever stops being entered, that branch never runs, the plain fallback
+	// stages "version two" for itself, and every assertion below still holds —
+	// so pin the load, exactly as this test's siblings do.
+	if got := countLaunchctlVerb(*calls, "load"); got != 1 {
+		t.Fatalf("`launchctl load` invocations = %d, want 1 — without the load the source is never sabotaged and this test proves nothing", got)
+	}
+	if info, err := os.Stat(sourcePath); err != nil || !info.IsDir() {
+		t.Fatalf("source bossd is not the sabotaged directory (err %v) — a second EnsureStaged would have succeeded", err)
+	}
+	if got, want := startedPath, expectedStagedBossdPath(t); got != want {
+		t.Errorf("fallback started %q, want the staged path %q", got, want)
+	}
+	if got, err := os.ReadFile(expectedStagedBossdPath(t)); err != nil || string(got) != "version two" {
+		t.Fatalf("staged bossd = %q (err %v), want the upgraded contents — otherwise the reuse proves nothing", got, err)
+	}
+}
+
+// TestPlatformEnsureRunningLeavesACurrentPlistAlone asserts the compare-then-
+// write half: the plist names the same stable staged path on every start, so
+// re-staging must not churn a file launchd watches.
+func TestPlatformEnsureRunningLeavesACurrentPlistAlone(t *testing.T) {
+	sourcePath, plistPath, socketPath := prepareEnsureRunningEnvironment(t)
+
+	// Upgrade the source so the refresh definitely runs; only then does "the
+	// plist was left alone" say anything.
+	if err := os.WriteFile(sourcePath, []byte("version two"), 0o755); err != nil {
+		t.Fatalf("upgrade source bossd: %v", err)
+	}
+
+	before, err := os.Stat(plistPath)
+	if err != nil {
+		t.Fatalf("stat plist before start: %v", err)
+	}
+
+	stubLoadServesSocket(t, socketPath, nil)
+	if err := platformEnsureRunning(socketPath); err != nil {
+		t.Fatalf("platformEnsureRunning: %v", err)
+	}
+
+	after, err := os.Stat(plistPath)
+	if err != nil {
+		t.Fatalf("stat plist after start: %v", err)
+	}
+	// mtime, not content: os.WriteFile truncates in place, so identical bytes
+	// and an unchanged inode are both consistent with a needless rewrite.
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("plist was rewritten (mtime %s -> %s) although its generated bytes are unchanged",
+			before.ModTime(), after.ModTime())
+	}
+	staged, err := os.ReadFile(expectedStagedBossdPath(t))
+	if err != nil || string(staged) != "version two" {
+		t.Fatalf("staged bossd = %q (err %v), want the upgraded contents — otherwise the check above proves nothing", staged, err)
 	}
 }
 
@@ -533,16 +822,160 @@ func stubRestartLaunchctl(t *testing.T, respond func(args []string) ([]byte, err
 	return calls
 }
 
-// countBootstrapCalls counts the recorded `launchctl bootstrap` invocations,
-// which is what pins platformRestart's retry as bounded.
-func countBootstrapCalls(calls [][]string) int {
+// countLaunchctlVerb counts recorded runLaunchctl invocations of one verb.
+func countLaunchctlVerb(calls [][]string, verb string) int {
 	count := 0
 	for _, call := range calls {
-		if len(call) > 0 && call[0] == "bootstrap" {
+		if len(call) > 0 && call[0] == verb {
 			count++
 		}
 	}
 	return count
+}
+
+// countBootstrapCalls counts the recorded `launchctl bootstrap` invocations,
+// which is what pins platformRestart's retry as bounded.
+func countBootstrapCalls(calls [][]string) int {
+	return countLaunchctlVerb(calls, "bootstrap")
+}
+
+// stubLaunchdClock replaces the retry's wait with a simulated clock so a test
+// can drive the real backoff schedule without spending real time. The returned
+// pointer accumulates the simulated wait.
+func stubLaunchdClock(t *testing.T) *time.Duration {
+	t.Helper()
+	original := launchdSleep
+	var elapsed time.Duration
+	launchdSleep = func(d time.Duration) { elapsed += d }
+	t.Cleanup(func() { launchdSleep = original })
+	return &elapsed
+}
+
+// TestPlatformRestartRetryWindowOutlastsTheOldFlatBudget drives the production
+// backoff on a simulated clock: a bootout that has still not released the job
+// past the old flat ~750ms budget now converges instead of erroring, which is
+// the second half of the BOS-977 report.
+func TestPlatformRestartRetryWindowOutlastsTheOldFlatBudget(t *testing.T) {
+	const oldFlatWindow = 750 * time.Millisecond
+
+	// prepareRestartEnvironment zeroes the base delay so the other retry tests
+	// never sleep; this one needs the shipped schedule, kept free by the
+	// simulated clock below. Its cleanup still restores the same value.
+	productionDelay := launchdBootstrapRetryDelay
+	prepareRestartEnvironment(t)
+	launchdBootstrapRetryDelay = productionDelay
+	simulated := stubLaunchdClock(t)
+
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			if *simulated <= oldFlatWindow {
+				return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+			}
+			return nil, nil
+		case "list":
+			return nil, fakeExitError(t, 113)
+		default:
+			return nil, nil
+		}
+	})
+
+	if err := platformRestart(); err != nil {
+		t.Fatalf("platformRestart lost a bootout race that outlived the old %s budget: %v", oldFlatWindow, err)
+	}
+	if *simulated <= oldFlatWindow {
+		t.Fatalf("retry converged after %s, inside the old %s budget — the test would pass against the old code", *simulated, oldFlatWindow)
+	}
+	if *simulated > launchdBootstrapRetryWindow {
+		t.Fatalf("retry waited %s in total, over the %s bound", *simulated, launchdBootstrapRetryWindow)
+	}
+	if got := countBootstrapCalls(*calls); got > launchdBootstrapAttempts {
+		t.Fatalf("bootstrap invocations = %d, want at most the %d bound", got, launchdBootstrapAttempts)
+	}
+}
+
+// TestPlatformRestartBoundsTheWidenedRetryWindow pins the other direction:
+// widening the window must not let a genuinely broken bootstrap run long, and
+// it must not disturb which failure the operator is shown.
+func TestPlatformRestartBoundsTheWidenedRetryWindow(t *testing.T) {
+	productionDelay := launchdBootstrapRetryDelay
+	prepareRestartEnvironment(t)
+	launchdBootstrapRetryDelay = productionDelay
+	simulated := stubLaunchdClock(t)
+
+	bootstraps := 0
+	calls := stubRestartLaunchctl(t, func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "bootstrap":
+			bootstraps++
+			if bootstraps == 1 {
+				return []byte("Bootstrap failed: 5: Input/output error"), fakeExitError(t, 5)
+			}
+			// A different, non-already-loaded failure afterwards, so this
+			// isolates first-versus-last from the short-circuit.
+			return []byte("Bootstrap failed: 1: Operation not permitted"), fakeExitError(t, 1)
+		case "list":
+			return nil, fakeExitError(t, 113)
+		default:
+			return nil, nil
+		}
+	})
+
+	err := platformRestart()
+	if err == nil {
+		t.Fatal("platformRestart with a permanently failing bootstrap returned nil")
+	}
+	if !strings.Contains(err.Error(), "Input/output error") {
+		t.Errorf("platformRestart error %q dropped the first (informative) failure", err.Error())
+	}
+	if strings.Contains(err.Error(), "Operation not permitted") {
+		t.Errorf("platformRestart error %q reported a later attempt instead of the first", err.Error())
+	}
+	if *simulated > launchdBootstrapRetryWindow {
+		t.Errorf("permanently failing bootstrap waited %s, over the %s bound", *simulated, launchdBootstrapRetryWindow)
+	}
+	if got := countBootstrapCalls(*calls); got != launchdBootstrapAttempts {
+		t.Errorf("bootstrap invocations = %d, want exactly the %d bound", got, launchdBootstrapAttempts)
+	}
+}
+
+// TestLaunchdBootstrapDelaysBackOffWithinTheBound pins the schedule itself: the
+// waits grow, their total stays inside the explicit window, and that total
+// clears the old flat budget the incident outran. Bounding the window rather
+// than only the attempt count is the property BOS-977 asked for.
+func TestLaunchdBootstrapDelaysBackOffWithinTheBound(t *testing.T) {
+	const oldFlatWindow = 750 * time.Millisecond
+
+	delays := launchdBootstrapDelays()
+	if len(delays) == 0 {
+		t.Fatal("launchdBootstrapDelays returned no waits; the retry would never pause")
+	}
+	// Exact, not an upper bound: the retry loop now counts attempts as
+	// len(delays)+1 and never reads launchdBootstrapAttempts, so a window
+	// narrowed below the base delay would silently shrink the schedule while
+	// the constant still advertised six attempts.
+	if got := len(delays) + 1; got != launchdBootstrapAttempts {
+		t.Errorf("schedule allows %d attempts, want exactly the %d bound", got, launchdBootstrapAttempts)
+	}
+
+	var total time.Duration
+	for i, delay := range delays {
+		if delay <= 0 {
+			t.Fatalf("delay %d = %s, want a positive wait", i, delay)
+		}
+		// The final step is clamped to whatever is left of the window rather
+		// than dropped, so only the steps before it must grow.
+		if i > 0 && i < len(delays)-1 && delay <= delays[i-1] {
+			t.Errorf("delay %d = %s does not back off from %s", i, delay, delays[i-1])
+		}
+		total += delay
+	}
+	if total > launchdBootstrapRetryWindow {
+		t.Errorf("schedule totals %s, over the %s bound", total, launchdBootstrapRetryWindow)
+	}
+	if total <= oldFlatWindow {
+		t.Errorf("schedule totals %s, still inside the old %s budget the incident outran", total, oldFlatWindow)
+	}
 }
 
 func TestGeneratePlist(t *testing.T) {
@@ -1082,11 +1515,7 @@ func TestPlatformRestartRewritesPreChangePlist(t *testing.T) {
 	// rewrite branch is never reached, and the assertion below would be
 	// measuring the sandbox rather than the behaviour under test.
 	sourcePath := writeFakeCellarBossd(t, home, "version one")
-	originalExecutablePath := executablePath
-	executablePath = func() (string, error) {
-		return filepath.Join(filepath.Dir(sourcePath), "boss"), nil
-	}
-	t.Cleanup(func() { executablePath = originalExecutablePath })
+	stubExecutableNextTo(t, sourcePath)
 
 	launchAgents := filepath.Join(home, "Library", "LaunchAgents")
 	if err := os.MkdirAll(launchAgents, 0o700); err != nil {

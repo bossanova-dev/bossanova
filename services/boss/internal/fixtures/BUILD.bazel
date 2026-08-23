@@ -30,6 +30,7 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gitremote",
         "//lib/bossalib/sessionreason",
+        "//services/boss/internal/preflight",
         "@org_golang_google_protobuf//proto",
     ],
 )

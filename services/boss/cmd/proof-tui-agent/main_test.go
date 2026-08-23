@@ -2,16 +2,24 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
+
+	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/boss/internal/tuitest"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // e2e boss + agent binaries, built once and shared across the e2e cases.
@@ -520,5 +528,230 @@ func TestProofSettingsSeedOverrides(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("proofSettingsSeedOverrides = %#v, want %#v", got, want)
+	}
+}
+
+// TestMergeSettingsOverridesLayersEnvOnTopOfPreset pins the precedence between
+// the two sources that write into the same seeded settings.json. A preset
+// default is a baseline a scenario may move, so the env-driven layer wins on a
+// collision — and neither source may drop the other's disjoint keys, which is
+// what a naive "use whichever is non-empty" would do.
+func TestMergeSettingsOverridesLayersEnvOnTopOfPreset(t *testing.T) {
+	got := mergeSettingsOverrides(
+		map[string]any{"login_shell": "/bin/bash", "posthog_host": "https://preset.example"},
+		map[string]any{"posthog_host": "https://scenario.example", "event_tracing_enabled": true},
+	)
+	want := map[string]any{
+		"login_shell":           "/bin/bash",
+		"posthog_host":          "https://scenario.example",
+		"event_tracing_enabled": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeSettingsOverrides = %#v, want %#v", got, want)
+	}
+}
+
+// TestMergeSettingsOverridesHandlesEmptySources guards the overwhelmingly common
+// case — every preset but slow-agent-probe declares no SettingsOverrides at all,
+// so the merged result must stay byte-identical to the env-only map it replaced.
+func TestMergeSettingsOverridesHandlesEmptySources(t *testing.T) {
+	if got := mergeSettingsOverrides(nil, nil); len(got) != 0 {
+		t.Errorf("merge(nil, nil) = %#v, want empty", got)
+	}
+	envOnly := map[string]any{"event_tracing_enabled": true}
+	if got := mergeSettingsOverrides(nil, envOnly); !reflect.DeepEqual(got, envOnly) {
+		t.Errorf("merge(nil, env) = %#v, want %#v", got, envOnly)
+	}
+}
+
+// TestWriteHomeFilesStagesPresetFiles covers the happy path a preset relies on:
+// nested paths are created, and the content lands verbatim (a mangled .bashrc
+// would silently stop being slow and the proof would capture the wrong screen).
+func TestWriteHomeFilesStagesPresetFiles(t *testing.T) {
+	home := t.TempDir()
+	files := map[string]string{
+		".bashrc":            "sleep 45\n",
+		".config/boss/x.txt": "nested\n",
+	}
+	if err := writeHomeFiles(home, files); err != nil {
+		t.Fatalf("writeHomeFiles: %v", err)
+	}
+	for rel, want := range files {
+		got, err := os.ReadFile(filepath.Join(home, rel))
+		if err != nil {
+			t.Fatalf("reading %q: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Errorf("%q = %q, want %q", rel, got, want)
+		}
+	}
+}
+
+// TestWriteHomeFilesRejectsEscapingPaths is the containment gate. The preset
+// registry is ordinary repo data, but this helper WRITES to disk, so a key that
+// escapes the throwaway HOME must be refused rather than trusted — otherwise a
+// typo'd preset overwrites the developer's real dotfiles. Each case asserts
+// nothing was written, not merely that an error came back.
+func TestWriteHomeFilesRejectsEscapingPaths(t *testing.T) {
+	for _, rel := range []string{"", "/etc/passwd", "../escaped", "a/../../escaped"} {
+		t.Run(rel, func(t *testing.T) {
+			home := t.TempDir()
+			outside := filepath.Join(home, "..", "escaped")
+			err := writeHomeFiles(home, map[string]string{rel: "x"})
+			if err == nil {
+				t.Fatalf("writeHomeFiles(%q) = nil, want an error", rel)
+			}
+			if !strings.Contains(err.Error(), "relative path inside HOME") {
+				t.Errorf("error should name the rule; got %v", err)
+			}
+			if _, statErr := os.Stat(outside); statErr == nil {
+				t.Errorf("writeHomeFiles(%q) wrote outside HOME", rel)
+			}
+			entries, readErr := os.ReadDir(home)
+			if readErr != nil {
+				t.Fatalf("reading home: %v", readErr)
+			}
+			if len(entries) != 0 {
+				t.Errorf("HOME should be untouched, got %d entries", len(entries))
+			}
+		})
+	}
+}
+
+// TestSlowAgentProbePresetSeedsAReachableProbe is the bridge-side half of the
+// BOS-976 fixture contract: the preset's declarations have to survive the two
+// bridge steps that act on them. It asserts on the merged override map and the
+// staged HOME rather than on the preset struct (services/boss/internal/fixtures
+// already pins that side), so a preset field the bridge silently ignores fails
+// here instead of at scenario-replay time.
+func TestSlowAgentProbePresetSeedsAReachableProbe(t *testing.T) {
+	preset, err := fixtures.LookupPreset("slow-agent-probe")
+	if err != nil {
+		t.Fatalf("LookupPreset: %v", err)
+	}
+
+	overrides := mergeSettingsOverrides(preset.SettingsOverrides, proofSettingsSeedOverrides(nil))
+	if overrides["login_shell"] != "/bin/bash" {
+		t.Errorf("merged login_shell = %v, want /bin/bash", overrides["login_shell"])
+	}
+	if overrides["plugins"] == nil {
+		t.Error("merged overrides must carry the plugins array that enables claude")
+	}
+
+	home := t.TempDir()
+	if err := writeHomeFiles(home, preset.HomeFiles); err != nil {
+		t.Fatalf("writeHomeFiles: %v", err)
+	}
+	rc, err := os.ReadFile(filepath.Join(home, ".bashrc"))
+	if err != nil {
+		t.Fatalf("the probe sources $HOME/.bashrc; it was not staged: %v", err)
+	}
+	if string(rc) != fixtures.SlowLoginShellRC {
+		t.Errorf(".bashrc = %q, want the preset's rc verbatim", rc)
+	}
+
+	// The bridge's first-frame wait must outlast a startup that is slow by
+	// design, or the bridge fails before the screen it exists to capture.
+	if preset.BootWait <= fixtures.DefaultBootWait {
+		t.Errorf("BootWait = %s, want more than the bridge default %s",
+			preset.BootWait, fixtures.DefaultBootWait)
+	}
+}
+
+// TestSeedWorldSeedsAgentsIntoListAgents pins the third short-circuit: boss's
+// preflight intersects settings.Plugins with the daemon's ListAgents inventory,
+// which is empty unless seedWorld forwards the world's Agents. Without this the
+// slow-agent-probe preset enables a plugin the daemon never reports and the
+// probe is skipped in silence.
+func TestSeedWorldSeedsAgentsIntoListAgents(t *testing.T) {
+	// A short socket dir, not t.TempDir(): macOS caps a unix socket path at 104
+	// bytes and the test-name-derived temp path blows straight past it.
+	dir, err := os.MkdirTemp("", "ptua-t-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	daemon, stop, err := tuitest.StartMockDaemon(filepath.Join(dir, "d.sock"))
+	if err != nil {
+		t.Fatalf("StartMockDaemon: %v", err)
+	}
+	defer func() { _ = stop() }()
+
+	preset, err := fixtures.LookupPreset("slow-agent-probe")
+	if err != nil {
+		t.Fatalf("LookupPreset: %v", err)
+	}
+	seedWorld(daemon, preset.World())
+
+	resp, err := daemon.ListAgents(context.Background(), connect.NewRequest(&pb.ListAgentsRequest{}))
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	var names []string
+	for _, a := range resp.Msg.GetAgents() {
+		names = append(names, a.GetName())
+	}
+	if !slices.Contains(names, "claude") {
+		t.Errorf("ListAgents = %v, want it to include claude", names)
+	}
+}
+
+// TestRejectUnhonouredFirstRunFields pins the loud failure. The SeedFirstRun
+// path seeds a fixed settings.json and skips the first-frame wait, so both
+// fields below are inert there — and a preset that is silently NOT the preset it
+// declared produces a green capture of the wrong screen, which is exactly the
+// class of lie BOS-976 exists to remove.
+func TestRejectUnhonouredFirstRunFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		preset  fixtures.Preset
+		wantErr string
+	}{
+		{
+			name:    "settings overrides are refused",
+			preset:  fixtures.Preset{SeedKind: fixtures.SeedFirstRun, SettingsOverrides: map[string]any{"login_shell": "/bin/bash"}},
+			wantErr: "login_shell",
+		},
+		{
+			name:    "boot wait is refused",
+			preset:  fixtures.Preset{SeedKind: fixtures.SeedFirstRun, BootWait: 45 * time.Second},
+			wantErr: "BootWait",
+		},
+		{
+			name:   "a first-run preset declaring neither is fine",
+			preset: fixtures.Preset{SeedKind: fixtures.SeedFirstRun},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnhonouredFirstRunFields(tc.preset)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want nil, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want an error naming %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should name the unhonoured field %q; got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestRegisteredFirstRunPresetsDeclareNothingUnhonoured runs the guard over the
+// REAL registry, so adding a first-run preset that sets one of these fields
+// fails here at unit-test time rather than at scenario-replay time on a screen
+// that looks fine.
+func TestRegisteredFirstRunPresetsDeclareNothingUnhonoured(t *testing.T) {
+	for name, preset := range fixtures.Presets() {
+		if preset.SeedKind != fixtures.SeedFirstRun {
+			continue
+		}
+		if err := rejectUnhonouredFirstRunFields(preset); err != nil {
+			t.Errorf("preset %q: %v", name, err)
+		}
 	}
 }

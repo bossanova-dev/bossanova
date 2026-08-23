@@ -1,0 +1,53 @@
+{
+  "$schema": "./schema.json",
+  "version": 1,
+  "title": "BOS-976 — a login shell that cannot answer inside the agent-probe budget now blocks startup with a timeout that names the shell and the budget, instead of claiming the agent was not found",
+  "fixture": { "preset": "slow-agent-probe" },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "A slow interactive rc lands on the probe-timed-out screen, which says the shell ran out of time rather than sending the user hunting a PATH problem",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "timed out",
+            "match": "normalized",
+            "label": "the probe's deadline produces a screen that says so — before BOS-976 the same 20 seconds ended on 'claude was not found for this project' and the agent resolved perfectly well"
+          },
+          "timeoutMs": 55000,
+          "caption": "The preset's login shell sources a .bashrc that sleeps well past the probe budget, so boss's real `command -v claude` probe really runs out of time. Nothing paints until it does: the wait is deliberately longer than the 20s budget so a loaded CI box cannot cut the probe short and turn a real capture into an unexplained timeout."
+        },
+        {
+          "expect": [
+            {
+              "text": "checking claude timed out after 20s",
+              "match": "normalized",
+              "label": "the headline names the operation, the agent and the elapsed budget, so a user who waited 20 seconds gets a diagnosis rather than a dead end"
+            },
+            {
+              "text": "20s",
+              "match": "normalized",
+              "label": "the budget is on screen as a number the user can act on — it is rendered from agentResolveTimeout, so it cannot drift from the bound that actually elapsed"
+            },
+            {
+              "text": "/bin/bash",
+              "match": "normalized",
+              "label": "the login shell the probe ran is named, which is the thing the user has to go and time"
+            },
+            {
+              "text": "not a missing claude",
+              "match": "normalized",
+              "label": "the screen rules out the wrong diagnosis explicitly — this is the whole defect, so a message that merely stopped saying 'not found' would not be enough"
+            },
+            {
+              "text": "timed\\s+out[\\s\\S]*[Pp]ress\\s+q\\s+to\\s+quit",
+              "match": "regex",
+              "label": "the way out is on the SAME frame as the timeout: one regex over one screen, so the user is not stranded on a blocking screen they cannot dismiss"
+            }
+          ],
+          "caption": "The timeout screen: the elapsed budget, the shell that was too slow, an explicit denial that the agent is missing, and a live way out. The matcher has no negative form, so the counterpart — that a genuine non-zero `command -v` still renders today's not-found screen byte for byte — is pinned as a literal in TestCheckAgentResolvableBranchesOnProbeOutcome rather than asserted here."
+        }
+      ]
+    }
+  ]
+}

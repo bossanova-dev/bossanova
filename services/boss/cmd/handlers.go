@@ -358,7 +358,10 @@ type agentPreflightClient interface {
 	ListAgents(ctx context.Context) ([]client.AgentInfo, error)
 }
 
-var checkAgentResolvableForPreflight = preflight.CheckAgentResolvable
+// checkAgentsResolvableForPreflight probes every enabled agent under a single
+// startup budget — see preflight.CheckAgentsResolvable, which runs them
+// concurrently precisely because this call blocks boss's first frame.
+var checkAgentsResolvableForPreflight = preflight.CheckAgentsResolvable
 
 var cliBackedAgentProviders = map[string]bool{
 	"claude": true,
@@ -384,10 +387,9 @@ func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPrefligh
 	if err != nil {
 		return err
 	}
-	for _, agent := range enabledAgentProviders(settings, loadedAgents, agentName) {
-		if issue := checkAgentResolvableForPreflight(settings.LoginShell, agent, worktree); issue != nil {
-			return views.RunPreflight(*issue)
-		}
+	agents := enabledAgentProviders(settings, loadedAgents, agentName)
+	if issue := checkAgentsResolvableForPreflight(settings.LoginShell, agents, worktree); issue != nil {
+		return views.RunPreflight(*issue)
 	}
 	return nil
 }

@@ -554,6 +554,74 @@ func platformUninstall() error {
 	return nil
 }
 
+// refreshStagedPlist stages sourcePath at the stable staged path and brings
+// plistPath in line with it, leaving the file untouched when its generated
+// bytes already match what is on disk. It returns the staged path so a caller
+// that goes on to need it does not have to re-derive it — see
+// platformEnsureRunning, where repeating the work means re-hashing the binary
+// rather than re-running a stat.
+//
+// This is the single stage-then-compare-then-write path. platformRestart and
+// platformEnsureRunning both go through it, which is what stops `start` and
+// `restart` disagreeing about which build the LaunchAgent names: the plist
+// points at the staged copy, so whoever hands that plist to launchctl has to
+// have refreshed the copy first (BOS-977).
+//
+// Rewriting only on a byte difference is deliberate. The plist normally names
+// the same stable staged path every time, so an unconditional write would churn
+// a file launchd watches for no gain.
+func refreshStagedPlist(sourcePath, plistPath string) (string, error) {
+	stagedPath, err := EnsureStaged(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	plist, err := generatePlist(stagedPath)
+	if err != nil {
+		return "", err
+	}
+
+	// #nosec G304 -- both callers pass platformServicePath's result: the fixed per-user LaunchAgents plist; non-secret local service state.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	currentPlist, readErr := os.ReadFile(plistPath)
+	switch {
+	case readErr == nil && bytes.Equal(currentPlist, []byte(plist)):
+		// Preserve the existing file when its content is current.
+		return stagedPath, nil
+	case readErr == nil || os.IsNotExist(readErr):
+		if writeErr := os.WriteFile(plistPath, []byte(plist), 0o600); writeErr != nil {
+			return "", fmt.Errorf("rewrite plist: %w", writeErr)
+		}
+		return stagedPath, nil
+	default:
+		return "", fmt.Errorf("read plist before rewrite: %w", readErr)
+	}
+}
+
+// refreshInstalledDaemon resolves the installed bossd and refreshes the staged
+// copy plus the plist that the LaunchAgent load will read, returning the staged
+// path it brought up to date.
+func refreshInstalledDaemon(plistPath string) (string, error) {
+	sourcePath, err := ResolveBossdPath()
+	if err != nil {
+		return "", err
+	}
+	return refreshStagedPlist(sourcePath, plistPath)
+}
+
+// warnDaemonRefreshFailed reports a pre-load staging or plist-refresh failure
+// to the operator without failing the start. It is a package var so tests can
+// observe the surfaced reason, following the runLaunchctl / executablePath
+// indirection idiom in this package.
+//
+// The wording names the plist as well as the binary because refreshStagedPlist
+// fails for either: a current staged copy with an unreadable plist lands here
+// too, and a message that blamed only staging would misdirect that operator.
+var warnDaemonRefreshFailed = func(err error) {
+	_, _ = fmt.Fprintf(os.Stderr,
+		"boss: could not refresh the staged bossd or its LaunchAgent plist before starting it: %v; starting the previously staged build — run 'boss daemon restart' if it is out of date\n",
+		err)
+}
+
 func platformRestart() error {
 	plistPath, err := platformServicePath()
 	if err != nil {
@@ -570,27 +638,7 @@ func platformRestart() error {
 	}
 
 	if refreshErr == nil {
-		var stagedPath string
-		stagedPath, refreshErr = EnsureStaged(sourcePath)
-		if refreshErr == nil {
-			var plist string
-			plist, refreshErr = generatePlist(stagedPath)
-			if refreshErr == nil {
-				// #nosec G304 -- platformServicePath returns the fixed per-user LaunchAgents plist; non-secret local service state.
-				// owner=@recurser review-by=2027-01-18 issue=BOS-28
-				currentPlist, readErr := os.ReadFile(plistPath)
-				switch {
-				case readErr == nil && bytes.Equal(currentPlist, []byte(plist)):
-					// Preserve the existing file when its content is current.
-				case readErr == nil || os.IsNotExist(readErr):
-					if writeErr := os.WriteFile(plistPath, []byte(plist), 0o600); writeErr != nil {
-						refreshErr = fmt.Errorf("rewrite plist: %w", writeErr)
-					}
-				default:
-					refreshErr = fmt.Errorf("read plist before rewrite: %w", readErr)
-				}
-			}
-		}
+		_, refreshErr = refreshStagedPlist(sourcePath, plistPath)
 	}
 
 	if skipLaunchctl() {
@@ -610,12 +658,17 @@ func platformRestart() error {
 	// registers the job anyway, later attempts fail with "already loaded"
 	// noise; reporting the last error would hide the real cause behind it and
 	// leave the retry diagnosing worse than the single attempt it replaced.
+	//
+	// BOS-977: the flat 250ms delay made that window ~750ms in total, which the
+	// reported incident outran. The waits now back off (see
+	// launchdBootstrapDelays) under an explicitly bounded total.
+	delays := launchdBootstrapDelays()
 	var (
 		firstOut  []byte
 		firstErr  error
 		succeeded bool
 	)
-	for attempt := 1; attempt <= launchdBootstrapAttempts; attempt++ {
+	for attempt := 0; attempt <= len(delays); attempt++ {
 		out, err := runLaunchctl("bootstrap", domainTarget, plistPath)
 		if err == nil {
 			succeeded = true
@@ -629,8 +682,8 @@ func platformRestart() error {
 			// attempt can change the outcome — stop paying the backoff.
 			break
 		}
-		if attempt < launchdBootstrapAttempts {
-			time.Sleep(launchdBootstrapRetryDelay)
+		if attempt < len(delays) {
+			launchdSleep(delays[attempt])
 		}
 	}
 
@@ -672,11 +725,61 @@ func launchctlAlreadyBootstrapped(err error) bool {
 	}
 }
 
-const launchdBootstrapAttempts = 3
+const (
+	// launchdBootstrapAttempts caps how many `launchctl bootstrap` attempts one
+	// restart makes.
+	launchdBootstrapAttempts = 6
 
-// launchdBootstrapRetryDelay keeps the bounded retry short. It is a package var
-// so tests exercise the retry without sleeping.
+	// launchdBootstrapRetryWindow caps the TOTAL time spent waiting between
+	// those attempts.
+	//
+	// Bounding the window and not just the attempt count is the point of
+	// BOS-977. The incident's bootout had still not released the job well past
+	// the old flat 3 x 250ms budget, so the delays have to grow — but growing
+	// them under an attempt cap alone silently trades a fixed upgrade race for
+	// a genuinely broken bootstrap that takes far longer to report. Five
+	// seconds comfortably covers the observed race while still failing fast.
+	launchdBootstrapRetryWindow = 5 * time.Second
+)
+
+// launchdBootstrapRetryDelay is the FIRST backoff step; each later step doubles
+// it until launchdBootstrapRetryWindow is spent. It is a package var so tests
+// exercise the retry without sleeping.
 var launchdBootstrapRetryDelay = 250 * time.Millisecond
+
+// launchdSleep is the wait between bootstrap attempts. It is a package var so a
+// test can drive the bounded window on a simulated clock rather than real time.
+var launchdSleep = time.Sleep
+
+// launchdBootstrapDelays returns the ordered waits between the bounded
+// bootstrap attempts: each step doubles the one before it, and the schedule is
+// truncated so the waits can never total more than
+// launchdBootstrapRetryWindow — including the final step, which is clamped to
+// whatever is left of the window rather than dropped.
+//
+// A zero base delay (what tests set) keeps every attempt and drops only the
+// waiting, so the retry's shape stays observable without real time passing.
+func launchdBootstrapDelays() []time.Duration {
+	delays := make([]time.Duration, 0, launchdBootstrapAttempts-1)
+	remaining := launchdBootstrapRetryWindow
+	delay := launchdBootstrapRetryDelay
+	for len(delays) < launchdBootstrapAttempts-1 {
+		if delay <= 0 {
+			delays = append(delays, 0)
+			continue
+		}
+		if remaining <= 0 {
+			break
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		delays = append(delays, delay)
+		remaining -= delay
+		delay *= 2
+	}
+	return delays
+}
 
 // verifiedRestartOutcome probes the real post-failure state through the same
 // path platformStop uses. bossdStillRunningProbe fails closed — a probe error
@@ -784,10 +887,40 @@ func platformEnsureRunning(socketPath string) error {
 		return nil
 	}
 
+	// stagedPath is set only when the LaunchAgent refresh below actually
+	// succeeded, and lets the direct-spawn fallback reuse that work instead of
+	// resolving and staging a second time. daemonbin.NeedsStage short-circuits
+	// on a SHA-256 of both the source and the staged copy, not on a stat, so
+	// the repeat would re-hash ~38 MB twice over on a path already reached by
+	// a failed load.
+	var stagedPath string
+
 	// Try the LaunchAgent first (if installed).
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
 		plistPath, _ := platformServicePath()
+
+		// BOS-977: the plist names the STAGED copy, so loading it without
+		// refreshing that copy first starts the PREVIOUS build after a package
+		// upgrade — and reports success. That is why `boss daemon restart`,
+		// which stages unconditionally, was the only command that cleared the
+		// staleness warning.
+		//
+		// Staging is a file copy rather than a service operation, so it is safe
+		// ahead of the load and leaves both surrounding isSocketReachable
+		// guards where they are.
+		//
+		// A refresh failure must never make a working start worse: the
+		// behaviour here has always been "load whatever is already staged", so
+		// surface the reason and fall through to the load rather than turning a
+		// stale start into no start at all.
+		refreshed, refreshErr := refreshInstalledDaemon(plistPath)
+		if refreshErr != nil {
+			warnDaemonRefreshFailed(refreshErr)
+		} else {
+			stagedPath = refreshed
+		}
+
 		if _, err := runLaunchctl("load", plistPath); err == nil {
 			if waitForSocket(socketPath, LifecycleStartupTimeout) {
 				return nil
@@ -797,14 +930,19 @@ func platformEnsureRunning(socketPath string) error {
 
 	// Fall back to starting bossd directly as a background process. Stage it
 	// first so this path, used when no LaunchAgent is installed, also preserves
-	// macOS TCC's resolved-executable-path grant across package upgrades.
-	sourcePath, err := ResolveBossdPath()
-	if err != nil {
-		return fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
-	}
-	bossdPath, err := EnsureStaged(sourcePath)
-	if err != nil {
-		return fmt.Errorf("stage fallback daemon: %w", err)
+	// macOS TCC's resolved-executable-path grant across package upgrades —
+	// unless the refresh above already did exactly that, in which case reuse
+	// its result rather than paying for it twice.
+	bossdPath := stagedPath
+	if bossdPath == "" {
+		sourcePath, resolveErr := ResolveBossdPath()
+		if resolveErr != nil {
+			return fmt.Errorf("cannot auto-start daemon because start failed: %w", resolveErr)
+		}
+		bossdPath, err = EnsureStaged(sourcePath)
+		if err != nil {
+			return fmt.Errorf("stage fallback daemon: %w", err)
+		}
 	}
 
 	// Final guard before spawning: don't race a daemon that just came up.

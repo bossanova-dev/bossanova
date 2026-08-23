@@ -113,6 +113,12 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	if len(w.CreateSessionScript) > 0 {
 		d.SetCreateSessionScript(w.CreateSessionScript, w.CreateSessionFrameDelay)
 	}
+	// ListAgents answers empty unless a world seeds it, and boss's agent
+	// preflight intersects that inventory with settings.Plugins — so a preset
+	// that needs a startup agent check to actually run has to fill both sides.
+	if len(w.Agents) > 0 {
+		d.SetAgents(w.Agents)
+	}
 	for _, a := range w.Accounts {
 		// Display-safe metadata only; the Account proto has no credential field,
 		// so a nil credential is correct (BOS-265 Settings → Accounts list).
@@ -235,13 +241,31 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	// the bridge — not the fixtures package — maps kind -> helper.
 	switch preset.SeedKind {
 	case fixtures.SeedAcknowledged:
-		if err := tuitest.SeedSettingsAcknowledgedWithOverrides(home, worktreeBaseDir, proofSettingsSeedOverrides(allowedEnv)); err != nil {
+		overrides := mergeSettingsOverrides(preset.SettingsOverrides, proofSettingsSeedOverrides(allowedEnv))
+		if err := tuitest.SeedSettingsAcknowledgedWithOverrides(home, worktreeBaseDir, overrides); err != nil {
 			return fmt.Errorf("seed settings: %w", err)
 		}
 	case fixtures.SeedFirstRun:
+		// SeedFirstRunSettings writes a fixed unacknowledged settings.json and
+		// takes no overrides, and the first-frame wait below is skipped entirely
+		// for a first-run preset — so both fields a preset can use to shape the
+		// boot are inert on this path. Refuse loudly rather than seed a preset
+		// that silently is not the preset it declared: a mis-seeded proof run
+		// captures the wrong screen and looks exactly as green as a correct one,
+		// which is the failure class this whole ticket exists to remove.
+		if err := rejectUnhonouredFirstRunFields(preset); err != nil {
+			return err
+		}
 		if err := tuitest.SeedFirstRunSettings(home, socket); err != nil {
 			return fmt.Errorf("seed first-run settings: %w", err)
 		}
+	}
+
+	// Stage the preset's extra HOME files (a slow .bashrc, a stub binary) after
+	// the settings seed and before boss starts, so boss reads them through its
+	// ordinary host-state code paths rather than through a test hook.
+	if err := writeHomeFiles(home, preset.HomeFiles); err != nil {
+		return err
 	}
 
 	// firstRun presets (onboarding) drive the pre-auth path: boss skips the
@@ -333,7 +357,14 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	// First-run (onboarding) never renders the app shell, so only wait for the
 	// banner when a real home screen is expected.
 	if !firstRun {
-		if err := drv.WaitForText(10*time.Second, "Bossanova"); err != nil {
+		// A preset whose whole point is a slow startup (slow-agent-probe blocks on
+		// a login-shell probe until it times out) paints nothing until that wait
+		// is over, so it raises the bound rather than racing the default.
+		bootWait := preset.BootWait
+		if bootWait <= 0 {
+			bootWait = fixtures.DefaultBootWait
+		}
+		if err := drv.WaitForText(bootWait, "Bossanova"); err != nil {
 			return fmt.Errorf("wait for app shell: %w", err)
 		}
 	}
@@ -370,6 +401,80 @@ func readSeedOverlay(path string) (fixtures.Overlay, error) {
 		return fixtures.Overlay{}, fmt.Errorf("-seed %q: %w", path, err)
 	}
 	return overlay, nil
+}
+
+// rejectUnhonouredFirstRunFields fails a first-run preset that declares preset
+// fields this seed path cannot honour, naming the field and the preset so the
+// author is told what to do rather than left reading a screen that quietly does
+// not match the preset.
+//
+// Nothing declares either field on a first-run preset today. When something
+// needs to, the fix is to teach the bridge to honour it here — not to delete
+// this guard.
+func rejectUnhonouredFirstRunFields(preset fixtures.Preset) error {
+	if len(preset.SettingsOverrides) > 0 {
+		return fmt.Errorf(
+			"preset declares SettingsOverrides %v, but its SeedFirstRun path seeds a fixed "+
+				"settings.json that ignores them; teach the bridge to honour them or use a "+
+				"SeedAcknowledged preset",
+			sortedAnyKeys(preset.SettingsOverrides))
+	}
+	if preset.BootWait > 0 {
+		return fmt.Errorf(
+			"preset declares BootWait %s, but a SeedFirstRun preset never waits for the app "+
+				"shell (first-run renders no banner), so the value is dropped",
+			preset.BootWait)
+	}
+	return nil
+}
+
+// sortedAnyKeys is sortedKeys for a map[string]any — the settings-override
+// shape — so an error message names the offending keys in a stable order.
+func sortedAnyKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// mergeSettingsOverrides layers the scenario's env-driven settings overrides on
+// top of the preset's. Both are merged into the same settings.json, and the
+// env-driven layer wins on a collision: a preset default is the baseline a
+// scenario is allowed to move, not a floor it cannot.
+func mergeSettingsOverrides(presetOverrides map[string]any, envOverrides map[string]any) map[string]any {
+	merged := make(map[string]any, len(presetOverrides)+len(envOverrides))
+	for k, v := range presetOverrides {
+		merged[k] = v
+	}
+	for k, v := range envOverrides {
+		merged[k] = v
+	}
+	return merged
+}
+
+// writeHomeFiles materializes a preset's HomeFiles inside the per-run HOME.
+// Every key must be a plain relative path: the preset registry is ordinary repo
+// data, but this writes to disk, so an absolute or parent-escaping key is
+// rejected rather than trusted — otherwise a typo'd preset could overwrite the
+// developer's real dotfiles instead of the throwaway home.
+func writeHomeFiles(home string, files map[string]string) error {
+	// Sorted so a failure names the same offending key on every run.
+	for _, rel := range sortedKeys(files) {
+		content := files[rel]
+		if rel == "" || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
+			return fmt.Errorf("preset HomeFiles key %q must be a plain relative path inside HOME", rel)
+		}
+		dest := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+			return fmt.Errorf("create HOME dir for %q: %w", rel, err)
+		}
+		if err := os.WriteFile(dest, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("write HOME file %q: %w", rel, err)
+		}
+	}
+	return nil
 }
 
 func proofSettingsSeedOverrides(allowedEnv map[string]string) map[string]any {

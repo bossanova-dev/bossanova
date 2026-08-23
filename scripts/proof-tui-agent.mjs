@@ -1549,6 +1549,41 @@ function stampProofSource(shapes, source) {
 }
 
 /**
+ * Bridge-shaping deps a replayed scenario contributes: its fixture preset, its env
+ * overlay, and its pty size. Returns `{}` — not `{deps: {}}` — when the scenario
+ * declares none, so the spread leaves `ctx.deps` exactly as it was.
+ *
+ * That `{}` return is reachable for a programmatic caller but NOT on the production
+ * path: `loadScenario` (scripts/proof-scenario.mjs) defaults `fixture` to
+ * `{preset: 'demo', ...}`, so a real scenario always carries a preset and this
+ * always contributes at least `fixture`. See the call site for what that means for
+ * the spawned argv.
+ *
+ * @param {{deps?: object}} ctx
+ * @param {{fixture?: {preset?: string, env?: object}, terminal?: object}} scenario
+ * @returns {{deps?: object}}
+ */
+export function replayBridgeDeps(ctx, scenario) {
+  const merged = { ...(ctx.deps ?? {}) }
+  let changed = false
+  // Only fill what the caller did not already inject, mirroring proof.mjs's
+  // `== null` guards so an explicitly injected dep (tests, overrides) still wins.
+  if (merged.fixture == null && scenario?.fixture?.preset != null) {
+    merged.fixture = scenario.fixture.preset
+    changed = true
+  }
+  if (merged.seedEnv == null && scenario?.fixture?.env != null) {
+    merged.seedEnv = scenario.fixture.env
+    changed = true
+  }
+  if (merged.terminal == null && scenario?.terminal != null) {
+    merged.terminal = scenario.terminal
+    changed = true
+  }
+  return changed ? { deps: merged } : {}
+}
+
+/**
  * Agent-first TUI dispatch with automatic scenario-replay fallback (BOS-223, D-B).
  *
  * Runs the AGENT leg first (today's `runTuiAgentProof` default path). On a returned
@@ -1681,14 +1716,26 @@ export async function runTuiWithReplayFallback(ctx, deps) {
       }
       replayRun = await runLeg({
         ...ctx,
-        // BOS-571: the collect-mode dispatcher hands the leg no `deps`, so this is
-        // where the replayed scenario's optional `terminal` has to join the dep bag
-        // that resolveBridge → makeStdioBridge reads. Spread nothing when the
-        // scenario declares no size, keeping `deps` (and therefore the spawn argv)
-        // byte-identical for every scenario written before the field existed.
-        ...(scenario.terminal != null
-          ? { deps: { ...(ctx.deps ?? {}), terminal: scenario.terminal } }
-          : {}),
+        // BOS-571 / BOS-976: the collect-mode dispatcher hands the leg no `deps`, so
+        // this is where the replayed scenario's bridge-shaping fields have to join the
+        // dep bag that resolveBridge → makeStdioBridge reads — the same three the
+        // `scenario run` path threads at scripts/proof.mjs.
+        //
+        // On the EFFECTIVE preset this is a no-op for every scenario written before
+        // these fields existed, but not on the argv, and the difference is worth
+        // stating rather than glossed as "byte-identical": `loadScenario` defaults
+        // `fixture` to `{preset: 'demo'}`, so a scenario that declares nothing now
+        // contributes `fixture: 'demo'` and bridgeSpawnArgs appends `--fixture demo`
+        // where it previously appended nothing. The Go flag's own default is `demo`
+        // (services/boss/cmd/proof-tui-agent/main.go), so the bridge boots the same
+        // preset either way — one extra argv pair, same behaviour. `seedEnv` and
+        // `terminal` have no such default and stay genuinely absent when undeclared.
+        //
+        // `fixture` is the load-bearing one: without it every replayed scenario ran
+        // against the bridge's default `demo` preset no matter what it declared, so a
+        // scenario built on a purpose-made preset passed `scenario run` locally and
+        // then proved nothing in CI — a silently wrong green, not a failure.
+        ...replayBridgeDeps(ctx, scenario),
         brief: synthesizeBrief(scenario, fileBasename),
         // runTuiAgentProof clamps brief.budgets.maxWallClockMs to the reserved slice,
         // but the custom loopRunner args omit maxWallClockMs, so runReplayLoop would

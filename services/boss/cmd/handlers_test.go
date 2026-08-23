@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -857,8 +858,8 @@ func TestEnabledAgentProvidersRequiresEnabledLoadedCLIBackedProvider(t *testing.
 }
 
 func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
-	oldCheck := checkAgentResolvableForPreflight
-	defer func() { checkAgentResolvableForPreflight = oldCheck }()
+	oldCheck := checkAgentsResolvableForPreflight
+	defer func() { checkAgentsResolvableForPreflight = oldCheck }()
 
 	stub := &agentPreflightStub{
 		agents: []client.AgentInfo{{Name: "codex"}},
@@ -883,10 +884,10 @@ func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
 		},
 	}
 
-	var checkedAgent string
+	var checkedAgents []string
 	var checkedWorktree string
-	checkAgentResolvableForPreflight = func(_ string, agent string, worktree string) *preflight.Issue {
-		checkedAgent = agent
+	checkAgentsResolvableForPreflight = func(_ string, agents []string, worktree string) *preflight.Issue {
+		checkedAgents = agents
 		checkedWorktree = worktree
 		return nil
 	}
@@ -900,8 +901,8 @@ func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
 	if stub.resolveCalled {
 		t.Fatal("ResolveContext should not be called when attach session is selected")
 	}
-	if checkedAgent != "codex" {
-		t.Fatalf("checked agent = %q, want codex", checkedAgent)
+	if !slices.Equal(checkedAgents, []string{"codex"}) {
+		t.Fatalf("checked agents = %v, want [codex]", checkedAgents)
 	}
 	if checkedWorktree != "/tmp/target-worktree" {
 		t.Fatalf("checked worktree = %q, want /tmp/target-worktree", checkedWorktree)
@@ -913,8 +914,8 @@ func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
 // lives on the other end and block the TUI over it. The daemon must not be
 // asked anything either — a local cwd means nothing to a remote ResolveContext.
 func TestRunAgentPreflightsSkipsRemoteTransports(t *testing.T) {
-	oldCheck := checkAgentResolvableForPreflight
-	defer func() { checkAgentResolvableForPreflight = oldCheck }()
+	oldCheck := checkAgentsResolvableForPreflight
+	defer func() { checkAgentsResolvableForPreflight = oldCheck }()
 
 	settings := config.Settings{
 		LoginShell: "/bin/sh",
@@ -934,8 +935,8 @@ func TestRunAgentPreflightsSkipsRemoteTransports(t *testing.T) {
 				agents:  []client.AgentInfo{{Name: "claude"}},
 				session: &pb.Session{Id: "s", WorktreePath: "/remote/worktree", AgentName: "claude"},
 			}
-			checkAgentResolvableForPreflight = func(_, agent, worktree string) *preflight.Issue {
-				t.Fatalf("the local agent probe must not run: agent=%q worktree=%q", agent, worktree)
+			checkAgentsResolvableForPreflight = func(_ string, agents []string, worktree string) *preflight.Issue {
+				t.Fatalf("the local agent probe must not run: agents=%v worktree=%q", agents, worktree)
 				return nil
 			}
 
@@ -953,8 +954,8 @@ func TestRunAgentPreflightsSkipsRemoteTransports(t *testing.T) {
 }
 
 func TestRunAgentPreflightsSkipsNonCLIBackedPlugins(t *testing.T) {
-	oldCheck := checkAgentResolvableForPreflight
-	defer func() { checkAgentResolvableForPreflight = oldCheck }()
+	oldCheck := checkAgentsResolvableForPreflight
+	defer func() { checkAgentsResolvableForPreflight = oldCheck }()
 
 	stub := &agentPreflightStub{
 		agents: []client.AgentInfo{{Name: "opencode"}},
@@ -971,17 +972,19 @@ func TestRunAgentPreflightsSkipsNonCLIBackedPlugins(t *testing.T) {
 		},
 	}
 
-	called := false
-	checkAgentResolvableForPreflight = func(_ string, agent string, worktree string) *preflight.Issue {
-		called = true
-		t.Fatalf("non-CLI plugin should not be probed: agent=%q worktree=%q", agent, worktree)
+	probed := false
+	checkAgentsResolvableForPreflight = func(_ string, agents []string, worktree string) *preflight.Issue {
+		if len(agents) > 0 {
+			probed = true
+			t.Fatalf("non-CLI plugin should not be probed: agents=%v worktree=%q", agents, worktree)
+		}
 		return nil
 	}
 
 	if err := runAgentPreflights(context.Background(), nil, stub, settings, "target-session"); err != nil {
 		t.Fatalf("runAgentPreflights returned error: %v", err)
 	}
-	if called {
+	if probed {
 		t.Fatal("non-CLI plugin was probed")
 	}
 }

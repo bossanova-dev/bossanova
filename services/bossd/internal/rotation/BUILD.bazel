@@ -34,6 +34,7 @@ go_test(
         "engine_test.go",
         "fakestore_test.go",
         "proactive_sweep_test.go",
+        "proxy_token_repair_test.go",
         "util_test.go",
     ],
     data = glob(

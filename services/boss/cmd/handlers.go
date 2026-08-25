@@ -2253,11 +2253,40 @@ func runResurrect(cmd *cobra.Command, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	sess, err := c.ResurrectSession(ctx, sessionID)
+	stream, err := c.ResurrectSession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("resurrect session: %w", err)
 	}
+	defer func() { _ = stream.Close() }()
+
+	// Setup output goes to stderr, matching `boss new` — the resurrected line on
+	// stdout is the scripting surface.
+	var sess *pb.Session
+	setupError := ""
+	for stream.Receive() {
+		msg := stream.Msg()
+		if so := msg.GetSetupOutput(); so != nil {
+			printSetupOutput(cmd.ErrOrStderr(), so.GetText())
+		}
+		if r := msg.GetSessionResurrected(); r != nil {
+			sess = r.GetSession()
+			setupError = r.GetSetupError()
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("resurrect session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("resurrect session: daemon did not return a session")
+	}
 	fmt.Printf("Session %s resurrected (%s).\n", sess.Id, sess.Title)
+	if setupError != "" {
+		// Non-fatal: the session IS back. Say so on stderr rather than failing,
+		// so the user knows dependencies may be missing (BOS-984).
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: the repo setup script failed, so this worktree's dependencies may be missing: %s\n",
+			setupError)
+	}
 	return nil
 }
 

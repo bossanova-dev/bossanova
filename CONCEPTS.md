@@ -262,6 +262,13 @@ lifecycle event. So a failed start compensates, with one atomic write that retur
 closed stamp and state it originally wore — not a fresh stamp, which would restate a long-archived
 session as newly archived and move it in the trash order.
 
+Recreating the workspace is idempotent, which is what keeps a second attempt from wedging on the
+debris of the first: a workspace already present and checked out on the branch the session left
+behind is adopted as it stands rather than rebuilt, and a registration left over from a workspace
+that was released out of band is cleared before a new one is created. Neither signal decides that
+alone — a released workspace stays registered until the registration is cleared, so registration
+proves only that the workspace once existed, and presence has to be read from the directory itself.
+
 ## Chat panes and reaping
 
 ### Chat pane
@@ -623,6 +630,26 @@ The writers differ in what they prove, so they differ in how their records may b
 
 The daemon's automatic response to a usage-capped account: put the limited account on cooldown, select the next eligible account for the provider (active, healthy, not cooling, lowest priority first), and respawn/resume the interrupted session under it — posting an in-chat notice, and never auto-resending the interrupted prompt. On by default once extra accounts are registered, with per-repo opt-outs; `managed_accounts.enabled=false` (set via `boss settings --no-managed-accounts`; `--no-rotation` is a deprecated alias) is the global kill-switch that halts all automatic rotation, re-read live per decision, while manual `boss account switch` keeps working. Every decision is audit-logged as a rotation event (labels only, never credentials).
 
+### Switch
+
+The daemon operation that moves a chat from its currently bound Account to a different target: validate the target Account, stop the chat's pane, rebind it, and resume or start fresh under the new Account. A manual account change, a Rotation, and a Respawn-in-place all ultimately issue a Switch.
+
+Validation happens before anything about the chat is touched, so a Switch can be refused — the target Account is disabled, failed, or cooling, or the chat is mid-turn — without disturbing the chat at all. That refused-before-touched distinction matters to anything that charges a budget per Switch attempt: a refusal that touched nothing must not spend the same budget as an attempt that reached the chat and then failed.
+
+### Respawn in place
+
+The healer that restarts a wedged agent pane under the Account it is already bound to, instead of rotating it to a different one. It exists for the case where the pane cannot authenticate but the bound Account probes healthy — a local wiring fault rather than a credential fault — so switching accounts would fix nothing and would cost a working binding. Because it is a disruptive action taken on a heuristic, it fires only after repeated healthy confirmations spaced minutes apart, and is capped per chat per window.
+
+A respawn reuses the pane rather than clearing it, so the banner that triggered the heal is still on screen afterwards and the detector keeps reporting failure for a while. The heal therefore destroys its own accumulated confirmations on success: a still-visible banner must not be able to resurrect them, and only a fresh failure edge may open a new attempt.
+
+Respawn in place charges its cap before issuing the Switch, so an attempt that reaches the chat and then fails still counts. When the Switch is instead refused before touching the chat, the charge is refunded — nothing was attempted. A refusal caused specifically by the bound Account being ineligible triggers a real Rotation to an eligible Account instead of a retry, since retrying the same Account can only be refused again; any other before-touch refusal is retried against its own separate, smaller budget so it cannot outlast the respawn cap's own limit.
+
+### Auth-failed episode
+
+One continuous stretch of a pane being unable to authenticate, as Respawn in place accounts for it — deliberately a different boundary from the momentary auth-failed marker the status surface renders. That marker is level-triggered and self-healing: it clears on the first reading that does not see a login banner, so the user-facing overlay disappears the moment a pane logs back in. But a pane stuck in an agent's own auth-retry countdown redraws itself, scrolling the banner out of the detector's view for a reading at a time, so the marker drops and re-establishes repeatedly inside a single wedge.
+
+The healer therefore keeps its own episode, latched: a clean reading is held rather than believed, and the episode ends only once the pane has stayed clear for a grace window derived from the poll cadence and the retry cadence together. The latch is private to the healer, leaving the shared marker's instant clear untouched, and its identity is the healer's own record of accumulated confirmations — never a timestamp read back from the marker, which re-pins on exactly the flap the latch exists to absorb.
+
 ### Failover proxy
 
 A loopback HTTP proxy the daemon runs and points every agent's provider traffic at, so model requests pass through Bossanova on their way out. It is what lets a Rotation happen without restarting the agent: the proxy inspects a response's opening frames before committing to them, so a usage-cap refusal that arrives before any content can be retried under a different Account and the replacement response returned in the failure's place — the swap is invisible to the agent process.
@@ -748,6 +775,21 @@ a branch changes what the test graph is supposed to cover. It is evidence about 
 verification surface, not the runner itself: a stale manifest can mislead review even when the
 underlying build target is correct, and a correct manifest cannot make a missing build-target entry
 execute.
+
+### Budget regime
+
+The exact measurement harness a pinned performance budget's numbers were taken under — which runner
+executes the work, under which build flags, at what parallelism and sharding, and whether cached
+results were permitted — recorded alongside the budget itself.
+
+A budget number without its regime is not comparable to anything: the same target measured natively
+and through the build facade, or at a different shard count, yields figures that differ by multiples,
+so a budget re-derived from a figure taken under a different harness ratchets in the wrong direction
+without anyone seeing it move. The regime is therefore part of the pinned artifact rather than
+commentary on it, and a budget document that omits it is rejected rather than assumed. Changing the
+regime invalidates every number under it — the budgets are re-measured, not rescaled. Where a regime
+forbids cache-served results, a served result is a measurement failure rather than a fast pass,
+because it reports a duration for work this run did not do.
 
 ### Stamp
 
@@ -1098,6 +1140,28 @@ existed to forbid. A negative assertion inverts the trade, since there the wider
 superset and is the stronger one. A gate enforcing the rule therefore needs a marked, greppable
 exception for the deliberate exact gap, and the audit that reads those markers must match them the
 same way the gate does, or it reports a complete census that is not one.
+
+### Self-inflicted finding
+
+A review finding whose subject is text an earlier fix round of the same review wrote — the defect was
+absent from the work under review and was introduced by the act of remediating it. It is distinct
+from an ordinary regression because nothing it breaks is executable: its surface is almost always a
+claim no gate reads, so the only detector is another reader, and the round that produced it has
+already been recorded as closing a finding.
+
+Its rate is what makes it a planning concern rather than a curiosity. Wherever the deliverable is the
+accuracy of claims, a fix round is itself an authoring act and reintroduces the class at roughly the
+rate the original authoring did, so remediation converges as a series rather than terminating in one
+pass. Any stopping rule keyed on the named finding being gone, or on a fixed round count, therefore
+halts somewhere inside that series with residue still in the tree while every gate reports green; the
+terminating condition is a round over the current text that yields nothing new. Two structural
+consequences follow. The confirming pass must re-read the replacement text rather than the absence of
+the original. And it must run in a context that did not write that text, because the reasoning which
+produced a claim is still resident in the context that produced it and will assent to it — a second
+persona inside one context is not a second reader. The cost of re-verification is set by what a claim
+is bound to: an identifier or a quoted literal can be re-derived by search, and a claim some gate
+reads is at least a **Prose pin** that fails loudly, whereas a line number or a pronoun decays with
+no signal at all.
 
 ### Relational guard
 

@@ -2482,3 +2482,71 @@ func TestHasWorkingIndicator_ProseCountIsNotEvictedByPrecedingMarker(t *testing.
 		t.Error("generic-noun prose is expected to report working; if this now passes, the matcher was narrowed")
 	}
 }
+
+// TestHasWorkingIndicator_ShellFooterNotEvictedByStatusBar is the "still
+// running" half of the ⏺ main guard question_test.go:2350 pins for the
+// background-agent footer. A user-reported pane showed a chat with a live
+// background shell and two live monitors reading IDLE: the CLI statusline's
+// trailing git row ("⏺ main") sits below the footer and forges a response
+// marker, so the freshness check judged the footer stale. The status bar can
+// forge a response marker; only the transcript above the input box can retire a
+// footer.
+func TestHasWorkingIndicator_ShellFooterNotEvictedByStatusBar(t *testing.T) {
+	pane := "" +
+		"Note the tier has effectively degraded by elapsed time. If the resume cycle\n" +
+		"doesn't converge shortly, I'll take the documented inline fallback.\n" +
+		"\n" +
+		"✻ Cogitated for 33m 4s · 1 shell, 2 monitors still running\n" +
+		"                                          6% until auto-compact\n" +
+		"────────────────────────────────────────────────────────────────\n" +
+		"❯ just finish the review inline\n" +
+		"────────────────────────────────────────────────────────────────\n" +
+		"  bos-981-stop-cap-burn-on-a-respawn-in-place Opus 5 22% remaining\n" +
+		"  ⏵⏵ bypass permissions on · PR #2225 · 1 shell, 2 monitors · ← 1 agent\n" +
+		"\n" +
+		"  ⏺ main\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("a live shell/monitor footer must report working even with a trailing ⏺ main status glyph")
+	}
+}
+
+// TestHasWorkingIndicator_BoxedInputBoxAnchorsStatusRegion pins the same guard
+// for the boxed input-box rendering. The anchor row is drawn with border chrome
+// ("│ ❯ │"), so a prompt-marker probe that only tolerates leading whitespace
+// finds no anchor, treats the whole tail as transcript, and lets the statusline
+// evict the footer again.
+func TestHasWorkingIndicator_BoxedInputBoxAnchorsStatusRegion(t *testing.T) {
+	pane := "" +
+		"⏺ Kicked off the proof run in the background.\n" +
+		"\n" +
+		"✻ Cooked for 48s · 1 shell still running\n" +
+		"╭──────────────────────────────────────╮\n" +
+		"│ ❯                                    │\n" +
+		"╰──────────────────────────────────────╯\n" +
+		"  ⏵⏵ bypass permissions on · PR #2225\n" +
+		"\n" +
+		"  ⏺ main\n"
+	if !HasWorkingIndicator([]byte(pane)) {
+		t.Error("a live shell footer must report working when the ⏺ sits below a boxed input row")
+	}
+}
+
+// TestHasWorkingIndicator_StaleFooterStillEvictedAboveInputBox is the negative
+// half: anchoring the terminator scan to the transcript must not stop a genuine
+// completion marker from retiring the footer. Here the ⏺ renders where Claude
+// really prints it — above the input box — so the pane is idle.
+func TestHasWorkingIndicator_StaleFooterStillEvictedAboveInputBox(t *testing.T) {
+	pane := "" +
+		"✻ Baked for 42m 54s · 1 shell, 1 monitor still running\n" +
+		"\n" +
+		"⏺ Background command \"make test\" completed (exit code 0)\n" +
+		"────────────────────────────────────────────────────────────────\n" +
+		"❯ \n" +
+		"────────────────────────────────────────────────────────────────\n" +
+		"  ⏵⏵ bypass permissions on · PR #2225\n" +
+		"\n" +
+		"  ⏺ main\n"
+	if HasWorkingIndicator([]byte(pane)) {
+		t.Error("a completion marker above the input box must still evict the footer")
+	}
+}

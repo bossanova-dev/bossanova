@@ -295,7 +295,7 @@ func (m *cleanupWorktreeManager) CreateFromExistingBranch(context.Context, gitpk
 func (m *cleanupWorktreeManager) Archive(context.Context, string) error {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
+func (m *cleanupWorktreeManager) Resurrect(context.Context, gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) ReapLocalBranches(_ context.Context, repoPath string, branches []string) error {

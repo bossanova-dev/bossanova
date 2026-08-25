@@ -1690,7 +1690,7 @@ func TestResurrect(t *testing.T) {
 	}
 
 	// Resurrect.
-	if err := mgr.Resurrect(context.Background(), ResurrectOpts{
+	if _, err := mgr.Resurrect(context.Background(), ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1740,7 +1740,7 @@ func TestResurrect_IgnoresBossDir(t *testing.T) {
 		t.Fatalf("truncate exclude: %v", err)
 	}
 
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1805,7 +1805,7 @@ func TestResurrect_BranchDeletedRecreatesFromBase(t *testing.T) {
 	gitOutput(t, repoDir, "worktree", "prune")
 	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
 
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1858,7 +1858,7 @@ func TestResurrect_ZeroCommitBranchRecreatesFromBase(t *testing.T) {
 	gitOutput(t, repoDir, "worktree", "prune")
 	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
 
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1914,7 +1914,7 @@ func TestResurrect_PrefersOriginBranchWhenPresent(t *testing.T) {
 	gitOutput(t, repoDir, "worktree", "prune")
 	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
 
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1975,7 +1975,7 @@ func TestResurrect_PrefersLocalBaseOverStaleOriginBase(t *testing.T) {
 	gitOutput(t, repoDir, "worktree", "prune")
 	gitOutput(t, repoDir, "branch", "-D", result.BranchName)
 
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -1999,7 +1999,7 @@ func TestResurrect_BaseMissingReturnsError(t *testing.T) {
 	ctx := context.Background()
 
 	wtPath := filepath.Join(t.TempDir(), "worktrees", "gone")
-	err := mgr.Resurrect(ctx, ResurrectOpts{
+	_, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: wtPath,
 		BranchName:   "gone-branch",
@@ -2013,6 +2013,359 @@ func TestResurrect_BaseMissingReturnsError(t *testing.T) {
 	}
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		t.Errorf("no worktree should have been created at %s", wtPath)
+	}
+}
+
+// TestResurrect_PrunesMissingRegisteredWorktree covers BOS-983: a worktree
+// directory removed out-of-band stays REGISTERED in the source clone, and
+// `git worktree add` then refuses with "is a missing but already registered
+// worktree". Resurrect must prune the stale registration itself so the archived
+// session is recoverable from the UI with no manual `git worktree prune`.
+//
+// Shape (a) of the three the resurrect path must tell apart: registered in git,
+// missing on disk.
+func TestResurrect_PrunesMissingRegisteredWorktree(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	wtPath := filepath.Join(wtBase, "my-repo", "fix-camera-crash")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"checkout", "main"},
+		{"worktree", "add", wtPath, "fix-camera-crash"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	// Remove the directory out-of-band, leaving the registration behind — the
+	// exact state the ticket was filed from.
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatalf("remove worktree dir: %v", err)
+	}
+	if !strings.Contains(gitOutput(t, repoDir, "worktree", "list", "--porcelain"), wtPath) {
+		t.Fatalf("precondition: %s should still be registered after removing its directory", wtPath)
+	}
+
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: wtPath,
+		BranchName:   "fix-camera-crash",
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect over a missing-but-registered worktree: %v", err)
+	}
+
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree dir not found after resurrect: %v", err)
+	}
+	if current := gitOutput(t, wtPath, "branch", "--show-current"); current != "fix-camera-crash" {
+		t.Fatalf("current branch = %q, want fix-camera-crash", current)
+	}
+}
+
+// TestResurrect_PresentValidWorktreeSkipsAdd covers BOS-983 shape (b): the
+// worktree is present, registered and on the right branch. A resurrect that
+// died AFTER the add (setup script, agent start, RPC deadline) leaves exactly
+// this state, so a retry must succeed by skipping the add instead of failing
+// with "already exists" — otherwise the user is in an inescapable loop.
+//
+// The marker file proves the existing worktree is reused, not deleted and
+// recreated: shape (b) must never be treated as a stale directory.
+func TestResurrect_PresentValidWorktreeSkipsAdd(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect idempotent",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	marker := filepath.Join(result.WorktreePath, "partial-resurrect-marker.txt")
+	if err := os.WriteFile(marker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	// Resurrect twice against the live worktree — the retry a post-add failure
+	// forces the user into.
+	for i := range 2 {
+		if _, err := mgr.Resurrect(ctx, ResurrectOpts{
+			RepoPath:     repoDir,
+			WorktreePath: result.WorktreePath,
+			BranchName:   result.BranchName,
+			BaseBranch:   "main",
+		}); err != nil {
+			t.Fatalf("Resurrect over a present valid worktree (attempt %d): %v", i+1, err)
+		}
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("existing worktree was recreated rather than reused (marker gone): %v", err)
+	}
+	if current := gitOutput(t, result.WorktreePath, "branch", "--show-current"); current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
+	}
+}
+
+// TestResurrect_AddFailureNamesRepoAndRemedy covers BOS-983 shape (c): the path
+// exists but is not a worktree of this repo. Fixing that case is out of scope,
+// but the surfaced error must name the repo and the remedy instead of echoing
+// git's raw "already exists" text straight into the TUI — and must still unwrap
+// to the underlying git failure.
+func TestResurrect_AddFailureNamesRepoAndRemedy(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "worktrees", "my-repo", "blocked")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	gitOutput(t, repoDir, "branch", "blocked")
+
+	// A non-empty plain directory: `git worktree add` refuses it, and it is not
+	// a registered worktree, so pruning cannot clear it.
+	if err := os.MkdirAll(wtPath, 0o750); err != nil {
+		t.Fatalf("mkdir occupied path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "leftover.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	_, err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: wtPath,
+		BranchName:   "blocked",
+		BaseBranch:   "main",
+	})
+	if err == nil {
+		t.Fatalf("expected Resurrect to fail against an occupied non-worktree path")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, repoDir) {
+		t.Errorf("error should name the repo %q, got: %v", repoDir, err)
+	}
+	if !strings.Contains(msg, wtPath) {
+		t.Errorf("error should name the worktree path %q, got: %v", wtPath, err)
+	}
+	// Anchor every remedy assertion to the FULL command, including the -C target. A bare
+	// Contains(msg, "status") passes vacuously: runGitWithTimeout wraps an
+	// *exec.ExitError whose Error() is the literal "exit status 128", so that
+	// substring is present in every add failure whether or not the remedy
+	// mentions `status` at all. Anchoring also pins the format string's %s
+	// argument order, which nothing else here checks.
+	if !strings.Contains(msg, "git -C "+repoDir+" worktree list") {
+		t.Errorf("error should tell the operator to inspect the clone's worktree list, got: %v", err)
+	}
+	if !strings.Contains(msg, "git -C "+wtPath+" status") {
+		t.Errorf("error should tell the operator to inspect the path before clearing it, got: %v", err)
+	}
+	if !strings.Contains(msg, "git -C "+repoDir+" worktree prune") {
+		t.Errorf("the safe remedy should name the clone to prune, got: %v", err)
+	}
+	// Asserting the SHAPE of the guidance, not just that some git command is
+	// mentioned: `worktree remove --force` is wrong in both directions here. On
+	// this very fixture — a plain occupied directory — it exits 128 with "is not
+	// a working tree"; where the path IS a working tree, `--force` is what makes
+	// `worktree remove` delete a dirty one, so a copy-pasted remedy would destroy
+	// uncommitted work. This text is pasted verbatim out of a TUI, so a remedy
+	// that merely contains plausible git commands is not good enough.
+	if strings.Contains(msg, "worktree remove") {
+		t.Errorf("error must not suggest `worktree remove` (--force deletes a dirty worktree; "+
+			"it exits 128 on a non-worktree path), got: %v", err)
+	}
+	if errors.Unwrap(err) == nil {
+		t.Errorf("error should still wrap the underlying git failure, got: %v", err)
+	}
+}
+
+// TestResurrect_PruneFailureStillAttemptsAdd covers BOS-983 AC 2: the prune is
+// best-effort, so a prune that fails must not fail an otherwise-viable
+// resurrect. Git is shimmed on PATH to fail `worktree prune` only; everything
+// else forwards to the real binary.
+//
+// The unrelated stale registration gives prune real work to do, so the shim is
+// failing a prune that would otherwise have changed something. The resurrect
+// target itself needs no prune, so a resurrect that treats the prune error as
+// fatal is the only way this can fail.
+func TestResurrect_PruneFailureStillAttemptsAdd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	unrelatedPath := filepath.Join(wtBase, "my-repo", "unrelated")
+	wtPath := filepath.Join(wtBase, "my-repo", "resurrect-me")
+
+	for _, args := range [][]string{
+		{"branch", "unrelated"},
+		{"branch", "resurrect-me"},
+		{"worktree", "add", unrelatedPath, "unrelated"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	// An unrelated missing-but-registered worktree: real work for prune.
+	if err := os.RemoveAll(unrelatedPath); err != nil {
+		t.Fatalf("remove unrelated worktree dir: %v", err)
+	}
+
+	shimDir := t.TempDir()
+	// The marker is what makes this a real AC 2 guard rather than a test that
+	// passes on `main`. Without it, deleting the prune call outright leaves
+	// nothing to fail — no prune runs, so no prune error, so the resurrect
+	// succeeds and the test is green against an implementation that never
+	// prunes. Asserting the shim was actually entered pins the call site in
+	// place; asserting the resurrect still succeeded pins its best-effort
+	// handling.
+	pruneMarker := filepath.Join(shimDir, "prune-attempted")
+	shim := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"prune\" ]; then\n" +
+		"  : > '" + pruneMarker + "'\n" +
+		"  echo 'fatal: simulated prune failure' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"exec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o700); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	mgr := NewManager(zerolog.Nop())
+	if _, err := mgr.Resurrect(context.Background(), ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: wtPath,
+		BranchName:   "resurrect-me",
+		BaseBranch:   "main",
+	}); err != nil {
+		t.Fatalf("Resurrect with a failing prune: %v", err)
+	}
+	if _, err := os.Stat(pruneMarker); err != nil {
+		t.Fatalf("Resurrect never attempted `git worktree prune` (marker absent): %v", err)
+	}
+	if current := gitOutput(t, wtPath, "branch", "--show-current"); current != "resurrect-me" {
+		t.Fatalf("current branch = %q, want resurrect-me", current)
+	}
+}
+
+// TestResurrect_PresentValidWorktreeSkipsAddFromLinkedRepoPath is the
+// cross-model review's finding on BOS-983 shape (b): the idempotent skip must
+// hold when the registered RepoPath is itself a LINKED worktree, not the main
+// one.
+//
+// Every linked worktree of a clone is registered under the COMMON git dir's
+// `worktrees/`, wherever the caller stands. Deriving the prefix from
+// `rev-parse --absolute-git-dir` on RepoPath only coincides with that from the
+// MAIN worktree; asked from a linked one it answers
+// `<common>/worktrees/<self>`, whose `worktrees/` child matches no sibling. So
+// worktreeReadyAt returned false for a perfectly healthy worktree, the add ran,
+// and AC 4's "already exists" loop came straight back for this configuration.
+//
+// The marker file is the same delete-and-recreate guard the main-worktree test
+// uses.
+// TestResurrect_NestedSubdirectoryOfLiveWorktreeIsNotReady covers the
+// "inside it" vs "is it" distinction in worktreeReadyAt. `git rev-parse`
+// searches upward, so a plain subdirectory of a healthy worktree answers the
+// admin-dir and branch probes exactly as that worktree's own root does. Without
+// the --show-toplevel leg, Resurrect would treat the subdirectory as an already
+// good worktree, skip the add, run the setup script there and report success —
+// leaving the agent to start at a path that is not a worktree at all.
+func TestResurrect_NestedSubdirectoryOfLiveWorktreeIsNotReady(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: filepath.Join(t.TempDir(), "worktrees"),
+		RepoName:        "my-repo",
+		Title:           "Resurrect nested subdir",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A pre-existing directory INSIDE the live worktree, on the same branch.
+	nested := filepath.Join(result.WorktreePath, "nested")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	_, err = mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: nested,
+		BranchName:   result.BranchName,
+		BaseBranch:   "main",
+	})
+	if err == nil {
+		t.Fatal("Resurrect onto a subdirectory of a live worktree returned nil; " +
+			"it treated the subdirectory as an already-ready worktree and skipped the add")
+	}
+
+	// The enclosing worktree must be untouched — this path must never delete.
+	if _, statErr := os.Stat(result.WorktreePath); statErr != nil {
+		t.Fatalf("enclosing worktree was destroyed: %v", statErr)
+	}
+	if current := gitOutput(t, result.WorktreePath, "branch", "--show-current"); current != result.BranchName {
+		t.Fatalf("enclosing worktree branch = %q, want %q", current, result.BranchName)
+	}
+}
+
+func TestResurrect_PresentValidWorktreeSkipsAddFromLinkedRepoPath(t *testing.T) {
+	mainRepo := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	// Stand the "repo" on a LINKED worktree of the clone rather than its main
+	// worktree — the shape the production RepoPath is merely assumed not to be.
+	linkedRepo := filepath.Join(t.TempDir(), "linked-repo")
+	gitOutput(t, mainRepo, "branch", "linked-repo-branch")
+	gitOutput(t, mainRepo, "worktree", "add", linkedRepo, "linked-repo-branch")
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        linkedRepo,
+		BaseBranch:      "main",
+		WorktreeBaseDir: filepath.Join(t.TempDir(), "worktrees"),
+		RepoName:        "my-repo",
+		Title:           "Resurrect idempotent from linked repo path",
+	})
+	if err != nil {
+		t.Fatalf("Create from a linked worktree repo path: %v", err)
+	}
+
+	marker := filepath.Join(result.WorktreePath, "partial-resurrect-marker.txt")
+	if err := os.WriteFile(marker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	for i := range 2 {
+		if _, err := mgr.Resurrect(ctx, ResurrectOpts{
+			RepoPath:     linkedRepo,
+			WorktreePath: result.WorktreePath,
+			BranchName:   result.BranchName,
+			BaseBranch:   "main",
+		}); err != nil {
+			t.Fatalf("Resurrect over a present valid worktree via a linked repo path (attempt %d): %v", i+1, err)
+		}
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("existing worktree was recreated rather than reused (marker gone): %v", err)
+	}
+	if current := gitOutput(t, result.WorktreePath, "branch", "--show-current"); current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
 	}
 }
 
@@ -3650,7 +4003,7 @@ func TestResurrect_LogsSetupScriptDurationAndOutput(t *testing.T) {
 	}
 
 	script := `echo resurrect-log-marker`
-	if err := mgr.Resurrect(ctx, ResurrectOpts{
+	if _, err := mgr.Resurrect(ctx, ResurrectOpts{
 		RepoPath:     repoDir,
 		WorktreePath: result.WorktreePath,
 		BranchName:   result.BranchName,
@@ -4515,5 +4868,85 @@ func TestVerifyPushedBranchAheadOfBase_SkipFetchWithoutBaseRefErrors(t *testing.
 	}
 	if verification != nil {
 		t.Errorf("verification = %+v, want nil when the base ref cannot be resolved", verification)
+	}
+}
+
+// TestResurrectAddError_QuotesPastedCommandPaths pins the shell-quoting of the
+// remedy's three `-C` targets. That text is pasted verbatim out of a TUI, so a
+// checkout path containing a space must not word-split the command it lands in:
+// `git -C /Users/me/My Repo worktree list` points git at /Users/me/My and reads
+// "Repo" as a subcommand. Quoting is conditional so the ordinary case stays
+// readable, which is also why the existing fixture-based assertions above (on
+// t.TempDir() paths) keep passing unchanged. resurrectAddError is pure, so this
+// needs no filesystem fixture.
+func TestResurrectAddError_QuotesPastedCommandPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		repoPath     string
+		worktreePath string
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name:         "ordinary paths stay unquoted for readability",
+			repoPath:     "/tmp/repo",
+			worktreePath: "/tmp/repo/wt",
+			wantContains: []string{
+				"`git -C /tmp/repo worktree list`",
+				"`git -C /tmp/repo/wt status`",
+				"`git -C /tmp/repo worktree prune`",
+			},
+			// The format string contains no apostrophe of its own, so any quote
+			// here would be the helper needlessly wrapping a safe path.
+			wantAbsent: []string{"'"},
+		},
+		{
+			name:         "whitespace paths are quoted so the paste does not word-split",
+			repoPath:     "/tmp/My Repo",
+			worktreePath: "/tmp/My Repo/wt dir",
+			wantContains: []string{
+				"`git -C '/tmp/My Repo' worktree list`",
+				"`git -C '/tmp/My Repo/wt dir' status`",
+				"`git -C '/tmp/My Repo' worktree prune`",
+				// The prose halves name the paths rather than forming a command,
+				// so they stay bare.
+				"could not create worktree /tmp/My Repo/wt dir in repo /tmp/My Repo",
+			},
+		},
+		{
+			name:         "embedded single quote is escaped, not merely wrapped",
+			repoPath:     "/tmp/o'brien",
+			worktreePath: "/tmp/o'brien/wt",
+			wantContains: []string{
+				"`git -C '/tmp/o'\\''brien' worktree list`",
+				"`git -C '/tmp/o'\\''brien/wt' status`",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wrapped := errors.New("exit status 128")
+			err := resurrectAddError("resurrect", tt.repoPath, tt.worktreePath, wrapped)
+			msg := err.Error()
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(msg, want) {
+					t.Errorf("remedy missing %q, got: %s", want, msg)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(msg, absent) {
+					t.Errorf("remedy should not contain %q for an ordinary path, got: %s", absent, msg)
+				}
+			}
+			if !errors.Is(err, wrapped) {
+				t.Error("resurrectAddError must keep the underlying error wrapped so error chains still work")
+			}
+		})
 	}
 }

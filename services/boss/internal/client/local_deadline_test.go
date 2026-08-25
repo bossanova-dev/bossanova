@@ -53,6 +53,27 @@ func (d wedgedDaemon) ListRepos(context.Context, *connect.Request[pb.ListReposRe
 	return nil, connect.NewError(connect.CodeUnavailable, errors.New("wedged daemon never answered"))
 }
 
+// ResurrectSession models the BOS-984 shape: a repo setup script that runs
+// longer than the client's unary deadline, streaming progress while it works.
+// It is deliberately NOT wedged — the daemon here is perfectly healthy, just
+// slow, which is exactly the case the old unary RPC misreported as
+// deadline_exceeded.
+func (d wedgedDaemon) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest], stream *connect.ServerStream[pb.ResurrectSessionResponse]) error {
+	if err := stream.Send(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SetupOutput{
+		SetupOutput: &pb.SetupScriptOutput{Text: "installing dependencies"},
+	}}); err != nil {
+		return err
+	}
+	select {
+	case <-time.After(d.streamGap):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return stream.Send(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SessionResurrected{
+		SessionResurrected: &pb.SessionResurrected{Session: &pb.Session{Id: req.Msg.GetId()}},
+	}})
+}
+
 func (d wedgedDaemon) AttachSession(ctx context.Context, _ *connect.Request[pb.AttachSessionRequest], stream *connect.ServerStream[pb.AttachSessionResponse]) error {
 	send := func(text string) error {
 		return stream.Send(&pb.AttachSessionResponse{
@@ -471,7 +492,7 @@ func TestNewLocalClient_HTTPClientTimeoutIsZero(t *testing.T) {
 // member being added or removed — the shape assertion below (every member is a
 // DaemonService procedure path) is the part that is independent of the
 // production map. Neither half can catch the set being *incomplete*: review
-// caught RecordChat/WakeChat/ResurrectSession/ArchiveSession/ListAccounts
+// caught RecordChat/WakeChat/ArchiveSession/ListAccounts
 // missing while this test was green. Membership is a judgement call about the
 // handler's work, so when adding a slow unary RPC, add it to slowProcedures
 // first and here second.
@@ -492,7 +513,6 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 		bossanovav1connect.DaemonServiceSwitchSessionAccountProcedure: true,
 		bossanovav1connect.DaemonServiceRecordChatProcedure:           true,
 		bossanovav1connect.DaemonServiceWakeChatProcedure:             true,
-		bossanovav1connect.DaemonServiceResurrectSessionProcedure:     true,
 		bossanovav1connect.DaemonServiceArchiveSessionProcedure:       true,
 		bossanovav1connect.DaemonServiceEmptyTrashProcedure:           true,
 		bossanovav1connect.DaemonServiceRemoveSessionProcedure:        true,
@@ -547,7 +567,8 @@ func TestSlowProcedures_CoverTheAttachPath(t *testing.T) {
 	for _, procedure := range []string{
 		bossanovav1connect.DaemonServiceRecordChatProcedure,
 		bossanovav1connect.DaemonServiceWakeChatProcedure,
-		bossanovav1connect.DaemonServiceResurrectSessionProcedure,
+		// ResurrectSession is deliberately absent (BOS-984): it is
+		// server-streaming now, and this unary-only interceptor never bounds it.
 		bossanovav1connect.DaemonServiceArchiveSessionProcedure,
 	} {
 		if got := deadlineFor(procedure); got != slowRPCDeadline {
@@ -576,5 +597,95 @@ func TestDeadlineFor(t *testing.T) {
 				t.Fatalf("deadlineFor(%q) = %v, want %v", tc.procedure, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLocalClient_ResurrectOutlivesTheUnaryDeadline is the client half of the
+// BOS-984 proof. The daemon takes streamGap to settle the resurrect — five
+// times the shrunk unary bound — and the call must still succeed.
+//
+// This is what could not pass before the conversion. ResurrectSession was a
+// member of slowProcedures, so deadlineInterceptor.WrapUnary imposed
+// slowRPCDeadline on it and a setup script that ran past that bound cancelled
+// the request from the client side, whatever the daemon was doing. The
+// interceptor's streaming wrappers are pass-throughs, so converting the RPC is
+// what removes the bound — not raising it.
+//
+// Cannot use t.Parallel(): shrinkDefaultRPCDeadline mutates package state.
+func TestLocalClient_ResurrectOutlivesTheUnaryDeadline(t *testing.T) {
+	shrinkDefaultRPCDeadline(t, 200*time.Millisecond)
+	prevSlow := slowRPCDeadline
+	slowRPCDeadline = slowDeadlineRatio * defaultRPCDeadline
+	t.Cleanup(func() { slowRPCDeadline = prevSlow })
+
+	const setupDuration = time.Second
+	socketPath, _ := startWedgedDaemon(t, setupDuration)
+	c := NewLocal(socketPath)
+
+	type outcome struct {
+		lines   []string
+		session *pb.Session
+		err     error
+	}
+	done := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		var got outcome
+		stream, err := c.ResurrectSession(context.Background(), "sess-1")
+		if err != nil {
+			got.err = err
+			done <- got
+			return
+		}
+		defer func() { _ = stream.Close() }()
+		for stream.Receive() {
+			msg := stream.Msg()
+			if so := msg.GetSetupOutput(); so != nil {
+				got.lines = append(got.lines, so.GetText())
+			}
+			if r := msg.GetSessionResurrected(); r != nil {
+				got.session = r.GetSession()
+			}
+		}
+		got.err = stream.Err()
+		done <- got
+	}()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(rpcWatchdogBudget):
+		t.Fatalf("resurrect did not return within %v", rpcWatchdogBudget)
+	}
+	elapsed := time.Since(start)
+
+	if got.err != nil {
+		t.Fatalf("resurrect failed after %v against a healthy but slow daemon "+
+			"(unary bound was %v, slow bound %v): %v",
+			elapsed, defaultRPCDeadline, slowRPCDeadline, got.err)
+	}
+	if elapsed <= slowRPCDeadline {
+		t.Fatalf("resurrect returned in %v, inside the %v slow-unary bound — "+
+			"the slow daemon did not actually delay, so this proves nothing",
+			elapsed, slowRPCDeadline)
+	}
+	if got.session.GetId() != "sess-1" {
+		t.Fatalf("terminal frame session = %v, want sess-1", got.session)
+	}
+	if len(got.lines) == 0 {
+		t.Fatal("no setup-output frames; the restore was silent for its whole duration")
+	}
+}
+
+// TestSlowProcedures_ExcludesStreamingResurrect pins the cleanup half of
+// BOS-984. deadlineInterceptor is unary-only, so leaving a now-streaming
+// procedure in slowProcedures is dead configuration that reads as an applied
+// bound to the next person who looks.
+func TestSlowProcedures_ExcludesStreamingResurrect(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := slowProcedures[bossanovav1connect.DaemonServiceResurrectSessionProcedure]; ok {
+		t.Fatal("ResurrectSession is server-streaming; the unary-only deadline interceptor " +
+			"never applies slowProcedures to it, so an entry here is misleading dead config")
 	}
 }

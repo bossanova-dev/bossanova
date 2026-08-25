@@ -242,12 +242,35 @@ func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSession
 	return nil
 }
 
+// DeleteByAgentSessionID removes a chat AND the durable proxy-token row that
+// pointed at it (BOS-979), in one transaction.
+//
+// The token delete cannot be a cascade: proxy_tokens.agent_session_id carries no
+// foreign key, because agent_chats.agent_session_id is indexed but NOT unique
+// and SQLite requires a unique parent key. So the two statements are issued
+// together instead — a chat whose row is gone but whose token still resolves
+// would let a rebuild point a live pane at a chat that no longer exists.
 func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM agent_chats WHERE agent_session_id = ?`, agentSessionID)
+	conn, err := beginImmediate(ctx, s.db, "agent_chat")
 	if err != nil {
+		return err
+	}
+	committed := false
+	defer closeImmediate(ctx, conn, &committed)
+
+	if _, err := conn.ExecContext(ctx,
+		`DELETE FROM agent_chats WHERE agent_session_id = ?`, agentSessionID); err != nil {
 		return fmt.Errorf("delete agent_chat by agent_session_id: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx,
+		`DELETE FROM proxy_tokens WHERE agent_session_id = ?`, agentSessionID); err != nil {
+		return fmt.Errorf("delete proxy_tokens by agent_session_id: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit agent_chat delete: %w", err)
+	}
+	committed = true
 	return nil
 }
 

@@ -51,7 +51,19 @@ service DaemonService {
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
-  rpc ResurrectSession(ResurrectSessionRequest) returns (ResurrectSessionResponse);
+  // ResurrectSession re-creates the archived session's worktree, runs the
+  // repo's setup script in it, and restarts the agent. Server-streaming for
+  // the same reason CreateSession is (BOS-984): the setup script alone may run
+  // for gitpkg.SetupScriptTimeout (5 minutes), and no unary response can
+  // outlast the daemon's own http.Server WriteTimeout (120s) — so a slow setup
+  // returned deadline_exceeded against a daemon that was working perfectly.
+  //
+  // This RPC is bossd-local. The versioned surface bosso serves is
+  // OrchestratorService.ProxyResurrectSession, whose request/response shapes
+  // are deliberately unchanged by this conversion, so no apiversion bump is
+  // owed (lib/bossalib/apiversion is installed only on the orchestrator
+  // handler; see the note in server.go's StreamCreateSession).
+  rpc ResurrectSession(ResurrectSessionRequest) returns (stream ResurrectSessionResponse);
   rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
 
   // Claude chat tracking
@@ -700,8 +712,43 @@ message ResurrectSessionRequest {
   string id = 1;
 }
 
+// ResurrectSessionResponse is one frame of the resurrect stream. It mirrors
+// CreateSessionResponse: zero or more setup_output frames while the repo's
+// setup script runs, then exactly one terminal session_resurrected frame.
+//
+// Field 1 is deliberately retired rather than reused: it was the unary
+// `Session session = 1`, and giving the tag to a oneof member would let a stale
+// client decode a progress frame as a completed resurrect. `reserved` is how
+// that intent is stated to the compiler and to `buf breaking`, instead of only
+// to a human reading this comment.
 message ResurrectSessionResponse {
+  reserved 1;
+  reserved "session";
+
+  oneof event {
+    SetupScriptOutput setup_output = 2;
+    SessionResurrected session_resurrected = 3;
+  }
+}
+
+message SessionResurrected {
   Session session = 1;
+
+  // setup_error carries the repo setup script's failure message, and is empty
+  // when the script succeeded or the repo has no setup script.
+  //
+  // Resurrect treats a setup failure as NON-fatal on purpose: this is the
+  // reattach path for an existing branch, so the worktree and the session are
+  // genuinely back even when dependency installation failed, and refusing the
+  // resurrect would strand the session in the trash. Before BOS-984 the error
+  // was dropped entirely, which left the user unable to tell "restored, deps
+  // missing" from "restored cleanly".
+  //
+  // The three failure modes stay distinguishable: a setup failure arrives here
+  // on an otherwise-successful stream; a worktree failure fails the RPC with
+  // CodeInternal and no terminal frame; a timeout is a transport deadline with
+  // no terminal frame and a CodeDeadlineExceeded.
+  string setup_error = 2;
 }
 
 message EmptyTrashRequest {

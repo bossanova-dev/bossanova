@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -360,15 +361,15 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 	}
 
 	// Resurrect the session.
-	resResp, err := h.Client.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sessionID}))
+	resurrected, err := drainResurrectStream(ctx, h.Client, sessionID)
 	if err != nil {
 		t.Fatalf("resurrect session: %v", err)
 	}
-	if resResp.Msg.Session.ArchivedAt != nil {
+	if resurrected.ArchivedAt != nil {
 		t.Fatal("expected ArchivedAt to be nil after resurrection")
 	}
-	if resResp.Msg.Session.State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
-		t.Fatalf("expected IMPLEMENTING_PLAN after resurrect, got %v", resResp.Msg.Session.State)
+	if resurrected.State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		t.Fatalf("expected IMPLEMENTING_PLAN after resurrect, got %v", resurrected.State)
 	}
 
 	// Verify worktree was resurrected.
@@ -377,7 +378,7 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 	}
 
 	// Verify a new Claude process was started (2 total: original + resurrect).
-	if resResp.Msg.Session.AgentSessionId == nil {
+	if resurrected.AgentSessionId == nil {
 		t.Fatal("expected new Claude session ID")
 	}
 }
@@ -2347,4 +2348,28 @@ func TestE2E_PluginSession_DeferPRDefaultsFalse(t *testing.T) {
 	if sess.PRNumber == nil {
 		t.Error("expected PRNumber to be populated after plugin-path session creation")
 	}
+}
+
+// drainResurrectStream runs the server-streaming ResurrectSession to completion
+// and returns the session from its terminal frame (BOS-984). Progress frames
+// are ignored here — this test asserts the lifecycle outcome, not the progress.
+func drainResurrectStream(ctx context.Context, c bossanovav1connect.DaemonServiceClient, sessionID string) (*pb.Session, error) {
+	stream, err := c.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = stream.Close() }()
+	var sess *pb.Session
+	for stream.Receive() {
+		if r := stream.Msg().GetSessionResurrected(); r != nil {
+			sess = r.GetSession()
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, errors.New("resurrect stream ended without a terminal frame")
+	}
+	return sess, nil
 }

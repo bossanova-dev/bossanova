@@ -4,15 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/githubcallback"
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // setupFileDB opens a temp file-backed SQLite DB (multiple connections) with
@@ -26,9 +25,7 @@ func setupFileDB(t *testing.T) *sql.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
+	dbtest.Apply(t, db)
 	return db
 }
 
@@ -580,9 +577,7 @@ func TestGithubCallbackStore_RetryPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	dbtest.Apply(t, db)
 	store := NewGithubCallbackStore(db)
 
 	cb, err := store.Create(ctx, newTestCallbackParams())

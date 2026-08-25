@@ -1,0 +1,39 @@
+{
+  "$comment": "Per-package `-race` wall-clock budgets, enforced by scripts/check-race-budget.mjs on the release tier only (.github/workflows/bazel-linux-smoke.yml) and runnable locally via `make check-race-budget`. Every figure below names the harness that produced it: a second measured one way is not a second measured another, and re-deriving a budget from the wrong regime silently defeats the ratchet. See docs/plans/BOS-1022-bossd-race-test-tax.md.",
+  "combination": "summed-across-shards",
+  "budgetRegime": "bazel test --config=race --nocache_test_results; each target's per-shard wall clock (Build Event Protocol testAttemptDurationMillis) summed across its shards",
+  "$regimeNote": "budgetSeconds is compared ONLY against bazelSummedPostFixSeconds-style figures. The native `go test -race -count=1` figures are recorded because they are what BOS-1022 set out to reduce and what the plan's before/after table quotes, but they are NOT the enforced regime: summing per-shard wall clock adds each shard's own process startup and schema build to the same total work, so a Bazel-summed figure is systematically larger than its native counterpart. Requiring budgetSeconds < nativePreFixSeconds is therefore a deliberately conservative cross-regime bound — it also holds against the (larger, unmeasured) Bazel-summed pre-fix figure, so a budget that passes validation could not have passed before the fix.",
+  "$calibration": "bazelSummedPostFixSeconds was measured on an Apple M-series laptop, the only race-capable host this branch could run, with `make check-race-budget`. bazelSummedPostFixSecondsSecondRun is an independent run of the same command on the same host: the two differ by up to 16%, which is the run-to-run noise floor for a sharded race suite competing for cores, and is why a budget near the measured figure would flake. The CI runner (ubicloud-standard-8) is slower again, so budgets carry roughly 2.5x headroom over the local figure rather than the ~1.2x a same-host, low-noise calibration would justify. That makes this a coarse ratchet: it catches a return to per-test migration replay (a 3-4x regression), not a 20% drift. Tighten it once the release tier has published a real CI figure — see the BOS-1022 plan follow-ups.",
+  "targets": [
+    {
+      "label": "//services/bossd/internal/db:db_test",
+      "budgetSeconds": 420,
+      "bazelSummedPostFixSeconds": 147.06,
+      "nativePreFixSeconds": 512.5,
+      "nativePostFixSeconds": 52.3,
+      "shardCount": 8,
+      "note": "The package BOS-1022 was filed against. Pre-fix cost was goose replaying every migration per test under -race checkptr; dbtest.Schema now builds the schema once per test binary.",
+      "bazelSummedPostFixSecondsSecondRun": 170.4
+    },
+    {
+      "label": "//services/bossd/internal/server:server_test",
+      "budgetSeconds": 280,
+      "bazelSummedPostFixSeconds": 106.29,
+      "nativePreFixSeconds": 400.4,
+      "nativePostFixSeconds": 44.7,
+      "shardCount": 8,
+      "note": "Same migration tax, reached through the server package's own DB fixtures; now routed through dbtest.",
+      "bazelSummedPostFixSecondsSecondRun": 113.6
+    },
+    {
+      "label": "//services/bossd/internal/session:session_test",
+      "budgetSeconds": 85,
+      "bazelSummedPostFixSeconds": 37.58,
+      "nativePreFixSeconds": 106,
+      "nativePostFixSeconds": 18.6,
+      "shardCount": 4,
+      "note": "Sleep-bound rather than migration-bound: the fix replaced fixed sleeps with waits on the outcome. Budgeted so a reintroduced sleep shows up.",
+      "bazelSummedPostFixSecondsSecondRun": 33.6
+    }
+  ]
+}

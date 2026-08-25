@@ -83,8 +83,7 @@ const slowDeadlineRatio = 4
 // seconds on a healthy daemon?", not "does it touch the network":
 //
 //   - git and worktree work — CloneAndRegisterRepo runs a synchronous git clone;
-//     ResurrectSession does `git worktree add` and then runs the repo's setup
-//     script (pnpm install / bazel) before starting the agent; ArchiveSession
+//     ArchiveSession
 //     does `git worktree remove --force` over a tree that may carry node_modules
 //     or a Bazel output base (this repo's own proof harness models it with a 4s
 //     SetArchiveDelay); EmptyTrash repeats that branch-reaping work once per
@@ -113,6 +112,14 @@ const slowDeadlineRatio = 4
 // nobody adds here silently gets the 30s default. Over-granting is the safe
 // direction — every member is still ceilinged by the daemon's own 120s
 // http.Server WriteTimeout — so when in doubt, add the RPC.
+//
+// Deliberately NOT a member: DaemonServiceResurrectSession (BOS-984). It used
+// to be one, and it was the ticket's client-side half: resurrect runs the repo
+// setup script inline, so 120s was never enough. Granting it a longer unary
+// bound could not have fixed it either — the daemon's own 120s http.Server
+// WriteTimeout closed the response first, whatever the client waited for. The
+// RPC is server-streaming now, and this interceptor is unary-only, so an entry
+// here would be dead, misleading configuration rather than a shorter deadline.
 //
 // Deliberately NOT a member: DaemonServiceGetAuthState (BOS-944). It reads
 // in-memory daemon state under a mutex — no network, no subprocess, no
@@ -144,7 +151,6 @@ var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceSwitchSessionAccountProcedure: {},
 	bossanovav1connect.DaemonServiceRecordChatProcedure:           {},
 	bossanovav1connect.DaemonServiceWakeChatProcedure:             {},
-	bossanovav1connect.DaemonServiceResurrectSessionProcedure:     {},
 	bossanovav1connect.DaemonServiceArchiveSessionProcedure:       {},
 	bossanovav1connect.DaemonServiceEmptyTrashProcedure:           {},
 	bossanovav1connect.DaemonServiceRemoveSessionProcedure:        {},

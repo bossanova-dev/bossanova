@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/recurser/bossalib/agenterr"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -115,6 +115,22 @@ type Failover interface {
 	// successful replay, so the persisted account is the one that served the
 	// request.
 	CommitFailover(ctx context.Context, sessionID string, r session.FailoverResult) error
+	// RepairProxyPane routes a 401 the PROXY ITSELF minted — an unknown path
+	// token — to a same-account respawn of the pane that owns that token,
+	// skipping the account probe (BOS-982). The proxy never consulted the
+	// account for such a 401, so probing it can only answer "healthy"; the pane,
+	// not the credential, is what needs repairing.
+	//
+	// It is deliberately NOT reachable from an upstream 401: that one is a real
+	// credential failure and must keep taking PrepareFailover's account-rotation
+	// path, probe included.
+	//
+	// The implementation re-verifies attribution against the pane's own live
+	// tmux state before dispatching anything, and returns false — no dispatch —
+	// whenever the token cannot be tied to a live pane. token is a SECRET, taken
+	// only so the pane's baked URL can be compared against it; it is never
+	// logged.
+	RepairProxyPane(ctx context.Context, sessionID, agentSessionID, token string) (bool, error)
 }
 
 // ProxyServer is a loopback-only reverse proxy that the Claude Code subprocess
@@ -162,6 +178,40 @@ type ProxyServer struct {
 	// start/progress/finish logs.
 	inFlight atomic.Int64
 
+	// repairJobs tracks the BOS-982 unknown-token pane repairs that are running
+	// off the HTTP handler. The repair is dispatched AFTER the 401 is written and
+	// deliberately outlives the handler (see beginUnknownTokenRepair), so this
+	// is what stops a shutdown from cutting a repair mid-flight and what lets a
+	// test join the work it triggered.
+	repairJobs sync.WaitGroup
+	// repairMu guards closingRepairs AND serialises it against repairJobs.Add. It
+	// exists because http.Server.Shutdown does NOT stop in-flight handlers when its
+	// ctx expires — it returns ctx.Err() and leaves them running — while
+	// waitRepairJobs' inner goroutine stays blocked in repairJobs.Wait() after its
+	// own ctx arm has fired. A surviving handler that reached the unknown-token
+	// branch would then Add(1) from a possibly-zero counter concurrently with that
+	// live Wait, which is the documented sync.WaitGroup misuse ("WaitGroup is
+	// reused before previous Wait has returned").
+	//
+	// A flag read on its own — atomic or not — does not close that window: a
+	// registration that observed "still open" can be preempted before its Add, and
+	// Shutdown's Store plus its whole Wait can complete in the gap. The mutex is
+	// what makes (observe-open, Add) one step that cannot interleave with setting
+	// the flag, so the invariant Wait relies on is real: once closingRepairs is
+	// true, every Add that will ever happen has already happened, and the counter
+	// can only fall. Shutdown releases the mutex BEFORE waiting — holding it across
+	// Wait would deadlock any repair still trying to register.
+	//
+	// Gating the Add costs nothing real: a daemon already past its drain budget
+	// cannot finish a repair either, and the pane's next unresolved-token 401
+	// re-enters the lane against the NEXT daemon, which is the one that can act on
+	// it.
+	repairMu sync.Mutex
+	// closingRepairs is set the instant Shutdown begins and gates every later
+	// repairJobs.Add. Guarded by repairMu — deliberately a plain bool rather than
+	// an atomic, so nothing suggests it can be read safely on its own.
+	closingRepairs bool
+
 	// streams, when wired, durably records which chats are holding an in-flight
 	// proxied stream so a hard-killed daemon leaves behind the set of streams
 	// its death severed (BOS-890). Narrow interface, not the concrete recorder,
@@ -175,11 +225,28 @@ type ProxyServer struct {
 	// drain budget" via drainProgressCadence; only tests pin it.
 	drainProgressInterval time.Duration
 
-	mu             sync.RWMutex
-	tokenToSession map[string]string
+	mu sync.RWMutex
+	// hashToTarget is the RESOLUTION index: hex(sha256(token)) → proxy target
+	// (a bare sessionID, or the chat-shaped string session.ProxyTargetForChat
+	// builds). It is keyed by the DIGEST rather than the token because that is
+	// the only key a restart can rebuild — the raw token is a secret and is
+	// never persisted (BOS-979). See sessionForToken for why hashing away the
+	// raw key keeps the timing property the old constant-time scan had.
+	hashToTarget map[string]string
+	// sessionHashes is sessionID → the set of digests that session owns, across
+	// BOTH shapes (its own token and each of its chats'). It is the eviction
+	// index: Deregister and ForgetBearer need to reach a rebuilt entry whose raw
+	// token this process never saw, which the raw-token maps below cannot do.
+	// A session can own several session-shaped digests — one per daemon
+	// generation that minted for it — so this is a set, not a single value.
+	sessionHashes map[string]map[string]struct{}
+	// sessionToToken and chatToToken hold RAW tokens and therefore cover only
+	// registrations THIS process minted or adopted. They are deliberately not
+	// rebuildable: their job is to hand the same token back to a caller that is
+	// about to bake it into a pane URL, which only ever happens at spawn time.
+	// Resolution never reads them — that is hashToTarget's job.
 	sessionToToken map[string]string
 	chatToToken    map[string]string
-	sessionChats   map[string]map[string]string
 	// sessionBearer caches the bearer a session was last failed-over TO, so the
 	// swap is STICKY: after one 429/401 swap, every later request forwards with
 	// the swapped account's bearer on its FIRST leg. The proxied subprocess sends
@@ -193,6 +260,15 @@ type ProxyServer struct {
 	// request. The cached bearer is a SECRET, held only in memory and never
 	// logged; it is dropped on Deregister.
 	sessionBearer map[string]string
+
+	// proxyTokens, when wired, mirrors the token registry above into durable
+	// storage so a daemon restart can rebuild it BEFORE serving (BOS-979). Only
+	// hex(sha256(token)) is stored — never the token, which stays a secret held
+	// in the maps and in the pane's own baked URL. Narrow db interface rather
+	// than the concrete store, so a fake can drive the write-through paths.
+	// nil ⇒ every persistence call here is a no-op and the daemon behaves
+	// exactly as it did before, relying on the pane sweep alone.
+	proxyTokens db.ProxyTokenStore
 
 	// now is the clock used by the pass-through Warn rate-limiter and the
 	// minute-bucket counters. Defaults to time.Now; tests override it (via
@@ -253,6 +329,10 @@ type ProxyServerConfig struct {
 	// daemon serves proxy traffic exactly as before and records nothing, so a
 	// restart simply has no severed-stream evidence to recover from.
 	Streams StreamRecorder
+	// ProxyTokens is the durable path-token registry (BOS-979). nil ⇒ tokens
+	// live only in memory, as before, and a restart depends entirely on the
+	// pane sweep to re-adopt them.
+	ProxyTokens db.ProxyTokenStore
 }
 
 // NewProxyServer constructs a ProxyServer. Call Listen to bind, then Serve
@@ -278,15 +358,16 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 		failover:        cfg.Failover,
 		logger:          cfg.Logger,
 		streams:         cfg.Streams,
+		proxyTokens:     cfg.ProxyTokens,
 		upstream:        u,
 		transport:       transport,
 		port:            cfg.Port,
 		ssePeekByteCap:  sseErrorPeekByteCap,
 		ssePeekDeadline: sseErrorPeekDeadline,
-		tokenToSession:  map[string]string{},
+		hashToTarget:    map[string]string{},
+		sessionHashes:   map[string]map[string]struct{}{},
 		sessionToToken:  map[string]string{},
 		chatToToken:     map[string]string{},
-		sessionChats:    map[string]map[string]string{},
 		sessionBearer:   map[string]string{},
 		now:             now,
 		ptLogLast:       map[string]time.Time{},
@@ -444,12 +525,30 @@ func (p *ProxyServer) Shutdown(ctx context.Context) (DrainOutcome, error) {
 	started := time.Now()
 	outcome := DrainOutcome{InFlightAtStart: p.InFlightStreams()}
 
+	// Close the repair-registration gate FIRST, before anything below can block.
+	// Under repairMu, so this cannot land between a registration's gate check and
+	// its repairJobs.Add: once this returns, every Add that will ever be taken has
+	// already been taken and the counter can only fall — which is what makes the
+	// waitRepairJobs join below safe even on the path where srv.Shutdown gives up
+	// with handlers still live. The mutex is released here, not held across the
+	// wait: a registration blocked on it would otherwise never reach the Done that
+	// wait is waiting for.
+	p.repairMu.Lock()
+	p.closingRepairs = true
+	p.repairMu.Unlock()
+
 	var srvErr error
 	if p.srv != nil {
 		stopProgress := p.startDrainProgressLog(ctx, outcome.InFlightAtStart)
 		srvErr = p.srv.Shutdown(ctx)
 		stopProgress()
 	}
+
+	// Join any in-flight unknown-token pane repair (BOS-982). These run off the
+	// handler, so the http.Server drain above does not see them; cutting one
+	// between its durable read and its respawn dispatch would leave the pane
+	// wedged with nothing scheduled to fix it.
+	p.waitRepairJobs(ctx)
 
 	outcome.InFlightAtEnd = p.InFlightStreams()
 	outcome.Elapsed = time.Since(started)
@@ -566,7 +665,11 @@ func (p *ProxyServer) TokenForSession(sessionID string) string {
 		return ""
 	}
 	p.sessionToToken[sessionID] = tok
-	p.tokenToSession[tok] = sessionID
+	p.registerTargetLocked(proxyTokenHash(tok), sessionID, sessionID)
+	p.persistProxyTokenLocked(db.ProxyTokenRecord{
+		TokenSHA256: proxyTokenHash(tok),
+		SessionID:   sessionID,
+	})
 	return tok
 }
 
@@ -581,7 +684,12 @@ func (p *ProxyServer) TokenForChat(sessionID, agentSessionID, fallbackAccountID 
 	defer p.mu.Unlock()
 	target := session.ProxyTargetForChat(agentSessionID, fallbackAccountID)
 	if tok, ok := p.chatToToken[agentSessionID]; ok {
-		p.tokenToSession[tok] = target
+		p.registerTargetLocked(proxyTokenHash(tok), sessionID, target)
+		// This branch does not mint — it REWRITES a live token's target to pick
+		// up a changed fallback account. Persisting only on mint would leave the
+		// row pinned to the account the chat had at spawn, so a rebuild would
+		// resolve the pane to a different account than the running daemon does.
+		p.persistProxyTokenLocked(chatProxyTokenRecord(tok, sessionID, agentSessionID, fallbackAccountID))
 		return tok
 	}
 	tok := mintProxyToken()
@@ -589,12 +697,27 @@ func (p *ProxyServer) TokenForChat(sessionID, agentSessionID, fallbackAccountID 
 		return ""
 	}
 	p.chatToToken[agentSessionID] = tok
-	if p.sessionChats[sessionID] == nil {
-		p.sessionChats[sessionID] = map[string]string{}
-	}
-	p.sessionChats[sessionID][agentSessionID] = tok
-	p.tokenToSession[tok] = target
+	p.registerTargetLocked(proxyTokenHash(tok), sessionID, target)
+	p.persistProxyTokenLocked(chatProxyTokenRecord(tok, sessionID, agentSessionID, fallbackAccountID))
 	return tok
+}
+
+// registerTargetLocked installs one digest → target resolution entry and files
+// the digest under its owning session so eviction can find it later. Caller
+// holds p.mu. Passing the digest rather than the token keeps every raw token
+// confined to its own call frame.
+func (p *ProxyServer) registerTargetLocked(hash, sessionID, target string) {
+	if hash == "" || target == "" {
+		return
+	}
+	p.hashToTarget[hash] = target
+	if sessionID == "" {
+		return
+	}
+	if p.sessionHashes[sessionID] == nil {
+		p.sessionHashes[sessionID] = map[string]struct{}{}
+	}
+	p.sessionHashes[sessionID][hash] = struct{}{}
 }
 
 // Deregister drops a session's token (called when a session ends). Safe to call
@@ -602,24 +725,37 @@ func (p *ProxyServer) TokenForChat(sessionID, agentSessionID, fallbackAccountID 
 func (p *ProxyServer) Deregister(sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if tok, ok := p.sessionToToken[sessionID]; ok {
-		delete(p.tokenToSession, tok)
-		delete(p.sessionToToken, sessionID)
-	}
+	delete(p.sessionToToken, sessionID)
 	delete(p.sessionBearer, sessionID)
 	// Evict this session's pass-through counters too, so an ended session's
 	// history does not linger until the sweep (bounds memory on churn) and its
 	// display id is freed. The display id for a plain session is the session id;
 	// for a chat it is the agentSessionID (see passthroughDisplayID).
 	p.ptStats.forget(sessionID)
-	for agentSessionID, tok := range p.sessionChats[sessionID] {
-		targetID := p.tokenToSession[tok]
-		delete(p.tokenToSession, tok)
-		delete(p.chatToToken, agentSessionID)
+	// Walk the DIGEST set, not the raw-token maps: after a restart rebuild the
+	// session's entries exist only as digests, and a Deregister that read
+	// sessionToToken/chatToToken would leave every rebuilt row resolvable for
+	// the life of the daemon.
+	for hash := range p.sessionHashes[sessionID] {
+		targetID := p.hashToTarget[hash]
+		delete(p.hashToTarget, hash)
+		if targetID == "" || targetID == sessionID {
+			continue
+		}
 		delete(p.sessionBearer, targetID)
-		p.ptStats.forget(agentSessionID)
+		// The agentSessionID is recovered from the target rather than tracked
+		// separately, so the chat bookkeeping survives a rebuild that only ever
+		// saw the target string.
+		if agentSessionID, _, ok := session.ParseProxyChatTarget(targetID); ok {
+			delete(p.chatToToken, agentSessionID)
+			p.ptStats.forget(agentSessionID)
+		}
 	}
-	delete(p.sessionChats, sessionID)
+	delete(p.sessionHashes, sessionID)
+	// One delete covers both arms: a chat row carries its owning session's
+	// session_id, so the session's own token and every chat token beneath it go
+	// together.
+	p.forgetSessionProxyTokensLocked(sessionID)
 }
 
 // ForgetBearer drops the session's sticky swapped bearer (but keeps its path
@@ -631,8 +767,10 @@ func (p *ProxyServer) ForgetBearer(sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.sessionBearer, sessionID)
-	for _, tok := range p.sessionChats[sessionID] {
-		delete(p.sessionBearer, p.tokenToSession[tok])
+	for hash := range p.sessionHashes[sessionID] {
+		if target := p.hashToTarget[hash]; target != "" {
+			delete(p.sessionBearer, target)
+		}
 	}
 }
 
@@ -645,6 +783,224 @@ func (p *ProxyServer) ForgetAllBearers() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sessionBearer = map[string]string{}
+}
+
+// proxyTokenPersistTimeout bounds a single durable-registry write. The store is
+// local SQLite, so this is a backstop against a wedged file lock rather than an
+// expected wait: exceeding it degrades to the in-memory-only behavior we had
+// before BOS-979 rather than stalling a session spawn.
+//
+// It is deliberately SHORT. These writes happen while the caller holds p.mu for
+// writing, and sessionForToken takes p.mu for reading on every proxied request,
+// so the timeout is the worst-case stall this imposes on ALL proxy resolution —
+// not just on the mint that hit the wedged lock. A sub-millisecond write that
+// has not completed in half a second is not going to complete usefully, and the
+// failure path is already log-and-continue, so half a second buys everything a
+// longer budget would while capping the blast radius.
+const proxyTokenPersistTimeout = 500 * time.Millisecond
+
+// proxyTokenTTL bounds how long a persisted path token stays resolvable.
+//
+// Nothing else bounds it. ProxyServer.Deregister has no production caller, and
+// sessions.archived_at is a soft delete, so before BOS-979 a daemon restart was
+// the de-facto revocation and after it a row would otherwise live forever —
+// growing both the table and the rebuilt in-memory registry with every session
+// ever spawned, and keeping a long-dead pane's token valid indefinitely.
+//
+// 30 days is deliberately far longer than the risk window suggests. The only
+// thing a too-short TTL can break is a LIVE pane whose ANTHROPIC_BASE_URL was
+// frozen at spawn and can never be reissued — the exact wedge BOS-979 exists to
+// prevent — and a tmux pane can legitimately sit idle for a week or more. A
+// month comfortably exceeds any plausible live-pane lifetime while still
+// turning "forever" into a bound, and a pane that outlives it is recoverable
+// through the pane sweep, which reconstructs the token from the pane's own env.
+const proxyTokenTTL = 30 * 24 * time.Hour
+
+// proxyTokenPruneTimeout bounds the boot-time age prune. It is separate from the
+// per-write budget because it runs once, off the request path, before Serve.
+const proxyTokenPruneTimeout = 10 * time.Second
+
+// chatProxyTokenRecord builds the durable row for a chat-shaped token. The
+// assembled target string is deliberately NOT stored — the rebuild reassembles
+// it through session.ProxyTargetForChat from these components, so the wire
+// format keeps exactly one author.
+func chatProxyTokenRecord(token, sessionID, agentSessionID, accountID string) db.ProxyTokenRecord {
+	return db.ProxyTokenRecord{
+		TokenSHA256:    proxyTokenHash(token),
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		AccountID:      accountID,
+		IsChatShaped:   true,
+	}
+}
+
+// persistProxyTokenLocked mirrors one registry entry into durable storage.
+//
+// The caller must already hold p.mu, and that is the point: the in-memory write
+// and the durable write land inside the SAME critical section, so a concurrent
+// reader can never observe a token registered in memory but absent from the
+// table (the shape the restart rebuild and the pane sweep both act on). The
+// store is local SQLite and a write is sub-millisecond, so holding the registry
+// lock across it is cheaper than the reconciliation an async write would need.
+//
+// A failure here NEVER fails the caller. A session that cannot spawn is a worse
+// outcome than a token that is merely not durable — the pane sweep remains the
+// fallback for exactly that case — so the error is logged and the mint proceeds.
+// Only the digest prefix is logged; the token itself never reaches a log line.
+func (p *ProxyServer) persistProxyTokenLocked(rec db.ProxyTokenRecord) {
+	if p.proxyTokens == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyTokenPersistTimeout)
+	defer cancel()
+	if err := p.proxyTokens.Upsert(ctx, rec); err != nil {
+		p.logger.Error().
+			Err(err).
+			Str("token_fingerprint", digestFingerprint(rec.TokenSHA256)).
+			Str("session_id", rec.SessionID).
+			Bool("chat_shaped", rec.IsChatShaped).
+			Msg("failover proxy: persist path token failed; token works this run but a restart must fall back to the pane sweep")
+	}
+}
+
+// forgetSessionProxyTokensLocked drops every durable row a session owns — its
+// own token and each of its chat tokens, which carry the same session_id — so an
+// ended session's targets do not accumulate in the table. Caller holds p.mu.
+// Like the write path, a failure is logged and swallowed: a stale row resolves
+// to a session that no longer exists, which the rebuild discards anyway.
+func (p *ProxyServer) forgetSessionProxyTokensLocked(sessionID string) {
+	if p.proxyTokens == nil || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyTokenPersistTimeout)
+	defer cancel()
+	if err := p.proxyTokens.DeleteBySessionID(ctx, sessionID); err != nil {
+		p.logger.Error().
+			Err(err).
+			Str("session_id", sessionID).
+			Msg("failover proxy: evict path tokens failed; stale rows will be discarded at rebuild")
+	}
+}
+
+// pruneExpiredProxyTokens drops every persisted registration older than
+// proxyTokenTTL. It is called once per daemon boot, from the rebuild path, and
+// is deliberately NOT a background sweeper: the table only grows when a token is
+// minted, and a boot-time prune is enough to keep it bounded.
+//
+// It takes no lock. The delete is a pure durable-store operation whose effect on
+// memory is entirely "these rows are not read by the List that follows", and the
+// caller has not taken p.mu yet.
+//
+// A failure is logged and swallowed. The consequence of a failed prune is an
+// oversized table, which is exactly the state this branch inherited; the
+// consequence of propagating it would be a daemon that cannot boot.
+func (p *ProxyServer) pruneExpiredProxyTokens() {
+	if p.proxyTokens == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyTokenPruneTimeout)
+	defer cancel()
+	cutoff := time.Now().Add(-proxyTokenTTL)
+	removed, err := p.proxyTokens.DeleteOlderThan(ctx, cutoff)
+	if err != nil {
+		p.logger.Error().
+			Err(err).
+			Time("cutoff", cutoff).
+			Msg("failover proxy: pruning expired path tokens failed; the durable registry stays oversized this run")
+		return
+	}
+	if removed > 0 {
+		p.logger.Info().
+			Int64("removed", removed).
+			Time("cutoff", cutoff).
+			Msg("failover proxy: pruned expired path tokens")
+	}
+}
+
+// RebuildTokenRegistry repopulates the resolution index from the durable rows
+// written at mint/adopt time, so a tmux pane whose ANTHROPIC_BASE_URL was baked
+// by a PREVIOUS daemon keeps resolving after a restart (BOS-979). Implements
+// session.proxyTokenRegistrar; called from Lifecycle.Bootstrap, which runs
+// before Serve, so no request can observe a half-rebuilt registry.
+//
+// Only the two DIGEST-keyed indexes are rebuilt. sessionToToken and chatToToken
+// hold raw tokens, which are secrets that were deliberately never persisted, so
+// they stay empty for a pane this process did not itself spawn — the pane still
+// resolves, because resolution only ever reads hashToTarget, and the pane sweep
+// (or a re-adoption) is what refills the raw maps when a token is recoverable
+// from the pane's own env.
+//
+// It runs BEFORE the pane sweep so a persisted row wins over a tmux-env
+// reconstruction, and it never clobbers a registration already in memory: a
+// live spawn's token always outranks a stored row for the same digest.
+//
+// A read failure is returned, not fatal — the caller logs and continues, which
+// degrades to exactly the pre-BOS-979 behavior of depending on the pane sweep.
+func (p *ProxyServer) RebuildTokenRegistry(ctx context.Context) error {
+	if p.proxyTokens == nil {
+		return nil
+	}
+	// Prune BEFORE the read, so an expired row is never resurrected into memory
+	// for the lifetime of this process. Failure degrades to log-and-continue,
+	// like every other durable-registry write: an unbounded table is a worse
+	// outcome than a failed prune, but a failed prune must never wedge a boot.
+	p.pruneExpiredProxyTokens()
+	recs, err := p.proxyTokens.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list persisted proxy tokens: %w", err)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	restored, skipped := 0, 0
+	for _, rec := range recs {
+		if rec.TokenSHA256 == "" || rec.SessionID == "" {
+			skipped++
+			continue
+		}
+		target := rec.SessionID
+		if rec.IsChatShaped {
+			if rec.AgentSessionID == "" {
+				skipped++
+				continue
+			}
+			// Reassembled through the single author of the wire format. The
+			// target embeds NUL bytes and is deliberately not a stored column,
+			// so this call — not the row — is what defines the shape.
+			target = session.ProxyTargetForChat(rec.AgentSessionID, rec.AccountID)
+		}
+		if existing, ok := p.hashToTarget[rec.TokenSHA256]; ok {
+			if existing != target {
+				// Something registered this digest between process start and
+				// Bootstrap; the live registration wins, same precedence as
+				// AdoptToken. Log-safe: the digest is not the token, but only
+				// its fingerprint is emitted for symmetry with the write path.
+				p.logger.Warn().
+					Str("token_fingerprint", digestFingerprint(rec.TokenSHA256)).
+					Str("session_id", rec.SessionID).
+					Msg("failover proxy: rebuilt token conflicts with a live registration; keeping the live one")
+				skipped++
+			}
+			continue
+		}
+		p.registerTargetLocked(rec.TokenSHA256, rec.SessionID, target)
+		restored++
+	}
+	p.logger.Info().
+		Int("restored", restored).
+		Int("skipped", skipped).
+		Int("rows", len(recs)).
+		Msg("failover proxy: rebuilt path-token registry from durable rows")
+	return nil
+}
+
+// digestFingerprint abbreviates an ALREADY-hashed token for a log line. It takes
+// the digest rather than the token so a caller holding only the durable row can
+// log a correlatable id without the raw secret ever being in scope.
+func digestFingerprint(digest string) string {
+	if len(digest) > 8 {
+		return digest[:8]
+	}
+	return digest
 }
 
 // tokenPrefix returns a short, non-reversible prefix of a proxy token (at most 8
@@ -703,11 +1059,16 @@ const (
 // unknownTokenBody is the self-identifying 401 body the proxy returns for a path
 // token it does not recognise (BOS-483). The old opaque "unauthorized" gave an
 // operator staring at a pane's failed request no clue the proxy itself — not the
-// upstream — rejected it; this names the component and the most likely cause (a
-// pane whose baked /s/<token> predates a daemon restart that wiped the in-memory
-// token map, the BOS-481 failure mode). Tests compare against this constant plus
-// the trailing newline http.Error appends.
-const unknownTokenBody = "bossd failover proxy: unknown session token (pane likely predates a daemon restart — see BOS-481)"
+// upstream — rejected it; this names the component and the most likely cause.
+//
+// Since BOS-979 the registry is rebuilt from durable rows before the daemon
+// serves, so "the pane predates a restart" is no longer the expected cause and
+// the body no longer points operators at that ticket. A token that reaches here
+// now means the registration is genuinely gone — its session was deregistered,
+// its row was evicted, or the pane belongs to a different daemon's registry.
+// Tests compare against this constant plus the trailing newline http.Error
+// appends.
+const unknownTokenBody = "bossd failover proxy: unknown session token (no live registration for this pane; its session has ended or its token was never registered with this daemon)"
 
 // passthroughWarnWindow is the minimum spacing between repeated pass-through
 // Warns for the same (displayID, class): repeats within a minute collapse to one
@@ -748,9 +1109,26 @@ func passthroughClass(status int, sseErrorType string) string {
 // from the SAME baked pane can be correlated WITHOUT ever logging token bytes.
 // (tokenPrefix logs a raw 8-char slice, fine for a token WE minted this run and
 // hold; an unknown token is attacker-influenceable input, so it is hashed.)
-func tokenFingerprint(token string) string {
+//
+// The return type is named, not a bare string, because logUnknownToken now takes
+// the fingerprint rather than the token: a caller handing it the raw token would
+// log the secret verbatim, and the only thing that caught that was a whole-log
+// security scan running much later. It is a compile error instead.
+type tokenFP string
+
+func tokenFingerprint(token string) tokenFP {
+	return tokenFP(proxyTokenHash(token)[:8])
+}
+
+// proxyTokenHash returns the full hex-encoded SHA-256 of a path token — the
+// durable registry's primary key, and the only form of a token that is ever
+// written to disk or a log. It is deliberately the single author of that digest
+// so the value a row is keyed by and the value tokenFingerprint abbreviates for
+// a log line can never drift apart; a rebuild that looked up a differently
+// derived digest would silently resolve nothing.
+func proxyTokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])[:8]
+	return hex.EncodeToString(sum[:])
 }
 
 // allowPassthroughWarn reports whether a Warn keyed by (displayID, class) should
@@ -816,17 +1194,162 @@ func (p *ProxyServer) logPassthrough(targetID, method, upstreamPath string, stat
 // recognise. It logs a SHA-256 fingerprint (never token bytes) and the upstream
 // API path (never the token-bearing request path), rate-limited per fingerprint
 // because the volume is unauthenticated and attacker-influenceable.
-func (p *ProxyServer) logUnknownToken(token, method, upstreamPath string) {
-	fp := tokenFingerprint(token)
-	if !p.allowPassthroughWarn("unknown-token", fp) {
-		return
-	}
+//
+// The rate-limit charge is NOT taken here. The limiter is stateful, one charge
+// gates both the warn and the pane-repair attempt (BOS-982), and a helper that
+// both charged and reported its charge through the return value made a logging
+// function the control-flow authority for a repair dispatch. The single charge
+// lives at the one call site instead, which is also the only place that can see
+// both consequences of it; this function just writes the line for a charge that
+// was already taken, and takes the fingerprint rather than the token so the
+// secret does not travel any further than it must.
+func (p *ProxyServer) logUnknownToken(fp tokenFP, method, upstreamPath string) {
 	p.logger.Warn().
 		Str("event", "failover_proxy_unknown_token").
-		Str("token_fingerprint", fp).
+		Str("token_fingerprint", string(fp)).
 		Str("method", method).
 		Str("path", upstreamPath).
 		Msg("failover proxy: rejected request with unknown session token")
+}
+
+// proxyTokenRepairTimeout bounds the CONTEXT-AWARE part of one unknown-token
+// repair attempt: the durable primary-key read plus the two tmux calls the
+// attribution check makes against a single named pane. It is generous relative
+// to the persist timeout because a tmux exec is a subprocess.
+//
+// It does NOT bound the whole attempt. The dispatch it ends in reaches the
+// rotator, whose shared reservation loads config from disk through an API that
+// takes no context — so this timeout could never have been the thing that kept
+// a wedged repair from holding the 401 open. Running the repair off the handler,
+// after the 401 is already written, is what does (see beginUnknownTokenRepair).
+const proxyTokenRepairTimeout = 3 * time.Second
+
+// repairUnknownTokenPane tries to attribute a token the in-memory registry could
+// not resolve, and — when it belongs to a live pane — routes it to a
+// probe-skipping respawn-in-place (BOS-982).
+//
+// This is the whole point of the change: the shape it recovers from is a token
+// whose DURABLE row still exists while the in-memory map has lost it, which is
+// exactly what a daemon restart or a Deregister-while-the-pane-lives produces.
+// Before this, that pane's only route back to health was Claude Code rendering
+// the 401, the status poller scraping a login banner off it, and the rotator
+// probing an account that was never involved.
+//
+// The gates are ordered cheapest-first and every one of them fails closed:
+//
+//	no failover seam / no durable store  → nothing to attribute with
+//	token is not 64-hex                  → cannot be one of ours; no DB read
+//	no row for the digest                → unattributable; the 401 stands
+//	row is session-shaped                → no chat to respawn
+//	RepairProxyPane says no              → pane not live, or not this pane's token
+//
+// Whatever happens, the 401 body the handler already wrote stands unchanged — a
+// repair is a side effect of the rejection, never a substitute for it. token is a
+// secret and is never logged; only its digest prefix appears.
+func (p *ProxyServer) repairUnknownTokenPane(token string) bool {
+	if p.failover == nil || p.proxyTokens == nil {
+		return false
+	}
+	// The canonical-shape pre-gate. It is the SAME predicate the adoption sweep
+	// applies to a pane's baked URL, deliberately shared rather than re-spelled:
+	// a second copy could drift into calling a token ours that attribution would
+	// then refuse (or the reverse). Cheap and attacker-facing — garbage costs this
+	// loop and nothing else, no durable read and no tmux exec.
+	if !session.IsCanonicalProxyToken(token) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyTokenRepairTimeout)
+	defer cancel()
+
+	digest := proxyTokenHash(token)
+	rec, err := p.proxyTokens.GetByTokenHash(ctx, digest)
+	if err != nil {
+		p.logger.Warn().
+			Err(err).
+			Str("token_fingerprint", digestFingerprint(digest)).
+			Msg("failover proxy: durable lookup for an unknown path token failed; leaving the pane to the status-scrape path")
+		return false
+	}
+	if rec == nil || !rec.IsChatShaped || rec.AgentSessionID == "" {
+		return false
+	}
+	repaired, err := p.failover.RepairProxyPane(ctx, rec.SessionID, rec.AgentSessionID, token)
+	if err != nil {
+		p.logger.Warn().
+			Err(err).
+			Str("token_fingerprint", digestFingerprint(digest)).
+			Str("session_id", rec.SessionID).
+			Msg("failover proxy: pane repair for an unknown path token failed; leaving the pane to the status-scrape path")
+		return false
+	}
+	return repaired
+}
+
+// beginUnknownTokenRepair runs an unknown-token pane repair OFF the HTTP
+// handler that observed the token.
+//
+// The 401 is written first and does not wait for this. The repair is not a
+// substitute for the rejection — Claude Code sees the same body either way — and
+// the work behind it is not something an HTTP handler should be holding a
+// response open for: a durable read, two tmux subprocess calls, and then a
+// rotator dispatch whose shared reservation loads config from disk through an
+// API that takes no context. proxyTokenRepairTimeout bounds the ctx-aware part
+// only, so on the handler's goroutine a wedged tmux or a slow disk would delay
+// the 401 for a pane that is already retrying.
+//
+// The goroutine is joined, not fire-and-forget: repairJobs is what Shutdown
+// waits on, so a restart cannot cut a repair between its durable read and its
+// respawn dispatch.
+//
+// Registration is split from execution on purpose. The caller registers the job
+// BEFORE it writes the 401 and runs it after, so anything that has observed the
+// response — Shutdown's join, a test — is guaranteed to see the repair as
+// outstanding rather than racing the handler to the Add.
+//
+// That split is what makes the Add/Done pairing non-local, so the returned run
+// func is ALWAYS deferred by its caller rather than called at a chosen point: a
+// panic on the 401 write path (http.ErrAbortHandler from a wrapping
+// ResponseWriter, a middleware panic) would otherwise skip it, strand the
+// counter, and make every later Shutdown burn its whole drain budget on a job
+// that will never run — a hang nowhere near the code that caused it. run is
+// never nil, so the caller needs no nil check for its defer.
+//
+// Once Shutdown has begun no repair is registered at all: the returned run is a
+// no-op and no Add is taken. The gate check and the Add happen together under
+// repairMu, which is what makes them one step against Shutdown's flag write —
+// checking a bare flag and then adding leaves a window in which Shutdown sets the
+// flag and its repairJobs.Wait both complete, so the Add lands on a WaitGroup
+// whose Wait has already returned. See closingRepairs.
+func (p *ProxyServer) beginUnknownTokenRepair(token string) (run func()) {
+	p.repairMu.Lock()
+	if p.closingRepairs {
+		p.repairMu.Unlock()
+		return func() {}
+	}
+	p.repairJobs.Add(1)
+	p.repairMu.Unlock()
+	return func() {
+		safego.Go(p.logger, func() {
+			defer p.repairJobs.Done()
+			p.repairUnknownTokenPane(token)
+		})
+	}
+}
+
+// waitRepairJobs blocks until every dispatched unknown-token repair has
+// finished, or ctx expires. A repair is short and bounded, so the usual outcome
+// is an immediate return; the ctx guard exists so a shutdown budget that has
+// already expired is not extended by this.
+func (p *ProxyServer) waitRepairJobs(ctx context.Context) {
+	done := make(chan struct{})
+	safego.Go(p.logger, func() {
+		defer close(done)
+		p.repairJobs.Wait()
+	})
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // passthroughStatsWindow is how many one-minute buckets (→ last hour) of
@@ -1033,16 +1556,26 @@ func (p *ProxyServer) AdoptToken(token, sessionID string) {
 		// defer to it silently, leaving the spawn's registration intact.
 		return
 	}
-	if existingTarget, ok := p.tokenToSession[token]; ok {
-		if existingTarget != sessionID {
-			p.logger.Warn().
-				Str("token_prefix", tokenPrefix(token)).
-				Msg("failover proxy: adopt token already registered to a different target; keeping first registration")
-		}
+	hash := proxyTokenHash(token)
+	if existingTarget, ok := p.hashToTarget[hash]; ok && existingTarget != sessionID {
+		p.logger.Warn().
+			Str("token_prefix", tokenPrefix(token)).
+			Msg("failover proxy: adopt token already registered to a different target; keeping first registration")
 		return
 	}
+	// Falling through on an already-matching target is deliberate, not a
+	// redundant rewrite: after the boot rebuild the digest resolves but the RAW
+	// token is not in sessionToToken, and only the sweep is holding it. Filling
+	// it in here means a later TokenForSession hands the live pane back its own
+	// baked token instead of minting a second one the pane can never learn.
 	p.sessionToToken[sessionID] = token
-	p.tokenToSession[token] = sessionID
+	p.registerTargetLocked(hash, sessionID, sessionID)
+	// An adopted token must become durable too, or the NEXT restart loses it
+	// again and recovery depends on the pane sweep succeeding every time.
+	p.persistProxyTokenLocked(db.ProxyTokenRecord{
+		TokenSHA256: hash,
+		SessionID:   sessionID,
+	})
 }
 
 // AdoptTokenForChat re-registers an EXISTING chat-shaped path token reconstructed
@@ -1064,20 +1597,19 @@ func (p *ProxyServer) AdoptTokenForChat(sessionID, agentSessionID, accountID, to
 		// A live fresh spawn already minted a different token for this chat.
 		return
 	}
-	if existingTarget, ok := p.tokenToSession[token]; ok {
-		if existingTarget != target {
-			p.logger.Warn().
-				Str("token_prefix", tokenPrefix(token)).
-				Msg("failover proxy: adopt chat token already registered to a different target; keeping first registration")
-		}
+	hash := proxyTokenHash(token)
+	if existingTarget, ok := p.hashToTarget[hash]; ok && existingTarget != target {
+		p.logger.Warn().
+			Str("token_prefix", tokenPrefix(token)).
+			Msg("failover proxy: adopt chat token already registered to a different target; keeping first registration")
 		return
 	}
+	// Same reasoning as AdoptToken: a matching target after a rebuild still
+	// needs the raw-token bookkeeping filled in, so a later TokenForChat
+	// refreshes the LIVE pane's token rather than minting an unreachable one.
 	p.chatToToken[agentSessionID] = token
-	if p.sessionChats[sessionID] == nil {
-		p.sessionChats[sessionID] = map[string]string{}
-	}
-	p.sessionChats[sessionID][agentSessionID] = token
-	p.tokenToSession[token] = target
+	p.registerTargetLocked(hash, sessionID, target)
+	p.persistProxyTokenLocked(chatProxyTokenRecord(token, sessionID, agentSessionID, accountID))
 }
 
 // bearerForSession returns the session's sticky swapped bearer, or "" before
@@ -1096,25 +1628,33 @@ func (p *ProxyServer) rememberBearer(sessionID, token string) {
 	p.sessionBearer[sessionID] = token
 }
 
-// sessionForToken resolves a path token to its session using a constant-time
-// compare against every registered token, so a matching token cannot be
-// distinguished from a near-miss by timing.
+// sessionForToken resolves a path token to its proxy target through a single
+// hash-keyed map lookup on hex(sha256(token)).
+//
+// This replaced an O(n) subtle.ConstantTimeCompare scan over every registered
+// raw token, and the timing property that scan existed to provide is PRESERVED,
+// not traded away. The attacker supplies the token, so they already know it and
+// can compute its SHA-256 themselves; hashing it leaks nothing they did not
+// bring with them. What must never happen is a comparison that short-circuits
+// against an unknown secret, revealing it prefix by prefix — and no such
+// comparison remains here. The raw token is consumed only by SHA-256, which is
+// data-independent in time, and the resulting digest is used as a map key.
+// Go's map lookup does compare key bytes non-constant-time, but only against
+// digests, so the most a timing oracle could recover is how far a digest the
+// attacker already possesses matches a stored digest of a token they already
+// possess — and sha256 preimage resistance means a near-miss digest cannot be
+// walked back into a near-miss token. Meanwhile the old scan's real cost was
+// unbounded: it hashed nothing but touched every live registration on every
+// request, including 401 probes.
 func (p *ProxyServer) sessionForToken(token string) (string, bool) {
+	hash := proxyTokenHash(token)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	tb := []byte(token)
-	var sessionID string
-	matched := 0
-	for tok, sid := range p.tokenToSession {
-		if subtle.ConstantTimeCompare(tb, []byte(tok)) == 1 {
-			sessionID = sid
-			matched = 1
-		}
+	target, ok := p.hashToTarget[hash]
+	if !ok || target == "" {
+		return "", false
 	}
-	if matched == 1 {
-		return sessionID, true
-	}
-	return "", false
+	return target, true
 }
 
 // isManagedSentinel reports whether a request is the interactive REPL's managed
@@ -1154,7 +1694,28 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// (a pane whose baked token predates a daemon restart) instead of an opaque
 		// "unauthorized". Log a SHA-256 fingerprint (never the token) and the
 		// upstream path (never r.URL.Path, which carries the token).
-		p.logUnknownToken(token, r.Method, upstreamPath)
+		// ONE rate-limiter charge gates BOTH the warn and the repair attempt
+		// (BOS-982), so a retrying pane cannot drive a respawn per request. The
+		// limiter is stateful, so it is charged exactly once, here, where both
+		// consequences of the answer are visible.
+		fp := tokenFingerprint(token)
+		if p.allowPassthroughWarn("unknown-token", string(fp)) {
+			p.logUnknownToken(fp, r.Method, upstreamPath)
+			// Deferred, not called below the write: the Add is already taken, so the
+			// matching Done must not depend on control reaching a later statement.
+			// The deferred call still runs AFTER http.Error, which is the ordering
+			// the registration/execution split exists to give.
+			runRepair := p.beginUnknownTokenRepair(token)
+			defer runRepair()
+		}
+		// The rejection is written FIRST and never waits on the repair. This 401
+		// is self-inflicted: the proxy minted it without ever consulting an
+		// account. When the token still resolves durably to a live pane, that
+		// pane is sent straight to a same-account respawn instead of travelling
+		// through an account-invalidation diagnosis it can never satisfy — but
+		// the response is unchanged either way, so Claude Code sees the same 401
+		// and retries at the same moment it always did; the repair just means
+		// something is now fixing the pane while it does.
 		http.Error(w, unknownTokenBody, http.StatusUnauthorized)
 		return
 	}

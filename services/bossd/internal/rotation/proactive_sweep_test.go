@@ -34,6 +34,25 @@ type proactiveFake struct {
 	switchCalls []SwitchRequest
 	switchErr   error
 	captures    []string
+
+	// switchEntered/switchRelease gate the Switch seam so a test can hold the
+	// proactive lane inside its switch — reservation held — while it delivers a
+	// racing trigger. Without a gate the interleaving is the scheduler's to pick
+	// and only one of them is ever exercised. (BOS-982)
+	switchEntered chan struct{}
+	switchRelease chan struct{}
+}
+
+// gateSwitch arms the Switch gate. entered receives once the lane is inside
+// Switch (and therefore holds the chat's reservation); closing release lets it
+// continue.
+func (f *proactiveFake) gateSwitch() (entered <-chan struct{}, release chan<- struct{}) {
+	in := make(chan struct{}, 1)
+	rel := make(chan struct{})
+	f.mu.Lock()
+	f.switchEntered, f.switchRelease = in, rel
+	f.mu.Unlock()
+	return in, rel
 }
 
 func newProactiveFake() *proactiveFake {
@@ -97,7 +116,15 @@ func (f *proactiveFake) rotator(now *time.Time) *ChatRotator {
 		Switch: func(_ context.Context, req SwitchRequest) (SwitchResult, error) {
 			f.mu.Lock()
 			f.switchCalls = append(f.switchCalls, req)
+			entered, release := f.switchEntered, f.switchRelease
+			f.switchEntered, f.switchRelease = nil, nil
 			f.mu.Unlock()
+			if entered != nil {
+				entered <- struct{}{}
+			}
+			if release != nil {
+				<-release
+			}
 			return SwitchResult{SwitchedToLabel: req.AccountID}, f.switchErr
 		},
 		CaptureProactiveRotation: func(_ context.Context, provider string) {
@@ -317,7 +344,7 @@ func TestSweepProactive_SkipsWhenReactiveRotationInFlight(t *testing.T) {
 	// chat: it holds the shared inFlight marker. SwitchAccount has no internal
 	// per-chat serialization, so the proactive sweep must NOT switch concurrently.
 	r.mu.Lock()
-	r.inFlight["chat-idle"] = true
+	r.chatLocked("chat-idle").inFlight = true
 	r.mu.Unlock()
 
 	if got := r.SweepProactive(context.Background()); got != 0 {
@@ -347,5 +374,56 @@ func TestSweepProactive_PerChatLimiterSuppressesSecondSwitch(t *testing.T) {
 	}
 	if n := len(f.switched()); n != 1 {
 		t.Errorf("total switch calls = %d, want 1 (limiter suppresses the second)", n)
+	}
+}
+
+// TestSweepProactive_QueuedProxyRepairIsNotASecondRespawn pins the proactive
+// lane's half of AC6: concurrent arrival of a BOS-982 proxy-token 401 and a
+// proactive pre-cap switch on one chat produces exactly one respawn.
+//
+// The proactive lane takes the SAME shared per-chat reservation as the reactive
+// ones, so a proxy signal arriving mid-switch is queued rather than dropped, and
+// releaseInFlight drains it unless the winner applied a pane-level remedy. A
+// completed proactive switch IS such a remedy — it stops, rebinds and respawns
+// the pane with freshly injected wiring — so draining behind it would fire a
+// same-account respawn at a pane that was just restarted, charging the respawn
+// cap and writing a spurious RESPAWNED_SAME_ACCOUNT row for it.
+func TestSweepProactive_QueuedProxyRepairIsNotASecondRespawn(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	f := newProactiveFake()
+	f.cfg = proactiveOnConfig()
+	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
+	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
+	f.snaps = map[string]models.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", Label: "lo", CandidateUtil: 0.1}
+
+	r := f.rotator(&now)
+	entered, release := f.gateSwitch()
+	swept := make(chan int, 1)
+	go func() { swept <- r.SweepProactive(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("proactive lane never reached Switch; the reservation was never held")
+	}
+
+	// Delivered while the proactive switch holds the reservation, so it is queued
+	// rather than dispatched.
+	r.OnProxyTokenUnresolved("chat-idle")
+	if n := len(f.switched()); n != 1 {
+		t.Fatalf("switch calls = %d while the proactive lane holds the reservation, want 1 (its own)", n)
+	}
+	close(release)
+	if got := <-swept; got != 1 {
+		t.Fatalf("SweepProactive() = %d, want 1", got)
+	}
+	waitIdle(t, r)
+
+	sw := f.switched()
+	if len(sw) != 1 {
+		t.Fatalf("switch calls = %d, want exactly 1 — a proxy repair queued behind a completed proactive rotation is the second respawn the shared reservation exists to prevent: %+v", len(sw), sw)
+	}
+	if sw[0].RespawnSameAccount {
+		t.Fatalf("the one switch is a same-account respawn, so the proactive rotation was the one that lost: %+v", sw[0])
 	}
 }

@@ -19,6 +19,27 @@ import (
 	"github.com/recurser/bossd/internal/status"
 )
 
+// runOnePollCycle runs exactly one poll cycle and waits for the poller to stop.
+//
+// DisplayPoller.Run polls once, synchronously, before it ever consults its
+// ticker, and poll() never checks ctx — so cancelling immediately still yields
+// one complete cycle, and Done() reports when that cycle has finished.
+//
+// This replaces a fixed 150 ms settle delay at twelve call sites. That sleep
+// was both slower and weaker: it asserted nothing about a cycle having
+// actually run, so on a loaded machine an assertion could read an untouched
+// tracker, and it left the poller polling concurrently with the assertions
+// below it.
+func runOnePollCycle(t *testing.T, poller *DisplayPoller, cancel context.CancelFunc) {
+	t.Helper()
+	cancel()
+	select {
+	case <-poller.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the display poller to finish its cycle")
+	}
+}
+
 func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -49,9 +70,7 @@ func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	// Wait for at least one poll cycle.
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -218,8 +237,7 @@ func TestDisplayPoller_SkipsSessionWithoutPR(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e != nil {
@@ -254,8 +272,7 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -302,8 +319,7 @@ func TestDisplayPoller_MergedPRPersistsSnapshot(t *testing.T) {
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.SetSnapshotStore(snapshots)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	snaps := snapshots.all()
 	if len(snaps) != 1 {
@@ -353,8 +369,7 @@ func TestDisplayPoller_ClosedPRSkipsChecksAndReviews(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -439,8 +454,7 @@ func TestDisplayPoller_FailingChecks(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -484,8 +498,7 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -529,8 +542,7 @@ func TestDisplayPoller_CodexBotCommentedReviewCommentsRejected(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -568,8 +580,7 @@ func TestDisplayPoller_CheckResultsError_NoUpdate(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	// Falling back to "Idle" on a transient API error silently disables the
 	// repair plugin (which only triggers on FAILING/CONFLICT/REJECTED). The
@@ -608,8 +619,7 @@ func TestDisplayPoller_CheckResultsError_PreservesPrevious(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -656,8 +666,7 @@ func TestDisplayPoller_ClearsStaleDraftWhenReadyWithNoChecks(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -702,8 +711,7 @@ func TestDisplayPoller_ReviewCommentsError_NoUpdate(t *testing.T) {
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	runOnePollCycle(t, poller, cancel)
 
 	// Without reviews we cannot tell apart "Passing" from "Rejected" — so
 	// the poller must skip the update rather than misclassify a rejected

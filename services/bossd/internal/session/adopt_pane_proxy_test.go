@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/rotation"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // paneTok is a canonical 64-lowercase-hex token, as mintProxyToken emits.
@@ -82,12 +84,21 @@ type adoptCall struct {
 type recordingRegistrar struct {
 	mu    sync.Mutex
 	calls []adoptCall
+	// rebuildErr, when set, makes RebuildTokenRegistry fail so a test can prove
+	// Bootstrap logs and continues into the sweep rather than aborting.
+	rebuildErr error
 }
 
 func (r *recordingRegistrar) TokenForSession(string) string              { return "" }
 func (r *recordingRegistrar) TokenForChat(string, string, string) string { return "" }
 func (r *recordingRegistrar) ForgetBearer(string)                        {}
 func (r *recordingRegistrar) ForgetAllBearers()                          {}
+func (r *recordingRegistrar) RebuildTokenRegistry(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, adoptCall{kind: "rebuild"})
+	return r.rebuildErr
+}
 func (r *recordingRegistrar) AdoptToken(token, sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -270,11 +281,14 @@ func TestAdoptSurvivingPaneProxyTokens(t *testing.T) {
 	}
 }
 
-// TestAdoptSweep_abortsOnListError proves a ListWithTmuxSession failure aborts
-// the whole sweep (no adopt calls) rather than panicking or partial-processing.
+// TestAdoptSweep_abortsOnListError proves a chat-list failure aborts the whole
+// sweep (no adopt calls) rather than panicking or partial-processing. The sweep
+// reads ListRoutableChats since BOS-979 (ListWithTmuxSession filtered out the
+// NULL-tmux_session_name rows the fallback exists for), so the error is injected
+// on that method.
 func TestAdoptSweep_abortsOnListError(t *testing.T) {
 	lc, reg := newAdoptSweepLifecycle(t, adoptSweepCfg{enabled: true, hasSession: true, sessAccount: strptr("acct-sess")})
-	lc.agentChats.(*mockAgentChatStore).listWithTmuxErr = errors.New("db down")
+	lc.agentChats.(*mockAgentChatStore).listRoutableErr = errors.New("db down")
 	lc.adoptSurvivingPaneProxyTokens(context.Background())
 	if len(reg.got()) != 0 {
 		t.Fatalf("adopt calls on list error = %+v, want none", reg.got())
@@ -364,5 +378,219 @@ func TestAdoptSweep_inertWithoutRegistrarOrChats(t *testing.T) {
 	lc2.adoptSurvivingPaneProxyTokens(context.Background()) // must not panic
 	if len(reg2.got()) != 0 {
 		t.Fatalf("adopt calls with nil agentChats = %+v, want none", reg2.got())
+	}
+}
+
+// --- BOS-979: rebuild-before-sweep ordering, and the sweep's NULL-name gap ---
+
+// recordingTmux is a tmux stub that RECORDS every session name it is asked
+// about. stubTmuxForSweep ignores the name argument entirely, so it cannot tell
+// a sweep that read chat.TmuxSessionName from one that derived the name via
+// tmux.ChatSessionName — which is exactly the distinction these tests turn on.
+type recordingTmux struct {
+	mu       sync.Mutex
+	asked    []string
+	alive    map[string]bool
+	baked    string
+	askedEnv []string
+}
+
+func newRecordingTmux(baked string, alive ...string) (*tmux.Client, *recordingTmux) {
+	rec := &recordingTmux{alive: map[string]bool{}, baked: baked}
+	for _, name := range alive {
+		rec.alive[name] = true
+	}
+	client := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		sub, target := "", ""
+		if len(args) > 0 {
+			sub = args[0]
+		}
+		// Both `has-session -t <name>` and `show-environment -t <name> VAR`
+		// carry the target after -t.
+		for i, a := range args {
+			if a == "-t" && i+1 < len(args) {
+				target = args[i+1]
+			}
+		}
+		rec.mu.Lock()
+		switch sub {
+		case "has-session":
+			rec.asked = append(rec.asked, target)
+		case "show-environment":
+			rec.askedEnv = append(rec.askedEnv, target)
+		}
+		live := rec.alive[target]
+		baked := rec.baked
+		rec.mu.Unlock()
+
+		switch sub {
+		case "has-session":
+			if live {
+				return exec.CommandContext(ctx, "true")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"can't find session\" >&2; exit 1")
+		case "show-environment":
+			if baked == "" {
+				return exec.CommandContext(ctx, "sh", "-c", "printf '%s' 'unknown variable' >&2; exit 1")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s\\n' 'ANTHROPIC_BASE_URL="+baked+"'")
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}))
+	return client, rec
+}
+
+func (r *recordingTmux) askedAbout(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, got := range r.asked {
+		if got == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAdoptSweep_considersChatsWithNoPersistedTmuxName closes the BOS-979 gap.
+//
+// The sweep has always carried a `tmux.ChatSessionName(repoID, agentSessionID)`
+// fallback for a chat whose tmux_session_name is NULL — but it read the chat
+// list through ListWithTmuxSession, whose WHERE clause excludes precisely those
+// rows, so the fallback was unreachable code. A pane whose name was never
+// persisted (or was cleared on a partial write) held a live baked token that no
+// restart could ever recover.
+//
+// This asserts the fallback now RUNS: with TmuxSessionName nil the sweep asks
+// tmux about the derived name and adopts the pane's token.
+func TestAdoptSweep_considersChatsWithNoPersistedTmuxName(t *testing.T) {
+	derived := tmux.ChatSessionName("repo-1", "agent-01")
+
+	sessions := newMockSessionStore()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-sess"),
+	}
+	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{{
+		ID:             "chat-1",
+		SessionID:      "sess-1",
+		AgentSessionID: "agent-01",
+		AgentName:      "claude",
+		// The whole point: no persisted tmux session name.
+		TmuxSessionName: nil,
+	}}}
+
+	tmuxClient, rec := newRecordingTmux(canonicalBakedURL(44127), derived)
+	reg := &recordingRegistrar{}
+	lc := &Lifecycle{
+		sessions: sessions, agentChats: chats, tmux: tmuxClient,
+		logger: zerolog.Nop(), proxyPort: 44127, proxyRegistrar: reg,
+	}
+	on := true
+	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
+
+	lc.adoptSurvivingPaneProxyTokens(context.Background())
+
+	if !rec.askedAbout(derived) {
+		t.Fatalf("sweep never asked tmux about the derived name %q; asked=%v", derived, rec.asked)
+	}
+	got := reg.got()
+	want := []adoptCall{{kind: "session", token: paneTok, sessionID: "sess-1"}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("NULL-tmux-name chat not adopted: got %+v want %+v", got, want)
+	}
+}
+
+// TestAdoptSweep_stillAdoptsAPaneWithNoPersistedRow is the other half of AC7:
+// the rebuild becoming the primary path must not have disabled the fallback.
+// The registrar here restores nothing on rebuild (as it would for a pane spawned
+// before the migration existed), and the sweep still recovers the pane.
+func TestAdoptSweep_stillAdoptsAPaneWithNoPersistedRow(t *testing.T) {
+	lc, reg := newAdoptSweepLifecycle(t, adoptSweepCfg{
+		enabled: true, hasSession: true, sessAccount: strptr("acct-sess"),
+	})
+
+	lc.rebuildProxyTokenRegistry(context.Background()) // restores nothing
+	lc.adoptSurvivingPaneProxyTokens(context.Background())
+
+	got := reg.got()
+	if len(got) != 2 || got[0].kind != "rebuild" ||
+		got[1] != (adoptCall{kind: "session", token: paneTok, sessionID: "sess-1"}) {
+		t.Fatalf("pane with no persisted row was not adopted by the fallback: %+v", got)
+	}
+}
+
+// TestAdoptSweep_survivesARebuildFailure proves a rebuild error degrades to the
+// pre-BOS-979 behaviour instead of aborting recovery: the sweep still runs and
+// still adopts. A durable-read failure that also killed the fallback would turn
+// one bad boot into every surviving pane wedging.
+func TestAdoptSweep_survivesARebuildFailure(t *testing.T) {
+	lc, reg := newAdoptSweepLifecycle(t, adoptSweepCfg{
+		enabled: true, hasSession: true, sessAccount: strptr("acct-sess"),
+	})
+	reg.rebuildErr = errors.New("durable registry unreadable")
+
+	lc.rebuildProxyTokenRegistry(context.Background())
+	lc.adoptSurvivingPaneProxyTokens(context.Background())
+
+	got := reg.got()
+	if len(got) != 2 || got[1].kind != "session" || got[1].token != paneTok {
+		t.Fatalf("sweep did not run after a rebuild failure: %+v", got)
+	}
+}
+
+// TestBootstrap_rebuildsRegistryBeforeTheSweep is AC6's ordering assertion. It
+// runs the REAL Bootstrap and reads the registrar's call log, rather than
+// asserting on the source, so reordering the two statements fails the test.
+//
+// Order matters for correctness, not tidiness: a persisted row was written by
+// the daemon that actually minted the token, while the sweep RECONSTRUCTS one
+// from tmux env. Because both AdoptToken and the rebuild keep whatever is
+// already registered for a digest, whichever runs first wins — so running the
+// sweep first would let a tmux-env reconstruction outrank the authoritative row.
+func TestBootstrap_rebuildsRegistryBeforeTheSweep(t *testing.T) {
+	sessions := newMockSessionStore()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-sess"),
+	}
+	name := "boss-repo-1-agent-01"
+	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{{
+		ID: "chat-1", SessionID: "sess-1", AgentSessionID: "agent-01",
+		AgentName: "claude", TmuxSessionName: &name,
+	}}}
+
+	tmuxClient, _ := newRecordingTmux(canonicalBakedURL(44127), name)
+	lc := newTestLifecycle(
+		sessions, newMockRepoStore(), chats, &stubCronJobStore{},
+		&mockWorktreeManager{}, newMockAgentRunner(), tmuxClient,
+		newMockVCSProvider(), zerolog.Nop(),
+	)
+	reg := &recordingRegistrar{}
+	lc.SetProxyRegistrar(reg)
+	lc.SetProxyPort(44127)
+	on := true
+	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
+
+	lc.Bootstrap(context.Background())
+
+	got := reg.got()
+	var rebuildAt, adoptAt = -1, -1
+	for i, call := range got {
+		switch {
+		case call.kind == "rebuild" && rebuildAt < 0:
+			rebuildAt = i
+		case (call.kind == "session" || call.kind == "chat") && adoptAt < 0:
+			adoptAt = i
+		}
+	}
+	if rebuildAt < 0 {
+		t.Fatalf("Bootstrap never rebuilt the durable registry: %+v", got)
+	}
+	if adoptAt < 0 {
+		t.Fatalf("Bootstrap never ran the adoption sweep, so the ordering is unproven: %+v", got)
+	}
+	if rebuildAt > adoptAt {
+		t.Fatalf("Bootstrap ran the sweep before the rebuild (rebuild=%d adopt=%d): %+v", rebuildAt, adoptAt, got)
 	}
 }

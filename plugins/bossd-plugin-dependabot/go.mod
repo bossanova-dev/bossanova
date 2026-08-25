@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/recurser/bossalib v0.0.0
 	github.com/rs/zerolog v1.35.1
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 )
 
 require (
@@ -18,7 +18,7 @@ require (
 	github.com/mattn/go-isatty v0.0.23 // indirect
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

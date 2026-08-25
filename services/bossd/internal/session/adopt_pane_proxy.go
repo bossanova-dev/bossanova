@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -17,6 +19,53 @@ import (
 // account.Resolver.DefaultAccountID. Optional: nil ⇒ both-nil rows are skipped.
 func (l *Lifecycle) SetDefaultAccountResolver(r func(ctx context.Context, provider string, now time.Time) (string, error)) {
 	l.defaultAccountResolver = r
+}
+
+// anthropicBaseURLEnv is the tmux session environment variable the daemon bakes
+// the failover-proxy URL into. Named once because three separate readers ask a
+// pane for it — the adoption sweep, the stale-port sweep, and unknown-token
+// attribution — and a typo in any one of them would read as "this pane has no
+// proxy URL", which every one of those readers treats as a benign skip.
+const anthropicBaseURLEnv = "ANTHROPIC_BASE_URL"
+
+// persistedChatPaneName returns the chat's persisted tmux session name, or ""
+// when the row does not carry one. An empty result is NOT "no pane": every
+// caller falls back to deriving the name via tmux.ChatSessionName, because a
+// chat whose tmux name was never persisted (or was cleared) still has a live
+// pane holding a baked token. They differ only in how they obtain the owning
+// session for that derivation, which is why the fallback itself is not shared.
+func persistedChatPaneName(chat *models.AgentChat) string {
+	if chat == nil || chat.TmuxSessionName == nil {
+		return ""
+	}
+	return *chat.TmuxSessionName
+}
+
+// paneIsLive reports whether a named tmux pane exists right now. A pane that is
+// gone can hold no baked token, so every reader below stops here rather than
+// attributing anything to it.
+func (l *Lifecycle) paneIsLive(ctx context.Context, tmuxName string) bool {
+	return tmuxName != "" && l.tmux != nil && l.tmux.HasSession(ctx, tmuxName)
+}
+
+// paneBakedProxyURL returns the failover-proxy URL baked into a live pane's tmux
+// session environment, and whether it has one at all. An unset variable and an
+// empty one are the same answer: nothing to parse.
+//
+// It deliberately does NOT interpret the value. The two readers want different
+// things from it — the adoption sweep needs the strict canonical parse
+// (parseBakedProxyToken), the stale-port sweep the deliberately tolerant one
+// (stalePaneProxyPort) — and collapsing that difference is what this helper must
+// not do.
+func (l *Lifecycle) paneBakedProxyURL(ctx context.Context, tmuxName string) (string, bool) {
+	if l.tmux == nil {
+		return "", false
+	}
+	baked, ok := l.tmux.ShowEnv(ctx, tmuxName, anthropicBaseURLEnv)
+	if !ok || baked == "" {
+		return "", false
+	}
+	return baked, true
 }
 
 // parseBakedProxyToken extracts the failover-proxy path token from a surviving
@@ -63,15 +112,24 @@ func parseBakedProxyToken(bakedURL string, livePort int) (string, bool) {
 		return "", false
 	}
 	token := strings.TrimPrefix(u.Path, prefix)
-	if !isCanonicalProxyToken(token) {
+	if !IsCanonicalProxyToken(token) {
 		return "", false
 	}
 	return token, true
 }
 
-// isCanonicalProxyToken reports whether token is exactly 64 lowercase hex chars
+// IsCanonicalProxyToken reports whether token is exactly 64 lowercase hex chars
 // — the shape mintProxyToken emits (32 random bytes, hex-encoded).
-func isCanonicalProxyToken(token string) bool {
+//
+// This is the SINGLE definition of that shape. The failover proxy uses it as a
+// cheap pre-gate on its unknown-token branch (BOS-982), which is attacker
+// reachable: an arbitrary garbage token costs this loop and nothing more — no
+// durable read, no tmux exec. It is not a security boundary there either; the
+// real check is the byte-exact constant-time comparison against the pane's own
+// baked URL in RepairProxyPane. Keeping one definition is what stops the
+// adoption sweep and that pre-gate from drifting into disagreeing about which
+// tokens are ours.
+func IsCanonicalProxyToken(token string) bool {
 	if len(token) != 64 {
 		return false
 	}
@@ -123,12 +181,29 @@ func (l *Lifecycle) resolveDefaultAccountID(ctx context.Context, agentName strin
 // rest.
 //
 // It mirrors detectStalePaneProxyPorts' iteration and per-row failure semantics:
-// a ListWithTmuxSession error aborts the whole sweep with one Warn; a single bad
-// row (session load miss, dead pane, non-canonical URL) is skipped without
-// blocking the rest. The sweep is inert when the proxy is off/unbound, when no
-// registrar is wired, or when there are no chats. For each live Claude pane it
-// mirrors the spawn's account-shape discriminator exactly so the adopted token's
-// target matches what the original spawn registered.
+// a list error aborts the whole sweep with one Warn; a single bad row (session
+// load miss, dead pane, non-canonical URL) is skipped without blocking the rest.
+// The sweep is inert when the proxy is off/unbound, when no registrar is wired,
+// or when there are no chats. For each live Claude pane it mirrors the spawn's
+// account-shape discriminator exactly so the adopted token's target matches what
+// the original spawn registered.
+//
+// SINCE BOS-979 THIS IS A FALLBACK, NOT THE PRIMARY RECOVERY PATH. Bootstrap
+// rebuilds the registry from durable rows first (rebuildProxyTokenRegistry), and
+// a persisted row is authoritative because the daemon that minted the token
+// wrote it. What is left for this sweep is exactly one population: panes spawned
+// BEFORE the proxy_tokens table existed, which therefore have no row and can
+// only be recovered by reading the token back out of tmux env. Every such pane
+// dies with its daemon generation, so once no pre-migration pane can still be
+// running — one full restart cycle past the BOS-979 release — this whole file
+// and its registrar Adopt* entry points can be deleted. Tracked as the BOS-979
+// follow-up "retire the tmux-env pane adoption sweep".
+//
+// FAILURE VISIBILITY: every early `continue` below increments a named counter,
+// and the terminal log line emits the whole tally even when nothing was adopted.
+// Six of these branches used to be silent, which made "there was nothing to
+// adopt" and "the sweep could not evaluate a single row" produce byte-identical
+// output — the exact ambiguity that made the original incident hard to read.
 func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 	if l.agentChats == nil || l.proxyRegistrar == nil {
 		return
@@ -136,18 +211,28 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 	if !l.failoverProxyEnabled() || l.proxyPort == 0 {
 		return
 	}
-	chats, err := l.agentChats.ListWithTmuxSession(ctx)
+	// ListRoutableChats rather than ListWithTmuxSession: the latter filters out
+	// every chat whose tmux_session_name is NULL, so the tmux.ChatSessionName
+	// fallback below — written to recover exactly those rows — could never run.
+	// A tmux chat whose name was never persisted (or was cleared) still has a
+	// live pane holding a baked token, and that pane is precisely the one this
+	// sweep exists for. The wider predicate also admits headless runs, which are
+	// bounded and fall out cheaply at the has-session check.
+	chats, err := l.agentChats.ListRoutableChats(ctx)
 	if err != nil {
-		l.logger.Warn().Err(err).Msg("bootstrap adopt-proxy sweep: failed to list chats with tmux session")
+		l.logger.Warn().Err(err).Msg("bootstrap adopt-proxy sweep: failed to list routable chats")
 		return
 	}
 	adopted := 0
+	skips := adoptSweepSkips{}
 	for _, chat := range chats {
 		if chat == nil || chat.AgentSessionID == "" {
+			skips.malformedRow++
 			continue
 		}
 		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
 		if proxyAgentName(chat.AgentName) != string(models.AccountProviderClaude) {
+			skips.notClaude++
 			continue
 		}
 		// The session is always needed here (unlike the stale-port sweep) because
@@ -158,25 +243,27 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 				Str("agent_session", chat.AgentSessionID).
 				Str("session", chat.SessionID).
 				Msg("bootstrap adopt-proxy sweep: failed to load session; skipping")
+			skips.sessionLoadFailed++
 			continue
 		}
 
-		tmuxName := ""
-		if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
-			tmuxName = *chat.TmuxSessionName
-		} else {
+		tmuxName := persistedChatPaneName(chat)
+		if tmuxName == "" {
 			tmuxName = tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 		}
-		if tmuxName == "" || l.tmux == nil || !l.tmux.HasSession(ctx, tmuxName) {
+		if !l.paneIsLive(ctx, tmuxName) {
+			skips.noLivePane++
 			continue
 		}
-		baked, ok := l.tmux.ShowEnv(ctx, tmuxName, "ANTHROPIC_BASE_URL")
-		if !ok || baked == "" {
+		baked, ok := l.paneBakedProxyURL(ctx, tmuxName)
+		if !ok {
+			skips.noBakedURL++
 			continue
 		}
 		token, ok := parseBakedProxyToken(baked, l.proxyPort)
 		if !ok {
 			// Port mismatch or non-canonical URL: left to detectStalePaneProxyPorts.
+			skips.uncanonicalURL++
 			continue
 		}
 
@@ -200,6 +287,7 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 		if accountID == "" {
 			// A genuinely unmanaged pane never received a proxy URL, so there is
 			// nothing to adopt.
+			skips.noAccount++
 			continue
 		}
 
@@ -213,8 +301,55 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 		}
 		adopted++
 	}
-	if adopted > 0 {
-		l.logger.Info().Int("adopted", adopted).
-			Msg("failover proxy: re-adopted surviving tmux pane proxy tokens after daemon restart")
+	// Emitted unconditionally, unlike the old `adopted > 0` guard: a sweep that
+	// adopted nothing is the interesting case, and the tally is what separates
+	// "no pane needed adopting" from "every row was skipped before it could be
+	// evaluated". Held to Debug when there was nothing at all to look at, so a
+	// daemon with no chats does not add a line to every start.
+	ev := l.logger.Info()
+	if adopted == 0 && skips.total() == 0 {
+		ev = l.logger.Debug()
 	}
+	skips.attach(ev.Int("adopted", adopted).Int("rows", len(chats))).
+		Msg("failover proxy: surviving-pane token adoption sweep complete (fallback path; the durable registry rebuild runs first)")
+}
+
+// adoptSweepSkips tallies why the sweep passed over a row. Counters only — no
+// token, account id, or session id — so the whole tally is safe to log verbatim.
+type adoptSweepSkips struct {
+	// malformedRow: a nil row or one with no agent_session_id.
+	malformedRow int
+	// notClaude: a non-Claude agent, which never receives a proxy URL.
+	notClaude int
+	// sessionLoadFailed: the owning session could not be read, so the token
+	// shape could not be decided. The only branch that ALSO logs per row.
+	sessionLoadFailed int
+	// noLivePane: no resolvable tmux name, no tmux client, or the pane is gone.
+	noLivePane int
+	// noBakedURL: a live pane with no ANTHROPIC_BASE_URL in its env.
+	noBakedURL int
+	// uncanonicalURL: a baked URL that is not this daemon's exact bake — a stale
+	// port, or a shape that failed the byte-for-byte contract.
+	uncanonicalURL int
+	// noAccount: no account could be resolved, so the pane was never managed.
+	noAccount int
+}
+
+func (s adoptSweepSkips) total() int {
+	return s.malformedRow + s.notClaude + s.sessionLoadFailed + s.noLivePane +
+		s.noBakedURL + s.uncanonicalURL + s.noAccount
+}
+
+// attach folds the tally onto a log event. Every reason is emitted, including
+// zeros, so an operator diffing two boot logs sees a counter move rather than a
+// field appear.
+func (s adoptSweepSkips) attach(ev *zerolog.Event) *zerolog.Event {
+	return ev.
+		Int("skip_malformed_row", s.malformedRow).
+		Int("skip_not_claude", s.notClaude).
+		Int("skip_session_load_failed", s.sessionLoadFailed).
+		Int("skip_no_live_pane", s.noLivePane).
+		Int("skip_no_baked_url", s.noBakedURL).
+		Int("skip_uncanonical_url", s.uncanonicalURL).
+		Int("skip_no_account", s.noAccount)
 }

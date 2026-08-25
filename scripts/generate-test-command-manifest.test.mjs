@@ -65,3 +65,18 @@ test('manifest omits the volatile Go test-file count column', () => {
   assert.match(manifest, /\| Module\s+\| Target\s+\|/)
   assert.doesNotMatch(manifest, /\| `services\/bosso` \| `make test-bosso` \| \d+ \|/)
 })
+
+test('manifest states where -race runs and points at the budget ratchet', () => {
+  const manifest = renderManifest({
+    rootTargets: ['test-smoke'],
+    modules: [{ path: 'services/bossd', target: 'test-bossd' }],
+  })
+
+  // The prose is the only place the three-tier race policy is written down for
+  // agents; losing it silently is exactly the failure this asserts against.
+  assert.match(manifest, /### Where `-race` actually runs \(BOS-1022\)/)
+  assert.match(manifest, /`bazel-linux-smoke\.yml`/)
+  assert.match(manifest, /`make check-race-budget`/)
+  assert.match(manifest, /summed, never maxed/)
+  assert.match(manifest, /`services\/bossd\/internal\/dbtest`/)
+})

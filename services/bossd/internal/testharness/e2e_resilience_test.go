@@ -248,7 +248,11 @@ func TestE2E_Resilience_ConcurrentArchiveAndResurrect(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = h.Client.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sessionID}))
+		// Drain, do not just open: ResurrectSession is server-streaming
+		// (BOS-984). Returning on the client call alone would end this goroutine
+		// before the resurrect had run — the race would stop racing, and the
+		// handler would still be writing to the test DB after the test ended.
+		_, _ = drainResurrectStream(ctx, h.Client, sessionID)
 	}()
 	go func() {
 		defer wg.Done()

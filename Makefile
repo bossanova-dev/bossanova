@@ -9,7 +9,7 @@
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
-	lint-proto-breaking post-rebase-check \
+	lint-proto-breaking post-rebase-check check-race-budget \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -985,6 +985,30 @@ proof-tui-prebuild:
 
 test-scripts:
 	$(MAKE) -C scripts test
+
+## check-race-budget: score the per-package `-race` wall-clock budgets in
+## scripts/race-budgets.json (BOS-1022's ratchet against per-test migration
+## replay creeping back).
+##
+## CI runs this on the RELEASE tier only, inside bazel-linux-smoke.yml's race leg,
+## where a full race pass is already paid for. This target exists so the same gate
+## is reproducible locally when a budget needs re-measuring — it is deliberately
+## NOT wired into `make lint` or `make test`, which are the fast affected loop.
+##
+## Durations come from the Build Event Protocol stream, not from JUnit test.xml:
+## rules_go writes an empty <testsuites></testsuites> for a PASSING target, so a
+## test.xml-based gate can never score a green run. --nocache_test_results is what
+## makes the numbers this run's own; the checker refuses any shard the BEP reports
+## as cache-served, so a cached pass fails loudly instead of reading as fast.
+check-race-budget:
+	@targets="$$(node -e 'process.stdout.write(require("./scripts/race-budgets.json").targets.map(t=>t.label).join(" "))')"; \
+	bep="$$(mktemp -t race-budget-bep)"; \
+	trap 'rm -f "$$bep"' EXIT; \
+	bazel test --config=race $$targets \
+		--nocache_test_results \
+		--build_event_json_file="$$bep" \
+		--test_output=errors || exit $$?; \
+	node scripts/check-race-budget.mjs --bep "$$bep"
 
 lint-docs:
 	$(MAKE) -C services/docs lint

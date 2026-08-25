@@ -129,11 +129,27 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 	}, nil
 }
 
+// ResolveInteractiveSessionID models a provider that has already written its
+// session row by the time the pane is up — the normal case.
+//
+// The default used to be an empty (not-found) response, which is the
+// pathological case: persistFreshProviderSessionID polls every 100ms until
+// freshProviderSessionIDResolveDeadline (2s), so every StartTmuxChat /
+// StartSession / SwitchAccount test paid the full deadline synchronously. That
+// was 69.9s of this package's 99.6s. Tests that want the not-found or
+// resolves-late paths set ResolveInteractiveSessionIDFunc explicitly; see
+// TestStartTmuxChat_FreshLaunchRetriesProviderSessionIDResolution.
+//
+// The returned id must differ from the requested one, or the production loop
+// treats it as "not the provider's own id yet" and keeps polling.
 func (f *fakeAgentForLifecycle) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	if f.ResolveInteractiveSessionIDFunc != nil {
 		return f.ResolveInteractiveSessionIDFunc(req)
 	}
-	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:     true,
+		SessionId: "provider-" + req.GetRequestedSessionId(),
+	}, nil
 }
 
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {

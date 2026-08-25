@@ -368,6 +368,10 @@ type AgentChatStore interface {
 	// DeleteByAgentSessionID: the row is preserved so the chat list
 	// can surface the failed attempt.
 	MarkStartFailed(ctx context.Context, agentSessionID, reason string) error
+	// DeleteByAgentSessionID removes the chat and, in the same
+	// transaction, the durable proxy-token row that resolved to it
+	// (BOS-979). That row cannot cascade — agent_chats.agent_session_id
+	// is not UNIQUE, so it cannot be a foreign-key parent.
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
 	// ListRoutableChats returns chats the daemon can route to for the
@@ -758,4 +762,39 @@ type NoteStore interface {
 	// Delete removes a note and (by cascade) its tag rows. It is idempotent:
 	// deleting an absent id is a nil no-op.
 	Delete(ctx context.Context, id string) error
+}
+
+// ProxyTokenStore persists the failover proxy's path-token registry (BOS-979)
+// so a token baked into a live tmux pane still resolves after the daemon that
+// minted it restarts. A pane's ANTHROPIC_BASE_URL is frozen at spawn and can
+// never be reissued, so the daemon's own record of the token is what has to be
+// durable.
+//
+// Rows are keyed by hex(sha256(token)). The raw token never reaches this store.
+type ProxyTokenStore interface {
+	// Upsert writes a registration through, updating an existing row for the
+	// same token hash rather than inserting a second one. Callers write through
+	// on every registry mutation, including the target refresh that rewrites a
+	// live chat token's fallback account.
+	Upsert(ctx context.Context, rec ProxyTokenRecord) error
+	// List returns every registration, for the boot-time rebuild.
+	List(ctx context.Context) ([]ProxyTokenRecord, error)
+	// GetByTokenHash returns the single registration a token digest resolves
+	// to, or (nil, nil) when no row holds that digest. This is the primary-key
+	// read the proxy's unknown-token path uses to recover a rejected pane's
+	// identity (BOS-982); List would be an unbounded scan on an
+	// attacker-reachable branch.
+	GetByTokenHash(ctx context.Context, tokenSHA256 string) (*ProxyTokenRecord, error)
+	// DeleteBySessionID removes a session's own token and all of its chats'
+	// tokens. Idempotent.
+	DeleteBySessionID(ctx context.Context, sessionID string) error
+	// DeleteByAgentSessionID removes one chat's token. Required because
+	// agent_chats.agent_session_id is not unique, so no cascade can cover the
+	// chat-only delete path. Idempotent.
+	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
+	// DeleteOlderThan drops every row created before cutoff and reports how many
+	// went away. This is what bounds the table: no other delete path runs for a
+	// merely idle or archived session, so the boot-time rebuild prunes by age
+	// before it reads.
+	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }

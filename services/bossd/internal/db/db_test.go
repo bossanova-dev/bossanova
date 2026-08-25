@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,8 +12,8 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // migrationsDir returns the absolute path to the bossd migrations directory.
@@ -23,18 +22,15 @@ func migrationsDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
 }
 
-// setupTestDB creates an in-memory SQLite database with migrations applied.
+// setupTestDB creates an in-memory SQLite database carrying bossd's schema.
+//
+// The schema is built once per test binary rather than by replaying the
+// migrations here, which is what keeps this package's -race wall clock
+// reasonable; see internal/dbtest. Tests whose subject is the migrations
+// themselves want dbtest.NewMigrated instead.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := OpenInMemory()
-	if err != nil {
-		t.Fatalf("open in-memory db: %v", err)
-	}
-	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return dbtest.New(t)
 }
 
 // createTestRepo creates a repo for testing and returns it.
@@ -1313,9 +1309,7 @@ func TestRepoStore_ConcurrentCreateRejectsDuplicateCanonicalOrigin(t *testing.T)
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
+	dbtest.Apply(t, db)
 	store := NewRepoStore(db)
 
 	const workers = 8

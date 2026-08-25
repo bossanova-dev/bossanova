@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // preMigrationVersion is the goose timestamp of the migration immediately
@@ -323,7 +323,7 @@ func seedLegacyRows(t *testing.T) *sql.DB {
 		t.Fatalf("open in-memory db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate.RunUpTo(db, os.DirFS(migrationsDir()), preMigrationVersion); err != nil {
+	if err := dbtest.RunUpTo(db, os.DirFS(migrationsDir()), preMigrationVersion); err != nil {
 		t.Fatalf("migrate up to %d: %v", preMigrationVersion, err)
 	}
 
@@ -373,7 +373,7 @@ func seedLegacyRows(t *testing.T) *sql.DB {
 // fresh-DB round-trip tests (empty tables at migrate time) do not.
 func TestSchemaNamingMigrationConvertsLegacyData(t *testing.T) {
 	db := seedLegacyRows(t)
-	if err := migrate.RunUpTo(db, os.DirFS(migrationsDir()), schemaNamingVersion); err != nil {
+	if err := dbtest.RunUpTo(db, os.DirFS(migrationsDir()), schemaNamingVersion); err != nil {
 		t.Fatalf("apply schema-naming migration: %v", err)
 	}
 
@@ -454,10 +454,10 @@ func TestSchemaNamingMigrationConvertsLegacyData(t *testing.T) {
 // preserved. Without this, the entire Down block is never executed by any test.
 func TestSchemaNamingMigrationDownReverses(t *testing.T) {
 	db := seedLegacyRows(t)
-	if err := migrate.RunUpTo(db, os.DirFS(migrationsDir()), schemaNamingVersion); err != nil {
+	if err := dbtest.RunUpTo(db, os.DirFS(migrationsDir()), schemaNamingVersion); err != nil {
 		t.Fatalf("apply schema-naming migration: %v", err)
 	}
-	if err := migrate.RunDownTo(db, os.DirFS(migrationsDir()), preMigrationVersion); err != nil {
+	if err := dbtest.RunDownTo(db, os.DirFS(migrationsDir()), preMigrationVersion); err != nil {
 		t.Fatalf("roll back schema-naming migration: %v", err)
 	}
 

@@ -84,6 +84,7 @@ func (s *serverStubRegistrar) TokenForChat(sessionID, agentSessionID, fallbackAc
 }
 func (s *serverStubRegistrar) AdoptToken(string, string)                        {}
 func (s *serverStubRegistrar) AdoptTokenForChat(string, string, string, string) {}
+func (s *serverStubRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
 
 // TestResolveAccountEnv_BoundVsAccountZero proves the Fix #1 attach-path account
 // env resolution: a bound session materializes its account's spawn env, while an

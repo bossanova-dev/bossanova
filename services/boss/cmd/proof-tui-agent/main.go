@@ -113,6 +113,9 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	if len(w.CreateSessionScript) > 0 {
 		d.SetCreateSessionScript(w.CreateSessionScript, w.CreateSessionFrameDelay)
 	}
+	if len(w.ResurrectSetupLines) > 0 || w.ResurrectSetupError != "" {
+		d.SetResurrectScript(w.ResurrectSetupLines, w.ResurrectFrameDelay, w.ResurrectSetupError)
+	}
 	// ListAgents answers empty unless a world seeds it, and boss's agent
 	// preflight intersects that inventory with settings.Plugins — so a preset
 	// that needs a startup agent check to actually run has to fill both sides.

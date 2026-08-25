@@ -648,6 +648,63 @@ func TestSwitchAccount_DisabledTargetRefused(t *testing.T) {
 	if h.findCall("kill-session") != nil {
 		t.Error("disabled refusal must not kill the pane")
 	}
+	// BOS-981: the refusal is additionally tagged as never having reached the pane, so
+	// the automatic respawn path can refund its cap charge...
+	if !errors.Is(err, ErrSwitchNotAttempted) {
+		t.Errorf("err = %v, want it to also be ErrSwitchNotAttempted", err)
+	}
+	// ...without changing what an operator sees: the tag must not alter the message.
+	if want := "target account is disabled: account \"Off\" is disabled"; err.Error() != want {
+		t.Errorf("err.Error() = %q, want %q (the not-attempted tag must be invisible)", err.Error(), want)
+	}
+}
+
+// TestSwitchAccount_RespawnSameAccountStillRefusesDisabledAccount pins the BOS-981
+// security-adjacent boundary: RespawnSameAccount bypasses the idempotent no-op
+// short-circuit, and BOS-981 teaches the rotator to treat its refusal as free — but it
+// must NOT become a way to run work on a disabled account. A same-account respawn onto
+// a disabled account is still refused, before the pane is touched.
+func TestSwitchAccount_RespawnSameAccountStillRefusesDisabledAccount(t *testing.T) {
+	h := newSwitchHarness(t)
+	bound := "acct-2"
+	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "claude", Label: "Off", Status: AccountDisabled,
+	}}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+		Auto: true, RespawnSameAccount: true,
+	})
+	if !errors.Is(err, ErrAccountDisabled) {
+		t.Fatalf("err = %v, want ErrAccountDisabled (RespawnSameAccount must not bypass the eligibility gate)", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Error("a refused respawn must not kill the pane")
+	}
+	if !errors.Is(err, ErrSwitchNotAttempted) {
+		t.Errorf("err = %v, want it to also be ErrSwitchNotAttempted", err)
+	}
+}
+
+// TestSwitchAccount_ForceDoesNotBypassDisabledAccount pins the other half of the same
+// boundary: --force only overrides the mid-turn guard, never account eligibility.
+func TestSwitchAccount_ForceDoesNotBypassDisabledAccount(t *testing.T) {
+	h := newSwitchHarness(t)
+	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
+		ID: "acct-2", Provider: "claude", Label: "Off", Status: AccountDisabled,
+	}}
+
+	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
+		Force: true, RespawnSameAccount: true,
+	})
+	if !errors.Is(err, ErrAccountDisabled) {
+		t.Fatalf("err = %v, want ErrAccountDisabled (force must not bypass the eligibility gate)", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Error("a refused switch must not kill the pane")
+	}
 }
 
 // TestSwitchAccount_FailedHealthTargetRefused: a target whose last health check

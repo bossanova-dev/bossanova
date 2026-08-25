@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // notesVersion is the goose timestamp of the BOS-550 migration.
@@ -194,8 +194,8 @@ func TestNotesMigrationNoSessionForeignKey(t *testing.T) {
 // TestNotesMigrationDown asserts the Down step removes both tables (and with
 // them their indexes) so the migration is reversible.
 func TestNotesMigrationDown(t *testing.T) {
-	db := setupTestDB(t)
-	if err := migrate.RunDownTo(db, os.DirFS(migrationsDir()), preNotesVersion); err != nil {
+	db := dbtest.NewMigrated(t)
+	if err := dbtest.RunDownTo(db, os.DirFS(migrationsDir()), preNotesVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	if cols := tableColumns(t, db, "notes"); len(cols) != 0 {

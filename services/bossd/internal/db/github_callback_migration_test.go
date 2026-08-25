@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // githubCallbacksVersion is the goose timestamp of the BOS-467 migration.
@@ -73,8 +73,8 @@ func TestGithubCallbacksMigrationSchema(t *testing.T) {
 // TestGithubCallbacksMigrationDown asserts the Down step removes the table so the
 // migration is reversible.
 func TestGithubCallbacksMigrationDown(t *testing.T) {
-	db := setupTestDB(t)
-	if err := migrate.RunDownTo(db, os.DirFS(migrationsDir()), preGithubCallbacksVersion); err != nil {
+	db := dbtest.NewMigrated(t)
+	if err := dbtest.RunDownTo(db, os.DirFS(migrationsDir()), preGithubCallbacksVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	cols := tableColumns(t, db, "github_callbacks")

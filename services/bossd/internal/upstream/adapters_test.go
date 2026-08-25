@@ -77,9 +77,16 @@ func (f *fakeSessionCommandServer) CloseSession(_ context.Context, req *connect.
 	return connect.NewResponse(&pb.CloseSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
 }
 
-func (f *fakeSessionCommandServer) ResurrectSession(_ context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
-	f.lastResurrectID = req.Msg.GetId()
-	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+func (f *fakeSessionCommandServer) StreamResurrectSession(_ context.Context, msg *pb.ResurrectSessionRequest, emit func(*pb.ResurrectSessionResponse) error) error {
+	f.lastResurrectID = msg.GetId()
+	if err := emit(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SetupOutput{
+		SetupOutput: &pb.SetupScriptOutput{Text: "installing deps"},
+	}}); err != nil {
+		return err
+	}
+	return emit(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SessionResurrected{
+		SessionResurrected: &pb.SessionResurrected{Session: &pb.Session{Id: msg.GetId()}},
+	}})
 }
 
 func (f *fakeSessionCommandServer) RemoveSession(_ context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
@@ -533,8 +540,8 @@ func (e *errCommandServer) CloseSession(context.Context, *connect.Request[pb.Clo
 	return nil, e.err
 }
 
-func (e *errCommandServer) ResurrectSession(context.Context, *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
-	return nil, e.err
+func (e *errCommandServer) StreamResurrectSession(context.Context, *pb.ResurrectSessionRequest, func(*pb.ResurrectSessionResponse) error) error {
+	return e.err
 }
 
 func (e *errCommandServer) RemoveSession(context.Context, *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {

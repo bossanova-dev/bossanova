@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 func TestAccountStore_CreateGetDefaults(t *testing.T) {
@@ -301,7 +301,9 @@ func TestAccountStore_Delete(t *testing.T) {
 // setupTestDB and that re-running the migration set is a no-op (goose version
 // tracking), after which the table is still writable.
 func TestAccountsMigrationIdempotent(t *testing.T) {
-	db := setupTestDB(t)
+	// A real replay, not the shared fixture: idempotency of the migrations is
+	// this test's subject, so it must not start from their captured output.
+	db := dbtest.NewMigrated(t)
 	ctx := context.Background()
 
 	var count int
@@ -310,7 +312,7 @@ func TestAccountsMigrationIdempotent(t *testing.T) {
 	}
 
 	// Re-run migrations; goose version tracking makes this a no-op.
-	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
+	if err := dbtest.Run(db, os.DirFS(migrationsDir())); err != nil {
 		t.Fatalf("second migration run should be a no-op: %v", err)
 	}
 

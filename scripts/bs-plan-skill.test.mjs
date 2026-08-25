@@ -2460,7 +2460,8 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // the operation-map/signature notes that must run before any drafting reference is opened.
   // BOS-926 re-baselines 103902 -> 104003 (+101 B): the sibling-class enumeration rule is resident
   // as well as in the headless brief, with Phase 3 prose kept under the pre-split baseline.
-  const RATCHET = 104003 // exact measured resident body, re-measured 2026-08-23 (BOS-926 rebase)
+  // BOS-1024 banks 104003 -> 104002 (-1 B): the await-helper citation was folded into existing prose.
+  const RATCHET = 104002 // exact measured resident body, re-measured 2026-08-25 (BOS-1024)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',

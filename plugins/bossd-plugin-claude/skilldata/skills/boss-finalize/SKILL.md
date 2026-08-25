@@ -34,7 +34,8 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 The orchestrator does not run Steps 1–8 inline on its own context. Instead it dispatches the
 **entire finalize workflow** (Steps 1–8 below) to **one fresh subagent** (`Agent`/`Task` tool,
-`subagent_type: general-purpose`, `model: "sonnet"`) and **awaits** it — **never** `run_in_background`.
+`subagent_type: general-purpose`, `model: "sonnet"`) and **awaits** it — **never** `run_in_background`;
+use `$BOSS_FINALIZE_TOOLBOX/bs-dispatch-await.mjs` (`toolbox/bs-dispatch-await.mjs`) for completion classification.
 
 <!-- tier: sonnet because the finalize workflow is mechanical on its happy path — base-freshness/
      branch-inference bash, `[#PR-NUM]` stamping (script-produced by add-pr-numbers.sh), conflict-free

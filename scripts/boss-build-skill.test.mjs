@@ -4,7 +4,7 @@ import { after, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import fs from 'node:fs'
 import os from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 
 import { precedes, region, regionUntilNext } from './gate-region-lib.mjs'
 // BOS-964 anti-drift join: the `provisional` payload marker is written as a hand-authored
@@ -486,8 +486,22 @@ test('the resident body is pinned at its exact post-extraction size (BOS-674)', 
   // substantive rule lives in callback-watches.md.
   // BOS-905 banks 80753 -> 80719 (-34 B) while adding the Step 5 dispatch-budget and contract
   // obligations; the resident growth was paid for by trimming stale resident proof/model prose.
-  const RATCHET = 80719 // exact measured resident body, re-measured 2026-08-23 (BOS-905)
-  // Headroom to the pre-extraction baseline is 98 bytes (80817 - 80719) — read that as the real
+  // BOS-1020 re-baselines 80719 -> 80796 (+77 B) to carry `BASE_REF` / `BASE_REMOTE` /
+  // `BASE_BRANCH` into the Step 6 review-stack dispatch. Resident by necessity: the dispatch list
+  // IS the handoff, and a variable the orchestrator never names cannot be re-derived downstream
+  // without guessing which branch the work is for. Everything else the round-boundary base-drift
+  // check needed — the check itself, its act-on-hit rebase rule, the `REVIEW_BASE` re-bind, the
+  // oscillation-guard degradation and the BLOCKED-route publication, ~5 KB — went into the
+  // unratcheted references/review-stack.md and references/code-reviewer-template.md.
+  // BOS-1020 must-fix follow-up re-baselines 80796 -> 80812 (+16 B) for `the drift note` in Step
+  // 6's closed RETURNS list. Resident by necessity and paid for at the cheapest possible width: the
+  // check runs INSIDE the dispatched review-stack subagent while `## Autonomous decisions` is the
+  // ORCHESTRATOR's section, so a note absent from this list never reaches the PR body on the clean
+  // route at all. Only the three-word pointer is resident; the reason it must come back, and the
+  // note's own contents, live in the unratcheted references/review-stack.md return contract.
+  // `PRE_EXTRACTION_BASELINE` is again NOT raised — 5 bytes of live headroom remain.
+  const RATCHET = 80812 // exact measured resident body, re-measured 2026-08-25 (BOS-1020 follow-up)
+  // Headroom to the pre-extraction baseline is 5 bytes (80817 - 80812, exclusive) — read that as the real
   // budget before writing ANY resident prose, because this assertion is the only thing standing
   // between the extraction's ~11.8 KB and it being quietly re-spent. When it reds upward, the fix
   // is a trim somewhere in an 80 KB body, not in whatever file you were editing; the cheap move is
@@ -2186,6 +2200,49 @@ test('Step 8 injects the [#PR] tag before the boss-repair green gate (BOS-181)',
   // The daemon-race guard is preserved on the (now-earlier) push.
   assert.match(step8, /--force-with-lease/)
   assert.match(step8, /HEAD == @\{u\}/)
+})
+
+test('BOS-1021: Step 8 documents the portable test-gate cache contract', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const step8 = region(finalizeAndStop(dir), '## Step 8:', '## Step 9:')
+    const cache = region(
+      step8,
+      '### Test gate cache contract',
+      '**Inject the PR-number tag',
+      `${dir}/${FINALIZE_REF}`,
+    )
+    assert.match(
+      cache,
+      /whole\s+working-tree\s+content\s+hash[\s\S]{0,120}fully\s+resolved\s+command[\s\S]{0,120}merge-base\s+commit/,
+      `${dir}: gate cache key must include tree content, command and merge-base`,
+    )
+    assert.match(
+      cache,
+      /repo-declared\s+variables\s+that\s+change\s+the\s+selected\s+runner\s+or\s+arguments/,
+      `${dir}: gate cache key must include expansion-affecting variables without naming repo-specific ones`,
+    )
+    assert.match(
+      cache,
+      /hit\s+skips\s+the\s+gate[\s\S]{0,80}`cached`[\s\S]{0,80}12-character\s+tree\s+hash/,
+      `${dir}: cache hits must be reported with the tree hash`,
+    )
+    assert.match(
+      cache,
+      /record\s+a\s+stamp\s+only\s+after\s+a\s+zero-exit\s+result/,
+      `${dir}: only successful gates may be stamped`,
+    )
+    assert.match(cache, /cache\s+is\s+opt-in\s+per\s+gate/, `${dir}: gate cache must remain opt-in`)
+    assert.match(
+      cache,
+      /adds\s+or\s+renames\s+a\s+file[\s\S]{0,160}`commands\.testUncached`/,
+      `${dir}: added or renamed inputs must route through the configured uncached command`,
+    )
+    assert.doesNotMatch(
+      cache,
+      /--nocache_test_results|make\s+test|BOS-\d+/,
+      `${dir}: published gate prose must not name repo-specific runner flags, make targets, or tickets`,
+    )
+  }
 })
 
 test('Step 9 re-injects the tag only via an idempotent guard (BOS-181)', () => {
@@ -10377,6 +10434,814 @@ test('BOS-964: an allowance that declines work must disclose both numbers', () =
       step6c,
       /do\s+not\s+re-file\s+it\s+as\s+a\s+budget\s+bug\s+or\s+re-price\s+the\s*\n?\s*formula/i,
       `${dir}: re-pricing the tier formula must be named as out of scope for this reading`,
+    )
+  }
+})
+
+// BOS-1020: `REVIEW_BASE` and the base ref behind it were resolved once, in Preflight, and the
+// Step 6 loop can then run for hours. Anything landing on the base branch meanwhile was invisible:
+// a semantically overlapping change that merges textually clean produced no red signal anywhere,
+// and surfaced only as `mergeStateStatus: DIRTY` after the final push — after every finding,
+// disposition and clean verdict had already been computed against a base that no longer existed.
+// These gates hold the round-boundary re-check, its act-on-hit rebase, and the fail-closed reading
+// of `unevaluated` in place across both mirrors.
+const readTemplate = (dir) =>
+  fs.readFileSync(path.join(rootDir, dir, 'references/code-reviewer-template.md'), 'utf8')
+
+const baseDriftSection = (dir) =>
+  region(
+    readReviewStack(dir),
+    '### Base-drift check (every round boundary)',
+    '### Mechanical remediation',
+    `${dir}/references/review-stack.md base-drift section`,
+  )
+
+test('BOS-1020: Step 6 dispatch carries the base identity by name (both mirrors)', () => {
+  for (const mirror of Object.keys(RESIDENT_BODIES)) {
+    const body = readSkill(RESIDENT_BODIES[mirror])
+    const dispatch = region(
+      body,
+      '**Dispatch the review stack.**',
+      '`REMAINING_MINUTES` is whole minutes',
+      `${RESIDENT_BODIES[mirror]} Step 6 review-stack dispatch`,
+    )
+    // Exactly these three names. The reference's check refuses to re-derive a base it was not
+    // given, so a dispatch that renames or omits one silently disables the check rather than
+    // degrading it — and re-deriving is a guess about which branch the work is even for.
+    assert.match(
+      dispatch,
+      /`BASE_REF`\s+\/\s+`BASE_REMOTE`\s+\/\s+`BASE_BRANCH`/,
+      `${RESIDENT_BODIES[mirror]}: the review-stack dispatch must pass BASE_REF / BASE_REMOTE / BASE_BRANCH`,
+    )
+    assert.match(
+      dispatch,
+      /round-boundary\s+drift\s+check/i,
+      `${RESIDENT_BODIES[mirror]}: the dispatch must say what the base identity is passed for`,
+    )
+  }
+})
+
+test('BOS-1020: the review loop re-checks base drift at every round boundary (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = readReviewStack(dir)
+    const loop = region(
+      reviewStack,
+      '## Step 6: Whole-branch review loop',
+      '### Base-drift check (every round boundary)',
+      `${dir}/references/review-stack.md Step 6 loop`,
+    )
+    // A step 0, so it is the round's first act and not something bolted after the reviewer.
+    assert.match(
+      loop,
+      /^0\.\s+\*\*Base-drift\s+check\s+\(round\s+boundary\)\.\*\*/m,
+      `${dir}/references/review-stack.md: the loop must open each round with a base-drift check`,
+    )
+    // Ordering is the whole point: a rebase later in the round leaves REVIEW_LEG_SECONDS and
+    // FIX_LEG_SECONDS measured against a tree that no longer exists.
+    precedes(
+      loop,
+      '0. **Base-drift check (round boundary).**',
+      '1. **Independent review (awaited, read-only).**',
+      `${dir}/references/review-stack.md: the drift check must precede the round's reviewer`,
+    )
+    const section = baseDriftSection(dir)
+    assert.match(
+      section,
+      /Run\s+it\s+\*\*before\*\*\s*\n?\s*`REVIEW_LEG_SECONDS`\s*\/\s*`FIX_LEG_SECONDS`\s+are\s+derived/,
+      `${dir}/references/review-stack.md: the check must be ordered ahead of the leg-clamp derivation`,
+    )
+    // It must actually invoke the installed detector, not describe one.
+    assert.match(
+      section,
+      /node\s+"\$BOSS_BUILD_TOOLBOX\/base-drift\.mjs"\s+check/,
+      `${dir}/references/review-stack.md: the check must call the vendored base-drift detector`,
+    )
+    // Missing base identity is a recorded degradation, never a silent pass and never a re-derive.
+    assert.match(
+      section,
+      /never\s+re-derive\s+it/i,
+      `${dir}/references/review-stack.md: a missing base identity must not be re-derived`,
+    )
+    assert.match(
+      section,
+      /skip\s+the\s+check\s+and\s+record\s+which\s+one\s+was\s*\n?\s*missing/i,
+      `${dir}/references/review-stack.md: a skipped check must record which value was missing`,
+    )
+    // `BOSS_BUILD_TOOLBOX` is exported in the ORCHESTRATOR's shell and does not reach this
+    // dispatched subagent. Unguarded, `[ ! -f "/base-drift.mjs" ]` is true and the check reports
+    // "not installed in this toolbox" on every round forever — a false reason, not a real one.
+    assert.match(
+      section,
+      /if\s+\[\s+-z\s+"\$\{BOSS_BUILD_TOOLBOX:-\}"\s+\];\s+then/,
+      `${dir}/references/review-stack.md: the block must re-derive BOSS_BUILD_TOOLBOX before using it`,
+    )
+    assert.match(
+      section,
+      /base-drift\s+SKIPPED:\s+no\s+boss-build\s+toolbox\s+on\s+this\s+host/,
+      `${dir}/references/review-stack.md: an unresolvable toolbox must have its own honest reason`,
+    )
+    // The fetch force-updates the very ref a resume names REVIEW_BASE after, and the reviewer
+    // template's range is TWO-dot — so an unpinned binding hands the round a diff in which the base
+    // branch's own commits read as deletions this branch never made.
+    assert.match(
+      section,
+      /REVIEW_BASE_OID="\$\(git\s+rev-parse\s+--verify\s+--quiet\s+"\$\{REVIEW_BASE:-\}\^\{commit\}"\)"/,
+      `${dir}/references/review-stack.md: the block must pin REVIEW_BASE to an OID before the fetch`,
+    )
+    precedes(
+      section,
+      'REVIEW_BASE_OID=',
+      'git fetch --no-tags',
+      `${dir}/references/review-stack.md: the pin must precede the fetch that moves the ref`,
+    )
+    assert.match(
+      section,
+      /\*\*The\s+fetch\s+moves\s+the\s+ref\s+`REVIEW_BASE`\s+may\s+be\s+named\s+after,\s+so\s+pin\s+it\s+first\.\*\*/,
+      `${dir}/references/review-stack.md: the section must explain why the pin exists`,
+    )
+    assert.match(
+      section,
+      /two-dot/i,
+      `${dir}/references/review-stack.md: the pin's rationale must name the two-dot range it protects`,
+    )
+    // A shell assignment dies with the Bash call, so the pin has to be PRINTED and read back or it
+    // is an inert line that every gate above still reads as satisfied.
+    assert.match(
+      section,
+      /printf\s+'base-drift:\s+REVIEW_BASE\s+pinned\s+to\s+%s/,
+      `${dir}/references/review-stack.md: the pinned OID must be printed, not only assigned`,
+    )
+    assert.match(
+      section,
+      /\*\*Read\s+the\s+printed\s+OID\s+back\s+and\s+use\s*\n?\s*it\s+as\s+`REVIEW_BASE`\s+for\s+the\s+rest\s+of\s+this\s+round\*\*/i,
+      `${dir}/references/review-stack.md: the caller must be told to read the printed OID back`,
+    )
+  }
+})
+
+test('BOS-1020: an unevaluated drift reading is never read as clean (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const section = baseDriftSection(dir)
+    // The fail-closed guard contract: "could not evaluate" is its own outcome on BOTH fields.
+    assert.match(
+      section,
+      /\*\*`unevaluated`\s+is\s+not\s+`clean`\*\*/,
+      `${dir}/references/review-stack.md: the section must state that unevaluated is not clean`,
+    )
+    assert.match(
+      section,
+      /an\s+`unevaluated`\s+`behind`\s+as\s+a\s+base\s+that\s+may\s+have\s+moved/i,
+      `${dir}/references/review-stack.md: an unevaluated commit count must be treated as possible drift`,
+    )
+    assert.match(
+      section,
+      /an\s+`unevaluated`\s+`mergeTree`\s+as\s+an\s+overlap\s+nobody\s*\n?\s*checked/i,
+      `${dir}/references/review-stack.md: an unevaluated merge probe must be treated as an unchecked overlap`,
+    )
+    // `skipped` is the fourth value and the one that keeps the fail-closed reading honest: a probe
+    // that was NOT NEEDED (unmoved base, or a base that moved on paths this branch never touched)
+    // is a complete answer, while `unevaluated` is a probe that was needed and could not run. Both
+    // earlier spellings conflated them — "either field is `unevaluated`" fired on the unmoved base,
+    // and its `stage2`-paired replacement fired on the moved-but-disjoint round, which is the
+    // ordinary healthy case on any repo whose base branch moves at all.
+    assert.match(
+      section,
+      /\*\*Unrefreshable\s+drift\*\*\s+—\s+`behind`\s+is\s+`unevaluated`;\s+\*\*or\*\*\s+`mergeTree`\s+is\s+`unevaluated`;\s+\*\*or\*\*\s*\n?\s*`mergeTree`\s+is\s+`conflicts`/i,
+      `${dir}/references/review-stack.md: the unrefreshable reading must be three single-field tests`,
+    )
+    // Scoped to the classification bullets, not the whole section: the prose below them names the
+    // retired inference on purpose, so that a future editor reintroducing it recognises it. What
+    // must stay gone is the RULE, and this is the region a model actually executes.
+    const rule = region(
+      section,
+      '**Two readings count as a hit',
+      'A report matching neither',
+      `${dir}/references/review-stack.md drift classification rule`,
+    )
+    assert.doesNotMatch(
+      rule,
+      /`stage2`/i,
+      `${dir}/references/review-stack.md: the executable rule must not reach mergeTree through stage2`,
+    )
+    assert.match(
+      section,
+      /never\s+reconstruct\s+one\s+from\s+a\s+pair/i,
+      `${dir}/references/review-stack.md: the trigger must forbid inferring a test from two fields`,
+    )
+    assert.match(
+      section,
+      /`skipped`\s+is\s+a\s+probe\s+that\s*\n?\s*was\s+\*\*not\s+needed\*\*/i,
+      `${dir}/references/review-stack.md: the section must define skipped as the unneeded probe`,
+    )
+    assert.match(
+      section,
+      /Only\s+`unevaluated`\s+is\s+a\s+hit;\s+`skipped`\s+is\s+the\s+ordinary\s*\n?\s*healthy\s+round/i,
+      `${dir}/references/review-stack.md: only the unevaluated probe may count as a hit`,
+    )
+    assert.match(
+      section,
+      /fires\s+on\s+a\s+branch\s+with\s*\n?\s*\*\*no\s+drift\s+at\s+all\*\*/i,
+      `${dir}/references/review-stack.md: the section must say what mis-reading mergeTree costs`,
+    )
+    assert.match(
+      section,
+      /`skipped`\s+is\s+neither/i,
+      `${dir}/references/review-stack.md: the field summary must place skipped outside unevaluated`,
+    )
+    assert.match(
+      section,
+      /`intersection`\s+is\s+an\s+array\s*\n?\s*and\s+can\s+never\s+hold\s+the\s+string\s+`unevaluated`/i,
+      `${dir}/references/review-stack.md: the section must rule out testing intersection for unevaluated`,
+    )
+    // The exact ambiguous clause that shipped must not come back.
+    assert.doesNotMatch(
+      section,
+      /or\s+when\s+either\s+field\s+is\s+`unevaluated`,\s+do/i,
+      `${dir}/references/review-stack.md: the ambiguous either-field trigger must stay deleted`,
+    )
+  }
+})
+
+test('BOS-1020: the boundary rebase fires only on a proven-clean merge (both mirrors)', () => {
+  // The ticket's acceptance criterion is explicit — refresh by rebase at the detecting boundary
+  // "only when `mergeTree` is `'clean'`". The first shipped rule rebased on any non-empty
+  // intersection, and explicitly on `unevaluated`: fail-safe, but a silent departure from an AC.
+  for (const dir of BUILD_MIRRORS) {
+    const section = baseDriftSection(dir)
+    assert.match(
+      section,
+      /\*\*Refreshable\s+drift\*\*\s+—\s+`behind`\s+is\s+a\s+positive\s+integer\s+\*\*and\*\*\s+`intersection`\s+is\s+non-empty\s+\*\*and\*\*\s*\n?\s*`mergeTree`\s+is\s+`clean`/i,
+      `${dir}/references/review-stack.md: the rebasing reading must require a clean mergeTree`,
+    )
+    assert.match(
+      section,
+      /This\s+is\s+the\s+only\s+reading\s+that\s+rebases/i,
+      `${dir}/references/review-stack.md: exactly one reading may rebase`,
+    )
+    assert.match(
+      section,
+      /A\s+clean\s+`mergeTree`\s+is\s+the\s+rebase's\s+precondition,\s+not\s+a\s+nicety/i,
+      `${dir}/references/review-stack.md: the clean-merge precondition must be stated as such`,
+    )
+    assert.match(
+      section,
+      /\(refreshable\s+reading\s+only\)/i,
+      `${dir}/references/review-stack.md: the rebase bullet must name the reading that gates it`,
+    )
+    // …and the non-clean readings must be explicitly told NOT to rebase, not left to inference.
+    assert.match(
+      section,
+      /Do\s+\*\*not\*\*\s+rebase:\s+record\s+the\s+drift,\s+publish\s*\n?\s*the\s+note,\s+brief\s+the\s+reviewer,\s+and\s+review\s+on/i,
+      `${dir}/references/review-stack.md: an unrefreshable reading must record and brief without rebasing`,
+    )
+    assert.match(
+      section,
+      /On\s+`conflicts`\s+or\s+on\s+`unevaluated`\s+an\s*\n?\s*unattended\s+rebase\s+attempts\s+a\s+reconciliation\s+nobody\s+has\s+evidence\s+for/i,
+      `${dir}/references/review-stack.md: the section must say why a non-clean merge does not rebase`,
+    )
+  }
+})
+
+test('BOS-1020: a failed base fetch reaches the report, not only stderr (both mirrors)', () => {
+  // `git fetch … || echo …>&2` left the failure entirely outside DRIFT_JSON. The detector then read
+  // a stale BASE_REF, plausibly reported `behind: 0`, and the note became the flat string
+  // `Base drift: none.` — the one substitution code-reviewer-template.md forbids for this slot.
+  for (const dir of BUILD_MIRRORS) {
+    const section = baseDriftSection(dir)
+    assert.match(
+      section,
+      /\|\|\s+FETCH_FAILED='--fetch-failed'/,
+      `${dir}/references/review-stack.md: a failed fetch must set the detector flag, not just echo`,
+    )
+    assert.match(
+      section,
+      /--head\s+"\$\(git\s+rev-parse\s+HEAD\)"\s+\$FETCH_FAILED/,
+      `${dir}/references/review-stack.md: the flag must actually reach the detector invocation`,
+    )
+    assert.match(
+      section,
+      /\*\*A\s+failed\s+fetch\s+is\s+an\s+input\s+to\s+the\s+report,\s+not\s+a\s+log\s+line\.\*\*/i,
+      `${dir}/references/review-stack.md: the section must state that a fetch failure is reported`,
+    )
+    assert.match(
+      section,
+      /plausibly\s+counts\s+`behind:\s*0`,\s+and\s+publishes\s+the\s+flat\s*\n?\s*string\s+`Base\s+drift:\s+none\.`/i,
+      `${dir}/references/review-stack.md: the section must name the false "no drift" it prevents`,
+    )
+    // The stderr-only spelling must stay gone.
+    assert.doesNotMatch(
+      section,
+      /echo\s+"base-drift:\s+fetch\s+failed/,
+      `${dir}/references/review-stack.md: the stderr-only fetch-failure branch must stay deleted`,
+    )
+  }
+})
+
+// The act-on-hit classifier, transcribed from §Base-drift check so the block's REAL output is run
+// through the documented rule rather than reasoned about. `shippedTrigger` is the rule that first
+// shipped, kept only so the regression it caused stays visible below.
+const classifyDrift = (r) => {
+  if (r.behind === 'unevaluated') return 'unrefreshable'
+  if (r.mergeTree === 'unevaluated') return 'unrefreshable'
+  if (r.mergeTree === 'conflicts') return 'unrefreshable'
+  if (
+    Number.isInteger(r.behind) &&
+    r.behind > 0 &&
+    r.intersection.length > 0 &&
+    r.mergeTree === 'clean'
+  ) {
+    return 'refreshable'
+  }
+  return 'no-hit'
+}
+// The two retired triggers, kept as witnesses. Both tried to recover "was the probe needed?" from a
+// `mergeTree` that could not express it — the first from the field alone, the second by pairing it
+// with `stage2` — and each misfired on a different healthy round. `mergeTree: 'skipped'` is the
+// missing value, so both are re-run below against the SAME real reports to show the misfire is gone
+// at the source rather than papered over in the rule.
+const retiredEitherFieldTrigger = (r) =>
+  (Number.isInteger(r.behind) && r.behind > 0 && r.intersection.length > 0) ||
+  r.behind === 'unevaluated' ||
+  r.mergeTree === 'unevaluated'
+const retiredStage2Trigger = (r) =>
+  r.behind === 'unevaluated' ||
+  (r.stage2 === true && r.mergeTree === 'unevaluated') ||
+  r.mergeTree === 'conflicts'
+
+test('BOS-1020: the documented drift-check block runs against a real origin (both mirrors)', () => {
+  // EXECUTABLE, not prose-pinning. `scripts/check-skill-shell.mjs` only runs `bash -n` over this
+  // fence, and a syntax check cannot see that the block reads the wrong ref, drops the fetch
+  // failure, or emits a report the documented trigger then misclassifies. The plan asked for a
+  // hermetic bare-origin-plus-clone fixture for exactly that reason.
+  for (const dir of BUILD_MIRRORS) {
+    const section = baseDriftSection(dir)
+    const fences = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1])
+    assert.equal(
+      fences.length,
+      1,
+      `${dir}/references/review-stack.md: the base-drift section must carry exactly one runnable fenced block`,
+    )
+    const fenced = fences[0]
+    // Non-vacuity: prove this is the detector invocation and not a neighbouring fence.
+    assert.match(
+      fenced,
+      /base-drift\.mjs/,
+      `${dir}/references/review-stack.md: the extracted fence must be the detector invocation`,
+    )
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-build-drift-block-'))
+    try {
+      const origin = path.join(root, 'origin.git')
+      const seed = path.join(root, 'seed')
+      const clone = path.join(root, 'clone')
+      const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+      const git = (cwd, ...args) => execFileSync('git', args, { cwd, ...quiet })
+      const identify = (cwd) => {
+        git(cwd, 'config', 'user.email', 'boss-build-test@example.test')
+        git(cwd, 'config', 'user.name', 'boss-build test')
+        git(cwd, 'config', 'commit.gpgsign', 'false')
+      }
+
+      execFileSync('git', ['init', '--bare', '--initial-branch=main', origin], quiet)
+      execFileSync('git', ['init', '--initial-branch=main', seed], quiet)
+      identify(seed)
+      fs.writeFileSync(path.join(seed, 'shared.txt'), 'original\n')
+      git(seed, 'add', '-A')
+      git(seed, 'commit', '-q', '-m', 'fork point')
+      git(seed, 'remote', 'add', 'origin', origin)
+      git(seed, 'push', '-q', 'origin', 'main')
+
+      execFileSync('git', ['clone', '-q', origin, clone], quiet)
+      identify(clone)
+      git(clone, 'checkout', '-q', '-b', 'work')
+      fs.writeFileSync(path.join(clone, 'shared.txt'), 'prepended by branch\noriginal\n')
+      git(clone, 'add', '-A')
+      git(clone, 'commit', '-q', '-m', 'branch work')
+
+      const rawBlock = (env) =>
+        spawnSync('bash', ['-c', fenced], {
+          cwd: clone,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            BOSS_BUILD_TOOLBOX: path.join(rootDir, dir, 'toolbox'),
+            BASE_REF: 'refs/remotes/origin/main',
+            BASE_REMOTE: 'origin',
+            BASE_BRANCH: 'main',
+            ...env,
+          },
+        })
+      const runBlock = (remote) => JSON.parse(rawBlock({ BASE_REMOTE: remote }).stdout.trim())
+
+      // (a) THE HEALTHY ROUND — the base has not moved. The probe was not NEEDED here, which is a
+      // complete answer and must not read as an unanswered one.
+      const healthy = runBlock('origin')
+      assert.equal(healthy.behind, 0, `${dir}: an unmoved base must report behind 0`)
+      assert.equal(healthy.stage2, false, `${dir}: stage 2 must not run on an unmoved base`)
+      assert.equal(
+        healthy.mergeTree,
+        'skipped',
+        `${dir}: a merge probe that was never needed must report skipped, not unevaluated`,
+      )
+      assert.equal(
+        classifyDrift(healthy),
+        'no-hit',
+        `${dir}: the documented trigger must NOT fire on a healthy round (${JSON.stringify(healthy)})`,
+      )
+      // The regression witness, in two halves so it cannot go vacuous: the retired rule DID fire on
+      // this report while the field said `unevaluated`, and does not now that it says `skipped`.
+      assert.ok(
+        retiredEitherFieldTrigger({ ...healthy, mergeTree: 'unevaluated' }),
+        `${dir}: expected the retired either-field trigger to misfire on the old field value — if it no longer does, this witness has stopped guarding the regression it was written for`,
+      )
+      assert.equal(
+        retiredEitherFieldTrigger(healthy),
+        false,
+        `${dir}: the retired trigger must no longer misfire on the real report — the fix is the field value, not the rule`,
+      )
+
+      // (a2) THE OTHER HEALTHY ROUND — the base MOVED, on a path this branch never touched. This is
+      // the case the `stage2`-paired replacement misread: `stage2` is true because the merge base
+      // resolved, and `mergeTree` was left `unevaluated` because the disjoint intersection returned
+      // before the probe. It is the common shape on any repo whose base branch is active, so a
+      // trigger that fires here publishes a drift note on nearly every run.
+      fs.writeFileSync(path.join(seed, 'elsewhere.txt'), 'base only\n')
+      git(seed, 'add', '-A')
+      git(seed, 'commit', '-q', '-m', 'chore: touch an unrelated path (#77)')
+      git(seed, 'push', '-q', 'origin', 'main')
+      const disjoint = runBlock('origin')
+      assert.equal(disjoint.behind, 1, `${dir}: the block must see the moved base`)
+      assert.equal(disjoint.stage2, true, `${dir}: stage 2 runs — there IS a merge base`)
+      assert.deepEqual(
+        disjoint.intersection,
+        [],
+        `${dir}: the two change sets must be disjoint for this case to mean anything`,
+      )
+      assert.equal(
+        disjoint.mergeTree,
+        'skipped',
+        `${dir}: a disjoint round leaves the probe nothing to answer, so it is skipped`,
+      )
+      assert.equal(
+        classifyDrift(disjoint),
+        'no-hit',
+        `${dir}: a base that moved somewhere else is not a hit (${JSON.stringify(disjoint)})`,
+      )
+      assert.ok(
+        retiredStage2Trigger({ ...disjoint, mergeTree: 'unevaluated' }),
+        `${dir}: expected the retired stage2-paired trigger to misfire on the old field value — if it no longer does, this witness has stopped guarding the regression it was written for`,
+      )
+      assert.equal(
+        retiredStage2Trigger(disjoint),
+        false,
+        `${dir}: the retired stage2-paired trigger must no longer misfire on the real report`,
+      )
+
+      // (b) REAL DRIFT, textually clean, attributed to the PR that landed it.
+      fs.writeFileSync(path.join(seed, 'shared.txt'), 'original\nbase appended\n')
+      git(seed, 'add', '-A')
+      git(seed, 'commit', '-q', '-m', 'feat(core): rework the shared path (#4242)')
+      git(seed, 'push', '-q', 'origin', 'main')
+      const drifted = runBlock('origin')
+      assert.equal(drifted.behind, 2, `${dir}: the block must re-fetch and see both base commits`)
+      assert.deepEqual(drifted.intersection, ['shared.txt'], `${dir}: the overlap must be reported`)
+      assert.equal(drifted.mergeTree, 'clean', `${dir}: this overlap merges textually clean`)
+      assert.deepEqual(
+        drifted.attribution.prs,
+        [4242],
+        `${dir}: the overlapping base commit must be attributed to the PR that landed it`,
+      )
+      assert.match(drifted.note, /PR\s+4242/, `${dir}: the note must name the landing PR`)
+      assert.doesNotMatch(
+        drifted.note,
+        /#4242/,
+        `${dir}: but never as a bare #N — that writes a cross-reference onto the other PR`,
+      )
+      assert.equal(
+        classifyDrift(drifted),
+        'refreshable',
+        `${dir}: a clean overlap is the one reading that rebases`,
+      )
+
+      // (c) A FAILED FETCH — the report must say so, never fall back to a stale "no drift".
+      const stale = runBlock('no-such-remote')
+      assert.equal(
+        stale.fetchFailed,
+        true,
+        `${dir}: the block must carry the fetch failure through`,
+      )
+      assert.equal(
+        stale.behind,
+        'unevaluated',
+        `${dir}: a base ref nobody could refresh must not be read as unmoved`,
+      )
+      assert.doesNotMatch(
+        stale.note,
+        /Base\s+drift:\s+none\./,
+        `${dir}: a failed fetch must never publish the flat no-drift note`,
+      )
+      assert.equal(
+        classifyDrift(stale),
+        'unrefreshable',
+        `${dir}: it is a hit that does not rebase`,
+      )
+
+      // (e) THE PIN IS PRINTED, AND IT IS THE PRE-FETCH TIP. The block's own fetch force-updates the
+      // ref a resume names REVIEW_BASE after, and a shell assignment cannot reach the caller — so
+      // the pinned OID has to leave the block on stderr or the fix is an inert line every prose
+      // gate still reads as satisfied.
+      const preFetchTip = git(clone, 'rev-parse', 'refs/remotes/origin/main').trim()
+      fs.writeFileSync(path.join(seed, 'moved-again.txt'), 'after the pin\n')
+      git(seed, 'add', '-A')
+      git(seed, 'commit', '-q', '-m', 'chore: move the base again (#88)')
+      git(seed, 'push', '-q', 'origin', 'main')
+      const pinned = rawBlock({ REVIEW_BASE: 'refs/remotes/origin/main' })
+      assert.match(
+        pinned.stderr,
+        new RegExp(`base-drift: REVIEW_BASE pinned to ${preFetchTip}`),
+        `${dir}: the block must print the PRE-fetch tip (stderr: ${pinned.stderr.trim()})`,
+      )
+      assert.notEqual(
+        git(clone, 'rev-parse', 'refs/remotes/origin/main').trim(),
+        preFetchTip,
+        `${dir}: precondition — the fetch really did move the ref out from under the name`,
+      )
+
+      // (d) NO TOOLBOX IN THE ENVIRONMENT. `BOSS_BUILD_TOOLBOX` is exported in the orchestrator's
+      // shell and does not reach the dispatched subagent's. Unguarded, the block tested
+      // `[ ! -f "/base-drift.mjs" ]`, which is true, and recorded "not installed in this toolbox"
+      // on every round forever — the whole feature inert behind a reason that is simply false.
+      const noToolbox = rawBlock({ BOSS_BUILD_TOOLBOX: '', HOME: path.join(root, 'empty-home') })
+      assert.equal(noToolbox.stdout.trim(), '', `${dir}: a skipped check emits no report`)
+      assert.match(
+        noToolbox.stderr,
+        /base-drift\s+SKIPPED:\s+no\s+boss-build\s+toolbox\s+on\s+this\s+host/,
+        `${dir}: an unresolvable toolbox must be recorded as such (got: ${noToolbox.stderr.trim()})`,
+      )
+      assert.doesNotMatch(
+        noToolbox.stderr,
+        /is\s+not\s+installed\s+in\s+this\s+toolbox/,
+        `${dir}: it must not claim the detector is missing from a toolbox it never found`,
+      )
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('BOS-1020: the drift note has a return channel to the orchestrator (both mirrors)', () => {
+  // The check runs INSIDE the dispatched review-stack subagent, but `## Autonomous decisions` is
+  // the orchestrator's section. Without the note on the returned contract, the clean route simply
+  // never carries it — only the BLOCKED route, which publishes its own, would ever show it.
+  for (const dir of BUILD_MIRRORS) {
+    const returns = region(
+      readReviewStack(dir),
+      'The review subagent RETURNS',
+      'Bulk material',
+      `${dir}/references/review-stack.md review-subagent return contract`,
+    )
+    assert.match(
+      returns,
+      /\*\*base-drift\s+note\*\*/i,
+      `${dir}/references/review-stack.md: the return contract must carry the base-drift note`,
+    )
+    assert.match(
+      returns,
+      /owns\s+the\s+PR\s*\n?\s*body's\s+`##\s+Autonomous\s+decisions`\s+section/i,
+      `${dir}/references/review-stack.md: the return contract must say why the note has to come back`,
+    )
+    // "the last note" alone loses a hit the loop already acted on: the check keeps running after a
+    // rebase, so rounds 3-6 reading `Base drift: none.` would overwrite round 2's hit.
+    assert.match(
+      returns,
+      /from\s+\*\*every\*\*\s+round\s+boundary\s+that\s+read\s+a\s+hit/i,
+      `${dir}/references/review-stack.md: the return contract must carry every hit, not just the last note`,
+    )
+    assert.match(
+      returns,
+      /Return\s+every\s+hit\s+rather\s+than\s+the\s+latest\s+note/i,
+      `${dir}/references/review-stack.md: the return contract must say why the latest note is not enough`,
+    )
+  }
+  for (const mirror of Object.keys(RESIDENT_BODIES)) {
+    const comesBack = region(
+      readSkill(RESIDENT_BODIES[mirror]),
+      '**What comes back (thin, non-routing).**',
+      '**Classify from the run file only.**',
+      `${RESIDENT_BODIES[mirror]} Step 6 returned-contract list`,
+    )
+    assert.match(
+      comesBack,
+      /the\s+drift\s+note/i,
+      `${RESIDENT_BODIES[mirror]}: Step 6's returned-contract list must include the drift note`,
+    )
+  }
+})
+
+test('BOS-1020: a drift hit rebases, re-binds REVIEW_BASE, and is capped (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const section = baseDriftSection(dir)
+    // Rebase, never merge — boss-finalize's gate forbids the merge commit outright.
+    assert.match(
+      section,
+      /\*\*Act\s+on\s+a\s+hit\s+—\s+rebase,\s+never\s+merge\.\*\*/,
+      `${dir}/references/review-stack.md: the act-on-hit rule must forbid merging the base`,
+    )
+    assert.match(
+      section,
+      /`git\s+rebase\s+"\$BASE_REF"`/,
+      `${dir}/references/review-stack.md: the rule must name the rebase command`,
+    )
+    // A rebase that moves the branch without moving REVIEW_BASE leaves every later consumer
+    // reviewing a range whose left endpoint is no longer an ancestor of HEAD.
+    assert.match(
+      section,
+      /\*\*Re-bind\s+`REVIEW_BASE`\*\*\s+to\s+`\$\(git\s+rev-parse\s+"\$BASE_REF"\)`/,
+      `${dir}/references/review-stack.md: a successful rebase must re-bind REVIEW_BASE`,
+    )
+    assert.match(
+      section,
+      /round\s+reviewer's\s+`BASE_SHA`[\s\S]{0,400}no\s+longer\s+an\s+ancestor\s+of\s+HEAD/i,
+      `${dir}/references/review-stack.md: the re-bind must name the consumers it reaches`,
+    )
+    // Failure path: abort, and prove the abort landed on two independent post-conditions.
+    assert.match(
+      section,
+      /`git\s+rebase\s+--abort`/,
+      `${dir}/references/review-stack.md: a failed rebase must abort`,
+    )
+    assert.match(
+      section,
+      /`git\s+rev-parse\s+--verify\s+--quiet\s+REBASE_HEAD`\s+prints\s+nothing[\s\S]{0,120}`git\s+status\s+--porcelain`\s+is\s*\n?\s*empty/i,
+      `${dir}/references/review-stack.md: the abort must be confirmed by both post-conditions`,
+    )
+    // A base branch under traffic can move every round; an uncapped rule never converges.
+    assert.match(
+      section,
+      /At\s+most\s+\*\*one\*\*\s+rebase\s+per\s+run,\s+`BS_BASE_DRIFT_MAX_REBASES`\s+clamped\s*\n?\s*\*\*lower-only\*\*/,
+      `${dir}/references/review-stack.md: rebases must be capped with a lower-only env clamp`,
+    )
+    assert.match(
+      section,
+      /later\s+boundaries\s+still\s+\*\*check\*\*\s+and\s+still\s+publish\s+the\s+note/i,
+      `${dir}/references/review-stack.md: a spent rebase cap must not disable the check itself`,
+    )
+    // `git rebase` refuses on unstaged changes and `git rebase --abort` then exits 128, so without a
+    // PRE-condition the two post-conditions report a worktree left mid-rebase by a rebase that never
+    // started. Loop step 5 says fix churn is expected, so a dirty tree is an ordinary round-2 state.
+    assert.match(
+      section,
+      /`git\s+status\s+--porcelain\s+--untracked-files=no`\s+must\s+be\s+empty/,
+      `${dir}/references/review-stack.md: the rebase must check the tree before it starts`,
+    )
+    precedes(
+      section,
+      '--untracked-files=no',
+      '`git rebase "$BASE_REF"`',
+      `${dir}/references/review-stack.md: the tree check must precede the rebase itself`,
+    )
+    // Both pre-conditions sit ahead of the command, because a top-down executor acts at the first
+    // mention and a prohibition stated three bullets later is read after the rebase it forbids.
+    precedes(
+      section,
+      'not at the final boundary',
+      '`git rebase "$BASE_REF"`',
+      `${dir}/references/review-stack.md: the final-boundary exclusion must precede the rebase too`,
+    )
+    // The rebase forces a full pass in the SAME round, and a full pass re-derives every settled
+    // item — at the last boundary there is no round left to confirm a fix for what that turns up.
+    assert.match(
+      section,
+      /\*\*Never\s+rebase\s+at\s+the\s+boundary\s+that\s+opens\s+the\s+final\s+round\.\*\*/,
+      `${dir}/references/review-stack.md: the last boundary must not rebase`,
+    )
+  }
+})
+
+test('BOS-1020: a rebase degrades the oscillation guard to file level for one round (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = readReviewStack(dir)
+    const guard = regionUntilNext(
+      reviewStack,
+      '6. **Oscillation guard.**',
+      '7. **Increment.**',
+      `${dir}/references/review-stack.md oscillation guard`,
+    )
+    // A rebase rewrites every commit, so `file:line` equality stops matching a surviving finding
+    // and a genuine oscillation reads as two unrelated ones — the guard failing OPEN.
+    assert.match(
+      guard,
+      /For\s+the\s+round\s+whose\s+own\s+step\s+0\s+performed\s+the\s+rebase,\s+compare\s+at\s+file\s*\n?\s*level\s+instead/i,
+      `${dir}/references/review-stack.md: the guard must degrade to file level in the rebasing round`,
+    )
+    // Both halves of the signal must name the SAME round. The earlier spellings disagreed — step 1
+    // said "this round", the act-on-hit bullet said "the next round only" — and an unattended
+    // executor picking the bullet degrades a round whose two sides are already consistent while the
+    // real cross-rebase comparison still matches on file:line.
+    assert.match(
+      guard,
+      /the\s+same\s+round\s+step\s+1's\s+force-full-pass\s+signal\s+applies\s+to\s+—\s+the\s+rebasing\s+one\s+—\s+never\s+the\s*\n?\s*round\s+after\s+it/i,
+      `${dir}/references/review-stack.md: the guard must pin itself to the same round as the signal`,
+    )
+    assert.match(
+      guard,
+      /shifted\s+line\s+number/i,
+      `${dir}/references/review-stack.md: the guard must say why file:line stops matching`,
+    )
+    assert.match(
+      guard,
+      /return\s+to\s+`file:line`\s+the\s+round\s+after/i,
+      `${dir}/references/review-stack.md: the degradation must last exactly one round`,
+    )
+    // The force-full-pass signal only fires when a rebase actually happened, and it drops the
+    // inherited dispositions that were settled against the replaced base.
+    const section = baseDriftSection(dir)
+    assert.match(
+      section,
+      /only\s+after\s+a\s+rebase\s+actually\s*\n?\s*happened/i,
+      `${dir}/references/review-stack.md: detection without a rebase must not force a full pass`,
+    )
+    assert.match(
+      section,
+      /for\s+\*\*this\*\*\s+round\s+—\s+the\s+one\s+whose\s+step\s+0\s+just\s+rebased,\s+not\s*\n?\s*the\s+one\s+after\s+it/i,
+      `${dir}/references/review-stack.md: the signal must apply to the rebasing round, not the next one`,
+    )
+    assert.doesNotMatch(
+      section,
+      /force-full-pass\s+signal\*\*\s+for\s+the\s+next\s+round\s+only/i,
+      `${dir}/references/review-stack.md: the next-round spelling of the signal must stay deleted`,
+    )
+    const round = regionUntilNext(
+      reviewStack,
+      '1. **Independent review (awaited, read-only).**',
+      '2. **Categorize.**',
+      `${dir}/references/review-stack.md round reviewer step`,
+    )
+    assert.match(
+      round,
+      /hand\s+over\s+no\s+prior-round\s*\n?\s*dispositions\s+at\s+all/i,
+      `${dir}/references/review-stack.md: a forced full pass must drop the inherited dispositions`,
+    )
+  }
+})
+
+test('BOS-1020: the drift note reaches the reviewer and every route out (both mirrors)', () => {
+  for (const dir of BUILD_MIRRORS) {
+    const template = readTemplate(dir)
+    // The slot exists in the prompt body the reviewer actually reads…
+    assert.match(
+      template,
+      /^\s*\[BASE_DRIFT_NOTE\]\s*$/m,
+      `${dir}/references/code-reviewer-template.md: the prompt body must carry a [BASE_DRIFT_NOTE] slot`,
+    )
+    // …and is documented in the placeholder list, including the fail-closed reading.
+    const placeholders = region(
+      template,
+      '**Placeholders:**',
+      '**Reviewer returns:**',
+      `${dir}/references/code-reviewer-template.md placeholder list`,
+    )
+    assert.match(
+      placeholders,
+      /- `\[BASE_DRIFT_NOTE\]`/,
+      `${dir}/references/code-reviewer-template.md: the placeholder list must document the drift note`,
+    )
+    assert.match(
+      placeholders,
+      /never\s+substitute\s*\n?\s*`Base\s+drift:\s+none\.`\s+for\s+an\s+answer\s+nobody\s+obtained/i,
+      `${dir}/references/code-reviewer-template.md: a skipped check must not be reported as no drift`,
+    )
+    // The BLOCKED route never reaches Step 7 and never writes a PR body, so it is the only place
+    // the drift can reach a reader on that route.
+    const blocked = region(
+      readReviewStack(dir),
+      '### BLOCKED-route publication',
+      '**The push rule',
+      `${dir}/references/review-stack.md BLOCKED-route publication`,
+    )
+    assert.match(
+      blocked,
+      /\*\*The\s+base-drift\s+note\s+publishes\s+here\s+too\.\*\*/,
+      `${dir}/references/review-stack.md: the BLOCKED route must publish the drift note`,
+    )
+    assert.match(
+      blocked,
+      /`##\s+Autonomous\s+decisions`/,
+      `${dir}/references/review-stack.md: the BLOCKED-route drift note must name the section it lands in`,
+    )
+    // …and the CLEAN route, which is the one the ticket exists for: the originating incident was a
+    // run that went green and found the overlap only after the final push. A publication rule that
+    // named only the failure routes would leave the primary route silent.
+    const section = baseDriftSection(dir)
+    assert.match(
+      section,
+      /\*\*Publish\s+the\s+note\s+on\s+every\s+route\s+out\s+—\s+the\s+clean\s+one\s+first,\s+then\s+BLOCKED\s+and\s+PARTIAL\.\*\*/,
+      `${dir}/references/review-stack.md: the publication rule must lead with the clean route`,
+    )
+    assert.match(
+      section,
+      /On\s+the\s+\*\*clean\*\*\s+route\s+the\s+orchestrator\s+writes\s+each\s+returned\s+drift\s+note\s+verbatim\s*\n?\s*under\s+`##\s+Autonomous\s+decisions`\s+in\s+the\s+Step\s+7\s+PR\s+body/i,
+      `${dir}/references/review-stack.md: the clean route must name who writes the note, where`,
     )
   }
 })

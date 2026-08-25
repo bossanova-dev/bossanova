@@ -106,6 +106,8 @@ export function hashTree(repoRoot, dir) {
     hash.update('\0')
     const abs = path.join(repoRoot, filePath)
     try {
+      hash.update(String(fs.statSync(abs).mode & 0o777))
+      hash.update('\0')
       hash.update(fs.readFileSync(abs))
     } catch {
       // Deleted in the working tree (staged deletion / removed): tombstone.

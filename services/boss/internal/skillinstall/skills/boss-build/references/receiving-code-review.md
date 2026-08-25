@@ -19,6 +19,13 @@ WHEN receiving code review feedback:
 6. IMPLEMENT: One item at a time, test each
 ```
 
+## Within-Run Observations
+
+When the fix brief includes carried observations, treat them as constraints on what the fix may
+write. They are provisional observations derived from earlier findings in the same run, not
+established rules and not replacements for adjudicating the current finding. Verify the current
+premise first, then avoid introducing the named defect class while making the fix.
+
 ## Forbidden Responses
 
 **NEVER:**

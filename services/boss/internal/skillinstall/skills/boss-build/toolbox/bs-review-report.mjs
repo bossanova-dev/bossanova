@@ -150,13 +150,317 @@ function renderReviewers(reviewers = []) {
 function renderEvidence({ evidenceRows = [], gates = [] } = {}) {
   const parts = []
   if (evidenceRows.length) {
-    const rows = evidenceRows.map((r) => `| ${esc(r.round)} | ${esc(r.result)} |`).join('\n')
-    parts.push(`| Round | Result |\n|-------|--------|\n${rows}`)
+    const hasRoundState = evidenceRows.some(
+      (r) => r.mode !== undefined || r.base !== undefined || r.carriedCount !== undefined,
+    )
+    if (hasRoundState) {
+      const rows = evidenceRows
+        .map(
+          (r) =>
+            `| ${esc(r.round)} | ${esc(r.mode ?? '')} | ${esc(r.base ?? '')} | ${esc(r.carriedCount ?? 0)} | ${esc(r.result)} |`,
+        )
+        .join('\n')
+      parts.push(
+        `| Round | Mode | Base | Carried | Result |\n|-------|------|------|---------|--------|\n${rows}`,
+      )
+    } else {
+      const rows = evidenceRows.map((r) => `| ${esc(r.round)} | ${esc(r.result)} |`).join('\n')
+      parts.push(`| Round | Result |\n|-------|--------|\n${rows}`)
+    }
   }
   if (gates.length) {
     parts.push(`Gates (all green): ${gates.map((g) => `\`${g}\``).join(' · ')}.`)
   }
   return parts.join('\n\n')
+}
+
+function renderReviewerInputBytes(reviewerInputBytes = {}) {
+  if (!reviewerInputBytes || typeof reviewerInputBytes !== 'object') return ''
+  const baseline = Number(reviewerInputBytes.baseline)
+  const resolved = Number(reviewerInputBytes.resolved)
+  if (!Number.isFinite(baseline) || !Number.isFinite(resolved)) return ''
+  return `Reviewer input bytes: baseline ${baseline}; resolved ${resolved}.`
+}
+
+const REVIEW_MODES = new Set(['full', 'delta'])
+const CARRIED_STATUSES = new Set(['open', 'fixed', 'verified'])
+const CLOSED_STATUSES = new Set(['closed', 'reclosed'])
+
+function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function uniqStrings(values) {
+  return [...new Set(asArray(values).filter((v) => typeof v === 'string' && v.length > 0))]
+}
+
+function normaliseStatus(claim) {
+  const raw = String(claim?.status ?? claim?.disposition ?? '').toLowerCase()
+  if (raw === 'unresolved') return 'open'
+  if (raw === 'resolved') return 'fixed'
+  return raw
+}
+
+function claimKey(claim) {
+  if (typeof claim?.id === 'string' && claim.id.length > 0) return claim.id
+  if (typeof claim?.key === 'string' && claim.key.length > 0) return claim.key
+  const title = typeof claim?.title === 'string' ? claim.title : ''
+  const file = typeof claim?.file === 'string' ? claim.file : ''
+  const line = Number.isInteger(claim?.line) ? claim.line : ''
+  return `${file}:${line}:${title}`.trim()
+}
+
+function claimsFromRound(round) {
+  return [
+    ...asArray(round?.carriedClaims),
+    ...asArray(round?.claims),
+    ...asArray(round?.findings),
+    ...asArray(round?.mustfix?.items),
+  ]
+}
+
+function observationsFromRound(round) {
+  return [
+    ...asArray(round?.carriedObservations),
+    ...asArray(round?.derivedObservations),
+    ...asArray(round?.withinRunObservations),
+  ]
+}
+
+export function validateReviewClaim(claim) {
+  if (!claim || typeof claim !== 'object' || Array.isArray(claim)) {
+    return { ok: false, reason: 'claim must be an object' }
+  }
+  if (claim.line !== undefined && claim.line !== null && !Number.isInteger(claim.line)) {
+    return { ok: false, reason: 'claim line must be an integer or null' }
+  }
+  if (Number.isInteger(claim.line) && !(typeof claim.file === 'string' && claim.file.length > 0)) {
+    return { ok: false, reason: 'claim with a line must include a file' }
+  }
+  if (!claimKey(claim)) return { ok: false, reason: 'claim needs an id, key, or location title' }
+  if (typeof claim.file !== 'string' || claim.file.length === 0) {
+    return { ok: false, reason: 'claim needs a file' }
+  }
+  if (typeof claim.anchor !== 'string' || claim.anchor.length === 0) {
+    return { ok: false, reason: 'claim needs a greppable anchor' }
+  }
+  if (/^\d+$/.test(claim.anchor.trim())) {
+    return { ok: false, reason: 'claim anchor must not be a line number' }
+  }
+  return { ok: true }
+}
+
+export function carriedReviewClaims(state = {}) {
+  const rounds = Array.isArray(state) ? state : state?.rounds
+  const carried = new Map()
+  for (const round of asArray(rounds)) {
+    for (const claim of claimsFromRound(round)) {
+      const validation = validateReviewClaim(claim)
+      if (!validation.ok) continue
+      const status = normaliseStatus(claim)
+      const key = claimKey(claim)
+      if (CLOSED_STATUSES.has(status)) {
+        carried.delete(key)
+      } else if (CARRIED_STATUSES.has(status)) {
+        carried.set(key, { ...claim, status })
+      }
+    }
+  }
+  return [...carried.values()]
+}
+
+export function carriedReviewObservations(state = {}) {
+  const rounds = Array.isArray(state) ? state : state?.rounds
+  const observations = []
+  const seen = new Set()
+  for (const round of asArray(rounds)) {
+    for (const observation of observationsFromRound(round)) {
+      if (!observation || typeof observation !== 'object' || Array.isArray(observation)) continue
+      const sourceRound = Number.isInteger(observation.round) ? observation.round : round?.round
+      const category = typeof observation.category === 'string' ? observation.category.trim() : ''
+      const paragraph =
+        typeof observation.paragraph === 'string' ? observation.paragraph.trim() : ''
+      if (!Number.isInteger(sourceRound) || sourceRound < 1 || !category || !paragraph) continue
+      const key = JSON.stringify([sourceRound, category, paragraph])
+      if (seen.has(key)) continue
+      seen.add(key)
+      observations.push({ round: sourceRound, category, paragraph })
+    }
+  }
+  return observations
+}
+
+export function parseRoundState(input) {
+  let value = input
+  if (typeof input === 'string') {
+    try {
+      value = JSON.parse(input || '{}')
+    } catch {
+      return { ok: false, reason: 'round state must be valid JSON', rounds: [] }
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, reason: 'round state must be an object', rounds: [] }
+  }
+  if (!Array.isArray(value.rounds)) {
+    return { ok: false, reason: 'round state needs a rounds array', rounds: [] }
+  }
+  const rounds = []
+  for (const [index, round] of value.rounds.entries()) {
+    if (!round || typeof round !== 'object' || Array.isArray(round)) {
+      return { ok: false, reason: `round ${index + 1} must be an object`, rounds: [] }
+    }
+    if (!Number.isInteger(round.round) || round.round < 1) {
+      return { ok: false, reason: `round ${index + 1} needs a positive integer round`, rounds: [] }
+    }
+    if (!REVIEW_MODES.has(round.mode)) {
+      return { ok: false, reason: `round ${round.round} mode must be full or delta`, rounds: [] }
+    }
+    if (typeof round.tip !== 'string' || round.tip.length === 0) {
+      return { ok: false, reason: `round ${round.round} needs a non-empty tip`, rounds: [] }
+    }
+    if (round.base !== undefined && (typeof round.base !== 'string' || round.base.length === 0)) {
+      return {
+        ok: false,
+        reason: `round ${round.round} base must be a non-empty string when present`,
+        rounds: [],
+      }
+    }
+    if (
+      round.mergeBase !== undefined &&
+      (typeof round.mergeBase !== 'string' || round.mergeBase.length === 0)
+    ) {
+      return {
+        ok: false,
+        reason: `round ${round.round} mergeBase must be a non-empty string when present`,
+        rounds: [],
+      }
+    }
+    for (const claim of claimsFromRound(round)) {
+      const validation = validateReviewClaim(claim)
+      if (!validation.ok) {
+        return { ok: false, reason: `round ${round.round}: ${validation.reason}`, rounds: [] }
+      }
+    }
+    for (const observation of observationsFromRound(round)) {
+      if (!observation || typeof observation !== 'object' || Array.isArray(observation)) {
+        return {
+          ok: false,
+          reason: `round ${round.round}: carried observation must be an object`,
+          rounds: [],
+        }
+      }
+      const sourceRound = Number.isInteger(observation.round) ? observation.round : round.round
+      if (!Number.isInteger(sourceRound) || sourceRound < 1) {
+        return {
+          ok: false,
+          reason: `round ${round.round}: carried observation needs a positive integer round`,
+          rounds: [],
+        }
+      }
+      if (typeof observation.category !== 'string' || observation.category.trim() === '') {
+        return {
+          ok: false,
+          reason: `round ${round.round}: carried observation needs a category`,
+          rounds: [],
+        }
+      }
+      if (typeof observation.paragraph !== 'string' || observation.paragraph.trim() === '') {
+        return {
+          ok: false,
+          reason: `round ${round.round}: carried observation needs a paragraph`,
+          rounds: [],
+        }
+      }
+    }
+    rounds.push(round)
+  }
+  return { ok: true, rounds }
+}
+
+export function nextReviewRoundMode({
+  state = {},
+  changedFiles = [],
+  mergeBase = '',
+  deltaFileThreshold = 20,
+  forceFull = false,
+  unreviewedFixFiles = [],
+  anchorMissing = false,
+  lastTipAncestorOfCurrentTip = true,
+} = {}) {
+  const parsed = parseRoundState(state)
+  const threshold =
+    Number.isInteger(deltaFileThreshold) && deltaFileThreshold >= 0 ? deltaFileThreshold : 20
+  if (!parsed.ok) {
+    return {
+      mode: 'full',
+      base: mergeBase || '',
+      reason: parsed.reason,
+      carriedClaims: [],
+      carriedObservations: [],
+      carriedCount: 0,
+      carriedObservationCount: 0,
+      round: 1,
+    }
+  }
+  const rounds = parsed.rounds
+  const carriedClaims = carriedReviewClaims({ rounds })
+  const carriedObservations = carriedReviewObservations({ rounds })
+  const carriedCount = carriedClaims.length
+  const carriedObservationCount = carriedObservations.length
+  const nextRound = rounds.length ? Math.max(...rounds.map((r) => r.round)) + 1 : 1
+  const last = rounds.at(-1)
+  const lastFullIndex = rounds.findLastIndex((r) => r.mode === 'full')
+  const sinceLastFull = lastFullIndex === -1 ? rounds : rounds.slice(lastFullIndex + 1)
+  const cumulativeFiles = new Set(uniqStrings(changedFiles))
+  for (const round of sinceLastFull) {
+    for (const file of uniqStrings(round.changedFiles)) cumulativeFiles.add(file)
+  }
+  const base = last?.tip || mergeBase || ''
+  const full = (reason) => ({
+    mode: 'full',
+    base: mergeBase || base,
+    reason,
+    carriedClaims,
+    carriedObservations,
+    carriedCount,
+    carriedObservationCount,
+    round: nextRound,
+  })
+  if (forceFull === true) return full('force-full')
+  if (!rounds.length) return full('first-round')
+  if (anchorMissing || carriedClaims.some((claim) => claim.anchorMissing === true)) {
+    return full('anchor-missing')
+  }
+  if (uniqStrings(unreviewedFixFiles).length > 0) return full('unreviewed-fix-file')
+  if (last?.mergeBase && mergeBase && last.mergeBase !== mergeBase) {
+    return full('merge-base-changed')
+  }
+  if (!lastTipAncestorOfCurrentTip) return full('tip-not-ancestor')
+  if (cumulativeFiles.size > threshold) return full('delta-file-threshold')
+  return {
+    mode: 'delta',
+    base,
+    reason: 'delta',
+    carriedClaims,
+    carriedObservations,
+    carriedCount,
+    carriedObservationCount,
+    round: nextRound,
+  }
+}
+
+export function reviewerInputByteTotals(state = {}) {
+  const rounds = Array.isArray(state) ? state : state?.rounds
+  let totalBytes = 0
+  const perRound = asArray(rounds).map((round, index) => {
+    const inputBytes = Number.isInteger(round?.reviewerInputBytes)
+      ? round.reviewerInputBytes
+      : Buffer.byteLength(String(round?.reviewerInput ?? ''), 'utf8')
+    totalBytes += inputBytes
+    return { round: round?.round ?? index + 1, inputBytes, totalBytes }
+  })
+  return { rounds: perRound, totalBytes }
 }
 
 // "Must-fix detail": one bullet per item, disposition badge first.
@@ -202,6 +506,39 @@ function renderInvalid(invalid = []) {
       return `${reason}\n\n${fence}json\n${payload}\n${fence}`
     })
     .join('\n\n')
+}
+
+function renderPatchSummary(patchSummary = {}) {
+  const patchable = Number(patchSummary.patchable ?? 0)
+  const narrative = Number(patchSummary.narrative ?? 0)
+  const nullWithReason = Number(patchSummary.nullWithReason ?? 0)
+  if (!patchable && !narrative && !nullWithReason) return ''
+  const parts = [
+    `${patchable} patchable`,
+    `${narrative} narrative`,
+    `${nullWithReason} patch-null-with-reason`,
+  ]
+  return `Patch handling: ${parts.join(' / ')}.`
+}
+
+function renderCarriedObservations(observations = []) {
+  const items = asArray(observations)
+    .filter(
+      (observation) =>
+        Number.isInteger(observation?.round) &&
+        typeof observation?.category === 'string' &&
+        observation.category.trim() !== '' &&
+        typeof observation?.paragraph === 'string' &&
+        observation.paragraph.trim() !== '',
+    )
+    .sort((a, b) => a.round - b.round)
+  if (!items.length) return ''
+  return items
+    .map(
+      (observation) =>
+        `- **Round ${observation.round} — ${esc(observation.category)}:** ${esc(observation.paragraph)}`,
+    )
+    .join('\n')
 }
 
 // "Create N follow-up issues": a single copyable, fence-guarded prompt an agent
@@ -270,6 +607,9 @@ export function renderReport(data = {}) {
     gates = [],
     mustfix = {},
     invalid = [],
+    patchSummary = {},
+    carriedObservations = [],
+    reviewerInputBytes = {},
     leaveAsIs = [],
     suggestions = [],
     prUrl = '',
@@ -296,6 +636,9 @@ export function renderReport(data = {}) {
   const evidence = renderEvidence({ evidenceRows, gates })
   if (evidence) blocks.push(detailsSection('Evidence — rounds & gates', evidence))
 
+  const reviewerBytes = renderReviewerInputBytes(reviewerInputBytes)
+  if (reviewerBytes) blocks.push(reviewerBytes)
+
   const mf = renderMustfix(mustfix)
   if (mf) {
     const tally =
@@ -303,6 +646,13 @@ export function renderReport(data = {}) {
       `verified ${mustfix.verified ?? 0} / unresolved ${mustfix.unresolved ?? 0}`
     blocks.push(detailsSection(`Must-fix detail — ${tally}`, mf))
   }
+
+  const patchTally = renderPatchSummary(patchSummary)
+  if (patchTally) blocks.push(patchTally)
+
+  blocks.push(
+    detailsSection('Within-run observations', renderCarriedObservations(carriedObservations)),
+  )
 
   blocks.push(
     detailsSection('Invalid reviewer findings — repair or re-run required', renderInvalid(invalid)),
@@ -328,7 +678,9 @@ if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2)
   const usage =
     'usage: bs-review-report [--in <path>]\n' +
+    '       bs-review-report <round-state|next-round-mode|carried-claims|carried-observations|reviewer-input-bytes> [--in <path>]\n' +
     '  Renders report JSON to markdown on stdout.\n' +
+    '  Subcommands read JSON and print JSON to stdout.\n' +
     '  With no arguments, reads the JSON from stdin.\n' +
     '  --in <path>  read the JSON from a file instead of stdin\n' +
     '  -h, --help   show this message\n'
@@ -337,11 +689,38 @@ if (isMainModule(import.meta.url)) {
   // This runs BEFORE the isTTY branch below so an unrecognised flag (a typo,
   // --help, a future caller's flag) can never fall through to the
   // empty-stdin default-report path and print a fabricated pass.
-  const isValidIn = argv.length === 2 && argv[0] === '--in' && Boolean(argv[1])
-  if (argv.length > 0 && !isValidIn) {
+  const subcommands = new Set([
+    'round-state',
+    'next-round-mode',
+    'carried-claims',
+    'carried-observations',
+    'reviewer-input-bytes',
+  ])
+  const isSubcommand = subcommands.has(argv[0])
+  const subArgs = isSubcommand ? argv.slice(1) : argv
+  const isValidIn = subArgs.length === 2 && subArgs[0] === '--in' && Boolean(subArgs[1])
+  const runSubcommand = (input) => {
+    const result =
+      argv[0] === 'round-state'
+        ? parseRoundState(input)
+        : argv[0] === 'next-round-mode'
+          ? nextReviewRoundMode(input?.state === undefined ? { state: input } : input)
+          : argv[0] === 'carried-claims'
+            ? carriedReviewClaims(input)
+            : argv[0] === 'carried-observations'
+              ? carriedReviewObservations(input)
+              : reviewerInputByteTotals(input)
+    process.stdout.write(`${JSON.stringify(result)}\n`)
+  }
+  if (argv.length > 0 && !isSubcommand && !isValidIn) {
     process.stderr.write(usage)
     process.exit(2)
-  } else if (isValidIn) {
+  } else if (isSubcommand && subArgs.length > 0 && !isValidIn) {
+    process.stderr.write(usage)
+    process.exit(2)
+  } else if (isSubcommand && isValidIn) {
+    runSubcommand(JSON.parse(readFileSync(subArgs[1], 'utf8')))
+  } else if (!isSubcommand && isValidIn) {
     process.stdout.write(renderReport(JSON.parse(readFileSync(argv[1], 'utf8'))))
   } else if (process.stdin.isTTY) {
     process.stderr.write('bs-review-report: provide JSON via --in <path> or on stdin\n')
@@ -349,8 +728,12 @@ if (isMainModule(import.meta.url)) {
   } else {
     const chunks = []
     process.stdin.on('data', (c) => chunks.push(c))
-    process.stdin.on('end', () =>
-      process.stdout.write(renderReport(JSON.parse(chunks.join('') || '{}'))),
-    )
+    process.stdin.on('end', () => {
+      if (!isSubcommand) {
+        process.stdout.write(renderReport(JSON.parse(chunks.join('') || '{}')))
+        return
+      }
+      runSubcommand(JSON.parse(chunks.join('') || '{}'))
+    })
   }
 }

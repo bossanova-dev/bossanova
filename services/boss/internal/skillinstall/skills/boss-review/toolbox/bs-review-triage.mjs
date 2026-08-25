@@ -12,8 +12,8 @@
 //
 // Node built-ins only — cron worktrees are dependency-free.
 
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join, resolve, relative } from 'node:path'
 import { isMainModule } from './main-module.mjs'
 import { validateResult } from './skill-extensions.mjs'
 
@@ -21,9 +21,78 @@ import { validateResult } from './skill-extensions.mjs'
 // reporting the same (file, line, title) is enough to promote it, even below
 // Critical/Warning severity. Overridable per call via `convergenceThreshold`.
 export const CONVERGENCE_THRESHOLD = 2
+export const MONOCLASS_MIN_FINDINGS = 3
+export const MONOCLASS_MAJORITY_THRESHOLD = 0.75
 
 // Severity merges upward: Critical > Warning > Suggestion.
 const SEVERITY_RANK = { Suggestion: 1, Warning: 2, Critical: 3 }
+const PROSE_CLASS_EXTENSIONS = /\.(adoc|markdown|md|mdx|rst|txt)$/i
+
+function isRepoRelativePath(file) {
+  return !isAbsolute(file) && !relative('', file).startsWith('..')
+}
+
+function isInside(root, file) {
+  const rel = relative(root, file)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function countOccurrences(text, needle) {
+  if (needle.length === 0) return 0
+  let count = 0
+  let index = 0
+  while ((index = text.indexOf(needle, index)) !== -1) {
+    count += 1
+    index += 1
+  }
+  return count
+}
+
+function validatePatch(item, { repoRoot = process.cwd() } = {}) {
+  const proseClass = PROSE_CLASS_EXTENSIONS.test(item.file)
+  if (!Object.hasOwn(item, 'patch')) {
+    return proseClass
+      ? { reason: 'prose-class finding requires patch or patch:null with patchReason' }
+      : { meta: { kind: 'narrative' } }
+  }
+
+  if (item.patch === null) {
+    if (typeof item.patchReason !== 'string' || item.patchReason.trim() === '') {
+      return { reason: 'patch:null requires non-empty patchReason' }
+    }
+    return { meta: { kind: 'null-with-reason', reason: item.patchReason } }
+  }
+
+  if (typeof item.patch !== 'object' || Array.isArray(item.patch)) {
+    return { reason: 'patch must be an object or null' }
+  }
+
+  const { file, old_string: oldString, new_string: newString } = item.patch
+  if (typeof file !== 'string' || file.trim() === '')
+    return { reason: 'patch.file missing or blank' }
+  if (!isRepoRelativePath(file)) return { reason: 'patch.file must be repo-root relative' }
+  if (typeof oldString !== 'string' || oldString.length === 0) {
+    return { reason: 'patch.old_string missing or empty' }
+  }
+  if (typeof newString !== 'string') return { reason: 'patch.new_string missing or non-string' }
+
+  const root = resolve(repoRoot)
+  const path = resolve(root, file)
+  if (!isInside(root, path)) return { reason: 'patch.file escapes repo root' }
+  if (!existsSync(path)) return { reason: `patch.file not found: ${file}` }
+
+  const bytes = readFileSync(path, 'utf8')
+  const matches = countOccurrences(bytes, oldString)
+  if (matches !== 1) return { reason: `patch.old_string matched ${matches} times in ${file}` }
+  const start = bytes.indexOf(oldString)
+  return {
+    meta: {
+      kind: 'patch',
+      patch: { file, old_string: oldString, new_string: newString },
+      span: { file, start, end: start + oldString.length },
+    },
+  }
+}
 
 /**
  * Validate one findings item against the repo's reviewer findings contract.
@@ -31,22 +100,208 @@ const SEVERITY_RANK = { Suggestion: 1, Warning: 2, Critical: 3 }
  * @param {unknown} item
  * @returns {string|null}
  */
-function invalidReason(item) {
+function validateFinding(item, opts = {}) {
   if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-    return 'item is not an object'
+    return { reason: 'item is not an object' }
   }
   const { severity, file, line, title, detail, lens } = item
-  if (typeof file !== 'string' || file.trim() === '') return 'missing or blank file'
-  if (typeof title !== 'string' || title.trim() === '') return 'missing or blank title'
+  if (typeof file !== 'string' || file.trim() === '') return { reason: 'missing or blank file' }
+  if (typeof title !== 'string' || title.trim() === '') return { reason: 'missing or blank title' }
   // Deliberately NOT `.trim() === ''` like `file`/`title` above: a blank detail
   // on one occurrence is legal because a duplicate occurrence may supply the
   // real one, and only the merge in `triageFindings` knows whether any did.
   // The all-blank verdict is made there, per group, once every occurrence is in.
-  if (typeof detail !== 'string') return 'missing or non-string detail'
-  if (!Object.hasOwn(SEVERITY_RANK, severity)) return `unknown severity: ${String(severity)}`
-  if (line !== null && !Number.isInteger(line)) return 'line must be an integer or null'
-  if (typeof lens !== 'string' || lens.trim() === '') return 'missing or blank lens'
-  return null
+  if (typeof detail !== 'string') return { reason: 'missing or non-string detail' }
+  if (!Object.hasOwn(SEVERITY_RANK, severity))
+    return { reason: `unknown severity: ${String(severity)}` }
+  if (line !== null && !Number.isInteger(line)) return { reason: 'line must be an integer or null' }
+  if (typeof lens !== 'string' || lens.trim() === '') return { reason: 'missing or blank lens' }
+  return validatePatch(item, opts)
+}
+
+function invalidReason(item) {
+  return validateFinding(item).reason ?? null
+}
+
+function findingCategory(item) {
+  return typeof item?.category === 'string' ? item.category.trim() : ''
+}
+
+/**
+ * Classify the shape of one round's findings. A monoclass round needs a
+ * machine-readable optional `category` on every finding, enough findings to be
+ * a pattern, and either unanimity or a conservative supermajority.
+ *
+ * @param {unknown} findings
+ * @param {{minFindings?: number, majorityThreshold?: number}} [opts]
+ * @returns {{monoclass: boolean, category: string|null, findings: object[], reason: string, total: number, count: number}}
+ */
+export function classifyMonoclassRound(
+  findings,
+  { minFindings = MONOCLASS_MIN_FINDINGS, majorityThreshold = MONOCLASS_MAJORITY_THRESHOLD } = {},
+) {
+  if (!Array.isArray(findings)) {
+    return {
+      monoclass: false,
+      category: null,
+      findings: [],
+      reason: 'findings is not an array',
+      total: 0,
+      count: 0,
+    }
+  }
+
+  const total = findings.length
+  if (total < minFindings) {
+    return {
+      monoclass: false,
+      category: null,
+      findings: [],
+      reason: `below minimum finding floor (${total}/${minFindings})`,
+      total,
+      count: 0,
+    }
+  }
+
+  const missing = findings.some((item) => findingCategory(item) === '')
+  if (missing) {
+    return {
+      monoclass: false,
+      category: null,
+      findings: [],
+      reason: 'one or more findings are missing category',
+      total,
+      count: 0,
+    }
+  }
+
+  const byCategory = new Map()
+  for (const item of findings) {
+    const category = findingCategory(item)
+    if (!byCategory.has(category)) byCategory.set(category, [])
+    byCategory.get(category).push(item)
+  }
+
+  const [category, members] = [...byCategory.entries()].sort((a, b) => b[1].length - a[1].length)[0]
+  const count = members.length
+  if (count === total || (count >= minFindings && count / total >= majorityThreshold)) {
+    return {
+      monoclass: true,
+      category,
+      findings: members,
+      reason: count === total ? 'unanimous' : 'majority-threshold',
+      total,
+      count,
+    }
+  }
+
+  return {
+    monoclass: false,
+    category: null,
+    findings: [],
+    reason: `mixed categories (${count}/${total} below threshold ${majorityThreshold})`,
+    total,
+    count,
+  }
+}
+
+/**
+ * Append one derived within-run observation without mutating earlier entries.
+ * The caller owns synthesis; this helper owns the run-scoped list shape.
+ */
+export function appendCarriedObservation(observations = [], observation = {}) {
+  const prior = Array.isArray(observations) ? observations : []
+  const round = Number(observation.round)
+  const category = typeof observation.category === 'string' ? observation.category.trim() : ''
+  const paragraph = typeof observation.paragraph === 'string' ? observation.paragraph.trim() : ''
+  if (!Number.isInteger(round) || round < 1) {
+    throw new Error('carried observation needs a positive integer round')
+  }
+  if (!category) throw new Error('carried observation needs a category')
+  if (!paragraph) throw new Error('carried observation needs a paragraph')
+  return [...prior, { round, category, paragraph }]
+}
+
+function composeCluster(bytes, records) {
+  const min = Math.min(...records.map((r) => r.patchMeta.span.start))
+  const max = Math.max(...records.map((r) => r.patchMeta.span.end))
+  const chars = [...bytes.slice(min, max)]
+
+  for (const record of records) {
+    const { patch, span } = record.patchMeta
+    if (patch.old_string.length !== patch.new_string.length) {
+      return { conflict: 'overlapping patches with changed lengths cannot be composed safely' }
+    }
+    const offset = span.start - min
+    for (let i = 0; i < patch.new_string.length; i += 1) {
+      const next = patch.new_string[i]
+      const current = chars[offset + i]
+      if (current !== patch.old_string[i] && current !== next) {
+        return { conflict: 'overlapping patches write conflicting replacement bytes' }
+      }
+      chars[offset + i] = next
+    }
+  }
+
+  return {
+    patch: {
+      file: records[0].patchMeta.patch.file,
+      old_string: bytes.slice(min, max),
+      new_string: chars.join(''),
+    },
+  }
+}
+
+function composePatchPlan(records, { repoRoot = process.cwd() } = {}) {
+  const patchRecords = records.filter((record) => record.patchMeta?.kind === 'patch')
+  const byFile = new Map()
+  for (const record of patchRecords) {
+    const file = record.patchMeta.patch.file
+    if (!byFile.has(file)) byFile.set(file, [])
+    byFile.get(file).push(record)
+  }
+
+  const items = []
+  const conflicts = []
+  for (const [file, fileRecords] of byFile) {
+    const sorted = [...fileRecords].sort((a, b) => a.patchMeta.span.start - b.patchMeta.span.start)
+    const bytes = readFileSync(resolve(repoRoot, file), 'utf8')
+    let cluster = []
+    let clusterEnd = -1
+    const flush = () => {
+      if (!cluster.length) return
+      if (cluster.length === 1) {
+        items.push(cluster[0].patchMeta.patch)
+      } else {
+        const composed = composeCluster(bytes, cluster)
+        if (composed.conflict) {
+          conflicts.push({
+            item: cluster.map((record) => record.record),
+            reason: `${file}: ${composed.conflict}`,
+          })
+        } else {
+          items.push(composed.patch)
+        }
+      }
+      cluster = []
+      clusterEnd = -1
+    }
+
+    for (const record of sorted) {
+      const { start, end } = record.patchMeta.span
+      if (!cluster.length || start < clusterEnd) {
+        cluster.push(record)
+        clusterEnd = Math.max(clusterEnd, end)
+      } else {
+        flush()
+        cluster.push(record)
+        clusterEnd = end
+      }
+    }
+    flush()
+  }
+
+  return { items, conflicts }
 }
 
 /** The dedupe key: (file, line, title). A null line never collapses into a numbered one. */
@@ -100,9 +355,18 @@ function withReviewerLens(items, lens, filename) {
  * @param {{convergenceThreshold?: number}} [opts]
  * @returns {{mustFix: object[], pool: object[], invalid: {item: unknown, reason: string}[]}}
  */
-export function triageFindings(items, { convergenceThreshold = CONVERGENCE_THRESHOLD } = {}) {
+export function triageFindings(
+  items,
+  { convergenceThreshold = CONVERGENCE_THRESHOLD, repoRoot = process.cwd() } = {},
+) {
   if (!Array.isArray(items)) {
-    return { mustFix: [], pool: [], invalid: [{ item: items, reason: 'items is not an array' }] }
+    return {
+      mustFix: [],
+      pool: [],
+      invalid: [{ item: items, reason: 'items is not an array' }],
+      patchSummary: { patchable: 0, narrative: 0, nullWithReason: 0 },
+      patchPlan: { items: [] },
+    }
   }
 
   const invalid = []
@@ -111,11 +375,14 @@ export function triageFindings(items, { convergenceThreshold = CONVERGENCE_THRES
   for (const candidate of items) {
     const source = candidate?.[FINDING_SOURCE]
     const item = source ? candidate.item : candidate
-    const reason = invalidReason(item)
-    if (reason) {
-      invalid.push(source ? { item, reason, source } : { item, reason })
+    const validation = validateFinding(item, { repoRoot })
+    if (validation.reason) {
+      invalid.push(
+        source ? { item, reason: validation.reason, source } : { item, reason: validation.reason },
+      )
       continue
     }
+    const patchMeta = validation.meta
 
     const key = keyFor(item)
     let group = groups.get(key)
@@ -142,7 +409,7 @@ export function triageFindings(items, { convergenceThreshold = CONVERGENCE_THRES
       }
       groups.set(key, group)
     }
-    group.occurrences.push({ item, source })
+    group.occurrences.push({ item, source, patchMeta })
 
     if (SEVERITY_RANK[item.severity] > SEVERITY_RANK[group.severity]) {
       group.severity = item.severity
@@ -194,6 +461,12 @@ export function triageFindings(items, { convergenceThreshold = CONVERGENCE_THRES
     } else if (reviewerCount >= convergenceThreshold) {
       promotedBy = 'convergence'
     }
+    const patchMeta = group.occurrences.find(
+      (occurrence) => occurrence.patchMeta?.kind === 'patch',
+    )?.patchMeta
+    const nullWithReason = group.occurrences.find(
+      (occurrence) => occurrence.patchMeta?.kind === 'null-with-reason',
+    )?.patchMeta
     const record = {
       severity: group.severity,
       file: group.file,
@@ -204,10 +477,27 @@ export function triageFindings(items, { convergenceThreshold = CONVERGENCE_THRES
       reviewerCount,
       promotedBy,
     }
+    if (patchMeta) record.patch = patchMeta.patch
+    if (nullWithReason) {
+      record.patch = null
+      record.patchReason = nullWithReason.reason
+    }
+    const planRecord = { record, patchMeta }
     ;(promotedBy ? mustFix : pool).push(record)
+    record.__patchPlanRecord = planRecord
   }
 
-  return { mustFix, pool, invalid }
+  const planRecords = mustFix.map((record) => record.__patchPlanRecord).filter(Boolean)
+  const patchPlan = composePatchPlan(planRecords, { repoRoot })
+  invalid.push(...patchPlan.conflicts)
+  for (const record of [...mustFix, ...pool]) delete record.__patchPlanRecord
+  const patchSummary = {
+    patchable: mustFix.filter((record) => record.patch && typeof record.patch === 'object').length,
+    narrative: mustFix.filter((record) => !Object.hasOwn(record, 'patch')).length,
+    nullWithReason: mustFix.filter((record) => record.patch === null).length,
+  }
+
+  return { mustFix, pool, invalid, patchSummary, patchPlan: { items: patchPlan.items } }
 }
 
 /**

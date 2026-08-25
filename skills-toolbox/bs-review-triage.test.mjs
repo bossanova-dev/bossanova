@@ -5,7 +5,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CONVERGENCE_THRESHOLD, triageFindings } from './bs-review-triage.mjs'
+import {
+  CONVERGENCE_THRESHOLD,
+  MONOCLASS_MAJORITY_THRESHOLD,
+  appendCarriedObservation,
+  classifyMonoclassRound,
+  triageFindings,
+} from './bs-review-triage.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-triage.mjs', import.meta.url))
 
@@ -20,6 +26,16 @@ function finding(overrides = {}) {
     lens: 'claude',
     ...overrides,
   }
+}
+
+function categorizedFinding(category, overrides = {}) {
+  return finding({ category, title: `${category} ${overrides.title ?? 'finding'}`, ...overrides })
+}
+
+function writeRepoFile(root, file, contents) {
+  const path = join(root, file)
+  mkdirSync(join(path, '..'), { recursive: true })
+  writeFileSync(path, contents)
 }
 
 /** Run the CLI as a subprocess; return trimmed stdout/stderr + exit status. */
@@ -277,6 +293,114 @@ test('malformed items land in invalid with a reason, never in mustFix/pool', () 
   }
 })
 
+// --- BOS-1025: monoclass round classification ------------------------------
+
+test('BOS-1025: a round above the floor whose findings all share a category is monoclass', () => {
+  const result = classifyMonoclassRound([
+    categorizedFinding('false-universal', { lens: 'a' }),
+    categorizedFinding('false-universal', { lens: 'b' }),
+    categorizedFinding('false-universal', { lens: 'c' }),
+  ])
+  assert.equal(result.monoclass, true)
+  assert.equal(result.category, 'false-universal')
+  assert.equal(result.reason, 'unanimous')
+  assert.equal(result.total, 3)
+  assert.equal(result.count, 3)
+  assert.equal(result.findings.length, 3)
+})
+
+test('BOS-1025: majority threshold accepts exactly at the threshold and rejects one below it', () => {
+  const atThreshold = classifyMonoclassRound([
+    categorizedFinding('line-reference', { lens: 'a' }),
+    categorizedFinding('line-reference', { lens: 'b' }),
+    categorizedFinding('line-reference', { lens: 'c' }),
+    categorizedFinding('pronoun', { lens: 'd' }),
+  ])
+  assert.equal(3 / 4, MONOCLASS_MAJORITY_THRESHOLD)
+  assert.equal(atThreshold.monoclass, true)
+  assert.equal(atThreshold.category, 'line-reference')
+  assert.equal(atThreshold.reason, 'majority-threshold')
+
+  const belowThreshold = classifyMonoclassRound([
+    categorizedFinding('line-reference', { lens: 'a' }),
+    categorizedFinding('line-reference', { lens: 'b' }),
+    categorizedFinding('pronoun', { lens: 'c' }),
+    categorizedFinding('false-universal', { lens: 'd' }),
+  ])
+  assert.equal(belowThreshold.monoclass, false)
+  assert.match(belowThreshold.reason, /mixed categories/)
+})
+
+test('BOS-1025: single and below-floor rounds are never monoclass however unanimous', () => {
+  const single = classifyMonoclassRound([categorizedFinding('single')])
+  assert.equal(single.monoclass, false)
+  assert.match(single.reason, /below minimum finding floor \(1\/3\)/)
+
+  const belowFloor = classifyMonoclassRound([
+    categorizedFinding('two-item', { lens: 'a' }),
+    categorizedFinding('two-item', { lens: 'b' }),
+  ])
+  assert.equal(belowFloor.monoclass, false)
+  assert.match(belowFloor.reason, /below minimum finding floor \(2\/3\)/)
+})
+
+test('BOS-1025: mixed, empty and missing-category rounds return false without throwing', () => {
+  const mixed = classifyMonoclassRound([
+    categorizedFinding('a', { lens: 'a' }),
+    categorizedFinding('b', { lens: 'b' }),
+    categorizedFinding('c', { lens: 'c' }),
+  ])
+  assert.equal(mixed.monoclass, false)
+  assert.match(mixed.reason, /mixed/)
+
+  const empty = classifyMonoclassRound([])
+  assert.equal(empty.monoclass, false)
+  assert.match(empty.reason, /below minimum finding floor/)
+
+  const missing = classifyMonoclassRound([
+    finding({ lens: 'a' }),
+    categorizedFinding('has-category', { lens: 'b' }),
+    categorizedFinding('has-category', { lens: 'c' }),
+  ])
+  assert.equal(missing.monoclass, false)
+  assert.match(missing.reason, /missing category/)
+})
+
+test('BOS-1025: triage return shape, dedupe and severity behavior are unchanged by optional category', () => {
+  const categorized = triageFindings([
+    categorizedFinding('same-class', { severity: 'Critical', lens: 'a', title: 'same' }),
+    categorizedFinding('same-class', { severity: 'Suggestion', lens: 'b', title: 'same' }),
+  ])
+  const uncategorized = triageFindings([
+    finding({ severity: 'Critical', lens: 'a', title: 'same' }),
+    finding({ severity: 'Suggestion', lens: 'b', title: 'same' }),
+  ])
+  assert.deepEqual(Object.keys(categorized).sort(), Object.keys(uncategorized).sort())
+  assert.equal(categorized.mustFix.length, uncategorized.mustFix.length)
+  assert.equal(categorized.mustFix[0].promotedBy, uncategorized.mustFix[0].promotedBy)
+  assert.equal(categorized.mustFix[0].reviewerCount, uncategorized.mustFix[0].reviewerCount)
+})
+
+test('BOS-1025: carried observations append in round order without mutating earlier entries', () => {
+  const first = appendCarriedObservation([], {
+    round: 2,
+    category: 'false-universal',
+    paragraph: 'Round 2 findings all cited false universal wording.',
+  })
+  const second = appendCarriedObservation(first, {
+    round: 3,
+    category: 'line-reference',
+    paragraph: 'Round 3 findings repeatedly cited line-number references.',
+  })
+
+  assert.equal(first.length, 1)
+  assert.deepEqual(
+    second.map((entry) => entry.round),
+    [2, 3],
+  )
+  assert.equal(second[0].paragraph, first[0].paragraph)
+})
+
 test('missing or non-string detail is invalid rather than producing an incomplete finding', () => {
   const { mustFix, pool, invalid } = triageFindings([
     finding({ detail: undefined }),
@@ -289,6 +413,248 @@ test('missing or non-string detail is invalid rather than producing an incomplet
     invalid.map((entry) => entry.reason),
     ['missing or non-string detail', 'missing or non-string detail'],
   )
+})
+
+test('a valid patch is carried into a must-fix group and patch plan', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'before\nold reviewed sentence\nafter\n')
+    const result = triageFindings(
+      [
+        finding({
+          severity: 'Warning',
+          file: 'docs/review.md',
+          patch: {
+            file: 'docs/review.md',
+            old_string: 'old reviewed sentence',
+            new_string: 'new reviewed sentence',
+          },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.deepEqual(result.invalid, [])
+    assert.equal(result.mustFix.length, 1)
+    assert.deepEqual(result.mustFix[0].patch, {
+      file: 'docs/review.md',
+      old_string: 'old reviewed sentence',
+      new_string: 'new reviewed sentence',
+    })
+    assert.deepEqual(result.patchSummary, { patchable: 1, narrative: 0, nullWithReason: 0 })
+    assert.deepEqual(result.patchPlan.items, [result.mustFix[0].patch])
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('patch anchors matching zero or two times are invalid and name the match count', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'repeat\nrepeat\n')
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          patch: { file: 'docs/review.md', old_string: 'missing', new_string: 'x' },
+        }),
+        finding({
+          file: 'docs/review.md',
+          title: 'duplicate anchor',
+          patch: { file: 'docs/review.md', old_string: 'repeat', new_string: 'x' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0)
+    assert.deepEqual(
+      result.invalid.map((entry) => entry.reason),
+      [
+        'patch.old_string matched 0 times in docs/review.md',
+        'patch.old_string matched 2 times in docs/review.md',
+      ],
+    )
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('overlapping patch anchors are counted as distinct matches', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'aaa\n')
+    const result = triageFindings(
+      [
+        finding({
+          file: 'docs/review.md',
+          patch: { file: 'docs/review.md', old_string: 'aa', new_string: 'bb' },
+        }),
+      ],
+      { repoRoot },
+    )
+
+    assert.equal(result.mustFix.length, 0)
+    assert.equal(result.invalid[0].reason, 'patch.old_string matched 2 times in docs/review.md')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('malformed and missing-file patches are invalid without crashing', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    const cases = [
+      finding({ patch: { file: '', old_string: 'body', new_string: 'x' } }),
+      finding({
+        title: 'non-string new',
+        patch: { file: 'docs/review.md', old_string: 'body', new_string: 42 },
+      }),
+      finding({
+        title: 'empty old',
+        patch: { file: 'docs/review.md', old_string: '', new_string: 'x' },
+      }),
+      finding({
+        title: 'missing file',
+        patch: { file: 'docs/missing.md', old_string: 'body', new_string: 'x' },
+      }),
+    ]
+    const result = triageFindings(cases, { repoRoot })
+    assert.equal(result.invalid.length, 4)
+    assert.deepEqual(
+      result.invalid.map((entry) => entry.reason),
+      [
+        'patch.file missing or blank',
+        'patch.new_string missing or non-string',
+        'patch.old_string missing or empty',
+        'patch.file not found: docs/missing.md',
+      ],
+    )
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('overlapping patches compose into one exact replacement in either order', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'alpha beta gamma\n')
+    const first = finding({
+      severity: 'Warning',
+      file: 'docs/review.md',
+      title: 'first overlap',
+      patch: { file: 'docs/review.md', old_string: 'alpha beta', new_string: 'ALPHA BETA' },
+    })
+    const second = finding({
+      severity: 'Warning',
+      file: 'docs/review.md',
+      title: 'second overlap',
+      patch: { file: 'docs/review.md', old_string: 'beta gamma', new_string: 'BETA GAMMA' },
+    })
+
+    for (const items of [
+      [first, second],
+      [second, first],
+    ]) {
+      const result = triageFindings(items, { repoRoot })
+      assert.deepEqual(result.invalid, [])
+      assert.deepEqual(result.patchPlan.items, [
+        {
+          file: 'docs/review.md',
+          old_string: 'alpha beta gamma',
+          new_string: 'ALPHA BETA GAMMA',
+        },
+      ])
+    }
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('conflicting overlapping patches are reported and excluded from the patch plan', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'alpha beta gamma\n')
+    const result = triageFindings(
+      [
+        finding({
+          severity: 'Warning',
+          file: 'docs/review.md',
+          title: 'first conflict',
+          patch: { file: 'docs/review.md', old_string: 'alpha beta', new_string: 'ALPHA XXXX' },
+        }),
+        finding({
+          severity: 'Warning',
+          file: 'docs/review.md',
+          title: 'second conflict',
+          patch: { file: 'docs/review.md', old_string: 'beta gamma', new_string: 'BETA GAMMA' },
+        }),
+      ],
+      { repoRoot },
+    )
+
+    assert.deepEqual(result.patchPlan.items, [])
+    assert.equal(result.invalid.length, 1)
+    assert.equal(
+      result.invalid[0].reason,
+      'docs/review.md: overlapping patches write conflicting replacement bytes',
+    )
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('stale uniqueness is rechecked against current bytes before a patch is accepted', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'anchor\nintroduces anchor\n')
+    const result = triageFindings(
+      [
+        finding({
+          severity: 'Warning',
+          file: 'docs/review.md',
+          patch: { file: 'docs/review.md', old_string: 'anchor', new_string: 'replacement' },
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.equal(result.mustFix.length, 0)
+    assert.equal(result.invalid[0].reason, 'patch.old_string matched 2 times in docs/review.md')
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('prose-class findings require patch or patch:null with non-empty patchReason', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'bs-review-triage-repo-'))
+  try {
+    writeRepoFile(repoRoot, 'docs/review.md', 'body\n')
+    const missing = triageFindings([finding({ file: 'docs/review.md' })], { repoRoot })
+    assert.equal(
+      missing.invalid[0].reason,
+      'prose-class finding requires patch or patch:null with patchReason',
+    )
+
+    const accepted = triageFindings(
+      [
+        finding({
+          severity: 'Warning',
+          file: 'docs/review.md',
+          patch: null,
+          patchReason: 'The finding cites generated prose and needs a structural code fix.',
+        }),
+      ],
+      { repoRoot },
+    )
+    assert.deepEqual(accepted.invalid, [])
+    assert.equal(accepted.mustFix[0].patch, null)
+    assert.equal(
+      accepted.mustFix[0].patchReason,
+      'The finding cites generated prose and needs a structural code fix.',
+    )
+    assert.deepEqual(accepted.patchSummary, { patchable: 0, narrative: 0, nullWithReason: 1 })
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true })
+  }
 })
 
 test('non-array items argument returns empty groups plus one invalid entry, and does not throw', () => {

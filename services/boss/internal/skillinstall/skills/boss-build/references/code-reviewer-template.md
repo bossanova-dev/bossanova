@@ -29,11 +29,34 @@ Subagent (general-purpose):
 
     **Base:** [BASE_SHA]
     **Head:** [HEAD_SHA]
+    **Mode:** [ROUND_MODE]
 
     ```bash
     git diff --stat [BASE_SHA]..[HEAD_SHA]
     git diff [BASE_SHA]..[HEAD_SHA]
     ```
+
+    ## Carried Claims
+
+    [CARRIED_CLAIMS]
+
+    When this is a delta round, review both parts: the diff in `[BASE_SHA]..[HEAD_SHA]` and every
+    carried claim row. A carried claim row is `{findingId, file, anchor}`. Open `file`, grep for
+    `anchor`, and re-check the claim even if the file is absent from the delta. If an anchor no
+    longer resolves, report that as a review-scope failure rather than silently ignoring the row.
+
+    ## Within-Run Observations
+
+    [CARRIED_OBSERVATIONS]
+
+    These observations are provisional and additive. Each row was derived from one earlier round's
+    findings in this same run; it is not an established rule and it does not narrow your review
+    scope. Use it as an extra check for the named defect class while still reviewing the full range
+    and every carried claim above.
+
+    ## Base Drift
+
+    [BASE_DRIFT_NOTE]
 
     ## Read-Only Review
 
@@ -136,6 +159,18 @@ Subagent (general-purpose):
 - `[PLAN_OR_REQUIREMENTS]` — what it should do (plan file path, task text, or requirements)
 - `[BASE_SHA]` — starting commit
 - `[HEAD_SHA]` — ending commit
+- `[ROUND_MODE]` — `full` or `delta`; round 1 is always `full`.
+- `[CARRIED_CLAIMS]` — JSON or bullet list of `{findingId, file, anchor}` rows; use `[]` for a full
+  round with no carried claims.
+- `[CARRIED_OBSERVATIONS]` — JSON or bullet list of
+  `{round, category, paragraph}` rows derived earlier in this run; use `[]` when none exist.
+- `[BASE_DRIFT_NOTE]` — the one-line report from the round-boundary base-drift check, verbatim. It
+  is the only way the reviewer learns that someone else changed these same paths while this branch
+  was being written: an overlap that merges textually clean is invisible in the diff above, so a
+  reviewer who is not told simply cannot find it. Fill it on every round, including the rounds where
+  the base did not move — `Base drift: none.` is a real answer and an empty slot is not. When the
+  check was skipped or could not evaluate, say **that**, naming the reason; never substitute
+  `Base drift: none.` for an answer nobody obtained.
 - `[TIME_BUDGET_SECONDS]` — the dispatching step's hard return-by, in seconds. Never omit it: the
   caller awaits this dispatch and cannot preempt it, so a budget the caller keeps to itself bounds
   nothing. In `boss-build` it is Step 6's `REVIEW_LEG_SECONDS`, the degraded whole-branch

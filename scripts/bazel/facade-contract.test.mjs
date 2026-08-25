@@ -39,7 +39,11 @@ function makeDryRun(args, extraEnv = {}) {
 
 test('test-bossd delegates to bazel //services/bossd/... + the bossd ledger step', () => {
   const out = makeDryRun(['test-bossd'])
-  assert.match(out, /test --test_output=errors \/\/services\/bossd\/\.\.\./)
+  assert.match(out, /gate-cache\.mjs run --site test-bossd/)
+  assert.match(
+    out,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/bossd\/\.\.\./,
+  )
   assert.match(out, /run-ledger\.mjs --module services\/bossd --disposition default-run/)
 })
 
@@ -47,6 +51,13 @@ test('RACE=1 maps to --config=race on bazel AND --race on the ledger step', () =
   const out = makeDryRun(['RACE=1', 'test-bossd'])
   assert.match(out, /--config=race/)
   assert.match(out, /run-ledger\.mjs .*--race/)
+})
+
+test('forced uncached module run preserves race config and adds uncached Bazel flag', () => {
+  const out = makeDryRun(['RACE=1', 'BOSS_GATE_FORCE_UNCACHED=1', 'test-bossd'])
+  assert.match(out, /--config=race/)
+  assert.match(out, /\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}/)
+  assert.match(out, /--nocache_test_results/)
 })
 
 test('test-smoke runs the short bazel loop over //...', () => {
@@ -60,7 +71,7 @@ test('test-all: guards run before the bazel loop, native ledger runs after', () 
   const out = makeDryRun(['test-all'])
   const idxScripts = out.indexOf('test-scripts')
   const idxMirror = out.indexOf('test-public-mirror')
-  const idxBazel = out.search(/test --test_output=errors \/\/\.\.\./)
+  const idxBazel = out.search(/test --test_output=errors\s+\/\/\.\.\./)
   const idxLedger = out.search(/test-native-ledger|run-ledger/)
   assert.ok(idxScripts >= 0 && idxMirror >= 0 && idxBazel >= 0 && idxLedger >= 0, out)
   assert.ok(idxScripts < idxBazel, 'test-scripts guard must precede the bazel loop')
@@ -117,5 +128,9 @@ test('optional-module guard: mcp-gateway present here yields its bazel line', ()
   // the target entirely, so no bazel line is emitted for it. services/mcp-gateway
   // IS present in this repo, so we assert the present-case bazel delegation.
   const out = makeDryRun(['test-mcp-gateway'])
-  assert.match(out, /test --test_output=errors \/\/services\/mcp-gateway\/\.\.\./)
+  assert.match(out, /gate-cache\.mjs run --site test-mcp-gateway/)
+  assert.match(
+    out,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/mcp-gateway\/\.\.\./,
+  )
 })

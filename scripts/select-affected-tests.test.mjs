@@ -573,10 +573,23 @@ function createMakeFixture({ nodeScript, makeScript, makefileText }) {
   fs.mkdirSync(binDirectory)
 
   const nodePath = path.join(binDirectory, 'node')
+  const selectorPath = path.join(binDirectory, 'select-affected-tests')
   const makePath = path.join(binDirectory, 'make')
   const logPath = path.join(directory, 'make.log')
 
-  fs.writeFileSync(nodePath, nodeScript, { mode: 0o755 })
+  fs.writeFileSync(selectorPath, nodeScript, { mode: 0o755 })
+  fs.writeFileSync(
+    nodePath,
+    [
+      '#!/bin/sh',
+      'if [ "$1" = "scripts/select-affected-tests.mjs" ]; then',
+      `  exec ${JSON.stringify(selectorPath)}`,
+      'fi',
+      `exec ${JSON.stringify(process.execPath)} "$@"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
   fs.writeFileSync(makePath, makeScript, { mode: 0o755 })
   fs.writeFileSync(logPath, '')
   if (makefileText) {
@@ -597,6 +610,7 @@ function runMakeFixture(fixture) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      BOSS_GATE_STAMP_DIR: path.join(fixture.directory, 'gate-stamps'),
       FAKE_MAKE_LOG: fixture.logPath,
       PATH: `${fixture.binDirectory}${path.delimiter}${process.env.PATH}`,
     },

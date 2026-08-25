@@ -645,6 +645,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     // imports it, so it ships wherever the adapter does.
     'boss-binary.mjs',
     'bossd-present.mjs',
+    'bs-dispatch-await.mjs',
     'bs-epic-lib.mjs',
     'bs-run-sentinel.mjs',
     'callback/adapter.mjs',

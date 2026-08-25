@@ -1,11 +1,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderReport, MARKER, VERDICT_OK } from './bs-review-report.mjs'
+import {
+  renderReport,
+  MARKER,
+  VERDICT_OK,
+  parseRoundState,
+  nextReviewRoundMode,
+  carriedReviewClaims,
+  carriedReviewObservations,
+  validateReviewClaim,
+  reviewerInputByteTotals,
+} from './bs-review-report.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-report.mjs', import.meta.url))
 
@@ -188,6 +198,21 @@ test('a cap with both blockers reports both counts', () => {
     invalid: [{ reason: 'a' }, { reason: 'b' }, { reason: 'c' }],
   })
   assert.match(md, /2 must-fix findings and 3 invalid entries remain \(surfaced below\)/)
+})
+
+test('patch summary reports patchable, narrative, and null-with-reason counts', () => {
+  const md = renderReport({
+    patchSummary: { patchable: 2, narrative: 1, nullWithReason: 1 },
+  })
+  assert.match(md, /Patch handling: 2 patchable \/ 1 narrative \/ 1 patch-null-with-reason\./)
+})
+
+test('zero patch summary is omitted and never claims a patch was applied', () => {
+  const md = renderReport({
+    patchSummary: { patchable: 0, narrative: 0, nullWithReason: 0 },
+  })
+  assert.doesNotMatch(md, /Patch handling:/)
+  assert.doesNotMatch(md, /patchable/)
 })
 
 // Neither count is reportable: stay truthful rather than asserting a zero.
@@ -454,6 +479,24 @@ test('evidence section renders a markdown table and the gate roster', () => {
   assert.match(md, /Gates \(all green\): `make codex-skills-check` · `make test-scripts \(642\)`\./)
 })
 
+test('BOS-1019: evidence rows can render review mode, base, and carried count', () => {
+  const md = renderReport({
+    reviewerInputBytes: { baseline: 900, resolved: 420 },
+    evidenceRows: [
+      {
+        round: 'Round 2',
+        mode: 'delta',
+        base: 'abc1234',
+        carriedCount: 3,
+        result: '1 must-fix fixed',
+      },
+    ],
+  })
+  assert.match(md, /\| Round \| Mode \| Base \| Carried \| Result \|/)
+  assert.match(md, /\| Round 2 \| delta \| abc1234 \| 3 \| 1 must-fix fixed \|/)
+  assert.match(md, /Reviewer input bytes: baseline 900; resolved 420\./)
+})
+
 test('must-fix items badge each disposition', () => {
   const md = renderReport({
     mustfix: {
@@ -527,4 +570,393 @@ test('CLI rejects --in with no following value (stdin closed, not a TTY)', () =>
   assert.equal(status, 2)
   assert.equal(stdout, '')
   assert.match(stderr, /usage/i)
+})
+
+// --- BOS-1019: review delta state helpers ---------------------------------
+
+function roundState() {
+  return {
+    rounds: [
+      {
+        round: 1,
+        mode: 'full',
+        base: 'base-0',
+        tip: 'tip-1',
+        mergeBase: 'base-0',
+        changedFiles: ['a.js', 'b.js'],
+        claims: [
+          {
+            id: 'open-1',
+            status: 'open',
+            file: 'a.js',
+            line: 3,
+            title: 'Still open',
+            anchor: 'function stillOpen',
+          },
+        ],
+      },
+      {
+        round: 2,
+        mode: 'delta',
+        base: 'tip-1',
+        tip: 'tip-2',
+        mergeBase: 'base-0',
+        changedFiles: ['c.js'],
+        claims: [
+          {
+            id: 'fixed-1',
+            status: 'fixed',
+            file: 'b.js',
+            line: 4,
+            title: 'Fixed',
+            anchor: 'fixedBranch()',
+          },
+          {
+            id: 'verified-1',
+            status: 'verified',
+            file: 'c.js',
+            line: 5,
+            title: 'Verified',
+            anchor: 'verifiedBranch()',
+          },
+        ],
+      },
+    ],
+  }
+}
+
+test('BOS-1019: round 1 is always full and absent state forces full', () => {
+  assert.deepEqual(nextReviewRoundMode({ state: { rounds: [] }, mergeBase: 'base' }), {
+    mode: 'full',
+    base: 'base',
+    reason: 'first-round',
+    carriedClaims: [],
+    carriedObservations: [],
+    carriedCount: 0,
+    carriedObservationCount: 0,
+    round: 1,
+  })
+  assert.equal(nextReviewRoundMode({ state: {}, mergeBase: 'base' }).mode, 'full')
+  assert.match(nextReviewRoundMode({ state: {}, mergeBase: 'base' }).reason, /rounds array/)
+})
+
+test('BOS-1019: round 3 delta base equals round 2 tip', () => {
+  const next = nextReviewRoundMode({
+    state: roundState(),
+    changedFiles: ['d.js'],
+    mergeBase: 'base-0',
+    deltaFileThreshold: 20,
+  })
+  assert.equal(next.round, 3)
+  assert.equal(next.mode, 'delta')
+  assert.equal(next.base, 'tip-2')
+})
+
+test('BOS-1025: carried observations accumulate in round order and reach the next round mode', () => {
+  const state = roundState()
+  state.rounds[0].derivedObservations = [
+    {
+      round: 1,
+      category: 'false-universal',
+      paragraph: 'Round 1 findings repeatedly cited false universal wording.',
+    },
+  ]
+  state.rounds[1].carriedObservations = [
+    {
+      round: 2,
+      category: 'line-reference',
+      paragraph: 'Round 2 findings repeatedly cited line-number references.',
+    },
+  ]
+
+  assert.deepEqual(carriedReviewObservations(state), [
+    {
+      round: 1,
+      category: 'false-universal',
+      paragraph: 'Round 1 findings repeatedly cited false universal wording.',
+    },
+    {
+      round: 2,
+      category: 'line-reference',
+      paragraph: 'Round 2 findings repeatedly cited line-number references.',
+    },
+  ])
+  const next = nextReviewRoundMode({ state, changedFiles: ['d.js'], mergeBase: 'base-0' })
+  assert.equal(next.carriedObservationCount, 2)
+  assert.equal(next.carriedObservations[1].category, 'line-reference')
+})
+
+test('BOS-1025: cumulative round snapshots do not duplicate carried observations', () => {
+  const first = {
+    round: 1,
+    category: 'false-universal',
+    paragraph: 'Round 1 findings repeatedly cited false universal wording.',
+  }
+  const second = {
+    round: 2,
+    category: 'line-reference',
+    paragraph: 'Round 2 findings repeatedly cited line-number references.',
+  }
+  const state = {
+    rounds: [
+      { round: 1, mode: 'full', tip: 't1', carriedObservations: [first] },
+      { round: 2, mode: 'delta', tip: 't2', carriedObservations: [first, second] },
+    ],
+  }
+
+  assert.deepEqual(carriedReviewObservations(state), [first, second])
+  const next = nextReviewRoundMode({ state, changedFiles: ['d.js'], mergeBase: 'base-0' })
+  assert.equal(next.carriedObservationCount, 2)
+})
+
+test('BOS-1025: report renders observations attributed to their rounds', () => {
+  const md = renderReport({
+    carriedObservations: [
+      {
+        round: 2,
+        category: 'false-universal',
+        paragraph:
+          'Within-run observation from round 2: findings cited false universal wording only.',
+      },
+      {
+        round: 3,
+        category: 'line-reference',
+        paragraph: 'Within-run observation from round 3: findings cited line-number references.',
+      },
+    ],
+  })
+  assert.match(md, /<details><summary>Within-run observations<\/summary>/)
+  assert.match(
+    md,
+    /Round 2 — false-universal.*Within-run observation from round 2: findings cited false universal wording only\./,
+  )
+  assert.match(md, /Round 3 — line-reference/)
+})
+
+test('BOS-1025: a run with no observations renders the same report as before', () => {
+  assert.equal(renderReport({}), renderReport({ carriedObservations: [] }))
+})
+
+test('BOS-1019: cumulative changed-file threshold since last full escalates to full', () => {
+  const next = nextReviewRoundMode({
+    state: roundState(),
+    changedFiles: ['d.js', 'e.js'],
+    mergeBase: 'base-0',
+    deltaFileThreshold: 2,
+  })
+  assert.equal(next.mode, 'full')
+  assert.equal(next.reason, 'delta-file-threshold')
+  assert.equal(next.base, 'base-0')
+})
+
+test('BOS-1019: unreviewed fix file escalates to full', () => {
+  const next = nextReviewRoundMode({
+    state: roundState(),
+    changedFiles: ['d.js'],
+    unreviewedFixFiles: ['fix.js'],
+    mergeBase: 'base-0',
+  })
+  assert.equal(next.mode, 'full')
+  assert.equal(next.reason, 'unreviewed-fix-file')
+})
+
+test('BOS-1019: merge-base changed and prior tip is not ancestor forces full', () => {
+  const next = nextReviewRoundMode({
+    state: roundState(),
+    changedFiles: ['d.js'],
+    mergeBase: 'base-1',
+  })
+  assert.equal(next.mode, 'full')
+  assert.equal(next.reason, 'merge-base-changed')
+
+  const rebased = nextReviewRoundMode({
+    state: roundState(),
+    changedFiles: ['d.js'],
+    mergeBase: 'base-0',
+    lastTipAncestorOfCurrentTip: false,
+  })
+  assert.equal(rebased.mode, 'full')
+  assert.equal(rebased.reason, 'tip-not-ancestor')
+})
+
+test('BOS-1019: missing carried anchor forces full', () => {
+  const state = roundState()
+  state.rounds[1].claims.push({
+    id: 'lost-anchor',
+    status: 'open',
+    file: 'gone.js',
+    line: 9,
+    title: 'Lost anchor',
+    anchor: 'missingSymbol',
+    anchorMissing: true,
+  })
+  const next = nextReviewRoundMode({ state, changedFiles: ['d.js'], mergeBase: 'base-0' })
+  assert.equal(next.mode, 'full')
+  assert.equal(next.reason, 'anchor-missing')
+})
+
+test('BOS-1019: malformed round state forces full', () => {
+  assert.equal(parseRoundState({ rounds: [{ round: 1, mode: 'full' }] }).ok, false)
+  const next = nextReviewRoundMode({ state: { rounds: [{ round: 1, mode: 'full' }] } })
+  assert.equal(next.mode, 'full')
+  assert.match(next.reason, /tip/)
+})
+
+test('BOS-1019: bare line number is rejected', () => {
+  assert.deepEqual(validateReviewClaim({ id: 'x', status: 'open', line: 7 }), {
+    ok: false,
+    reason: 'claim with a line must include a file',
+  })
+  assert.deepEqual(validateReviewClaim({ id: 'x', status: 'open', file: 'a.js', anchor: '7' }), {
+    ok: false,
+    reason: 'claim anchor must not be a line number',
+  })
+  assert.equal(
+    parseRoundState({
+      rounds: [{ round: 1, mode: 'full', tip: 't1', claims: [{ id: 'x', file: 'a.js' }] }],
+    }).ok,
+    false,
+  )
+})
+
+test('BOS-1019: carried claims include open, fixed, verified and persist until reclosed', () => {
+  const state = {
+    rounds: [
+      {
+        round: 1,
+        mode: 'full',
+        tip: 't1',
+        claims: [
+          {
+            id: 'open',
+            disposition: 'unresolved',
+            file: 'a.js',
+            line: 1,
+            title: 'Open',
+            anchor: 'openFinding',
+          },
+          {
+            id: 'fixed',
+            status: 'fixed',
+            file: 'b.js',
+            line: 2,
+            title: 'Fixed',
+            anchor: 'fixedFinding',
+          },
+        ],
+      },
+      {
+        round: 2,
+        mode: 'delta',
+        tip: 't2',
+        claims: [
+          {
+            id: 'verified',
+            status: 'verified',
+            file: 'c.js',
+            line: 3,
+            title: 'Verified',
+            anchor: 'verifiedFinding',
+          },
+        ],
+      },
+    ],
+  }
+  assert.deepEqual(
+    carriedReviewClaims(state)
+      .map((c) => `${c.id}:${c.status}`)
+      .sort(),
+    ['fixed:fixed', 'open:open', 'verified:verified'],
+  )
+  state.rounds.push({
+    round: 3,
+    mode: 'delta',
+    tip: 't3',
+    claims: [
+      {
+        id: 'open',
+        status: 'reclosed',
+        file: 'a.js',
+        line: 1,
+        title: 'Open',
+        anchor: 'openFinding',
+      },
+    ],
+  })
+  assert.deepEqual(
+    carriedReviewClaims(state)
+      .map((c) => c.id)
+      .sort(),
+    ['fixed', 'verified'],
+  )
+})
+
+test('BOS-1019: reviewer input byte totals accumulate over synthetic 9-round and 3-round sequences', () => {
+  const nine = {
+    rounds: Array.from({ length: 9 }, (_, i) => ({
+      round: i + 1,
+      reviewerInputBytes: (i + 1) * 10,
+    })),
+  }
+  assert.equal(reviewerInputByteTotals(nine).totalBytes, 450)
+  assert.equal(reviewerInputByteTotals(nine).rounds.at(-1).totalBytes, 450)
+
+  const three = {
+    rounds: [
+      { round: 1, reviewerInput: 'aa' },
+      { round: 2, reviewerInput: '€' },
+      { round: 3, reviewerInput: 'bbbb' },
+    ],
+  }
+  assert.deepEqual(
+    reviewerInputByteTotals(three).rounds.map((r) => r.totalBytes),
+    [2, 5, 9],
+  )
+})
+
+test('BOS-1019: CLI subcommands return JSON and preserve unknown argv rejection', () => {
+  const state = JSON.stringify(roundState())
+  assert.equal(JSON.parse(runCli(['round-state'], state).stdout).ok, true)
+  assert.equal(JSON.parse(runCli(['next-round-mode'], state).stdout).mode, 'delta')
+  assert.equal(JSON.parse(runCli(['carried-claims'], state).stdout).length, 3)
+  assert.equal(
+    JSON.parse(
+      runCli(['reviewer-input-bytes'], JSON.stringify({ rounds: [{ reviewerInput: 'abc' }] }))
+        .stdout,
+    ).totalBytes,
+    3,
+  )
+
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-report-cli-'))
+  try {
+    const file = join(dir, 'state.json')
+    writeFileSync(file, state)
+    assert.equal(JSON.parse(runCli(['next-round-mode', '--in', file]).stdout).mode, 'delta')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  const bad = runCli(['next-round-mode', '--unknown'], state)
+  assert.equal(bad.status, 2)
+  assert.equal(bad.stdout, '')
+  assert.match(bad.stderr, /usage/i)
+})
+
+test('BOS-1019: coverage replay assertion for full and delta byte accounting', () => {
+  const state = {
+    rounds: [
+      { round: 1, mode: 'full', tip: 't1', reviewerInputBytes: 100 },
+      { round: 2, mode: 'delta', tip: 't2', reviewerInputBytes: 25 },
+      { round: 3, mode: 'delta', tip: 't3', reviewerInputBytes: 30 },
+    ],
+  }
+  const replay = reviewerInputByteTotals(state)
+  assert.deepEqual(
+    replay.rounds.map((r) => r.inputBytes),
+    [100, 25, 30],
+  )
+  assert.deepEqual(
+    replay.rounds.map((r) => r.totalBytes),
+    [100, 125, 155],
+  )
 })

@@ -111,6 +111,12 @@ export const DEFAULT_CONFIG = Object.freeze({
       { capability: 'second-voice', kind: 'cross-agent' },
       { capability: 'code-review', kind: 'skill', skill: 'compound-engineering:ce-code-review' },
     ],
+    // Maximum cumulative changed files since the most recent full review before a delta round
+    // escalates back to full. Zero is valid and means every non-empty delta escalates.
+    deltaFileThreshold: 20,
+    // Emergency switch for hosts that need to suppress delta review entirely without changing
+    // round sequencing state. Only boolean true enables it; every other value resolves false.
+    forceFull: false,
   },
   env: {
     headlessSignals: [
@@ -197,6 +203,8 @@ export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 // How a default review round's capability is probed. 'cross-agent' is shell-queryable (resolve the
 // opposite agent's binary and classify the probe); 'skill' is not, so its probe is the dispatch.
 export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
+
+export const REVIEW_DEFAULT_DELTA_FILE_THRESHOLD = DEFAULT_CONFIG.reviewDefaults.deltaFileThreshold
 
 // The `required` classifications a planContract section may carry. `optional` means RECOGNISED but
 // never required: the section may appear without tripping unknown-heading detection, and
@@ -297,6 +305,19 @@ export function validateConfig(config, source) {
         }
         seenCapabilities.add(round.capability)
       }
+    }
+    if (
+      config.reviewDefaults.deltaFileThreshold === undefined ||
+      !Number.isInteger(config.reviewDefaults.deltaFileThreshold) ||
+      config.reviewDefaults.deltaFileThreshold < 0
+    ) {
+      console.warn(
+        `skill-config: ${source}: reviewDefaults.deltaFileThreshold must be a non-negative integer; using ${REVIEW_DEFAULT_DELTA_FILE_THRESHOLD}`,
+      )
+      config.reviewDefaults.deltaFileThreshold = REVIEW_DEFAULT_DELTA_FILE_THRESHOLD
+    }
+    if (config.reviewDefaults.forceFull !== true) {
+      config.reviewDefaults.forceFull = false
     }
   }
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
@@ -759,6 +780,18 @@ export function skillForLens(config, id) {
 export function reviewDefaultRounds(config) {
   const rounds = config?.reviewDefaults?.rounds
   return Array.isArray(rounds) ? rounds : []
+}
+
+export function reviewDeltaDefaults(config) {
+  const defaults = config?.reviewDefaults || {}
+  const threshold =
+    Number.isInteger(defaults.deltaFileThreshold) && defaults.deltaFileThreshold >= 0
+      ? defaults.deltaFileThreshold
+      : REVIEW_DEFAULT_DELTA_FILE_THRESHOLD
+  return {
+    deltaFileThreshold: threshold,
+    forceFull: defaults.forceFull === true,
+  }
 }
 
 /**

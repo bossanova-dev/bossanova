@@ -15,6 +15,12 @@ export const VENDOR_MAP = {
   // must be co-located for the bundled helper to resolve its `./skill-config.mjs` import.
   'boss-review': [
     'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) centralizes awaited-dispatch classification
+    // and batch planning. It imports bs-run-sentinel.mjs for terminal artefacts and
+    // dag-scheduler.mjs for fail-closed dependency waves, so all three ship together.
+    'bs-dispatch-await.mjs',
+    'bs-run-sentinel.mjs',
+    'dag-scheduler.mjs',
     'bs-review-caps.mjs',
     'bs-review-triage.mjs',
     'bs-review-report.mjs',
@@ -27,10 +33,18 @@ export const VENDOR_MAP = {
   ],
   'boss-build': [
     'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
+    // the skill prose cites; it imports bs-run-sentinel.mjs and dag-scheduler.mjs,
+    // both already ship here for the review sentinel and tracker scheduler.
+    'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
     'worktree-lock.sh',
     'bs-review-caps.mjs',
     'bs-review-report.mjs',
+    // BOS-1020: the Step 6 review loop re-checks base drift at every round boundary, so the
+    // detector must resolve inside an installed boss-build toolbox — the review stack runs in
+    // user repos that have no repo-root skills-toolbox/ to reach back into.
+    'base-drift.mjs',
     // skill-config.mjs (BOS-204) exposes validatePlanDescription, invoked in Step 4's
     // plan-contract check. boss-build ships to user repos via the embedded skillinstall
     // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
@@ -95,6 +109,10 @@ export const VENDOR_MAP = {
   // stays in skills-toolbox/ only (test files are never vendored).
   'boss-epic': [
     'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
+    // the epic prose cites; its bs-run-sentinel.mjs and dag-scheduler.mjs imports
+    // already ship here for repair outcomes and child scheduling.
+    'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
     'bs-epic-lib.mjs',
     'dag-scheduler.mjs',
@@ -156,7 +174,11 @@ export const VENDOR_MAP = {
   // Their *.test.mjs / *.demo.mjs siblings are never vendored.
   'boss-plan': [
     'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
+    // the drafting-dispatch prose cites; it imports the sentinel and scheduler.
+    'bs-dispatch-await.mjs',
     'bs-run-sentinel.mjs',
+    'dag-scheduler.mjs',
     'skill-config.mjs',
     'plan-attachment.mjs',
     'plan-epic-lib.mjs',
@@ -177,9 +199,22 @@ export const VENDOR_MAP = {
   // and it brings session/adapter.mjs with it — the import it cannot resolve without.
   'boss-repair': [
     'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
+    // the repair-dispatch prose cites; it imports the sentinel and scheduler.
+    'bs-dispatch-await.mjs',
+    'bs-run-sentinel.mjs',
+    'dag-scheduler.mjs',
     'skill-extensions.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
+  ],
+  'boss-finalize': [
+    'main-module.mjs',
+    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
+    // the finalize-dispatch prose cites; it imports the sentinel and scheduler.
+    'bs-dispatch-await.mjs',
+    'bs-run-sentinel.mjs',
+    'dag-scheduler.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
@@ -197,6 +232,7 @@ export const PUBLISHED_SKILLS = new Set([
   'boss-epic',
   'boss-plan',
   'boss-repair',
+  'boss-finalize',
 ])
 
 export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {

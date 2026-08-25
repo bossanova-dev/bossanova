@@ -87,6 +87,12 @@ BAZEL_TEST_FLAGS := --test_output=errors
 ifeq ($(RACE),1)
 BAZEL_TEST_FLAGS += --config=race
 endif
+BAZEL_TEST_EXTRA_FLAGS ?=
+ifeq ($(BOSS_GATE_FORCE_UNCACHED),1)
+BAZEL_TEST_EXTRA_FLAGS += --nocache_test_results
+GO_TEST_COUNT ?= 1
+endif
+BAZEL_TEST_FLAGS += $(BAZEL_TEST_EXTRA_FLAGS)
 
 # Auto-detect Go modules (works in both private and public repos)
 MODULES := $(patsubst %/go.mod,%,$(wildcard lib/*/go.mod services/*/go.mod plugins/*/go.mod))
@@ -648,14 +654,14 @@ test-affected:
 	@commands="$$(node scripts/select-affected-tests.mjs)" || exit $$?; \
 	if [ -z "$$commands" ]; then \
 		echo "make test-smoke"; \
-		$(MAKE) test-smoke || exit $$?; \
+		node scripts/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
 	else \
 		printf '%s\n' "$$commands" | while IFS= read -r command; do \
 			[ -z "$$command" ] && continue; \
 			echo "$$command"; \
 			if { [ "$$command" = "make test-smoke" ] && ! grep -Eq '^test-smoke:' Makefile; }; then \
 				echo "Pending target fallback: make test-scripts"; \
-				$(MAKE) test-scripts || exit $$?; \
+				node scripts/gate-cache.mjs run --site "test-scripts" --command "make test-scripts" -- $(MAKE) test-scripts || exit $$?; \
 			else \
 				eval "$$command" || exit $$?; \
 			fi; \
@@ -677,43 +683,38 @@ test-race:
 ## default-run ledger rows, with a native-loop fallback when bazel is absent.
 test-bossalib:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //lib/bossalib/...
-	@node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-bossalib --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C lib/bossalib test-all
+	@node scripts/gate-cache.mjs run --site test-bossalib --command '$(MAKE) -C lib/bossalib test-all' -- $(MAKE) -C lib/bossalib test-all
 endif
 
 test-boss:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/boss/...
-	@node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-boss --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C services/boss test-all
+	@node scripts/gate-cache.mjs run --site test-boss --command '$(MAKE) -C services/boss test-all' -- $(MAKE) -C services/boss test-all
 endif
 
 test-bossd:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/bossd/...
-	@node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-bossd --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C services/bossd test-all
+	@node scripts/gate-cache.mjs run --site test-bossd --command '$(MAKE) -C services/bossd test-all' -- $(MAKE) -C services/bossd test-all
 endif
 
 test-mcp:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/mcp/...
-	@node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-mcp --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C services/mcp test-all
+	@node scripts/gate-cache.mjs run --site test-mcp --command '$(MAKE) -C services/mcp test-all' -- $(MAKE) -C services/mcp test-all
 endif
 
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 test-mcp-gateway:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/mcp-gateway/...
-	@node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-mcp-gateway --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C services/mcp-gateway test-all
+	@node scripts/gate-cache.mjs run --site test-mcp-gateway --command '$(MAKE) -C services/mcp-gateway test-all' -- $(MAKE) -C services/mcp-gateway test-all
 endif
 endif
 
@@ -724,10 +725,9 @@ test-integration-bossd:
 ifneq ($(wildcard services/bosso/go.mod),)
 test-bosso:
 ifeq ($(BAZEL_USABLE),1)
-	$(BAZEL) test $(BAZEL_TEST_FLAGS) //services/bosso/...
-	@node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-bosso --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	$(MAKE) -C services/bosso test-all
+	@node scripts/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif
 
 test-bosso-scale:
@@ -740,10 +740,9 @@ endif
 define define-plugin-test
 test-$(2):
 ifeq ($$(BAZEL_USABLE),1)
-	$$(BAZEL) test $$(BAZEL_TEST_FLAGS) //$(1)/...
-	@node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)
+	@node scripts/gate-cache.mjs run --site test-$(2) --command '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)' -- sh -c '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)'
 else
-	$$(MAKE) -C $(1) test-all
+	@node scripts/gate-cache.mjs run --site test-$(2) --command '$$(MAKE) -C $(1) test-all' -- $$(MAKE) -C $(1) test-all
 endif
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \

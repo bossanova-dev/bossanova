@@ -17,8 +17,8 @@ subagent for recon + drafting (Phase 2), so it is safe to schedule unattended.
 - **Dispatch zero-change work as such.** Planning runs commit nothing, so a plain session finalizes `blocked` behind an empty draft PR. See _Sessions that change nothing_ in the `boss` skill: `create_session` takes `quick_chat` (no worktree or PR) or `defer_pr` (worktree, no up-front PR).
 
 **Headless mode.** If `BOSS_CRON=true`, no human can answer `AskUserQuestion`, so **never call it** —
-in the orchestrator or the subagent, at any phase. The default path: preflight → select the
-ranked-queue head → **dispatch ONE awaited `general-purpose` drafting subagent** (Phase 2) → classify
+in the orchestrator or the subagent, at any phase. Path: preflight → select the
+queue head → **dispatch ONE `general-purpose` drafting subagent via `toolbox/bs-dispatch-await.mjs`** → classify
 its run-file sentinel → upload + write back to Linear. Make selections with reasonable defaults from
 the ticket and codebase, discard local artifacts, and never block waiting for input.
 

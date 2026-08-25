@@ -58,8 +58,29 @@ for (const mirror of REVIEW_MIRRORS) {
 
   const phase5 = sliceSection(skill, '## Phase 5', '## Phase 6')
   const phase6 = sliceSection(skill, '## Phase 6', '## Phase 7')
+  const phase7 = sliceSection(skill, '## Phase 7', '## Phase 8')
   const phase0 = sliceSection(skill, '## Phase 0', '## Phase 1')
+  const findingsContract = sliceSection(skill, '## Findings contract', '## Acceptance-criteria')
+  const coreFindingsContract = sliceSection(
+    coreMethodology,
+    '## Findings contract',
+    '## Severity policy',
+  )
+  const convergenceLoop = sliceSection(coreMethodology, '## Convergence loop', '### Oscillation')
   const severityPolicy = sliceSection(coreMethodology, '## Severity policy', '## Always-on rounds')
+
+  test(`[${mirror}] findings contract documents patch field and exact repo-root anchor rule`, () => {
+    for (const section of [findingsContract, coreFindingsContract]) {
+      assert.match(section, /"patch":\s*\{\s*"file":\s*"<repo-root-relative\s+path>"/)
+      assert.match(section, /`file`\s+is\s+rooted\s+at\s+the\s+repository\s+root/)
+      assert.match(section, /`old_string`\s+must\s+match\s+exactly\s+once/)
+      assert.match(
+        section,
+        /rejects\s+rather\s+than\s+guesses\s+on\s+zero\s+or\s+multiple\s+matches/,
+      )
+      assert.match(section, /"patch": null[\s\S]{0,120}`patchReason`/)
+    }
+  })
 
   test(`[${mirror}] Phase 5 calls the triage helper's categorize verb and applies the coverage override to its pool`, () => {
     assert.match(phase5, /bs-review-triage\.mjs["'`]?\s+categorize/)
@@ -102,6 +123,17 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.match(phase5, /Every\s+unrepaired\s+`invalid` entry\s+blocks\s+a\s+clean\s+verdict/)
   })
 
+  test(`[${mirror}] Phase 5 says patch rejections stay invalid but route to the narrative remainder`, () => {
+    assert.match(
+      phase5,
+      /malformed,\s+missing-file,\s+non-unique,\s+or\s+conflict-composed\s+`patch`/,
+    )
+    assert.match(
+      phase5,
+      /route\s+the\s+underlying\s+finding\s+through\s+the\s+narrative\s+must-fix\s+path/,
+    )
+  })
+
   test(`[${mirror}] Phase 5 qualifies convergence promotion on distinct reviewers`, () => {
     assert.match(phase5, /convergence/i)
     assert.match(phase5, /distinct\s+reviewers/i)
@@ -119,6 +151,46 @@ for (const mirror of REVIEW_MIRRORS) {
     // clobbers a prior round's evidence"), so it gates nothing. Pin the clause
     // that binds the evidence to the `verified` disposition itself.
     assert.match(phase6, /the\s+`evidence`\s+that\s+settled\s+it/)
+  })
+
+  test(`[${mirror}] Phase 6 applies patchable findings mechanically before narrative fix dispatch`, () => {
+    assert.match(phase6, /Partition\s+the\s+must-fix\s+items\s+into\s+patchable\s+and\s+narrative/)
+    assert.match(phase6, /Apply\s+patchable\s+findings\s+mechanically\s+in\s+the\s+orchestrator/)
+    assert.match(
+      phase6,
+      /compose\s+overlapping\s+patches\s+in\s+one\s+file\s+into\s+the\s+helper's\s+single\s+exact\s+replacement/,
+    )
+    assert.match(
+      phase6,
+      /re-read\s+the\s+current\s+file\s+bytes\s+immediately\s+before\s+each\s+application/,
+    )
+    assert.match(
+      phase6,
+      /Dispatch\s+a\s+fresh\s+`general-purpose`\s+fix\s+subagent\s+\(awaited\)\s+\*\*only\*\*/,
+    )
+  })
+
+  test(`[${mirror}] core-methodology convergence loop carries the same mechanical patch path`, () => {
+    assert.match(
+      convergenceLoop,
+      /Partition\s+must-fix\s+items\s+into\s+patchable\s+and\s+narrative/,
+    )
+    assert.match(
+      convergenceLoop,
+      /Apply\s+patchable\s+findings\s+mechanically\s+in\s+the\s+orchestrator/,
+    )
+    assert.match(
+      convergenceLoop,
+      /Dispatch\s+a\s+fix\s+step\s+\*\*only\*\*\s+for\s+the\s+narrative\s+remainder/,
+    )
+  })
+
+  test(`[${mirror}] Phase 7 report schema carries the patch summary tally`, () => {
+    assert.match(
+      phase7,
+      /"patchSummary":\s*\{\s*"patchable":\s*P,\s*"narrative":\s*N,\s*"nullWithReason":\s*R\s*\}/,
+    )
+    assert.match(phase7, /patchable\/narrative\/null-with-reason\s+tally/)
   })
 
   // BOS-798: `proseWrap: preserve` means prettier does not reflow prose, so a hand-split or
@@ -230,6 +302,24 @@ for (const mirror of REVIEW_MIRRORS) {
     assert.doesNotMatch(severityPolicy, forbidden)
   })
 }
+
+test('repo-local boss-review extensions restate patch for prose-class findings', () => {
+  const rels = [
+    '.claude/skills/boss-review-ce/SKILL.md',
+    '.claude/skills/boss-review-crossmodel/SKILL.md',
+    '.claude/skills/boss-review-golang/SKILL.md',
+    '.claude/skills/boss-review-thermonuclear/SKILL.md',
+    '.claude/skills/boss-review-tui/SKILL.md',
+    '.claude/skills/boss-review-web/SKILL.md',
+    '.claude/skills/thermonuclear-review/SKILL.md',
+  ]
+  for (const rel of rels) {
+    const text = read(rel)
+    assert.match(text, /"patch"/, `${rel} must name the patch field`)
+    assert.match(text, /prose-class\s+findings/, `${rel} must name prose-class findings`)
+    assert.match(text, /patchReason/, `${rel} must name the null-with-reason hatch`)
+  }
+})
 
 // BOS-814 review P1: the repo-local `boss-review-ce` round extension keys its inline fallback on
 // whether a CE review pass ACTUALLY RAN, not on whether the skill loaded. Keying it on absence

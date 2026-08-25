@@ -152,6 +152,13 @@ Each receives:
     "planPath": "<plan doc path when this run had one; otherwise null>",
     "mergeBase": "<REVIEW_BASE>",
     "head": "<current HEAD after Step 6 fixes are committed>",
+    "carriedObservations": [
+      {
+        "round": 2,
+        "category": "false-universal",
+        "paragraph": "Within-run observation from round 2: …"
+      }
+    ],
     "repoId": "<BOSS_REPO_ID when present; otherwise null>"
   },
   "runTmp": "<KNOWLEDGE_RUN_TMP>",
@@ -161,6 +168,9 @@ Each receives:
 
 There is deliberately **no `outcome` key**: this phase runs pre-PR, so no terminal outcome exists yet.
 `mergeBase` and `head` bound what the run actually changed, which is the material a capture pass reads.
+`carriedObservations` is the distilled within-run trail from the review loop. It is input to the
+knowledge extension's overlap/synthesis work only; this phase still owns any durable `docs/` or
+`CONCEPTS.md` write, and the mid-run observation step never writes those paths.
 
 ## Validation and the ledger
 

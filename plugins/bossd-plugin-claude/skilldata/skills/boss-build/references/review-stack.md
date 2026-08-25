@@ -15,8 +15,16 @@ failure and is untouched by the tier rule: it stays a `dispatch-failure` → BLO
 
 The review subagent RETURNS a short structured result: the **rendered `boss-review` report** (the
 markdown captured in Step 6c, leading with the `<!-- bs-review -->` marker), the Step 6b
-`## Cross-model review` outcome token, the `## Review coverage` outcome token (below), and the
-finding ledger. Bulk material — round-by-round review
+`## Cross-model review` outcome token, the `## Review coverage` outcome token (below), the
+**base-drift note** from **every** round boundary that read a hit — a refreshable or an
+unrefreshable one (§Base-drift check below) — and, when no boundary did, the last boundary's note.
+Return every hit rather than the latest note: the loop keeps checking after it rebases, so a run
+that hits at round 2 and then reads `Base drift: none.` through rounds 3-6 would otherwise return
+the `none.` and lose the one boundary that mattered, which is the exact loss this check exists to
+prevent. Last, the
+finding ledger. The note is returned because the orchestrator — not this subagent — owns the PR
+body's `## Autonomous decisions` section, so a note that stays in here reaches no reader on the
+clean route at all. Bulk material — round-by-round review
 transcripts, diffs, Codex output, `boss-review` lens output — stays in the subagent's context and is
 **NOT** pasted back.
 
@@ -89,6 +97,28 @@ or Step 6b capped and Step 6c came back clean ⇒ the verdict is still `capped <
 The orchestrator classifies this file with `matchSentinel` and never reads your reply — so if
 you write nothing (a crash or watchdog kill), the orchestrator's provisional seed is what it reads,
 which routes to the safe non-clean (BLOCKED) branch, never clean.
+
+## Round Scope Contract
+
+Step 6c delegates the actual `boss-review` pass, but this caller owns the durable review trace. A
+delta-aware `boss-review` report carries a per-round scope object: `mode`, `base`,
+`mergeBase`, `reviewedFiles`, `carriedClaims`, and `briefBytes`. Round 1 is always `mode=full` with
+`base` equal to the true merge base. Rounds 2 and later may use `mode=delta` with `base` equal to the
+previous round's recorded tip, but only when the round-state helper can prove the state is complete
+and consistent.
+
+The brief for a delta round is two-part:
+
+- `git diff <base>..HEAD`, where `<base>` is the previous round's recorded tip;
+- the cumulative carried claims list, each `{findingId, file, anchor}` with a greppable anchor.
+
+The carried list includes fixed, verified, and still-open must-fix claims, accumulates across the
+run, and drops a row only when a later round re-closes it. A missing or non-greppable anchor, base
+movement, a recorded tip that is no longer an ancestor of `HEAD`, an unreviewed fix file, or
+unreadable round state escalates the next round to `full`.
+
+The PR-visible `boss-review` comment must show mode, diff base, and carried-claim count per round
+and must include full-branch baseline bytes alongside the resolved-mode total.
 
 ## Step 6 entry — review tier selection
 
@@ -807,6 +837,13 @@ clean" — and a fresh run that caps or fails before Step 7 is precisely the cas
 back on, so publishing one token there loses whether the cross-model pass ran, was skipped, or
 errored. Every branch below therefore names a value for **both**.
 
+**The base-drift note publishes here too.** If any round boundary's base-drift check produced a note
+— a hit, or an `unevaluated` it could not resolve — carry it into whatever this route publishes,
+under `## Autonomous decisions`: the PR body when `PR_NUMBER` is known, otherwise the BLOCKED blocker
+comment beside the two coverage tokens. A run that routes to BLOCKED never reaches Step 7 and so
+never writes a PR body, which makes this the only place the drift reaches a reader — and the next
+run needs to know the base moved under this one before it re-derives anything at all.
+
 **The push rule — Step 7 is also the only step that pushes.** Publishing the tokens is not the only
 thing Step 7 owns. Every route in this section stops at **Stop cleanly**, and Step 12 deletes the
 claim, drops the stop-hooks and releases the lock without ever running `git push`. By the time any of
@@ -1400,15 +1437,23 @@ re-gate, repeat — capped at the effective review-round cap `MAX_ROUNDS=$(node
 cap, never raise it — set it to 2–3 for cron/plugin invocations). Round counter starts at 1. Each
 round:
 
+0. **Base-drift check (round boundary).** Before anything else in the round — including the leg
+   clamp below, whose arithmetic a rebase performed later in the round would invalidate — run the
+   **Base-drift check** below. It re-reads the base branch, and on a hit it rebases, re-binds
+   `REVIEW_BASE`, and raises the force-full-pass signal steps 1 and 6 read.
 1. **Independent review (awaited, read-only).** Dispatch a general-purpose reviewer subagent (never
    backgrounded) filling the [code-reviewer prompt template](code-reviewer-template.md), with
-   `BASE_SHA=$REVIEW_BASE`, `HEAD_SHA=$(git rev-parse HEAD)`, the plan/acceptance-criteria, **and
+   `BASE_SHA=$REVIEW_BASE`, `HEAD_SHA=$(git rev-parse HEAD)`, the plan/acceptance-criteria, the
+   `[BASE_DRIFT_NOTE]` step 0 produced, **and
    every prior round's findings + dispositions** (`Fixed`/`Verified`/`Deferred`/`Rejected-with-reasoning`)
    so it never re-litigates settled items. Bound it first: fill the template's
    `[TIME_BUDGET_SECONDS]` slot with `REVIEW_LEG_SECONDS`, derived below. Hand over each declined
    finding's **reasoning**, not just its verdict: a declined finding's rationale is itself
    reviewable, so a settled item resting on a factually false premise is re-opened rather than
-   inherited. The reviewer only reports — it writes nothing.
+   inherited. **When step 0 raised the force-full-pass signal this round, hand over no prior-round
+   dispositions at all** and ask for a full pass: every one of them was settled against a base that
+   has since been replaced, so inheriting them re-imports verdicts about a diff nobody reviewed.
+   The reviewer only reports — it writes nothing.
 2. **Categorize.** must-fix = all Critical + Important; deferred = Minor.
 3. **Clean check.** Zero must-fix → **clean exit**: run the conditional API-surface check below
    (§API-surface check) **first** — it belongs to the gate, not to coverage, and an unrun required
@@ -1426,7 +1471,13 @@ round:
 6. **Oscillation guard.** If the same `file:line` was must-fix this round **and** the immediately
    preceding round and was neither fixed nor verified, stop looping now and take the capped path:
    **write `sentinel capped <N>` to the run file here**, `<N>` = the rounds reached, with
-   `'{"provisional":false}'`.
+   `'{"provisional":false}'`. **For the round whose own step 0 performed the rebase, compare at file
+   level instead.** A rebase rewrites every commit on the branch, so a finding that survived it
+   lands on a shifted line number: `file:line` equality stops matching and a genuine oscillation
+   reads as two unrelated findings, which is the guard failing open into an unbounded loop. Match
+   that round on the **file** plus the finding's own text, and return to `file:line` the round after.
+   It is the same round step 1's force-full-pass signal applies to — the rebasing one — never the
+   round after it.
 7. **Increment.** round++; if > `$MAX_ROUNDS`, take the capped path — and **write
    `sentinel capped <N>` to the run file here** too, on the same terms as step 6. Both capped exits
    persist the verdict at the line that decides it; neither defers it to the end of the dispatch.
@@ -1481,6 +1532,214 @@ exposes no timeout argument and an awaited call cannot be preempted — so it bo
 expectation rather than absolutely. That is the honest claim, and it is what makes `20` a round's
 worst _legal_ cost instead of an unbounded one; do not restate it as a hard kill, and do not try to
 strengthen it with a watchdog an awaited dispatch cannot host.
+
+### Base-drift check (every round boundary)
+
+`REVIEW_BASE`, and the base ref behind it, were resolved **once** in Preflight — and this loop can
+run for hours. Anything that lands on the base branch meanwhile is invisible here: the reviewer
+reads `$REVIEW_BASE...HEAD`, so every finding, disposition and clean verdict is computed against a
+base that no longer exists upstream. The benign case surfaces at the end as a dirty merge state. The
+case this check exists for does not: a semantically **overlapping** change that still merges
+textually clean goes entirely unnoticed until a human reads the merged result. Re-check at every
+round boundary and act on a hit, rather than recording one and reviewing on regardless.
+
+**The dispatch supplies the base identity; never re-derive it.** `BASE_REF`, `BASE_REMOTE` and
+`BASE_BRANCH` arrive from the orchestrator's Step 6 dispatch under exactly those names. If any of
+the three is missing, or the detector is not installed, **skip the check and record which one was
+missing**. Re-deriving is a guess about which branch this work is even for, and a wrong guess
+rebases onto the wrong history; a recorded skip is a degradation the reader can see, which a silent
+pass is not.
+
+**Bounded, not budgeted.** Like the API-surface check below, this is one single-ref fetch and a
+couple of local git reads, so it draws nothing from the round's leg clamps. Run it **before**
+`REVIEW_LEG_SECONDS` / `FIX_LEG_SECONDS` are derived: those numbers are measured against the current
+tree, and a rebase later in the round leaves both of them describing a tree that no longer exists.
+
+```bash
+DRIFT_JSON=''
+# Pin `REVIEW_BASE` to an OID BEFORE the fetch below, and note that this runs on every round whether
+# or not the check goes on to fire. On a resume the orchestrator binds `REVIEW_BASE` to the ref NAME
+# `refs/remotes/<remote>/<branch>` — and the fetch three lines down force-updates exactly that ref.
+# Unpinned, `REVIEW_BASE` therefore follows the base tip on a round where nothing rebased, silently
+# breaking this section's own rule that only a successful rebase re-binds it. The damage lands on
+# the round reviewer: [code-reviewer-template.md](code-reviewer-template.md) diffs `BASE_SHA..HEAD`
+# with TWO dots, so a base tip that is not an ancestor of HEAD renders the base branch's own commits
+# as deletions this branch never made — a corrupted review artifact produced by the check meant to
+# protect it. Pinning also removes the window between reading the ref and using it.
+REVIEW_BASE_OID="$(git rev-parse --verify --quiet "${REVIEW_BASE:-}^{commit}")" || REVIEW_BASE_OID=''
+if [ -n "$REVIEW_BASE_OID" ]; then REVIEW_BASE="$REVIEW_BASE_OID"; fi
+# PRINT it. The assignment above dies with this Bash call for exactly the reason the next comment
+# gives for re-deriving `BOSS_BUILD_TOOLBOX`, and YOU — not the shell — are what carries
+# `REVIEW_BASE` from here to step 1's `BASE_SHA`. A pin nobody reads back is an inert line that
+# every gate still reads as satisfied.
+printf 'base-drift: REVIEW_BASE pinned to %s\n' "${REVIEW_BASE_OID:-<unresolved>}" >&2
+# Re-derive `BOSS_BUILD_TOOLBOX` the way SKILL.md's own preambles do. It was exported in an EARLIER
+# Bash call, in the ORCHESTRATOR's shell, and shell state survives neither between calls nor into
+# this dispatched subagent. Left unguarded it is the worst kind of failure: `[ ! -f
+# "/base-drift.mjs" ]` is true, so the block reports "not installed in this toolbox" on every round
+# forever — a recorded skip whose stated reason is false, which reads as a host problem nobody can
+# reproduce. Under `set -u` it aborts the round instead.
+if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
+  for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
+  done
+fi
+if [ -z "${BASE_REF:-}" ] || [ -z "${BASE_REMOTE:-}" ] || [ -z "${BASE_BRANCH:-}" ]; then
+  echo "base-drift SKIPPED: dispatch supplied no BASE_REF/BASE_REMOTE/BASE_BRANCH" >&2
+elif [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
+  echo "base-drift SKIPPED: no boss-build toolbox on this host to resolve base-drift.mjs from" >&2
+elif [ ! -f "$BOSS_BUILD_TOOLBOX/base-drift.mjs" ]; then
+  echo "base-drift SKIPPED: base-drift.mjs is not installed in this toolbox" >&2
+else
+  # A failed fetch is an INPUT to the report, never only a log line. FETCH_FAILED is deliberately
+  # unquoted below so that empty expands to no argument at all.
+  FETCH_FAILED=''
+  git fetch --no-tags "$BASE_REMOTE" "+refs/heads/$BASE_BRANCH:$BASE_REF" \
+    || FETCH_FAILED='--fetch-failed'
+  DRIFT_JSON="$(node "$BOSS_BUILD_TOOLBOX/base-drift.mjs" check \
+    --repo "$(git rev-parse --show-toplevel)" \
+    --base "$BASE_REF" --head "$(git rev-parse HEAD)" $FETCH_FAILED)" || DRIFT_JSON=''
+  if [ -z "$DRIFT_JSON" ]; then
+    echo "base-drift UNEVALUATED: the detector returned no report" >&2
+  else
+    printf '%s\n' "$DRIFT_JSON"
+  fi
+fi
+```
+
+**The fetch moves the ref `REVIEW_BASE` may be named after, so pin it first.** This is the one way
+the check can damage the round it opens rather than inform it. A resume binds `REVIEW_BASE` to the
+base ref's **name**, and this step force-updates that name every round; the reviewer's own diff
+range is two-dot, so an unpinned binding hands round N a diff in which the base branch's commits
+appear as deletions. The pin is the first two lines of the block above, ahead of the fetch and
+ahead of the toolbox guard, so it holds on the skip paths too. **Read the printed OID back and use
+it as `REVIEW_BASE` for the rest of this round** — it is what step 1's `BASE_SHA` expands to, and a
+shell assignment cannot reach step 1 on its own; when the line prints `<unresolved>` the ref named
+nothing this repo holds, so record that and keep the existing binding rather than inventing one. It
+is not a substitute for the
+re-bind below: a rebase still re-binds `REVIEW_BASE` deliberately, to the new tip. What the pin
+forbids is the ref moving underneath the variable when nothing rebased.
+
+**A failed fetch is an input to the report, not a log line.** `--fetch-failed` is what carries it:
+the detector then returns `behind: unevaluated` with a note saying the ref could not be refreshed.
+Without it the check reads a stale `BASE_REF`, plausibly counts `behind: 0`, and publishes the flat
+string `Base drift: none.` — a proven-unmoved verdict nobody obtained, and exactly the substitution
+[code-reviewer-template.md](code-reviewer-template.md) forbids for this slot.
+
+The report carries `behind` (commits the base holds that HEAD does not), `intersection` (paths both
+sides changed since the merge base), `mergeTree` (`clean` / `conflicts` / `skipped` / `unevaluated`),
+and a one-line `note`. **`unevaluated` is not `clean`** — it is the detector saying it could not
+tell, on either field, and it is never to be read as "no drift" or as "no overlap". Treat an
+`unevaluated` `behind` as a base that may have moved, and an `unevaluated` `mergeTree` as an overlap
+nobody checked. **`skipped` is neither**: it is the probe the detector did not need to run, because
+nothing overlapped for it to answer.
+
+**Act on a hit — rebase, never merge.** `boss-finalize`'s gate and the straight-line-history
+invariant both forbid merging the base into the branch, so the only legal way to re-seat this branch
+on the moved base is a rebase, and a round boundary is the only safe moment for one: no reviewer or
+fixer leg is in flight.
+
+**Two readings count as a hit, and only one of them rebases.** Classify the report against its own
+fields, in this order:
+
+- **Refreshable drift** — `behind` is a positive integer **and** `intersection` is non-empty **and**
+  `mergeTree` is `clean`. This is the only reading that rebases.
+- **Unrefreshable drift** — `behind` is `unevaluated`; **or** `mergeTree` is `unevaluated`; **or**
+  `mergeTree` is `conflicts`. Do **not** rebase: record the drift, publish
+  the note, brief the reviewer, and review on.
+
+A report matching neither is not a hit and the round proceeds untouched.
+
+**Every test above reads one field's own value — never reconstruct one from a pair.** `mergeTree`
+carries three non-`clean` values and they do not mean the same thing. `conflicts` is a probe that
+ran and did not reconcile. `unevaluated` is a probe that was **needed and could not run** — no merge
+base, a failed changed-path diff, a git without `merge-tree --write-tree`. `skipped` is a probe that
+was **not needed**, because nothing overlapped for it to answer: the base has not moved, or the base
+moved on paths this branch never touched. Only `unevaluated` is a hit; `skipped` is the ordinary
+healthy round and matches neither reading, exactly as the closing line above says.
+A trigger that cannot tell those two apart fires on a branch with
+**no drift at all** — on the unmoved base, and on every run where the base merely moved somewhere
+else, which is most of them — and a drift note published on most runs is how a real hit stops being
+visible. Earlier rounds tried to recover the distinction from a second field (`stage2` is `true`
+**and** `mergeTree` is `unevaluated`); that inference is what shipped the misfire on the
+moved-but-disjoint round, where `stage2` is `true` and the probe was simply unnecessary. The
+detector now draws the distinction on the field itself, so read it there: a rule a model executes
+unattended must be a lookup, not a derivation. `intersection` is an array
+and can never hold the string `unevaluated`, so never test it for one.
+
+**A clean `mergeTree` is the rebase's precondition, not a nicety.** It is the only reading in which
+this branch and the moved base are known to reconcile. On `conflicts` or on `unevaluated` an
+unattended rebase attempts a reconciliation nobody has evidence for, inside a round whose only
+recovery is an abort — so those readings are recorded and briefed instead, and `boss-finalize` still
+owns the reconciliation at the end. This is deliberately narrower than "rebase whenever the paths
+overlap".
+
+On a **refreshable** reading do all of the following in one go. On an **unrefreshable** one do
+only **Brief the reviewer** and then publish the note as below — no rebase happened, so the re-bind,
+the force-full-pass signal and the cap all have nothing to act on:
+
+- **Rebase onto the moved base** (refreshable reading only). Check the tree **first**, the way the
+  tag injector already does: `git status --porcelain --untracked-files=no` must be empty. `git
+rebase` refuses outright on unstaged changes and `git rebase --abort` then exits 128 with "no
+  rebase in progress", so the two post-conditions below would report a worktree left mid-rebase by a
+  rebase that never started — a BLOCKED whose stated cause is the opposite of what happened. Loop
+  step 5 re-runs the change gate and says fix churn is expected, so this is an ordinary round-2
+  state, not an edge case. A dirty tree is a recorded skip with its own reason: keep the old base,
+  publish the note, and review on. **And check which boundary this is**: the one that opens the
+  final round never rebases, for the reason the dedicated bullet below gives. Both pre-conditions
+  belong here, ahead of the command, because a top-down executor acts at the first mention — a
+  prohibition stated three bullets later is read after the rebase it forbids. Only on a clean tree,
+  and not at the final boundary, run `git rebase "$BASE_REF"`. On failure run `git rebase --abort`,
+  then confirm the abort actually landed before continuing: two post-conditions, both required —
+  `git rev-parse --verify --quiet REBASE_HEAD` prints nothing, and `git status --porcelain` is
+  empty. An abort that reports success while either still holds has left the worktree mid-rebase,
+  where no further review is meaningful; route to **BLOCKED** with the drift note attached. A clean
+  abort is a recorded skip instead: keep the old base, publish the note, and review on.
+- **Re-bind `REVIEW_BASE`** to `$(git rev-parse "$BASE_REF")` immediately after a successful rebase.
+  It is the binding every later consumer expands — the round reviewer's `BASE_SHA`, the degraded
+  tier's detection reviewer, the verification leg, Step 6b's `--base` and its outside-voice range —
+  so a rebase that moves the branch without moving this variable leaves all of them reviewing a
+  range whose left endpoint is no longer an ancestor of HEAD.
+- **Raise the force-full-pass signal** for **this** round — the one whose step 0 just rebased, not
+  the one after it — and only after a rebase actually happened: step 1 drops the inherited
+  dispositions, and step 6 compares at file level. The rebase lands _before_ this round's reviewer,
+  so this round is the first to read the moved base and the first whose findings carry post-rebase
+  line numbers. Deferring either half to the next round degrades a comparison whose two sides are
+  already consistent, and leaves the one genuinely cross-rebase comparison — the previous round's
+  pre-rebase findings against this round's post-rebase ones — still matching on `file:line`, which
+  is the guard failing open. A boundary
+  that detected drift but did **not** rebase changes nothing about the diff, so it raises nothing.
+- **Never rebase at the boundary that opens the final round.** The rebase raises the
+  force-full-pass signal for that same round, and a full pass hands the reviewer no prior
+  dispositions at all — so the round re-derives every settled item, including the `Deferred` Minors
+  and the `Rejected-with-reasoning` ones, and any of them scored differently is a fresh must-fix.
+  With no round left to confirm a fix, that boundary converts a converging run into a cap by
+  construction. Detect and brief there instead; `boss-finalize` still owns the reconciliation.
+- **Cap the rebases.** At most **one** rebase per run, `BS_BASE_DRIFT_MAX_REBASES` clamped
+  **lower-only** to that default of 1 exactly as `BS_REVIEW_MAX_ROUNDS` is (invalid / absent / too
+  high → 1; the env may only lower it, to 0). A base branch under active traffic can move every
+  round, and an uncapped rule turns a bounded review loop into a rebase treadmill that never
+  converges. Once the cap is spent, later boundaries still **check** and still publish the note —
+  they simply stop rebasing.
+- **Brief the reviewer** (both readings). The report's `note` is the `[BASE_DRIFT_NOTE]` slot in
+  [code-reviewer-template.md](code-reviewer-template.md). A textually clean overlap tells the
+  reviewer exactly what git cannot: these paths were changed by someone else too, and the merge
+  hid it.
+
+**Publish the note on every route out — the clean one first, then BLOCKED and PARTIAL.** The clean
+route is the one this check exists for: the incident behind it was a run that went green and found
+the overlap only after the final push, so a rule that named only the failure routes would leave the
+primary one silent. On the **clean** route the orchestrator writes each returned drift note verbatim
+under `## Autonomous decisions` in the Step 7 PR body — it is not a decision the run made, but it is
+the section a reader looks in for what the run did about its own environment, and Step 7 is the only
+step that writes a body. The note travels there through the returned-result contract at the top of
+this file, which is why it is on that list at all.
+
+The failure routes then need their own rule for the opposite reason: a run that routes to BLOCKED
+never reaches Step 7 and never writes a PR, yet its
+drift is precisely what the next run needs to know before it re-derives anything. Carry the note
+into the BLOCKED-route publication's `## Autonomous decisions` section alongside the rest, and into
+the PARTIAL route the same way.
 
 ### Mechanical remediation extension (after the default cap)
 

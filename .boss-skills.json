@@ -37,6 +37,8 @@
     }
   ],
   "reviewDefaults": {
+    "deltaFileThreshold": 20,
+    "forceFull": false,
     "rounds": [
       { "capability": "second-voice", "kind": "cross-agent" },
       {
@@ -54,7 +56,47 @@
     "testAffected": "make test-affected",
     "testFull": "make test-full",
     "testModule": "make test-{module}",
+    "testUncached": "BOSS_GATE_FORCE_UNCACHED=1 make test-affected",
     "postRebase": "make post-rebase-check"
+  },
+  "gateCache": {
+    "eligible": {
+      "test-affected": {
+        "cacheable": true,
+        "reason": "selector output and delegated targets are covered by the whole-tree hash plus command identity"
+      },
+      "test-bossalib": {
+        "cacheable": true,
+        "reason": "module target delegates to Bazel/native Go over tracked repo content"
+      },
+      "test-boss": {
+        "cacheable": true,
+        "reason": "module target delegates to Bazel/native Go over tracked repo content"
+      },
+      "test-bossd": {
+        "cacheable": true,
+        "reason": "module target delegates to Bazel/native Go over tracked repo content"
+      },
+      "test-bosso": {
+        "cacheable": true,
+        "reason": "module target delegates to Bazel/native Go over tracked repo content"
+      },
+      "test-mcp": {
+        "cacheable": true,
+        "reason": "module target delegates to Bazel/native Go over tracked repo content"
+      },
+      "test-mcp-gateway": {
+        "cacheable": true,
+        "reason": "optional module target delegates to Bazel/native Go over tracked repo content"
+      }
+    },
+    "ineligible": {
+      "test-smoke": "checks installed skill mirrors and toolboxes outside the hashed corpus",
+      "test-race": "race-detector verdicts can differ between runs over identical content",
+      "test-web-e2e": "browser and network state are outside the hashed corpus",
+      "build-drift-check": "reads generated-artifact and checkout state beyond a declared test gate",
+      "post-rebase-check": "must run after a rebase even when content appears unchanged"
+    }
   },
   "test": { "manifestPath": "docs/testing/test-command-manifest.md" },
   "env": {

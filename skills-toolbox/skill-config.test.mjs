@@ -25,6 +25,7 @@ import {
   detectChangeTypes,
   skillForLens,
   reviewDefaultRounds,
+  reviewDeltaDefaults,
   command,
   moduleTestCommand,
   manifestPath,
@@ -332,6 +333,14 @@ test('DEFAULT_CONFIG ships the default review rounds and reviewDefaultRounds rea
   validateConfig(DEFAULT_CONFIG, 'test')
 })
 
+test('DEFAULT_CONFIG documents review delta defaults and reviewDeltaDefaults reads them', () => {
+  assert.deepEqual(reviewDeltaDefaults(DEFAULT_CONFIG), {
+    deltaFileThreshold: 20,
+    forceFull: false,
+  })
+  validateConfig(DEFAULT_CONFIG, 'test')
+})
+
 test('reviewDefaultRounds returns [] for a config carrying no registry', () => {
   // [] is the honest "this repo default-runs no extra round" — a config predating the block, or one
   // that merged it away, must degrade to an empty phase rather than failing a review run.
@@ -339,6 +348,17 @@ test('reviewDefaultRounds returns [] for a config carrying no registry', () => {
   assert.deepEqual(reviewDefaultRounds({ reviewDefaults: {} }), [])
   assert.deepEqual(reviewDefaultRounds(undefined), [])
   validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: undefined }, 'test')
+})
+
+test('reviewDeltaDefaults returns documented fallbacks for a config carrying no registry', () => {
+  assert.deepEqual(reviewDeltaDefaults({}), {
+    deltaFileThreshold: 20,
+    forceFull: false,
+  })
+  assert.deepEqual(reviewDeltaDefaults(undefined), {
+    deltaFileThreshold: 20,
+    forceFull: false,
+  })
 })
 
 test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
@@ -350,11 +370,54 @@ test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
   ])
 })
 
+test('mergeConfig preserves reviewDefaults delta keys beside a rounds override', () => {
+  const merged = mergeConfig(DEFAULT_CONFIG, {
+    reviewDefaults: {
+      rounds: [{ capability: 'second-voice', kind: 'cross-agent' }],
+      deltaFileThreshold: 7,
+      forceFull: true,
+    },
+  })
+  assert.deepEqual(reviewDeltaDefaults(merged), {
+    deltaFileThreshold: 7,
+    forceFull: true,
+  })
+})
+
 test('validateConfig rejects a non-array reviewDefaults.rounds', () => {
   assert.throws(
     () => validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: { rounds: {} } }, 'test'),
     /skill-config:.*reviewDefaults\.rounds must be an array/,
   )
+})
+
+test('validateConfig warns and coerces malformed reviewDefaults delta settings', () => {
+  for (const deltaFileThreshold of [undefined, null, '7', 1.5, -1]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { deltaFileThreshold } })
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig(cfg, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.equal(cfg.reviewDefaults.deltaFileThreshold, 20)
+    assert.equal(cfg.reviewDefaults.forceFull, false)
+    assert.match(warnings.join('\n'), /reviewDefaults\.deltaFileThreshold/)
+  }
+})
+
+test('validateConfig accepts only boolean true for reviewDefaults.forceFull', () => {
+  const enabled = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { forceFull: true } })
+  validateConfig(enabled, 'test')
+  assert.deepEqual(reviewDeltaDefaults(enabled), { deltaFileThreshold: 20, forceFull: true })
+
+  for (const forceFull of [false, 'true', 1, null, undefined]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { forceFull } })
+    validateConfig(cfg, 'test')
+    assert.deepEqual(reviewDeltaDefaults(cfg), { deltaFileThreshold: 20, forceFull: false })
+  }
 })
 
 test('validateConfig rejects a default round with an empty or non-string capability', () => {

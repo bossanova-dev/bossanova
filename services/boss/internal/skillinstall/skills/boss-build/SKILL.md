@@ -122,7 +122,7 @@ body carries the decision skeleton; every moved instruction is still reachable h
 - Never merge. Terminal success is review-ready, never "Done".
 - Honor the wall-clock breaker (Preflight). When it trips, flush to the nearest honest terminal state
   — BLOCKED if any required item is unaddressed — then stop via **Stop cleanly** if claim/work began.
-- **Never `run_in_background` a subagent — always await every dispatch.**
+- **Never `run_in_background`; await via `toolbox/bs-dispatch-await.mjs`.**
 - **No raw bulk output in the main thread** (rationale: [`references/core-spine.md`](references/core-spine.md)
   §5). Never paste full diffs, CI logs, or review threads into the orchestrator's context. Read them
   **inside a subagent that returns a short summary**, or filter to a few lines (`gh pr checks --json
@@ -978,7 +978,8 @@ model — review is the canonical judgment step). It runs the full
 protocol in **[review-stack.md](references/review-stack.md)**: the bounded whole-branch
 loop (cap + guard), the Step 6b outside-voice / cross-model Codex pass, and the Step 6c `boss-review`
 pass — fixing must-fix findings and committing tagless. First take a **fresh** whole-minute reading
-from the absolute deadline, then pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`, the
+from the absolute deadline, then pass it `REVIEW_BASE`, `HEAD=$(git rev-parse HEAD)`,
+`BASE_REF` / `BASE_REMOTE` / `BASE_BRANCH` (the round-boundary drift check), the
 plan/acceptance-criteria, (on a resume) the Step 4.5 map, `RUN_DIR` / `RUN_ID`, **and
 `REMAINING_MINUTES`**:
 
@@ -1017,7 +1018,7 @@ when it capped with open must-fix; the advisory Step 6c never writes it.
 
 **What comes back (thin, non-routing).** The subagent RETURNS only the rendered `boss-review` report
 (leading with `<!-- bs-review -->`, for Step 7), the Step 6b `## Cross-model review` outcome token,
-the `## Review coverage` outcome token, and the finding ledger — all **non-routing** (the verdict is
+the `## Review coverage` outcome token, the drift note, and the finding ledger — all **non-routing** (the verdict is
 read from the run file below). Bulk stays in the subagent's context, **NOT pasted back**.
 
 **Classify from the run file only.** Read the sentinel and route on `matchSentinel`

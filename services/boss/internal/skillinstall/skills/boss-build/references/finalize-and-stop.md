@@ -10,6 +10,28 @@ instructions themselves are here.
 
 ## Step 8: Tag commits, then repair to green (boss-repair, capped)
 
+### Test gate cache contract
+
+Before a cache-eligible test gate runs, consult a content-addressed gate cache keyed on the whole
+working-tree content hash, the fully resolved command, the merge-base commit for the PR base, and the
+gate-expansion fingerprint. The fingerprint includes toolchain versions plus the
+repo-declared variables that change the selected runner or arguments. A hit skips the gate and
+reports `cached` with the 12-character tree hash. A miss runs the gate and reports `fresh`; record a
+stamp only after a zero-exit result.
+
+The cache is opt-in per gate. A gate that the repo has not declared eligible, a gate that reads state
+outside the hashed corpus, a nondeterministic gate, an unusable stamp directory, an unresolvable base
+commit, or a failing git read all fail open to a fresh run and never yield a hit. Treat a `make`
+target as an alias: the cache key uses the fully resolved command, while the eligibility lookup uses
+the normalized gate site so a changed package list or flag misses without making every selected
+command undeclarable.
+
+Order matters. Check the exact cache key first. Only on a miss, when the branch adds or renames a
+file (including an uncommitted or untracked one), force the resolved gate through repo-declared
+uncached behavior guarded by `commands.testUncached`; if the repo has no such command, keep caching
+disabled for that gate and state why rather than guessing a runner flag. The existing
+inject-tag-before-green-gate rule below is unrelated to this cache and unchanged by it.
+
 **Inject the PR-number tag and force-push _before_ the green gate**, so CI runs once on the tagged
 head instead of a second time after a post-green rewrite. This is the finalize adapter's
 **inject-PR-tag** capability (`toolbox/finalize/cli.mjs inject-pr-tag`, which delegates to the

@@ -43,6 +43,12 @@ Every reviewer returns a JSON array of findings. Each item is:
   "line": null,
   "title": "<short>",
   "detail": "<why it matters + suggested fix>",
+  "patch": {
+    "file": "<repo-root-relative path>",
+    "old_string": "<verbatim>",
+    "new_string": "<verbatim>"
+  },
+  "category": "<optional defect class>",
   "lens": "<which reviewer produced it>"
 }
 ```
@@ -50,6 +56,14 @@ Every reviewer returns a JSON array of findings. Each item is:
 `line` is an integer or `null`. `lens` identifies the producing reviewer so the
 orchestrator can attribute findings and dedupe across rounds. A reviewer with nothing to
 report returns `[]` — never prose, never an error.
+`category` is optional and identifies the defect class for within-run monoclass detection; it is not
+used for reviewer attribution, and omitting it keeps the finding valid.
+
+`patch` is optional for non-prose findings and required for prose-class findings — comments, docs,
+and test failure messages — unless the item sets `"patch": null` and a non-empty `patchReason`
+naming why a verbatim edit is not safe. A non-null patch uses the same exact-anchor discipline as the
+Edit tool: `file` is rooted at the repository root, `old_string` must match exactly once in that
+file, and the orchestrator rejects rather than guesses on zero or multiple matches.
 
 ## Severity policy
 
@@ -119,8 +133,14 @@ produce the first-pass findings, to catch what a single model's blind spots miss
 
 Once must-fix findings exist, iterate:
 
-1. **Fix.** Dispatch a fix step given **only** the must-fix items (each as `file:line` plus
-   the requested change). Follow receiving-code-review discipline: **adjudicate before you fix** —
+1. **Fix.** Partition must-fix items into patchable and narrative work. Apply patchable findings
+   mechanically in the orchestrator before any fix step is dispatched: compose overlapping patches
+   in one file into one exact replacement, re-read the current file bytes immediately before each
+   application, require `old_string` to still match exactly once, and reject rather than guess when
+   the anchor has become stale or ambiguous. Record rejected patches as invalid reviewer evidence and
+   route their findings to the narrative remainder for the same round. Dispatch a fix step **only**
+   for the narrative remainder (each as `file:line` plus the requested change). Follow
+   receiving-code-review discipline: **adjudicate before you fix** —
    an item may not be fixed until its premise has been confirmed or falsified against the code it
    cites — then one item at a time, no unrelated refactors, and write behavior-focused tests for
    coverage gaps. Each item ends in exactly one disposition — **fixed** (code changed) or

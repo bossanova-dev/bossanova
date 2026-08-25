@@ -23,7 +23,7 @@ pure, unit-tested DAG scheduler in the installed `boss-epic/toolbox/dag-schedule
 classify/normalize/parse surface — this skill never re-derives them inline. The
 skill's own job is the I/O, and it reaches every Bossanova coupling through the
 **adapter seams** below: the tracker adapter (assembly, state, progress comment)
-and the session-runner adapter (spawn/poll/merge sessions, per-ticket dispatch).
+and session-runner adapter (`toolbox/bs-dispatch-await.mjs` for subagent waits).
 
 The unit of work per ticket is a `subSkills.implement` (`/boss-build <TICKET>`)
 session. Do **not** re-implement boss-build's pipeline here; boss-epic only

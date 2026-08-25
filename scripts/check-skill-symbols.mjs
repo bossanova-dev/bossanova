@@ -102,6 +102,7 @@ const EXCLUDED_PATH_SEGMENTS = ['.codex/skills', 'plugins/bossd-plugin-claude/sk
 export const TOOLBOX_OWNING_SKILLS = new Set([
   'boss-build',
   'boss-epic',
+  'boss-finalize',
   'boss-plan',
   'boss-repair',
   'boss-review',

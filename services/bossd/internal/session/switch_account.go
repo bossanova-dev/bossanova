@@ -137,7 +137,40 @@ var (
 	ErrAccountFailed = errors.New("target account failed its last health check")
 	// ErrChatMidTurn means the chat is WORKING and Force was not set.
 	ErrChatMidTurn = errors.New("chat is mid-turn")
+	// ErrSwitchNotAttempted marks a refusal returned BEFORE the switch touched the
+	// chat's pane — i.e. before step 5's KillChatTmuxSession, the first
+	// pane-disturbing operation. It is a structural marker, not a cause: every
+	// early return in SwitchAccount carries it in addition to its own typed cause
+	// (ErrAccountDisabled, ErrChatMidTurn, a plain lookup failure, …), so a caller
+	// can ask "was anything consumed?" without enumerating error strings.
+	//
+	// The automatic respawn-in-place path (BOS-981) charges its per-chat cap before
+	// calling the switch so a genuinely-attempted respawn still counts; this marker
+	// is how it refunds the charge for an attempt that never happened, instead of
+	// spending a chat's whole cap on a refusal that costs nothing. (BOS-981)
+	ErrSwitchNotAttempted = errors.New("switch not attempted (pane untouched)")
 )
+
+// notAttemptedError marks a SwitchAccount refusal that returned before the pane was
+// touched. It renders EXACTLY like the error it wraps — no prefix, no added text — so
+// every operator-facing message (CLI, MCP, the server's typed Connect mappings) is
+// byte-identical to before; the marker is visible only to errors.Is. Both the wrapped
+// cause and ErrSwitchNotAttempted are reachable, so existing
+// errors.Is(err, ErrAccountDisabled)-style callers are unaffected. (BOS-981)
+type notAttemptedError struct{ err error }
+
+func (e notAttemptedError) Error() string   { return e.err.Error() }
+func (e notAttemptedError) Unwrap() []error { return []error{e.err, ErrSwitchNotAttempted} }
+
+// notAttempted tags a pre-pane-touch refusal with ErrSwitchNotAttempted. Every
+// SwitchAccount return path above step 5 goes through it; a nil error passes through
+// so call sites can wrap unconditionally. (BOS-981)
+func notAttempted(err error) error {
+	if err == nil {
+		return nil
+	}
+	return notAttemptedError{err: err}
+}
 
 // SetAccountSwitchDeps wires the production account-switch adapters onto the
 // Lifecycle without changing NewLifecycle's signature. The session→account
@@ -170,20 +203,20 @@ func (l *Lifecycle) SetAccountSwitchDeps(accounts db.AccountStore, clients map[s
 // TODO(BOS-174): headless-preserving respawn via the rotateAndRestart path.
 func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (SwitchAccountResult, error) {
 	if l.sessions == nil || l.agentChats == nil {
-		return SwitchAccountResult{}, fmt.Errorf("account switch: session/chat store not configured")
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("account switch: session/chat store not configured"))
 	}
 
 	// 1. Load the session and its chat.
 	session, err := l.sessions.Get(ctx, p.SessionID)
 	if err != nil {
-		return SwitchAccountResult{}, fmt.Errorf("get session %s: %w", p.SessionID, err)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("get session %s: %w", p.SessionID, err))
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, p.AgentSessionID)
 	if err != nil {
-		return SwitchAccountResult{}, fmt.Errorf("get agent chat %s: %w", p.AgentSessionID, err)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("get agent chat %s: %w", p.AgentSessionID, err))
 	}
 	if chat == nil {
-		return SwitchAccountResult{}, fmt.Errorf("agent chat not found for agent_session_id %q", p.AgentSessionID)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("agent chat not found for agent_session_id %q", p.AgentSessionID))
 	}
 
 	// The switch binds the CHAT's account, not the session's, so a cross-agent
@@ -196,27 +229,27 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		binding = chatAccountBinding{chats: l.agentChats, agentSessionID: p.AgentSessionID}
 	}
 	if l.accountSwitchRegistry == nil {
-		return SwitchAccountResult{}, fmt.Errorf("account switch: account registry not configured")
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("account switch: account registry not configured"))
 	}
 
 	// 2. Validate the target, then short-circuit a no-op switch.
 	target, err := l.accountSwitchRegistry.Account(ctx, p.TargetAccountID)
 	if err != nil {
-		return SwitchAccountResult{}, fmt.Errorf("load target account %q: %w", p.TargetAccountID, err)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("load target account %q: %w", p.TargetAccountID, err))
 	}
 	if target.Status == AccountDisabled {
-		return SwitchAccountResult{}, fmt.Errorf("%w: account %q is disabled", ErrAccountDisabled, target.Label)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is disabled", ErrAccountDisabled, target.Label))
 	}
 	if target.Status == AccountFailed {
-		return SwitchAccountResult{}, fmt.Errorf("%w: account %q", ErrAccountFailed, target.Label)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q", ErrAccountFailed, target.Label))
 	}
 	if target.Status == AccountCooling || (target.CooldownUntil != nil && target.CooldownUntil.After(l.switchNow())) {
-		return SwitchAccountResult{}, fmt.Errorf("%w: account %q is cooling until %s",
-			ErrAccountCooling, target.Label, coolingUntilText(target.CooldownUntil))
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is cooling until %s",
+			ErrAccountCooling, target.Label, coolingUntilText(target.CooldownUntil)))
 	}
 	current, err := binding.SessionAccount(ctx, p.SessionID)
 	if err != nil {
-		return SwitchAccountResult{}, fmt.Errorf("read current session account: %w", err)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("read current session account: %w", err))
 	}
 	if current == p.TargetAccountID && !p.RespawnSameAccount {
 		// Already on the target: no stop, no rebind, no respawn. The BOS-482
@@ -241,7 +274,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// treats a failed switch as fail-safe and leaves the chat as-is. No pane is
 	// killed on refusal.
 	if !p.Force && l.accountSwitchWorking != nil && l.accountSwitchWorking.IsWorking(p.AgentSessionID) {
-		return SwitchAccountResult{}, fmt.Errorf("%w; confirm/--force to interrupt", ErrChatMidTurn)
+		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w; confirm/--force to interrupt", ErrChatMidTurn))
 	}
 
 	// 4. Resume-vs-fresh. Provider comes from the target account; for the
@@ -272,6 +305,15 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		l.switchTranscriptExists(ctx, chat.AgentName, session.WorktreePath, resumeID)
 
 	// 5. STOP the current chat pane. A headless chat (no tmux name) is a no-op.
+	//
+	// ── PANE-TOUCH BOUNDARY (BOS-981) ────────────────────────────────────────────
+	// This kill is the FIRST operation that can disturb the chat. Every return above
+	// it is wrapped in notAttempted() so callers can tell "refused, nothing consumed"
+	// from "attempted and failed"; nothing below it is. If you add a new guard, put
+	// it above this line and wrap it — or below it and leave it unwrapped. Moving an
+	// existing check across this line changes what the automatic respawn-in-place
+	// path charges its per-chat cap for.
+	// ─────────────────────────────────────────────────────────────────────────────
 	if err := l.KillChatTmuxSession(ctx, p.SessionID, p.AgentSessionID); err != nil {
 		return SwitchAccountResult{}, fmt.Errorf("stop chat before switch: %w", err)
 	}

@@ -45,6 +45,15 @@ type World struct {
 	// observable if the intermediate frames arrive far enough apart to capture.
 	CreateSessionScript     []*pb.CreateSessionResponse
 	CreateSessionFrameDelay time.Duration
+	// ResurrectSetupLines / ResurrectFrameDelay / ResurrectSetupError script the
+	// mock daemon's server-streaming ResurrectSession (BOS-984), for the same
+	// reason the CreateSession fields above exist: the restore's progress line
+	// is only observable if the frames arrive far enough apart to capture.
+	// ResurrectSetupError, when non-empty, is carried on the terminal frame so
+	// the "restored, but setup failed" warning can be demonstrated.
+	ResurrectSetupLines []string
+	ResurrectFrameDelay time.Duration
+	ResurrectSetupError string
 	// Agents, when non-empty, is what the mock daemon's ListAgents answers.
 	// It is empty for almost every preset because the home board does not read
 	// it — but boss's agent preflight does (services/boss/cmd/handlers.go
@@ -1046,6 +1055,29 @@ const AsyncCreateSessionTitle = "Return an accepted session early"
 // the BOS-720 accepted-then-settled shape: the accepted frame carries the
 // session id in CreatingWorktree with no worktree yet, a setup line follows,
 // and the settled frame carries the post-bootstrap fields the first could not.
+// ResurrectProgressWorld is the demo world plus a scripted resurrect stream
+// (BOS-984). DemoWorld already seeds ArchivedSessions, so the Trash screen is
+// populated; all this adds is the progress the streaming RPC now emits. The 2s
+// spacing mirrors AsyncCreateWorld's and is what makes a progress line
+// capturable rather than a flicker.
+func ResurrectProgressWorld() World {
+	w := DemoWorld()
+	w.ResurrectFrameDelay = 2 * time.Second
+	// Three lines, matching the coarse phases Lifecycle.ResurrectSession really
+	// writes around the setup script. The count is load-bearing for capture: the
+	// mock sends the terminal frame immediately after the LAST line, and the TUI
+	// clears the progress label on settle, so the final line's visible window is
+	// ~0ms. A scenario may therefore assert only NON-final lines — the trailing
+	// "worktree restored" exists to give "pnpm install" a full frame delay of
+	// screen time, not to be asserted on.
+	w.ResurrectSetupLines = []string{
+		"recreating worktree",
+		"pnpm install --frozen-lockfile",
+		"worktree restored",
+	}
+	return w
+}
+
 func AsyncCreateWorld() World {
 	settledChatID := "chat-async-720"
 	w := DemoWorld()

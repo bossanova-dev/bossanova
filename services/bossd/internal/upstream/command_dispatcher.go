@@ -159,7 +159,7 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_CloseSession:
 		return c.dispatchCloseSession(ctx, cmdID, cmd.GetCloseSession())
 	case *pb.OrchestratorCommand_ResurrectSession:
-		return c.dispatchResurrectSession(ctx, cmdID, cmd.GetResurrectSession())
+		return c.dispatchResurrectSession(ctx, cmdID, cmd.GetResurrectSession(), outbound)
 	case *pb.OrchestratorCommand_RemoveSession:
 		return c.dispatchRemoveSession(ctx, cmdID, cmd.GetRemoveSession(), outbound)
 	case *pb.OrchestratorCommand_EmptyTrash:
@@ -571,16 +571,25 @@ func (c *StreamClient) dispatchCloseSession(ctx context.Context, cmdID string, r
 }
 
 // dispatchResurrectSession routes a ResurrectSessionCommand to the handler and
-// replies with the updated Session (session = 4). Mirrors dispatchArchive.
-func (c *StreamClient) dispatchResurrectSession(ctx context.Context, cmdID string, req *pb.ResurrectSessionCommand) *pb.DaemonEvent {
+// replies with the updated Session (session = 4).
+//
+// Dispatched asynchronously (BOS-984), unlike the archive it otherwise mirrors:
+// resurrect re-creates the worktree and then runs the repo's setup script,
+// which is allowed gitpkg.SetupScriptTimeout (5 minutes). Running it inline
+// would block the command reader for that entire window, stalling every other
+// orchestrator command on this daemon behind one restore. Same reasoning as
+// dispatchRemoveSession and dispatchEmptyTrash.
+func (c *StreamClient) dispatchResurrectSession(ctx context.Context, cmdID string, req *pb.ResurrectSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	sess, err := c.commandHandler.ResurrectSession(ctx, req.GetSessionId())
-	if err != nil {
-		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
-	}
-	return commandOK(cmdID, sess)
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		sess, err := c.commandHandler.ResurrectSession(ctx, req.GetSessionId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return commandOK(cmdID, sess)
+	})
 }
 
 // dispatchRemoveSession routes a RemoveSessionCommand to the handler and replies

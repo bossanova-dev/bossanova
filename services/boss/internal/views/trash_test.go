@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -25,6 +26,13 @@ type trashStubClient struct {
 	restoredIDs []string
 	emptyCalled bool
 	failOnID    string // when set, RemoveSession returns an error for this id
+
+	// Resurrect stream script (BOS-984): the setup-output lines the stream
+	// replays before its terminal frame, the non-fatal setup error that frame
+	// carries, and an error returned instead of opening the stream at all.
+	resurrectSetupLines []string
+	resurrectSetupError string
+	resurrectErr        error
 }
 
 func (s *trashStubClient) ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error) {
@@ -39,9 +47,51 @@ func (s *trashStubClient) RemoveSession(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *trashStubClient) ResurrectSession(_ context.Context, id string) (*pb.Session, error) {
+func (s *trashStubClient) ResurrectSession(_ context.Context, id string) (client.ResurrectSessionStream, error) {
 	s.restoredIDs = append(s.restoredIDs, id)
-	return &pb.Session{Id: id}, nil
+	if s.resurrectErr != nil {
+		return nil, s.resurrectErr
+	}
+	frames := make([]*pb.ResurrectSessionResponse, 0, len(s.resurrectSetupLines)+1)
+	for _, line := range s.resurrectSetupLines {
+		frames = append(frames, &pb.ResurrectSessionResponse{
+			Event: &pb.ResurrectSessionResponse_SetupOutput{SetupOutput: &pb.SetupScriptOutput{Text: line}},
+		})
+	}
+	frames = append(frames, &pb.ResurrectSessionResponse{
+		Event: &pb.ResurrectSessionResponse_SessionResurrected{
+			SessionResurrected: &pb.SessionResurrected{
+				Session:    &pb.Session{Id: id},
+				SetupError: s.resurrectSetupError,
+			},
+		},
+	})
+	return &stubResurrectStream{frames: frames}, nil
+}
+
+// stubResurrectStream replays a scripted frame list as a
+// client.ResurrectSessionStream.
+type stubResurrectStream struct {
+	frames []*pb.ResurrectSessionResponse
+	i      int
+	closed bool
+}
+
+func (s *stubResurrectStream) Receive() bool {
+	if s.i >= len(s.frames) {
+		return false
+	}
+	s.i++
+	return true
+}
+
+func (s *stubResurrectStream) Msg() *pb.ResurrectSessionResponse { return s.frames[s.i-1] }
+
+func (s *stubResurrectStream) Err() error { return nil }
+
+func (s *stubResurrectStream) Close() error {
+	s.closed = true
+	return nil
 }
 
 func (s *trashStubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
@@ -205,7 +255,9 @@ func TestTrashModel_RestoreUsesSelectedFilteredSession(t *testing.T) {
 	if !m.restoring {
 		t.Fatal("model should enter restoring state")
 	}
-	msg := cmd().(sessionRestoredMsg)
+	// The first command opens the stream (BOS-984); the restore result arrives
+	// on a later frame.
+	msg := cmd().(restoreStreamOpenedMsg)
 	if msg.id != "sess-3" {
 		t.Fatalf("restored id = %q, want sess-3", msg.id)
 	}
@@ -733,4 +785,146 @@ func trashSessionIDs(sessions []*pb.Session) []string {
 		ids = append(ids, sess.Id)
 	}
 	return ids
+}
+
+// driveRestore runs a restore to completion: press [r], then pump every command
+// the model returns until the terminal sessionRestoredMsg lands. It returns the
+// model at each step so a test can assert what the user SAW mid-restore, which
+// is the whole point of BOS-984's progress frames.
+func driveRestore(t *testing.T, m TrashModel) (steps []TrashModel, final TrashModel) {
+	t.Helper()
+	model, cmd := m.Update(keyString("r"))
+	m = model.(TrashModel)
+	steps = append(steps, m)
+	for i := 0; cmd != nil && i < 20; i++ {
+		msg := cmd()
+		if msg == nil {
+			break
+		}
+		model, cmd = m.Update(msg)
+		m = model.(TrashModel)
+		steps = append(steps, m)
+		if _, done := msg.(sessionRestoredMsg); done {
+			break
+		}
+	}
+	return steps, m
+}
+
+// TestTrashModel_RestoreRendersSetupProgress pins the user-visible half of
+// BOS-984: while the repo's setup script runs, the restore shows what it is
+// doing instead of an undifferentiated spinner.
+func TestTrashModel_RestoreRendersSetupProgress(t *testing.T) {
+	client := &trashStubClient{
+		stubClient:          &stubClient{},
+		sessions:            trashFixtureSessions(),
+		resurrectSetupLines: []string{"recreating worktree", "installing dependencies"},
+	}
+	m := newLoadedTrashModelWithClient(client)
+
+	steps, final := driveRestore(t, m)
+
+	var sawProgress bool
+	for _, step := range steps {
+		if !step.restoring {
+			continue
+		}
+		view := step.View().Content
+		if strings.Contains(view, "installing dependencies") {
+			sawProgress = true
+		}
+	}
+	if !sawProgress {
+		t.Fatal("no rendered frame showed the setup script's progress; " +
+			"the restore was a silent spinner for its whole duration")
+	}
+	if final.restoring {
+		t.Fatal("model still restoring after the terminal frame")
+	}
+	if final.err != nil {
+		t.Fatalf("restore reported an error: %v", final.err)
+	}
+	if final.restoreLine != "" {
+		t.Fatalf("progress line %q survived the terminal frame", final.restoreLine)
+	}
+}
+
+// TestTrashModel_RestoreSetupFailureRendersAsAWarningNotAnError pins AC3 in the
+// UI: a restore whose setup script failed is a success with a caveat. It must
+// NOT raise the error banner, which is how a failed restore (or a deadline)
+// renders — conflating them is exactly what left the user unable to tell them
+// apart.
+func TestTrashModel_RestoreSetupFailureRendersAsAWarningNotAnError(t *testing.T) {
+	client := &trashStubClient{
+		stubClient:          &stubClient{},
+		sessions:            trashFixtureSessions(),
+		resurrectSetupError: "setup script exited 1",
+	}
+	m := newLoadedTrashModelWithClient(client)
+
+	_, final := driveRestore(t, m)
+
+	if final.err != nil {
+		t.Fatalf("a setup failure must not raise the error banner, got %v", final.err)
+	}
+	if final.restoreWarning == "" {
+		t.Fatal("setup failure was dropped; the user is told nothing about missing dependencies")
+	}
+	view := final.View().Content
+	if !strings.Contains(view, "setup script exited 1") {
+		t.Fatalf("view does not surface the setup failure:\n%s", view)
+	}
+	if final.restoredID == "" {
+		t.Fatal("the session did come back; it must be recorded as restored")
+	}
+}
+
+// TestTrashModel_RestoreFailureRendersAsAnError is the contrast case: when the
+// resurrect itself fails, the error banner is correct and the warning line must
+// stay empty.
+func TestTrashModel_RestoreFailureRendersAsAnError(t *testing.T) {
+	client := &trashStubClient{
+		stubClient:   &stubClient{},
+		sessions:     trashFixtureSessions(),
+		resurrectErr: errors.New("resurrect worktree: fatal: invalid reference"),
+	}
+	m := newLoadedTrashModelWithClient(client)
+
+	_, final := driveRestore(t, m)
+
+	if final.err == nil {
+		t.Fatal("a failed resurrect must raise the error banner")
+	}
+	if final.restoreWarning != "" {
+		t.Fatalf("restoreWarning = %q; a failed restore is not a setup failure", final.restoreWarning)
+	}
+	if final.restoredID != "" {
+		t.Fatalf("restoredID = %q; a failed restore restored nothing", final.restoredID)
+	}
+}
+
+// TestTrashModel_FastRestoreShowsNoProgressFlicker pins the third U3 scenario: a
+// repo with no setup script produces no progress frames, so the restore renders
+// the plain spinner and nothing else. Progress must be evidence of work, not
+// decoration.
+func TestTrashModel_FastRestoreShowsNoProgressFlicker(t *testing.T) {
+	client := &trashStubClient{stubClient: &stubClient{}, sessions: trashFixtureSessions()}
+	m := newLoadedTrashModelWithClient(client)
+
+	steps, final := driveRestore(t, m)
+
+	for _, step := range steps {
+		if step.restoreLine != "" {
+			t.Fatalf("progress line %q appeared with no setup output to show", step.restoreLine)
+		}
+		if step.restoring && !strings.Contains(step.View().Content, "Restoring...") {
+			t.Fatal("the restoring frame lost its spinner label")
+		}
+	}
+	if final.err != nil {
+		t.Fatalf("restore failed: %v", final.err)
+	}
+	if final.restoreWarning != "" {
+		t.Fatalf("restoreWarning = %q on a clean restore", final.restoreWarning)
+	}
 }

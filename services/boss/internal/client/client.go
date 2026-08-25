@@ -82,7 +82,16 @@ type BossClient interface {
 
 	// Archive / Resurrect
 	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)
-	ResurrectSession(ctx context.Context, id string) (*pb.Session, error)
+	// ResurrectSession restores an archived session. Server-streaming for the
+	// same reason CreateSession is (BOS-984): the repo's setup script runs
+	// inside this call and may take minutes, which no unary response survives.
+	// The caller drains the stream; the terminal SessionResurrected frame
+	// carries the restored session and any non-fatal setup failure.
+	//
+	// RemoteClient still reaches the daemon through the UNARY
+	// ProxyResurrectSession and adapts its reply into a single terminal frame,
+	// so the orchestrator's versioned wire shapes are untouched.
+	ResurrectSession(ctx context.Context, id string) (ResurrectSessionStream, error)
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
 
 	// Claude chat tracking
@@ -206,6 +215,19 @@ type BossClient interface {
 	// run, including disabled and failed entries. Surfaced via
 	// `boss plugin list`.
 	ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error)
+}
+
+// ResurrectSessionStream abstracts a server-streaming resurrect session
+// response. Same four-method shape as CreateSessionStream.
+type ResurrectSessionStream interface {
+	// Receive advances the stream. Returns false when done or on error.
+	Receive() bool
+	// Msg returns the most recent message from the stream.
+	Msg() *pb.ResurrectSessionResponse
+	// Err returns the stream error, if any.
+	Err() error
+	// Close closes the stream.
+	Close() error
 }
 
 // CreateSessionStream abstracts a server-streaming create session response.

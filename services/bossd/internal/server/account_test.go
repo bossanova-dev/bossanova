@@ -53,6 +53,7 @@ func (r recordingProxyRegistrar) ForgetBearer(string)                           
 func (r recordingProxyRegistrar) ForgetAllBearers()                                { r.rec.record("forget") }
 func (r recordingProxyRegistrar) AdoptToken(string, string)                        {}
 func (r recordingProxyRegistrar) AdoptTokenForChat(string, string, string, string) {}
+func (r recordingProxyRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
 
 // recordingSmoke logs the TestAccount live-smoke into a shared eventRecorder.
 type recordingSmoke struct{ rec *eventRecorder }

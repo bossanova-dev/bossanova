@@ -434,13 +434,27 @@ func (c *LocalClient) ArchiveSession(ctx context.Context, id string) (*pb.Sessio
 	return resp.Msg.Session, nil
 }
 
-func (c *LocalClient) ResurrectSession(ctx context.Context, id string) (*pb.Session, error) {
-	resp, err := c.rpc.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: id}))
+func (c *LocalClient) ResurrectSession(ctx context.Context, id string) (ResurrectSessionStream, error) {
+	stream, err := c.rpc.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: id}))
 	if err != nil {
-		return nil, err
+		return nil, mapClientErr(err)
 	}
-	return resp.Msg.Session, nil
+	return &localResurrectSessionStream{stream: stream}, nil
 }
+
+// localResurrectSessionStream wraps the DaemonService ResurrectSession stream.
+// Mirrors localCreateSessionStream exactly.
+type localResurrectSessionStream struct {
+	stream *connect.ServerStreamForClient[pb.ResurrectSessionResponse]
+}
+
+func (s *localResurrectSessionStream) Receive() bool { return s.stream.Receive() }
+
+func (s *localResurrectSessionStream) Msg() *pb.ResurrectSessionResponse { return s.stream.Msg() }
+
+func (s *localResurrectSessionStream) Err() error { return mapClientErr(s.stream.Err()) }
+
+func (s *localResurrectSessionStream) Close() error { return s.stream.Close() }
 
 func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error) {
 	resp, err := c.rpc.EmptyTrash(ctx, connect.NewRequest(req))

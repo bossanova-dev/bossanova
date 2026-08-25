@@ -349,12 +349,30 @@ func (b *Backend) ArchiveSession(ctx context.Context, id string) (*pb.Session, e
 	return resp.Msg.GetSession(), nil
 }
 
+// ResurrectSession drains the daemon's server-streaming resurrect (BOS-984) and
+// returns the session from its terminal frame. The MCP tool surface is
+// request/response, so the setup-output progress frames have nowhere to go and
+// are discarded; the streaming shape is still what lets a slow setup script
+// finish at all.
 func (b *Backend) ResurrectSession(ctx context.Context, id string) (*pb.Session, error) {
-	resp, err := b.rpc.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: id}))
+	stream, err := b.rpc.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: id}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetSession(), nil
+	defer func() { _ = stream.Close() }()
+	var sess *pb.Session
+	for stream.Receive() {
+		if r := stream.Msg().GetSessionResurrected(); r != nil {
+			sess = r.GetSession()
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, errors.New("resurrect session: stream ended without a resurrected session")
+	}
+	return sess, nil
 }
 
 func (b *Backend) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error) {

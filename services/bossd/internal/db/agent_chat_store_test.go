@@ -843,3 +843,139 @@ func TestAgentChatStore_ListRoutableChats(t *testing.T) {
 		t.Errorf("failed-start chat should be excluded from routable snapshot; got %v", got)
 	}
 }
+
+// TestAgentChatStore_NullTmuxNameIsRoutableButNotTmuxListed pins the exact query
+// gap the BOS-979 pane-adoption sweep depends on.
+//
+// The sweep carries a tmux.ChatSessionName(repoID, agentSessionID) fallback for a
+// chat whose tmux_session_name is NULL, but it used to read its chat list through
+// ListWithTmuxSession — whose WHERE clause excludes precisely those rows, making
+// the fallback unreachable code. A pane whose name was never persisted, or was
+// cleared by a partial write, held a live baked token that no restart could
+// recover. This asserts the two predicates really do differ on that row, so the
+// sweep's switch to ListRoutableChats is what closes the gap rather than a
+// no-op rename.
+func TestAgentChatStore_NullTmuxNameIsRoutableButNotTmuxListed(t *testing.T) {
+	db := setupTestDB(t)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, NewRepoStore(db))
+	sess, err := NewSessionStore(db).Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "null tmux name",
+		WorktreePath: "/tmp/wt/null-tmux",
+		BranchName:   "feat/null-tmux",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// A chat that was tmux-hosted and whose name was then CLEARED — the
+	// surviving pane is still alive and still holds its baked token.
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID: sess.ID, AgentSessionID: "cleared-name", Title: "Cleared",
+	}); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	name := "boss-repo-cleared"
+	if err := chatStore.UpdateTmuxSessionName(ctx, "cleared-name", &name); err != nil {
+		t.Fatalf("set tmux name: %v", err)
+	}
+	if err := chatStore.UpdateTmuxSessionName(ctx, "cleared-name", nil); err != nil {
+		t.Fatalf("clear tmux name: %v", err)
+	}
+
+	tmuxListed, err := chatStore.ListWithTmuxSession(ctx)
+	if err != nil {
+		t.Fatalf("list with tmux session: %v", err)
+	}
+	for _, c := range tmuxListed {
+		if c.AgentSessionID == "cleared-name" {
+			t.Fatalf("ListWithTmuxSession returned a NULL-name row; the gap this test pins does not exist")
+		}
+	}
+
+	routable, err := chatStore.ListRoutableChats(ctx)
+	if err != nil {
+		t.Fatalf("list routable chats: %v", err)
+	}
+	found := false
+	for _, c := range routable {
+		if c.AgentSessionID == "cleared-name" {
+			found = true
+			if c.TmuxSessionName != nil {
+				t.Fatalf("expected a NULL tmux_session_name, got %q", *c.TmuxSessionName)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("ListRoutableChats dropped the NULL-name row the sweep needs to see")
+	}
+}
+
+// TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken covers the chat half
+// of the durable registry's eviction. proxy_tokens.agent_session_id carries no
+// foreign key — agent_chats.agent_session_id is indexed but not UNIQUE, and
+// SQLite requires a unique parent key — so nothing cascades here and the chat
+// delete has to issue the DELETE itself. Without it, deleting a chat would leave
+// a row whose rebuild resolves a live pane's token to a chat that no longer
+// exists.
+func TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken(t *testing.T) {
+	db := setupTestDB(t)
+	chatStore := NewAgentChatStore(db)
+	tokenStore := NewProxyTokenStore(db)
+	ctx := context.Background()
+
+	sessID := createProxyTokenTestSession(t, db, "chat delete drops proxy token")
+	for _, agentSessionID := range []string{"keep-me", "delete-me"} {
+		if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+			SessionID: sessID, AgentSessionID: agentSessionID, Title: agentSessionID,
+		}); err != nil {
+			t.Fatalf("create chat %s: %v", agentSessionID, err)
+		}
+		if err := tokenStore.Upsert(ctx, ProxyTokenRecord{
+			TokenSHA256:    hexDigest(agentSessionID[0]),
+			SessionID:      sessID,
+			AgentSessionID: agentSessionID,
+			AccountID:      "acct-1",
+			IsChatShaped:   true,
+		}); err != nil {
+			t.Fatalf("persist token for %s: %v", agentSessionID, err)
+		}
+	}
+
+	if err := chatStore.DeleteByAgentSessionID(ctx, "delete-me"); err != nil {
+		t.Fatalf("delete by agent session id: %v", err)
+	}
+
+	rows, err := tokenStore.List(ctx)
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("proxy token rows = %d, want 1", len(rows))
+	}
+	if rows[0].AgentSessionID != "keep-me" {
+		t.Errorf("surviving token agent_session_id = %q, want keep-me", rows[0].AgentSessionID)
+	}
+
+	// The chat row itself still goes away — the token delete must not have
+	// replaced the original statement or rolled it back.
+	chats, err := chatStore.ListBySession(ctx, sessID)
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].AgentSessionID != "keep-me" {
+		t.Fatalf("chats after delete = %+v, want only keep-me", chats)
+	}
+
+	// Deleting an agent session that never existed stays a no-op on both tables.
+	if err := chatStore.DeleteByAgentSessionID(ctx, "nonexistent"); err != nil {
+		t.Errorf("delete non-existent should not error, got: %v", err)
+	}
+	if rows, err = tokenStore.List(ctx); err != nil || len(rows) != 1 {
+		t.Errorf("rows after no-op delete = %d (err %v), want 1", len(rows), err)
+	}
+}

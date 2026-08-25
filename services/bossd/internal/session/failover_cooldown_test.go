@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -467,6 +468,39 @@ func (d *syncDecider) signal() rotation.Signal {
 // MaterializeAccount + ProbeRateLimit round trip plus a usage-cache write, aiming
 // a burst of probes at the provider that is already rate-limiting us. They all
 // ask the same question at the same instant, so one answer must serve them all.
+// waitForCallersInFlight blocks until want goroutines have reached the
+// single-flight probe.
+//
+// probeAccountUsage is the coalescing point, so counting entries to
+// PrepareFailover is too early a signal: a caller can be recorded there while
+// still loading its session, then reach the group after the shared flight has
+// already resolved and start a second probe. The single-flight parks its waiters
+// on an unexported WaitGroup, so there is no counter to read and a whole-process
+// stack dump is the available signal. singleflight.Do runs fn on the winning
+// caller's own goroutine, so the caller executing the probe is counted too.
+func waitForCallersInFlight(t *testing.T, want int) {
+	t.Helper()
+
+	const frame = ".probeAccountUsage("
+	deadline := time.Now().Add(5 * time.Second)
+	buf := make([]byte, 64*1024)
+	for {
+		n := runtime.Stack(buf, true)
+		for n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			n = runtime.Stack(buf, true)
+		}
+		got := strings.Count(string(buf[:n]), frame)
+		if got >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d callers to reach the usage probe; saw %d", want, got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPrepareFailover_ConcurrentProbesCoalesce(t *testing.T) {
 	const callers = 8
 
@@ -508,9 +542,13 @@ func TestPrepareFailover_ConcurrentProbesCoalesce(t *testing.T) {
 	for range callers {
 		<-arrived
 	}
-	// Give the callers a moment to pile into the single-flight before answering,
-	// so this measures coalescing rather than a serialized race.
-	time.Sleep(50 * time.Millisecond)
+	// Answer only once every caller has provably reached the single-flight,
+	// so this measures coalescing rather than a serialized race. Arrival on the
+	// channel above happens just *before* the call, so it does not establish
+	// overlap on its own; the stack dump does. This replaces a fixed 50ms settle
+	// delay that was simultaneously slower on a fast machine and too short on a
+	// loaded one.
+	waitForCallersInFlight(t, callers)
 	close(release)
 	wg.Wait()
 

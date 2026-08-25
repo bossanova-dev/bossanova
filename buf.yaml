@@ -14,3 +14,39 @@ modules:
     breaking:
       use:
         - FILE
+        # FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED is NOT in the FILE category
+        # (it lives in CSR/WIRE_JSON/WIRE). It is added so the daemon.proto
+        # ignore_only below trades the ABSOLUTE deletion rule for the
+        # reserve-aware one rather than dropping deletion protection entirely.
+        # On every other file it is redundant — FILE's own FIELD_NO_DELETE
+        # already subsumes it — so this adds coverage and removes none.
+        - FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED
+      # daemon.proto is the bossd-LOCAL socket API, not the versioned surface.
+      # apiversion.Interceptor is installed only on bosso's OrchestratorService
+      # handler (services/bosso/cmd/main.go); bossd's DaemonService handler
+      # installs socketauth + errortrack only, so a daemon-resident RPC cannot
+      # be version-gated at all. Its only clients ship from this repo
+      # (services/boss, services/mcp, the bossd test harness) and `boss upgrade`
+      # restarts the daemon by default, so the boss<->bossd skew window is
+      # bounded and self-correcting.
+      #
+      # Exactly two rules are scoped off for that ONE file, both of which fail
+      # LOUDLY on skew (a protocol error, not a misparse):
+      #   - RPC_SAME_SERVER_STREAMING: unary -> server-streaming (BOS-984).
+      #     It is in every category, so an explicit ignore is the only way.
+      #   - FIELD_NO_DELETE: absolute. The reserve-aware rule added above still
+      #     covers this file, so deleting a field WITHOUT `reserved` is still a
+      #     failure; only a properly reserved retirement is allowed.
+      #
+      # Everything that fails SILENTLY on skew — renumbering, retyping, renames
+      # — stays enforced here, and orchestrator.proto (the surface with clients
+      # that cannot be upgraded in lockstep) keeps FILE at full strength.
+      #
+      # Scope, not strength: this is deliberately NOT the repo-wide `except:`
+      # that BOS-446 refused, which would have disabled a rule for the versioned
+      # surface too.
+      ignore_only:
+        RPC_SAME_SERVER_STREAMING:
+          - proto/bossanova/v1/daemon.proto
+        FIELD_NO_DELETE:
+          - proto/bossanova/v1/daemon.proto

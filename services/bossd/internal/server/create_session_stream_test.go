@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,20 +21,18 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dbtest"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 )
-
-var setupServerTestDBMigrateMu sync.Mutex
 
 // streamTestToken is a fixed valid 64-char hex socket-auth token used to wire
 // the in-process httptest server and its client in this file's harness.
@@ -78,7 +75,7 @@ func TestCreateSessionHandlerClearsWriteDeadline(t *testing.T) {
 
 	rw := &deadlineCaptureResponseWriter{header: http.Header{}}
 	handlerCalled := false
-	handler := withCreateSessionWriteDeadlineOverride(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := withStreamingWriteDeadlineOverride(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		handlerCalled = true
 	}))
 
@@ -1161,23 +1158,7 @@ func (h *createSessionStreamHarness) createIsQuickChat(t *testing.T, title strin
 
 func setupServerTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-
-	sqlDB, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatalf("open in-memory db: %v", err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	setupServerTestDBMigrateMu.Lock()
-	defer setupServerTestDBMigrateMu.Unlock()
-	if err := migrate.Run(sqlDB, os.DirFS(serverTestMigrationsDir())); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	return sqlDB
-}
-
-func serverTestMigrationsDir() string {
-	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
+	return dbtest.New(t)
 }
 
 type setupOutputCaptureSender struct {
@@ -1196,6 +1177,11 @@ type setupStreamWorktree struct {
 	createErr             error
 	createFromExistingErr error
 	createFn              func(context.Context, gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
+	// resurrectFn overrides Resurrect; the BOS-984 resurrect-stream tests drive
+	// it to model a slow setup script, a failed setup script, and a failed
+	// worktree add.
+	resurrectFn    func(context.Context, gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error)
+	resurrectCalls []gitpkg.ResurrectOpts
 
 	createCalls             []gitpkg.CreateOpts
 	createFromExistingCalls []gitpkg.CreateFromExistingBranchOpts
@@ -1271,8 +1257,21 @@ func (w *setupStreamWorktree) callRecords() ([]gitpkg.CreateOpts, []gitpkg.Creat
 }
 
 func (w *setupStreamWorktree) Archive(context.Context, string) error { return nil }
-func (w *setupStreamWorktree) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
-	return nil
+func (w *setupStreamWorktree) Resurrect(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
+	w.mu.Lock()
+	w.resurrectCalls = append(w.resurrectCalls, opts)
+	fn := w.resurrectFn
+	w.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, opts)
+	}
+	return &gitpkg.ResurrectResult{}, nil
+}
+
+func (w *setupStreamWorktree) resurrectOpts() []gitpkg.ResurrectOpts {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]gitpkg.ResurrectOpts(nil), w.resurrectCalls...)
 }
 func (w *setupStreamWorktree) ReapLocalBranches(_ context.Context, _ string, branches []string) error {
 	w.mu.Lock()

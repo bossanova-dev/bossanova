@@ -1,0 +1,32 @@
+● I'll pick up the rotation audit trail next.
+
+● Bash(cd services/bossd && go test ./internal/rotation/...)
+  ⎿  ok  	github.com/recurser/bossd/internal/rotation	0.712s
+
+● Now let me wire the recorder through.
+
+✻ Invalid API key · Please run /login
+  ⎿  API Error (401 {"error":"unknown session token"}) · Retrying in 1s · attempt 1/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 2s · attempt 2/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 4s · attempt 3/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 8s · attempt 4/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 15s · attempt 5/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 15s · attempt 6/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 15s · attempt 7/10
+
+✻ 401 bossd failover proxy: unknown session token · Retrying in 15s · attempt 8/10
+
+✻ 401 bossd failover proxy: unknown session token (pane likely predates a daemon
+  restart — see BOS-481) · Retrying in 15s · attempt 9/10
+
+────────────────────────────────────────────────────────────────────────────────
+  >
+────────────────────────────────────────────────────────────────────────────────
+  bos-980-latch-the-auth-failed-episode Opus 5 (1M context) 63% remaining
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #2214

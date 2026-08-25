@@ -81,10 +81,8 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 			continue
 		}
 
-		tmuxName := ""
-		if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
-			tmuxName = *chat.TmuxSessionName
-		} else {
+		tmuxName := persistedChatPaneName(chat)
+		if tmuxName == "" {
 			sess, serr := l.sessions.Get(ctx, chat.SessionID)
 			if serr != nil {
 				l.logger.Warn().Err(serr).
@@ -95,12 +93,12 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 			}
 			tmuxName = tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 		}
-		if tmuxName == "" || l.tmux == nil || !l.tmux.HasSession(ctx, tmuxName) {
+		if !l.paneIsLive(ctx, tmuxName) {
 			continue
 		}
 
-		baked, ok := l.tmux.ShowEnv(ctx, tmuxName, "ANTHROPIC_BASE_URL")
-		if !ok || baked == "" {
+		baked, ok := l.paneBakedProxyURL(ctx, tmuxName)
+		if !ok {
 			continue
 		}
 		bakedPort, stale := stalePaneProxyPort(baked, l.proxyPort)

@@ -120,8 +120,8 @@ func TestAdoptToken_idempotentAndConflictSafe(t *testing.T) {
 		ps := newAdoptProxy(t, &buf)
 		ps.AdoptToken("", "sess-1")
 		ps.AdoptToken(tokB, "")
-		if len(ps.tokenToSession) != 0 {
-			t.Fatalf("empty inputs registered something: %v", ps.tokenToSession)
+		if len(ps.hashToTarget) != 0 {
+			t.Fatalf("empty inputs registered something: %v", ps.hashToTarget)
 		}
 	})
 }
@@ -142,7 +142,7 @@ func TestAdoptTokenForChat_registersAndCleansUp(t *testing.T) {
 	// Bookkeeping is filled so Deregister tears the chat token down.
 	ps.Deregister("sess-1")
 	if _, ok := ps.sessionForToken(tok); ok {
-		t.Fatalf("Deregister did not drop an adopted chat token; sessionChats bookkeeping missing")
+		t.Fatalf("Deregister did not drop an adopted chat token; sessionHashes bookkeeping missing")
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("clean chat adoption logged: %s", buf.String())
@@ -285,7 +285,7 @@ func TestProxy_adoptedSharedSessionTokenServesSiblings(t *testing.T) {
 		}
 	}
 	// Exactly one registry entry backs both siblings.
-	if got := len(psB.tokenToSession); got != 1 {
+	if got := len(psB.hashToTarget); got != 1 {
 		t.Fatalf("shared session token produced %d registry entries, want 1", got)
 	}
 }

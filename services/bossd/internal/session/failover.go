@@ -127,6 +127,32 @@ type proxyTokenRegistrar interface {
 	// ForgetBearer keep working. accountID is the account resolved at adoption
 	// time, seeding the target's fallbackAccountID. Never mints. Secret.
 	AdoptTokenForChat(sessionID, agentSessionID, accountID, token string)
+	// RebuildTokenRegistry repopulates the registrar's in-memory token index
+	// from durable storage (BOS-979), so a tmux pane whose ANTHROPIC_BASE_URL
+	// was baked by a PREVIOUS daemon keeps resolving across a restart without
+	// depending on the pane sweep reconstructing it from tmux env. Called once
+	// from Bootstrap, BEFORE the sweep, so a persisted row wins over a tmux-env
+	// reconstruction. Idempotent; a returned error is logged and the daemon
+	// continues on the pre-BOS-979 sweep-only path.
+	//
+	// It lives on this interface rather than being called directly on the proxy
+	// so the session package still never imports server.
+	RebuildTokenRegistry(ctx context.Context) error
+}
+
+// rebuildProxyTokenRegistry restores the failover proxy's path-token registry
+// from durable rows before anything else in Bootstrap consults it. No-op when
+// no registrar is wired (proxy disabled). A failure is NOT fatal: the daemon
+// falls back to adoptSurvivingPaneProxyTokens, which is exactly the recovery
+// path that existed before the registry was persisted.
+func (l *Lifecycle) rebuildProxyTokenRegistry(ctx context.Context) {
+	if l.proxyRegistrar == nil {
+		return
+	}
+	if err := l.proxyRegistrar.RebuildTokenRegistry(ctx); err != nil {
+		l.logger.Warn().Err(err).
+			Msg("bootstrap: failover proxy token registry rebuild failed; falling back to the surviving-pane sweep")
+	}
 }
 
 // forgetProxyBearer clears the failover proxy's sticky bearer for a session

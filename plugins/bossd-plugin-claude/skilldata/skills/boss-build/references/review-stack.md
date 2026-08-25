@@ -366,6 +366,14 @@ pass runs and its independent verification round confirms the repair,
 sentinel** the full tier writes — `bs-review capped:` → **BLOCKED**. Only a pass that **ran to
 completion and found zero** must-fix writes `bs-review clean:`.
 
+That routing is unchanged, but **what a capped sentinel is allowed to mean is not.** A pass writes it
+only once every must-fix it holds open has a cause on the finding's own side — attempted and not
+cleared, the round cap reached, or ineligible to attempt at all. A must-fix that was located and
+never attempted does not qualify: the bounded repair pass owes it one attempt first, funded by the
+single overrun round `boss-review`'s §Caller deadline allows for exactly this case. So the BLOCKED
+this sentinel produces names the finding and why it is still open — never the clock as a cause in
+its own right.
+
 **A reviewer that did not report is not a reviewer that found nothing.** At this point the tier has
 exactly one reviewer and no second opinion — the bounded repair pass below is reached only _through_
 this reviewer's findings, so an empty result gates it out rather than triggering it, and Steps 6b and
@@ -575,6 +583,22 @@ without any repair round, because there is nothing to verify.
 exhausted, record every unresolved finding by `file:line` and BLOCK. That is a decision to stop
 paying for those findings on this run — a later run repairs them with a real budget — never a
 judgement that they were noise, and never a licence to downgrade one to Minor so the gate can pass.
+
+### The reserved merge-gate token (every route, no exceptions)
+
+`do not merge` is **`boss-epic`'s merge-gate token**: it matches that substring against a PR's
+`title,body` and holds the PR back. So on **any** route this file owns — Step 7's normal
+publication, §PARTIAL-route publication, §BLOCKED-route publication, and Step 6c's advisory
+hand-off — no text sourced from `boss-review` may place that substring in a PR **title or body**:
+not a finding title, not a status phrase, not a summary line, not a quoted excerpt. Emitting it as
+review prose wedges a merge nothing intended to wedge, and from Step 6c — explicitly non-blocking —
+it wedges one on advisory evidence. **Rephrase the finding rather than quoting the token**; open
+items belong in the `<!-- bs-review -->` comment, which is where a human reads them.
+
+The one deliberate use is this file's own PARTIAL marker
+(`do not merge — partial: <satisfied>/<total> acceptance criteria`): that line is composed _here_, by
+the route that means to hold the PR, and is not `boss-review`-sourced. The ban is on relaying the
+token out of review text, never on the marker this protocol writes on purpose.
 
 ### PARTIAL-route publication
 
@@ -1833,7 +1857,14 @@ exist yet at this step). Then classify the advisory sentinel:
 - `bs-review clean:` → record `boss-review: clean` in the run log and proceed to Step 7.
 - `bs-review capped:` (open must-fix remain) → record `boss-review: capped`, keep going to Step 7, and
   surface the open items to the human reviewer **in the posted comment**. This advisory status must
-  not be copied into the run-file verdict.
+  not be copied into the run-file verdict, and it must not reach the **PR title or body** in any
+  form. Put it in the `<!-- bs-review -->` comment, which is where a human reads it, and nowhere
+  else. In particular this step is bound by
+  [§The reserved merge-gate token](#the-reserved-merge-gate-token-every-route-no-exceptions), which
+  applies on **any** route and not only here: no text sourced from `boss-review` may place the
+  substring `do not merge` in a PR title or body, because that is `boss-epic`'s reserved merge-gate
+  token, so emitting it as advisory prose blocks a merge nothing intended to block, from a step that
+  is explicitly non-blocking. Rephrase the finding rather than quoting the token.
 - any `boss-review` error/timeout → record `boss-review: skipped (<reason>)`, post no comment, and
   proceed; never block.
 
@@ -1896,9 +1927,14 @@ fi
   preempted either, so `now < deadline` would admit one that overruns by the rest of its cost.
 - **What that arithmetic means at the default, stated rather than discovered.**
   `STEP_6C_MINUTES` is 15 and `boss-review`'s own initial pass spends ~10 of it (its two dispatch
-  legs, 5 each), so `20` does not fit and **no** fix round is ever admitted at the default — the
-  5 minutes left is a quarter of a round. `boss-review` reports its findings
-  without fixing them, through its capped report. That is the intended shape for an **advisory**
+  legs, 5 each), so `20` does not fit and **no ordinary fix round** is ever admitted at the default —
+  the 5 minutes left is a quarter of a round. There is exactly one exception, and it is bounded:
+  where the pass found a must-fix **it has not yet attempted**, `boss-review` funds a single overrun
+  round from its own `MUSTFIX_OVERRUN_ROUNDS` allowance rather than deferring a finding nobody tried
+  to fix. That round is charged to the post-review reserve, once per run, and cannot repeat — so it
+  does not make rounds "fit" here and does not re-open the pricing question. Absent such a finding —
+  the ordinary case — `boss-review` reports what it found
+  without fixing it, through its capped report. That is the intended shape for an **advisory**
   pass — Step 6c's findings reach the human in the Step 7 comment, and the blocking Step 6/6b loop
   is the one that fixes — not a bound that quietly does nothing. Raising the allowance to make
   rounds fit would mean raising `STEP_6C_MINUTES` and re-pricing `FULL_TIER_MINUTES` with it, which
@@ -1907,7 +1943,10 @@ fi
   **this bound working as designed**, not a mis-derived deadline: 900s of allowance less the ~10
   minutes the initial pass spends leaves roughly that, and 1200s is `FIX_ROUND_MINUTES`. Recognise
   it, disclose it through the suffix above, and do not re-file it as a budget bug or re-price the
-  formula to make it go away.
+  formula to make it go away. Read that sentence with its precondition attached, though: it is the
+  right reading for a pass carrying **no open, unattempted must-fix**. The same 412s reported
+  alongside a located must-fix nothing has tried to fix is not this bound working — it is the
+  overrun round having been skipped, and it is a bug in the pass, not in the price.
 - **Exit gate.** When the call returns, compare `date +%s` against `$STEP_6C_DEADLINE`. At or past
   it, do **nothing further** in this step — no additional fix round, no re-invocation — and go
   straight to Step 7 with the report it produced.

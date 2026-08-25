@@ -15,6 +15,7 @@ const defaultRootTargets = [
   'test-affected',
   'test-full',
   'test-race',
+  'check-race-budget',
   'test-profile',
   'test-scripts',
   'test-no-inline-stop-hooks',
@@ -124,6 +125,7 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     ['Changed-file selection', '`make test-affected`'],
     ['Full/exhaustive suite', '`make test-all`'],
     ['Race detector pass', '`make test-race`'],
+    ['Race wall-clock budgets', '`make check-race-budget`'],
     ['Slow-test profiling', '`make test-profile`'],
   ]
   const moduleRows = modules.map((module) => [
@@ -156,6 +158,18 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '`make test-smoke` runs `node --test scripts/bs-*-skill.test.mjs`. That glob does **not** match `scripts/boss-skill.test.mjs`, `scripts/boss-build-skill.test.mjs`, or `scripts/check-agent-test-guidance.test.mjs`, so those suites — including their exact-size ratchets — are not covered by a smoke run. `make test-scripts` (the `test` target in `scripts/Makefile`) runs every `scripts/*.test.mjs` and is the target that covers them, along with the `check-vacuous-regions.mjs` and `check-raw-size-ratchets.mjs` gates. Neither of those two is a whole-tree scan, and neither claims to be: `check-vacuous-regions.mjs` reads `scripts/` and `skills-toolbox/` only, and `check-raw-size-ratchets.mjs` reads `scripts/` files matching `skill*.test.mjs` plus one named extra. `make lint-scripts` reaches `scripts/Makefile` `lint`, including `node scripts/check-exec-waitdelay.mjs`, the BOS-927 full-tree Go exec captured-output gate. Each gate prints its own scope and residual with its success line — read that line, not this sentence, for what a given run actually covered.',
     '',
     '`codex-skills-check` (the `.codex` mirror staleness check) is a prerequisite of `make test-smoke` and `make test-all`, but **not** of `make test` / `make test-affected` — those run only the commands `scripts/select-affected-tests.mjs` picked, and reach `test-smoke` only when the selection is empty. A change that leaves a `.codex` mirror stale can therefore pass `make test`. The per-skill `assertMirrorRegenerated` checks in the `bs-sweep-*` suites close this for those skills by regenerating the mirror in memory and comparing exactly; size is never the discriminator, because the generated header makes a healthy mirror larger than its source.',
+    '',
+    '### Where `-race` actually runs (BOS-1022)',
+    '',
+    // Same rule as the BOS-768 block above: this file is byte-for-byte generated, so
+    // prose belongs here and nowhere else.
+    "The race detector is **opt-in locally** (`make test-race`, or `RACE=1` on a module target) and **not** part of the per-PR gate: `bazel.yml`'s `go-test` job is deliberately plain. The only whole-graph plain+race pass in this repo is `bazel-linux-smoke.yml`, and it runs on the release tier only — `push` to `staging`/`production`, `pull_request` into those branches, and `workflow_dispatch`; `main` is deliberately absent. `bazel.yml`'s `release-gates` job adds `make test-native-ledger RACE=1`, which is the only race coverage the native ledger rows get. `ci.yml` is `workflow_dispatch:`-only here and survives as the public mirror's source; `test-go.yml` does set `RACE: \"1\"` on every non-`main` push, but is gated to `github.repository == 'bossanova-dev/bossanova'`, so on the private repo it is a no-op skip. Read those `on:` blocks before claiming a change is race-covered — a green feature PR has not run the race detector at all.",
+    '',
+    "`-race` also enables Go's `checkptr` instrumentation, which is brutal for the pure-Go SQLite driver (`modernc.org/sqlite`): a package that replays goose migrations once per test pays that tax on every replay, which is how `//services/bossd/internal/db` reached 512s and `//services/bossd/internal/server` 400s. `make check-race-budget` is the ratchet that keeps them down. It re-runs the targets in `scripts/race-budgets.json` under `--config=race` and scores each against its `budgetSeconds` via `scripts/check-race-budget.mjs`; CI runs the same pair as the final step of `bazel-linux-smoke.yml`'s race leg. Two rules decide whether a run means anything: shard durations are **summed, never maxed** (a sharded target that is slow everywhere must not read as fast), and any shard Bazel reports as cache-served is a hard failure, so `--nocache_test_results` is load-bearing rather than belt-and-braces — without it a cached result from an older commit scores a pass. Durations come from the Build Event Protocol stream (`--build_event_json_file`), not from JUnit `test.xml`: rules_go writes an empty `<testsuites></testsuites>` for a target that **passes**, so a `test.xml`-based gate could never score a green run.",
+    '',
+    '### Keeping a bossd package off the ratchet',
+    '',
+    'Two idioms came out of that work and are worth reaching for before adding a test to a slow package. **Build the schema once per binary**: `services/bossd/internal/dbtest` replays the migrations a single time, captures the resulting schema as a script, and builds every later database from it — `dbtest.New(t)` for an ordinary migrated database, `dbtest.NewMigrated(t)` for tests that assert on migration behaviour itself and so must not read back the output of the thing under test. It also owns the goose mutex: `migrate.Run`/`RunUpTo`/`RunDownTo` all write goose\'s package-level `SetBaseFS`/`SetDialect` globals, so two tests migrating concurrently race even on unrelated databases, and routing every goose entry point through `dbtest` gives callers that guarantee by construction. **Wait on the outcome you are about to assert**, never on a fixed settle sleep: a sleep tuned to be "long enough" without the race detector is either flaky or wasteful under it, and a poll against the same condition the assertion checks still fails when the outcome never arrives — just at a deadline instead of instantly.',
     '',
     '## Web Targets (`services/web`)',
     '',

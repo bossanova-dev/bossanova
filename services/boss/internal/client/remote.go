@@ -401,13 +401,49 @@ func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session,
 	return nil, errLocalOnly("ArchiveSession")
 }
 
-func (c *RemoteClient) ResurrectSession(ctx context.Context, id string) (*pb.Session, error) {
+// ResurrectSession adapts the orchestrator's UNARY ProxyResurrectSession into
+// the streaming shape the Client interface now uses (BOS-984).
+//
+// The proxy RPC is deliberately left unary: its request/response shapes are on
+// bosso's versioned OrchestratorService surface, and changing them would owe an
+// apiversion bump plus a down-convert transform. The daemon-local streaming
+// conversion is what fixes the timeout; this leg simply reports the one result
+// it gets as a single terminal frame, with no progress to relay.
+func (c *RemoteClient) ResurrectSession(ctx context.Context, id string) (ResurrectSessionStream, error) {
 	resp, err := c.rpc.ProxyResurrectSession(ctx, connect.NewRequest(&pb.ProxyResurrectSessionRequest{Id: id}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.Session, nil
+	return &singleFrameResurrectStream{
+		frame: &pb.ResurrectSessionResponse{
+			Event: &pb.ResurrectSessionResponse_SessionResurrected{
+				SessionResurrected: &pb.SessionResurrected{Session: resp.Msg.GetSession()},
+			},
+		},
+	}, nil
 }
+
+// singleFrameResurrectStream replays exactly one already-received frame. It
+// exists so a unary upstream can satisfy client.ResurrectSessionStream without
+// the callers needing to know which client they hold.
+type singleFrameResurrectStream struct {
+	frame *pb.ResurrectSessionResponse
+	sent  bool
+}
+
+func (s *singleFrameResurrectStream) Receive() bool {
+	if s.sent {
+		return false
+	}
+	s.sent = true
+	return true
+}
+
+func (s *singleFrameResurrectStream) Msg() *pb.ResurrectSessionResponse { return s.frame }
+
+func (s *singleFrameResurrectStream) Err() error { return nil }
+
+func (s *singleFrameResurrectStream) Close() error { return nil }
 
 // EmptyTrash proxies the daemon-wide trash purge through the orchestrator, which
 // aggregates across the caller's Ready daemons and sums the deleted counts.

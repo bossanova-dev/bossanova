@@ -949,7 +949,74 @@ var waitingForBackgroundAgentRe = regexp.MustCompile(`(?m)Waiting for [0-9]+ bac
 // the start of a line. When one renders after a "shells still running" footer,
 // the shell has since finished (Claude printed e.g. `⏺ Background command "…"
 // completed`) and the footer is stale history, not a live signal.
+//
+// Match it against the transcript, never a raw pane region: the CLI statusline
+// renders its git row as "⏺ main", which satisfies this pattern on every
+// frame. responseMarkerRetiredFooter is the anchored wrapper callers should use.
 var responseMarkerRe = regexp.MustCompile(`(?m)^[^\S\n]*\x{23FA}`)
+
+// inputBoxBorderChrome is the leading decoration the CLI may draw before the
+// input box's prompt glyph. Both renderings are current — the divider form puts
+// the glyph at the line start ("❯ just finish the review inline") and the boxed
+// form puts a border rune before it ("│ ❯    │") — so the probe below strips
+// this set before testing for a prompt marker. Getting the boxed form wrong is
+// not a cosmetic miss: with no anchor found, the whole tail reads as transcript
+// and the statusline evicts the footer exactly as before the fix.
+// The set is written as literal runes, matching spinnerGlyphs above:
+// space, tab, and the vertical box-drawing rules U+2502 U+2503 U+254E U+2506
+// U+250A plus the ASCII pipe.
+const inputBoxBorderChrome = " \t│┃╎┆┊|"
+
+// isInputBoxRow reports whether a pane row is the agent's live input box — the
+// boundary between the transcript above it and the CLI-owned statusline chrome
+// below it.
+//
+// It layers border-chrome stripping over limit.go's hasPromptMarker rather than
+// widening that predicate. hasPromptMarker is a deliberate, independently-tested
+// mirror of services/bossd/internal/tmux/tmux_submit_verify.go's copy and must
+// not drift from it, and widening it would also move StatusRegionBelowPrompt's
+// anchor, changing usage-limit detection for a change that is about the working
+// detector.
+func isInputBoxRow(line []byte) bool {
+	return hasPromptMarker(bytes.TrimLeft(line, inputBoxBorderChrome))
+}
+
+// transcriptBelowFooter narrows the region under a footer to the part the agent
+// actually wrote: everything at or above the bottom-most input box row. What
+// sits below that row is statusline chrome the CLI owns and redraws every frame,
+// independent of whether any turn is running.
+//
+// When no input box is on screen the whole region is returned unchanged. That is
+// the fail-safe direction: it leaves the caller's eviction evidence exactly as
+// wide as it was before this narrowing existed, rather than blanking it.
+//
+// This narrows the TERMINATOR's view only, never the footer search. Trimming the
+// searched buffer instead would retire a footer rendered below the input box by
+// making it invisible, flipping a busy chat to IDLE — the failure direction
+// turnEndedAfterFooter documents as the dangerous one.
+func transcriptBelowFooter(rest []byte) []byte {
+	lines := bytes.Split(rest, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isInputBoxRow(lines[i]) {
+			return bytes.Join(lines[:i+1], []byte("\n"))
+		}
+	}
+	return rest
+}
+
+// responseMarkerRetiredFooter reports whether a genuine response marker renders
+// below a background-work footer, proving the work finished and Claude redrew.
+//
+// The marker must render in the TRANSCRIPT. The CLI statusline's git row renders
+// as "⏺ main", which is byte-identical to the marker responseMarkerRe looks for
+// and is present on every frame — so scanning the raw region retires every such
+// footer the moment the statusline is on screen, and a chat with live background
+// shells reads IDLE. The sibling background-agent footer already carries this
+// guard (see backgroundAgentFooterIsLive, whose comment states the rule this
+// reuses: the status bar can forge a response marker).
+func responseMarkerRetiredFooter(rest []byte) bool {
+	return responseMarkerRe.Match(transcriptBelowFooter(rest))
+}
 
 // lastFooterIsLive is the shared freshness rule behind every lingering-footer
 // signal in this file: find the LAST footer footerRe matches, then ask whether
@@ -1112,7 +1179,13 @@ func HasWorkingIndicator(data []byte) bool {
 	// terminator: this footer IS evicted by a bare response marker, because the
 	// shell's completion is what prints one. The background-agent footer is not,
 	// for the reason backgroundAgentFooterIsLive documents.
-	return lastFooterIsLive(tail, backgroundWorkRunningRe, responseMarkerRe.Match)
+	//
+	// Both terminators do agree on one thing, and it is why this one is not
+	// responseMarkerRe.Match directly: the marker only counts in the transcript.
+	// The statusline's git row is a bare "⏺ main" on every frame, so scanning
+	// the raw region below the footer retires it whenever the statusline is on
+	// screen. See responseMarkerRetiredFooter.
+	return lastFooterIsLive(tail, backgroundWorkRunningRe, responseMarkerRetiredFooter)
 }
 
 // workingTailLines bounds HasWorkingIndicator to the current screen. It matches

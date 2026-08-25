@@ -472,8 +472,10 @@ type WorktreeManager interface {
 	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error
 
 	// Resurrect re-creates a worktree from an existing branch and runs the
-	// setup script if present.
-	Resurrect(ctx context.Context, opts ResurrectOpts) error
+	// setup script if present. A non-nil error means the worktree is NOT back;
+	// a setup-script failure is reported on the result instead (see
+	// ResurrectResult.SetupErr) because it is deliberately non-fatal here.
+	Resurrect(ctx context.Context, opts ResurrectOpts) (*ResurrectResult, error)
 
 	// ReapLocalBranches force-deletes LOCAL branches for archived sessions and
 	// prunes stale worktree refs. It never contacts the remote.
@@ -751,6 +753,22 @@ type ResurrectOpts struct {
 	BaseBranch        string
 	SetupScript       *string   // Optional setup script to run after creation.
 	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
+}
+
+// ResurrectResult reports what a successful Resurrect did.
+//
+// SetupErr mirrors CreateResult.SetupErr's contract: non-nil when the worktree
+// was re-created successfully but its configured setup script failed. On this
+// path the failure is deliberately non-fatal — the branch and the worktree are
+// genuinely back, and only dependency installation is missing — so it has to
+// travel as a VALUE or it is invisible. Before BOS-984 it was dropped on the
+// floor here, which is why a resurrect whose setup failed looked identical to
+// one that succeeded.
+type ResurrectResult struct {
+	SetupErr error
+	// SetupScriptDuration is the caller's wall-clock for the setup step (parse
+	// + exec), zero when no script ran. Same measurement CreateResult reports.
+	SetupScriptDuration time.Duration
 }
 
 var _ WorktreeManager = (*Manager)(nil)
@@ -1268,6 +1286,27 @@ func sshControlSocketTemplate() string {
 // is not a bare "'" + s + "'").
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// shellQuotePath makes a path safe to paste into a shell, leaving an ordinary
+// path unquoted so the common case stays readable. Mirrors the conditional
+// shellQuote in the boss CLI's own pasteable remedy text (services/boss/cmd/
+// skill_sync.go, services/boss/internal/views/attach.go); duplicated rather
+// than shared because those are separate modules. The escaping itself
+// delegates to shellSingleQuote so the package has exactly one implementation.
+func shellQuotePath(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("-_./:=@", r):
+		default:
+			return shellSingleQuote(s)
+		}
+	}
+	return s
 }
 
 // sshControlPathOption renders the `-o ControlPath=...` fragment of the authored
@@ -2313,28 +2352,251 @@ func removeWorktreeDir(path string) error {
 	return nil
 }
 
+// resolveRealPath returns path with symlinks resolved, falling back to the
+// cleaned input when it cannot be resolved (e.g. it does not exist). Used only
+// to compare git-reported paths against our own, where macOS's /var ->
+// /private/var symlink otherwise makes two spellings of one directory look
+// different.
+func resolveRealPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+// worktreeReadyAt reports whether worktreePath is ALREADY a usable worktree of
+// repoPath checked out on branch — BOS-983 shape (b), the state a resurrect
+// that died after its `worktree add` (setup script, agent start, RPC deadline)
+// leaves behind.
+//
+// It is deliberately a three-part test, because the three states Resurrect must
+// tell apart are only separable by all three:
+//
+//   - present on disk. A stale registration (shape (a)) is still listed by
+//     `git worktree list` until pruned, so registration alone does not
+//     discriminate it from a live worktree — directory presence does.
+//   - a LINKED worktree of THIS clone. Checked by comparing the admin directory
+//     `rev-parse --absolute-git-dir` reports for worktreePath against the
+//     `worktrees/` root under repoPath's COMMON git dir: every linked worktree
+//     of a clone lives at `<common git dir>/worktrees/<name>`, so a directory
+//     that merely sits inside some other repository (or inside a main worktree,
+//     whose git dir is `<repo>/.git` itself) fails the prefix test. The repo
+//     side must be the common dir and not `--absolute-git-dir` — see the
+//     comment at the call below for what that gets wrong.
+//   - the ROOT of that worktree, not merely a path inside it. `rev-parse`
+//     searches upward, so a subdirectory of a healthy sibling satisfies both
+//     tests above; `--show-toplevel` is what distinguishes them.
+//   - checked out on the branch the caller asked for, and not detached.
+//
+// Anything else is shape (a) or shape (c) and falls through to the prune + add
+// below. False is always the safe answer: it only costs a `worktree add`
+// attempt, whereas a false positive would skip the add for a directory that is
+// not the worktree we want.
+func (m *Manager) worktreeReadyAt(ctx context.Context, repoPath, worktreePath, branch string) bool {
+	if _, err := os.Stat(worktreePath); err != nil {
+		return false
+	}
+	wtGitDir, err := runGit(ctx, worktreePath, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return false
+	}
+	// --git-common-dir, NOT --absolute-git-dir, for the repo side. Every linked
+	// worktree of a clone is registered under the COMMON dir's `worktrees/`,
+	// wherever the caller happens to be standing. `--absolute-git-dir` answers
+	// "this worktree's own admin dir", which coincides with the common dir only
+	// from the main worktree: asked from a LINKED worktree it returns
+	// `<common>/worktrees/<self>`, so the prefix built from it
+	// (`<common>/worktrees/<self>/worktrees/`) matches no sibling and every
+	// present, healthy worktree reads as not-ready. That is a safe answer but
+	// the wrong one — it costs the `worktree add` skip, which is the whole of
+	// BOS-983 AC 4, and the "already exists" loop returns for any repo whose
+	// registered LocalPath is itself a linked worktree.
+	//
+	// It can come back relative (git prints `.git` from a main worktree), so
+	// resolve it against repoPath exactly as ensureGitInfoExclude does.
+	repoCommonDir, err := runGit(ctx, repoPath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(repoCommonDir) {
+		repoCommonDir = filepath.Join(repoPath, repoCommonDir)
+	}
+	linkedRoot := resolveRealPath(filepath.Join(repoCommonDir, "worktrees")) + string(os.PathSeparator)
+	if !strings.HasPrefix(resolveRealPath(strings.TrimSpace(wtGitDir))+string(os.PathSeparator), linkedRoot) {
+		return false
+	}
+	// The prefix above proves worktreePath is INSIDE a linked worktree of this
+	// clone, never that it IS that worktree's root: `rev-parse` searches upward,
+	// so a plain subdirectory of a healthy sibling answers both it and the branch
+	// check identically. Require the discovered root to BE the requested path, or
+	// a mis-nested or relocated stored path skips the add and then runs the setup
+	// script — and the agent after it — from the wrong directory, reporting
+	// success the whole way.
+	toplevel, err := runGit(ctx, worktreePath, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false
+	}
+	if resolveRealPath(toplevel) != resolveRealPath(worktreePath) {
+		return false
+	}
+	current, err := m.currentBranch(ctx, worktreePath)
+	if err != nil {
+		return false
+	}
+	return current == branch
+}
+
+// resurrectAddError wraps a failed `git worktree add` on the resurrect path
+// (BOS-983 AC 6). Git's own text ("is a missing but already registered
+// worktree", "already exists") surfaced verbatim in the TUI and named neither
+// the clone the operator has to fix nor what to run there, so the wrapper adds
+// both. The underlying error stays wrapped so %w chains still work.
+//
+// The remedy deliberately leads with INSPECTION and offers only the
+// non-destructive `worktree prune`. It must not name `worktree remove --force`:
+// this text is pasted verbatim out of a TUI, and that command is wrong in both
+// directions. On the shape that reaches here most often — a plain, occupied,
+// non-worktree directory — it exits 128 with "is not a working tree" and clears
+// nothing. On the shape where the path IS a working tree, `--force` is
+// precisely the flag that makes `worktree remove` delete a DIRTY one, so the
+// suggestion would destroy uncommitted work. Prune is safe in both: it only
+// drops registrations whose directory is already gone. What is left after that
+// needs a human's eyes, and `worktree list` + `status` is how they get them.
+//
+// The three `-C` targets are shell-quoted because this text is pasted: a
+// checkout under e.g. /Users/me/My Repo would otherwise word-split, leaving
+// `git -C /Users/me/My` pointed at the wrong directory. The two prose
+// interpolations are left bare — they name the paths, they are not commands.
+func resurrectAddError(op, repoPath, worktreePath string, err error) error {
+	return fmt.Errorf(
+		"%s: could not create worktree %s in repo %s — inspect it with "+
+			"`git -C %s worktree list` and `git -C %s status`, then clear it: "+
+			"`git -C %s worktree prune` if it is only a stale registration, "+
+			"otherwise remove the directory once you have confirmed there is nothing to keep: %w",
+		op, worktreePath, repoPath,
+		shellQuotePath(repoPath), shellQuotePath(worktreePath), shellQuotePath(repoPath), err,
+	)
+}
+
 // Resurrect re-creates a worktree from an existing branch.
-func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
+func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) (*ResurrectResult, error) {
 	m.logger.Info().
 		Str("branch", opts.BranchName).
 		Str("path", opts.WorktreePath).
 		Msg("resurrecting worktree")
 
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o750); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+	// Serialize the mutating git window against this clone (see repoCloneGates).
+	// The create-sized budget rather than the cleanup one is deliberate: the
+	// window below is `worktree prune` + `worktree add` against the shared
+	// clone, i.e. exactly the create-shaped window Create and
+	// CreateFromExistingBranch take this gate for, and a resurrect that gives up
+	// leaves the session unrecoverable rather than merely leaking an artifact.
+	// Released explicitly once the add and info/exclude have landed, so the
+	// setup script — the long step — runs outside it. The deferred call is the
+	// all-other-exits safety net; release is idempotent, so both firing is fine.
+	//
+	// Nothing on the way in holds this gate: Resurrect's only production caller
+	// is session.Lifecycle.ResurrectSession, and repoCloneGates is unexported to
+	// this package, so there is no re-entrancy hazard (the gate is not
+	// reentrant).
+	releaseClone, cloneWait, err := repoCloneGates.Acquire(ctx, opts.RepoPath, RepoCloneGateTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("serialize git for %s: %w", opts.RepoPath, err)
+	}
+	defer releaseClone()
+	if cloneWait > time.Second {
+		m.logger.Info().
+			Str("repo", opts.RepoPath).
+			Dur("clone_gate_wait", cloneWait).
+			Msg("waited for concurrent git on this repo before resurrecting")
 	}
 
-	// Add the worktree. If the local branch still exists, check it out directly
-	// (unchanged path). If it was safe-deleted on archive (BOS-180), recreate it
-	// from a start point resolved locally — restoring the exact tip when a ref is
-	// still known, otherwise the base branch (equivalent for a merged/empty
-	// branch). See BOS-421.
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o750); err != nil {
+		return nil, fmt.Errorf("create parent dir: %w", err)
+	}
+
+	// Add the worktree, unless one is already sitting there in good order.
+	//
+	// Skipping the add for a present, registered, correctly-checked-out worktree
+	// is what makes Resurrect idempotent (BOS-983): a resurrect that fails AFTER
+	// the add leaves a good worktree behind, and without this every retry dies
+	// at the add with "already exists" — an inescapable loop for the user. Note
+	// what this must NOT do: clearStaleWorktree would "fix" the same symptom by
+	// removing the directory, which here would destroy a healthy worktree.
+	if m.worktreeReadyAt(ctx, opts.RepoPath, opts.WorktreePath, opts.BranchName) {
+		m.logger.Info().
+			Str("branch", opts.BranchName).
+			Str("path", opts.WorktreePath).
+			Msg("resurrect: worktree already present on the expected branch, skipping add")
+	} else {
+		// Drop registrations whose directories are gone before adding. A worktree
+		// removed out-of-band stays registered, and git then refuses the add with
+		// "is a missing but already registered worktree" — the reported bug.
+		//
+		// Best-effort, matching every other prune site (clearStaleWorktree,
+		// Create's force path, the reapers): a prune failure must not block an
+		// otherwise-viable resurrect, so it is logged at Debug and the add is
+		// still attempted.
+		//
+		// Repo-global by construction: `prune` clears EVERY registration in this
+		// clone whose directory is missing, not just this session's. That matches
+		// the other sites' semantics — a registration with no directory is
+		// garbage whoever left it.
+		if _, err := runGit(ctx, opts.RepoPath, "worktree", "prune"); err != nil {
+			m.logger.Debug().Err(err).Msg("worktree prune (best effort)")
+		}
+
+		if err := m.addResurrectedWorktree(ctx, opts); err != nil {
+			return nil, err
+		}
+	}
+
+	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored — covers
+	// worktrees that predate this feature or had info/exclude cleared.
+	if err := ensureGitInfoExclude(ctx, opts.WorktreePath, bossdManagedExcludePatterns); err != nil {
+		return nil, fmt.Errorf("ensure info/exclude: %w", err)
+	}
+
+	// Shared-clone work is done (ensureGitInfoExclude included — see Create);
+	// let a queued create in this repo proceed while the setup script runs.
+	releaseClone()
+
+	// Run setup script if provided. Non-fatal: this is the reattach path for an
+	// existing worktree, where a failed setup step must not block resurrection.
+	// runAndLogSetup has already logged the failure; it is REPORTED on the
+	// result rather than returned so the caller can tell the user "restored,
+	// but setup failed" without the resurrect itself failing (BOS-984). Before
+	// that ticket this error was dropped here and the distinction was
+	// unavailable to every caller.
+	setupDuration, setupErr := m.runAndLogSetup(ctx, setupRunOpts{
+		Op:       "resurrect",
+		RepoPath: opts.RepoPath,
+		Worktree: opts.WorktreePath,
+		Branch:   opts.BranchName,
+		Script:   opts.SetupScript,
+		Output:   opts.SetupScriptOutput,
+	})
+
+	if err := m.verifyCurrentBranch(ctx, opts.WorktreePath, opts.BranchName); err != nil {
+		return nil, fmt.Errorf("verify resurrected worktree branch: %w", err)
+	}
+
+	return &ResurrectResult{SetupErr: setupErr, SetupScriptDuration: setupDuration}, nil
+}
+
+// addResurrectedWorktree runs the `git worktree add` half of Resurrect. Callers
+// must hold the clone gate. If the local branch still exists, check it out
+// directly (unchanged path). If it was safe-deleted on archive (BOS-180),
+// recreate it from a start point resolved locally — restoring the exact tip
+// when a ref is still known, otherwise the base branch (equivalent for a
+// merged/empty branch). See BOS-421.
+func (m *Manager) addResurrectedWorktree(ctx context.Context, opts ResurrectOpts) error {
 	if branchExists(ctx, opts.RepoPath, opts.BranchName) {
 		if _, err := runGit(ctx, opts.RepoPath,
 			"worktree", "add", opts.WorktreePath, opts.BranchName,
 		); err != nil {
-			return fmt.Errorf("worktree add: %w", err)
+			return resurrectAddError("worktree add", opts.RepoPath, opts.WorktreePath, err)
 		}
 	} else {
 		// Resolve a start point from already-known refs only (no network fetch on
@@ -2368,32 +2630,8 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 		if _, err := runGit(ctx, opts.RepoPath,
 			"worktree", "add", "-b", opts.BranchName, opts.WorktreePath, startPoint,
 		); err != nil {
-			return fmt.Errorf("worktree add (recreate branch): %w", err)
+			return resurrectAddError("worktree add (recreate branch)", opts.RepoPath, opts.WorktreePath, err)
 		}
-	}
-
-	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored — covers
-	// worktrees that predate this feature or had info/exclude cleared.
-	if err := ensureGitInfoExclude(ctx, opts.WorktreePath, bossdManagedExcludePatterns); err != nil {
-		return fmt.Errorf("ensure info/exclude: %w", err)
-	}
-
-	// Run setup script if provided. Non-fatal: this is the reattach path for an
-	// existing worktree, where a failed setup step must not block resurrection.
-	// Log it and carry on.
-	// The error is intentionally dropped: runAndLogSetup has already logged it,
-	// and resurrection continues regardless.
-	_, _ = m.runAndLogSetup(ctx, setupRunOpts{
-		Op:       "resurrect",
-		RepoPath: opts.RepoPath,
-		Worktree: opts.WorktreePath,
-		Branch:   opts.BranchName,
-		Script:   opts.SetupScript,
-		Output:   opts.SetupScriptOutput,
-	})
-
-	if err := m.verifyCurrentBranch(ctx, opts.WorktreePath, opts.BranchName); err != nil {
-		return fmt.Errorf("verify resurrected worktree branch: %w", err)
 	}
 
 	return nil

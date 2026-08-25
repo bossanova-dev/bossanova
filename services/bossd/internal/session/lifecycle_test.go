@@ -680,6 +680,7 @@ type mockAgentChatStore struct {
 	deleteErr                error
 	listBySessionErr         error // when non-nil, ListBySession returns it
 	listWithTmuxErr          error // when non-nil, ListWithTmuxSession returns it
+	listRoutableErr          error // when non-nil, ListRoutableChats returns it
 	// onUpdateTmuxName, when set, runs after each recorded pointer write.
 	onUpdateTmuxName func(name *string)
 }
@@ -934,6 +935,9 @@ func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.A
 func (m *mockAgentChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listRoutableErr != nil {
+		return nil, m.listRoutableErr
+	}
 	return m.chatsWithTmux, nil
 }
 
@@ -951,11 +955,14 @@ type mockWorktreeManager struct {
 	archiveCtx                  context.Context
 	archiveCtxLive              bool
 	resurrected                 []gitpkg.ResurrectOpts
-	pushed                      []string
-	pushErr                     error    // if set, Push returns this error
-	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
-	emptyCommitCalls            int
-	verifyCurrentBranchErr      error
+	// resurrectFunc overrides the default Resurrect behavior when set (BOS-984:
+	// slow setup scripts, and setup scripts that fail).
+	resurrectFunc          func(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error)
+	pushed                 []string
+	pushErr                error    // if set, Push returns this error
+	emptyCommits           []string // worktree paths on which EmptyCommit was invoked
+	emptyCommitCalls       int
+	verifyCurrentBranchErr error
 	// verifyCurrentBranchHook, when set, runs inside VerifyCurrentBranch — the
 	// FIRST worktree call createDraftPR makes. The BOS-540 tests use it to park
 	// the background create before it has touched anything, so the assertions
@@ -1059,9 +1066,21 @@ func (m *mockWorktreeManager) Archive(ctx context.Context, path string) error {
 
 func (m *mockWorktreeManager) PurgeWorktree(_ context.Context, _, _, _, _ string) error { return nil }
 
-func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.ResurrectOpts) error {
+// resurrectForTest calls Lifecycle.ResurrectSession with the zero options and
+// discards the result, preserving the pre-BOS-984 error-only shape these tests
+// were written against. Tests that assert on the new setup-failure reporting
+// call ResurrectSession directly.
+func resurrectForTest(lc *Lifecycle, ctx context.Context, sessionID string) error { //nolint:unparam // every caller in this file restores the same fixture id; the parameter keeps the helper readable at each call site.
+	_, err := lc.ResurrectSession(ctx, sessionID, ResurrectSessionOpts{})
+	return err
+}
+
+func (m *mockWorktreeManager) Resurrect(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
 	m.resurrected = append(m.resurrected, opts)
-	return nil
+	if m.resurrectFunc != nil {
+		return m.resurrectFunc(ctx, opts)
+	}
+	return &gitpkg.ResurrectResult{}, nil
 }
 
 func (m *mockWorktreeManager) EmptyCommit(_ context.Context, worktreePath, _ string) error {
@@ -3315,7 +3334,7 @@ func TestResurrectSession(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
+	if err := resurrectForTest(lc, ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
 	}
 
@@ -3361,7 +3380,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected error for non-archived session")
 	}
@@ -3417,7 +3436,7 @@ func TestResurrectSessionRollsBackWhenAgentStartFails(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
 	}
@@ -3475,7 +3494,7 @@ func TestResurrectSessionWritesStateWithTheUnarchive(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 
-	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
+	if err := resurrectForTest(lc, ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
 	}
 
@@ -3508,7 +3527,7 @@ func TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected ResurrectSession to fail when the resurrect CAS lost the race")
 	}
@@ -3550,7 +3569,7 @@ func TestResurrectSessionLeavesRowAloneWhenRollbackMisses(t *testing.T) {
 	var logs bytes.Buffer
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.New(&logs))
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
 	}
@@ -3594,7 +3613,7 @@ func TestResurrectSessionReturnsStartErrorWhenRollbackErrors(t *testing.T) {
 	var logs bytes.Buffer
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.New(&logs))
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected ResurrectSession to fail when the agent cannot start")
 	}
@@ -3626,7 +3645,7 @@ func TestResurrectSessionReturnsResurrectError(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 
-	err := lc.ResurrectSession(ctx, "sess-1")
+	err := resurrectForTest(lc, ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected ResurrectSession to fail when the resurrect write errors")
 	}
@@ -4408,7 +4427,7 @@ func TestResurrectQuickChatSession(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
+	if err := resurrectForTest(lc, ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
 	}
 

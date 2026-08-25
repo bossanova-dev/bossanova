@@ -1972,11 +1972,19 @@ func TestDispatchCommand_ResurrectSession_CallsHandler(t *testing.T) {
 	sess := &pb.Session{Id: "s-res"}
 	handler := &fakeCommandHandler{resurrectSession: sess}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	// Resurrect is dispatched ASYNCHRONOUSLY (BOS-984) — it runs the repo setup
+	// script, so it must not hold the command reader — hence a nil synchronous
+	// return and the result arriving on the outbound channel, exactly like
+	// remove_session and empty_trash.
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-rs1",
 			Cmd:       &pb.OrchestratorCommand_ResurrectSession{ResurrectSession: &pb.ResurrectSessionCommand{SessionId: "s-res"}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async resurrect command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	if handler.resurrectSessionID != "s-res" {
 		t.Fatalf("resurrect session id = %q, want s-res", handler.resurrectSessionID)
 	}

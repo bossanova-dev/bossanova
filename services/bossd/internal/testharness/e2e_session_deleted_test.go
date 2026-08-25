@@ -211,7 +211,12 @@ func TestE2E_SessionUpdated_ArchiveAndResurrect(t *testing.T) {
 		t.Fatalf("archive update repo display = %q, want my-app", updates[0].RepoDisplayName)
 	}
 
-	if _, err := h.Client.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sess.Id})); err != nil {
+	// Drain the stream, do not just open it: ResurrectSession is server-streaming
+	// (BOS-984), so the client call returns as soon as the request is written and
+	// a nil error there says nothing about whether the resurrect ran. Reading to
+	// the terminal frame is what orders this assertion behind the handler's
+	// session-updated callback.
+	if _, err := drainResurrectStream(ctx, h.Client, sess.Id); err != nil {
 		t.Fatalf("resurrect session: %v", err)
 	}
 	updates = h.UpdatedSessions()

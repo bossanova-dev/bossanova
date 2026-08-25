@@ -40,6 +40,11 @@ type MockWorktreeManager struct {
 	// BranchSafeToDeleteFn overrides BranchSafeToDelete when set.
 	BranchSafeToDeleteFn func(ctx context.Context, repoPath, branchTip, baseBranch string) (bool, error)
 
+	// ResurrectFunc overrides the default Resurrect behavior when set. It is
+	// the seam the BOS-984 resurrect-streaming tests drive: a setup script that
+	// outlives the client deadline, and a setup script that fails.
+	ResurrectFunc func(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error)
+
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
 
@@ -275,11 +280,15 @@ func (m *MockWorktreeManager) Archive(ctx context.Context, worktreePath string) 
 	return nil
 }
 
-func (m *MockWorktreeManager) Resurrect(ctx context.Context, opts gitpkg.ResurrectOpts) error {
+func (m *MockWorktreeManager) Resurrect(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
 	m.mu.Lock()
 	m.ResurrectCalls = append(m.ResurrectCalls, opts)
+	fn := m.ResurrectFunc
 	m.mu.Unlock()
-	return nil
+	if fn != nil {
+		return fn(ctx, opts)
+	}
+	return &gitpkg.ResurrectResult{}, nil
 }
 
 func (m *MockWorktreeManager) ReapLocalBranches(ctx context.Context, repoPath string, branches []string) error {

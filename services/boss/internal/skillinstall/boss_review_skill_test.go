@@ -1147,3 +1147,236 @@ func TestBossReviewSkillClaimVerificationRules(t *testing.T) {
 		})
 	}
 }
+
+// bossReviewMustFixOverrunPins pins the §Caller deadline half of the bounded must-fix override.
+// Every one of these claims is pure prose: the toolbox enforces the arithmetic, but nothing
+// downstream reds when the prose that tells a run to CALL the toolbox is softened back into "stop
+// when the allowance does not fit". That softening is exactly the regression this change removes --
+// a located, fixable, unattempted must-fix converted into a deferred item with the clock named as
+// the cause. So each pin sits on the token that makes the override checkable (a round COUNT, a
+// re-derived remainder, a single spend, an enumerated cause list) rather than on its motivation,
+// and each tokenRemoved fixture kills that token while leaving a sentence that still reads as a
+// rule -- the shape a well-meaning edit actually produces.
+var bossReviewMustFixOverrunPins = regProsePins([]falsificationProsePin{
+	{
+		// The bound is a COUNT. A seconds-valued restatement would re-open the units confusion
+		// the FIX_ROUND_SECONDS suffix exists to close, one gate later.
+		name:         "overrun-bound-is-one-round",
+		pattern:      `MUSTFIX_OVERRUN_ROUNDS\s+=\s+1\s+#\s+the\s+ONE\s+extra\s+fix\s+round`,
+		live:         "MUSTFIX_OVERRUN_ROUNDS  = 1   # the ONE extra fix round an open, UNATTEMPTED must-fix may buy past",
+		tokenRemoved: "MUSTFIX_OVERRUN_ROUNDS  = 2   # the ONE extra fix round an open, UNATTEMPTED must-fix may buy past",
+		alsoRemoved: []string{
+			"MUSTFIX_OVERRUN_ROUNDS  = 1   # extra fix rounds an open, UNATTEMPTED must-fix may buy past",
+		},
+	},
+	{
+		name:         "overrun-seconds-derived-from-rounds",
+		pattern:      `MUSTFIX_OVERRUN_SECONDS\s+=\s+MUSTFIX_OVERRUN_ROUNDS\s+\*\s+FIX_ROUND_SECONDS`,
+		live:         "MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * FIX_ROUND_SECONDS",
+		tokenRemoved: "MUSTFIX_OVERRUN_SECONDS = 1200",
+	},
+	{
+		// A second seconds-valued BUDGET is the failure mode: two quantities to keep in sync, one
+		// of which the gate never reads. The pin holds the seconds figure in reporting position.
+		name:         "overrun-seconds-reported-never-tested",
+		pattern:      `MUSTFIX_OVERRUN_SECONDS.\s+is\s+the\s+figure\s+the\s+run\s+\*\*reports\*\*,\s+never\s+one\s+it\s+tests`,
+		live:         "`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports**, never one it tests",
+		tokenRemoved: "`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports** and the one it tests",
+	},
+	{
+		// "dispatched against" is the whole trigger. "cleared" inverts it: it would fire the
+		// override for a finding two rounds already failed to clear, and never for a fresh one.
+		name:         "override-requires-never-dispatched",
+		pattern:      `\*\*no\s+fix\s+round\s+has\s+been\s+dispatched\s+against\*\*`,
+		live:         "a must-fix finding is open that **no fix round has been dispatched against**, refusing it",
+		tokenRemoved: "a must-fix finding is open that **no fix round has cleared**, refusing it",
+	},
+	{
+		name:         "override-is-per-run-not-per-finding",
+		pattern:      `one\s+extra\s+round\s+for\s+the\s+whole\s+run,\s+never\s+one\s+per\s+finding\s+and\s+never\s+one\s+per\s+round`,
+		live:         "one extra round for the whole run, never one per finding and never one per round",
+		tokenRemoved: "one extra round for each open finding",
+	},
+	{
+		name:         "override-decided-by-the-toolbox",
+		pattern:      `bs-review-caps\.mjs.\s+admit-fix-round`,
+		live:         `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round`,
+		tokenRemoved: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" rounds`,
+	},
+	{
+		// The two caps bound different things. An override that reached the round cap would also
+		// break resolveMaxRounds' lower-only clamp -- a session granting itself more rounds.
+		name:         "round-cap-evaluated-first-never-overridden",
+		pattern:      `The\s+round\s+cap\s+is\s+evaluated\s+first\s+and\s+is\s+never\s+overridden`,
+		live:         "**The round cap is evaluated first and is never overridden.**",
+		tokenRemoved: "**The round cap is evaluated first.**",
+		alsoRemoved: []string{
+			"**The round cap is evaluated last and is never overridden.**",
+		},
+	},
+	{
+		name:         "remaining-seconds-re-derived-at-the-boundary",
+		pattern:      `is\s+re-derived\s+from\s+.date\s+\+%s.\s+at\s+this\s+boundary\*\*,\s+never\s+carried`,
+		live:         "**`remainingSeconds` is re-derived from `date +%s` at this boundary**, never carried from the",
+		tokenRemoved: "**`remainingSeconds` is reused from the previous round's reading**, never carried from the",
+	},
+	{
+		// `null` and 0 are opposite answers: no deadline at all versus a deadline already blown.
+		name:         "null-remaining-is-never-a-zero-deadline",
+		pattern:      `it\s+is\s+never\s+a\s+deadline\s+of\s+.0.`,
+		live:         "means _no deadline was supplied_, which is the no-cap case above; it is never a deadline of `0`.",
+		tokenRemoved: "means _no deadline was supplied_, which is the no-cap case above.",
+	},
+	{
+		name:         "override-spends-once-through-run-state",
+		pattern:      `The\s+override\s+spends\s+once\.\*\*\s+.overrunRoundsUsed.\s+is\s+run\s+state`,
+		live:         "**The override spends once.** `overrunRoundsUsed` is run state the loop increments",
+		tokenRemoved: "**The override spends once.** Each new finding starts it over.",
+	},
+	{
+		name:         "override-not-reset-by-finding-phase-or-round",
+		pattern:      `not\s+reset\s+by\s+a\s+new\s+finding,\s+a\s+new\s+phase,\s+or\s+a\s+new\s+round`,
+		live:         "not reset by a new finding, a new phase, or a new round.",
+		tokenRemoved: "not reset by a new round.",
+	},
+	{
+		// "exactly one of these three" is what closes the list. "one of these causes" invites a
+		// fourth, and the fourth every timed run reaches for is the clock.
+		name:         "terminal-open-mustfix-has-exactly-three-causes",
+		pattern:      `and\s+exactly\s+one\s+of\s+these\s+three\s+causes`,
+		live:         "its `<file:line> - <title>` — and exactly one of these three causes:",
+		tokenRemoved: "its `<file:line> - <title>` — and one of these causes:",
+	},
+	{
+		// AC5's three causes are pinned one apiece, not as a list: an enumeration pin alone goes
+		// green when a cause is dropped and the count word edited with it, and each cause licenses
+		// a different terminal state. Cause 1 is the one that must name DISPATCH-and-survival --
+		// "the fix subagent reported failure" would also cover a round that was never run.
+		name:         "cause-1-attempted-and-not-cleared",
+		pattern:      `\*\*Attempted\s+and\s+not\s+cleared\*\*\s+—\s+a\s+fix\s+round\s+was\s+dispatched\s+against\s+it\s+and\s+it\s+survived`,
+		live:         "**Attempted and not cleared** — a fix round was dispatched against it and it survived, including",
+		tokenRemoved: "**Attempted and not cleared** — the fix subagent reported failure, including",
+	},
+	{
+		// Cause 2 has to point at the effective cap the toolbox computes. "the round budget feels
+		// spent" is the same sentence with the check removed.
+		name:         "cause-2-round-cap-reached",
+		pattern:      `\*\*Round\s+cap\s+reached\*\*\s+—\s+the\s+effective\s+cap\s+from\s+.bs-review-caps\.mjs\s+rounds.\s+is\s+spent`,
+		live:         "**Round cap reached** — the effective cap from `bs-review-caps.mjs rounds` is spent, so no further",
+		tokenRemoved: "**Round cap reached** — the round budget feels spent, so no further",
+	},
+	{
+		// Cause 3 is the hard-ABORT route staying legal, and it turns on what the run MAY do, not
+		// on how the finding feels: "looks risky" would readmit the clock's excuse by another name.
+		name:         "cause-3-ineligible-to-attempt-at-all",
+		pattern:      `\*\*Ineligible\s+to\s+attempt\s+at\s+all\*\*\s+—\s+the\s+fix\s+is\s+outside\s+what\s+this\s+run\s+may\s+do`,
+		live:         "**Ineligible to attempt at all** — the fix is outside what this run may do, so no round could",
+		tokenRemoved: "**Ineligible to attempt at all** — the fix looks risky, so no round could",
+	},
+	{
+		name:         "clock-is-not-a-lawful-cause",
+		pattern:      `.The\s+clock\s+ran\s+out.\s+is\s+\*\*not\*\*\s+on\s+that\s+list\s+and\s+never\s+becomes\s+a\s+fourth\s+entry`,
+		live:         `"The clock ran out" is **not** on that list and never becomes a fourth entry.`,
+		tokenRemoved: `"The clock ran out" is **not** on that list in most cases.`,
+	},
+	{
+		// The earlier gate-failure paragraph can still use caller deadline for the skipped leg, but
+		// must not assign that disposition to open must-fixes. This is the contradiction that escaped
+		// the three per-cause pins below.
+		name:         "caller-deadline-is-skipped-leg-not-open-mustfix-disposition",
+		pattern:      `The\s+caller\s+deadline\s+is\s+the\s+disposition\s+for\s+the\s+skipped\s+leg,\s+not\s+for\s+an\s+open\s+must-fix`,
+		live:         "The caller deadline is the disposition for the skipped leg, not for an\nopen must-fix",
+		tokenRemoved: "with every still-open must-fix recorded as\n`unresolved (caller deadline)`",
+	},
+	{
+		name:         "spent-override-reported-as-cause-one-or-two",
+		pattern:      `not\s+as\s+a\s+bare\s+.unresolved\s+\(caller\s+deadline\).`,
+		live:         "say\nso as cause 1 or 2 with the overrun ledger showing it, not as a bare `unresolved (caller deadline)`.",
+		tokenRemoved: "say so as cause 1 or 2 with the overrun ledger showing it.",
+	},
+})
+
+// bossReviewPhase6OverrunPins pins the Phase 6 half: the round-entry gate is where the refusal used
+// to happen, so the exception has to be legible at the point of decision and not only in the
+// deadline chapter a run may never re-read. `attempted` is the load-bearing definition -- keyed on
+// DISPATCH, not on outcome -- because every wrong reading of it collapses the override to nothing
+// (a fresh finding counted as attempted) or to everything (a stale one counted as unattempted).
+var bossReviewPhase6OverrunPins = regProsePins([]falsificationProsePin{
+	{
+		name:         "phase6-override-is-the-same-call-without-a-deadline",
+		pattern:      `bs-review-caps\.mjs\s+admit-fix-round.,\s+and\s+it\s+is\s+the\s+same\s+call\s+whether\s+or\s+not\s+a\s+deadline\s+was\s+supplied`,
+		live:         "`bs-review-caps.mjs admit-fix-round`, and it is the same call whether or not a deadline was\n     supplied",
+		tokenRemoved: "`bs-review-caps.mjs admit-fix-round`, which applies only when a deadline was supplied",
+	},
+	{
+		name:         "phase6-attempted-means-dispatched-against",
+		pattern:      `\*\*Attempted\*\*\s+means\s+a\s+fix\s+round\s+has\s+been\s+dispatched\s+against\s+that\s+specific`,
+		live:         "**Attempted** means a fix round\n     has been dispatched against that specific `<file:line> - <title>` — whether or not it succeeded",
+		tokenRemoved: "**Attempted** means a fix round has cleared that specific `<file:line> - <title>`",
+		alsoRemoved: []string{
+			"**Attempted** means a must-fix has been located against that specific `<file:line> - <title>`",
+		},
+	},
+	{
+		name:         "phase6-fresh-finding-is-unattempted",
+		pattern:      `just\s+produced\s+has\s+\*\*not\*\*\s+been\s+attempted`,
+		live:         "A finding the round now ending\n     just produced has **not** been attempted, so it is exactly what the override exists for",
+		tokenRemoved: "A finding the round now ending just produced has been attempted",
+	},
+	{
+		name:         "phase6-override-once-and-never-over-the-round-cap",
+		pattern:      `available\s+\*\*once\*\*\s+per\s+run\s+and\s+never\s+overrides\s+the\s+round\s+cap`,
+		live:         "is available **once** per run and never overrides the round cap.",
+		tokenRemoved: "is available **once** per run.",
+	},
+	{
+		name:         "phase6-caller-deadline-disposition-requires-a-spent-override",
+		pattern:      `which,\s+after\s+the\s+override,\s+means\s+the\s+run\s+had\s+already\s+spent\s+the\s+override\s+or\s+was\s+already\s+at\s+the\s+round\s+cap`,
+		live:         "**only** where no round could be spent on it at all — which, after the override, means the run\n     had already spent the override or was already at the round cap.",
+		tokenRemoved: "**only** where no round could be spent on it at all.",
+	},
+	{
+		// The zero-rounds outcome stays sanctioned, but only for a pass with nothing to override
+		// for. Unscoped, it is the exact licence the old gate used to skip the fix loop entirely.
+		name:         "phase6-zero-rounds-scoped-to-no-open-mustfix",
+		pattern:      `\*\*and\s+the\s+pass\s+found\s+no\s+must-fix\s+to\s+override\s+for\*\*`,
+		live:         "smaller than one initial pass plus one `FIX_ROUND_MINUTES` **and the pass found no must-fix to\n   override for**.",
+		tokenRemoved: "smaller than one initial pass plus one `FIX_ROUND_MINUTES`.",
+	},
+	{
+		name:         "phase6-zero-rounds-with-an-unattempted-mustfix-is-unlawful",
+		pattern:      `zero\s+rounds\s+with\s+an\s+open,\s+never-attempted\s+must-fix.\s+is\s+\*\*not\*\*\s+a\s+lawful\s+outcome`,
+		live:         "so \"zero rounds with an open, never-attempted\n   must-fix\" is **not** a lawful outcome",
+		tokenRemoved: "so \"zero rounds with an open, never-attempted must-fix\" is a lawful outcome",
+	},
+})
+
+// TestBossReviewMustFixOverrunAdmission asserts the bounded override against the real payload, in
+// both windows it has to hold in. The windows are deliberate: sectionBetween refuses a span that
+// would cross an intervening section, so a rule relocated out of §Caller deadline or out of Phase 6
+// fails here rather than passing as a move -- and a run reads exactly one of those two places at
+// the moment it decides whether to enter a round.
+func TestBossReviewMustFixOverrunAdmission(t *testing.T) {
+	const skillPath = "skills/boss-review/SKILL.md"
+
+	for payloadName, payload := range shippedPayloads(t) {
+		payloadName, payload := payloadName, payload
+		t.Run(payloadName, func(t *testing.T) {
+			skill := readPayloadFile(t, payload, skillPath)
+
+			deadline := sectionBetween(t, skill, "## Caller deadline (wall-clock cap)", "## Findings contract")
+			assertFalsificationPins(t, deadline, bossReviewMustFixOverrunPins)
+
+			phase6 := sectionBetween(t, skill, "## Phase 6 — Fix must-fix", "## Phase 7")
+			assertFalsificationPins(t, phase6, bossReviewPhase6OverrunPins)
+
+			// The ledger field is how a caller tells a lawful overrun from an ignored deadline.
+			// Without it the override is unobservable downstream and cause 1/2 above is unprovable.
+			assertContains(t, skill, `"overrun": { "rounds": 0 | 1, "seconds": 0 | 1200, "reason": "mustfix-override" }`)
+
+			// The Phase 6 leg allowance must stay subject to the override in the legs list; a legs
+			// entry that still reads as an unconditional price is the pre-change gate restated.
+			assertContains(t, skill, "subject to the single bounded")
+		})
+	}
+}

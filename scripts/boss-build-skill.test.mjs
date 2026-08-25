@@ -1341,8 +1341,32 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
     )
     assert.match(
       step6c,
-      /no\*{0,2}\s*fix\s+round\s+is\s+ever\s+admitted\s+at\s+the\s+default/i,
-      `${dir}: Step 6c must state that 15 minutes funds no fix round, so the advisory-only outcome is deliberate`,
+      /no\*{0,2}\s*ordinary\s+fix\s+round\*{0,2}\s+is\s+ever\s+admitted\s+at\s+the\s+default/i,
+      `${dir}: Step 6c must state that 15 minutes funds no ORDINARY fix round, so the advisory-only outcome is deliberate`,
+    )
+    // ...and that claim is now narrowed rather than absolute, which the prose has to
+    // say or it ships a falsehood. `boss-review` funds ONE overrun round for a
+    // must-fix nothing has attempted, so "no round ever runs at the default" is
+    // true only of a pass with no such finding. The narrowing must not be paid for
+    // by re-pricing the tier: STEP_6C_MINUTES stays 15 (pinned above) and the
+    // overrun is charged to the post-review reserve, once per run.
+    assert.match(
+      step6c,
+      /MUSTFIX_OVERRUN_ROUNDS/,
+      `${dir}: Step 6c must name the overrun allowance that excepts its zero-round claim`,
+    )
+    assert.match(
+      step6c,
+      /(has\s+not\s+yet\s+attempted|unattempted)[\s\S]{0,400}(single\s+overrun\s+round|once\s+per\s+run)/i,
+      `${dir}: the exception must be scoped to an UNATTEMPTED must-fix and bounded to one round`,
+    )
+    // The worked 412s example is the same claim in numbers, so it carries the same
+    // precondition. Left unscoped it teaches the exact mis-read this closes: that a
+    // sub-round remainder is always "the bound working as designed".
+    assert.match(
+      step6c,
+      /412s[\s\S]{0,900}no\s+open,?\s+unattempted\s+must-fix/i,
+      `${dir}: the worked deadline example must state the precondition it holds under`,
     )
     // ...and the zero-round default must not be mistaken for a SKIP. `## Review coverage` reads
     // `full (skipped: Step 6c boss-review)` as "the pass did not run"; stamping that on the
@@ -1361,6 +1385,148 @@ test('Step 6c is bounded by a hard deadline, not a 15-minute guess', () => {
       step6c,
       /comfortable\s+margin/i,
       `${dir}: Step 6c's budget guard must be arithmetic, not a "comfortable margin" judgement call`,
+    )
+  }
+})
+
+test('a terminal state with an open must-fix never names the clock as its cause', () => {
+  // The defect this closes: a fix round refused on the wall clock turned a located,
+  // fixable, NEVER-ATTEMPTED must-fix into a required-deferred item, and the run
+  // terminated BLOCKED citing the deadline. The clock is a real bound, but it is not
+  // a cause on the finding's side, and a reader who accepts it as one will defer work
+  // that a single bounded round would have closed.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = fs.readFileSync(
+      path.join(rootDir, dir, 'references/review-stack.md'),
+      'utf8',
+    )
+    const troubleshooting = fs.readFileSync(
+      path.join(rootDir, dir, 'references/troubleshooting.md'),
+      'utf8',
+    )
+
+    // (a) The bounded tier's sentinel routing is unchanged — `capped:` still means
+    // BLOCKED — but WHAT the sentinel is allowed to mean is narrowed: every open
+    // must-fix it carries needs a cause on the finding's own side.
+    assert.match(
+      reviewStack,
+      // `bs-review capped:` is the sentinel token itself; its exact spacing is what routing
+      // matches on. prose-pin: literal-space ok
+      /`bs-review capped:`\s*→\s*\*\*BLOCKED\*\*/,
+      `${dir}: the capped sentinel must still route to BLOCKED`,
+    )
+    assert.match(
+      reviewStack,
+      /attempted\s+and\s+not\s+cleared,\s+the\s+round\s+cap\s+reached,\s+or\s+ineligible\s+to\s+attempt/i,
+      `${dir}: the capped sentinel must enumerate the finding-side causes it is allowed to mean`,
+    )
+    assert.match(
+      reviewStack,
+      /located\s+and\s+never\s+attempted\s+does\s+not\s+qualify/i,
+      `${dir}: an unattempted must-fix must be excluded from the lawful capped causes`,
+    )
+    assert.match(
+      reviewStack,
+      /never\s+the\s+clock\s+as\s+a\s+cause\s+in\s*\n?\s*its\s+own\s+right/i,
+      `${dir}: the BLOCKED this produces must name the finding, not the clock`,
+    )
+
+    // (b) The red-flags catalog is where a reader who is already rationalizing looks.
+    // The correction has to be there, in the same table, keyed on the thought itself.
+    const redFlags = region(troubleshooting, '## Red flags (stop and correct)')
+    assert.match(
+      redFlags,
+      /"The\s+clock\s+ran\s+out,\s+so\s+I'll\s+go\s+BLOCKED\s+with\s+an\s+open\s+must-fix"/,
+      `${dir}: the red-flags table must carry the deadline-as-cause rationalization`,
+    )
+    assert.match(
+      redFlags,
+      /attempted\*{0,2}\s+and\s+not\s+cleared\*{0,2}[\s\S]{0,240}MUSTFIX_OVERRUN_ROUNDS/,
+      `${dir}: its correction must name the lawful causes and the overrun round that replaces the clock`,
+    )
+  }
+})
+
+test('Step 6c never leaks the reserved merge-gate token into a PR title or body', () => {
+  // `do not merge` is a RESERVED token another caller matches on to hold a PR back.
+  // Step 6c is explicitly non-blocking and advisory, so any boss-review-sourced text
+  // it copies into the PR title/body that happens to contain that substring blocks a
+  // merge nothing intended to block — a reserved-token leak, not a review finding.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = fs.readFileSync(
+      path.join(rootDir, dir, 'references/review-stack.md'),
+      'utf8',
+    )
+    const step6c = region(reviewStack, '## Step 6c: Consolidated multi-lens review')
+    assert.match(
+      step6c,
+      /must\s+not\s+reach\s+the\s+\*\*PR\s+title\s+or\s+body\*\*/i,
+      `${dir}: Step 6c's advisory status must be barred from the PR title and body`,
+    )
+    assert.match(
+      step6c,
+      // `do not merge` is the reserved merge-gate token verbatim; its spacing is precisely what
+      // must never appear in a PR title or body. prose-pin: literal-space ok
+      /substring\s+`do not merge`\s+in\s+a\s+PR\s+title\s+or\s+body/i,
+      `${dir}: Step 6c must name the reserved token it must never emit`,
+    )
+    assert.match(
+      step6c,
+      /reserved\*{0,2}\s+merge-gate\s+token/i,
+      `${dir}: the rule must say WHY the token is reserved, or it reads as style advice`,
+    )
+    // The escape hatch has to be stated, or a reader with a finding whose title
+    // contains the phrase has no lawful move and will either drop the finding or
+    // emit the token anyway.
+    assert.match(
+      step6c,
+      /Rephrase\s+the\s+finding/i,
+      `${dir}: the rule must say what to do instead of emitting the token`,
+    )
+  }
+})
+
+test('the reserved merge-gate token ban is stated route-independently, not only in Step 6c', () => {
+  // Scoping the ban to Step 6c leaves the routes that actually COMPOSE a PR title and body
+  // uncovered: PARTIAL-route publication and BLOCKED-route publication both write review-sourced
+  // text (`## Cross-model review`, `## Review coverage`, the open-findings list) into the body via
+  // `gh pr edit`. A ban a publishing route never reads is a ban that ships inert, so pin that the
+  // rule lives OUTSIDE the advisory step and says so.
+  for (const dir of BUILD_MIRRORS) {
+    const reviewStack = fs.readFileSync(
+      path.join(rootDir, dir, 'references/review-stack.md'),
+      'utf8',
+    )
+    const step6c = region(reviewStack, '## Step 6c: Consolidated multi-lens review')
+    const outside = reviewStack.split(step6c).join('')
+    assert.match(
+      outside,
+      /###\s+The\s+reserved\s+merge-gate\s+token\s+\(every\s+route/i,
+      `${dir}: the token ban needs a route-independent home outside Step 6c`,
+    )
+    assert.match(
+      outside,
+      // The owning caller must be named, or a reader cannot tell which gate they would wedge.
+      /`boss-epic`'s\s+merge-gate\s+token/i,
+      `${dir}: the route-independent rule must name boss-epic as the caller that matches the token`,
+    )
+    assert.match(
+      outside,
+      /on\s+\*\*any\*\*\s+route/i,
+      `${dir}: the rule must claim EVERY route, not just the advisory one`,
+    )
+    for (const route of ['PARTIAL-route publication', 'BLOCKED-route publication']) {
+      assert.ok(
+        outside.includes(route),
+        `${dir}: the rule must name the publishing route ${route} it governs`,
+      )
+    }
+    // The protocol's OWN deliberate PARTIAL marker contains the substring on purpose; a ban that
+    // did not carve it out would forbid the one use that is correct.
+    assert.match(
+      outside,
+      /is\s+not\s+`boss-review`-sourced/i,
+      `${dir}: the rule must exempt the protocol's own deliberate PARTIAL marker`,
     )
   }
 })

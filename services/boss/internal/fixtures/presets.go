@@ -159,6 +159,15 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// resurrect-progress: the demo world plus a scripted ResurrectSession
+		// stream (BOS-984). Before that ticket a restore was a silent spinner
+		// until the client deadline fired; this preset stages the progress the
+		// streaming RPC now emits so a scenario can assert it.
+		"resurrect-progress": {
+			World:      ResurrectProgressWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"busy": {
 			World:      BusyWorld,
 			SeedKind:   SeedAcknowledged,

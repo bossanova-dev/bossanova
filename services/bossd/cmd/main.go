@@ -1217,6 +1217,40 @@ func executableDigest(path string) ([sha256.Size]byte, error) {
 	return digest, nil
 }
 
+// mapRotationSwitchError translates a session.SwitchAccount error into the sentinels the
+// chat rotator classifies on. The rotation package cannot import session (the rotator is
+// a seam the session layer is wired INTO), so this adapter is the single translation
+// point.
+//
+// Order matters: ErrChatMidTurn is checked first because a mid-turn refusal is also a
+// pre-pane-touch refusal, but the rotator's abort branch is deliberately different from
+// the not-attempted branch (abort keeps the charge and re-probes; not-attempted refunds
+// and parks). Anything else that returned before the pane was touched maps to
+// ErrSwitchNotAttempted, additionally carrying ErrSwitchAccountIneligible when the cause
+// was the target account being disabled / health-failed / cooling — on the
+// respawn-in-place path the "target" IS the bound account, and that is the case the
+// rotator resolves by rotating to an eligible account instead. (BOS-981)
+func mapRotationSwitchError(err error) error {
+	if err == nil {
+		return nil
+	}
+	// Map the mid-turn refusal onto the rotator's fail-safe sentinel so the
+	// respawn-in-place path leaves the chat as-is (no FAILED audit) and re-probes
+	// later, rather than treating a deliberately-skipped live turn as a failure.
+	if errors.Is(err, session.ErrChatMidTurn) {
+		return rotation.ErrSwitchAborted
+	}
+	if !errors.Is(err, session.ErrSwitchNotAttempted) {
+		return err
+	}
+	if errors.Is(err, session.ErrAccountDisabled) ||
+		errors.Is(err, session.ErrAccountFailed) ||
+		errors.Is(err, session.ErrAccountCooling) {
+		return fmt.Errorf("%w: %w: %w", rotation.ErrSwitchNotAttempted, rotation.ErrSwitchAccountIneligible, err)
+	}
+	return fmt.Errorf("%w: %w", rotation.ErrSwitchNotAttempted, err)
+}
+
 func run(opts runOpts) error {
 	// Human-friendly console logging plus rotated file at $XDG_STATE_HOME/bossanova/logs/bossd.log.
 	logCloser := bossalog.Setup("bossd")
@@ -2154,6 +2188,11 @@ func run(opts runOpts) error {
 		// confirmed=false (non-auth errors are logged, never surfaced as rotation), so
 		// the path proceeds only on a real auth invalidation.
 		CurrentAuthFailed: chatStatusTracker.AuthFailed,
+		// The stable per-episode anchor behind the BOS-980 latch: it lets the rotator tell
+		// a pane still inside the same auth-failed episode from one that recovered and
+		// wedged again. (AuthFailed alone cannot, because the tracker clears its marker on
+		// the first clean poll by design — see the BOS-808 note on status/tracker.go.)
+		AuthFailedSince: chatStatusTracker.AuthFailedSince,
 		AuthProbe: func(ctx context.Context, accountID string) rotation.AuthProbeResult {
 			prober, ok := accountMaterializer.(usageSnapshotProber)
 			if !ok || accountID == "" {
@@ -2193,7 +2232,8 @@ func run(opts runOpts) error {
 					r := req.ResetAt
 					return &r
 				}(),
-				RotationCapable: capable,
+				RotationCapable:    capable,
+				SuppressHealthFail: req.SuppressHealthFail,
 			})
 			out, err := rotationEngine.Decide(ctx, sig)
 			if err != nil {
@@ -2234,13 +2274,7 @@ func run(opts runOpts) error {
 				PreviousResetAt:    req.PreviousResetAt,
 			})
 			if err != nil {
-				// Map the mid-turn refusal onto the rotator's fail-safe sentinel so the
-				// respawn-in-place path leaves the chat as-is (no FAILED audit) and re-probes
-				// later, rather than treating a deliberately-skipped live turn as a failure.
-				if errors.Is(err, session.ErrChatMidTurn) {
-					return rotation.SwitchResult{}, rotation.ErrSwitchAborted
-				}
-				return rotation.SwitchResult{}, err
+				return rotation.SwitchResult{}, mapRotationSwitchError(err)
 			}
 			return rotation.SwitchResult{SwitchedToLabel: res.TargetLabel, Fresh: !res.Resumed}, nil
 		},
@@ -2364,6 +2398,18 @@ func run(opts runOpts) error {
 	// (BOS-481): mirrors the spawn's DefaultAccountID for a surviving pane whose
 	// chat and session both lack a persisted binding.
 	lifecycle.SetDefaultAccountResolver(accountResolver.DefaultAccountID)
+	// Probe-skipping pane repair for a 401 the failover proxy minted itself
+	// (BOS-982). The proxy attributes its own unknown-token rejection to a live
+	// pane and lands here; the account was never consulted for that 401, so the
+	// rotator respawns in place rather than probing a credential that is not the
+	// problem. Nil-guarded: chatRotator is only constructed when the rotation
+	// lane is wired, and without it the proxy's 401 behaves exactly as before.
+	lifecycle.SetPaneRepairDispatcher(func(agentSessionID string) {
+		if chatRotator == nil {
+			return
+		}
+		chatRotator.OnProxyTokenUnresolved(agentSessionID)
+	})
 	if opts.onRotationSeamsWired != nil {
 		opts.onRotationSeamsWired(lifecycle.HasLiveRotationSeams())
 	}
@@ -3838,6 +3884,11 @@ func run(opts runOpts) error {
 		// live tmux pane survives a daemon restart (BOS-409). Falls back to an
 		// ephemeral port on a collision; 0/unset defaults to 44127.
 		Port: settings.ManagedAccounts.FailoverProxyPort(),
+		// Durable path-token registry (BOS-979). Without this the proxy holds the
+		// registry only in memory, so a restart 401s every surviving pane whose
+		// token the tmux-env sweep cannot reconstruct. Rebuilt in Bootstrap,
+		// before Serve.
+		ProxyTokens: db.NewProxyTokenStore(database),
 	}
 	// Assigned only when non-nil, to keep the interface value honest. NewRecorder
 	// yields a nil *Recorder when there is no app-data path, and assigning a nil

@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
@@ -22,10 +24,33 @@ type trashListMsg struct {
 	err      error
 }
 
-// sessionRestoredMsg carries the result of restoring an archived session.
+// sessionRestoredMsg carries the TERMINAL result of restoring an archived
+// session.
+//
+// setupError is the third outcome BOS-984 made expressible. err means the
+// session did not come back (a worktree failure, or the RPC itself failing —
+// including a deadline); setupError means it DID come back but its setup script
+// failed, so the worktree is missing its dependencies. Both empty is a clean
+// restore.
 type sessionRestoredMsg struct {
-	id  string
-	err error
+	id         string
+	err        error
+	setupError string
+}
+
+// restoreStreamOpenedMsg hands the freshly-opened resurrect stream back to the
+// model so subsequent frames can be pumped from it.
+type restoreStreamOpenedMsg struct {
+	id     string
+	stream client.ResurrectSessionStream
+}
+
+// restoreProgressMsg carries one setup-output line from the resurrect stream.
+// Without it the restore is silent for however long the repo's setup script
+// runs — the exact experience BOS-984 replaced.
+type restoreProgressMsg struct {
+	id   string
+	line string
 }
 
 // sessionDeletedMsg carries the result of permanently deleting a session.
@@ -64,6 +89,12 @@ type TrashModel struct {
 	deletingAll      bool
 	restoring        bool
 	restoredID       string
+	// restoreStream is the in-flight resurrect stream; restoreLine is the most
+	// recent progress line it produced, and restoreWarning the non-fatal setup
+	// failure a completed restore reported (BOS-984).
+	restoreStream  client.ResurrectSessionStream
+	restoreLine    string
+	restoreWarning string
 
 	// Delete-all batch progress. pendingDeleteIDs holds the IDs resolved when
 	// [a] is pressed (so a later filter change cannot alter the batch). Once
@@ -310,8 +341,26 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.buildTable()
 		return m, nil
 
+	case restoreStreamOpenedMsg:
+		m.restoreStream = msg.stream
+		return m, readNextRestoreMsg(msg.id, msg.stream)
+
+	case restoreProgressMsg:
+		// Ignore a frame that arrives after this restore stopped being the
+		// model's business (the terminal frame already landed, or the stream
+		// was dropped on a routed-away restore) rather than rendering a stale
+		// line or pumping a nil stream.
+		if !m.restoring || m.restoreStream == nil {
+			return m, nil
+		}
+		m.restoreLine = msg.line
+		return m, readNextRestoreMsg(msg.id, m.restoreStream)
+
 	case sessionRestoredMsg:
 		m.restoring = false
+		m.restoreStream = nil
+		m.restoreLine = ""
+		m.restoreWarning = msg.setupError
 		// session_resurrected is captured at the app root
 		// (App.handleSessionRestoredResult); see the note there.
 		if msg.err != nil {
@@ -448,9 +497,18 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if sess := m.selectedSession(); sess != nil && !m.deletingAll {
 				m.restoring = true
+				m.restoreLine = ""
+				m.restoreWarning = ""
+				m.restoreStream = nil
+				c := m.client
+				ctx := m.ctx
+				id := sess.Id
 				return m, func() tea.Msg {
-					_, err := m.client.ResurrectSession(m.ctx, sess.Id)
-					return sessionRestoredMsg{id: sess.Id, err: err}
+					stream, err := c.ResurrectSession(ctx, id)
+					if err != nil {
+						return sessionRestoredMsg{id: id, err: err}
+					}
+					return restoreStreamOpenedMsg{id: id, stream: stream}
 				}
 			}
 			return m, nil
@@ -576,6 +634,17 @@ func (m TrashModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
+	// A restore that came back with a failed setup script is a SUCCESS with a
+	// caveat, not an error — the session is out of the trash but its worktree
+	// has no dependencies installed. Rendering it as a warning above the action
+	// bar keeps it distinct from the error banner a failed restore raises
+	// (BOS-984).
+	if m.restoreWarning != "" && !m.restoring {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"Restored, but the repo setup script failed - dependencies may be missing: " + m.restoreWarning))
+		b.WriteString("\n")
+	}
+
 	if m.deleting {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Deleting..."))
@@ -585,8 +654,16 @@ func (m TrashModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + fmt.Sprintf("Deleting %d/%d…", min(m.deleteDone+1, m.deleteTotal), m.deleteTotal)))
 	} else if m.restoring {
+		// The progress line is what distinguishes "still coming back" from a
+		// hung restore. Before BOS-984 this spinner was all the user ever saw,
+		// right up until the client deadline turned a healthy restore into
+		// deadline_exceeded.
+		label := "Restoring..."
+		if m.restoreLine != "" {
+			label = "Restoring... " + m.restoreLine
+		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
-			m.spinner.View() + "Restoring..."))
+			m.spinner.View() + truncateRestoreLabel(label, m.width)))
 	} else if m.confirm.active {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
@@ -616,4 +693,61 @@ func trashActionBar(width int, f listFilter, hasRows bool) string {
 		return actionBarWidth(width, primary, []string{"[esc] back"})
 	}
 	return actionBarWidth(width, []string{"[esc] back"})
+}
+
+// readNextRestoreMsg pumps one frame off the resurrect stream. SetupOutput is
+// non-terminal (the caller schedules another read and the stream stays open);
+// SessionResurrected and stream end are terminal.
+//
+// An unrecognised frame is skipped rather than failing the restore, so a newer
+// daemon can add a frame type without breaking this binary — same forward
+// compatibility rule readNextStreamMsg follows for create.
+func readNextRestoreMsg(id string, stream client.ResurrectSessionStream) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			if !stream.Receive() {
+				_ = stream.Close()
+				if err := stream.Err(); err != nil {
+					return sessionRestoredMsg{id: id, err: err}
+				}
+				return sessionRestoredMsg{id: id, err: errRestoreStreamEndedEarly}
+			}
+			switch e := stream.Msg().Event.(type) {
+			case *pb.ResurrectSessionResponse_SetupOutput:
+				line := strings.TrimSpace(e.SetupOutput.GetText())
+				if line == "" {
+					// A blank line is real setup output, but rendering it would
+					// blank the progress label for no information.
+					continue
+				}
+				return restoreProgressMsg{id: id, line: line}
+			case *pb.ResurrectSessionResponse_SessionResurrected:
+				_ = stream.Close()
+				return sessionRestoredMsg{id: id, setupError: e.SessionResurrected.GetSetupError()}
+			default:
+				continue
+			}
+		}
+	}
+}
+
+// errRestoreStreamEndedEarly is the restore counterpart of the create wizard's
+// "stream ended unexpectedly": the daemon closed the stream without ever
+// sending a terminal frame, so nothing can be said about the session's state.
+var errRestoreStreamEndedEarly = errors.New("restore stream ended without a result")
+
+// truncateRestoreLabel keeps a long setup-output line from wrapping the action
+// row. The subtracted columns are the spinner plus the style's horizontal
+// padding; a width at or below that chrome (an unmeasured view) leaves the
+// label alone.
+//
+// ansi.Truncate, never a byte slice: setup output is arbitrary program output
+// and routinely carries UTF-8 and SGR escapes, both of which byte-slicing
+// splits into mojibake or a stranded escape sequence.
+func truncateRestoreLabel(label string, width int) string {
+	const chrome = 8
+	if width <= chrome {
+		return label
+	}
+	return ansi.Truncate(label, width-chrome, "…")
 }

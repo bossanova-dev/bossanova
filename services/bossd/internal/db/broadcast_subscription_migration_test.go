@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // broadcastSubscriptionsVersion is the goose timestamp of the BOS-557 migration.
@@ -155,14 +155,14 @@ func TestBroadcastSubscriptionsMigrationDown(t *testing.T) {
 		t.Fatalf("open in-memory db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate.RunUpTo(db, migrations, broadcastSubscriptionsVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, broadcastSubscriptionsVersion); err != nil {
 		t.Fatalf("run up to %d: %v", broadcastSubscriptionsVersion, err)
 	}
 	if cols := tableColumns(t, db, "broadcast_subscriptions"); len(cols) == 0 {
 		t.Fatal("broadcast_subscriptions missing before down")
 	}
 
-	if err := migrate.RunDownTo(db, migrations, preBroadcastSubscriptionsVersion); err != nil {
+	if err := dbtest.RunDownTo(db, migrations, preBroadcastSubscriptionsVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	if cols := tableColumns(t, db, "broadcast_subscriptions"); len(cols) != 0 {
@@ -181,7 +181,7 @@ func TestBroadcastSubscriptionsMigrationDown(t *testing.T) {
 
 	// Re-applying must succeed: a Down that leaves state the Up cannot re-enter
 	// is not actually reversible.
-	if err := migrate.RunUpTo(db, migrations, broadcastSubscriptionsVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, broadcastSubscriptionsVersion); err != nil {
 		t.Fatalf("re-run up after down: %v", err)
 	}
 	if cols := tableColumns(t, db, "broadcast_subscriptions"); len(cols) == 0 {

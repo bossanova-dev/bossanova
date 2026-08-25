@@ -99,7 +99,22 @@ FIX_ROUND_MINUTES = 10   # step 1: the fix subagent — fix + its module tests/l
                   + 10   # step 2: the confirming Phase R pass over the newly-changed files
 #                 = 20 minutes (one "review pair": a reviewing pass and the fixing pass it feeds)
 FIX_ROUND_SECONDS = FIX_ROUND_MINUTES * 60          # = 1200 — the unit the comparison uses
+
+MUSTFIX_OVERRUN_ROUNDS  = 1   # the ONE extra fix round an open, UNATTEMPTED must-fix may buy past
+#                               the deadline. A round COUNT — the override gate compares counts.
+MUSTFIX_OVERRUN_SECONDS = MUSTFIX_OVERRUN_ROUNDS * FIX_ROUND_SECONDS
+#                                                   # = 1200 — the reported total for the ledger's
+#                                                   # overrun field, NOT a gate input.
 ```
+
+`MUSTFIX_OVERRUN_SECONDS` is the figure the run **reports**, never one it tests: the override is
+bounded by round count, so a second seconds-valued budget would be a second thing to get wrong for
+no added guarantee. It is named here because the caller needs the number, and the caller needs it
+because the money is **borrowed, not spare**: `1200` comes out of the 25-minute (`1500` s)
+post-review reserve `boss-build` holds back after Step 6c, and that reserve is priced as the
+_shortest honest post-review path_ (Steps 7-12), never as slack. So the override spends up to 20 of
+those 25 minutes, **once per run**, and the bound that makes this safe is the round count — not a
+second absolute deadline threaded across the skill boundary, which is why none is defined here.
 
 `DEADLINE_LEG_MINUTES` is `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) expressed in
 minutes, because that timeout is what bounds one Tier-1 dispatch batch. It prices the Tier-2 and
@@ -170,6 +185,57 @@ leg is not preemptible — once dispatched, its awaited subagents run to complet
 `now < deadline` admits a leg that overruns by the rest of its cost, which is this cap's overrun
 moved one leg later rather than removed.
 
+**The one exception — an open must-fix nobody has tried yet.** That gate is the right _overrun_
+policy and, at exactly one leg, the wrong _value_ policy. When the refused leg is a **Phase 6 fix
+round** and a must-fix finding is open that **no fix round has been dispatched against**, refusing it
+buys the caller nothing they wanted: the run cannot report clean either way, so the real choice is
+not "overrun or on time" but "a closed finding a few minutes late, or a known defect shipped on
+time". Terminating there states the clock as the cause of an open must-fix, when the truthful cause
+is that nobody tried. So that round is **admitted**, bounded by `MUSTFIX_OVERRUN_ROUNDS` — one extra
+round for the whole run, never one per finding and never one per round:
+
+```bash
+# The Phase 6 round-entry decision. Same seconds vocabulary as the gate above; the OVERRUN
+# allowance is the one quantity compared in rounds. Decide it with the toolbox, not by hand:
+deadline="${STEP_6C_DEADLINE:-}"      # bind the caller's name; empty when none was supplied
+now=$(date +%s)                       # re-derive HERE — never carry a remainder across a round
+remaining=null                        # `null` = no deadline supplied; NEVER a deadline of 0
+if [ -n "${deadline:-}" ]; then
+  remaining=$(( deadline - now ))
+fi
+node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round \
+  "{\"remainingSeconds\": $remaining, \"fixRoundSeconds\": $FIX_ROUND_SECONDS,
+    \"openMustFix\": $open_mustfix, \"unattemptedMustFix\": $unattempted_mustfix,
+    \"roundsUsed\": $rounds_used, \"maxRounds\": $max_rounds,
+    \"overrunRoundsUsed\": $overrun_rounds_used}"
+# {"admit":true,"reason":"within-budget"}     → ordinary admission, charge nothing to the overrun
+# {"admit":true,"reason":"mustfix-override"}  → run it, and increment $overrun_rounds_used
+# {"admit":false,"reason":"round-cap"}        → stop; the round cap is NEVER overridden
+# {"admit":false,"reason":"overrun-exhausted" | "all-attempted" | "no-open-mustfix"} → stop
+```
+
+**What `→ stop` stops is the _fix_ loop, and nothing else.** This gate admits or refuses a **fix
+round**, so `no-open-mustfix` restates the standing rule that the Phase 6 fixer is never dispatched
+with an empty must-fix list — it is not a finish signal and it discharges nothing else the round is
+still owed. In particular, unrepaired `invalid` evidence is **not** governed here: Phase 6's repeat
+decision carries its own instruction to re-run or repair the reviewer that produced it, that retry
+is not a fix round, and a run left holding one exits `capped` — never `clean` — however this gate
+answered. Read a refusal as "do not dispatch a fixer", then continue to the terminal-state rules.
+
+Three properties of that call are the contract, not conveniences of the implementation:
+
+- **The round cap is evaluated first and is never overridden.** The two caps bound different things
+  — the deadline bounds elapsed cost, the round cap bounds how many attempts a finding gets — and a
+  run that exhausted the round cap has _attempted_ the finding to its limit, which is already an
+  honest terminal state. Overriding it would also break the lower-only clamp `resolveMaxRounds`
+  exists to hold: a pathological session must never grant itself more review rounds.
+- **`remainingSeconds` is re-derived from `date +%s` at this boundary**, never carried from the
+  previous round's reading — a carried value is exactly as stale as the round that just ran. `null`
+  means _no deadline was supplied_, which is the no-cap case above; it is never a deadline of `0`.
+- **The override spends once.** `overrunRoundsUsed` is run state the loop increments when it acts on
+  a `mustfix-override`, so the second attempt at the same trick returns `overrun-exhausted`. It is
+  not reset by a new finding, a new phase, or a new round.
+
 **The gate admits a leg; it cannot stop one.** Admission and execution are two different bounds, and
 the gate is only the first. Tier 1 carries the second: its dispatch is bounded by
 `BOSS_SKILL_EXTENSION_TIMEOUT_MS`, so a hung extension expires and degrades to the next tier. The
@@ -223,7 +289,8 @@ The legs, each with its `LEG_SECONDS`:
 - **Phase R Tier 2 / Tier 3** — the host-native and inline-rubric fallbacks are **additional** legs,
   run only when the tier above produced nothing, so each is gated again on its own entry →
   `DEADLINE_LEG_SECONDS`. The check that admitted Tier 1 does not cover them.
-- **Phase 6** — each fix→confirm round → `FIX_ROUND_SECONDS`.
+- **Phase 6** — each fix→confirm round → `FIX_ROUND_SECONDS`, subject to the single bounded
+  must-fix override above; it is the only leg that has one.
 - **Phase 8** — each post-terminal notes-extension dispatch, in a repository that opted in by
   providing one → `DEADLINE_LEG_SECONDS`.
 - **Phase D** — the opportunistic default-round batch → `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS`.
@@ -249,10 +316,28 @@ reduces the report.
 **When a gate fails, stop there.** Do not start the leg, do not start a partial one, and do not
 continue silently. Record the un-run leg in the ledger as `<phase>: skipped (caller deadline)`, then
 go straight to Phase 7 and exit through the **capped report** — `status: "capped"`, the
-`bs-review capped:` sentinel — with every still-open must-fix recorded as
-`unresolved (caller deadline)`, so the caller publishes a reduced pass rather than a clean one. A
-run that dispatched no reviewer at all still reports honestly through that path; it never reports
-`clean`.
+`bs-review capped:` sentinel. The caller deadline is the disposition for the skipped leg, not for an
+open must-fix: record still-open must-fixes under the terminal-state rules below, so the caller
+publishes a reduced pass rather than a clean one. A run that dispatched no reviewer at all still
+reports honestly through that path; it never reports `clean`.
+
+**What a terminal state with an open must-fix is allowed to say.** Reaching a terminal state while a
+must-fix is still open is lawful, but only for a reason that is about the finding. Name the finding —
+its `<file:line> - <title>` — and exactly one of these three causes:
+
+1. **Attempted and not cleared** — a fix round was dispatched against it and it survived, including
+   the oscillation guard's two-consecutive-rounds case.
+   Disposition: `unresolved (fixes not clearing)`.
+2. **Round cap reached** — the effective cap from `bs-review-caps.mjs rounds` is spent, so no further
+   attempt is available at any budget. Disposition: `unresolved (round cap)`.
+3. **Ineligible to attempt at all** — the fix is outside what this run may do, so no round could
+   lawfully be spent on it (a hard-stop class the caller's rules name).
+
+"The clock ran out" is **not** on that list and never becomes a fourth entry. A located, fixable,
+unattempted must-fix funds its own round through `MUSTFIX_OVERRUN_ROUNDS`, so a run that terminates
+citing the deadline over such a finding has skipped the override, not obeyed the cap. Where the
+deadline genuinely is the cause — the override already spent, or the round cap already reached — say
+so as cause 1 or 2 with the overrun ledger showing it, not as a bare `unresolved (caller deadline)`.
 
 **Two phases are exempt, for opposite reasons — everything else caps.**
 
@@ -847,7 +932,10 @@ batch below — one leg for the whole phase, never one per capability. The surch
 is what distinguishes Phase D's gate from every other leg's: a Phase D finding is an ordinary
 must-fix, so admitting the phase commits the run to a Phase 6 round it may not be able to afford, and
 an optional add-on that forces a capped report is worse than no add-on. Buy the remediation with the
-round or do not buy the round. If the gate refuses, dispatch nothing, append
+round or do not buy the round. The must-fix override does **not** relax this. The override is a
+scarce, once-per-run allowance held for a finding the required review already located; spending it
+to remediate an optional add-on the run chose to admit without funding would consume it before the
+required work can claim it. Phase D funds its own remediation up front, exactly as before. If the gate refuses, dispatch nothing, append
 `Phase D: skipped (caller deadline)` to the ledger, and continue to Phase 5 with what Phase R
 produced. Phase D does **not** exit through the
 capped report: it is optional by construction, so refusing it is a normal outcome, not a truncated
@@ -1183,16 +1271,37 @@ Each round:
      **seconds** remained. Testing merely that the deadline has not yet arrived is **not** the gate
      either — it admits a round that cannot finish inside the budget, which is the overrun this cap
      exists to prevent, moved one round later rather than removed.
-   - **When the allowance does not fit:** stop the loop **now**. Do not start a partial round, and do
-     not continue silently. Exit via the **capped report** — `status: "capped"`, the
-     `bs-review capped:` sentinel carrying the rounds actually run — recording each still-open
-     must-fix as `unresolved (caller deadline)` so the caller publishes a reduced pass rather than a
-     clean one.
+   - **Except for an open must-fix nobody has attempted.** Do not decide this by hand — the decision
+     table is [§Caller deadline](#caller-deadline-wall-clock-cap)'s
+     `bs-review-caps.mjs admit-fix-round`, and it is the same call whether or not a deadline was
+     supplied:
+
+     ```bash
+     node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round "$decision_json"
+     ```
+
+     A `mustfix-override` admission runs the round and increments the run's `overrunRoundsUsed`; it
+     is available **once** per run and never overrides the round cap. **Attempted** means a fix round
+     has been dispatched against that specific `<file:line> - <title>` — whether or not it succeeded,
+     and keyed on the same identity the oscillation guard above uses. A finding the round now ending
+     just produced has **not** been attempted, so it is exactly what the override exists for; a
+     finding two rounds have failed to clear has been, and it is not.
+
+   - **When the allowance does not fit and the override does not apply:** stop the loop **now**. Do
+     not start a partial round, and do not continue silently. Exit via the **capped report** —
+     `status: "capped"`, the `bs-review capped:` sentinel carrying the rounds actually run —
+     recording each still-open must-fix under the disposition that is actually true of it:
+     `unresolved (fixes not clearing)` for one this run attempted, and `unresolved (caller deadline)`
+     **only** where no round could be spent on it at all — which, after the override, means the run
+     had already spent the override or was already at the round cap.
 
    The gate is arithmetic, so it can legitimately admit **zero** rounds when the supplied deadline is
-   smaller than one initial pass plus one `FIX_ROUND_MINUTES`. That is the sanctioned outcome, not a
-   failure: report what the review found, unfixed, through the capped report. A caller that wants the
-   fix loop to run must supply a deadline that funds it.
+   smaller than one initial pass plus one `FIX_ROUND_MINUTES` **and the pass found no must-fix to
+   override for**. That is the sanctioned outcome, not a failure: report a clean pass, or report what
+   the review found through the capped report. A pass that _did_ find an unattempted must-fix funds
+   one round from the overrun allowance regardless, so "zero rounds with an open, never-attempted
+   must-fix" is **not** a lawful outcome — a caller that wants more of the fix loop than that must
+   supply a deadline that funds it.
 
 ## Phase 7 — Report
 
@@ -1208,6 +1317,7 @@ survives Phase 8 cleanup. Source every field from the ledger and gate results:
 ```jsonc
 {
   "rounds": <N>,                  // fix rounds run (1 when Phase 6 was skipped)
+  "overrun": { "rounds": 0 | 1, "seconds": 0 | 1200, "reason": "mustfix-override" },  // optional — omit entirely when no override round was run; `rounds` is capped at MUSTFIX_OVERRUN_ROUNDS and `seconds` reports MUSTFIX_OVERRUN_SECONDS
   "status": "clean" | "capped",   // must match the sentinel below
   "summary": "1–3 sentences: what was reviewed (range + file count) and the headline outcome",
   "security": [],                 // [{severity,title,file,line,fix}] — usually empty

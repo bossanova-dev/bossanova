@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "title": "BOS-984 trash restore — the streaming resurrect renders live setup progress instead of a silent spinner",
+  "fixture": {
+    "preset": "resurrect-progress"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "open Trash, which lists the archived sessions",
+      "steps": [
+        {
+          "key": "s",
+          "caption": "Open Settings from the home board"
+        },
+        {
+          "waitFor": "Trash",
+          "timeoutMs": 10000,
+          "caption": "Settings menu advertises [t]rash"
+        },
+        {
+          "key": "t",
+          "caption": "Open the Trash screen"
+        },
+        {
+          "waitFor": "Old caching spike",
+          "timeoutMs": 10000,
+          "caption": "Trash list loaded (demo world seeds five archived sessions)"
+        },
+        {
+          "expect": [
+            {
+              "text": "Old caching spike",
+              "match": "normalized",
+              "label": "the first archived session, the one [r]estore will act on"
+            },
+            {
+              "text": "[r]estore",
+              "match": "normalized",
+              "label": "the Trash action bar advertises [r]estore"
+            }
+          ],
+          "caption": "An archived session is selected and restorable"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "restoring shows the live setup-script line — the BOS-984 fix",
+      "steps": [
+        {
+          "key": "r",
+          "caption": "Press [r] to restore the selected archived session"
+        },
+        {
+          "waitFor": "recreating worktree",
+          "timeoutMs": 15000,
+          "caption": "The first progress frame off the resurrect stream reaches the TUI"
+        },
+        {
+          "expect": [
+            {
+              "text": "Restoring...",
+              "match": "normalized",
+              "label": "the restore is still in flight (spinner label)"
+            },
+            {
+              "text": "recreating worktree",
+              "match": "normalized",
+              "label": "THE FIX: a live progress line from the streaming resurrect, appended to the spinner label"
+            }
+          ],
+          "caption": "Before BOS-984 this was a bare 'Restoring...' spinner and nothing else, right up until the client deadline turned a healthy restore into deadline_exceeded"
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "progress advances to the setup script itself",
+      "steps": [
+        {
+          "waitFor": "pnpm install --frozen-lockfile",
+          "timeoutMs": 15000,
+          "caption": "The second progress frame — the repo's setup script, the leg that used to blow the deadline"
+        },
+        {
+          "expect": [
+            {
+              "text": "pnpm install --frozen-lockfile",
+              "match": "normalized",
+              "label": "setup-script output streaming live into the restore label"
+            }
+          ],
+          "caption": "Setup-script output streaming live into the restore label. Asserted here rather than on the final phase line, whose visible window is ~0ms because the terminal frame follows it immediately."
+        }
+      ]
+    },
+    {
+      "id": "scene-04",
+      "title": "the restore settles and the app opens the restored session",
+      "steps": [
+        {
+          "waitFor": "[n]ew chat",
+          "timeoutMs": 20000,
+          "caption": "Terminal SessionResurrected frame received — App.updateTrash routes into the chat picker for the restored session (app_delegate.go), so the spinner is gone rather than hanging"
+        },
+        {
+          "waitMs": 2000,
+          "caption": "Hold the settled screen so the capture records the destination rather than ending mid-restore"
+        },
+        {
+          "expect": [
+            {
+              "text": "[n]ew chat",
+              "match": "normalized",
+              "label": "the chat picker's action bar — reachable only once the restore SETTLED, so this is the proof the stream terminated cleanly"
+            },
+            {
+              "text": "Old caching spike",
+              "match": "normalized",
+              "label": "the restored session is the one now open"
+            }
+          ],
+          "caption": "The stream ended on its terminal frame and the session is live. Before BOS-984 this point was never reached: the unary call died on the client deadline while the daemon was still running the setup script."
+        }
+      ]
+    }
+  ]
+}

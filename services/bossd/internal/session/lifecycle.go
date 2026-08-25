@@ -175,6 +175,13 @@ type Lifecycle struct {
 	// proxy is strictly additive and opt-in. Never logs the token.
 	proxyRegistrar proxyTokenRegistrar
 
+	// paneRepair dispatches a probe-skipping respawn-in-place for one chat whose
+	// pane the failover proxy has just rejected with its OWN 401 (BOS-982).
+	// Wired in production to ChatRotator.OnProxyTokenUnresolved. Nil (default)
+	// makes RepairProxyPane inert, so the attribution path stays strictly
+	// additive: without a dispatcher the proxy's 401 behaves exactly as before.
+	paneRepair func(agentSessionID string)
+
 	// defaultAccountResolver resolves a provider's managed default account id at
 	// startup-adoption time (BOS-481), mirroring the spawn's DefaultAccountID
 	// resolution for a surviving pane whose chat AND session both lack a
@@ -635,6 +642,14 @@ func (l *Lifecycle) SetBranchResolver(branches LiveBranchResolver) {
 func (l *Lifecycle) Bootstrap(ctx context.Context) {
 	l.reArmSurvivingTmuxChats(ctx)
 	l.sweepOrphanedHeadlessRuns(ctx)
+	// Restore the failover-proxy path-token registry from its durable rows
+	// (BOS-979). MUST run before adoptSurvivingPaneProxyTokens: a persisted row
+	// is authoritative — it was written by the daemon that actually minted the
+	// token — whereas the sweep RECONSTRUCTS a token from tmux env and can only
+	// cover panes that are still alive and still on the matching port. Running
+	// the rebuild first means the sweep degrades to a fallback for pre-migration
+	// panes instead of being the sole recovery path.
+	l.rebuildProxyTokenRegistry(ctx)
 	// Re-adopt each surviving tmux pane's baked failover-proxy path token onto
 	// the fresh ProxyServer (BOS-481), so a pane whose port still matches (the
 	// fixed port of BOS-409) reconnects in place instead of wedging on a 401.
@@ -3342,21 +3357,62 @@ func (l *Lifecycle) reapSafeLocalBranch(ctx context.Context, sessionID string, r
 		Msg("reap: deleted safe local branch")
 }
 
+// ResurrectSessionOpts are the per-call knobs of Lifecycle.ResurrectSession.
+type ResurrectSessionOpts struct {
+	// SetupOutput, when non-nil, receives the repo setup script's live output
+	// plus the coarse phase lines this method writes around it. It mirrors
+	// StartSessionOpts.SetupOutput and exists for the same reason: the setup
+	// script is the slowest step by an order of magnitude, and without a live
+	// sink the caller sees nothing at all until it finishes (BOS-984).
+	SetupOutput io.Writer
+}
+
+// ResurrectSessionResult reports the non-fatal outcomes of a resurrect that
+// otherwise succeeded.
+type ResurrectSessionResult struct {
+	// SetupErr is the repo setup script's failure, nil when it succeeded, when
+	// there is no script, or when this session has no worktree of its own.
+	// Non-fatal by design — see gitpkg.ResurrectResult.SetupErr.
+	SetupErr error
+}
+
 // ResurrectSession re-creates a worktree from an existing branch and
 // starts a new Claude process (with --resume if a previous Claude session exists).
-func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) error {
+//
+// A non-nil error means the session is NOT back. A non-nil result with a
+// non-nil SetupErr means it IS back but its dependencies were not installed;
+// the two are deliberately different outcomes (BOS-984).
+func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts ResurrectSessionOpts) (*ResurrectSessionResult, error) {
+	// Bound the whole resurrect, exactly as StartSession bounds a bootstrap.
+	//
+	// This is load-bearing after BOS-984. Until then the RPC inherited two
+	// accidental ceilings — the client's 120s unary deadline and the daemon's
+	// 120s http.Server WriteTimeout — and the bug was that both were far too
+	// SHORT for the setup script. Streaming removes them, and removing them with
+	// nothing in their place would leave the one step that can genuinely hang
+	// forever (a wedged agent start) unbounded. BootstrapTimeout is double
+	// SetupScriptTimeout, so an honest slow setup finishes comfortably inside it
+	// while a stuck resurrect still ends.
+	//
+	// The rollback below deliberately detaches from this context, so a resurrect
+	// killed here still un-archives the row rather than stranding it live and
+	// agent-less.
+	ctx, cancel := context.WithTimeout(ctx, l.bootstrapDeadline())
+	defer cancel()
+
+	setupOutput := opts.SetupOutput
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("get session: %w", err)
+		return nil, fmt.Errorf("get session: %w", err)
 	}
 
 	if session.ArchivedAt == nil {
-		return fmt.Errorf("session %s is not archived", sessionID)
+		return nil, fmt.Errorf("session %s is not archived", sessionID)
 	}
 
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
-		return fmt.Errorf("get repo: %w", err)
+		return nil, fmt.Errorf("get repo: %w", err)
 	}
 
 	l.logger.Info().
@@ -3364,20 +3420,32 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		Str("branch", session.BranchName).
 		Msg("resurrecting session")
 
+	result := &ResurrectSessionResult{}
+
 	// Resurrect worktree from existing branch.
 	// Skip for quick chat sessions where WorktreePath is the base repo.
 	if session.WorktreePath != repo.LocalPath {
-		if err := l.worktrees.Resurrect(ctx, gitpkg.ResurrectOpts{
+		writeSetupProgress(setupOutput, "recreating worktree")
+		wt, err := l.worktrees.Resurrect(ctx, gitpkg.ResurrectOpts{
 			RepoPath:     repo.LocalPath,
 			WorktreePath: session.WorktreePath,
 			BranchName:   session.BranchName,
 			// Base branch lets Resurrect recreate the branch when it was
 			// safe-deleted on archive (BOS-180). See BOS-421.
-			BaseBranch:  session.BaseBranch,
-			SetupScript: repo.SetupScript,
-		}); err != nil {
-			return fmt.Errorf("resurrect worktree: %w", err)
+			BaseBranch:        session.BaseBranch,
+			SetupScript:       repo.SetupScript,
+			SetupScriptOutput: setupOutput,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resurrect worktree: %w", err)
 		}
+		if wt != nil {
+			result.SetupErr = wt.SetupErr
+			if wt.SetupErr != nil {
+				writeSetupProgress(setupOutput, "setup script failed: "+wt.SetupErr.Error())
+			}
+		}
+		writeSetupProgress(setupOutput, "worktree restored")
 	}
 
 	// Clear archived status AND leave the terminal state in one conditional
@@ -3399,14 +3467,16 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	implementingState := int(machine.ImplementingPlan)
 	resurrected, err := l.sessions.ResurrectToState(ctx, sessionID, implementingState)
 	if err != nil {
-		return fmt.Errorf("resurrect session: %w", err)
+		return nil, fmt.Errorf("resurrect session: %w", err)
 	}
 	if !resurrected {
 		// The row stopped being archived between the read above and this write.
 		// Another writer owns it now; proceeding would start an agent against a
 		// session this call does not control.
-		return fmt.Errorf("resurrect session: %s was no longer archived", sessionID)
+		return nil, fmt.Errorf("resurrect session: %s was no longer archived", sessionID)
 	}
+
+	writeSetupProgress(setupOutput, "restarting agent")
 
 	// Start Claude process, resuming previous session if available.
 	var resume *string
@@ -3463,7 +3533,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 					Msg("resurrect rollback skipped: session moved on before it could be re-archived")
 			}
 		}()
-		return fmt.Errorf("start claude: %w", err)
+		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
 	// Update Claude session ID. The state was already written above, with the
@@ -3471,7 +3541,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		AgentSessionID: strPtr(claudeSessionID),
 	}); err != nil {
-		return fmt.Errorf("update session: %w", err)
+		return nil, fmt.Errorf("update session: %w", err)
 	}
 
 	l.logger.Info().
@@ -3479,7 +3549,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		Str("claudeSession", claudeSessionID).
 		Msg("session resurrected")
 
-	return nil
+	return result, nil
 }
 
 // resolveOriginURL ensures the repo has a non-empty OriginURL. If it's

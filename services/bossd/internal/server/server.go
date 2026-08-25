@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -811,7 +812,7 @@ func (s *Server) Listen(socketPath string) error {
 		socketauth.NewServerInterceptor(token),
 		errortrack.Interceptor(),
 	))
-	mux.Handle(path, withCreateSessionWriteDeadlineOverride(handler))
+	mux.Handle(path, withStreamingWriteDeadlineOverride(handler))
 	registerPprofHandlers(mux)
 
 	s.srv = &http.Server{
@@ -827,11 +828,28 @@ func (s *Server) Listen(socketPath string) error {
 	return nil
 }
 
-func withCreateSessionWriteDeadlineOverride(next http.Handler) http.Handler {
+// setupStreamingProcedures are the DaemonService procedures that stream a
+// repo's setup-script output and therefore legitimately outlive the daemon's
+// non-streaming write timeout. Both run gitpkg.SetupScriptTimeout (5 minutes)
+// of user-supplied script inside one response, which the 120s WriteTimeout
+// would otherwise cut off mid-stream.
+//
+// AttachSession is streaming too and is deliberately NOT here: it is not on
+// this failure path, it has never had the exemption, and granting it one is a
+// behaviour change this ticket does not own.
+//
+// Keying on the generated constants makes a rename a build failure. Adding a
+// third streaming setup RPC without adding it here reproduces exactly the
+// BOS-984 defect — a healthy daemon reporting deadline_exceeded — so the set,
+// not a per-procedure branch, is the thing to extend.
+var setupStreamingProcedures = map[string]struct{}{
+	bossanovav1connect.DaemonServiceCreateSessionProcedure:    {},
+	bossanovav1connect.DaemonServiceResurrectSessionProcedure: {},
+}
+
+func withStreamingWriteDeadlineOverride(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == bossanovav1connect.DaemonServiceCreateSessionProcedure {
-			// CreateSession streams setup output and may legitimately run longer
-			// than the daemon's non-streaming write timeout.
+		if _, ok := setupStreamingProcedures[r.URL.Path]; ok {
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		}
 		next.ServeHTTP(w, r)
@@ -3482,18 +3500,52 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: s.sessionProtoWithRepo(ctx, sess)}), nil
 }
 
-func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+// ResurrectSession is the thin ConnectRPC handler: it delegates to the
+// streaming core StreamResurrectSession, wiring the connect server stream's
+// Send as the emit sink. Same split as CreateSession, and for the same reason
+// — the reverse-stream path (bosso -> daemon ResurrectSessionCommand) reuses
+// the core without a non-mockable *connect.ServerStream.
+func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest], stream *connect.ServerStream[pb.ResurrectSessionResponse]) error {
+	return s.StreamResurrectSession(ctx, req.Msg, stream.Send)
+}
+
+// StreamResurrectSession holds the full ResurrectSession body. Progress frames
+// are emitted as the repo's setup script produces output, then exactly one
+// terminal SessionResurrected frame.
+//
+// Streaming is what makes a slow setup survivable at all (BOS-984): a unary
+// response could not outlast the daemon's own 120s http.Server WriteTimeout,
+// while the setup script it is waiting on is allowed five minutes. The write
+// deadline for this procedure is cleared in Listen (see
+// setupStreamingProcedures) — without that, streaming alone would not help.
+func (s *Server) StreamResurrectSession(ctx context.Context, msg *pb.ResurrectSessionRequest, emit func(*pb.ResurrectSessionResponse) error) error {
+	if msg.GetId() == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	if err := s.lifecycle.ResurrectSession(ctx, req.Msg.Id); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resurrect session: %w", err))
-	}
+	out := newSetupLineEmitter(func(line string) {
+		// Progress is best-effort: a send failure here must not fail the
+		// resurrect, which is already past the point of being this stream's to
+		// abort. A client that has genuinely gone away cancels ctx, which stops
+		// the setup script through the ordinary context path.
+		_ = emit(&pb.ResurrectSessionResponse{
+			Event: &pb.ResurrectSessionResponse_SetupOutput{
+				SetupOutput: &pb.SetupScriptOutput{Text: line},
+			},
+		})
+	})
 
-	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	result, err := s.lifecycle.ResurrectSession(ctx, msg.GetId(), session.ResurrectSessionOpts{SetupOutput: out})
+	// Flush before the terminal frame so a setup script whose last line had no
+	// trailing newline is not silently dropped.
+	out.Flush()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return resurrectSessionConnectError(err)
+	}
+
+	sess, err := s.sessions.Get(ctx, msg.GetId())
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
 	p := s.sessionProtoWithRepo(ctx, sess)
@@ -3501,7 +3553,103 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 		s.onSessionUpdated(ctx, p)
 	}
 
-	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: p}), nil
+	setupError := ""
+	if result != nil && result.SetupErr != nil {
+		setupError = result.SetupErr.Error()
+	}
+	return emit(&pb.ResurrectSessionResponse{
+		Event: &pb.ResurrectSessionResponse_SessionResurrected{
+			SessionResurrected: &pb.SessionResurrected{Session: p, SetupError: setupError},
+		},
+	})
+}
+
+// setupLineEmitter adapts the io.Writer the worktree layer writes setup output
+// to into whole-line callbacks.
+//
+// It buffers a partial line across Writes because the setup script's output
+// arrives in arbitrary chunks, not lines, and a frame carrying half a line is
+// worse than no frame. Writes arrive on the exec copy goroutine while the
+// handler goroutine is blocked inside the lifecycle call, so the mutex guards a
+// handoff that is already ordered rather than a genuine race — it is cheap and
+// removes the need to reason about that ordering at every call site.
+//
+// A line longer than maxSetupOutputLineBytes is truncated rather than buffered
+// without bound; Write never reports an error, so a wedged consumer cannot fail
+// the setup script it is only observing.
+type setupLineEmitter struct {
+	mu      sync.Mutex
+	partial []byte
+	send    func(string)
+}
+
+func newSetupLineEmitter(send func(string)) *setupLineEmitter {
+	return &setupLineEmitter{send: send}
+}
+
+func (e *setupLineEmitter) Write(p []byte) (int, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.partial = append(e.partial, p...)
+	for {
+		i := bytes.IndexByte(e.partial, '\n')
+		if i < 0 {
+			break
+		}
+		e.emitLocked(string(e.partial[:i]))
+		e.partial = e.partial[i+1:]
+	}
+	if len(e.partial) > maxSetupOutputLineBytes {
+		e.emitLocked(string(e.partial[:maxSetupOutputLineBytes]))
+		e.partial = e.partial[:0]
+	}
+	return len(p), nil
+}
+
+// Flush emits any buffered partial line. Safe to call more than once.
+func (e *setupLineEmitter) Flush() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.partial) == 0 {
+		return
+	}
+	e.emitLocked(string(e.partial))
+	e.partial = e.partial[:0]
+}
+
+func (e *setupLineEmitter) emitLocked(line string) {
+	if len(line) > maxSetupOutputLineBytes {
+		line = line[:maxSetupOutputLineBytes]
+	}
+	e.send(line)
+}
+
+// resurrectSessionConnectError maps a resurrect failure onto the Connect code
+// that describes it, mirroring createSessionConnectError's role on the create
+// path.
+//
+// It exists because BOS-984 gave resurrect an internal bound of its own
+// (Lifecycle.ResurrectSession wraps the whole call in bootstrapDeadline). Left
+// in the generic CodeInternal bucket that bound is indistinguishable from a
+// worktree failure — which contradicts the three-way distinction
+// ResurrectSessionResponse's own comment promises: a setup failure arrives as
+// setup_error on a successful stream, a worktree failure is CodeInternal with
+// no terminal frame, and a timeout is CodeDeadlineExceeded with no terminal
+// frame. Without this mapping the daemon-side bound reported the middle case
+// for the last one.
+//
+// Canceled is mapped for the same reason in the other direction: a caller that
+// simply walked away is not a daemon fault, and reporting it as Internal puts
+// an ordinary disconnect in the same bucket as a real failure.
+func resurrectSessionConnectError(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return connect.NewError(connect.CodeDeadlineExceeded, fmt.Errorf("resurrect session: %w", err))
+	case errors.Is(err, context.Canceled):
+		return connect.NewError(connect.CodeCanceled, fmt.Errorf("resurrect session: %w", err))
+	default:
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("resurrect session: %w", err))
+	}
 }
 
 func (s *Server) sessionProtoWithRepo(ctx context.Context, sess *models.Session) *pb.Session {

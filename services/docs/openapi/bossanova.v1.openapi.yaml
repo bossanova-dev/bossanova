@@ -12061,12 +12061,35 @@ components:
       additionalProperties: false
     bossanova.v1.ResurrectSessionResponse:
       type: object
-      properties:
-        session:
-          title: session
-          $ref: '#/components/schemas/bossanova.v1.Session'
+      oneOf:
+        - type: object
+          properties:
+            sessionResurrected:
+              title: session_resurrected
+              $ref: '#/components/schemas/bossanova.v1.SessionResurrected'
+          title: session_resurrected
+          required:
+            - sessionResurrected
+        - type: object
+          properties:
+            setupOutput:
+              title: setup_output
+              $ref: '#/components/schemas/bossanova.v1.SetupScriptOutput'
+          title: setup_output
+          required:
+            - setupOutput
       title: ResurrectSessionResponse
       additionalProperties: false
+      description: |-
+        ResurrectSessionResponse is one frame of the resurrect stream. It mirrors
+         CreateSessionResponse: zero or more setup_output frames while the repo's
+         setup script runs, then exactly one terminal session_resurrected frame.
+
+         Field 1 is deliberately retired rather than reused: it was the unary
+         `Session session = 1`, and giving the tag to a oneof member would let a stale
+         client decode a progress frame as a completed resurrect. `reserved` is how
+         that intent is stated to the compiler and to `buf breaking`, instead of only
+         to a human reading this comment.
     bossanova.v1.RetrySessionCommand:
       type: object
       properties:
@@ -13086,6 +13109,32 @@ components:
         - SESSION_EVENT_PR_CLOSED
         - SESSION_EVENT_FINALIZE_REQUESTED
       description: SessionEvent represents the 16 events that trigger state transitions.
+    bossanova.v1.SessionResurrected:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        setupError:
+          type: string
+          title: setup_error
+          description: |-
+            setup_error carries the repo setup script's failure message, and is empty
+             when the script succeeded or the repo has no setup script.
+
+             Resurrect treats a setup failure as NON-fatal on purpose: this is the
+             reattach path for an existing branch, so the worktree and the session are
+             genuinely back even when dependency installation failed, and refusing the
+             resurrect would strand the session in the trash. Before BOS-984 the error
+             was dropped entirely, which left the user unable to tell "restored, deps
+             missing" from "restored cleanly".
+
+             The three failure modes stay distinguishable: a setup failure arrives here
+             on an otherwise-successful stream; a worktree failure fails the RPC with
+             CodeInternal and no terminal frame; a timeout is a transport deadline with
+             no terminal frame and a CodeDeadlineExceeded.
+      title: SessionResurrected
+      additionalProperties: false
     bossanova.v1.SessionState:
       type: string
       title: SessionState

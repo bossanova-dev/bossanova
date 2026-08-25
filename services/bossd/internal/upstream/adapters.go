@@ -202,7 +202,11 @@ type SessionCommandServer interface {
 	GetCronJob(context.Context, *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error)
 	RepairDoctor(context.Context, *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error)
 	CloseSession(context.Context, *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error)
-	ResurrectSession(context.Context, *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error)
+	// StreamResurrectSession is the streaming core of ResurrectSession
+	// (BOS-984). The reverse-stream path wants only the terminal session, so
+	// the adapter below passes a collecting emit and drops the setup-output
+	// frames — ProxyResurrectSession is unary and its shapes are unchanged.
+	StreamResurrectSession(ctx context.Context, msg *pb.ResurrectSessionRequest, emit func(*pb.ResurrectSessionResponse) error) error
 	RemoveSession(context.Context, *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error)
 	EmptyTrash(context.Context, *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error)
 }
@@ -412,11 +416,23 @@ func (a *CommandHandlerAdapter) ResurrectSession(ctx context.Context, sessionID 
 	if a.Commands == nil {
 		return nil, errors.New("resurrect: command server not wired")
 	}
-	resp, err := a.Commands.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sessionID}))
+	var sess *pb.Session
+	err := a.Commands.StreamResurrectSession(ctx, &pb.ResurrectSessionRequest{Id: sessionID},
+		func(resp *pb.ResurrectSessionResponse) error {
+			// Last terminal frame wins; setup_output frames are progress the
+			// unary proxy has nowhere to put.
+			if r := resp.GetSessionResurrected(); r != nil {
+				sess = r.GetSession()
+			}
+			return nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("resurrect session: %w", err)
 	}
-	return resp.Msg.GetSession(), nil
+	if sess == nil {
+		return nil, errors.New("resurrect session: stream ended without a resurrected session")
+	}
+	return sess, nil
 }
 
 // RemoveSession implements SessionCommandHandler.RemoveSession.

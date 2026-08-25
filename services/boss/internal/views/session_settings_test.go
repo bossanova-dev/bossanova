@@ -103,7 +103,7 @@ func (s *stubSessionSettingsClient) RefreshSessionPR(context.Context, *pb.Refres
 func (s *stubSessionSettingsClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ResurrectSession(context.Context, string) (*pb.Session, error) {
+func (s *stubSessionSettingsClient) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {

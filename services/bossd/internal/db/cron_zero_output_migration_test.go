@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // cronZeroOutputVersion is the goose timestamp of the BOS-563 migration that
@@ -78,14 +78,14 @@ func TestCronZeroOutputMigrationDown(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := migrate.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("run up to %d: %v", cronZeroOutputVersion, err)
 	}
 	if _, ok := tableColumns(t, db, "cron_jobs")["is_zero_output"]; !ok {
 		t.Fatal("is_zero_output missing before down")
 	}
 
-	if err := migrate.RunDownTo(db, migrations, preCronZeroOutputVersion); err != nil {
+	if err := dbtest.RunDownTo(db, migrations, preCronZeroOutputVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	if _, ok := tableColumns(t, db, "cron_jobs")["is_zero_output"]; ok {
@@ -94,7 +94,7 @@ func TestCronZeroOutputMigrationDown(t *testing.T) {
 
 	// Re-applying must succeed — a Down that leaves the table in a shape the Up
 	// cannot re-enter is not actually reversible.
-	if err := migrate.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("re-run up after down: %v", err)
 	}
 	if _, ok := tableColumns(t, db, "cron_jobs")["is_zero_output"]; !ok {
@@ -117,13 +117,13 @@ func TestCronZeroOutputMigrationBackfillsExistingRow(t *testing.T) {
 		t.Fatalf("open in-memory db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("run up to %d: %v", cronZeroOutputVersion, err)
 	}
 	repo := createTestRepo(t, NewRepoStore(db))
 
 	// Roll back to before BOS-563 so the column genuinely does not exist.
-	if err := migrate.RunDownTo(db, migrations, preCronZeroOutputVersion); err != nil {
+	if err := dbtest.RunDownTo(db, migrations, preCronZeroOutputVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	if _, ok := tableColumns(t, db, "cron_jobs")["is_zero_output"]; ok {
@@ -141,10 +141,10 @@ func TestCronZeroOutputMigrationBackfillsExistingRow(t *testing.T) {
 
 	// Now apply BOS-563 on top of the existing row, then continue to the current
 	// schema before reading through the current store implementation.
-	if err := migrate.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
+	if err := dbtest.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("re-run up after down: %v", err)
 	}
-	if err := migrate.Run(db, migrations); err != nil {
+	if err := dbtest.Run(db, migrations); err != nil {
 		t.Fatalf("run remaining migrations after BOS-563: %v", err)
 	}
 

@@ -705,7 +705,7 @@ func (s *stubRepoClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRR
 func (s *stubRepoClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ResurrectSession(context.Context, string) (*pb.Session, error) {
+func (s *stubRepoClient) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {

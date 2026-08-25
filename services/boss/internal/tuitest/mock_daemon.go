@@ -109,6 +109,12 @@ type MockDaemon struct {
 	createSessionScript     []*pb.CreateSessionResponse
 	createSessionFrameDelay time.Duration
 
+	// resurrectSetupLines / resurrectFrameDelay / resurrectSetupError script the
+	// streaming ResurrectSession response (BOS-984).
+	resurrectSetupLines []string
+	resurrectFrameDelay time.Duration
+	resurrectSetupError string
+
 	// updateSessionCalls records every UpdateSession request so tests can
 	// assert the TUI sent the expected title / field updates.
 	updateSessionCalls []*pb.UpdateSessionRequest
@@ -973,16 +979,58 @@ func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.A
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
 }
 
-func (m *MockDaemon) ResurrectSession(_ context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
+// ResurrectSession is server-streaming (BOS-984). It replays any scripted
+// progress lines, then the terminal SessionResurrected frame.
+func (m *MockDaemon) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest], stream *connect.ServerStream[pb.ResurrectSessionResponse]) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	lines := append([]string(nil), m.resurrectSetupLines...)
+	frameDelay := m.resurrectFrameDelay
+	setupError := m.resurrectSetupError
+	var target *pb.Session
 	for _, s := range m.sessions {
 		if s.Id == req.Msg.Id {
-			s.ArchivedAt = nil
-			return connect.NewResponse(&pb.ResurrectSessionResponse{Session: s}), nil
+			target = s
+			break
 		}
 	}
-	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+	m.mu.Unlock()
+
+	if target == nil {
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+	}
+
+	for _, line := range lines {
+		if frameDelay > 0 {
+			select {
+			case <-time.After(frameDelay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err := stream.Send(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: line},
+		}}); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	target.ArchivedAt = nil
+	m.mu.Unlock()
+
+	return stream.Send(&pb.ResurrectSessionResponse{Event: &pb.ResurrectSessionResponse_SessionResurrected{
+		SessionResurrected: &pb.SessionResurrected{Session: target, SetupError: setupError},
+	}})
+}
+
+// SetResurrectScript arranges the setup-output lines (and optional per-frame
+// delay and non-fatal setup error) the next ResurrectSession stream replays.
+func (m *MockDaemon) SetResurrectScript(lines []string, frameDelay time.Duration, setupError string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resurrectSetupLines = append([]string(nil), lines...)
+	m.resurrectFrameDelay = frameDelay
+	m.resurrectSetupError = setupError
 }
 
 func (m *MockDaemon) RemoveSession(_ context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {

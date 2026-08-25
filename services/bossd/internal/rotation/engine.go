@@ -76,6 +76,33 @@ type Signal struct {
 	// alternate), but callers that map the kind to operator-facing advice must
 	// account for it — session.recordNonRotateAudit does.
 	SuppressCooldown bool
+	// SuppressHealthFail tells the engine to select a rotation target for an
+	// AuthInvalidated signal WITHOUT recording the permanent health failure on the
+	// capped account: skip the FailHealth write only, leaving candidate selection
+	// exactly as it would otherwise be. Only consulted for AuthInvalidated signals.
+	//
+	// It exists for the respawn-in-place healer (BOS-981), which reaches this engine
+	// only AFTER an authoritative probe classified the bound account HEALTHY. That
+	// caller rotates because the bound account is administratively ineligible to host
+	// a respawn (disabled / cooling / already health-failed), not because its auth is
+	// broken, so writing health = failed would both contradict the probe and outlive
+	// the operator's remedy — re-enabling an account restores status, never health.
+	// The confirmed-401 caller leaves this false and still benches the account.
+	//
+	// Like SuppressCooldown it CAN change the outcome kind. Candidate selection is
+	// unchanged, but Kind is resolved after the write from the account list, and
+	// minFutureCooldown only counts selectable (Active + HealthOK) rows. So a bound
+	// account that is merely COOLING stays selectable here where the unsuppressed
+	// path would have benched it out of consideration: with no other eligible
+	// account the result is OutcomeAllExhausted ("all accounts cooling until …")
+	// rather than OutcomeNoEligibleAccount. That is still truthful — the account
+	// really does become selectable again at ResumeAt — but callers that map the
+	// kind to operator-facing advice must account for it.
+	//
+	// Like SuppressCooldown it is part of the single-flight key (see Decide), so a
+	// suppressing and a non-suppressing signal for the same account can never
+	// coalesce onto one another's verdict.
+	SuppressHealthFail bool
 }
 
 // OutcomeKind classifies the engine's decision.
@@ -311,7 +338,8 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 		return Outcome{Kind: OutcomeStatusOnly, CappedAccountID: sig.CappedAccountID}, nil
 	}
 
-	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t", sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown)
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t\x00%t",
+		sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown, sig.SuppressHealthFail)
 	r, err, _ := e.group.Do(key, func() (any, error) {
 		out, err := e.decide(ctx, sig)
 		return &decisionResult{outcome: out}, err
@@ -368,8 +396,12 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	err := e.accounts.DecideTx(ctx, sig.Provider, func(tx TxAccountView) error {
 		switch sig.Kind {
 		case AuthInvalidated:
-			if err := tx.FailHealth(ctx, sig.CappedAccountID); err != nil {
-				return fmt.Errorf("fail health: %w", err)
+			// BOS-981: a caller that is rotating off an ineligible-but-not-broken
+			// account suppresses this write; see Signal.SuppressHealthFail.
+			if !sig.SuppressHealthFail {
+				if err := tx.FailHealth(ctx, sig.CappedAccountID); err != nil {
+					return fmt.Errorf("fail health: %w", err)
+				}
 			}
 			out.CooldownApplied = false
 		default: // UsageLimited

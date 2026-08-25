@@ -12,6 +12,11 @@ import {
   cleanSentinel,
   cappedSentinel,
   matchSentinel,
+  DEFAULT_FIX_ROUND_SECONDS,
+  MUSTFIX_OVERRUN_ROUNDS,
+  MUSTFIX_OVERRUN_SECONDS,
+  ADMIT_FIX_ROUND_REASONS,
+  admitFixRound,
 } from './bs-review-caps.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-caps.mjs', import.meta.url))
@@ -221,6 +226,210 @@ test('CLI exits non-zero on an unknown subcommand', () => {
 })
 
 // ---------------------------------------------------------------------------
+// admitFixRound — the fix-round decision table, including the must-fix override.
+// ---------------------------------------------------------------------------
+
+/** The flagship case: past the deadline, an unattempted must-fix, overrun unspent. */
+const FLAGSHIP = Object.freeze({
+  remainingSeconds: 830,
+  fixRoundSeconds: 1200,
+  openMustFix: true,
+  unattemptedMustFix: true,
+  roundsUsed: 2,
+  maxRounds: 3,
+  overrunRoundsUsed: 0,
+})
+
+test('the overrun allowance is exactly one round', () => {
+  assert.equal(MUSTFIX_OVERRUN_ROUNDS, 1)
+  assert.equal(DEFAULT_FIX_ROUND_SECONDS, 1200)
+  // The seconds form is the REPORTED total, derived — never independently set.
+  assert.equal(MUSTFIX_OVERRUN_SECONDS, MUSTFIX_OVERRUN_ROUNDS * DEFAULT_FIX_ROUND_SECONDS)
+  // It must sit inside the caller's post-review reserve (POST_REVIEW_RESERVE_MINUTES
+  // = 25 -> 1500s), or an override round could overrun the reserve it borrows from.
+  assert.ok(MUSTFIX_OVERRUN_SECONDS <= 25 * 60, 'overrun fits inside the post-review reserve')
+})
+
+test('admitFixRound admits an unattempted must-fix past the deadline (the BOS ticket case)', () => {
+  // Before this override existed, 830 < 1200 refused the round outright and the
+  // run terminated BLOCKED naming the clock rather than the finding.
+  assert.deepEqual(admitFixRound(FLAGSHIP), { admit: true, reason: 'mustfix-override' })
+})
+
+test('admitFixRound refuses when nothing must-fix is open, whatever the budget', () => {
+  // openMustFix: false short-circuits, so a huge remainder cannot reach `within-budget`.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 5000, openMustFix: false }), {
+    admit: false,
+    reason: 'no-open-mustfix',
+  })
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 0, openMustFix: false }), {
+    admit: false,
+    reason: 'no-open-mustfix',
+  })
+})
+
+test('admitFixRound admits on budget only while carrying a finding', () => {
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 5000 }), {
+    admit: true,
+    reason: 'within-budget',
+  })
+  // Exactly the whole allowance still fits — the gate is `>=`, not `>`.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 1200 }), {
+    admit: true,
+    reason: 'within-budget',
+  })
+})
+
+test('admitFixRound treats a null remainder as NO deadline, never as zero', () => {
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: null }), {
+    admit: true,
+    reason: 'within-budget',
+  })
+  const { remainingSeconds: _omitted, ...noDeadline } = FLAGSHIP
+  assert.deepEqual(admitFixRound(noDeadline), { admit: true, reason: 'within-budget' })
+})
+
+test('admitFixRound still admits at a fully spent remainder', () => {
+  // Zero left is the case the override exists for: the finding is located,
+  // fixable, and nobody has tried yet.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 0 }), {
+    admit: true,
+    reason: 'mustfix-override',
+  })
+})
+
+test('admitFixRound spends the overrun allowance exactly once', () => {
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, overrunRoundsUsed: 1 }), {
+    admit: false,
+    reason: 'overrun-exhausted',
+  })
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, overrunRoundsUsed: 7 }), {
+    admit: false,
+    reason: 'overrun-exhausted',
+  })
+})
+
+test('admitFixRound refuses an already-attempted finding past the deadline', () => {
+  // Attempted-and-failed is a lawful terminal state; it must not buy a second allowance.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, unattemptedMustFix: false }), {
+    admit: false,
+    reason: 'all-attempted',
+  })
+})
+
+test('admitFixRound evaluates the round cap FIRST and never overrides it', () => {
+  // Every override input is maximally favorable here; the cap still wins.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, roundsUsed: 3, maxRounds: 3 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+  assert.deepEqual(
+    admitFixRound({ ...FLAGSHIP, roundsUsed: 3, maxRounds: 3, remainingSeconds: 99999 }),
+    { admit: false, reason: 'round-cap' },
+  )
+  // The cap itself stays lower-only: an inflated maxRounds cannot raise it.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, roundsUsed: 3, maxRounds: 99 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+  // A lowered cap is honored.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, roundsUsed: 1, maxRounds: 1 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+})
+
+test('admitFixRound falls back in the REFUSING direction on malformed counts', () => {
+  // A malformed round count reads as already at the cap. `undefined` is excluded
+  // deliberately: an ABSENT key is not malformed, it takes the documented default
+  // of 0 (asserted below), while an explicit `null` is an unreadable value.
+  for (const roundsUsed of ['2', 2.5, -1, Number.NaN, null, {}]) {
+    assert.deepEqual(
+      admitFixRound({ ...FLAGSHIP, roundsUsed }),
+      { admit: false, reason: 'round-cap' },
+      `roundsUsed ${String(roundsUsed)} must fail closed`,
+    )
+  }
+  // ...and a malformed overrun count reads as already spent.
+  for (const overrunRoundsUsed of ['0', 0.5, -1, Number.NaN, {}]) {
+    assert.deepEqual(
+      admitFixRound({ ...FLAGSHIP, overrunRoundsUsed }),
+      { admit: false, reason: 'overrun-exhausted' },
+      `overrunRoundsUsed ${String(overrunRoundsUsed)} must fail closed`,
+    )
+  }
+  // A malformed remainder reads as spent, so it must EARN the bounded override
+  // rather than being granted free `within-budget` admission.
+  for (const remainingSeconds of ['5000', Number.NaN, Number.POSITIVE_INFINITY, -5, {}]) {
+    assert.deepEqual(
+      admitFixRound({ ...FLAGSHIP, remainingSeconds, overrunRoundsUsed: 1 }),
+      { admit: false, reason: 'overrun-exhausted' },
+      `remainingSeconds ${String(remainingSeconds)} must not grant free admission`,
+    )
+  }
+  // A malformed round price falls back to the documented default.
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 1199, fixRoundSeconds: 0 }), {
+    admit: true,
+    reason: 'mustfix-override',
+  })
+  assert.deepEqual(admitFixRound({ ...FLAGSHIP, remainingSeconds: 1201, fixRoundSeconds: 'x' }), {
+    admit: true,
+    reason: 'within-budget',
+  })
+  // An absent count is not a malformed one: it takes the documented default of 0.
+  const { roundsUsed: _r, overrunRoundsUsed: _o, ...absent } = FLAGSHIP
+  assert.deepEqual(admitFixRound(absent), { admit: true, reason: 'mustfix-override' })
+  // No input at all must not admit — nothing is open, so there is nothing to buy.
+  assert.deepEqual(admitFixRound(), { admit: false, reason: 'no-open-mustfix' })
+  assert.deepEqual(admitFixRound({}), { admit: false, reason: 'no-open-mustfix' })
+})
+
+test('every reason in the closed set is reachable, and nothing outside it is returned', () => {
+  const reached = new Set()
+  for (const input of [
+    { ...FLAGSHIP, remainingSeconds: 5000 },
+    FLAGSHIP,
+    { ...FLAGSHIP, openMustFix: false },
+    { ...FLAGSHIP, unattemptedMustFix: false },
+    { ...FLAGSHIP, overrunRoundsUsed: 1 },
+    { ...FLAGSHIP, roundsUsed: 3 },
+  ]) {
+    const { admit, reason } = admitFixRound(input)
+    assert.equal(typeof admit, 'boolean')
+    assert.ok(ADMIT_FIX_ROUND_REASONS.includes(reason), `reason ${reason} is in the closed set`)
+    reached.add(reason)
+  }
+  assert.deepEqual([...reached].sort(), [...ADMIT_FIX_ROUND_REASONS].sort())
+})
+
+test('CLI `admit-fix-round` prints the same decision the function returns', () => {
+  const r = runCli(['admit-fix-round', JSON.stringify(FLAGSHIP)])
+  assert.equal(r.status, 0)
+  assert.deepEqual(JSON.parse(r.stdout), admitFixRound(FLAGSHIP))
+  // JSON `null` survives as "no deadline", not as 0.
+  const noDeadline = runCli([
+    'admit-fix-round',
+    JSON.stringify({ ...FLAGSHIP, remainingSeconds: null }),
+  ])
+  assert.deepEqual(JSON.parse(noDeadline.stdout), { admit: true, reason: 'within-budget' })
+})
+
+test('CLI `admit-fix-round` rejects a missing or non-object argument', () => {
+  for (const args of [
+    ['admit-fix-round'],
+    ['admit-fix-round', 'not json'],
+    ['admit-fix-round', '[]'],
+    ['admit-fix-round', 'null'],
+    ['admit-fix-round', '3'],
+  ]) {
+    const r = runCli(args)
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /requires one JSON object argument/)
+    assert.equal(r.stdout, '')
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Skill-file byte-stability guard — the sentinels the emitter prints must stay
 // byte-identical in the boss-review skill that documents them.
 // ---------------------------------------------------------------------------
@@ -249,6 +458,23 @@ test(
     assert.ok(
       skill.includes('bs-review clean: no changes to review.'),
       'empty-diff clean variant present in boss-review SKILL.md',
+    )
+    // The overrun constants live in two places by necessity — this module (the
+    // decision table) and the skill's `## Caller deadline` constants block (the
+    // prose an agent reads). Pin them against each other so they cannot drift.
+    assert.ok(
+      skill.includes(`MUSTFIX_OVERRUN_ROUNDS  = ${MUSTFIX_OVERRUN_ROUNDS}`),
+      'MUSTFIX_OVERRUN_ROUNDS agrees with the boss-review constants block',
+    )
+    assert.ok(
+      skill.includes(
+        `* 60          # = ${DEFAULT_FIX_ROUND_SECONDS} — the unit the comparison uses`,
+      ),
+      'DEFAULT_FIX_ROUND_SECONDS agrees with the boss-review constants block',
+    )
+    assert.ok(
+      skill.includes(`# = ${MUSTFIX_OVERRUN_SECONDS} — the reported total`),
+      'MUSTFIX_OVERRUN_SECONDS agrees with the boss-review constants block',
     )
   },
 )

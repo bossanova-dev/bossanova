@@ -157,7 +157,7 @@ func (s *chatPickerStub) RefreshSessionPR(context.Context, *pb.RefreshSessionPRR
 func (s *chatPickerStub) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ResurrectSession(context.Context, string) (*pb.Session, error) {
+func (s *chatPickerStub) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {

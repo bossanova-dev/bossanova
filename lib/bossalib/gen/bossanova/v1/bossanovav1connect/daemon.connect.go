@@ -299,7 +299,19 @@ type DaemonServiceClient interface {
 	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
-	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
+	// ResurrectSession re-creates the archived session's worktree, runs the
+	// repo's setup script in it, and restarts the agent. Server-streaming for
+	// the same reason CreateSession is (BOS-984): the setup script alone may run
+	// for gitpkg.SetupScriptTimeout (5 minutes), and no unary response can
+	// outlast the daemon's own http.Server WriteTimeout (120s) — so a slow setup
+	// returned deadline_exceeded against a daemon that was working perfectly.
+	//
+	// This RPC is bossd-local. The versioned surface bosso serves is
+	// OrchestratorService.ProxyResurrectSession, whose request/response shapes
+	// are deliberately unchanged by this conversion, so no apiversion bump is
+	// owed (lib/bossalib/apiversion is installed only on the orchestrator
+	// handler; see the note in server.go's StreamCreateSession).
+	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.ServerStreamForClient[v1.ResurrectSessionResponse], error)
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
 	// Claude chat tracking
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
@@ -1177,8 +1189,8 @@ func (c *daemonServiceClient) ArchiveSession(ctx context.Context, req *connect.R
 }
 
 // ResurrectSession calls bossanova.v1.DaemonService.ResurrectSession.
-func (c *daemonServiceClient) ResurrectSession(ctx context.Context, req *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error) {
-	return c.resurrectSession.CallUnary(ctx, req)
+func (c *daemonServiceClient) ResurrectSession(ctx context.Context, req *connect.Request[v1.ResurrectSessionRequest]) (*connect.ServerStreamForClient[v1.ResurrectSessionResponse], error) {
+	return c.resurrectSession.CallServerStream(ctx, req)
 }
 
 // EmptyTrash calls bossanova.v1.DaemonService.EmptyTrash.
@@ -1466,7 +1478,19 @@ type DaemonServiceHandler interface {
 	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
-	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
+	// ResurrectSession re-creates the archived session's worktree, runs the
+	// repo's setup script in it, and restarts the agent. Server-streaming for
+	// the same reason CreateSession is (BOS-984): the setup script alone may run
+	// for gitpkg.SetupScriptTimeout (5 minutes), and no unary response can
+	// outlast the daemon's own http.Server WriteTimeout (120s) — so a slow setup
+	// returned deadline_exceeded against a daemon that was working perfectly.
+	//
+	// This RPC is bossd-local. The versioned surface bosso serves is
+	// OrchestratorService.ProxyResurrectSession, whose request/response shapes
+	// are deliberately unchanged by this conversion, so no apiversion bump is
+	// owed (lib/bossalib/apiversion is installed only on the orchestrator
+	// handler; see the note in server.go's StreamCreateSession).
+	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest], *connect.ServerStream[v1.ResurrectSessionResponse]) error
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
 	// Claude chat tracking
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
@@ -1826,7 +1850,7 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ArchiveSession")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceResurrectSessionHandler := connect.NewUnaryHandler(
+	daemonServiceResurrectSessionHandler := connect.NewServerStreamHandler(
 		DaemonServiceResurrectSessionProcedure,
 		svc.ResurrectSession,
 		connect.WithSchema(daemonServiceMethods.ByName("ResurrectSession")),
@@ -2393,8 +2417,8 @@ func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connec
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ArchiveSession is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResurrectSession is not implemented"))
+func (UnimplementedDaemonServiceHandler) ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest], *connect.ServerStream[v1.ResurrectSessionResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResurrectSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error) {

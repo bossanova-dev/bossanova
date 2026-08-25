@@ -35,6 +35,51 @@ type fakeFailover struct {
 	currentBearerID   string
 	lastKind          rotation.SignalKind
 	lastTrigger       string
+
+	// repairMu guards the pane-repair recording only. The unknown-token repair
+	// path (BOS-982) is the one seam a test drives from several goroutines at
+	// once (a retrying pane is concurrent by nature), so its counters need to be
+	// race-clean even though the rest of this fake is single-threaded.
+	repairMu      sync.Mutex
+	repairCalls   []repairCall
+	repairHandled bool
+	repairErr     error
+	// repairEntered/repairBlock let a test wedge the repair seam: RepairProxyPane
+	// signals entry and then blocks until the test releases it. That is how the
+	// 401 is proved to be written WITHOUT waiting on the repair (BOS-982).
+	repairEntered chan struct{}
+	repairBlock   chan struct{}
+}
+
+// repairCall records one RepairProxyPane invocation. The token is recorded so a
+// test can assert the proxy forwards the PRESENTED token (the pane's own baked
+// value is what the real implementation compares it against).
+type repairCall struct {
+	sessionID      string
+	agentSessionID string
+	token          string
+}
+
+func (f *fakeFailover) RepairProxyPane(_ context.Context, sessionID, agentSessionID, token string) (bool, error) {
+	f.repairMu.Lock()
+	f.repairCalls = append(f.repairCalls, repairCall{sessionID: sessionID, agentSessionID: agentSessionID, token: token})
+	entered, block := f.repairEntered, f.repairBlock
+	handled, err := f.repairHandled, f.repairErr
+	f.repairMu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if block != nil {
+		<-block
+	}
+	return handled, err
+}
+
+// repairs returns a copy of the recorded pane-repair dispatches.
+func (f *fakeFailover) repairs() []repairCall {
+	f.repairMu.Lock()
+	defer f.repairMu.Unlock()
+	return append([]repairCall(nil), f.repairCalls...)
 }
 
 func (f *fakeFailover) PrepareFailover(_ context.Context, _ string, status int) (session.FailoverResult, error) {
@@ -1691,7 +1736,7 @@ func TestProxy_unknownToken_selfIdentifying(t *testing.T) {
 		t.Fatalf("unknown_token events = %d, want 1:\n%s", len(evs), buf.String())
 	}
 	e := evs[0]
-	if e["token_fingerprint"] != tokenFingerprint(bogus) {
+	if e["token_fingerprint"] != string(tokenFingerprint(bogus)) {
 		t.Fatalf("fingerprint = %v, want %s", e["token_fingerprint"], tokenFingerprint(bogus))
 	}
 	if e["path"] != "/v1/messages" {

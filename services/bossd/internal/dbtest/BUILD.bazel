@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dbtest",
+    srcs = ["dbtest.go"],
+    importpath = "github.com/recurser/bossd/internal/dbtest",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/migrate",
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/migrations",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+go_test(
+    name = "dbtest_test",
+    srcs = ["dbtest_test.go"],
+    embed = [":dbtest"],
+    deps = ["//services/bossd/migrations"],
+)

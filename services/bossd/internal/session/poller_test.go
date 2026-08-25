@@ -493,6 +493,29 @@ func (s *syncBuf) String() string {
 	return s.buf.String()
 }
 
+// waitForBoundedPolls blocks until the hung provider has recorded at least want
+// GetPRStatus calls and the poller has logged at least one timeout warning.
+//
+// Both conditions are exactly what the caller asserts afterwards, so an outcome
+// that never arrives still fails the test -- just at the deadline rather than
+// instantly.
+func waitForBoundedPolls(t *testing.T, vp *hungVCSProvider, logBuf *syncBuf, want int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		calls := atomic.LoadInt64(&vp.prStatusCalls)
+		logged := strings.Contains(logBuf.String(), "exceeded timeout")
+		if calls >= want && logged {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d bounded poll iterations: GetPRStatus calls = %d, timeout warning logged = %t", want, calls, logged)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPollerPollTimeoutBoundsHungProvider(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -517,8 +540,13 @@ func TestPollerPollTimeoutBoundsHungProvider(t *testing.T) {
 	poller := NewPoller(sessions, repos, vp, 25*time.Millisecond, 20*time.Millisecond, logger)
 	_ = poller.Run(ctx)
 
-	// Wait long enough for >=2 ticks to have fired and timed out.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the observable outcome instead of a fixed settle delay. Two
+	// GetPRStatus calls prove a second tick fired after the first poll's budget
+	// expired, and the warning proves that poll bounded itself rather than
+	// returning early. A flat 200ms sleep was both slower (paid every run) and
+	// weaker: on a loaded machine the assertions below could read a single
+	// recorded call and fail spuriously.
+	waitForBoundedPolls(t, vp, &logBuf, 2)
 	cancel()
 	<-poller.Done()
 

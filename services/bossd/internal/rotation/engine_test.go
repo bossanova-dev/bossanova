@@ -982,6 +982,48 @@ func TestDecideConcurrentSuppressionDoesNotCoalesce(t *testing.T) {
 	}
 }
 
+// TestDecideAuthInvalidatedSuppressHealthFail pins the BOS-981 seam: the respawn
+// healer rotates off an account that is merely ineligible to host a respawn — its auth
+// was just probed HEALTHY — so it must get a target WITHOUT the permanent health
+// failure the confirmed-401 caller writes. Selection is otherwise unchanged.
+func TestDecideAuthInvalidatedSuppressHealthFail(t *testing.T) {
+	ok := models.AccountHealthOK
+	active := models.AccountStatusActive
+
+	a := mkAcct("A", 0, ok, active, nil, tp(-3*time.Hour))
+	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
+	store := newFakeStore(a, b)
+	eng := newEngineForTest(store)
+
+	out, err := eng.Decide(context.Background(), Signal{
+		Provider: claude, CappedAccountID: "A", Kind: AuthInvalidated,
+		RotationCapable: true, SuppressHealthFail: true,
+	})
+	if err != nil {
+		t.Fatalf("Decide error: %v", err)
+	}
+	if a.Health != ok {
+		t.Fatalf("A.Health = %v, want unchanged (%v): SuppressHealthFail must skip the write", a.Health, ok)
+	}
+	if a.CooldownUntil != nil {
+		t.Fatalf("A.CooldownUntil = %v, want nil", a.CooldownUntil)
+	}
+	if out.NextAccount == nil || out.NextAccount.ID != "B" {
+		t.Fatalf("NextAccount = %v, want B (selection must be unaffected)", out.NextAccount)
+	}
+
+	// The flag is part of the single-flight key, so a later NON-suppressing signal for
+	// the same account must not be served the suppressing verdict: it still benches A.
+	if _, err := eng.Decide(context.Background(), Signal{
+		Provider: claude, CappedAccountID: "A", Kind: AuthInvalidated, RotationCapable: true,
+	}); err != nil {
+		t.Fatalf("second Decide error: %v", err)
+	}
+	if a.Health != models.AccountHealthFailed {
+		t.Fatalf("A.Health = %v, want failed for the non-suppressing signal", a.Health)
+	}
+}
+
 func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
 	ok := models.AccountHealthOK
 	active := models.AccountStatusActive

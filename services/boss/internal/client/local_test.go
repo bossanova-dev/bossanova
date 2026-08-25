@@ -126,10 +126,14 @@ func (f *fakeDaemonRPC) ArchiveSession(_ context.Context, _ *connect.Request[pb.
 	})
 }
 
-func (f *fakeDaemonRPC) ResurrectSession(_ context.Context, _ *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
-	return sessionResp(f, func() *pb.ResurrectSessionResponse {
-		return &pb.ResurrectSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
-	})
+func (f *fakeDaemonRPC) ResurrectSession(_ context.Context, _ *connect.Request[pb.ResurrectSessionRequest]) (*connect.ServerStreamForClient[pb.ResurrectSessionResponse], error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	// A real *connect.ServerStreamForClient cannot be constructed outside the
+	// connect package, so the success path here is only reachable through the
+	// full round-trip tests; the wrapper table below exercises the error leg.
+	return nil, errors.New("streaming resurrect is exercised via the connect round-trip tests")
 }
 
 func (f *fakeDaemonRPC) EmptyTrash(_ context.Context, _ *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
@@ -185,7 +189,6 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 			return c.RefreshSessionPR(ctx, &pb.RefreshSessionPRRequest{Id: &id})
 		}},
 		{"ArchiveSession", func(c *LocalClient) (*pb.Session, error) { return c.ArchiveSession(ctx, "id") }},
-		{"ResurrectSession", func(c *LocalClient) (*pb.Session, error) { return c.ResurrectSession(ctx, "id") }},
 	}
 
 	for _, w := range wrappers {

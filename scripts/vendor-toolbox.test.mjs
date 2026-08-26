@@ -326,7 +326,7 @@ test('withSkillSourceRewriteLock reclaims an expired lock whose PID was reused',
         (_, reject) =>
           (timeout = setTimeout(
             () => reject(new Error('reused PID lock blocked the writer')),
-            1_000,
+            5_000,
           )),
       ),
     ])

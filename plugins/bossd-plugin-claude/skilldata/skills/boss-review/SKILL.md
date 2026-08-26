@@ -36,7 +36,10 @@ degrades to "whole-branch rounds only," never to "these files go unreviewed."
 Per [the core methodology](references/core-methodology.md): every reviewer (lens or round)
 runs in a **fresh, read-only subagent** and **returns findings JSON only** — the orchestrator
 owns aggregation, the fix-loop, and all commits; **await every subagent** (never
-`run_in_background`) through this core's vendored `toolbox/bs-dispatch-await.mjs` contract. The Bossanova-specific operational rules on top of that core:
+`run_in_background`) through this core's vendored `toolbox/bs-dispatch-await.mjs` contract. The
+agent binding is neutral: Claude uses awaited `Task` calls, while Codex uses `spawn_agent` and
+`wait_agent`; inline execution is only a documented fallback and must write a ledger line naming the
+tier and reason. The Bossanova-specific operational rules on top of that core:
 
 - **Non-fatal inside boss-build.** A round extension error never aborts the run — it is
   recorded as a skipped round and the pipeline continues. `boss-review` only fixes what it can
@@ -94,6 +97,7 @@ _20 seconds_ remain, a factor-of-60 inversion of the guarantee this cap exists t
 ```
 DEADLINE_LEG_MINUTES =  5   # one awaited dispatch leg: a batch of parallel read-only subagents
 DEADLINE_LEG_SECONDS = DEADLINE_LEG_MINUTES * 60    # = 300  — the unit the comparison uses
+STEP_6C_INITIAL_LEGS = 3   # boss-build prices Step 6c as this many initial dispatch legs
 
 FIX_ROUND_MINUTES = 10   # step 1: the fix subagent — fix + its module tests/lint
                   + 10   # step 2: the confirming Phase R pass over the newly-changed files
@@ -259,8 +263,8 @@ expiry, treat it exactly as a Tier-1 expiry: record `<phase> tier <n>: skipped (
 ledger and continue to the next tier, or, when no tier remains, exit through the capped report below.
 
 **Know what this bound is, and what it is not.** The dispatch call exposes no timeout argument — its
-signature is `description` / `isolation` / `model` / `prompt` / `run_in_background` / `subagent_type`
-— and an awaited dispatch cannot be preempted. So neither `LEG_TIMEOUT_SECONDS` nor Tier 1's
+signature is `description` / `isolation` / `model` / `prompt` / `subagent_type` — and an awaited
+dispatch cannot be preempted. So neither `LEG_TIMEOUT_SECONDS` nor Tier 1's
 `BOSS_SKILL_EXTENSION_TIMEOUT_MS` can **stop** a worker that ignores it: both are **cooperative**
 budgets. Do not read either as a hard kill, and do not try to "strengthen" this with an external
 watchdog — an awaited call blocks the orchestrator, so there is nothing left running to fire one.
@@ -276,9 +280,18 @@ more than a stronger-sounding one: what this gate must never become is an admiss
 cap's name, refusing to _start_ an overrun while doing nothing to shorten one, which is the
 "advertised cap that is unenforceable" this section opens by rejecting.
 
-The legs, each with its `LEG_SECONDS`:
+The legs, each with its `LEG_SECONDS`, are now expressed as pre-report barriers and additional legs.
+The pre-report barriers, each with its `LEG_SECONDS`:
 
-- **Phase 1** — the matched specialist lens Tier-1 dispatches → `DEADLINE_LEG_SECONDS`.
+- **Barrier 1** — the matched specialist lens Tier-1 dispatches, the Phase R Tier-1
+  round-extension dispatches, and every Phase D entry whose capability no discovered round
+  descriptor declares, assembled as one roster and planned through `planBatches` →
+  `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS` while Phase D entries remain in it. If that surcharge
+  gate refuses, drop only Phase D with `Phase D: skipped (caller deadline)` and re-gate the
+  guaranteed Phase 1/Phase R roster at `DEADLINE_LEG_SECONDS`.
+- **Barrier 2** — the suppressible Phase D entries that remain after round-extension outcomes are
+  settled → `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS`. Suppression keys on a round extension having
+  run successfully, never on the descriptor merely being present.
 - **Phase 1 Tier 2** — the entry's `skill` reviewer is an **additional** leg, dispatched only for a
   lens whose bound extension produced nothing, so it is gated again on its own entry →
   `DEADLINE_LEG_SECONDS`. A Tier-1 batch that ran to its timeout can leave the allowance spent
@@ -289,6 +302,10 @@ The legs, each with its `LEG_SECONDS`:
 - **Phase R Tier 2 / Tier 3** — the host-native and inline-rubric fallbacks are **additional** legs,
   run only when the tier above produced nothing, so each is gated again on its own entry →
   `DEADLINE_LEG_SECONDS`. The check that admitted Tier 1 does not cover them.
+- **Non-guaranteed round-role dispatches** — capped by
+  `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-dispatched-round '<json>'`; guaranteed
+  whole-branch passes are admitted before the cap is evaluated, so the cap cannot reduce Phase R's
+  coverage.
 - **Phase 6** — each fix→confirm round → `FIX_ROUND_SECONDS`, subject to the single bounded
   must-fix override above; it is the only leg that has one.
 - **Phase 8** — each post-terminal notes-extension dispatch, in a repository that opted in by
@@ -319,7 +336,9 @@ go straight to Phase 7 and exit through the **capped report** — `status: "capp
 `bs-review capped:` sentinel. The caller deadline is the disposition for the skipped leg, not for an
 open must-fix: record still-open must-fixes under the terminal-state rules below, so the caller
 publishes a reduced pass rather than a clean one. A run that dispatched no reviewer at all still
-reports honestly through that path; it never reports `clean`.
+reports honestly through that path; it never reports `clean`. When the caller provided a sentinel
+payload reason such as `funding-starved`, carry that reason in the report metadata and rendered
+summary; do not alter the byte-stable sentinel line.
 
 **What a terminal state with an open must-fix is allowed to say.** Reaching a terminal state while a
 must-fix is still open is lawful, but only for a reason that is about the finding. Name the finding —
@@ -429,6 +448,10 @@ BASE="${BASE:-main}"   # symbolic-ref|sed exits 0 on empty input, so guard the E
 git fetch origin "$BASE" --quiet || true
 MERGE_BASE=$(git merge-base "origin/$BASE" HEAD 2>/dev/null || git merge-base "$BASE" HEAD)
 CHANGED=$(git diff --name-only "$MERGE_BASE..HEAD")
+if [ -z "$CHANGED" ]; then
+  echo "bs-review clean: no changes to review."
+  exit 0
+fi
 HOST_AGENT="${BOSS_AGENT:-$(if [ -n "$CLAUDECODE" ]; then echo claude; else echo codex; fi)}"
 if [ -z "${BOSS_SKILLS_HOME:-}" ]; then
   for candidate in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
@@ -446,6 +469,40 @@ LENS_REGISTRY_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-typ
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-review.XXXXXX")
 printf '%s\n' "$LENSES_JSON" | node --input-type=module -e 'let input = ""; for await (const chunk of process.stdin) input += chunk; const lenses = JSON.parse(input); if (!Array.isArray(lenses)) throw new Error("matched lenses must be an array"); process.stdout.write(JSON.stringify(lenses.map(({ skill }) => ({ skill }))))' > "$RUN_TMP/lens-entries.json"
 printf '[]\n' > "$RUN_TMP/expected-reviewer-outputs.json"
+printf '[]\n' > "$RUN_TMP/dispatch-batches.json"
+ROUNDS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role round --json)
+if [ "${BOSS_REVIEW_DEFAULT_ROUNDS:-1}" = "0" ]; then
+  DEFAULT_ROUNDS_JSON='[]'
+else
+  DEFAULT_ROUNDS_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, reviewDefaultRounds } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(reviewDefaultRounds(loadSkillConfig())))')
+fi
+RUN_ID="${RUN_ID:-$(date +%s)-$$}"
+case "$RUN_ID" in
+  ""|.|..|*/*|*\\*) echo "BLOCKED: boss-review RUN_ID must be one filename component"; exit 1 ;;
+esac
+BOSS_REVIEW_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+BOSS_REVIEW_LEDGER_CONFIG_DIR="$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { posix } from "node:path"; import { pathToFileURL } from "node:url"; const { loadSkillConfig, reviewLedgerConfig } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(posix.normalize(reviewLedgerConfig(loadSkillConfig()).dir))')"
+case "$BOSS_REVIEW_LEDGER_CONFIG_DIR" in
+  .git)
+    BOSS_REVIEW_LEDGER_DIR="$(git rev-parse --path-format=absolute --git-dir)"
+    BOSS_REVIEW_LEDGER_TRUST_ROOT="$BOSS_REVIEW_LEDGER_DIR"
+    ;;
+  .git/*)
+    BOSS_REVIEW_LEDGER_DIR="$(git rev-parse --git-path "${BOSS_REVIEW_LEDGER_CONFIG_DIR#.git/}")"
+    BOSS_REVIEW_LEDGER_TRUST_ROOT="$(git rev-parse --path-format=absolute --git-dir)"
+    ;;
+  *)
+    BOSS_REVIEW_LEDGER_DIR="$BOSS_REVIEW_REPO_ROOT/$BOSS_REVIEW_LEDGER_CONFIG_DIR"
+    BOSS_REVIEW_LEDGER_TRUST_ROOT="$BOSS_REVIEW_REPO_ROOT"
+    ;;
+esac
+BOSS_REVIEW_LEDGER_PATH="$BOSS_REVIEW_LEDGER_DIR/ledger-$RUN_ID.json"
+BOSS_REVIEW_LEDGER_TRUST_ROOT="$BOSS_REVIEW_LEDGER_TRUST_ROOT" BOSS_REVIEW_LEDGER_DIR="$BOSS_REVIEW_LEDGER_DIR" node --input-type=module -e 'import { existsSync, lstatSync, realpathSync } from "node:fs"; import { dirname, isAbsolute, relative, resolve, sep } from "node:path"; const fail = (message) => { console.error(`BLOCKED: ${message}`); process.exit(1) }; const root = realpathSync(process.env.BOSS_REVIEW_LEDGER_TRUST_ROOT); const target = resolve(process.env.BOSS_REVIEW_LEDGER_DIR); const staysInside = (path) => { const rel = relative(root, path); return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)); }; if (!staysInside(target)) fail("boss-review ledger dir must stay within its trust root"); let existing = target; while (!existsSync(existing)) { const parent = dirname(existing); if (parent === existing) fail("boss-review ledger dir has no existing parent"); existing = parent; } if (!staysInside(realpathSync(existing))) fail("boss-review ledger dir resolves outside its trust root"); let cursor = root; for (const part of relative(root, existing).split(sep).filter(Boolean)) { cursor = resolve(cursor, part); if (lstatSync(cursor).isSymbolicLink()) fail("boss-review ledger dir must not pass through a symlink"); }'
+mkdir -p "$BOSS_REVIEW_LEDGER_DIR"
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" seed \
+  --run-id "$RUN_ID" \
+  --populations "$(LENSES_JSON="$LENSES_JSON" ROUNDS_JSON="$ROUNDS_JSON" DEFAULT_ROUNDS_JSON="$DEFAULT_ROUNDS_JSON" node --input-type=module -e 'const lenses=JSON.parse(process.env.LENSES_JSON), rounds=JSON.parse(process.env.ROUNDS_JSON).extensions||[], defaultRounds=JSON.parse(process.env.DEFAULT_ROUNDS_JSON); process.stdout.write(JSON.stringify({lenses,rounds,defaultRounds}))')" \
+  --out "$BOSS_REVIEW_LEDGER_PATH"
 ```
 
 Variable meanings:
@@ -485,11 +542,20 @@ Variable meanings:
 - `RUN_TMP/expected-reviewer-outputs.json` — the selected Tier 2/3 output roster. Register an
   output before dispatching its fallback reviewer; Phase 5 marks a registered but missing file as
   unread rather than treating an empty directory as a clean review.
+- `RUN_TMP/dispatch-batches.json` — the pre-dispatch roster waves written through
+  `toolbox/bs-dispatch-await.mjs` `planBatches` before each declared-parallel dispatch site. It is
+  evidence of the intended batch shape; the transcript self-audit checks whether the issued `Task`
+  calls matched that shape.
+- `BOSS_REVIEW_LEDGER_PATH` — the durable per-run dispatch ledger
+  (`<reviewLedger.dir>/ledger-<run-id>.json`), seeded pessimistically before the first dispatch
+  from matched lenses, discovered round extensions, and configured default rounds. It is outside
+  `$RUN_TMP`, so a killed or compacted run still leaves readable `not-reached` rows.
 
 **Empty-diff guard:** if `$CHANGED` is empty, print `bs-review clean: no changes to review.`
-and stop (skip every later phase).
+and stop before creating `$RUN_TMP` or `$BOSS_REVIEW_LEDGER_PATH`.
 
-Initialise the decisions ledger at `$RUN_TMP/ledger.md`:
+Initialise the human decisions ledger at `$RUN_TMP/ledger.md`; dispatch accounting lives in the
+durable JSON ledger seeded above:
 
 ```markdown
 # boss-review ledger
@@ -521,12 +587,13 @@ expertise where a dedicated review skill exists; the lens set is **data-driven**
 `$LENSES_JSON` is a JSON array of matched lenses; each entry is
 `{ "lens": "<id>", "skill": "<skill>", "fallbackRubric": "<inline rubric>", "files": [<subset>] }`.
 
-**Deadline gate.** This phase is the first expensive awaited leg, so it is the first place a caller's
-deadline can be overrun. Before dispatching anything here, apply the
-[§Caller deadline](#caller-deadline-wall-clock-cap) gate with `LEG_SECONDS=$DEADLINE_LEG_SECONDS`;
-if it fails, dispatch **no** lens and exit through the capped report described there. Apply it
-**again** before the Tier-2 fallback below: that is a second awaited dispatch, entered only after a
-Tier-1 batch has already spent this allowance, and the check that admitted Tier 1 does not cover it.
+**Deadline gate.** Phase 1 Tier 1 is admitted through Barrier 1 in
+[§Caller deadline](#caller-deadline-wall-clock-cap), together with Phase R Tier 1 and the
+unsuppressed Phase D candidates, using `DEADLINE_LEG_SECONDS` after any Phase D refusal downgrades
+the barrier to the guaranteed roster, and that barrier roster is planned with `planBatches`. Apply
+the gate **again** before the Tier-2 fallback below: that is a second awaited dispatch, entered only
+after Barrier 1 has already spent this allowance, and the check that admitted the barrier does not
+cover it.
 
 Each matched entry is resolved by a **per-lens three-tier** contract — a bound discovered lens
 extension, then the entry's `skill`, then the entry's inline `fallbackRubric` — the same precedence
@@ -591,14 +658,27 @@ two cases are:
   can ever bind it, so this is a real misconfiguration; record it as
   `lens extension <name>: unbound`.
 
-Dispatch every matched lens's resolved reviewer **in parallel** (one message, multiple `Task`
-calls), taking bound descriptors in ascending `(order, name)` order.
+Before dispatching matched lenses, build one roster node per admitted lens reviewer with `id` and
+`outPath`, then contribute those nodes to the Barrier 1 roster that writes the waves to
+`$RUN_TMP/dispatch-batches.json` through `planBatches` from `toolbox/bs-dispatch-await.mjs`, passing
+the admitted roster size as `maxWidth`. A `planBatches` wave is a width limit inside the single
+Barrier 1 gate, not a second gate. Emit exactly one message containing one `Task` call per member of
+wave 1, then, only after every member's terminal artifact is confirmed, emit the next wave. Record
+`dispatch batch <n>/<m>: <ids>` in the ledger as each wave is issued.
+
+Dispatch order inside a wave is irrelevant; deterministic `(order, name)` sorting is retained only
+for roster assembly, ledger stability, and report assembly after dispatches return.
 
 Whichever tier runs, merged findings carry the **same** `lens` value — the entry's `skill`. The tier
 that actually ran is recorded in the ledger (`lens <id>: tier1 extension <name>` / `tier2 skill
 <skill>` / `tier3 fallback-inline-rubric`) and may be repeated in the report's reviewer `note`, but
 **never** in a finding: Phase 5 dedupes on `(file, line, title)` and Phase 6 re-runs confirming
 rounds, so a tier that flips between rounds must not present itself as a different reviewer.
+The durable JSON row is named `lens:<id>` and starts as `not-reached`; update it when a tier is
+actually attempted. A readable findings file reconciles to `completed`, an exhausted tier ladder
+records `skipped`, and a dispatch that exceeded its bound records `timed-out`. Do not delete the row
+for a lens with no Tier-1 extension: that row is the evidence that the lens was discovered from
+`lensMap` and still had to be accounted for.
 
 If `$LENSES_JSON` is an **empty array**, no specialist pass runs; record
 `lenses: none (covered by whole-branch rounds)` in the ledger. The changed files are still fully
@@ -678,9 +758,24 @@ node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" validate --role lens --file "$R
 ```
 
 When validation passes, merge `items[]` into the findings pool with the entry's `skill` as each
-item's `lens` value, and record the tier taken in the ledger. When validation fails, the subagent
-errors, times out, or the file is missing, record `lens <id> extension <name>: skipped (<reason>)`
-in the ledger.
+item's `lens` value, and record the tier taken in the human ledger and durable dispatch ledger.
+When validation fails, the subagent errors, times out, or the file is missing, record
+`lens <id> extension <name>: skipped (<reason>)` in the human ledger and update the durable
+row for the matched entry with `outcome: skipped`, except a timed-out dispatch records
+`outcome: timed-out`. Preserve `not-reached` only for a row no tier reached. The durable row name is
+the same name Phase 0 seeded: `lens:<id>` when that lens id appears once in `$LENSES_JSON`, or
+`lens:<entry-index>:<id>` when duplicate matched entries share the id. Use the recorder at that
+terminal skip site:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --name "<lens-row-name>" \
+  --phase "Phase 1" \
+  --outcome skipped-or-timed-out \
+  --cause "<reason>"
+```
 
 Decide the fall-through **per lens, once every descriptor bound to it has settled** — never per
 descriptor. Discovery permits more than one descriptor to declare the same `lens`, so a
@@ -748,6 +843,8 @@ Subagent (general-purpose), AWAITED, read-only:
   each item: { "severity": "Critical|Warning|Suggestion", "file": "<path>", "line": <int|null>,
   "title": "<short>", "detail": "<why + suggested fix>", "lens": "<LENS_SKILL>" }.
   If there are no findings, write [].
+  Also write <RUN_TMP>/findings-lens-<entry-index>-<LENS_SKILL>.json.tier with `dispatched`
+  when the named skill loaded, or `inlined` when you used <LENS_FALLBACK>.
 ```
 
 `<FILE_SUBSET>` = the matched lens entry's `files` (the changed files that matched that lens's
@@ -770,15 +867,16 @@ dropped. Record the tier reached in the ledger, per the tier-recording rule abov
 
 Rounds are whole-branch review passes. Resolve them by strict precedence.
 
-**Deadline gate.** Apply the [§Caller deadline](#caller-deadline-wall-clock-cap) gate with
-`LEG_SECONDS=$DEADLINE_LEG_SECONDS` before the Tier-1 dispatch batch below — and **again** before
-Tier 2 and before Tier 3, which are extra legs run after Tier 1 has already spent its allowance. If
-a gate fails, dispatch nothing further and exit through the capped report described there.
+**Deadline gate.** Phase R Tier 1 is admitted through Barrier 1 in
+[§Caller deadline](#caller-deadline-wall-clock-cap), sharing one `planBatches` roster with Phase 1
+Tier 1 and the unsuppressed Phase D candidates; after any Phase D refusal, the guaranteed roster is
+re-gated at `DEADLINE_LEG_SECONDS`. Apply the gate **again** before Tier 2 and before Tier 3, which
+are extra legs run after Barrier 1 has already spent its allowance. If a fallback gate fails,
+dispatch nothing further and exit through the capped report described there.
 
 ```bash
 BOSS_REVIEW_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-review/toolbox"
 if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skills/boss-review/toolbox"; fi
-ROUNDS_JSON=$(node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role round --json)
 ```
 
 Record every `ROUNDS_JSON.skipped` entry whose `deliberate` is `false` as
@@ -790,10 +888,14 @@ changes control flow; the phase still degrades exactly as documented below.
 
 ### Tier 1 — repo-local round extensions
 
-If `ROUNDS_JSON.extensions` is non-empty, dispatch **every** discovered round descriptor **in
-parallel** (one message, multiple `Task` calls), exactly as Phase 1 dispatches its matched lenses.
-Parallel here means several **awaited** `Task` calls issued together; it is **not**
-`run_in_background`, which stays forbidden.
+If `ROUNDS_JSON.extensions` is non-empty, build one roster node per discovered round descriptor with
+`id` and `outPath`, then contribute those nodes to the Barrier 1 roster and write the waves to
+`$RUN_TMP/dispatch-batches.json` through `planBatches` from `toolbox/bs-dispatch-await.mjs`, passing
+the admitted roster size as `maxWidth`. Emit exactly
+one message containing one `Task` call per member of wave 1, then, only after every member's
+terminal artifact is confirmed, emit the next wave. Record `dispatch batch <n>/<m>: <ids>` in the
+ledger as each wave is issued. Parallel here means several **awaited** `Task` calls issued together;
+it is **not** `run_in_background`, which stays forbidden.
 The `(order, name)` sort is retained **only** for deterministic ledger and report assembly **after
 the dispatches return** — evidence rows and `extension <name>: skipped` lines stay byte-stable
 whatever order the rounds complete in — never for dispatch sequencing. Nothing consumes the order
@@ -870,6 +972,24 @@ instruction, not the claim above it. An individual skipped round
 is non-fatal for the run: it affects the confidence rubric and report evidence, not control flow.
 All-skipped is different — it is the one case that DOES change control flow, and Tier 2 then Tier 3
 must run (see below).
+The durable JSON row for a discovered extension is `round:<extension-name>`. A valid envelope
+reconciles it to `completed` from its `findings-round-<extension-name>.json` file; timeout writes
+`timed-out`; other terminal failures write `skipped`. If no Tier-1 extension completed and the
+fallback path runs, the `.tier` marker beside `findings-round-builtin.json` or
+`findings-round-inline.json` lets the durable ledger report `mode: dispatched` or `mode: inlined`
+for the completed fallback row rather than guessing from prose.
+Use the recorder at each terminal skip site with `--outcome timed-out` for timeouts and
+`--outcome skipped` for other terminal failures:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --name "round:<extension-name>" \
+  --phase "Phase R" \
+  --outcome "<skipped|timed-out>" \
+  --cause "<reason>"
+```
 
 When at least one Tier-1 round extension **ran successfully**, do not run Tier 2 or Tier 3. When
 **every** discovered round extension was skipped — failed to load, errored, timed out, or returned
@@ -894,6 +1014,15 @@ fallback output:
 
 ```bash
 node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" expect "$RUN_TMP/expected-reviewer-outputs.json" "findings-round-builtin.json"
+printf 'dispatched\n' > "$RUN_TMP/findings-round-builtin.json.tier"
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --name "round:builtin" \
+  --phase "Phase R" \
+  --tier "tier2" \
+  --mode dispatched \
+  --outcome not-reached
 ```
 
 ### Tier 3 — inline whole-diff rubric
@@ -917,6 +1046,15 @@ Before dispatching it, register its output:
 
 ```bash
 node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" expect "$RUN_TMP/expected-reviewer-outputs.json" "findings-round-inline.json"
+printf 'inlined\n' > "$RUN_TMP/findings-round-inline.json.tier"
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --name "round:inline" \
+  --phase "Phase R" \
+  --tier "tier3" \
+  --mode inlined \
+  --outcome not-reached
 ```
 
 ```
@@ -969,26 +1107,33 @@ probe, no dispatch — and append `default rounds: disabled (BOSS_REVIEW_DEFAULT
 ledger. Any other value, including unset, leaves Phase D enabled. This is the escape hatch for a
 repository or operator that finds the added round unhelpful; it needs no config edit.
 
-**Deadline gate.** Apply the §Caller deadline gate **once**, with
-`LEG_SECONDS=$(( DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS ))`, immediately before the single dispatch
-batch below — one leg for the whole phase, never one per capability. The surcharge is deliberate and
-is what distinguishes Phase D's gate from every other leg's: a Phase D finding is an ordinary
-must-fix, so admitting the phase commits the run to a Phase 6 round it may not be able to afford, and
-an optional add-on that forces a capped report is worse than no add-on. Buy the remediation with the
-round or do not buy the round. The must-fix override does **not** relax this. The override is a
-scarce, once-per-run allowance held for a finding the required review already located; spending it
-to remediate an optional add-on the run chose to admit without funding would consume it before the
-required work can claim it. Phase D funds its own remediation up front, exactly as before. If the gate refuses, dispatch nothing, append
+**Deadline gate.** Phase D entries first join Barrier 1 in
+[§Caller deadline](#caller-deadline-wall-clock-cap), before round-extension outcomes are known; when
+the surcharged Barrier 1 gate refuses, drop them with `Phase D: skipped (caller deadline)` and
+re-gate the guaranteed roster at plain `DEADLINE_LEG_SECONDS`. Entries still not covered after Phase
+R outcomes are settled join Barrier 2, again with `LEG_SECONDS=$(( DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS ))`.
+The surcharge is deliberate and is what distinguishes Phase D's gate from every other leg: a Phase D
+finding is an ordinary must-fix, so admitting the phase commits the run to a Phase 6 round it may not
+be able to afford, and an optional add-on that forces a capped report is worse than no add-on. Buy
+the remediation with the round or do not buy the round. The must-fix override does **not** relax
+this. The override is a scarce, once-per-run allowance held for a finding the required review already
+located; spending it to remediate an optional add-on the run chose to admit without funding would
+consume it before the required work can claim it. Phase D funds its own remediation up front, exactly
+as before. If a Phase D gate refuses, dispatch nothing for the Phase D entries, append
 `Phase D: skipped (caller deadline)` to the ledger, and continue to Phase 5 with what Phase R
-produced. Phase D does **not** exit through the
-capped report: it is optional by construction, so refusing it is a normal outcome, not a truncated
-review. Bound each dispatch by `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) and the
-`LEG_TIMEOUT_SECONDS` clamp, stated in the worker brief as a hard cooperative return-by.
+produced. Phase D does **not** exit through the capped report: it is optional by construction, so
+refusing it is a normal outcome, not a truncated review. Bound each dispatch by
+`BOSS_SKILL_EXTENSION_TIMEOUT_MS` (default `300000` ms) and the `LEG_TIMEOUT_SECONDS` clamp, stated
+in the worker brief as a hard cooperative return-by.
 
 Read the registry — the effective config's default-round list:
 
 ```bash
-DEFAULT_ROUNDS_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, reviewDefaultRounds } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(reviewDefaultRounds(loadSkillConfig())))')
+if [ "${BOSS_REVIEW_DEFAULT_ROUNDS:-1}" = "0" ]; then
+  DEFAULT_ROUNDS_JSON='[]'
+else
+  DEFAULT_ROUNDS_JSON=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, reviewDefaultRounds } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(reviewDefaultRounds(loadSkillConfig())))')
+fi
 ```
 
 Each entry is `{capability, kind, skill?}`. `capability` is an id this core knows only as an id — the
@@ -1003,7 +1148,21 @@ Walk the entries in registry order and resolve each one:
    (`ROUNDS_JSON.extensions[].capability`), drop the entry and append
    `default round <capability>: skipped (covered by extension <name>)` to the ledger. One pass, not
    two. An extension that was skipped — failed to load, errored, timed out, or returned no valid
-   envelope — does **not** cover its capability, and the entry stays admitted.
+   envelope — does **not** cover its capability, and the entry stays admitted. The durable
+   `default:<capability>` row records this as `skipped`, not `completed`: the work was covered by
+   another reviewer, but this configured default round did not run.
+
+   ```bash
+   node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" record \
+     --in "$BOSS_REVIEW_LEDGER_PATH" \
+     --out "$BOSS_REVIEW_LEDGER_PATH" \
+     --name "default:<capability>" \
+     --phase "Phase D" \
+     --tier default \
+     --outcome skipped \
+     --cause "covered by extension <name>"
+   ```
+
 2. **Probe**, by `kind`:
    - **`cross-agent`** — the capability is served by the opposite agent's CLI, `$SECOND_VOICE` from
      Phase 0. The helper's `probe` subcommand is exactly `resolveAgentBin` + `classifyProbe`, so use
@@ -1022,10 +1181,14 @@ Walk the entries in registry order and resolve each one:
      and, when it cannot, return the skip envelope below instead of findings. Never report an
      unavailable skill as an `ok: true` envelope with empty `items[]` — that shape says "this
      capability ran and found nothing", which would silently retire the round.
-3. **Dispatch** every admitted entry as **one parallel awaited batch**: a single message carrying one
-   `Task` call per entry. Parallel means several **awaited** calls issued together; `run_in_background`
-   stays forbidden. Each worker is a fresh `general-purpose` subagent, read-only — it MUST NOT mutate
-   the worktree, index, or HEAD — and writes exactly one envelope to
+3. **Dispatch** every admitted entry through the active barrier roster: build one roster node per
+   admitted default round with `id` and `outPath`, then write the waves to
+   `$RUN_TMP/dispatch-batches.json` through `planBatches` from `toolbox/bs-dispatch-await.mjs`,
+   passing the admitted roster size as `maxWidth`. Emit exactly one message carrying one `Task` call
+   per member of wave 1, then, only after every member's terminal artifact is confirmed, emit the
+   next wave. Record `dispatch batch <n>/<m>: <ids>` in the ledger as each wave is issued. Parallel
+   means several **awaited** calls issued together; `run_in_background` stays forbidden. Each worker
+   is a fresh `general-purpose` subagent, read-only — it MUST NOT mutate the worktree, index, or HEAD — and writes exactly one envelope to
    `<RUN_TMP>/findings-round-default-<capability>.json`. Exactly six placeholders in this step are
    substituted by **this phase** before the brief is handed over — `<RUN_TMP>`, `<capability>`,
    `<TOOLBOX>`, `<SECOND_VOICE>`, `<MERGE_BASE>`, `<FALSIFICATION_REFERENCE>` — the way Phase R
@@ -1141,22 +1304,42 @@ unchanged:
 }
 ```
 
+For each admitted default round, reconcile the durable `default:<capability>` row from its
+`findings-round-default-<capability>.json` file after validation. Probe failures, covered-by-extension
+drops, unloadable skills, worker errors, timeouts, and missing files all record a terminal row
+(`skipped` or `timed-out`) instead of leaving the seeded `not-reached` value in place. `not-reached`
+is reserved for a configured reviewer the run discovered but never got far enough to attempt.
+
 ## Phase 5 — Categorize
 
-Triage every round's findings through the deterministic helper rather than by hand — it dedupes on
-`(file, line, title)` **without losing the reviewer set**, which is what makes cross-reviewer
-convergence observable:
+Triage one complete review pass through the deterministic helper rather than by hand. A pass's
+`categorize` invocation runs **once per review pass** over the pooled findings from every reviewer
+dispatched into that pass directory, and only after every dispatched reviewer has either returned or
+been recorded as a ledger skip. Never categorize a partial pass, never categorize per reviewer, and
+never categorize per round extension. The helper dedupes on `(file, line, title)` **without losing
+the reviewer set**, which is what makes cross-reviewer convergence observable:
 
 ```bash
-node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" categorize "$RUN_TMP" \
+TRIAGE_JSON=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" categorize "$RUN_TMP" \
   --lens-entries-file "$RUN_TMP/lens-entries.json" \
-  --expected-outputs-file "$RUN_TMP/expected-reviewer-outputs.json"
+  --expected-outputs-file "$RUN_TMP/expected-reviewer-outputs.json")
+printf '%s\n' "$TRIAGE_JSON" | node -e 'let input = ""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => { const parsed = JSON.parse(input); process.stdout.write(JSON.stringify(parsed.invalid || [])); })' > "$RUN_TMP/invalid.json"
+CURRENT_FINDINGS_DIR="$RUN_TMP"
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" reconcile \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --findings-dir "$CURRENT_FINDINGS_DIR" \
+  --populations "$(LENSES_JSON="$LENSES_JSON" ROUNDS_JSON="$ROUNDS_JSON" DEFAULT_ROUNDS_JSON="$DEFAULT_ROUNDS_JSON" node --input-type=module -e 'const lenses=JSON.parse(process.env.LENSES_JSON), rounds=JSON.parse(process.env.ROUNDS_JSON).extensions||[], defaultRounds=JSON.parse(process.env.DEFAULT_ROUNDS_JSON); process.stdout.write(JSON.stringify({lenses,rounds,defaultRounds}))')" \
+  --invalid "$RUN_TMP/invalid.json"
 ```
 
-On a confirming round pass that round's namespaced directory (`$RUN_TMP/round<N>`) instead. The verb
-reads every `findings-*.json` directly under the directory given and prints the same `{mustFix, pool,
-invalid}` split that `triageFindings(items)` returns when the helper is imported, with `invalid`
-additionally carrying any findings file the verb could not read as a list of findings. Each group carries
+On a confirming round set `CURRENT_FINDINGS_DIR="$RUN_TMP/round<N>"` and pass that round's namespaced
+directory instead. The verb reads every `findings-*.json` directly under the directory given and prints
+{mustFix, pool, invalid, panel}: the same `{mustFix, pool, invalid}` split that `triageFindings(items)` returns
+when the helper is imported, plus a `panel` block naming the distinct reviewers that produced
+readable output, those that reported findings, those that returned none, and any rostered output that
+never arrived. A reviewer that validly returns zero findings is therefore visible as part of the
+sample behind a clean verdict rather than indistinguishable from a reviewer that never ran. Each group carries
 `{severity, file, line, title, detail, patch, patchReason, lenses, reviewerCount, promotedBy}`:
 `patch` is present only when a contributing finding supplied a mechanically applicable patch,
 `patchReason` accompanies `"patch": null`, and `severity` merged upward
@@ -1193,7 +1376,7 @@ selected after those skips, so a run is unread only when it never produces the r
   or changed logic becomes must-fix; the helper does not judge coverage.
 - **suggestion pool** = the `pool` groups the coverage override did not promote.
 - **`invalid`** = anything that did not parse against the findings contract — a malformed **item**,
-  a whole findings **file** that did not parse at all or whose top level was not a list, or a
+  a whole findings **file** the helper could not read as a list of findings, or a
   deduped **finding whose `detail` is blank on every occurrence**. That last one is judged per
   group rather than per item, because a duplicate occurrence is allowed to supply the detail: only
   once every occurrence has merged is it known that none explained the defect. A location with an
@@ -1222,8 +1405,11 @@ mechanically; judge whether they describe one defect before treating them as two
 Record each must-fix item to the ledger `## Must-fix history` as
 `- round <N> - <sev> - <file:line> - <title>`, and append the suggestion pool to
 `## Suggestions (open pool)` (deduped). If there are **zero** must-fix items **and no `invalid`
-entry is still unrepaired**, skip Phase 6 and go to Phase 7 (clean exit). A malformed item or a
-round whose reviewers' output never parsed is unresolved review evidence, not a clean round.
+entry is still unrepaired**, skip Phase 6 and go to Phase 7 (clean exit). The clean exit is
+mechanical: Phase 7 still builds `$REPORT_JSON`, and the derived verdict owner,
+`bs-review-caps.mjs verdict --in "$REPORT_JSON"`, is the only thing that may print the clean
+terminal sentinel. A malformed item or a round whose reviewers' output never parsed is unresolved
+review evidence, not a clean round.
 
 Before the normal fix-and-confirm loop, repair every unrepaired `invalid` entry through its owning
 reviewer. Re-run that reviewer against the **same round's original review surface** and replace only
@@ -1253,27 +1439,39 @@ next delta base include the fixes it is supposed to review.
 Each round:
 
 1. Partition the must-fix items into patchable and narrative work from the triage helper's
-   `patchPlan` / `patchSummary`. Apply patchable findings mechanically in the orchestrator before
-   any fix subagent is dispatched: compose overlapping patches in one file into the helper's single
-   exact replacement, re-read the current file bytes immediately before each application, require
-   `old_string` to still match exactly once, and reject rather than guess when the anchor has become
-   stale or ambiguous. Record rejected patches in `invalid` and add their findings to the narrative
-   remainder for this same round. Dispatch a fresh `general-purpose` fix subagent (awaited) **only**
-   for the narrative remainder (file:line + the requested change) and this fix discipline:
-   **adjudicate before you fix** — no
-   item may be fixed until its premise has been confirmed or falsified against the code it cites.
-   Open the cited file rather than the diff hunk, and re-derive any claimed count or affected-site
-   set from the code; a fix authored to an unchecked premise is how one round manufactures the next
-   round's finding. Then: one item at a time; no unrelated refactors; write behaviour-focused tests
-   for coverage gaps. It fixes, runs the affected module tests/lint (per the repo's test-command
-   manifest at `manifestPath(cfg)`, or its own discovery prose when that returns `null`), and
-   commits with `git commit --no-verify`. Each fixed or verified item must include a greppable
-   `anchor`: for `fixed`, the source symbol or exact substring the fix edited; for `verified`, the
-   source substring the adjudication read. A bare line number is invalid. Each item
-   ends in exactly one disposition: **fixed** (code changed) or **verified** (adjudication refuted
-   the finding — requires a recorded `rationale` **and** the `evidence` that settled it: the file
-   and lines read, or the command run and its output). Record `fixed` items to `## Fixed`; record
-   `verified` rationales **with their evidence** to `## Leave as-is`.
+   `patchPlan` / `patchSummary`. This is one fix batch for the review pass. Apply patchable findings
+   mechanically in the orchestrator before any fix subagent is dispatched: compose overlapping
+   patches in one file into the helper's single exact replacement, re-read the current file bytes
+   immediately before each application, require `old_string` to still match exactly once, and reject
+   rather than guess when the anchor has become stale or ambiguous. Record rejected patches in
+   `invalid` and add their findings to the narrative remainder for this same round. Dispatch a fresh
+   `general-purpose` fix subagent (awaited) **only** for the narrative remainder (file:line + the
+   requested change) and this fix discipline: **adjudicate before you fix** — no item may be fixed
+   until its premise has been confirmed or falsified against the code it cites. Open the cited file
+   rather than the diff hunk, and re-derive any claimed count or affected-site set from the code; a
+   fix authored to an unchecked premise is how one round manufactures the next round's finding.
+   Then: one item at a time; no unrelated refactors; write behaviour-focused tests for coverage
+   gaps. Each item that changes the worktree is committed with `git commit --no-verify` after it is
+   fixed; a `verified` disposition that changes no files records only the ledger entry unless an
+   explicit empty-commit protocol is chosen; no gate runs per item or per finding. After every item
+   in the fix batch has been adjudicated and any worktree changes have been committed, run the
+   affected module tests/lint (per the repo's test-command manifest at
+   `manifestPath(cfg)`, or the fixer's own discovery prose when that returns `null`) exactly once
+   for the batch. If that batch-close gate fails, fix forward inside the same batch with an
+   additional commit that names the item or interaction it repairs, then re-run the same gate
+   commands for the batch. The default is one fix batch per pass. The sole interleaved-fix exception
+   is an intra-batch ordering dependency: one must-fix item's fix changes the file or bytes cited by
+   another must-fix item in the same batch, so the second cannot be adjudicated until the first has
+   landed. On that trigger only, split the pass into two dependency-ordered sub-batches, run the gate
+   commands once at the close of each sub-batch, record the trigger and member sets in the ledger,
+   and cap the exception at one split per pass; a split consumes no extra round or deadline
+   allowance. Each fixed or verified item must include a greppable `anchor`: for `fixed`, the source
+   symbol or exact substring the fix edited; for `verified`, the source substring the adjudication
+   read. A bare line number is invalid. Each item ends in exactly one disposition: **fixed** (code
+   changed) or **verified** (adjudication refuted the finding — requires a recorded `rationale`
+   **and** the `evidence` that settled it: the file and lines read, or the command run and its
+   output). Record `fixed` items to `## Fixed`; record `verified` rationales **with their evidence**
+   to `## Leave as-is`.
    When a fix adds a conditional guard, gate, or assertion, first read
    `<FALSIFICATION_REFERENCE>`, the resolved absolute installed path — never resolve it relative
    to the target repository — for the probe. Follow Tier B after committing the work and do not
@@ -1296,7 +1494,13 @@ Each round:
    and the cumulative carried claim files. A verified item changes no code, but its
    recorded rationale and evidence still need independent confirmation. If every item was verified
    and no code changed, the cited files still form the confirming surface; do not skip the round.
-   Carried claim files are added to that surface. Write findings into round-namespaced files
+   Carried claim files are added to that surface. Before dispatching, run
+   `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-confirming-round '<json>'` with the
+   previous round's recorded tip comparison plus the counts of newly `fixed`, newly `verified`,
+   newly carried claims, and unrepaired `invalid` entries. Only the exact no-op predicate refuses:
+   unchanged tip, zero fixed, zero verified, zero carried claims, and zero invalid entries. On that
+   refusal, append `confirming round: skipped (unchanged tip <sha>)` to the ledger and continue with
+   the existing categorized findings; every other reason admits the round. Write findings into round-namespaced files
    (`$RUN_TMP/round<N>/findings-<lens>.json`) so a re-run never clobbers prior evidence, then
    re-categorize (Phase 5) over **that round's** findings
    (`$RUN_TMP/round<N>/findings-*.json`) with `<N>` incremented. Then evaluate
@@ -1325,9 +1529,17 @@ Each round:
 3. **Repeat decision:** finish only when a round yields zero must-fix **and zero unrepaired
    `invalid` entries**. Re-run or repair the reviewer that produced invalid evidence; if it remains
    invalid at the round cap, record it as unresolved and report `capped`, never `clean`.
-   **Oscillation guard:** if the
-   same `<file:line> - <title>` is must-fix in two consecutive rounds and was neither fixed nor
-   verified, stop looping on it and record it as `unresolved (fixes not clearing)`. **Cap the fix
+   **Oscillation guard:** build `oscillation_json` from the previous and current categorized
+   must-fix lists plus the intervening ledger `fixed`/`verified` dispositions, write it to
+   `$RUN_TMP/round<N>/oscillation.json`, then run
+   `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" oscillation --in "$RUN_TMP/round<N>/oscillation.json"`.
+   The helper owns the deterministic JSON tuple identity `[file,line,title]`. If it returns any `oscillating` keys, stop
+   looping on them and record each as `unresolved (fixes not clearing)`.
+   **Disappearance guard:** run `vanishedFindings(history)` from `bs-review-caps.mjs` over the
+   ledger history before grading confidence. A finding that was must-fix at round N, absent at round
+   N+1, and recorded in neither `## Fixed` nor `## Leave as-is` is reviewer disagreement, not a
+   verified resolution; it lowers the derived confidence and is rendered in the report's Agreement
+   section for human adjudication. **Cap the fix
    rounds** at the effective review-round cap — `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" rounds`, which
    reads the `BS_REVIEW_MAX_ROUNDS` env var clamped **lower-only** to the default of **3** (invalid
    / absent / too-high → 3; the env may only lower the cap, never raise it), matching
@@ -1365,7 +1577,7 @@ Each round:
 
      A `mustfix-override` admission runs the round and increments the run's `overrunRoundsUsed`; it
      is available **once** per run and never overrides the round cap. **Attempted** means a fix round
-     has been dispatched against that specific `<file:line> - <title>` — whether or not it succeeded,
+     has been dispatched against that specific JSON tuple identity `[file,line,title]` — whether or not it succeeded,
      and keyed on the same identity the oscillation guard above uses. A finding the round now ending
      just produced has **not** been attempted, so it is exactly what the override exists for; a
      finding two rounds have failed to clear has been, and it is not.
@@ -1381,10 +1593,10 @@ Each round:
    The gate is arithmetic, so it can legitimately admit **zero** rounds when the supplied deadline is
    smaller than one initial pass plus one `FIX_ROUND_MINUTES` **and the pass found no must-fix to
    override for**. That is the sanctioned outcome, not a failure: report a clean pass, or report what
-   the review found through the capped report. A pass that _did_ find an unattempted must-fix funds
-   one round from the overrun allowance regardless, so "zero rounds with an open, never-attempted
-   must-fix" is **not** a lawful outcome — a caller that wants more of the fix loop than that must
-   supply a deadline that funds it.
+   the review found through the capped report, naming the funding reason when the caller supplied
+   one. A pass that _did_ find an unattempted must-fix funds one round from the overrun allowance
+   regardless, so "zero rounds with an open, never-attempted must-fix" is **not** a lawful outcome —
+   a caller that wants more of the fix loop than that must supply a deadline that funds it.
 
 ## Phase 7 — Report
 
@@ -1395,23 +1607,55 @@ so the posted comment is consistent and **cannot drift per run** (do not hand-wr
 markdown).
 
 **Build the JSON** to a file **outside** `$RUN_TMP` (e.g. `REPORT_JSON="$(mktemp)"`) so it
-survives Phase 8 cleanup. Source every field from the ledger and gate results:
+survives Phase 8 cleanup. Reconcile the durable dispatch ledger again immediately before rendering,
+then include its coverage object in the report JSON:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" reconcile \
+  --in "$BOSS_REVIEW_LEDGER_PATH" \
+  --out "$BOSS_REVIEW_LEDGER_PATH" \
+  --findings-dir "$CURRENT_FINDINGS_DIR" \
+  --populations "$(LENSES_JSON="$LENSES_JSON" ROUNDS_JSON="$ROUNDS_JSON" DEFAULT_ROUNDS_JSON="$DEFAULT_ROUNDS_JSON" node --input-type=module -e 'const lenses=JSON.parse(process.env.LENSES_JSON), rounds=JSON.parse(process.env.ROUNDS_JSON).extensions||[], defaultRounds=JSON.parse(process.env.DEFAULT_ROUNDS_JSON); process.stdout.write(JSON.stringify({lenses,rounds,defaultRounds}))')" \
+  --invalid "$RUN_TMP/invalid.json"
+LEDGER_COVERAGE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" coverage --in "$BOSS_REVIEW_LEDGER_PATH")
+```
+
+Source every field from the human ledger, durable dispatch ledger, and gate results:
+
+Before rendering, run the dispatch self-audit for this run and record its text verdict in the ledger
+and report evidence rows. This audit is report-only: it never changes the review exit code,
+sentinel, terminal outcome, or `status`.
+
+```bash
+DISPATCH_BATCH_AUDIT="$(
+  node "$BOSS_REVIEW_TOOLBOX/bs-dispatch-batch-audit.mjs" audit \
+    --run-tmp "$RUN_TMP" \
+    --format text 2>&1
+)" || DISPATCH_BATCH_AUDIT_STATUS=$?
+DISPATCH_BATCH_AUDIT_STATUS="${DISPATCH_BATCH_AUDIT_STATUS:-0}"
+printf 'dispatch batch self-audit: exit %s\n%s\n' \
+  "$DISPATCH_BATCH_AUDIT_STATUS" "$DISPATCH_BATCH_AUDIT" >> "$RUN_TMP/ledger.md"
+```
 
 ```jsonc
 {
   "rounds": <N>,                  // fix rounds run (1 when Phase 6 was skipped)
   "overrun": { "rounds": 0 | 1, "seconds": 0 | 1200, "reason": "mustfix-override" },  // optional — omit entirely when no override round was run; `rounds` is capped at MUSTFIX_OVERRUN_ROUNDS and `seconds` reports MUSTFIX_OVERRUN_SECONDS
-  "status": "clean" | "capped",   // must match the sentinel below
+  "status": "clean" | "capped",   // caller-supplied outcome; the derived verdict below is authoritative
+  "funding": { "reason": "funding-starved" }, // optional — mirrors the run-file sentinel payload; never changes the sentinel bytes
   "summary": "1–3 sentences: what was reviewed (range + file count) and the headline outcome",
   "security": [],                 // [{severity,title,file,line,fix}] — usually empty
   "issuesHeadline": "<found> must-fix found and fixed this run across <M> files",
   "reviewers": [ {"name": "golang-pro", "status": "clean", "note": "…?"} ],  // one per lens/round run; renders as the "N Reviewers" block
+  "panel": { "initial": ["<reviewer id>"], "reviewers": ["<reviewer id>"], "reporting": [], "silent": [], "missing": [] },  // derived from categorize output; records the sample that produced the verdict
+  "agreement": { "panelSize": 2, "initialPanelSize": 2, "terminalPanel": [], "initialPanel": [], "panelShrank": false, "uncorroboratedMustFixCount": 0, "vanishedFindings": [] },  // derived by bs-review-caps.mjs reviewAgreement; optional when no panel evidence exists
+  "ledger": { "discovered": 0, "completed": 0, "skipped": 0, "timedOut": 0, "notReached": 0 },  // from LEDGER_COVERAGE; missing or malformed is unreadable evidence and caps the report
   "prUrl": "https://github.com/<owner>/<repo>/pull/<N>",   // optional — the follow-up prompt's Related PR link; omit when no PR exists
   "issueUrl": "https://…/issue/<ID>",                      // optional — the follow-up prompt's Related issue link; omit when unknown
   "verdict": {
     "assessment": "Sound" | "Unsound",         // Sound iff zero open must-fix and zero unrepaired invalid entries at exit
     "evidence": "All gates green" | "<which gate failed>",
-    "confidence": "High" | "Medium" | "Low",   // grade per the rubric below
+    "confidence": "High" | "Medium" | "Low",   // caller-supplied record only; bs-review-caps.mjs confidence --in "$REPORT_JSON" derives the displayed grade
     "testing_assessment": "Satisfactory" | "Unnecessary" | "Unsatisfactory",
     "testing_detail": "1–3 sentences on the test coverage the run added/verified for changed logic; omit to render only the badge",  // optional
     "recommendation": "Approve" | "Fix"        // Approve when clean; Fix when capped/unresolved
@@ -1424,17 +1668,19 @@ survives Phase 8 cleanup. Source every field from the ledger and gate results:
   "mustfix": { "found": F, "fixed": X, "verified": V, "unresolved": U,
                "items": [ {"disposition": "fixed"|"verified"|"unresolved",
                            "title": "…", "file": "…", "line": N, "anchor": "…", "detail": "…", "commit": "<sha>"} ] },
-  "invalid": [ {"reason": "<malformed item or unread reviewer output>", "item": { /* original malformed payload when available */ }, "source": {"filename": "<reviewer output file>", "reviewer": "<reviewer id>"} } ],  // present when invalid evidence remains; renders reason plus retained source and payload
+  "invalid": [ {"reason": "<malformed item or unread reviewer output>", "item": { /* original malformed payload when available */ }, "source": {"filename": "<reviewer output file>", "reviewer": "<reviewer id>"} } ],  // always present; [] means no invalid evidence, non-empty renders reason plus retained source and payload
   "leaveAsIs": [ {"title": "…", "file": "…", "line": N, "rationale": "…", "evidence": "<file:line read or command result that settled it>"} ],   // verified-finding rationales and evidence
   "suggestions": [ {"title": "…", "file": "…", "line": N, "detail": "…", "priority": "Low"} ]  // open suggestion pool; priority optional (defaults Low)
 }
 ```
 
-Grade `confidence` per the rubric in [the core methodology](references/core-methodology.md),
-mapped to reviewer tags and Phase R evidence: `Low` if the round cap was hit, a must-fix is
-`unresolved`, or a required whole-branch round failed to run; `Medium` if only an optional
-independent-voice round was skipped on an infra flake while every required whole-branch round ran
-clean; `High` if all rounds ran and the branch converged.
+Grade `confidence` through the derived owner in
+`bs-review-caps.mjs confidence --in "$REPORT_JSON"`, using the rubric in
+[the core methodology](references/core-methodology.md). The displayed Confidence badge is derived
+from the report's own panel/agreement evidence, not from the caller-supplied `verdict.confidence`
+string. A contradiction between the supplied grade and the derived grade renders a confidence
+contradiction notice, and `Low` caused by a single-sample panel or vanished finding renders an
+explicit escalation line naming what a human should adjudicate.
 
 The `suggestions` pool renders as the collapsible **"Create N follow-up issues"** toggle — a
 fenced, copy-able agent prompt the human pastes into an agent to file each suggestion as a tracker
@@ -1449,7 +1695,10 @@ prompt carries **Related PR** / **Related issue** links and a report-back instru
 a standalone run with no PR (the prompt degrades cleanly).
 Build `reviewers` with one entry per lens/round actually run (name + a short
 status such as `clean`, and an optional `note`) — it renders as the collapsible **"N Reviewers"**
-roster. `evidenceRows` must render each round's `mode`, diff `base`, and carried-claim count, and
+roster. Build `panel` from each round's `categorize` output, carrying the initial panel and terminal
+panel separately so a confirming pass whose panel shrank is visible. Build `agreement` through the
+toolbox helper so the report renders panel size, initial-vs-terminal panel, uncorroborated
+must-fix count, and vanished findings. `evidenceRows` must render each round's `mode`, diff `base`, and carried-claim count, and
 `reviewerInputBytes` must state both the full-branch baseline and resolved-mode total.
 `carriedObservations` renders as a collapsible list attributed to the round that derived each
 observation; an empty list renders nothing. `mustfix.items` and `leaveAsIs` (including each verified
@@ -1459,9 +1708,9 @@ malformed payload when available. At the cap, unrepaired invalid evidence requir
 `verdict.testing_detail` with a short prose summary of the coverage this run added/verified for the
 changed logic (drawn from the `## Fixed` coverage-gap items and the test gates) — it renders as an
 expandable **Test Coverage** `<details>` body alongside the badge; omit it when there is nothing
-coverage-specific to say and only the badged verdict line renders. **The rendered markdown is the
-only durable artifact** — the ledger and findings files live in `$RUN_TMP` and are deleted in
-Phase 8, so anything that must survive the run has to be in the JSON above.
+coverage-specific to say and only the badged verdict line renders. **The rendered markdown and
+`$BOSS_REVIEW_LEDGER_PATH` are durable artifacts** — findings files live in `$RUN_TMP` and are
+deleted in Phase 8, so anything else that must survive the run has to be in the JSON above.
 
 **Render and print:**
 
@@ -1473,14 +1722,26 @@ Print that rendered markdown verbatim — it is the boss-review report. The call
 (`boss-build` Step 6c) captures it and posts it as the single, upserted `<!-- bs-review -->`
 PR comment.
 
-End with **exactly one** sentinel line on its own, emitted through the single-sourced builder so
-its prefix stays byte-identical (`$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs` owns the bytes;
-`skills-toolbox/bs-review-caps.test.mjs` pins them). Callers route on the `bs-review clean:` /
-`bs-review capped:` prefix (the tested `matchSentinel` classifier; the empty-diff guard's
-`bs-review clean: no changes to review.` from Phase 0 is the third recognized clean variant):
+End with **exactly one** sentinel line on its own. The report's own evidence chooses the sentinel:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" verdict --in "$REPORT_JSON"
+```
+
+That verb emits through the single-sourced builder so its prefix stays byte-identical
+(`$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs` owns the bytes; `skills-toolbox/bs-review-caps.test.mjs`
+pins them). If the caller-supplied `status` disagrees with the derived verdict, the rendered report
+keeps the derived header and prints an explicit contradiction notice; never hand-pick a sentinel to
+match the caller field. Callers still route on the `bs-review clean:` / `bs-review capped:` prefix
+(the tested `matchSentinel` classifier; the empty-diff guard's `bs-review clean: no changes to
+review.` from Phase 0 is the third recognized clean variant):
 
 - clean: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel clean` → `bs-review clean: no open must-fix findings.`
 - capped: `node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" sentinel capped <N>` → `bs-review capped: unresolved must-fix findings or invalid evidence remain after N rounds.` (only the round-count tail varies). The wording names both blockers deliberately: a run caps with **zero** open must-fix findings whenever unrepaired `invalid` entries are the only thing left, so a must-fix-only sentinel would state the wrong reason.
+
+For whole captured output, `classify --in <captured-output>` returns `missing` when no sentinel line
+exists; `missing` is non-clean. A `missing` or `ambiguous` classification is a broken review
+artifact, not a clean pass.
 
 ## Phase 8 — Cleanup
 

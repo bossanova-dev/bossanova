@@ -1126,6 +1126,12 @@ func TestStartTmuxChat_NonPreflightFailureIsNotTyped(t *testing.T) {
 // session's primary chat (BOS-381), and fall back to the session unchanged when
 // no primary chat exists (the first-start seed).
 func TestEffectiveSpawnSession_ReSourcesFromPrimaryChat(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if err := config.SaveTo(settingsPath, config.Settings{}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "agent-1"
 	acct := "acct-codex-2"
@@ -1138,7 +1144,7 @@ func TestEffectiveSpawnSession_ReSourcesFromPrimaryChat(t *testing.T) {
 			AccountID:      &acct,
 		}},
 	}
-	sess := &models.Session{ID: "sess-1", AgentName: "claude", Model: "sonnet", AgentSessionID: &agentSessionID}
+	sess := &models.Session{ID: "sess-1", AgentName: "claude", Model: "sonnet", EffectiveEffort: "high", AgentSessionID: &agentSessionID}
 	eff := h.lc.effectiveSpawnSession(context.Background(), sess)
 	if eff.AgentName != "codex" {
 		t.Errorf("eff.AgentName = %q, want codex (from primary chat)", eff.AgentName)
@@ -1146,18 +1152,43 @@ func TestEffectiveSpawnSession_ReSourcesFromPrimaryChat(t *testing.T) {
 	if eff.Model != "gpt-5" {
 		t.Errorf("eff.Model = %q, want gpt-5 (from primary chat)", eff.Model)
 	}
+	if eff.EffectiveEffort != "medium" {
+		t.Errorf("eff.EffectiveEffort = %q, want medium (codex default)", eff.EffectiveEffort)
+	}
 	if eff.AccountID == nil || *eff.AccountID != acct {
 		t.Errorf("eff.AccountID = %v, want %q (from primary chat)", eff.AccountID, acct)
 	}
 	// The original session is not mutated.
-	if sess.AgentName != "claude" || sess.Model != "sonnet" {
-		t.Errorf("original session mutated: agent=%q model=%q", sess.AgentName, sess.Model)
+	if sess.AgentName != "claude" || sess.Model != "sonnet" || sess.EffectiveEffort != "high" {
+		t.Errorf("original session mutated: agent=%q model=%q effort=%q", sess.AgentName, sess.Model, sess.EffectiveEffort)
 	}
 
 	// No primary chat (nil AgentSessionID) → session returned unchanged (seed path).
 	seed := &models.Session{ID: "sess-x", AgentName: "claude", Model: "sonnet"}
 	if got := h.lc.effectiveSpawnSession(context.Background(), seed); got != seed {
 		t.Errorf("effectiveSpawnSession with no primary chat = %v, want the session unchanged", got)
+	}
+}
+
+func TestEffectiveEffortForAgentUsesConfiguredCrossAgentDefault(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if err := config.SaveTo(settingsPath, config.Settings{Plugins: []config.PluginConfig{{
+		Name:    "codex",
+		Enabled: true,
+		Config:  map[string]string{"effort": "xhigh"},
+	}}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	if got := EffectiveEffortForAgent("claude", "high", "claude"); got != "high" {
+		t.Fatalf("same-agent effort = %q, want session effort high", got)
+	}
+	if got := EffectiveEffortForAgent("claude", "high", "codex"); got != "xhigh" {
+		t.Fatalf("cross-agent effort = %q, want configured codex effort xhigh", got)
+	}
+	if got := EffectiveEffortForAgent("claude", "high", "opencode"); got != "" {
+		t.Fatalf("unknown cross-agent effort = %q, want empty plugin default", got)
 	}
 }
 
@@ -2952,15 +2983,22 @@ func TestBuildAppendSystemPromptFacts(t *testing.T) {
 		for _, want := range []string{
 			// Scoped to what the running skill already mandates…
 			"protocol mandates",
-			// …awaited, never backgrounded…
-			"await every dispatch",
-			"run_in_background",
+			// …awaited by consuming the dispatch result, not by pretending every
+			// harness has foreground dispatch…
+			"backgrounds every dispatch, that is not a violation",
+			"fire-and-forget is",
+			"without that result in hand",
+			"do not assume or fabricate a pending dispatch's outcome",
+			"do not tear down a dispatch's workspace before its stated budget elapses",
 			// …and non-delivery is greppable, not a silent clean report.
 			"SUBAGENT-DISPATCH-UNAVAILABLE",
 		} {
 			if !strings.Contains(unattendedSubagentDirective, want) {
 				t.Errorf("subagent directive lost its bounding clause %q: %q", want, unattendedSubagentDirective)
 			}
+		}
+		if strings.Contains(unattendedSubagentDirective, "run_in_background") {
+			t.Fatalf("unattended directive must not name a foreground-dispatch parameter: %q", unattendedSubagentDirective)
 		}
 	})
 
@@ -3686,9 +3724,12 @@ func TestUnattendedSubagentDirectiveIsByteIdentical(t *testing.T) {
 		"standing request for the subagent dispatches your running skill's protocol mandates. You are " +
 		"authorised to dispatch them without asking, and skipping them is not the conservative choice — " +
 		"it silently downgrades the work you were launched to do. Bound that grant to the protocol: " +
-		"dispatch only what it mandates, and always await every dispatch — never background one " +
-		"(if your dispatch tool backgrounds by default, pass run_in_background: false) — rather than " +
-		"open-ended fan-out or convenience delegation. If a dispatch you cannot make has a documented " +
+		"dispatch only what it mandates. If your dispatch tool backgrounds every dispatch, that is not " +
+		"a violation of this grant; fire-and-forget is. Do not proceed past the step that consumes a " +
+		"dispatch's result without that result in hand, do not assume or fabricate a pending dispatch's " +
+		"outcome, and do not tear down a dispatch's workspace before its stated budget elapses. This " +
+		"bound authorises mandated dispatches rather than open-ended fan-out or convenience delegation. " +
+		"If a dispatch you cannot make has a documented " +
 		"inline fallback, take that fallback: it is the protocol's own recovery, and completing the " +
 		"mandated work inline is a clean result, not a downgrade. Escalate only when the mandated work " +
 		"itself goes undone — the protocol documents no fallback, or the fallback also failed: then do " +
@@ -3750,9 +3791,13 @@ func TestAttendedSubagentDirectiveIsBounded(t *testing.T) {
 		for _, want := range []string{
 			// Scoped to what the running skill already mandates…
 			"protocol mandates",
-			// …awaited, never backgrounded…
-			"await every dispatch",
-			"run_in_background",
+			// …awaited by consuming the dispatch result, not by pretending every
+			// harness has foreground dispatch…
+			"backgrounds every dispatch, that is not a violation",
+			"fire-and-forget is",
+			"without that result in hand",
+			"do not assume or fabricate a pending dispatch's outcome",
+			"do not tear down a dispatch's workspace before its stated budget elapses",
 			// …never widened into general delegation…
 			"open-ended fan-out or convenience delegation",
 			// …and non-delivery is greppable, not a silent clean report.
@@ -3761,6 +3806,9 @@ func TestAttendedSubagentDirectiveIsBounded(t *testing.T) {
 			if !strings.Contains(attendedSubagentDirective, want) {
 				t.Errorf("attended directive lost its bounding clause %q: %q", want, attendedSubagentDirective)
 			}
+		}
+		if strings.Contains(attendedSubagentDirective, "run_in_background") {
+			t.Fatalf("attended directive must not name a foreground-dispatch parameter: %q", attendedSubagentDirective)
 		}
 	})
 

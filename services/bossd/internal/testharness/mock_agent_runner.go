@@ -138,7 +138,7 @@ func (m *MockAgentRunner) NoChanges() {
 	}
 }
 
-func (m *MockAgentRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, _ string, _ map[string]string) (string, error) {
+func (m *MockAgentRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, _, _ string, _ map[string]string) (string, error) {
 	m.mu.Lock()
 	injectedErr := m.spawnError
 	m.spawnError = nil
@@ -283,26 +283,26 @@ func (m *MockAgentRunner) Subscribe(ctx context.Context, sessionID string) (<-ch
 // StartByAgent forwards to Start so existing assertions on Started/Stopped
 // still fire. By-agent routing is exercised by the dispatcher tests; this
 // fake doesn't need to inspect agentName.
-func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error) {
-	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
 // StartByAgentWithHeadlessCapabilityProfile forwards to StartByAgent. The mock
 // accepts every profile because it has no plugin capability surface to validate.
-func (m *MockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ bossanovav1.HeadlessCapabilityProfile) (string, error) {
-	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+func (m *MockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, _ bossanovav1.HeadlessCapabilityProfile) (string, error) {
+	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
 // StartByAgentWithHeadlessLaunchOptions forwards to StartByAgent. The mock
 // records process behavior only; managed launch controls are covered by the
 // PluginRunner contract tests.
-func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
-	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+func (m *MockAgentRunner) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
+	return m.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
 // PreflightByAgentWithHeadlessCapabilityProfile succeeds because the mock
 // runner can exercise any headless capability profile in test scenarios.
-func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.Context, string, string, string, map[string]string, bossanovav1.HeadlessCapabilityProfile) error {
+func (m *MockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(context.Context, string, string, string, string, map[string]string, bossanovav1.HeadlessCapabilityProfile) error {
 	return nil
 }
 

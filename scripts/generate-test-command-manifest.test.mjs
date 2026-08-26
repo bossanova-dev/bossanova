@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
-import { renderManifest } from './generate-test-command-manifest.mjs'
+import { buildManifest, renderManifest } from './generate-test-command-manifest.mjs'
 
 test('manifest includes the Web Targets section heading', () => {
   const manifest = renderManifest({
@@ -64,6 +67,37 @@ test('manifest omits the volatile Go test-file count column', () => {
   assert.doesNotMatch(manifest, /Test files/)
   assert.match(manifest, /\| Module\s+\| Target\s+\|/)
   assert.doesNotMatch(manifest, /\| `services\/bosso` \| `make test-bosso` \| \d+ \|/)
+})
+
+test('buildManifest is invariant to Go test files but changes for new modules', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-command-manifest-invariant-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  const moduleDirs = ['lib/bossalib', 'services/bossd', 'plugins/bossd-plugin-alpha']
+  for (const moduleDir of moduleDirs) {
+    fs.mkdirSync(path.join(root, moduleDir), { recursive: true })
+    fs.writeFileSync(path.join(root, moduleDir, 'go.mod'), `module example.com/${moduleDir}\n`)
+  }
+
+  const before = buildManifest({ root })
+
+  const testFiles = [
+    'lib/bossalib/foo_test.go',
+    'services/bossd/internal/server/bar_test.go',
+    'plugins/bossd-plugin-alpha/pkg/nested/baz_test.go',
+  ]
+  for (const testFile of testFiles) {
+    const absolutePath = path.join(root, testFile)
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+    fs.writeFileSync(absolutePath, 'package fixture\n')
+  }
+
+  assert.equal(buildManifest({ root }), before)
+
+  fs.mkdirSync(path.join(root, 'services/newmod'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'services/newmod/go.mod'), 'module example.com/newmod\n')
+
+  assert.notEqual(buildManifest({ root }), before)
 })
 
 test('manifest states where -race runs and points at the budget ratchet', () => {

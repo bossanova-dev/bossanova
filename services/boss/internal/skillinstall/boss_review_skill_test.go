@@ -737,8 +737,14 @@ TMP_ROOT=${TMP_ROOT_OUTPUT%x}`)
 			// The leg-list price. Phase D's findings join the ordinary must-fix set, so gating
 			// its admission on the dispatch leg alone can commit the run to a Phase 6 round it
 			// cannot fund — an optional add-on that forces a capped report.
+			assertContains(t, skill, "- **Barrier 1** — the matched specialist lens Tier-1 dispatches")
+			assertContains(t, skill, "planned through `planBatches`")
+			assertContains(t, skill, "- **Barrier 2** — the suppressible Phase D entries")
+			assertContains(t, skill, "planned with `planBatches`")
+			assertContains(t, skill, "sharing one `planBatches` roster")
 			assertContains(t, skill, "- **Phase D** — the opportunistic default-round batch → `DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS`.")
 			assertContains(t, citationWindows["phase-d"], "`LEG_SECONDS=$(( DEADLINE_LEG_SECONDS + FIX_ROUND_SECONDS ))`")
+			assertContains(t, citationWindows["phase-d"], "drop them with `Phase D: skipped (caller deadline)`")
 			// Additive, never a tier: without this, an all-skipped Phase D could be read as
 			// licence to treat a default round as a substitute for Phase R's own fallbacks.
 			assertContains(t, citationWindows["phase-d"], "It never suppresses Phase R's Tier 2 or Tier 3")
@@ -1088,6 +1094,8 @@ func TestBossReviewConfirmationSurfaceIncludesVerifiedFindings(t *testing.T) {
 
 	assertContains(t, phase6, "cited files of every `verified` must-fix item")
 	assertContains(t, phase6, "the cited files still form the confirming surface; do not skip")
+	assertContains(t, phase6, "admit-confirming-round")
+	assertContains(t, phase6, "confirming round: skipped (unchanged tip")
 
 	methodologyBytes, err := SkillsFS.ReadFile("skills/boss-review/references/core-methodology.md")
 	if err != nil {
@@ -1311,7 +1319,7 @@ var bossReviewPhase6OverrunPins = regProsePins([]falsificationProsePin{
 	{
 		name:         "phase6-attempted-means-dispatched-against",
 		pattern:      `\*\*Attempted\*\*\s+means\s+a\s+fix\s+round\s+has\s+been\s+dispatched\s+against\s+that\s+specific`,
-		live:         "**Attempted** means a fix round\n     has been dispatched against that specific `<file:line> - <title>` — whether or not it succeeded",
+		live:         "**Attempted** means a fix round\n     has been dispatched against that specific JSON tuple identity `[file,line,title]` — whether or not it succeeded",
 		tokenRemoved: "**Attempted** means a fix round has cleared that specific `<file:line> - <title>`",
 		alsoRemoved: []string{
 			"**Attempted** means a must-fix has been located against that specific `<file:line> - <title>`",

@@ -22,6 +22,7 @@ Check installed boss skills against this binary and checkout sources
 **Flags:**
 
 - `--agent` — Restrict to one agent: claude or codex (default: all on PATH)
+- `--gate` — Fail only when installed skills drift from checkout source for paths not edited by this branch
 
 ### `boss skills install [flags]`
 

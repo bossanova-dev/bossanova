@@ -2,10 +2,12 @@ package skillinstall
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -488,9 +490,14 @@ var knownIdentityLeaks = map[string]map[string]int{}
 // identityLeaks walks a skill payload (an fs.FS rooted so that "skills/<core>/..." resolves) and
 // returns, per top-level core, a representative file (the first seen) for each forbidden identity
 // token found. An empty result means the payload is project-agnostic.
-func identityLeaks(t *testing.T, fsys fs.FS) map[string]map[string]string {
-	t.Helper()
+type identityLeakScan struct {
+	leaks   map[string]map[string]string
+	scanned int
+}
+
+func scanIdentityLeaks(fsys fs.FS) (identityLeakScan, error) {
 	out := map[string]map[string]string{}
+	scanned := 0
 	err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -498,6 +505,7 @@ func identityLeaks(t *testing.T, fsys fs.FS) map[string]map[string]string {
 		if d.IsDir() {
 			return nil
 		}
+		scanned++
 		rel := strings.TrimPrefix(path, "skills/")
 		core, _, _ := strings.Cut(rel, "/")
 		data, err := fs.ReadFile(fsys, path)
@@ -529,9 +537,39 @@ func identityLeaks(t *testing.T, fsys fs.FS) map[string]map[string]string {
 		return nil
 	})
 	if err != nil {
+		return identityLeakScan{leaks: out, scanned: scanned}, err
+	}
+	if scanned == 0 {
+		return identityLeakScan{leaks: out, scanned: scanned}, errors.New("no files scanned; the project-agnostic identity gate would pass vacuously")
+	}
+	return identityLeakScan{leaks: out, scanned: scanned}, nil
+}
+
+func identityLeaks(t *testing.T, fsys fs.FS) map[string]map[string]string {
+	t.Helper()
+	scan, err := scanIdentityLeaks(fsys)
+	if err != nil {
 		t.Fatalf("walk skills payload: %v", err)
 	}
-	return out
+	return scan.leaks
+}
+
+func TestIdentityLeakScanFailsClosedOnEmptyPayload(t *testing.T) {
+	scan, err := scanIdentityLeaks(fstest.MapFS{
+		"skills": {Mode: fs.ModeDir},
+	})
+	if err == nil {
+		t.Fatal("scanIdentityLeaks(empty) returned nil error, want vacuity failure")
+	}
+	if scan.scanned != 0 {
+		t.Fatalf("scanIdentityLeaks(empty) scanned %d files, want 0", scan.scanned)
+	}
+	if !strings.Contains(err.Error(), "project-agnostic identity gate would pass vacuously") {
+		t.Fatalf("scanIdentityLeaks(empty) error = %v", err)
+	}
+	if len(scan.leaks) != 0 {
+		t.Fatalf("scanIdentityLeaks(empty) leaks = %v, want none", scan.leaks)
+	}
 }
 
 // TestPublishedCoresAreProjectAgnostic is the hard, ZERO-TOLERANCE gate keeping project-specific
@@ -568,16 +606,62 @@ func TestPublishedCoresAreProjectAgnostic(t *testing.T) {
 // that portable location (or BOSS_SKILLS_HOME), never a namespace literal.
 func TestPublishedCoresDoNotHardCodeNamespaceHelperPaths(t *testing.T) {
 	for label, fsys := range shippedPayloads(t) {
-		for _, core := range []string{"boss-build", "boss-plan", "boss-review", "boss-epic", "boss-repair"} {
-			path := "skills/" + core + "/SKILL.md"
+		for _, finding := range namespaceHelperPathFindings(t, fsys) {
+			t.Errorf("%s: %s hard-codes the installation namespace; resolve helpers through the top-level boss-* skill path or BOSS_SKILLS_HOME", label, finding)
+		}
+	}
+}
+
+func namespaceHelperPathFindings(t *testing.T, fsys fs.FS) []string {
+	t.Helper()
+	entries, err := fs.ReadDir(fsys, "skills")
+	if err != nil {
+		t.Fatalf("read skills dir: %v", err)
+	}
+	var findings []string
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "boss") {
+			continue
+		}
+		coreRoot := "skills/" + entry.Name()
+		err := fs.WalkDir(fsys, coreRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || filepath.Ext(path) != ".md" {
+				return nil
+			}
 			content, err := fs.ReadFile(fsys, path)
 			if err != nil {
-				t.Fatalf("%s: read %s: %v", label, path, err)
+				return err
 			}
 			if strings.Contains(string(content), "/skills/bossanova") {
-				t.Errorf("%s: %s hard-codes the installation namespace; resolve helpers through the top-level boss-* skill path or BOSS_SKILLS_HOME", label, path)
+				findings = append(findings, path)
 			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", coreRoot, err)
 		}
+	}
+	sort.Strings(findings)
+	return findings
+}
+
+func TestNamespaceHelperPathScanCoversCoreReferencesAndAllPublishedCores(t *testing.T) {
+	findings := namespaceHelperPathFindings(t, fstest.MapFS{
+		"skills/boss-build/SKILL.md":                         {Data: []byte("# clean\n")},
+		"skills/boss-build/references/cron-gate.md":          {Data: []byte("~/.claude/skills/bossanova/boss-build/toolbox\n")},
+		"skills/boss-finalize/SKILL.md":                      {Data: []byte("~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh\n")},
+		"skills/boss-finalize/toolbox/finalize/adapter.mjs":  {Data: []byte("const rel = 'skills/bossanova/boss-finalize/add-pr-numbers.sh'\n")},
+		"skills/boss-review/references/finalize-and-stop.md": {Data: []byte("portable\n")},
+	})
+	want := []string{
+		"skills/boss-build/references/cron-gate.md",
+		"skills/boss-finalize/SKILL.md",
+	}
+	if !reflect.DeepEqual(findings, want) {
+		t.Fatalf("namespaceHelperPathFindings() = %v, want %v", findings, want)
 	}
 }
 
@@ -1174,6 +1258,39 @@ func coresWithSubdir(t *testing.T, fsys fs.FS, sub string) []string {
 	return out
 }
 
+func scanToolboxRefs(fsys fs.FS) (map[string]int, int, error) {
+	refsByCore := map[string]int{}
+	scanned := 0
+	err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		scanned++
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		for _, ref := range toolboxRefs(string(data)) {
+			refsByCore[ref[0]]++
+			want := "skills/" + ref[0] + "/toolbox/" + ref[1]
+			if _, statErr := fs.Stat(fsys, want); statErr != nil {
+				return fmt.Errorf("%s names $BOSS_%s_TOOLBOX/%s but %s is not in the payload", strings.TrimPrefix(path, "skills/"), strings.ToUpper(strings.ReplaceAll(strings.TrimPrefix(ref[0], "boss-"), "-", "_")), ref[1], want)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return refsByCore, scanned, err
+	}
+	if scanned == 0 {
+		return refsByCore, scanned, errors.New("no files scanned; the shipped-toolbox gate would pass vacuously")
+	}
+	return refsByCore, scanned, nil
+}
+
 // TestPublishedCoresShipTheToolboxFilesTheyName is the POSITIVE inverse of
 // TestPublishedCoresOnlyReferenceShippedScripts: that gate proves a core names no path it does not
 // ship, this one proves every path it names ADJACENT to a $BOSS_<CORE>_TOOLBOX variable (see
@@ -1189,28 +1306,7 @@ func TestPublishedCoresShipTheToolboxFilesTheyName(t *testing.T) {
 	payloads := shippedPayloads(t)
 
 	for label, fsys := range payloads {
-		refsByCore := map[string]int{}
-		err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			data, err := fs.ReadFile(fsys, path)
-			if err != nil {
-				return err
-			}
-			for _, ref := range toolboxRefs(string(data)) {
-				refsByCore[ref[0]]++
-				want := "skills/" + ref[0] + "/toolbox/" + ref[1]
-				if _, statErr := fs.Stat(fsys, want); statErr != nil {
-					t.Errorf("%s: %s names $BOSS_%s_TOOLBOX/%s but %s is not in the payload — the published core would install without it; add the helper to the scripts/vendor-toolbox.mjs VENDOR_MAP and to BOTH BUILD.bazel embedsrcs lists (services/boss/internal/skillinstall and plugins/bossd-plugin-claude/skilldata), or stop naming it",
-						label, strings.TrimPrefix(path, "skills/"), strings.ToUpper(strings.ReplaceAll(strings.TrimPrefix(ref[0], "boss-"), "-", "_")), ref[1], want)
-				}
-			}
-			return nil
-		})
+		refsByCore, _, err := scanToolboxRefs(fsys)
 		if err != nil {
 			t.Fatalf("walk %s: %v", label, err)
 		}
@@ -1226,6 +1322,52 @@ func TestPublishedCoresShipTheToolboxFilesTheyName(t *testing.T) {
 	}
 }
 
+func TestToolboxRefsScanFailsClosedOnEmptyPayload(t *testing.T) {
+	refsByCore, scanned, err := scanToolboxRefs(fstest.MapFS{
+		"skills": {Mode: fs.ModeDir},
+	})
+	if err == nil {
+		t.Fatal("scanToolboxRefs(empty) returned nil error, want vacuity failure")
+	}
+	if scanned != 0 {
+		t.Fatalf("scanToolboxRefs(empty) scanned %d files, want 0", scanned)
+	}
+	if !strings.Contains(err.Error(), "shipped-toolbox gate would pass vacuously") {
+		t.Fatalf("scanToolboxRefs(empty) error = %v", err)
+	}
+	if len(refsByCore) != 0 {
+		t.Fatalf("scanToolboxRefs(empty) refs = %v, want none", refsByCore)
+	}
+}
+
+func bossPlanNamesDependencyLibrary(fsys fs.FS, helper string) (bool, int, error) {
+	found := false
+	scanned := 0
+	err := fs.WalkDir(fsys, "skills/boss-plan", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || found {
+			return err
+		}
+		scanned++
+		data, readErr := fs.ReadFile(fsys, path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, ref := range toolboxRefs(string(data)) {
+			if ref[0] == "boss-plan" && ref[1] == helper {
+				found = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return found, scanned, err
+	}
+	if scanned == 0 {
+		return found, scanned, errors.New("no boss-plan files scanned; the dependency-library adjacency gate would pass vacuously")
+	}
+	return found, scanned, nil
+}
+
 // TestBossPlanNamesItsDependencyLibraryAdjacently closes a coverage hole in the gate above, not a
 // shipping defect. boss-plan's Phase 4 step 5 reaches `plan-deps-lib.mjs` — the module the whole
 // step's decision now lives in — through string concatenation, the one spelling toolboxRefPattern
@@ -1236,28 +1378,31 @@ func TestPublishedCoresShipTheToolboxFilesTheyName(t *testing.T) {
 func TestBossPlanNamesItsDependencyLibraryAdjacently(t *testing.T) {
 	const helper = "plan-deps-lib.mjs"
 	for label, fsys := range shippedPayloads(t) {
-		found := false
-		err := fs.WalkDir(fsys, "skills/boss-plan", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || found {
-				return err
-			}
-			data, readErr := fs.ReadFile(fsys, path)
-			if readErr != nil {
-				return readErr
-			}
-			for _, ref := range toolboxRefs(string(data)) {
-				if ref[0] == "boss-plan" && ref[1] == helper {
-					found = true
-				}
-			}
-			return nil
-		})
+		found, _, err := bossPlanNamesDependencyLibrary(fsys, helper)
 		if err != nil {
 			t.Fatalf("walk %s: %v", label, err)
 		}
 		if !found {
 			t.Errorf("%s: no boss-plan file names $BOSS_PLAN_TOOLBOX/%s adjacently, so the shipped-toolbox gate does not cover the module Phase 4 step 5 depends on; keep the literal reference in the prose", label, helper)
 		}
+	}
+}
+
+func TestBossPlanDependencyLibraryScanFailsClosedOnEmptyPayload(t *testing.T) {
+	found, scanned, err := bossPlanNamesDependencyLibrary(fstest.MapFS{
+		"skills/boss-plan": {Mode: fs.ModeDir},
+	}, "plan-deps-lib.mjs")
+	if err == nil {
+		t.Fatal("bossPlanNamesDependencyLibrary(empty) returned nil error, want vacuity failure")
+	}
+	if scanned != 0 {
+		t.Fatalf("bossPlanNamesDependencyLibrary(empty) scanned %d files, want 0", scanned)
+	}
+	if !strings.Contains(err.Error(), "dependency-library adjacency gate would pass vacuously") {
+		t.Fatalf("bossPlanNamesDependencyLibrary(empty) error = %v", err)
+	}
+	if found {
+		t.Fatal("bossPlanNamesDependencyLibrary(empty) found helper, want false")
 	}
 }
 
@@ -1546,9 +1691,10 @@ func TestReferenceRefsDetection(t *testing.T) {
 // Factored out of the gate so the miss branch can be driven from a synthetic FS: see
 // TestMissingReferenceRefsDetectsAnAbsentFile. The owning core is the core of the file doing the
 // naming, because the path is core-relative.
-func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, error) {
+func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, int, error) {
 	var findings []string
 	refsByCore := map[string]int{}
+	scanned := 0
 	err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1556,6 +1702,7 @@ func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, error) {
 		if d.IsDir() {
 			return nil
 		}
+		scanned++
 		data, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
@@ -1585,7 +1732,13 @@ func missingReferenceRefs(fsys fs.FS) ([]string, map[string]int, error) {
 		}
 		return nil
 	})
-	return findings, refsByCore, err
+	if err != nil {
+		return findings, refsByCore, scanned, err
+	}
+	if scanned == 0 {
+		return findings, refsByCore, scanned, errors.New("no files scanned; the shipped-references gate would pass vacuously")
+	}
+	return findings, refsByCore, scanned, nil
 }
 
 // TestMissingReferenceRefsDetectsAnAbsentFile is the NON-VACUITY proof for the gate below. The
@@ -1599,9 +1752,12 @@ func TestMissingReferenceRefsDetectsAnAbsentFile(t *testing.T) {
 		"skills/boss-plan/SKILL.md":                   {Data: []byte("read `references/plan-storage.md` first")},
 		"skills/boss-plan/references/plan-storage.md": {Data: []byte("# plan storage")},
 	}
-	findings, refsByCore, err := missingReferenceRefs(present)
+	findings, refsByCore, scanned, err := missingReferenceRefs(present)
 	if err != nil {
 		t.Fatalf("missingReferenceRefs(present): %v", err)
+	}
+	if scanned == 0 {
+		t.Fatal("missingReferenceRefs(present) scanned 0 files, want non-zero")
 	}
 	if len(findings) != 0 {
 		t.Errorf("missingReferenceRefs(present) = %v, want none", findings)
@@ -1615,9 +1771,12 @@ func TestMissingReferenceRefsDetectsAnAbsentFile(t *testing.T) {
 		"skills/boss-plan/SKILL.md":                  {Data: []byte("read `references/plan-storage.md` first")},
 		"skills/boss-plan/references/interactive.md": {Data: []byte("# some other reference")},
 	}
-	findings, refsByCore, err = missingReferenceRefs(absent)
+	findings, refsByCore, scanned, err = missingReferenceRefs(absent)
 	if err != nil {
 		t.Fatalf("missingReferenceRefs(absent): %v", err)
+	}
+	if scanned == 0 {
+		t.Fatal("missingReferenceRefs(absent) scanned 0 files, want non-zero")
 	}
 	if len(findings) != 1 {
 		t.Fatalf("missingReferenceRefs(absent) = %v, want exactly one finding", findings)
@@ -1632,6 +1791,27 @@ func TestMissingReferenceRefsDetectsAnAbsentFile(t *testing.T) {
 	}
 }
 
+func TestMissingReferenceRefsScanFailsClosedOnEmptyPayload(t *testing.T) {
+	findings, refsByCore, scanned, err := missingReferenceRefs(fstest.MapFS{
+		"skills": {Mode: fs.ModeDir},
+	})
+	if err == nil {
+		t.Fatal("missingReferenceRefs(empty) returned nil error, want vacuity failure")
+	}
+	if scanned != 0 {
+		t.Fatalf("missingReferenceRefs(empty) scanned %d files, want 0", scanned)
+	}
+	if !strings.Contains(err.Error(), "shipped-references gate would pass vacuously") {
+		t.Fatalf("missingReferenceRefs(empty) error = %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("missingReferenceRefs(empty) findings = %v, want none", findings)
+	}
+	if len(refsByCore) != 0 {
+		t.Fatalf("missingReferenceRefs(empty) refsByCore = %v, want none", refsByCore)
+	}
+}
+
 // TestInstalledRootReferenceRefsRequireOwnershipAndShipping drives the installed-root branch:
 // a fresh subagent may be given an absolute installed path, but only to its owning core's shipped
 // reference. The control, missing-file, and cross-core cases must remain distinguishable.
@@ -1642,9 +1822,12 @@ func TestInstalledRootReferenceRefsRequireOwnershipAndShipping(t *testing.T) {
 		"skills/boss-review/SKILL.md":                    {Data: []byte("read " + installedFalsification + " before probing")},
 		"skills/boss-review/references/falsification.md": {Data: []byte("# falsification")},
 	}
-	findings, refsByCore, err := missingReferenceRefs(present)
+	findings, refsByCore, scanned, err := missingReferenceRefs(present)
 	if err != nil {
 		t.Fatalf("missingReferenceRefs(present installed root): %v", err)
+	}
+	if scanned == 0 {
+		t.Fatal("missingReferenceRefs(present installed root) scanned 0 files, want non-zero")
 	}
 	if len(findings) != 0 {
 		t.Errorf("missingReferenceRefs(present installed root) = %v, want none", findings)
@@ -1656,9 +1839,12 @@ func TestInstalledRootReferenceRefsRequireOwnershipAndShipping(t *testing.T) {
 	absent := fstest.MapFS{
 		"skills/boss-review/SKILL.md": {Data: []byte("read " + installedFalsification + " before probing")},
 	}
-	findings, _, err = missingReferenceRefs(absent)
+	findings, _, scanned, err = missingReferenceRefs(absent)
 	if err != nil {
 		t.Fatalf("missingReferenceRefs(absent installed root): %v", err)
+	}
+	if scanned == 0 {
+		t.Fatal("missingReferenceRefs(absent installed root) scanned 0 files, want non-zero")
 	}
 	if len(findings) != 1 || !strings.Contains(findings[0], "boss-review/references/falsification.md") || !strings.Contains(findings[0], "not in the payload") {
 		t.Errorf("missingReferenceRefs(absent installed root) = %v, want one missing boss-review falsification reference", findings)
@@ -1668,9 +1854,12 @@ func TestInstalledRootReferenceRefsRequireOwnershipAndShipping(t *testing.T) {
 		"skills/boss-plan/SKILL.md":                      {Data: []byte("read " + installedFalsification + " before probing")},
 		"skills/boss-review/references/falsification.md": {Data: []byte("# falsification")},
 	}
-	findings, _, err = missingReferenceRefs(crossCore)
+	findings, _, scanned, err = missingReferenceRefs(crossCore)
 	if err != nil {
 		t.Fatalf("missingReferenceRefs(cross-core installed root): %v", err)
+	}
+	if scanned == 0 {
+		t.Fatal("missingReferenceRefs(cross-core installed root) scanned 0 files, want non-zero")
 	}
 	if len(findings) != 1 || !strings.Contains(findings[0], "cross-core path boss-review/references/falsification.md") {
 		t.Errorf("missingReferenceRefs(cross-core installed root) = %v, want one cross-core finding", findings)
@@ -1692,7 +1881,7 @@ func TestPublishedCoresShipTheReferencesTheyName(t *testing.T) {
 	payloads := shippedPayloads(t)
 
 	for label, fsys := range payloads {
-		findings, refsByCore, err := missingReferenceRefs(fsys)
+		findings, refsByCore, _, err := missingReferenceRefs(fsys)
 		if err != nil {
 			t.Fatalf("walk %s: %v", label, err)
 		}
@@ -1846,12 +2035,12 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 	if err := os.WriteFile(forgedSpecPath, []byte(`{"parentId":"BOS-0","children":[{"key":"forged","title":"Add Forged"}]}`), 0o644); err != nil {
 		t.Fatalf("write forged epic spec: %v", err)
 	}
-	writeGuards := func(t *testing.T, ids ...string) string {
+	writeGuardSet := func(t *testing.T, names ...string) string {
 		t.Helper()
-		paths := make([]string, 0, len(ids)*3)
-		for _, id := range ids {
+		paths := make([]string, 0, len(names)*3)
+		for _, name := range names {
 			for _, suffix := range []string{".image-guard-orig.md", ".attachment-guard-orig.md", ".image-guard-new.md"} {
-				rel := ".linear-plans/" + id + suffix
+				rel := ".linear-plans/" + name + suffix
 				body := []byte("# guard\n")
 				if strings.HasSuffix(suffix, "-orig.md") {
 					body = nil
@@ -1864,14 +2053,21 @@ func TestBossPlanEpicSentinelRejectsInvalidChildPlanPaths(t *testing.T) {
 		}
 		return "[" + strings.Join(paths, ",") + "]"
 	}
-	defaultGuards := writeGuards(t, "BOS-0", "BOS-1", "BOS-2")
-	dirGuards := writeGuards(t, "BOS-0", "BOS-3")
-	parentOnlyGuards := writeGuards(t, "BOS-0")
-	nestedGuardPath := ".linear-plans/nested/BOS-2.image-guard-new.md"
+	epicGuardNames := func(parent string, children ...string) []string {
+		names := []string{parent}
+		for _, child := range children {
+			names = append(names, parent+".child-"+child)
+		}
+		return names
+	}
+	defaultGuards := writeGuardSet(t, epicGuardNames("BOS-0", "BOS-1", "BOS-2")...)
+	dirGuards := writeGuardSet(t, epicGuardNames("BOS-0", "BOS-3")...)
+	parentOnlyGuards := writeGuardSet(t, "BOS-0")
+	nestedGuardPath := ".linear-plans/nested/BOS-0.child-BOS-2.image-guard-new.md"
 	if err := os.WriteFile(filepath.Join(dir, nestedGuardPath), []byte("# nested guard\n"), 0o644); err != nil {
 		t.Fatalf("write nested guard: %v", err)
 	}
-	nestedGuards := strings.Replace(defaultGuards, `".linear-plans/BOS-2.image-guard-new.md"`, `"`+nestedGuardPath+`"`, 1)
+	nestedGuards := strings.Replace(defaultGuards, `".linear-plans/BOS-0.child-BOS-2.image-guard-new.md"`, `"`+nestedGuardPath+`"`, 1)
 
 	validator := bossPlanArtifactVerifier(t)
 	t.Run("valid child id to plan path map", func(t *testing.T) {

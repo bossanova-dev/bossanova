@@ -256,7 +256,7 @@ git log origin/$BASE_BRANCH..HEAD --oneline
 
 ```bash
 # Run from repo root - automatically detects PR number
-~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh
+~/.claude/skills/boss-finalize/add-pr-numbers.sh
 ```
 
 **DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against the PR base branch, not the feature branch.
@@ -519,7 +519,7 @@ Before saying "done", verify ALL items:
 | Missing dependencies in worktree     | Generate/format fails   | Install the repo's documented dependencies, then re-run the same gate commands                              |
 | Stopped to ask permission to push    | Blocked automation      | Just push — do NOT ask for permission. Force-push is expected and authorized.                               |
 | Squashed stale branch onto new base  | PR reverts base changes | Rebase onto `origin/$BASE_BRANCH` first; never soft-reset stale history onto the new base                   |
-| Non-empty commit missing `[#PR-NUM]` | PR not linked           | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix all non-empty commits               |
+| Non-empty commit missing `[#PR-NUM]` | PR not linked           | Run `~/.claude/skills/boss-finalize/add-pr-numbers.sh` to fix all non-empty commits                         |
 | Reported issue but didn't fix        | Commits still broken    | You MUST run the script, not just report that commits need fixing                                           |
 | Compared against feature branch      | Wrong comparison        | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                          |
 | Branch "up to date" so skipped       | Commits still need PR#  | Even pushed non-empty commits need PR numbers - compare to the PR base branch, not feature branch           |

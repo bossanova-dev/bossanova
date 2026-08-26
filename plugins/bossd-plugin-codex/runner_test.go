@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -17,7 +18,7 @@ func TestBuildArgvBasicSession(t *testing.T) {
 	got := r.buildArgv(agentruntime.BuildArgvInput{
 		SessionID: "sess-1", ProvidedSessionID: true,
 	})
-	want := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
+	want := []string{"codex", "exec", "--json", "--skip-git-repo-check", "-c", "model_reasoning_effort=" + defaultCodexEffort}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgv = %v, want %v", got, want)
 	}
@@ -32,7 +33,7 @@ func TestBuildArgvIncludesResume(t *testing.T) {
 	got := r.buildArgv(agentruntime.BuildArgvInput{
 		Resume: &resume, SessionID: "sess-1", ProvidedSessionID: true,
 	})
-	want := []string{"codex", "exec", "resume", "abcd-1234", "--json", "--skip-git-repo-check"}
+	want := []string{"codex", "exec", "resume", "abcd-1234", "--json", "--skip-git-repo-check", "-c", "model_reasoning_effort=" + defaultCodexEffort}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgv (resume) = %v, want %v", got, want)
 	}
@@ -98,6 +99,46 @@ func TestBuildArgvOmitsBypassWhenFalse(t *testing.T) {
 	got := r.buildArgv(agentruntime.BuildArgvInput{SessionID: "x", ProvidedSessionID: true})
 	if contains(got, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Errorf("did not expect --dangerously-bypass-approvals-and-sandbox in %v", got)
+	}
+}
+
+func TestBuildArgvEffortPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		defaultVal string
+		requestVal string
+		want       string
+	}{
+		{name: "request wins", defaultVal: "high", requestVal: "medium", want: "medium"},
+		{name: "plugin fallback", defaultVal: "medium", requestVal: "", want: "medium"},
+		{name: "both empty", defaultVal: "", requestVal: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRunner(zerolog.Nop(), WithEffort(tt.defaultVal))
+			got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"effort": tt.requestVal}})
+			joined := strings.Join(got, "\x00")
+			if tt.want == "" {
+				if strings.Contains(joined, "model_reasoning_effort") {
+					t.Fatalf("buildArgv = %v, want no effort config", got)
+				}
+				return
+			}
+			if !strings.Contains(joined, "-c\x00model_reasoning_effort="+tt.want) {
+				t.Fatalf("buildArgv = %v, want model_reasoning_effort=%s", got, tt.want)
+			}
+			if tt.defaultVal != "" && tt.requestVal != "" && strings.Contains(joined, "model_reasoning_effort="+tt.defaultVal) {
+				t.Fatalf("buildArgv = %v, plugin default must not also appear", got)
+			}
+		})
+	}
+}
+
+func TestBuildArgvUsesBuiltInEffortDefault(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{Options: map[string]string{"effort": ""}})
+	if !strings.Contains(strings.Join(got, "\x00"), "-c\x00model_reasoning_effort="+defaultCodexEffort) {
+		t.Fatalf("buildArgv = %v, want built-in effort %s", got, defaultCodexEffort)
 	}
 }
 

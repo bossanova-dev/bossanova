@@ -892,14 +892,19 @@ func skillsCmd() *cobra.Command {
 	install.Flags().StringVar(&installAgent, "agent", "", "Restrict to one agent: claude or codex (default: all on PATH)")
 
 	var checkAgent string
+	var gate bool
 	check := &cobra.Command{
 		Use:   "check",
 		Short: "Check installed boss skills against this binary and checkout sources",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
+			if gate {
+				return runSkillGate(c.OutOrStdout(), checkAgent)
+			}
 			return runSkillCheck(c.OutOrStdout(), checkAgent)
 		},
 	}
+	check.Flags().BoolVar(&gate, "gate", false, "Fail only when installed skills drift from checkout source for paths not edited by this branch")
 	check.Flags().StringVar(&checkAgent, "agent", "", "Restrict to one agent: claude or codex (default: all on PATH)")
 
 	cmd.AddCommand(sync, install, check)
@@ -1045,17 +1050,8 @@ func warnBinarySkillsDrift(payload selectedSkillPayload, postRefreshCurrent bool
 // every selected agent. It is read-only and returns an error only after every
 // requested report has been written.
 func runSkillCheck(out io.Writer, only string) error {
-	if only != "" {
-		known := false
-		for _, target := range skillInstallAgents {
-			if target.command == only {
-				known = true
-				break
-			}
-		}
-		if !known {
-			return fmt.Errorf("unknown agent %q (want claude or codex)", only)
-		}
+	if err := validateSkillAgentFilter(only); err != nil {
+		return err
 	}
 
 	// Checks are read-only, so a canonical authenticated checkout is safe to use
@@ -1139,6 +1135,121 @@ func runSkillCheck(out io.Writer, only string) error {
 		return fmt.Errorf("skill drift detected")
 	}
 	return nil
+}
+
+func validateSkillAgentFilter(only string) error {
+	if only == "" {
+		return nil
+	}
+	for _, target := range skillInstallAgents {
+		if target.command == only {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown agent %q (want claude or codex)", only)
+}
+
+func runSkillGate(out io.Writer, only string) error {
+	if err := validateSkillAgentFilter(only); err != nil {
+		return err
+	}
+	only = skillGateAgentFilter(only)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	srcRoot, found := libskillinstall.FindSourceRoot(cwd)
+	if !found {
+		return nil
+	}
+
+	payload := selectedSkillPayload{srcRoot: srcRoot, fromSource: true}
+	repoRoot := repoRootFromSourceRoot(srcRoot)
+	var gateErr error
+	for _, target := range skillInstallAgents {
+		if only != "" && target.command != only {
+			continue
+		}
+		dir, err := libskillinstall.DirForAgent(target.agent)
+		if err != nil {
+			return fmt.Errorf("%s skills dir: %w", target.command, err)
+		}
+		paths, err := libskillinstall.SourceDriftPaths(dir, srcRoot)
+		if err != nil {
+			gateErr = errors.Join(gateErr, fmt.Errorf("check %s skills: %w", target.command, err))
+			continue
+		}
+		if len(paths) == 0 {
+			continue
+		}
+
+		selfEdited, unexplained, fallback := classifySkillGateDrift(repoRoot, paths)
+		if len(selfEdited) > 0 {
+			_, _ = fmt.Fprintf(out, "boss skills gate: %s self-edited drift: %s", target.command, strings.Join(selfEdited, ", "))
+			if fallback {
+				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
+			}
+			_, _ = fmt.Fprintln(out)
+		}
+		if len(unexplained) > 0 {
+			gateErr = errors.Join(gateErr, fmt.Errorf("skill drift detected"))
+			_, _ = fmt.Fprintf(out, "boss skills gate: %s skill drift detected", target.command)
+			if fallback {
+				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
+			}
+			_, _ = fmt.Fprintln(out)
+			for _, path := range unexplained {
+				_, _ = fmt.Fprintf(out, "  - %s\n", path)
+			}
+			_, _ = fmt.Fprintf(out, "  run `%s`\n", skillInstallRemedy(payload))
+		}
+	}
+	return gateErr
+}
+
+func skillGateAgentFilter(only string) string {
+	if only != "" {
+		return only
+	}
+	switch filepath.Base(filepath.Dir(filepath.Clean(os.Getenv("BOSS_SKILLS_HOME")))) {
+	case ".claude":
+		return "claude"
+	case ".codex":
+		return "codex"
+	default:
+		return ""
+	}
+}
+
+func classifySkillGateDrift(repoRoot string, paths []string) (selfEdited, unexplained []string, usedFallback bool) {
+	branchBase, baseErr := checkoutGitOutput(repoRoot, "merge-base", "HEAD", "origin/HEAD")
+	if baseErr != nil || strings.TrimSpace(branchBase) == "" {
+		usedFallback = true
+		branchBase = ""
+	}
+	for _, rel := range paths {
+		sourcePath := filepath.Join(libskillinstall.SourceRelPath, "skills", filepath.FromSlash(strings.TrimSuffix(rel, "/")))
+		diff := ""
+		var err error
+		if branchBase != "" {
+			diff, err = checkoutGitOutput(repoRoot, "diff", "--name-only", branchBase, "--", sourcePath)
+			if err != nil {
+				usedFallback = true
+				diff = ""
+			}
+		}
+		status, statusErr := checkoutGitOutput(repoRoot, "status", "--porcelain", "--", sourcePath)
+		if statusErr == nil && strings.TrimSpace(status) != "" {
+			diff = status
+			err = nil
+		}
+		if err == nil && strings.TrimSpace(diff) != "" {
+			selfEdited = append(selfEdited, rel)
+			continue
+		}
+		unexplained = append(unexplained, rel)
+	}
+	return selfEdited, unexplained, usedFallback
 }
 
 func yesNo(value bool) string {

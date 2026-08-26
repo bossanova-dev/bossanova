@@ -55,6 +55,75 @@ func TestDispatcherChecksPassed(t *testing.T) {
 	}
 }
 
+func TestDispatcherChecksPassedPersistsObservedProvenance(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		State:    machine.AwaitingChecks,
+		PRNumber: &prNum,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, logger)
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-pass", Demonstrated: true}}
+	close(ch)
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.LastCheckState != machine.CheckStatePassed {
+		t.Errorf("LastCheckState = %v, want Passed", sess.LastCheckState)
+	}
+	if sess.LastCheckStateHeadSHA == nil || *sess.LastCheckStateHeadSHA != "sha-pass" {
+		t.Errorf("LastCheckStateHeadSHA = %v, want sha-pass", sess.LastCheckStateHeadSHA)
+	}
+	if sess.LastCheckStateAt == nil {
+		t.Fatal("LastCheckStateAt nil, want observation timestamp")
+	}
+}
+
+func TestDispatcherChecksPassedWithoutDemonstratedGatePersistsUnknown(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		State:          machine.AwaitingChecks,
+		PRNumber:       &prNum,
+		LastCheckState: machine.CheckStatePassed,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, logger)
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-no-gate", Demonstrated: false}}
+	close(ch)
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.LastCheckState != machine.CheckStateUnspecified {
+		t.Errorf("LastCheckState = %v, want Unspecified", sess.LastCheckState)
+	}
+	if sess.LastCheckStateHeadSHA == nil || *sess.LastCheckStateHeadSHA != "sha-no-gate" {
+		t.Errorf("LastCheckStateHeadSHA = %v, want sha-no-gate", sess.LastCheckStateHeadSHA)
+	}
+	if sess.LastCheckStateAt == nil {
+		t.Fatal("LastCheckStateAt nil, want observation timestamp")
+	}
+}
+
 func TestDispatcherChecksFailed(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()

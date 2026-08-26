@@ -133,7 +133,8 @@ produce the first-pass findings, to catch what a single model's blind spots miss
 
 Once must-fix findings exist, iterate:
 
-1. **Fix.** Partition must-fix items into patchable and narrative work. Apply patchable findings
+1. **Fix.** Partition must-fix items into patchable and narrative work. Treat the whole must-fix set
+   for the completed review pass as one fix batch. Apply patchable findings
    mechanically in the orchestrator before any fix step is dispatched: compose overlapping patches
    in one file into one exact replacement, re-read the current file bytes immediately before each
    application, require `old_string` to still match exactly once, and reject rather than guess when
@@ -143,15 +144,22 @@ Once must-fix findings exist, iterate:
    receiving-code-review discipline: **adjudicate before you fix** —
    an item may not be fixed until its premise has been confirmed or falsified against the code it
    cites — then one item at a time, no unrelated refactors, and write behavior-focused tests for
-   coverage gaps. Each item ends in exactly one disposition — **fixed** (code changed) or
-   **verified** (the finding was wrong for this codebase, with a recorded rationale **and the
-   evidence that settled it**). Run the affected tests/lint and commit.
+   coverage gaps. Each item that changes the worktree is committed without running gates; a
+   **verified** item that changes no files records only the ledger entry unless an explicit
+   empty-commit protocol is chosen; no gate runs per item or per finding. Each item ends in exactly
+   one disposition — **fixed** (code changed) or **verified** (the finding was wrong for this
+   codebase, with a recorded rationale **and the evidence that settled it**). Run the configured gate commands once at batch close, then fix
+   forward inside the same batch if they fail. Split the batch only for an intra-batch ordering
+   dependency, where one item's fix changes the file or bytes cited by another item in the same
+   batch; at most one split is allowed per pass, and each sub-batch gates once.
 2. **Re-review the confirming surface.** That surface is the union of the newly-changed files
    and the cited files of every verified finding. Verified items make no code change, so their
    rationale and evidence still need independent confirmation; if every item was verified and no
    code changed, their cited files are the confirming surface and the round still runs. Re-run the
-   always-on rounds over that surface, writing into round-namespaced findings so a re-run never
-   clobbers prior evidence. Re-dispatch a specialist lens only if a confirming-surface file
+   always-on rounds over that surface unless the no-op predicate refuses it: unchanged tip, zero
+   newly fixed items, zero newly verified items, zero carried claims, and zero unrepaired invalid
+   evidence. That predicate is narrower than "no code changed"; verified-only rounds still run.
+   Write into round-namespaced findings so a re-run never clobbers prior evidence. Re-dispatch a specialist lens only if a confirming-surface file
    matches it; when none match, the confirming round is exactly the always-on rounds over that
    surface — never skip the round entirely. The cross-agent voice is optional on confirming
    rounds.
@@ -161,9 +169,13 @@ Once must-fix findings exist, iterate:
 
 ### Oscillation guard
 
-If the same `file:line - title` is must-fix in **two consecutive rounds** and was neither
-fixed nor verified in between, stop looping on it and record it as `unresolved` (fixes are
-not clearing it). Oscillation is a signal to stop and report, not to loop forever.
+Write the previous round, current round, and intervening fixed/verified dispositions to an
+oscillation payload file, then run `bs-review-caps.mjs oscillation --in <payload.json>`. The helper
+owns the deterministic JSON tuple identity `[file,line,title]`: if the same key is must-fix in **two
+consecutive rounds**, stop looping on it and record it as `unresolved` (fixes are not clearing it).
+The fixed/verified dispositions in the payload are validated but do not suppress a finding that
+reappears in the current must-fix list. Oscillation is a signal to stop and report, not to loop
+forever.
 
 ### Round cap
 
@@ -173,16 +185,19 @@ hitting the cap with open must-fix, exit via the "capped" outcome rather than lo
 
 ## Confidence rubric
 
-Grade the run's confidence by what actually weakened the review — not by transient
-infrastructure flakes:
+Grade the run's confidence from the panel that produced the verdict and the agreement inside that
+panel, not from a caller-supplied word:
 
-- **Low** — the round cap was hit, **or** a must-fix is `unresolved`, **or** an always-on
-  round failed to run at all.
-- **Medium** — only the cross-agent second voice was skipped (an infra flake — timeout,
-  unauthenticated, not installed) while **every** always-on round ran clean. A flaky
-  cross-agent voice must not, on its own, drag a fully-reviewed clean branch to Low.
-- **High** — all rounds, including the second voice, ran and the branch converged to zero
-  open must-fix.
+- **Low** — panel evidence is absent or unreadable, the terminal panel has fewer than two
+  reviewers, the round cap was hit, a must-fix is `unresolved`, a required always-on round failed to
+  run, or a finding was must-fix at round N, absent at round N+1, and recorded in neither `Fixed` nor
+  `Leave as-is`.
+- **Medium** — every required round ran and there is no unresolved must-fix or vanished finding, but
+  the terminal panel is smaller than the initial panel, an optional independent voice was skipped on
+  infrastructure, or one reviewer alone raised a must-fix while a panel of two or more reviewed the
+  same surface.
+- **High** — the terminal panel has at least two reviewers, is no smaller than the initial panel, no
+  finding vanished, no must-fix remains unresolved, no cap was hit, and the branch converged.
 
 ## Terminal outcomes
 

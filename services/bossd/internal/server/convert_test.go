@@ -272,28 +272,34 @@ func TestSessionToProto(t *testing.T) {
 	prURL := "https://github.com/owner/repo/pull/42"
 	blocked := "CI failed"
 	acct := "a1"
+	checkHeadSHA := "abc123"
+	lastCheckStateAt := now.Add(-time.Minute)
+	stateEnteredAt := now.Add(-2 * time.Minute)
 
 	sess := &models.Session{
-		ID:                  "sess-1",
-		RepoID:              "repo-1",
-		Title:               "Fix bug",
-		Plan:                "Fix the thing",
-		WorktreePath:        "/tmp/wt",
-		BranchName:          "fix-bug",
-		BaseBranch:          "main",
-		State:               machine.ImplementingPlan,
-		AgentSessionID:      &agentSessionID,
-		AgentName:           "codex",
-		PRNumber:            &prNum,
-		PRURL:               &prURL,
-		LastCheckState:      machine.CheckStatePassed,
-		IsAutomationEnabled: true,
-		AttemptCount:        3,
-		BlockedReason:       &blocked,
-		AccountID:           &acct,
-		ArchivedAt:          &now,
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ID:                    "sess-1",
+		RepoID:                "repo-1",
+		Title:                 "Fix bug",
+		Plan:                  "Fix the thing",
+		WorktreePath:          "/tmp/wt",
+		BranchName:            "fix-bug",
+		BaseBranch:            "main",
+		State:                 machine.ImplementingPlan,
+		AgentSessionID:        &agentSessionID,
+		AgentName:             "codex",
+		PRNumber:              &prNum,
+		PRURL:                 &prURL,
+		LastCheckState:        machine.CheckStatePassed,
+		LastCheckStateHeadSHA: &checkHeadSHA,
+		LastCheckStateAt:      &lastCheckStateAt,
+		StateEnteredAt:        &stateEnteredAt,
+		IsAutomationEnabled:   true,
+		AttemptCount:          3,
+		BlockedReason:         &blocked,
+		AccountID:             &acct,
+		ArchivedAt:            &now,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 
 	p := SessionToProto(sess)
@@ -332,6 +338,21 @@ func TestSessionToProto(t *testing.T) {
 	}
 	if p.AccountId == nil || *p.AccountId != "a1" {
 		t.Errorf("AccountId = %v, want a1", p.AccountId)
+	}
+	if p.LastCheckState != pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED {
+		t.Errorf("LastCheckState = %v, want UNSPECIFIED before hydration", p.LastCheckState)
+	}
+	if p.LastCheckStateObserved != pb.ChecksOverall_CHECKS_OVERALL_PASSED {
+		t.Errorf("LastCheckStateObserved = %v, want PASSED", p.LastCheckStateObserved)
+	}
+	if p.GetLastCheckStateHeadSha() != checkHeadSHA {
+		t.Errorf("LastCheckStateHeadSha = %q, want %q", p.GetLastCheckStateHeadSha(), checkHeadSHA)
+	}
+	if p.GetLastCheckStateAt() == nil || !p.GetLastCheckStateAt().AsTime().Equal(lastCheckStateAt) {
+		t.Errorf("LastCheckStateAt = %v, want %v", p.GetLastCheckStateAt(), lastCheckStateAt)
+	}
+	if p.GetStateEnteredAt() == nil || !p.GetStateEnteredAt().AsTime().Equal(stateEnteredAt) {
+		t.Errorf("StateEnteredAt = %v, want %v", p.GetStateEnteredAt(), stateEnteredAt)
 	}
 }
 
@@ -1302,9 +1323,15 @@ func TestHydrateDisplayEntry(t *testing.T) {
 	}
 
 	mergeable := true
-	p := &pb.Session{}
+	checkHeadSHA := "abc123"
+	p := &pb.Session{
+		LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+		LastCheckStateObserved: pb.ChecksOverall_CHECKS_OVERALL_PASSED,
+		LastCheckStateHeadSha:  &checkHeadSHA,
+	}
 	HydrateDisplayEntry(p, &status.DisplayEntry{
 		Status:              vcs.DisplayStatusPassing,
+		HeadSHA:             checkHeadSHA,
 		HasFailures:         true,
 		HasChangesRequested: true,
 		IsRepairing:         true,
@@ -1315,6 +1342,9 @@ func TestHydrateDisplayEntry(t *testing.T) {
 	})
 	if p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_PASSING {
 		t.Errorf("display_status = %v, want PASSING", p.GetDisplayStatus())
+	}
+	if p.GetLastCheckState() != pb.ChecksOverall_CHECKS_OVERALL_PASSED {
+		t.Errorf("last_check_state = %v, want promoted PASSED", p.GetLastCheckState())
 	}
 	if !p.GetDisplayHasFailures() || !p.GetDisplayHasChangesRequested() ||
 		!p.GetDisplayIsRepairing() || !p.GetDisplaySettingUp() || !p.GetDisplayMerging() {
@@ -1339,6 +1369,17 @@ func TestHydrateDisplayEntry(t *testing.T) {
 	})
 	if pClear.GetArchivePending() {
 		t.Errorf("archive_pending = true for Archiving=false entry, want false")
+	}
+
+	oldHeadSHA := "old"
+	stale := &pb.Session{
+		LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+		LastCheckStateObserved: pb.ChecksOverall_CHECKS_OVERALL_FAILED,
+		LastCheckStateHeadSha:  &oldHeadSHA,
+	}
+	HydrateDisplayEntry(stale, &status.DisplayEntry{HeadSHA: "new"})
+	if stale.GetLastCheckState() != pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED {
+		t.Errorf("stale last_check_state = %v, want UNSPECIFIED", stale.GetLastCheckState())
 	}
 }
 

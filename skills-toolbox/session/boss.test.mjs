@@ -8,6 +8,8 @@ import {
   requiredBossCliCommandsForEpic,
   bossCliDegradedCapabilities,
   bossCliPartialCapabilities,
+  BOSS_CLI_INVENTORY_COMMAND,
+  normalizeBossCliCommands,
   bossEpicTransportPreflight,
   bossEpicToolPreflight,
 } from './boss.mjs'
@@ -236,6 +238,14 @@ test('requiredBossCliCommandsForEpic returns the distinct sorted CLI command set
   }
 })
 
+test('normalizeBossCliCommands prefixes bare names and de-duplicates deterministically', () => {
+  assert.deepEqual(normalizeBossCliCommands([' merge ', 'boss ls', '', 'merge', 'boss show']), [
+    'boss ls',
+    'boss merge',
+    'boss show',
+  ])
+})
+
 test('bossEpicTransportPreflight PREFERS the CLI when both transports are complete', () => {
   // The preference, pinned by name. A bossd spawn wired the boss MCP server
   // unconditionally until this preference existed, so an MCP-preferring resolver
@@ -255,6 +265,7 @@ test('bossEpicTransportPreflight PREFERS the CLI when both transports are comple
   // Preferring the CLI is not free: it costs the cli: null capabilities, and the
   // resolver must say so even on the happy path.
   assert.deepEqual(result.degraded, bossCliDegradedCapabilities())
+  assert.equal(result.inventoryHint, null)
 })
 
 test('bossEpicTransportPreflight selects MCP only when the CLI set is incomplete', () => {
@@ -268,6 +279,7 @@ test('bossEpicTransportPreflight selects MCP only when the CLI set is incomplete
   assert.deepEqual(result.missing, [])
   assert.deepEqual(result.degraded, [])
   assert.deepEqual(result.missingCliCommands, [requiredBossCliCommandsForEpic()[0]])
+  assert.equal(result.inventoryHint, null)
 })
 
 test('bossEpicTransportPreflight falls through to the CLI transport with no MCP at all', () => {
@@ -286,6 +298,7 @@ test('bossEpicTransportPreflight falls through to the CLI transport with no MCP 
   assert.ok(result.degraded.includes('resolveContext'))
   assert.ok(result.degraded.includes('getSessionStatuses'))
   assert.deepEqual(result.degraded, [...result.degraded].sort())
+  assert.equal(result.inventoryHint, null)
 })
 
 test('bossEpicTransportPreflight passes via CLI when MCP is missing only merge_session', () => {
@@ -300,6 +313,7 @@ test('bossEpicTransportPreflight passes via CLI when MCP is missing only merge_s
   assert.equal(result.transport, 'cli')
   assert.deepEqual(result.missing, [])
   assert.deepEqual(result.missingTools, ['merge_session'])
+  assert.equal(result.inventoryHint, null)
 })
 
 test('bossEpicTransportPreflight blocks only when neither transport is complete', () => {
@@ -314,11 +328,35 @@ test('bossEpicTransportPreflight blocks only when neither transport is complete'
   assert.deepEqual(result.missingTools, ['merge_session'])
   assert.deepEqual(result.missingCliCommands, ['boss merge'])
   assert.deepEqual(result.degraded, [])
+  assert.equal(result.inventoryHint, null)
   // A wholly empty runtime reports both transports' full requirement lists.
   const empty = bossEpicTransportPreflight({ availableTools: [], availableCliCommands: [] })
   assert.equal(empty.ok, false)
   assert.deepEqual(empty.missingTools, requiredBossToolsForEpic())
   assert.deepEqual(empty.missingCliCommands, requiredBossCliCommandsForEpic())
+  assert.match(empty.inventoryHint, new RegExp(BOSS_CLI_INVENTORY_COMMAND))
+})
+
+test('bossEpicTransportPreflight normalizes bare help names without inventing subcommands', () => {
+  const helpNames = ['agents', 'chat', 'chats', 'ls', 'merge', 'new', 'session', 'show']
+  const result = bossEpicTransportPreflight({ availableTools: [], availableCliCommands: helpNames })
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.missingCliCommands, [
+    'boss chat new',
+    'boss chat send',
+    'boss session checks',
+  ])
+  assert.match(result.inventoryHint, new RegExp(BOSS_CLI_INVENTORY_COMMAND))
+})
+
+test('bossEpicTransportPreflight passes with boss env capability inventory shape', () => {
+  const result = bossEpicTransportPreflight({
+    availableTools: [],
+    availableCliCommands: requiredBossCliCommandsForEpic(),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.transport, 'cli')
+  assert.equal(result.inventoryHint, null)
 })
 
 test('bossEpicToolPreflight keeps its original shape for its original inputs', () => {

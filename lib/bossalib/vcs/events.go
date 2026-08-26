@@ -9,6 +9,12 @@ type Event interface {
 // ChecksPassed indicates all CI checks passed on a PR.
 type ChecksPassed struct {
 	PRID int
+	// HeadSHA is the PR head commit SHA observed when the pass was emitted.
+	HeadSHA string
+	// Demonstrated records CheckVerdict.DemonstratedPass() at emit time. A
+	// Green/no-gate-ran verdict is green for some workflow routing, but proves
+	// no repository gate ran and must not be persisted as CHECKS_OVERALL_PASSED.
+	Demonstrated bool
 }
 
 // ChecksFailed indicates one or more CI checks failed on a PR.

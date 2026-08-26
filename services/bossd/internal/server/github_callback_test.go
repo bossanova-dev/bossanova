@@ -113,6 +113,25 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	if cb.AttemptCount != 0 {
 		t.Errorf("attempt_count = %d, want 0", cb.AttemptCount)
 	}
+	if cb.ShouldRequireTransition || cb.HasObservedBaseline {
+		t.Errorf("transition flags = %v/%v, want false/false", cb.ShouldRequireTransition, cb.HasObservedBaseline)
+	}
+}
+
+func TestCreateGithubCallback_ShouldRequireTransitionRoundTrips(t *testing.T) {
+	srv := newGithubCallbackServer(t)
+	ctx := context.Background()
+
+	req := validCreateGithubCallbackRequest()
+	requiresTransition := true
+	req.ShouldRequireTransition = &requiresTransition
+	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(req))
+	if err != nil {
+		t.Fatalf("CreateGithubCallback: %v", err)
+	}
+	if !resp.Msg.GetGithubCallback().GetShouldRequireTransition() {
+		t.Fatalf("should_require_transition = false, want true")
+	}
 }
 
 func TestCreateGithubCallback_ExplicitExpiryRoundTrips(t *testing.T) {
@@ -331,7 +350,7 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	}
 }
 
-func TestDeleteGithubCallback_Idempotent(t *testing.T) {
+func TestDeleteGithubCallback_OutcomesAndOwnership(t *testing.T) {
 	srv := newGithubCallbackServer(t)
 	ctx := context.Background()
 
@@ -341,20 +360,42 @@ func TestDeleteGithubCallback_Idempotent(t *testing.T) {
 	}
 	id := resp.Msg.GithubCallback.Id
 
-	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); err != nil {
+	wrongChat := "other-chat"
+	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+		Id:                 id,
+		ExpectTargetChatId: &wrongChat,
+	})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("wrong-owner delete = %v, want PermissionDenied", err)
+	}
+	all, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	if err != nil {
+		t.Fatalf("list after wrong-owner delete: %v", err)
+	}
+	if len(all.Msg.GithubCallbacks) != 1 {
+		t.Fatalf("wrong-owner delete should leave row present, list = %d", len(all.Msg.GithubCallbacks))
+	}
+
+	chat := "chat-1"
+	deleteResp, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+		Id:                 id,
+		ExpectTargetChatId: &chat,
+	}))
+	if err != nil {
 		t.Fatalf("first delete: %v", err)
 	}
+	if deleteResp.Msg.GetOutcome() != "deleted" {
+		t.Fatalf("delete outcome = %q, want deleted", deleteResp.Msg.GetOutcome())
+	}
 	// Gone from the list.
-	all, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	all, err = srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(all.Msg.GithubCallbacks) != 0 {
 		t.Fatalf("after delete list = %d, want 0", len(all.Msg.GithubCallbacks))
 	}
-	// Second delete is a no-op success (idempotent), not NotFound.
-	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); err != nil {
-		t.Fatalf("second delete should be OK, got %v", err)
+	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("second delete = %v, want NotFound", err)
 	}
 
 	// Blank id is rejected.
@@ -376,26 +417,28 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 
 	m := &models.GithubCallback{
-		ID:              "cb-1",
-		GroupID:         &group,
-		TargetChatID:    "chat-1",
-		RepoOwner:       "owner",
-		RepoName:        "repo",
-		PRNumber:        7,
-		Trigger:         models.GithubCallbackTriggerChecksFailed,
-		State:           models.GithubCallbackStateTriggered,
-		Message:         "body",
-		LeaseOwner:      &owner,
-		LeaseDeadlineAt: &lease,
-		AttemptCount:    3,
-		NextAttemptAt:   &next,
-		TriggeredAt:     &trig,
-		DeliveredAt:     &deliv,
-		LastError:       &lastErr,
-		LastEvent:       &lastEvent,
-		ExpiresAt:       created.Add(24 * time.Hour),
-		CreatedAt:       created,
-		UpdatedAt:       created.Add(time.Minute),
+		ID:                      "cb-1",
+		GroupID:                 &group,
+		TargetChatID:            "chat-1",
+		RepoOwner:               "owner",
+		RepoName:                "repo",
+		PRNumber:                7,
+		Trigger:                 models.GithubCallbackTriggerChecksFailed,
+		State:                   models.GithubCallbackStateTriggered,
+		Message:                 "body",
+		ShouldRequireTransition: true,
+		HasObservedBaseline:     true,
+		LeaseOwner:              &owner,
+		LeaseDeadlineAt:         &lease,
+		AttemptCount:            3,
+		NextAttemptAt:           &next,
+		TriggeredAt:             &trig,
+		DeliveredAt:             &deliv,
+		LastError:               &lastErr,
+		LastEvent:               &lastEvent,
+		ExpiresAt:               created.Add(24 * time.Hour),
+		CreatedAt:               created,
+		UpdatedAt:               created.Add(time.Minute),
 	}
 
 	p := githubCallbackToProto(m)
@@ -413,6 +456,9 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	}
 	if p.Message != "body" || p.LeaseOwner != "wkr" || p.AttemptCount != 3 {
 		t.Errorf("scalar fields wrong: %+v", p)
+	}
+	if !p.ShouldRequireTransition || !p.HasObservedBaseline {
+		t.Errorf("transition fields wrong: %+v", p)
 	}
 	if p.LastError != "delivery failed" || p.LastEvent != "pull_request.closed" {
 		t.Errorf("diagnostic fields wrong: %+v", p)

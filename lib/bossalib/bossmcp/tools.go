@@ -315,8 +315,8 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		// still held only its bootstrap commit. A tool description is the only
 		// contract an agent caller ever reads, so the caveat lives here — one
 		// sentence plus the oracle, because this text is per-turn rent.
-		Description: "Get a session by id. `state`/`last_check_state` carry no push information: they move when " +
-			"the daemon re-polls existing checks, while the remote branch is unchanged. Push " +
+		Description: "Get session. `state`/`last_check_state` carry no push information: re-poll existing checks " +
+			"can move them; `UNSPECIFIED` = no head-current gate. Push " +
 			"oracle (fetch first): `git rev-list --count origin/<base>..origin/<branch>`.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {

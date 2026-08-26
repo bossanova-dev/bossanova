@@ -267,6 +267,15 @@ message Session {
   optional int32 pr_number = 10;
   optional string pr_url = 11;
   ChecksOverall last_check_state = 12;
+  // Raw persisted check verdict latch, before the read-time head-SHA freshness
+  // gate is applied. last_check_state is promoted from this value only when
+  // last_check_state_head_sha matches the display tracker's current head SHA.
+  ChecksOverall last_check_state_observed = 65;
+  optional string last_check_state_head_sha = 66;
+  optional google.protobuf.Timestamp last_check_state_at = 67;
+  optional google.protobuf.Timestamp state_entered_at = 68;
+  string effective_model = 69;
+  string effective_effort = 70;
   bool is_automation_enabled = 13;
   int32 attempt_count = 14;
   optional string blocked_reason = 15;
@@ -784,6 +793,8 @@ message GithubCallback {
   google.protobuf.Timestamp expires_at        = 18;
   google.protobuf.Timestamp created_at        = 19;
   google.protobuf.Timestamp updated_at        = 20;
+  bool should_require_transition = 21;
+  bool has_observed_baseline = 22;
 }
 
 // Account is registry metadata for one provider login used by account

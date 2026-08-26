@@ -92,6 +92,7 @@ const HEADLESS_SECTION = sectionBetween(
   '### Headless (`BOSS_CRON=true`) — dispatch ONE awaited drafting subagent',
   '\n## Phase 2.5',
 )
+const PHASE_0_SECTION = sectionBetween(SKILL, '## Phase 0 — Preflight', '\n## Phase 1')
 const PHASE_4_SECTION = sectionBetween(
   SKILL,
   '## Phase 4 — Finalize the plan attachment and write back to the tracker',
@@ -152,7 +153,9 @@ test('boss-plan resolves BOSS_PLAN_TOOLBOX through one canonical preamble', () =
 
   assert.match(SKILL, /This\s+block\s+is\s+the\s+\*\*toolbox\s+preamble\*\*/)
   assert.match(SKILL, /\(drift\s+helper\s+not\s+installed\)/)
-  assert.match(SKILL, /prints\s+the\s+realpath/)
+  assert.match(SKILL, /boss\s+skills\s+check\s+--gate/)
+  assert.match(SKILL, /self-edited/)
+  assert.match(SKILL, /drift\s+helper\s+not\s+installed/)
   assert.match(SKILL, /loadSkillConfig\(\{ cwd \}\)/)
   assert.match(
     SKILL,
@@ -561,8 +564,8 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
   )
   assert.match(
     flat,
-    /\*\*explicit\s+field\s+list\*\*:\s+`description,\s+labels,\s+priority,\s+createdAt,\s+state`/,
-    'the candidate fetch must name the explicit field list — the default field set omits them and yields a silent zero-link run',
+    /\*\*explicit\s+field\s+list\*\*:\s+`description,\s+labels,\s+priority,\s+createdAt`\s+plus\s+the\s+adapter's\s+workflow-state\/status\s+fields/,
+    'the candidate fetch must name the explicit data fields plus adapter-specific workflow state/status fields — defaults omit them and yield a silent zero-link run',
   )
   assert.match(
     flat,
@@ -604,14 +607,13 @@ test('Phase 4 step 5 is I/O glue over the dependency library, not a prose decisi
     /planDependencyEdges/,
     'step 5 must call the library rather than re-deriving the ladder in prose',
   )
-  // The payload's own state. The subject is the blocked side of every inbound edge and the blocker
-  // of every outbound one, so a subject assembled without a state resolves to the unknown role on
-  // BOTH sides of the ladder's last rung and downgrades the whole set to `relatedTo` — a run that
-  // linked nothing, for a reason no per-candidate note distinguishes from having found nothing.
+  // The payload's own workflow state/status shape. The subject is blocked by inbound edges and
+  // blocks outbound ones, so missing state resolves to the unknown role on BOTH sides of the
+  // ladder's last rung and downgrades the whole set to `relatedTo`.
   assert.match(
     flat,
-    /`subject`\s+needs\s+the\s+SAME\s+fields\s+as\s+a\s+candidate,\s+its\s+own\s+`state`\s+included/,
-    'step 5 must require the subject payload to carry its own state, or every edge downgrades',
+    /`subject`\s+needs\s+the\s+SAME\s+fields\s+as\s+a\s+candidate,\s+including\s+workflow\s+state\/status/,
+    'step 5 must require the subject payload to carry its own state/status shape, or every edge downgrades',
   )
   // The prefilter is a context-scale measure. Read as an overlap filter it re-introduces the
   // missed-prerequisite defect one layer above the oracle.
@@ -1866,6 +1868,24 @@ test('the brief Step 7 template carries a `## Proof harness analysis` block (adv
   )
 })
 
+test('the brief Step 7 byte-copy recipe does not strip trailing newlines', () => {
+  assert.match(
+    BRIEF,
+    /Return\s+the\s+contents\s+of `"\$BODY"` as `descriptionSummary`/,
+    'the brief must tell the drafter to return the assembled file bytes',
+  )
+  assert.match(
+    BRIEF,
+    /command\s+substitution\s+strips\s+trailing\s+newline\s+bytes/,
+    'the brief must explain why command substitution is unsafe for the byte contract',
+  )
+  assert.doesNotMatch(
+    BRIEF,
+    /^DESCRIPTION_SUMMARY="\$\(cat "\$BODY"\)"$/m,
+    'the executable recipe must not assign descriptionSummary through command substitution',
+  )
+})
+
 test('the regenerated plugin mirror brief matches the canonical brief on the new contract strings', () => {
   assert.notEqual(
     MIRROR_BRIEF,
@@ -1881,6 +1901,11 @@ test('the regenerated plugin mirror brief matches the canonical brief on the new
     count(MIRROR_BRIEF, '## Proof harness analysis'),
     2,
     'the mirror brief must carry the same `## Proof harness analysis` blocks as the canonical brief',
+  )
+  assert.equal(
+    MIRROR_BRIEF,
+    BRIEF,
+    'the plugin mirror brief must be byte-identical to the canonical brief (run make copy-skills and stage it)',
   )
 })
 
@@ -2066,8 +2091,8 @@ test('the SKILL documents every load-bearing epic guard', () => {
   // green. That is the same failure mode the brief's outcome assertions already guard against.
   assert.match(
     EPIC_PHASE,
-    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never\s+by\s+eye,\s*never\s*\n?by\s+title/,
-    'the phase must mandate reconcileEpicChildren as the idempotent-resume join, not an eyeball or title match',
+    /reconcileEpicChildren\(spec,\s*hydratedLiveChildren\)`\s*—\s*never\s+by\s+eye,\s*never\s*\n?by\s+title/,
+    'the phase must mandate reconcileEpicChildren as the idempotent-resume join over hydrated children, not an eyeball or title match',
   )
   // The unambiguous-rename repair must be aimed at the CHILD's marker, never at the spec key:
   // `specKey` is the namespace `adopted`, the siblings' `blockedByKeys` and `epicWiringPlan` all
@@ -2130,8 +2155,8 @@ test('both references carry the EPIC triage tier and flow', () => {
   )
   assert.match(
     BRIEF,
-    /reconcileEpicChildren\(spec,\s*liveChildren\)`\s*—\s*never\s+adopt\s+by\s+eye,\s*never\s+by\s+title/,
-    'the brief must mandate reconcileEpicChildren as the idempotent-resume join, not an eyeball match',
+    /reconcileEpicChildren\(spec,\s*hydratedLiveChildren\)`[\s\S]*?Never\s+adopt\s+by\s+eye,\s*never\s+by\s+title/,
+    'the brief must mandate reconcileEpicChildren as the idempotent-resume join over hydrated children, not an eyeball match',
   )
   // Pin the three reconcileEpicChildren outcomes by their actual wording, not just the symbol's
   // presence — a resume step that stops calling the function while the identifier still appears
@@ -2238,6 +2263,58 @@ test('the plugin mirror SKILL.md is byte-identical to the canonical SKILL.md', (
 // Scratch cleanup — one glob pattern per command line.
 // ---------------------------------------------------------------------------
 
+test('BOS-992: Phase 0 invokes the stale plan-scratch reaper before tracker reads', () => {
+  assert.match(
+    PHASE_0_SECTION,
+    /node "\$BOSS_PLAN_TOOLBOX\/plan-scratch-reap\.mjs" \.linear-plans/,
+    'Phase 0 must invoke the plan-scratch reaper from the installed toolbox',
+  )
+  assert.ok(
+    SKILL.indexOf('plan-scratch-reap.mjs') < SKILL.indexOf('## Phase 1'),
+    'plan-scratch-reap must run before Phase 1, not from the success-only cleanup tail',
+  )
+  assert.match(
+    PHASE_0_SECTION,
+    /plan-scratch-reap\.mjs"\s+\.linear-plans\s+\|\|\n\s+echo\s+"warning:\s+stale\s+plan-scratch\s+reap\s+failed\s+\(non-fatal\)"\s+>&2/,
+    'the run-start reaper must warn on failure without aborting planning',
+  )
+  assert.doesNotMatch(
+    PHASE_0_SECTION,
+    /plan-scratch-reap\.mjs[^\n]*\|\| true/,
+    'the run-start reaper must not hide failures with `|| true`',
+  )
+})
+
+test('BOS-992: Phase 5 cleanup stays per-issue scoped', () => {
+  const phase5 = sectionBetween(SKILL, '## Phase 5 — Discard local artifacts', '\n## Phase 6')
+  const expectedPatterns = [
+    '<ISSUE-ID>-child-*.md',
+    '<ISSUE-ID>*.image-guard-*.md',
+    '<ISSUE-ID>*.attachment-guard-orig.md',
+    '<ISSUE-ID>*.attachment-headers-*.json',
+    '<ISSUE-ID>*.epic-spec.json',
+  ]
+  for (const pattern of expectedPatterns) {
+    assert.equal(
+      count(phase5, `-name '${pattern}' -delete`),
+      1,
+      `Phase 5 must keep exactly one deletion line for ${pattern}`,
+    )
+    assert.ok(
+      pattern.startsWith('<ISSUE-ID>'),
+      `Phase 5 pattern must remain issue-scoped: ${pattern}`,
+    )
+  }
+  const deletionLines = phase5
+    .split('\n')
+    .filter((line) => line.includes('find .linear-plans') && line.includes('-delete'))
+  assert.equal(
+    deletionLines.length,
+    expectedPatterns.length,
+    'Phase 5 must not gain broadened cleanup globs',
+  )
+})
+
 test('every glob-bearing scratch-cleanup line carries exactly one pattern', () => {
   // Under zsh and fish an UNMATCHED glob aborts the WHOLE command line. Three cleanup sites
   // used to share one `rm -f` line across the child-plan, image-guard and attachment-header
@@ -2338,7 +2415,7 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // together, which is the failure the exact pin below cannot see. It is passed as `below`, so
   // a violation now names both readings — pin raised toward the baseline, or baseline overdue
   // for re-derivation — instead of prescribing one cause.
-  const PRE_SPLIT_BASELINE = 104031
+  const PRE_SPLIT_BASELINE = 104520
   // BOS-782 re-baselines 87975 → 88035 (+60 B), carrying PRE_SPLIT_BASELINE with it to keep the
   // 16-byte guard margin. The Phase 0 preflight and the Phase 3 issueSlug one-liner both built
   // their ESM specifier as `'file://' + <path>`, which resolves a RELATIVE toolbox path as a bare
@@ -2461,7 +2538,21 @@ test('the resident SKILL.md body is pinned exactly, below the pre-split baseline
   // BOS-926 re-baselines 103902 -> 104003 (+101 B): the sibling-class enumeration rule is resident
   // as well as in the headless brief, with Phase 3 prose kept under the pre-split baseline.
   // BOS-1024 banks 104003 -> 104002 (-1 B): the await-helper citation was folded into existing prose.
-  const RATCHET = 104002 // exact measured resident body, re-measured 2026-08-25 (BOS-1024)
+  // BOS-1002 re-baselines 104002 -> 104495 (+493 B) for the resident fail-closed installed-skill
+  // drift gate. This must run before tracker writes, so it cannot live behind a later reference.
+  // Review repair re-baselines 104495 -> 104511 (+16 B) for the old-CLI fallback: unsupported
+  // `--gate` degrades to the warning helper, while real drift remains BLOCKED.
+  // BOS-999 banks 104511 -> 103913 (-598 B): resident epic orchestration now rejects decomposing
+  // epic children, hydrates children before resume reconciliation, verifies child guard scratch
+  // under the parent prefix, states the run-prefix cleanup invariant, and names the stronger
+  // epic reverify/header-prefix contracts found during review.
+  // BOS-992 re-baselines 103913 -> 104149 (+236 B): Phase 0 now invokes the existing age-based
+  // plan-scratch reaper after the config-ready gate and before any tracker read, with a visible
+  // non-fatal warning path. This must stay resident because abort paths skip Phase 5.
+  // BOS-996 re-baselines 104149 -> 104519 (+370 B): Phase 4 now names the adapter-specific
+  // workflow-state/status contract, stateRolesFor(config), and same-epic skip path.
+  // BOS-1030 banks 104519 -> 104483 (-36 B) while naming Codex's awaited dispatch pair.
+  const RATCHET = 104483 // exact measured resident body, re-measured 2026-08-26 (BOS-1030)
   assertExactSize({
     below: { name: 'PRE_SPLIT_BASELINE', value: PRE_SPLIT_BASELINE },
     constFile: 'scripts/bs-plan-skill.test.mjs',
@@ -2531,6 +2622,22 @@ test('the resident body cross-references how to dispatch a zero-change planning 
     assert.ok(
       !bullet.includes(notAFlag),
       `the zero-change cross-reference must not name ${notAFlag} — the pointer names the create_session field spellings; the CLI flags live in the boss skill's generated command reference`,
+    )
+  }
+})
+
+test('BOS-1002: installed-skill gate degrades for an old boss CLI', () => {
+  for (const copy of PAYLOAD_COPIES) {
+    assert.match(copy.skill, /skills\s+check\s+--gate/, copy.name)
+    assert.match(
+      copy.skill,
+      /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_PLAN_TOOLBOX\/toolbox-drift\.mjs"/,
+      copy.name,
+    )
+    assert.match(
+      copy.skill,
+      /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,
+      copy.name,
     )
   }
 })

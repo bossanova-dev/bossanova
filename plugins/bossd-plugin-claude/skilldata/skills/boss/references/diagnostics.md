@@ -102,6 +102,15 @@ Refresh one session's cached pull request status
 
 - `--pr` — Pull request number to refresh (default: 0)
 
+### `boss session review-ledger <session-id> [flags]`
+
+Show a finished boss-review run's durable dispatch ledger
+
+**Flags:**
+
+- `--json` — Emit a stable JSON schema instead of text
+- `--run` — Run id to read (default newest ledger by mtime)
+
 ### `boss tail [source...] [flags]`
 
 Tail daemon and agent logs

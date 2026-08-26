@@ -37,6 +37,7 @@ var ReleasedVersions = []Version{
 	"2026-08-16", // V20260816 — GateFailedOutcomeChange (BOS-881 gate_failed / CRON_JOB_STATUS_FAILED for a gate that could not run).
 	"2026-08-20", // V20260820 — SwitchDeadlineCodeChange (BOS-947 relayed switch deadline surfaces DEADLINE_EXCEEDED, not ABORTED).
 	"2026-08-21", // V20260821 — SwitchResultCeilingMessageChange + SwitchCanceledCodeChange.
+	"2026-08-25", // V20260825 — StaleCheckStateChange (last_check_state serves only head-current demonstrated verdicts).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

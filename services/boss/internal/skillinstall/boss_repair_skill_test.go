@@ -928,6 +928,42 @@ func TestBossRepairSkillGateRedIsNotAutomaticallyAFinding(t *testing.T) {
 	}
 }
 
+func TestBossRepairSkillStrategyBRootCauseTriage(t *testing.T) {
+	for name, skill := range bossRepairSkillPayloads(t) {
+		t.Run(name, func(t *testing.T) {
+			strategyB := sectionBetween(t, skill, "#### Strategy B: Failing Checks", "#### Strategy C: Review Feedback")
+
+			detailsAt := strings.Index(strategyB, "2. Get failure details:")
+			triageAt := strings.Index(strategyB, "3. Triage failing checks by root cause before choosing a repair branch:")
+			testAt := strings.Index(strategyB, "4. For **test failures**:")
+			if detailsAt < 0 || triageAt < 0 || testAt < 0 || detailsAt >= triageAt || triageAt >= testAt {
+				t.Fatalf("Strategy B root-cause triage must sit between failure details and per-type repair branches (details=%d triage=%d test=%d)", detailsAt, triageAt, testAt)
+			}
+
+			assertFalsificationPins(t, strategyB, bossRepairRootCauseTriagePins)
+
+			for _, window := range []struct {
+				name string
+				text string
+			}{
+				{name: "strategy B", text: strategyB},
+				{name: "strategy C", text: sectionBetween(t, skill, "#### Strategy C: Review Feedback", "### Phase 3: Verify and Monitor")},
+			} {
+				t.Run(window.name, func(t *testing.T) {
+					assertFalsificationPins(t, window.text, bossRepairBaseInheritancePins)
+				})
+			}
+
+			summary := sectionBetween(t, skill, "## Repair Summary", "## Terminal outcomes")
+			assertContains(t, summary, "**Root causes**:")
+			assertContains(t, summary, "Cause count")
+			assertContains(t, summary, "`cause -> checks it explains` table")
+			assertContains(t, summary, "**Gate results**:")
+			assertContains(t, summary, "**Residuals**:")
+		})
+	}
+}
+
 // TestBossRepairSkillPushedHeadSurvivalContract pins the survival check for this run's OWN commit.
 // A sibling agent sharing the worktree force-pushed over a round's committed content and every
 // signal the skill checked still read green: the sibling moved LOCAL HEAD too, so `git push`
@@ -1921,6 +1957,90 @@ var bossRepairDocClaimReadOrderPins = regProsePins([]falsificationProsePin{
 		pattern:      `beside\s+the\s+implementation\s+—\s+and\s+the\s+package\s+doc\s+comment\s+—`,
 		live:         "beside the implementation — and the package doc comment — and the **name**",
 		tokenRemoved: "beside the implementation and the **name**",
+	},
+})
+
+var bossRepairRootCauseTriagePins = regProsePins([]falsificationProsePin{
+	{
+		name:         "failure-signatures-come-from-output",
+		pattern:      `Derive\s+a\s+failure\s+signature\s+from\s+each\s+failing\s+check's\s+\*\*output\*\*,\s+not\s+from\s+the\s+check\s+name`,
+		live:         "Derive a failure signature from each failing check's **output**, not from the check name",
+		tokenRemoved: "Derive a failure signature from each failing check's name",
+	},
+	{
+		name:         "cause-table-groups-checks",
+		pattern:      "Group\\s+the\\s+failing\\s+checks\\s+into\\s+a\\s+`cause\\s+->\\s+checks\\s+it\\s+explains`\\s+table",
+		live:         "Group the failing checks into a `cause -> checks it explains` table",
+		tokenRemoved: "Group the failing checks into a table",
+	},
+	{
+		name:         "cause-count-drives-routing",
+		pattern:      `The\s+cause\s+count\s+drives\s+routing,\s+effort\s+sizing,\s+and\s+whether\s+fixes\s+split\s+into\s+separate\s+commits`,
+		live:         "The cause count drives routing, effort sizing, and whether fixes split into separate commits",
+		tokenRemoved: "The check count drives routing, effort sizing, and whether fixes split into separate commits",
+	},
+	{
+		name:         "red-check-count-drives-nothing",
+		pattern:      `the\s+red-check\s+count\s+is\s+only\s+a\s+symptom\s+count\s+and\s+drives\s+none\s+of\s+them`,
+		live:         "the red-check count is only a symptom count and drives none of them",
+		tokenRemoved: "the red-check count is only a symptom count",
+	},
+	{
+		name:         "base-signal-preferred",
+		pattern:      `Prefer\s+reading\s+the\s+base\s+branch's\s+own\s+recorded\s+CI\s+signal`,
+		live:         "Prefer reading the base branch's own recorded CI signal",
+		tokenRemoved: "Prefer re-running the base branch's CI signal",
+	},
+	{
+		name:         "merge-base-fallback",
+		pattern:      `reproduce\s+the\s+candidate\s+cause\s+at\s+the\s+merge-base\s+in\s+a\s+bounded\s+throwaway\s+worktree`,
+		live:         "reproduce the candidate cause at the merge-base in a bounded throwaway worktree",
+		tokenRemoved: "reproduce the candidate cause in a bounded worktree",
+	},
+	{
+		name:         "no-session-worktree-checkout",
+		pattern:      `Never\s+check\s+out\s+the\s+base\s+in\s+the\s+session\s+worktree`,
+		live:         "Never check out the base in the session worktree",
+		tokenRemoved: "Avoid checking out the base in the session worktree",
+	},
+	{
+		name:         "no-stash-fallback",
+		pattern:      "never\\s+use\\s+`git\\s+stash`",
+		live:         "never use `git stash`",
+		tokenRemoved: "avoid dirtying the worktree",
+	},
+	{
+		name:         "base-inherited-residual",
+		pattern:      `A\s+cause\s+confirmed\s+to\s+occur\s+on\s+the\s+base\s+is\s+a\s+\*\*residual\*\*`,
+		live:         "A cause confirmed to occur on the base is a **residual**",
+		tokenRemoved: "A cause confirmed to occur on the base is inherited",
+	},
+	{
+		name:         "no-new-outcome-or-token",
+		pattern:      `do\s+not\s+mint\s+a\s+new\s+terminal\s+outcome,\s+and\s+do\s+not\s+mint\s+a\s+new\s+watch\s+token`,
+		live:         "do not mint a new terminal outcome, and do not mint a new watch token",
+		tokenRemoved: "do not mint a new terminal outcome",
+	},
+})
+
+var bossRepairBaseInheritancePins = regProsePins([]falsificationProsePin{
+	{
+		name:         "base-inherited-failures-are-not-findings",
+		pattern:      `a\s+failure\s+already\s+present\s+on\s+the\s+PR's\s+base\s+is\s+an\s+inherited\s+failure,\s+not\s+a\s+finding`,
+		live:         "a failure already present on the PR's base is an inherited failure, not a finding",
+		tokenRemoved: "a failure already present on the PR's base is a finding",
+	},
+	{
+		name:         "compare-against-base",
+		pattern:      `compare\s+the\s+failure\s+against\s+the\s+base\s+when\s+inheritance\s+is\s+plausible`,
+		live:         "compare the failure against the base when inheritance is plausible",
+		tokenRemoved: "compare the failure against the branch",
+	},
+	{
+		name:         "branch-changed-and-absent-on-base",
+		pattern:      `Only\s+once\s+the\s+output\s+names\s+something\s+this\s+branch\s+changed\s+and\s+the\s+same\s+cause\s+is\s+not\s+already\s+present\s+on\s+the\s+base\s+is\s+there\s+a\s+failure\s+to\s+repair`,
+		live:         "Only once the output names something this branch changed and the same cause is not already present on the base is there a failure to repair",
+		tokenRemoved: "Only once the output names something this branch changed is there a failure to repair",
 	},
 })
 

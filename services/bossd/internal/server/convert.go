@@ -43,6 +43,9 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	if p == nil || e == nil {
 		return
 	}
+	if p.GetLastCheckStateHeadSha() != "" && p.GetLastCheckStateHeadSha() == e.HeadSHA {
+		p.LastCheckState = p.GetLastCheckStateObserved()
+	}
 	p.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
 	p.DisplayHasFailures = e.HasFailures
 	p.DisplayHasChangesRequested = e.HasChangesRequested
@@ -185,23 +188,25 @@ func repoToRepoSettings(r *models.Repo) *pb.RepoSettings {
 // SessionToProto converts a domain Session to its protobuf representation.
 func SessionToProto(s *models.Session) *pb.Session {
 	p := &pb.Session{
-		Id:                  protoString(s.ID),
-		RepoId:              protoString(s.RepoID),
-		Title:               protoString(s.Title),
-		Plan:                protoString(s.Plan),
-		WorktreePath:        protoString(s.WorktreePath),
-		BranchName:          protoString(s.BranchName),
-		BaseBranch:          protoString(s.BaseBranch),
-		State:               pb.SessionState(clampInt32(int(s.State))),
-		LastCheckState:      pb.ChecksOverall(clampInt32(int(s.LastCheckState))),
-		AgentName:           protoString(s.AgentName),
-		IsAutomationEnabled: s.IsAutomationEnabled,
-		AttemptCount:        clampInt32(s.AttemptCount),
-		CreatedAt:           timestamppb.New(s.CreatedAt),
-		UpdatedAt:           timestamppb.New(s.UpdatedAt),
-		DisplayLabel:        protoString(s.DisplayLabel),
-		DisplayIntent:       pb.DisplayIntent(s.DisplayIntent),
-		DisplaySpinner:      s.DisplaySpinner,
+		Id:                     protoString(s.ID),
+		RepoId:                 protoString(s.RepoID),
+		Title:                  protoString(s.Title),
+		Plan:                   protoString(s.Plan),
+		WorktreePath:           protoString(s.WorktreePath),
+		BranchName:             protoString(s.BranchName),
+		BaseBranch:             protoString(s.BaseBranch),
+		State:                  pb.SessionState(clampInt32(int(s.State))),
+		LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+		LastCheckStateObserved: pb.ChecksOverall(clampInt32(int(s.LastCheckState))),
+		LastCheckStateHeadSha:  s.LastCheckStateHeadSHA,
+		AgentName:              protoString(s.AgentName),
+		IsAutomationEnabled:    s.IsAutomationEnabled,
+		AttemptCount:           clampInt32(s.AttemptCount),
+		CreatedAt:              timestamppb.New(s.CreatedAt),
+		UpdatedAt:              timestamppb.New(s.UpdatedAt),
+		DisplayLabel:           protoString(s.DisplayLabel),
+		DisplayIntent:          pb.DisplayIntent(s.DisplayIntent),
+		DisplaySpinner:         s.DisplaySpinner,
 	}
 	if s.AgentSessionID != nil {
 		p.AgentSessionId = protoStringPtr(s.AgentSessionID)
@@ -230,6 +235,12 @@ func SessionToProto(s *models.Session) *pb.Session {
 	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
+	}
+	if s.LastCheckStateAt != nil {
+		p.LastCheckStateAt = timestamppb.New(*s.LastCheckStateAt)
+	}
+	if s.StateEnteredAt != nil {
+		p.StateEnteredAt = timestamppb.New(*s.StateEnteredAt)
 	}
 	// Last repair-attempt diagnostics, persisted by the repair plugin via
 	// HostService.RecordRepairOutcome. Forwarded here so `boss show <id>`
@@ -346,18 +357,20 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 // it is a secret and must never be logged by callers of this converter.
 func githubCallbackToProto(c *models.GithubCallback) *pb.GithubCallback {
 	p := &pb.GithubCallback{
-		Id:           c.ID,
-		TargetChatId: c.TargetChatID,
-		RepoOwner:    c.RepoOwner,
-		RepoName:     c.RepoName,
-		PrNumber:     clampInt32(c.PRNumber),
-		Trigger:      string(c.Trigger),
-		State:        string(c.State),
-		Message:      c.Message,
-		AttemptCount: clampInt32(c.AttemptCount),
-		ExpiresAt:    timestamppb.New(c.ExpiresAt),
-		CreatedAt:    timestamppb.New(c.CreatedAt),
-		UpdatedAt:    timestamppb.New(c.UpdatedAt),
+		Id:                      c.ID,
+		TargetChatId:            c.TargetChatID,
+		RepoOwner:               c.RepoOwner,
+		RepoName:                c.RepoName,
+		PrNumber:                clampInt32(c.PRNumber),
+		Trigger:                 string(c.Trigger),
+		State:                   string(c.State),
+		Message:                 c.Message,
+		ShouldRequireTransition: c.ShouldRequireTransition,
+		HasObservedBaseline:     c.HasObservedBaseline,
+		AttemptCount:            clampInt32(c.AttemptCount),
+		ExpiresAt:               timestamppb.New(c.ExpiresAt),
+		CreatedAt:               timestamppb.New(c.CreatedAt),
+		UpdatedAt:               timestamppb.New(c.UpdatedAt),
 	}
 	if c.GroupID != nil {
 		p.GroupId = *c.GroupID

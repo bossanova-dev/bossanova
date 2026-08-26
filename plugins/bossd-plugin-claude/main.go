@@ -57,6 +57,9 @@ func runnerOptsFromEnv() []RunnerOption {
 	if model := os.Getenv("BOSS_PLUGIN_model"); model != "" {
 		opts = append(opts, WithModel(model))
 	}
+	if effort := os.Getenv("BOSS_PLUGIN_effort"); effort != "" {
+		opts = append(opts, WithEffort(effort))
+	}
 	return opts
 }
 

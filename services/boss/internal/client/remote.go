@@ -799,14 +799,15 @@ func (c *RemoteClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCro
 // carried verbatim and never logged on either hop.
 func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.GithubCallback, error) {
 	resp, err := c.rpc.ProxyCreateGithubCallback(ctx, connect.NewRequest(&pb.ProxyCreateGithubCallbackRequest{
-		GroupId:      req.GroupId,
-		TargetChatId: req.GetTargetChatId(),
-		RepoOwner:    req.GetRepoOwner(),
-		RepoName:     req.GetRepoName(),
-		PrNumber:     req.GetPrNumber(),
-		Trigger:      req.GetTrigger(),
-		Message:      req.GetMessage(),
-		ExpiresAt:    req.GetExpiresAt(),
+		GroupId:                 req.GroupId,
+		TargetChatId:            req.GetTargetChatId(),
+		RepoOwner:               req.GetRepoOwner(),
+		RepoName:                req.GetRepoName(),
+		PrNumber:                req.GetPrNumber(),
+		Trigger:                 req.GetTrigger(),
+		Message:                 req.GetMessage(),
+		ExpiresAt:               req.GetExpiresAt(),
+		ShouldRequireTransition: req.ShouldRequireTransition,
 	}))
 	if err != nil {
 		return nil, err
@@ -836,12 +837,16 @@ func (c *RemoteClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGith
 
 // DeleteGithubCallback proxies a callback delete through the orchestrator,
 // routing to the owning daemon by target_chat_id.
-func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) error {
-	_, err := c.rpc.ProxyDeleteGithubCallback(ctx, connect.NewRequest(&pb.ProxyDeleteGithubCallbackRequest{
-		TargetChatId: targetChatID,
-		Id:           id,
+func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+	resp, err := c.rpc.ProxyDeleteGithubCallback(ctx, connect.NewRequest(&pb.ProxyDeleteGithubCallbackRequest{
+		TargetChatId:       targetChatID,
+		Id:                 id,
+		ExpectTargetChatId: stringPtrIfNotEmpty(targetChatID),
 	}))
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return &pb.DeleteGithubCallbackResponse{Outcome: resp.Msg.GetOutcome()}, nil
 }
 
 // --- Notes ---

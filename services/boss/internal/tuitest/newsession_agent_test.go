@@ -111,6 +111,7 @@ func TestTUI_NewSession_NoAgentFlag_LeavesNil(t *testing.T) {
 func TestCLI_New_AgentFlagRegistered(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
+		tuitest.WithTerminalSize(120, 50),
 		tuitest.WithArgs("new", "--help"),
 	)
 	// `--help` exits before the TUI starts; wait for the help text.

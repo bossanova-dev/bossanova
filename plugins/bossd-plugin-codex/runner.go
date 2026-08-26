@@ -23,10 +23,13 @@ type Runner struct {
 	sandbox           string
 	approval          string
 	model             string
+	effort            string
 	dangerouslyBypass bool
 	loginShell        string
 	cmdFactory        agentruntime.CommandFactory
 }
+
+const defaultCodexEffort = "medium"
 
 // Option configures a Runner.
 type Option func(*Runner)
@@ -43,6 +46,10 @@ func WithApproval(policy string) Option { return func(r *Runner) { r.approval = 
 
 // WithModel pins the codex --model selection. Empty means "use codex default".
 func WithModel(model string) Option { return func(r *Runner) { r.model = model } }
+
+// WithEffort pins codex's model_reasoning_effort config override. Empty means
+// "use codex default" and emits no override.
+func WithEffort(effort string) Option { return func(r *Runner) { r.effort = effort } }
 
 // WithLoginShell wraps codex argv through the configured login shell.
 func WithLoginShell(shell string) Option { return func(r *Runner) { r.loginShell = shell } }
@@ -82,7 +89,7 @@ func WithCommandFactory(f agentruntime.CommandFactory) Option {
 //     caller-provided session-ID hint and must wait briefly for codex
 //     to emit its own UUID before returning to bossd.
 func NewRunner(logger zerolog.Logger, opts ...Option) *Runner {
-	r := &Runner{}
+	r := &Runner{effort: defaultCodexEffort}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -176,6 +183,9 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if model := resolveCodexModel(in.Options["model"], r.model); model != "" {
 		args = append(args, "--model", model)
 	}
+	if effort := resolveCodexEffort(in.Options["effort"], r.effort); effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+effort)
+	}
 	// Caller-provided session ID is ignored: codex generates its own.
 	_ = in.ProvidedSessionID
 	_ = in.SessionID
@@ -193,11 +203,21 @@ func resolveCodexModel(reqModel, envModel string) string {
 	return envModel
 }
 
+func resolveCodexEffort(reqEffort, envEffort string) string {
+	if reqEffort != "" {
+		return reqEffort
+	}
+	return envEffort
+}
+
 // Start spawns the codex CLI subprocess. Delegates to the embedded
 // agentruntime.Runner.Start. The returned session ID is the codex-generated
 // UUID parsed from `thread.started` (via the SessionIDFromOutput hook wired
 // in C.6); falls back to the caller-supplied hint if no UUID was observed
 // in time.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
-	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath, model, extraEnv)
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
+		"model":  model,
+		"effort": effort,
+	})
 }

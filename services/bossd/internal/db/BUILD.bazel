@@ -68,6 +68,7 @@ go_test(
         "repo_store_test.go",
         "rotation_event_store_test.go",
         "schema_naming_migration_test.go",
+        "session_effective_runtime_migration_test.go",
         "session_store_test.go",
         "session_tmux_names_test.go",
         "sqlite_pool_test.go",

@@ -1041,9 +1041,36 @@ function verifyVerbatimOriginalNotes(originalText, rewrittenText) {
 
   const rewrittenLines = rewritten.split('\n')
   const originalLines = original.split('\n')
-  const index = originalLines.findIndex((line, i) => line !== rewrittenLines[i])
-  const differingLine = index === -1 ? Math.min(originalLines.length, rewrittenLines.length) : index
-  return `plan-image-guard: ## Original notes differs at line ${differingLine + 1}`
+  const lineCount = (text) => {
+    if (text.length === 0) return 0
+    const lines = text.split('\n').length
+    return text.endsWith('\n') ? lines - 1 : lines
+  }
+  const originalLineCount = lineCount(original)
+  const rewrittenLineCount = lineCount(rewritten)
+  const maxLines = Math.max(originalLines.length, rewrittenLines.length)
+  let differingIndex = 0
+  for (; differingIndex < maxLines; differingIndex += 1) {
+    if (originalLines[differingIndex] !== rewrittenLines[differingIndex]) break
+  }
+
+  const strippedOriginal = original.replace(/\n+$/, '')
+  const strippedRewritten = rewritten.replace(/\n+$/, '')
+  if (strippedOriginal === strippedRewritten) {
+    const line = Math.max(1, Math.min(originalLineCount || 1, rewrittenLineCount || 1))
+    return `plan-image-guard: ## Original notes trailing newline differs at line ${line} (original lines: ${originalLineCount}, rewritten lines: ${rewrittenLineCount})`
+  }
+
+  const originalLine = originalLines[differingIndex] ?? ''
+  const rewrittenLine = rewrittenLines[differingIndex] ?? ''
+  let kind = 'content'
+  if (originalLine.trim() === rewrittenLine.trim()) kind = 'whitespace-only'
+  const maxColumns = Math.max(originalLine.length, rewrittenLine.length)
+  let column = 1
+  for (; column <= maxColumns; column += 1) {
+    if (originalLine.charAt(column - 1) !== rewrittenLine.charAt(column - 1)) break
+  }
+  return `plan-image-guard: ## Original notes ${kind} difference at line ${differingIndex + 1}, column ${column} (original lines: ${originalLineCount}, rewritten lines: ${rewrittenLineCount})`
 }
 
 function escapeRegex(value) {

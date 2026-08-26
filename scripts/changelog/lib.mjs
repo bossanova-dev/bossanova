@@ -119,7 +119,7 @@ export function summaryFromBody(body, fallback) {
       .replace(/\*\*(.+?)\*\*/g, '$1') // bold
       .replace(/`([^`]+)`/g, '$1') // inline code
       .trim()
-    if (line) return line.slice(0, 140)
+    if (line) return line.slice(0, 140) // gate-region-ok: summary display truncation, not a section gate
   }
   return fallback
 }

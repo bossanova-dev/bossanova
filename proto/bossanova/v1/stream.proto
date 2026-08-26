@@ -597,6 +597,7 @@ message CreateSessionCommand {
   // unattended prompt.
   bool detach = 14;
   optional string model = 15;
+  optional string effort = 20;
   bool is_tmux_unattended = 16;
   optional string account_id = 17;
   // Mirror CreateSessionRequest.force_branch so reverse-stream hosted creates
@@ -959,6 +960,7 @@ message CreateGithubCallbackCommand {
   string trigger           = 6;
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
+  optional bool should_require_transition = 9;
 }
 
 // ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
@@ -976,7 +978,10 @@ message ListGithubCallbacksCommand {
 // DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
 // daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
 // and no payload.
-message DeleteGithubCallbackCommand { string id = 1; }
+message DeleteGithubCallbackCommand {
+  string id = 1;
+  optional string expect_target_chat_id = 2;
+}
 
 // Notes commands (BOS-552). Each mirrors the matching daemon.proto request.
 // Only CreateNoteCommand carries repo_id, because only creation needs it: the

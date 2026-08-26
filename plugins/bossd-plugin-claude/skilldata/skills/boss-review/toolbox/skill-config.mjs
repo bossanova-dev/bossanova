@@ -5,8 +5,8 @@
 // Node builtins ONLY: this module is vendored into the reusable toolbox
 // and runs in dependency-free cron worktrees.
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join, dirname, parse as parsePath } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join, dirname, isAbsolute, parse as parsePath, posix } from 'node:path'
 
 export const CONFIG_FILENAME = '.boss-skills.json'
 
@@ -114,6 +114,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     // Maximum cumulative changed files since the most recent full review before a delta round
     // escalates back to full. Zero is valid and means every non-empty delta escalates.
     deltaFileThreshold: 20,
+    // Maximum non-guaranteed round-role dispatches in one review run. Lower-only in config/env;
+    // the guaranteed whole-branch pass is admitted independently of this cap.
+    maxDispatchedRounds: 6,
     // Emergency switch for hosts that need to suppress delta review entirely without changing
     // round sequencing state. Only boolean true enables it; every other value resolves false.
     forceFull: false,
@@ -127,6 +130,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     headlessWhenNoTty: true,
   },
   adapters: { tracker: 'linear', publish: 'proof', sessionRunner: 'bossd' },
+  // Repo-local boss-* extensions may be authored for either supported agent root. Discovery uses
+  // this ordered candidate list and dedupes mirrored extensions by name, so a repo can carry both
+  // generated mirrors without dispatching every extension twice.
+  extensionRoots: ['.claude/skills', '.codex/skills'],
   // Concrete tracker / publish identity, keyed by the selected adapter. These blocks
   // deliberately DEFAULT TO EMPTY: the real values (MCP server name, team, project key, workflow
   // state names, publish bucket, public base URL) are repo-private data that lives ONLY in a
@@ -141,6 +148,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   // continue using the publish adapter even when implementation plans live on
   // the configured tracker.
   planStorage: { kind: 'tracker-attachment' },
+  // Durable boss-review dispatch ledger location. Repo-relative so published
+  // cores keep storage in the checkout that produced the review.
+  reviewLedger: { dir: '.git/boss-review-ledgers' },
   // Versioned wire contract for the `##`-section plan description that boss-plan emits and
   // boss-build / bs-sweep-plan consume. `version` is the integer contract
   // version stamped in-band as `- Contract: v<N>` under `## Planning`; `sections` is the
@@ -205,6 +215,8 @@ export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
 
 export const REVIEW_DEFAULT_DELTA_FILE_THRESHOLD = DEFAULT_CONFIG.reviewDefaults.deltaFileThreshold
+export const REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS =
+  DEFAULT_CONFIG.reviewDefaults.maxDispatchedRounds
 
 // The `required` classifications a planContract section may carry. `optional` means RECOGNISED but
 // never required: the section may appear without tripping unknown-heading detection, and
@@ -316,6 +328,17 @@ export function validateConfig(config, source) {
       )
       config.reviewDefaults.deltaFileThreshold = REVIEW_DEFAULT_DELTA_FILE_THRESHOLD
     }
+    if (
+      config.reviewDefaults.maxDispatchedRounds === undefined ||
+      !Number.isInteger(config.reviewDefaults.maxDispatchedRounds) ||
+      config.reviewDefaults.maxDispatchedRounds < 1 ||
+      config.reviewDefaults.maxDispatchedRounds > REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+    ) {
+      console.warn(
+        `skill-config: ${source}: reviewDefaults.maxDispatchedRounds must be an integer in [1, ${REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS}]; using ${REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS}`,
+      )
+      config.reviewDefaults.maxDispatchedRounds = REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+    }
     if (config.reviewDefaults.forceFull !== true) {
       config.reviewDefaults.forceFull = false
     }
@@ -379,6 +402,13 @@ export function validateConfig(config, source) {
     if (typeof config.adapters[kind] !== 'string' || config.adapters[kind].length === 0) {
       fail(`adapters.${kind} must be a non-empty string`)
     }
+  }
+  if (
+    !Array.isArray(config.extensionRoots) ||
+    config.extensionRoots.length === 0 ||
+    !config.extensionRoots.every((root) => typeof root === 'string' && root.length > 0)
+  ) {
+    fail('extensionRoots must be a non-empty array of non-empty strings')
   }
   // trackerConfig / publishConfig: optional per-adapter identity blocks. Absent or
   // empty is the norm (DEFAULT_CONFIG ships them as {}), so only a present-but-malformed override
@@ -463,6 +493,26 @@ export function validateConfig(config, source) {
     config.planStorage = { kind: 'tracker-attachment' }
   } else if (config.planStorage.kind !== 'tracker-attachment') {
     fail('planStorage.kind must be "tracker-attachment"')
+  }
+  if (
+    !config.reviewLedger ||
+    typeof config.reviewLedger !== 'object' ||
+    Array.isArray(config.reviewLedger)
+  ) {
+    fail('reviewLedger must be an object')
+  }
+  if (typeof config.reviewLedger.dir !== 'string' || config.reviewLedger.dir.length === 0) {
+    fail('reviewLedger.dir must be a non-empty string')
+  }
+  if (config.reviewLedger.dir.includes('\\')) {
+    fail('reviewLedger.dir must use POSIX separators')
+  }
+  if (isAbsolute(config.reviewLedger.dir)) {
+    fail('reviewLedger.dir must be repo-relative')
+  }
+  const normalizedReviewLedgerDir = posix.normalize(config.reviewLedger.dir)
+  if (normalizedReviewLedgerDir === '..' || normalizedReviewLedgerDir.startsWith('../')) {
+    fail('reviewLedger.dir must stay within the repository')
   }
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
@@ -794,6 +844,17 @@ export function reviewDeltaDefaults(config) {
   }
 }
 
+export function reviewMaxDispatchedRoundDefault(config) {
+  const value = config?.reviewDefaults?.maxDispatchedRounds
+  return Number.isInteger(value) && value >= 1 && value <= REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+    ? value
+    : REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+}
+
+export function reviewLedgerConfig(config) {
+  return config?.reviewLedger || DEFAULT_CONFIG.reviewLedger
+}
+
 /**
  * A configured/detected command string, or null when this repo declares none. `null` is the
  * honest "no command is known here" — a core that needs one falls back to its own discovery
@@ -844,6 +905,13 @@ export function adapterFor(config, kind) {
   return config.adapters[kind]
 }
 
+/** Ordered repo-local skill roots to scan for boss-* extensions. */
+export function extensionRootsFor(config) {
+  return Array.isArray(config?.extensionRoots)
+    ? config.extensionRoots
+    : DEFAULT_CONFIG.extensionRoots
+}
+
 // --- Per-adapter identity resolution + configured-repo probe ---------------
 
 /**
@@ -875,6 +943,17 @@ function trackerRoleName(config, field, role, required = true) {
 /** Resolve a configured Linear workflow-state display name by its stable role. */
 export function stateName(config, role) {
   return trackerRoleName(config, 'states', role)
+}
+
+/**
+ * Resolve the configured workflow-state display names into the state-name -> role map
+ * consumed by dependency planning.
+ */
+export function stateRolesFor(config) {
+  const roles = ['unplanned', 'planned', 'inProgress', 'inReview']
+  const out = {}
+  for (const role of roles) out[stateName(config, role)] = role
+  return out
 }
 
 /** Resolve a configured Linear issue-label display name by its stable role. */
@@ -1295,6 +1374,8 @@ const ACCEPTANCE_HEADING = '## Acceptance criteria'
 /** The optional `## Premises` contract heading. */
 const PREMISES_HEADING = '## Premises'
 const CENTRAL_PREMISE_MARKER_RE = /^(?:\*\*|__|\*|_)?\(central\)(?:\*\*|__|\*|_)?\s*/i
+const SHELL_BUILTINS = new Set(['[', 'cd', 'echo', 'false', 'printf', 'pwd', 'set', 'test', 'true'])
+const SHELL_COMMAND_SEPARATORS = new Set([';', '|', '&&', '||'])
 
 /** A markdown checkbox list item: `- [ ] text` / `- [x] text` (either box case, any list marker). */
 const CRITERION_RE = /^[-*+]\s+\[([ xX])\]\s*(.*)$/
@@ -1340,6 +1421,274 @@ function nonEmpty(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function pushShellToken(tokens, value, quoted) {
+  if (value) tokens.push({ value, quoted })
+}
+
+function tokenizeSimpleShellDetailed(command) {
+  const source = String(command ?? '')
+  const tokens = []
+  let current = ''
+  let quoted = false
+  let quote = null
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (char === quote) quote = null
+      else current += char
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      quoted = true
+    } else if (
+      (char === '&' && source[index + 1] === '&') ||
+      (char === '|' && source[index + 1] === '|')
+    ) {
+      pushShellToken(tokens, current, quoted)
+      current = ''
+      quoted = false
+      tokens.push({ value: char + source[index + 1], quoted: false })
+      index += 1
+    } else if (char === '|' || char === ';') {
+      pushShellToken(tokens, current, quoted)
+      current = ''
+      quoted = false
+      tokens.push({ value: char, quoted: false })
+    } else if (/\s/.test(char)) {
+      pushShellToken(tokens, current, quoted)
+      current = ''
+      quoted = false
+    } else {
+      current += char
+    }
+  }
+  pushShellToken(tokens, current, quoted)
+  return tokens
+}
+
+export function tokenizeSimpleShell(command) {
+  return tokenizeSimpleShellDetailed(command).map((token) => token.value)
+}
+
+function isExecutableFile(path) {
+  try {
+    const stat = statSync(path)
+    return stat.isFile() && (stat.mode & 0o111) !== 0
+  } catch {
+    return false
+  }
+}
+
+function resolvePathBinary(head, envPath) {
+  if (!head || head.includes('/')) return false
+  for (const dir of String(envPath ?? '').split(':')) {
+    if (!dir) continue
+    if (isExecutableFile(join(dir, head))) return true
+  }
+  return false
+}
+
+function commandHeadResolvable(tokens, cwd, env) {
+  const head = tokens[0]
+  if (!head) return false
+  if (SHELL_BUILTINS.has(head)) return true
+  if (head.startsWith('./') || head.startsWith('../') || head.includes('/')) {
+    return isExecutableFile(isAbsolute(head) ? head : join(cwd, head))
+  }
+  if (resolvePathBinary(head, env?.PATH)) return true
+  return false
+}
+
+function hasCommittedAnchor(tokens) {
+  return tokens.some(
+    (token) =>
+      token === '--cached' ||
+      token === '--staged' ||
+      token === 'HEAD' ||
+      token === 'FETCH_HEAD' ||
+      token.includes('..') ||
+      /^[0-9a-f]{7,40}$/i.test(token),
+  )
+}
+
+function hasCountAssertion(command) {
+  return /(#\s*(?:pass|tests)\s+\d+|grep\s+-q|rg\s+-q|wc\s+-l|assert|count)/i.test(command)
+}
+
+function advisory(code, message) {
+  return { code, message }
+}
+
+function normalizeCommandTokens(tokens, { stripShellPreamble = true } = {}) {
+  tokens = [...tokens]
+  while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens.shift()
+  if (tokens[0] === 'env') {
+    tokens.shift()
+    while (tokens.length > 0) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
+        tokens.shift()
+      } else if (tokens[0] === '--') {
+        tokens.shift()
+        break
+      } else if (tokens[0] === '-u' || tokens[0] === '--unset') {
+        tokens.splice(0, 2)
+      } else if (tokens[0].startsWith('--unset=')) {
+        tokens.shift()
+      } else if (tokens[0] === '-C' || tokens[0] === '--chdir') {
+        tokens.splice(0, 2)
+      } else if (tokens[0].startsWith('--chdir=')) {
+        tokens.shift()
+      } else if (tokens[0] === '-i' || tokens[0] === '--ignore-environment') {
+        tokens.shift()
+      } else if (tokens[0].startsWith('-')) {
+        tokens.shift()
+      } else {
+        break
+      }
+    }
+  }
+  if (stripShellPreamble && tokens[0] === 'set' && tokens[1] === '-o' && tokens[2] === 'pipefail') {
+    tokens.splice(0, tokens[3] === ';' ? 4 : 3)
+  }
+  return tokens
+}
+
+function commandTokens(command) {
+  return normalizeCommandTokens(tokenizeSimpleShell(command))
+}
+
+function commandSegments(tokens) {
+  const segments = []
+  let current = []
+  for (const token of tokens) {
+    if (SHELL_COMMAND_SEPARATORS.has(token.value)) {
+      if (current.length > 0) segments.push(current)
+      current = []
+    } else {
+      current.push(token)
+    }
+  }
+  if (current.length > 0) segments.push(current)
+  return segments.map((segment) =>
+    normalizeCommandTokens(
+      segment.map((token) => token.value),
+      { stripShellPreamble: false },
+    ),
+  )
+}
+
+function hasUnquotedOptionGlob(tokens) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (/^--[^=\s]+=.*[*?[]/.test(token.value) && !token.quoted) return true
+    if (
+      /^--(?:include|exclude|glob)$/.test(token.value) &&
+      tokens[index + 1] &&
+      /[*?[]/.test(tokens[index + 1].value) &&
+      !tokens[index + 1].quoted
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Classify a recorded check command without executing it.
+ *
+ * The command is PR-body text, so this function deliberately uses only static checks. Decidable
+ * failures land in `blocking`; heuristic proof-quality risks land in `advisory`.
+ */
+export function classifyCheckCommand(command, { cwd = process.cwd(), env = process.env } = {}) {
+  const detailedTokens = tokenizeSimpleShellDetailed(command)
+  const tokens = commandTokens(command)
+  const blocking = []
+  const advisoryFindings = []
+  const trimmed = String(command ?? '').trim()
+  if (!trimmed) {
+    return {
+      blocking: [
+        {
+          code: 'empty-command',
+          message: 'the check command is empty',
+        },
+      ],
+      advisory: advisoryFindings,
+    }
+  }
+  if (
+    commandSegments(detailedTokens).some((segment) => !commandHeadResolvable(segment, cwd, env))
+  ) {
+    blocking.push({
+      code: 'command-unresolvable',
+      message:
+        'the command head resolves to no executable PATH binary or executable repo-relative script',
+    })
+  }
+
+  if (
+    tokens[0] === 'git' &&
+    (tokens[1] === 'diff' || tokens[1] === 'status') &&
+    !hasCommittedAnchor(tokens)
+  ) {
+    advisoryFindings.push(
+      advisory(
+        'working-tree-scoped-git-check',
+        'working-tree-scoped git evidence can pass after unrelated local cleanup',
+      ),
+    )
+  }
+  if (
+    tokens.some((token) =>
+      /^(-run|--test-name-pattern|--test-only|--test-skip-pattern|--include)(=|$)/.test(token),
+    ) &&
+    !hasCountAssertion(trimmed)
+  ) {
+    advisoryFindings.push(
+      advisory(
+        'zero-selection-filter',
+        'a test or file-selection filter can select zero tests/files without a count assertion',
+      ),
+    )
+  }
+  if (hasUnquotedOptionGlob(detailedTokens)) {
+    advisoryFindings.push(
+      advisory(
+        'unquoted-option-glob',
+        'a glob embedded in an option value can be expanded or rejected by the shell before the command runs',
+      ),
+    )
+  }
+  if (
+    tokens.includes('|') &&
+    !tokens.includes('pipefail') &&
+    !trimmed.includes('set -o pipefail')
+  ) {
+    advisoryFindings.push(
+      advisory(
+        'pipe-without-pipefail',
+        'a pipeline without pipefail reports the tail command status rather than the failing command',
+      ),
+    )
+  }
+  if (tokens[0] === 'git' && tokens[1] === 'grep' && tokens.includes('-E') && /\\b/.test(trimmed)) {
+    advisoryFindings.push(
+      advisory('git-grep-word-boundary', 'git grep -E does not interpret \\b as a word boundary'),
+    )
+  }
+  if (
+    tokens[0] === 'bazel' &&
+    tokens[1] === 'test' &&
+    !tokens.some((token) => token === '--nocache_test_results')
+  ) {
+    advisoryFindings.push(
+      advisory('cached-bazel-test', 'a cached Bazel test can predate newly added inputs'),
+    )
+  }
+  return { blocking, advisory: advisoryFindings }
+}
+
 /**
  * Strip a leading run of markdown emphasis so `**(verify-only)**` classifies like `(verify-only)`.
  *
@@ -1374,7 +1723,17 @@ function stripEmphasis(value) {
  *
  * @param {object} config skill config (config-first, like `validatePlanDescription`)
  * @param {string} description plan description or PR body
- * @returns {{ text: string, checked: boolean, verifyOnly: boolean, check: string | null, result: string | null }[]}
+ * @returns {{
+ *   text: string,
+ *   checked: boolean,
+ *   verifyOnly: boolean,
+ *   malformedVerifyOnlyMarker: boolean,
+ *   check: string | null,
+ *   result: string | null,
+ *   checkedClause: boolean,
+ *   checkedCommandDelimited: boolean,
+ *   plannedTenseOnTicked: boolean
+ * }[]}
  *   `text` is the whole bullet body after the checkbox, marker and clause included, so a report can
  *   name the criterion verbatim. `checked` is the box state. `verifyOnly` is the literal-marker
  *   classification. `check` is the command named by either clause (backticks stripped) or `null`
@@ -1426,8 +1785,12 @@ function parseCheckboxSection(config, description, heading, fn) {
     const text = parts.filter(Boolean).join(' ').trim()
     let check = null
     let result = null
+    let checkedClause = false
+    let checkedCommandDelimited = false
+    let plannedTenseOnTicked = false
     const dischargeAt = text.indexOf(VERIFY_ONLY_CHECKED)
     if (dischargeAt !== -1) {
+      checkedClause = true
       const tail = text.slice(dischargeAt + VERIFY_ONLY_CHECKED.length)
       // A BACKTICKED command is a DELIMITED span, so close it BEFORE looking for the result
       // separator. Searching for the separator first lets an arrow INSIDE the command act as one:
@@ -1448,6 +1811,7 @@ function parseCheckboxSection(config, description, heading, fn) {
       // templates already backtick the command, so this rejects nothing they teach.
       const fenced = /^\s*(`+)([\s\S]*?)\1/.exec(tail)
       if (fenced) {
+        checkedCommandDelimited = true
         check = fenced[2].trim()
         const rest = tail.slice(fenced[0].length)
         const separator = RESULT_SEPARATOR_RE.exec(rest)
@@ -1455,14 +1819,26 @@ function parseCheckboxSection(config, description, heading, fn) {
       }
     } else {
       const plannedAt = text.indexOf(VERIFY_ONLY_CHECK)
-      if (plannedAt !== -1) check = unwrapCode(text.slice(plannedAt + VERIFY_ONLY_CHECK.length))
+      if (plannedAt !== -1) {
+        if (box.toLowerCase() === 'x') {
+          plannedTenseOnTicked = true
+        } else {
+          check = unwrapCode(text.slice(plannedAt + VERIFY_ONLY_CHECK.length))
+        }
+      }
     }
+    const markerText = stripEmphasis(text)
     return {
       text,
       checked: box.toLowerCase() === 'x',
-      verifyOnly: stripEmphasis(text).startsWith(VERIFY_ONLY_MARKER),
+      verifyOnly: markerText.startsWith(VERIFY_ONLY_MARKER),
+      malformedVerifyOnlyMarker:
+        markerText.includes(VERIFY_ONLY_MARKER) && !markerText.startsWith(VERIFY_ONLY_MARKER),
       check,
       result,
+      checkedClause,
+      checkedCommandDelimited,
+      plannedTenseOnTicked,
     }
   })
 }
@@ -1521,14 +1897,60 @@ export function parsePremises(config, description) {
  *
  * @param {object} config skill config (config-first)
  * @param {string} body plan description or PR body carrying an `## Acceptance criteria` section
- * @returns {{ ok: boolean, verifyOnly: object[], missingEvidence: object[] }} criteria as returned
- *   by `parseAcceptanceCriteria`. `ok` is true iff `missingEvidence` is empty.
+ * @returns {{ ok: boolean, verifyOnly: object[], missingEvidence: object[], malformedMarker: object[], advisory: object[] }}
+ *   criteria as returned by `parseAcceptanceCriteria`. `ok` is true iff `missingEvidence` is empty.
+ *   `malformedMarker` surfaces criteria that contain a misplaced `(verify-only)` marker without
+ *   reclassifying them. `advisory` carries non-blocking command-shape risks.
  */
 export function validateVerifyOnlyEvidence(config, body) {
   assertConfigFirst(config, 'validateVerifyOnlyEvidence')
-  const verifyOnly = parseAcceptanceCriteria(config, body).filter((c) => c.verifyOnly)
-  const missingEvidence = verifyOnly.filter(
-    (c) => c.checked && !(nonEmpty(c.check) && nonEmpty(c.result)),
-  )
-  return { ok: missingEvidence.length === 0, verifyOnly, missingEvidence }
+  const criteria = parseAcceptanceCriteria(config, body)
+  const verifyOnly = criteria.filter((c) => c.verifyOnly)
+  const malformedMarker = criteria.filter((c) => c.malformedVerifyOnlyMarker)
+  const missingEvidence = []
+  const advisory = []
+  for (const criterion of verifyOnly) {
+    if (!criterion.checked) continue
+    let reason = null
+    let remedy = null
+    if (criterion.plannedTenseOnTicked) {
+      reason = 'planned-tense-on-ticked'
+      remedy = `Use "${VERIFY_ONLY_CHECKED.trim()}" on checked verify-only criteria.`
+    } else if (!criterion.checkedClause) {
+      reason = 'no-clause'
+      remedy = `Add "${VERIFY_ONLY_CHECKED.trim()} \`<command>\`${VERIFY_ONLY_RESULT}<result>".`
+    } else if (!criterion.checkedCommandDelimited) {
+      reason = 'undelimited-command'
+      remedy = 'Wrap the discharged command in backticks so the result separator is unambiguous.'
+    } else if (!nonEmpty(criterion.check)) {
+      reason = 'empty-command'
+      remedy = 'Record a non-empty command between the backticks.'
+    } else if (!nonEmpty(criterion.result)) {
+      reason = 'empty-result'
+      remedy = 'Record the non-empty result after the result separator.'
+    } else {
+      const classified = classifyCheckCommand(criterion.check)
+      advisory.push(...classified.advisory.map((finding) => ({ ...finding, criterion })))
+      if (classified.blocking.length > 0) {
+        reason = 'command-unresolvable'
+        remedy =
+          'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
+      }
+    }
+    if (reason) {
+      missingEvidence.push({
+        ...criterion,
+        reason,
+        remedy,
+        check: reason === 'planned-tense-on-ticked' ? null : criterion.check,
+      })
+    }
+  }
+  return {
+    ok: missingEvidence.length === 0,
+    verifyOnly,
+    missingEvidence,
+    malformedMarker,
+    advisory,
+  }
 }

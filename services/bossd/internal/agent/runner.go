@@ -24,12 +24,12 @@ type AgentRunner interface {
 	// If resume is non-nil, it resumes an existing Claude session.
 	// If sessionID is non-empty, it is passed via --session-id and used as the tracking key.
 	// When sessionID is empty, a generated claude-<timestamp> ID is used instead.
-	// model is an opaque agent model id; "" means the plugin's default model.
+	// model and effort are opaque agent runtime choices; "" means the plugin's default.
 	// extraEnv is an allowlisted, never-logged env overlay (proof credentials
 	// + non-secret proof constants) applied to the spawned process; nil/empty
 	// leaves the inherited environment unchanged.
 	// Returns the session ID assigned to this process.
-	Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string) (string, error)
+	Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string) (string, error)
 
 	// Stop terminates the Claude process for the given session.
 	Stop(sessionID string) error
@@ -57,7 +57,7 @@ type AgentRunner interface {
 // fresh runs, non-empty for resume.
 type AgentDispatcher interface {
 	AgentRunner
-	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error)
+	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string) (string, error)
 	StopByAgent(ctx context.Context, agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
 }
@@ -85,7 +85,7 @@ type ContextualStopper interface {
 // separate from AgentRunner leaves every legacy Start call byte-for-byte
 // unchanged.
 type HeadlessCapabilityProfileRunner interface {
-	StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
+	StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
 }
 
 // HeadlessLaunchOptions carries daemon-owned policy that every panel-less
@@ -98,7 +98,7 @@ type HeadlessLaunchOptions struct {
 // complete panel-less launch contract instead of silently dropping a
 // capability profile.
 type HeadlessLaunchOptionsRunner interface {
-	StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
+	StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
 }
 
 // HeadlessCapabilityProfilePreflightRunner is implemented only by runners
@@ -110,7 +110,7 @@ type HeadlessLaunchOptionsRunner interface {
 // — agents discover per-repo config relative to their working directory — and
 // an empty value preserves the historical inherit-the-daemon-cwd behaviour.
 type HeadlessCapabilityProfilePreflightRunner interface {
-	PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
+	PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
 }
 
 // HeadlessCapabilityProfileDispatcher is the explicit-by-agent equivalent for
@@ -118,14 +118,14 @@ type HeadlessCapabilityProfilePreflightRunner interface {
 // on an agent without support fails closed instead of being silently dropped.
 type HeadlessCapabilityProfileDispatcher interface {
 	AgentDispatcher
-	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
+	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
 }
 
 // HeadlessLaunchOptionsDispatcher is the explicit-by-agent form used by the
 // lifecycle for panel-less launches.
 type HeadlessLaunchOptionsDispatcher interface {
 	AgentDispatcher
-	StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
+	StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
 }
 
 // AgentNameResolver is implemented by dispatchers that can report which
@@ -143,7 +143,7 @@ type HeadlessCapabilityProfilePreflightDispatcher interface {
 	AgentDispatcher
 	PreflightByAgentWithHeadlessCapabilityProfile(
 		ctx context.Context,
-		agentName, workDir, model string,
+		agentName, workDir, model, effort string,
 		extraEnv map[string]string,
 		profile bossanovav1.HeadlessCapabilityProfile,
 	) error

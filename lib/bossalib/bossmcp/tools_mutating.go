@@ -176,6 +176,9 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.Model != "" {
 			req.Model = &args.Model
 		}
+		if args.Effort != "" {
+			req.Effort = &args.Effort
+		}
 		out, err := backend.CreateSession(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
@@ -626,13 +629,14 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			return errorResult(err), nil, nil
 		}
 		req := &pb.CreateGithubCallbackRequest{
-			TargetChatId: strings.TrimSpace(args.TargetChatID),
-			RepoOwner:    ref.Owner,
-			RepoName:     ref.Repo,
-			PrNumber:     ref.PRNumber,
-			Trigger:      string(trigger),
-			Message:      args.Message,
-			ExpiresAt:    timestamppb.New(expiresAt),
+			TargetChatId:            strings.TrimSpace(args.TargetChatID),
+			RepoOwner:               ref.Owner,
+			RepoName:                ref.Repo,
+			PrNumber:                ref.PRNumber,
+			Trigger:                 string(trigger),
+			Message:                 args.Message,
+			ExpiresAt:               timestamppb.New(expiresAt),
+			ShouldRequireTransition: &args.ShouldRequireTransition,
 		}
 		if g := strings.TrimSpace(args.Group); g != "" {
 			req.GroupId = &g
@@ -912,13 +916,14 @@ func registerSessionStateTool(server *mcp.Server, opts Options, name, desc strin
 // register_github_callback. The message is required and is a secret — it is
 // stored verbatim and never returned by any tool.
 type RegisterGithubCallbackArgs struct {
-	PR           string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (requires repo context) or a full https://github.com/owner/repo/pull/123 URL"`
-	Trigger      string `json:"trigger" jsonschema:"the PR event to fire on; one of merged, closed, checks_passed, checks_failed, ready_for_review (open and not a draft), checks_passed_ready (green and not a draft). Triggers match on PR state, not on transitions: arming one against a PR that already satisfies it fires on the next evaluation"`
-	TargetChatID string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
-	Message      string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required; stored verbatim and never echoed back)"`
-	Repo         string `json:"repo,omitempty" jsonschema:"repository as owner/repo; required to anchor a bare PR number, ignored when pr is a full URL"`
-	ExpiresIn    string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 30m, 24h, 7d, 2w; default 24h, maximum 30d"`
-	Group        string `json:"group,omitempty" jsonschema:"optional group id; siblings in a group cancel each other on first fire"`
+	PR                      string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (requires repo context) or a full https://github.com/owner/repo/pull/123 URL"`
+	Trigger                 string `json:"trigger" jsonschema:"PR event: merged, closed, checks_passed, checks_failed, ready_for_review, or checks_passed_ready. State-based unless should_require_transition is true"`
+	TargetChatID            string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
+	Message                 string `json:"message" jsonschema:"the prompt delivered to the chat when the callback fires (required; stored verbatim and never echoed back)"`
+	Repo                    string `json:"repo,omitempty" jsonschema:"repository as owner/repo; required to anchor a bare PR number, ignored when pr is a full URL"`
+	ExpiresIn               string `json:"expires_in,omitempty" jsonschema:"expiry as a duration like 30m, 24h, 7d, 2w; default 24h, maximum 30d"`
+	Group                   string `json:"group,omitempty" jsonschema:"optional group id; siblings in a group cancel each other on first fire"`
+	ShouldRequireTransition bool   `json:"should_require_transition,omitempty" jsonschema:"fire only after trigger becomes true"`
 }
 
 // RegisterRepoArgs is the typed argument struct for register_repo.
@@ -1007,7 +1012,8 @@ type CreateSessionArgs struct {
 	Attended         bool    `json:"attended,omitempty" jsonschema:"opt into the idle-until-attach behavior: create the session but do NOT launch an agent, awaiting a human boss attach. By default a prompt-carrying create launches headless (mirroring the CLI's implicit --detach); set attended:true only when a human will attach and drive the session interactively"`
 	IsTmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
 	DeferPR          bool    `json:"defer_pr,omitempty" jsonschema:"create a worktree-backed session but do NOT open a draft PR up front; a PR is opened at finalize only if the run produces commits. Meaningful only alongside detach/tmux_unattended (which install the finalize hook); use for read-only/planning sessions"`
-	Model            string  `json:"model,omitempty" jsonschema:"opaque agent model id to run this session under (e.g. an Opus id); empty = the agent plugin's default"`
+	Model            string  `json:"model,omitempty" jsonschema:"model id; empty=default"`
+	Effort           string  `json:"effort,omitempty" jsonschema:"reasoning effort; empty=default"`
 	PRNumber         *int32  `json:"pr_number,omitempty" jsonschema:"target an existing PR. If an active session already owns that PR's branch, create_session ATTACHES to it and returns attached_existing=true WITHOUT running prompt — run the prompt in that session (send_chat_message with the returned agent_session_id). force does NOT bypass this branch attach"`
 	TrackerID        *string `json:"tracker_id,omitempty" jsonschema:"external issue id (e.g. FRE-1176). If an active session already owns this tracker id (with no branch collision), create_session fails with AlreadyExists — pass force:true to create a second session for the same tracker"`
 	TrackerURL       *string `json:"tracker_url,omitempty" jsonschema:"URL to the issue in the external tracker"`

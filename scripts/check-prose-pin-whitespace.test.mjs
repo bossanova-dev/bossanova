@@ -281,6 +281,16 @@ test('the declared glob is the one the file set is derived from', () => {
   assert.equal(GATE_FILE_GLOB, 'scripts/*skill*.test.mjs')
 })
 
+test('prettier explicitly preserves markdown prose wrapping', () => {
+  const config = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, '.prettierrc'), 'utf8'))
+
+  assert.equal(
+    config.proseWrap,
+    'preserve',
+    'proseWrap must stay preserve: changing it lets prettier reflow prose and invalidates proximity-window prose pins',
+  )
+})
+
 // ---------------------------------------------------------------------------
 // The gate as a contributor meets it
 // ---------------------------------------------------------------------------

@@ -144,7 +144,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		}
 		// target_chat_id lets the hosted gateway route the delete to the daemon
 		// that owns the callback; the local socket adapter ignores it.
-		if err := backend.DeleteGithubCallback(ctx, args.TargetChatID, args.ID); err != nil {
+		if _, err := backend.DeleteGithubCallback(ctx, args.TargetChatID, args.ID); err != nil {
 			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(map[string]string{"deleted_github_callback": args.ID})
@@ -289,12 +289,11 @@ type ConfirmIDArgs struct {
 
 // DeleteGithubCallbackArgs is the typed argument struct for
 // delete_github_callback. target_chat_id is the owning chat id; the hosted
-// gateway uses it to route the delete to the daemon that owns the callback,
-// while the local socket adapter ignores it (its own daemon owns every
-// callback in its registry, so the id alone resolves it).
+// gateway uses it to route the delete to the daemon that owns the callback and
+// the daemon uses it as an ownership guard.
 type DeleteGithubCallbackArgs struct {
 	ID           string `json:"id" jsonschema:"the callback id to delete"`
-	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"the callback's owning chat id (used for hosted routing; ignored for a local daemon)"`
+	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"owning chat id; used for routing and ownership"`
 	Confirm      bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the callback"`
 }
 

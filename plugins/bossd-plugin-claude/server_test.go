@@ -432,7 +432,7 @@ func TestServer_BuildInteractiveCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	want := []string{"claude", "--session-id", "abc-123"}
+	want := []string{"claude", "--session-id", "abc-123", "--effort", defaultClaudeEffort}
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
@@ -458,7 +458,7 @@ func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	want := []string{"claude", "--resume", "rid"}
+	want := []string{"claude", "--resume", "rid", "--effort", defaultClaudeEffort}
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
@@ -489,6 +489,8 @@ func TestServer_BuildInteractiveCommand_WrapsInLoginShellWhenConfigured(t *testi
 		"claude",
 		"--session-id",
 		"abc-123",
+		"--effort",
+		defaultClaudeEffort,
 	}
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("wrapped bash argv:\n got=%#v\nwant=%#v", resp.Argv, want)
@@ -505,7 +507,7 @@ func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T)
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	want := []string{"claude", "--session-id", "xyz", "--dangerously-skip-permissions"}
+	want := []string{"claude", "--session-id", "xyz", "--dangerously-skip-permissions", "--effort", defaultClaudeEffort}
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
@@ -970,6 +972,49 @@ func TestBuildInteractiveCommand_RequestModelBeatsPluginModel(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommand_EffortPrecedence(t *testing.T) {
+	srv := &Server{runner: NewRunner(zerolog.Nop(), WithEffort("high"))}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		Effort:    "medium",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--effort\x00medium") {
+		t.Fatalf("argv %v want per-request --effort medium to win", resp.GetArgv())
+	}
+	if strings.Contains(joined, "high") {
+		t.Fatalf("argv %v plugin default must not also appear", resp.GetArgv())
+	}
+
+	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--effort\x00high") {
+		t.Fatalf("argv %v want plugin default --effort high", resp.GetArgv())
+	}
+
+	srv = &Server{runner: NewRunner(zerolog.Nop())}
+	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(resp.GetArgv(), "\x00"), "--effort\x00"+defaultClaudeEffort) {
+		t.Fatalf("argv %v want built-in default --effort %s", resp.GetArgv(), defaultClaudeEffort)
+	}
+}
+
 // GetInfo must declare the model setting, otherwise the daemon never renders a
 // field for it and BOSS_PLUGIN_model is unreachable from settings.
 func TestGetInfoDeclaresModelSetting(t *testing.T) {
@@ -987,4 +1032,29 @@ func TestGetInfoDeclaresModelSetting(t *testing.T) {
 		}
 	}
 	t.Fatalf("GetInfo user settings %v missing a 'model' key", resp.GetInfo().GetUserSettings())
+}
+
+func TestGetInfoDeclaresEffortSetting(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.GetInfo(context.Background(), &bossanovav1.AgentRunnerServiceGetInfoRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range resp.GetInfo().GetUserSettings() {
+		if s.GetKey() != "effort" {
+			continue
+		}
+		if s.GetType() != bossanovav1.UserSettingType_USER_SETTING_TYPE_ENUM {
+			t.Fatalf("effort setting type = %v, want ENUM", s.GetType())
+		}
+		if s.GetDefaultValue() != "high" {
+			t.Fatalf("effort default = %q, want high", s.GetDefaultValue())
+		}
+		want := []string{"", "low", "medium", "high", "xhigh", "max"}
+		if !reflect.DeepEqual(s.GetAllowedValues(), want) {
+			t.Fatalf("effort allowed = %v, want %v", s.GetAllowedValues(), want)
+		}
+		return
+	}
+	t.Fatalf("GetInfo user settings %v missing an 'effort' key", resp.GetInfo().GetUserSettings())
 }

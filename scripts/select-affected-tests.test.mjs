@@ -50,18 +50,40 @@ test('selectTargets runs the whole module for module Makefile changes', () => {
 test('selectTargets fans proto changes out to generated-code consumers', () => {
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ target }) => target),
-    ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso'],
+    ['test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso'],
   )
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ env }) => env),
-    [{}, {}, {}, {}],
+    [{}, {}, {}, {}, {}],
   )
+})
+
+test('selectTargets maps proto support files to web generated-code consumers', () => {
+  assert.deepEqual(selectTargets(['proto/bossanova/v1/session.md']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
 })
 
 test('selectTargets maps script changes to script tests', () => {
   assert.deepEqual(selectTargets(['scripts/check-public-mirror-workflows.mjs']), [
     { kind: 'make', target: 'test-scripts', env: {} },
   ])
+})
+
+test('selectTargets maps script workflow and codegen inputs to script tests', () => {
+  for (const file of [
+    '.github/workflows/test-bosso-production-deployment.yml',
+    '.github/workflows/test-docs.yml',
+    '.github/workflows/test-marketing.yml',
+    '.github/workflows/test-plugin-distribution.yml',
+    '.github/workflows/test-proto.yml',
+    '.github/workflows/test-scripts.yml',
+    '.github/workflows/test-web.yml',
+    'buf.yaml',
+    'buf.gen.yaml',
+  ]) {
+    assert.deepEqual(selectTargets([file]), [{ kind: 'make', target: 'test-scripts', env: {} }])
+  }
 })
 
 test('selects scripts tests for proof recipe changes', () => {
@@ -108,6 +130,13 @@ test('selectTargets maps every Go module on disk to a native make target', () =>
   }
 })
 
+test('moduleRootsFromDisk fails closed when git returns no modules', () => {
+  assert.throws(
+    () => moduleRootsFromDisk({ execFile: () => '' }),
+    /moduleRootsFromDisk found no module roots; the module-rule coverage assertion would pass vacuously/,
+  )
+})
+
 test('each external input rule selects every derivable native target from its sample path', () => {
   for (const rule of externalInputRules) {
     assert.equal(typeof rule.samplePath, 'string', 'external input rules need a samplePath')
@@ -132,10 +161,13 @@ test('selectTargets maps the build-and-ci reference doc to script tests', () => 
 })
 
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
-  assert.deepEqual(
-    selectTargets(['AGENTS.md', 'CLAUDE.md', 'docs/testing/test-command-manifest.md']),
-    [{ kind: 'make', target: 'test-manifest', env: {} }],
-  )
+  assert.deepEqual(selectTargets(['AGENTS.md', 'CLAUDE.md']), [
+    { kind: 'make', target: 'test-manifest', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['docs/testing/test-command-manifest.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-manifest', env: {} },
+  ])
 })
 
 test('selectTargets maps skill docs to manifest, Stop-hook guard, and skill content tests', () => {
@@ -195,6 +227,49 @@ test('selectTargets adds the script tests to published skill sources WITHOUT dro
       { kind: 'make', target: 'test-boss', env: {} },
     ],
   )
+})
+
+test('selectTargets adds script tests to plugin skilldata WITHOUT dropping plugin and boss readers', () => {
+  assert.deepEqual(
+    selectTargets(['plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md']),
+    [
+      { kind: 'make', target: 'test-boss', env: {} },
+      { kind: 'make', target: 'test-scripts', env: {} },
+      { kind: 'make', target: 'test-claude', env: {} },
+    ],
+  )
+})
+
+test('selectTargets adds script tests to docs MCP prop inputs WITHOUT dropping module readers', () => {
+  assert.deepEqual(selectTargets(['services/docs/docs/commands.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['lib/bossalib/bossmcp/tools.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './bossmcp' } },
+  ])
+})
+
+test('selectTargets adds script tests to readiness figure inputs WITHOUT dropping modules', () => {
+  assert.deepEqual(selectTargets(['lib/bossalib/config/config.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './config' } },
+  ])
+  assert.deepEqual(selectTargets(['services/bossd/internal/tmux/tmux.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-bossd', env: { GO_TEST_PACKAGES: './internal/tmux' } },
+  ])
+})
+
+test('selectTargets adds script tests to TUI key vocabulary inputs WITHOUT dropping test-boss', () => {
+  assert.deepEqual(selectTargets(['services/boss/internal/tuidriver/keybytes.go']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-boss', env: { GO_TEST_PACKAGES: './internal/tuidriver' } },
+  ])
+  assert.deepEqual(selectTargets(['services/boss/internal/tuidriver/testdata/key-vocab.json']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+    { kind: 'make', target: 'test-boss', env: {} },
+  ])
 })
 
 test('selectTargets adds the script tests to published skill SHELL payloads too', () => {
@@ -261,7 +336,13 @@ test('selectTargets maps infra/install.sh to the turbo web target', () => {
 })
 
 test('selectTargets falls back to smoke tests when no rule matches', () => {
-  assert.deepEqual(selectTargets(['README.md']), [{ kind: 'make', target: 'test-smoke', env: {} }])
+  assert.deepEqual(selectTargets(['TODOS.md']), [{ kind: 'make', target: 'test-smoke', env: {} }])
+})
+
+test('selectTargets maps README to script tests', () => {
+  assert.deepEqual(selectTargets(['README.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
 })
 
 test('renderMakeCommands prefixes scoped environment variables', () => {
@@ -621,8 +702,8 @@ function realMakePath() {
   return execFileSync('which', ['make'], { encoding: 'utf8' }).trim()
 }
 
-function moduleRootsFromDisk() {
-  return execFileSync(
+function moduleRootsFromDisk({ execFile = execFileSync } = {}) {
+  const roots = execFile(
     'git',
     ['ls-files', '--', 'lib/*/go.mod', 'services/*/go.mod', 'plugins/*/go.mod'],
     {
@@ -635,6 +716,11 @@ function moduleRootsFromDisk() {
     .filter(Boolean)
     .map((file) => path.posix.dirname(file))
     .sort()
+  assert.ok(
+    roots.length > 0,
+    'moduleRootsFromDisk found no module roots; the module-rule coverage assertion would pass vacuously',
+  )
+  return roots
 }
 
 function trimSlash(value) {

@@ -119,20 +119,30 @@ gh pr view <n> --json state,mergedAt -q '.state'
 success rather than erroring — so the safe generic move for an unclassified merge
 error is: **re-read the provider state, then retry once.**
 
-## 4. Infra-death wake-to-resume
+## 4. Environmental-death wake-to-resume
 
 A chat can stop for a reason the agent never chose: the harness died mid-turn on a
-transient API error. That is **not** BLOCKED, and the standing ban on nudging a
-BLOCKED chat does not apply to it.
+transient API error or usage/rate-cap banner. That is **not** BLOCKED, and the
+standing ban on nudging a BLOCKED chat does not apply to it.
 
-**Diagnosis cheat sheet** — all of these together, not any one alone:
+**Diagnosis cheat sheet.**
 
-- the session reads idle / the chat is not working;
-- the chat's **last message is a transient API error** (a 5xx / overloaded /
-  connection-reset style failure), not an agent conclusion;
-- no spinner and activity is frozen — nothing has advanced since that message;
-- the work is unfinished: no terminal state was reported, and the branch may
-  carry committed work from before the death.
+- **Usage cap / 429:** `CHAT_STATUS_LIMITED`, or the chat's last message is a
+  usage-limit/rate-cap banner. This is a resume lane even when the aggregate
+  session state says BLOCKED; the agent did not conclude that code repair is
+  needed.
+- **Transient API / 5xx:** the session reads idle / the chat is not working, the
+  chat's **last message is a transient API error** (a 5xx / overloaded /
+  connection-reset style failure), no spinner is present, activity is frozen,
+  and the message is not an agent conclusion.
+- **Parked on a background agent:** `WAITING` or `WORKING` with a "waiting for
+  background agents" footer is alive/hold. An unmoved remote head plus a stale
+  transcript timestamp is expected while the parent chat waits on a sidecar; it
+  means read `waiting_reason` and the last message, not repair.
+- **Autocompact or dead-turn chrome:** if the last message cannot be classified
+  as usage-limit, transient API, or agent conclusion, treat it as
+  `unknown/investigate`. Do not invent a detector in this rail, and never repair
+  from the two-signal proxy alone.
 
 **Rule.** Deliver **one** wake-to-resume into that chat:
 
@@ -150,4 +160,6 @@ stop: the run reached a conclusion it could not act past, and nudging it just
 overrides that judgement, which is why the body forbids it. An infra-death is the
 _harness_ dying mid-work — there is no decision to override, only a turn that never
 finished. The daemon may also auto-resume a transient API death on its own; the
-driver's single wake is the belt-and-braces path when it has not.
+driver's single wake is the belt-and-braces path when it has not. A usage cap is
+the same kind of environmental interruption for routing purposes: one wake to
+resume committed state, then fail-isolate if it does not take.

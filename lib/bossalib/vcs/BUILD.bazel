@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "actionable_error.go",
         "attention.go",
+        "checks_verdict.go",
         "display.go",
         "events.go",
         "github.go",
@@ -25,6 +26,7 @@ go_test(
     srcs = [
         "actionable_error_test.go",
         "attention_test.go",
+        "checks_verdict_test.go",
         "conflict_block_test.go",
         "display_test.go",
         "github_test.go",

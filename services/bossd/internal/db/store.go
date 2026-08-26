@@ -43,6 +43,10 @@ var ErrGithubCallbackLeaseConflict = errors.New("github callback lease held by a
 // caller lost the group race; exactly one caller ever avoids it per group.
 var ErrGithubCallbackTriggerConflict = errors.New("github callback already resolved")
 
+// ErrGithubCallbackNotOwned is returned by Delete when an ownership-scoped
+// delete names an existing callback owned by a different target chat.
+var ErrGithubCallbackNotOwned = errors.New("github callback belongs to another target chat")
+
 // ErrNoteInvalid is the base for NoteStore validation failures (missing repo
 // id, empty or oversize body, empty/oversize tag, too many tags). Wrapped with
 // a specific reason via fmt.Errorf %w so RPC handlers can map any of them to a
@@ -142,6 +146,10 @@ type CreateSessionParams struct {
 	BaseBranch   string
 	AgentName    string // Agent plugin name; daemon callers should pass a resolved name. Empty falls back to "claude" for legacy callers.
 	Model        string // Opaque agent model id; "" = plugin default.
+	// EffectiveModel and EffectiveEffort are write-once runtime-attribution
+	// values resolved at creation from request value over per-agent config.
+	EffectiveModel  string
+	EffectiveEffort string
 	// AccountID binds the session to a rotation account; nil/empty = the
 	// system-default account 0 (no injected env, D9).
 	AccountID  *string
@@ -164,6 +172,8 @@ type UpdateSessionParams struct {
 	TrackerURL              **string
 	TmuxSessionName         **string
 	LastCheckState          *int
+	LastCheckStateHeadSHA   **string
+	LastCheckStateAt        **string
 	LastObservedReviewState *int
 	IsAutomationEnabled     *bool
 	AttemptCount            *int
@@ -575,17 +585,26 @@ const GithubCallbackDefaultExpiry = models.GithubCallbackDefaultExpiry
 // CreateGithubCallbackParams holds the fields for registering a new callback.
 // The store derives id, timestamps, and defaults; validation lives in Create.
 type CreateGithubCallbackParams struct {
-	GroupID      *string // nil = ungrouped
-	TargetChatID string
-	RepoOwner    string
-	RepoName     string
-	PRNumber     int
-	Trigger      models.GithubCallbackTrigger
-	Message      string
+	GroupID                 *string // nil = ungrouped
+	TargetChatID            string
+	RepoOwner               string
+	RepoName                string
+	PRNumber                int
+	Trigger                 models.GithubCallbackTrigger
+	Message                 string
+	ShouldRequireTransition bool
 	// ExpiresAt, when nil, defaults to now + GithubCallbackDefaultExpiry. An
 	// explicit value must be in the future and within GithubCallbackMaxExpiry.
 	ExpiresAt *time.Time
 }
+
+type DeleteGithubCallbackOutcome string
+
+const (
+	DeleteGithubCallbackOutcomeDeleted  DeleteGithubCallbackOutcome = "deleted"
+	DeleteGithubCallbackOutcomeNotFound DeleteGithubCallbackOutcome = "not_found"
+	DeleteGithubCallbackOutcomeNotOwned DeleteGithubCallbackOutcome = "not_owned"
+)
 
 // ListGithubCallbacksFilter narrows GithubCallbackStore.List. All fields are
 // optional; a nil field is not constrained. Results are ordered by created_at
@@ -622,9 +641,13 @@ type GithubCallbackStore interface {
 	Get(ctx context.Context, id string) (*models.GithubCallback, error)
 	// List returns callbacks matching filter, ordered by created_at then id.
 	List(ctx context.Context, filter ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
-	// Delete removes a callback. It is idempotent: deleting an absent id is a nil
-	// no-op, so repeated cancel is safe.
-	Delete(ctx context.Context, id string) error
+	// Delete removes a callback by id. When expectTargetChatID is non-empty, the
+	// row is deleted only if its target_chat_id matches; a mismatch returns
+	// DeleteGithubCallbackOutcomeNotOwned and leaves the row present.
+	Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGithubCallbackOutcome, error)
+	// ObserveBaseline marks the first transition-required evaluation as observed
+	// without firing the callback or canceling its group siblings.
+	ObserveBaseline(ctx context.Context, id string, now time.Time) error
 	// ExpireOverdue transitions every non-terminal callback whose expires_at is at
 	// or before now to the expired state, returning the number of rows changed.
 	ExpireOverdue(ctx context.Context, now time.Time) (int, error)

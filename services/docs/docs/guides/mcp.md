@@ -246,6 +246,11 @@ commit reached the remote. On one epic run this fired once per child while every
 branch still held only its bootstrap commit, and the driver evaluated merge rails
 against an effectively empty branch.
 
+`last_check_state=UNSPECIFIED` is also the honest answer for a stale, missing, or
+non-demonstrated verdict at the current head. Inspect
+`last_check_state_observed`, `last_check_state_head_sha`, and
+`last_check_state_at` to see the raw cached latch and where it came from.
+
 The push oracle is the remote itself:
 
 ```bash

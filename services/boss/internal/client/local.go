@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
@@ -689,11 +690,23 @@ func (c *LocalClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithu
 	return resp.Msg.GetGithubCallbacks(), nil
 }
 
-// DeleteGithubCallback ignores targetChatID: the local daemon owns every
-// callback in its own registry, so the id alone resolves it.
-func (c *LocalClient) DeleteGithubCallback(ctx context.Context, _ string, id string) error {
-	_, err := c.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id}))
-	return err
+func (c *LocalClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+	resp, err := c.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+		Id:                 id,
+		ExpectTargetChatId: stringPtrIfNotEmpty(targetChatID),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func stringPtrIfNotEmpty(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	out := strings.TrimSpace(s)
+	return &out
 }
 
 // --- Notes ---

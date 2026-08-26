@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // DescribeChatLaunch re-derives the exact command bossd would run to launch a
@@ -52,7 +53,8 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// append_system_prompt, so there are no instruction classes to report and
 	// this path emits no undelivered-instruction record whatever the runner
 	// declares.
-	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, nil)
+	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", chat.Model, effort, nil)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

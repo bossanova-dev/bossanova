@@ -1368,7 +1368,7 @@ func (c *StreamClient) dispatchDeleteGithubCallback(ctx context.Context, cmdID s
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		if err := c.commandHandler.DeleteGithubCallback(ctx, cmd.GetId()); err != nil {
+		if err := c.commandHandler.DeleteGithubCallback(ctx, cmd.GetId(), cmd.GetExpectTargetChatId()); err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
 		return commandOK(cmdID, nil)

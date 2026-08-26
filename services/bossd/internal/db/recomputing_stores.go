@@ -460,6 +460,8 @@ func isComputerSelfWrite(p UpdateSessionParams) bool {
 		p.TrackerURL == nil &&
 		p.TmuxSessionName == nil &&
 		p.LastCheckState == nil &&
+		p.LastCheckStateHeadSHA == nil &&
+		p.LastCheckStateAt == nil &&
 		p.IsAutomationEnabled == nil &&
 		p.AttemptCount == nil &&
 		p.BlockedReason == nil &&

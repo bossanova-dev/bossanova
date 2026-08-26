@@ -31,6 +31,27 @@ function captureStderr(run) {
   }
 }
 
+function writeRequiredDocs(repoRoot, contents = {}) {
+  fs.mkdirSync(path.join(repoRoot, 'docs', 'testing'), { recursive: true })
+  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), contents['CLAUDE.md'] ?? '')
+  if (contents['AGENTS.md'] !== undefined) {
+    fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), contents['AGENTS.md'])
+  } else if (contents.agentsSymlink) {
+    fs.symlinkSync(contents.agentsSymlink, path.join(repoRoot, 'AGENTS.md'))
+  } else {
+    fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
+  }
+  fs.writeFileSync(path.join(repoRoot, 'README.md'), contents['README.md'] ?? '')
+  fs.writeFileSync(
+    path.join(repoRoot, 'docs', 'build-and-ci.md'),
+    contents['docs/build-and-ci.md'] ?? '',
+  )
+  fs.writeFileSync(
+    path.join(repoRoot, 'docs', 'testing', 'test-command-manifest.md'),
+    contents['docs/testing/test-command-manifest.md'] ?? '',
+  )
+}
+
 test('extractDocumentedTargets pulls targets from fenced code blocks', () => {
   const doc = ['```bash', 'make deps', 'make build   # comment', '```'].join('\n')
 
@@ -363,9 +384,7 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
     { recursive: true },
   )
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
-  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  writeRequiredDocs(repoRoot)
   fs.writeFileSync(
     path.join(
       repoRoot,
@@ -391,14 +410,9 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
 
 test('checkDocMakeTargets names the offending doc and line for an undefined target', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(path.join(repoRoot, 'docs'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
-  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
-  fs.writeFileSync(
-    path.join(repoRoot, 'docs', 'build-and-ci.md'),
-    [
+  writeRequiredDocs(repoRoot, {
+    'docs/build-and-ci.md': [
       '# Build and CI', // 1
       '', // 2
       'Some prose.', // 3
@@ -409,7 +423,7 @@ test('checkDocMakeTargets names the offending doc and line for an undefined targ
       '```', // 8
       '',
     ].join('\n'),
-  )
+  })
 
   const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
 
@@ -420,18 +434,50 @@ test('checkDocMakeTargets names the offending doc and line for an undefined targ
   )
 })
 
-test('checkDocMakeTargets validates generated test-command manifest targets', () => {
+test('checkDocMakeTargets fails when a listed root doc is missing', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(path.join(repoRoot, 'docs', 'testing'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  fs.mkdirSync(path.join(repoRoot, 'docs', 'testing'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
   fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'docs', 'build-and-ci.md'), '')
-  fs.writeFileSync(
-    path.join(repoRoot, 'docs', 'testing', 'test-command-manifest.md'),
-    '| Module | Target |\n| --- | --- |\n| `services/demo` | `make ghost` |\n',
+  fs.writeFileSync(path.join(repoRoot, 'docs', 'testing', 'test-command-manifest.md'), '')
+
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.ok(
+    stderr.includes('docs/build-and-ci.md is listed for make-target validation but does not exist'),
+    `expected the missing documented surface to be named, got:\n${stderr}`,
   )
+})
+
+test('checkDocMakeTargets resolves doc symlinks to prose and scans the shared target once', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make ghost`.\n', agentsSymlink: 'CLAUDE.md' })
+
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+
+  assert.equal(result, false)
+  assert.ok(
+    stderr.includes('CLAUDE.md:1: make ghost'),
+    `expected CLAUDE.md finding, got:\n${stderr}`,
+  )
+  assert.equal(
+    stderr.includes('AGENTS.md:1: make ghost'),
+    false,
+    `expected symlinked shared prose to be scanned once, got:\n${stderr}`,
+  )
+})
+
+test('checkDocMakeTargets validates generated test-command manifest targets', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  writeRequiredDocs(repoRoot, {
+    'docs/testing/test-command-manifest.md':
+      '| Module | Target |\n| --- | --- |\n| `services/demo` | `make ghost` |\n',
+  })
 
   const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
 
@@ -444,22 +490,14 @@ test('checkDocMakeTargets validates generated test-command manifest targets', ()
 
 test('checkDocMakeTargets sorts offenders by doc, then line numerically, then target', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(path.join(repoRoot, 'docs'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
-  fs.writeFileSync(
-    path.join(repoRoot, 'AGENTS.md'),
-    [
+  writeRequiredDocs(repoRoot, {
+    'AGENTS.md': [
       '# Agents', // 1
       'Inline `make omega` here.', // 2
       '',
     ].join('\n'),
-  )
-  // Two offenders in one doc, on lines 2 and 10: a lexicographic sort of the
-  // rendered strings would put `:10:` before `:2:`, so this pair is what pins
-  // the numeric line comparison.
-  fs.writeFileSync(
-    path.join(repoRoot, 'CLAUDE.md'),
-    [
+    'CLAUDE.md': [
       '# Claude', // 1
       'Inline `make zeta` here.', // 2
       '', // 3
@@ -473,12 +511,7 @@ test('checkDocMakeTargets sorts offenders by doc, then line numerically, then ta
       '```', // 11
       '',
     ].join('\n'),
-  )
-  // Two offenders sharing one line, emitted in the reverse of their sorted
-  // order, so the target tie-break is pinned too.
-  fs.writeFileSync(
-    path.join(repoRoot, 'README.md'),
-    [
+    'README.md': [
       '# Readme', // 1
       '', // 2
       '```bash', // 3
@@ -486,19 +519,13 @@ test('checkDocMakeTargets sorts offenders by doc, then line numerically, then ta
       '```', // 5
       '',
     ].join('\n'),
-  )
-  // Alphabetically last but scanned last as well, so this doc alone cannot
-  // distinguish sorted output from emission order — AGENTS.md above is the one
-  // that does, being scanned second and sorted first.
-  fs.writeFileSync(
-    path.join(repoRoot, 'docs', 'build-and-ci.md'),
-    [
+    'docs/build-and-ci.md': [
       '# Build and CI', // 1
       '', // 2
       'Inline `make gamma` here.', // 3
       '',
     ].join('\n'),
-  )
+  })
 
   const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
 
@@ -525,9 +552,7 @@ test('checkDocMakeTargets passes when skill docs only use defined targets', () =
     { recursive: true },
   )
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\nlint:\n\t@true\n')
-  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  writeRequiredDocs(repoRoot)
   fs.writeFileSync(
     path.join(
       repoRoot,
@@ -579,9 +604,7 @@ test('checkDocMakeTargets validates -C targets against that directory Makefile',
   fs.mkdirSync(path.join(repoRoot, 'plugins'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'build:\n\t@true\n')
   fs.writeFileSync(path.join(repoRoot, 'scripts', 'Makefile'), 'lint:\n\t@true\n')
-  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), 'Run `make -C scripts lint`.\n')
-  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make -C scripts lint`.\n' })
 
   assert.equal(checkDocMakeTargets(repoRoot), true)
 })
@@ -592,9 +615,7 @@ test('checkDocMakeTargets validates -f targets against the selected Makefile', (
   fs.mkdirSync(path.join(repoRoot, 'plugins'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'build:\n\t@true\n')
   fs.writeFileSync(path.join(repoRoot, 'scripts', 'Makefile'), 'lint:\n\t@true\n')
-  fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), 'Run `make -f scripts/Makefile lint`.\n')
-  fs.writeFileSync(path.join(repoRoot, 'AGENTS.md'), '')
-  fs.writeFileSync(path.join(repoRoot, 'README.md'), '')
+  writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make -f scripts/Makefile lint`.\n' })
 
   assert.equal(checkDocMakeTargets(repoRoot), true)
 })

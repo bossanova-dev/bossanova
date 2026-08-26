@@ -3,6 +3,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const DEFAULT_ORDER = 100
+export const DEFAULT_EXTENSION_ROOTS = ['.claude/skills', '.codex/skills']
 
 // The SINGLE role table. Discovery (`KNOWN_EXTENSION_ROLES`) and validation (`ROLE_SCHEMAS`) are
 // both derived from it, so a role cannot exist for one and not the other — the two registries were
@@ -177,8 +178,55 @@ export function extensionMarker(frontmatter) {
   return marker
 }
 
-export function discoverExtensions({ core, root, role }) {
-  const skillsDir = path.join(root, '.claude', 'skills')
+function extensionRootsForDiscovery(config) {
+  const roots = config && config.extensionRoots
+  if (roots === undefined) return DEFAULT_EXTENSION_ROOTS
+  if (
+    !Array.isArray(roots) ||
+    roots.length === 0 ||
+    roots.some((candidate) => typeof candidate !== 'string' || candidate.trim() === '')
+  ) {
+    throw new Error('extensionRoots must be a non-empty array of non-empty strings')
+  }
+  return roots
+}
+
+function loadExtensionDiscoveryConfig(root) {
+  const configPath = path.join(root, '.boss-skills.json')
+  if (!fs.existsSync(configPath)) return {}
+  return JSON.parse(fs.readFileSync(configPath, 'utf8'))
+}
+
+function assertContainedExtensionRoot(base, candidate, resolved) {
+  const relative = path.relative(base, resolved)
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return
+  throw new Error(`extensionRoots entry escapes repository root: ${candidate}`)
+}
+
+export function resolveExtensionRoots(root, config = loadExtensionDiscoveryConfig(root)) {
+  const base = path.resolve(root)
+  const realBase = fs.realpathSync(base)
+  const configuredRoots = extensionRootsForDiscovery(config)
+  return configuredRoots
+    .map((candidate) => {
+      const resolved = path.resolve(base, candidate)
+      assertContainedExtensionRoot(base, candidate, resolved)
+      return resolved
+    })
+    .filter((candidate) => {
+      let stat
+      try {
+        stat = fs.statSync(candidate)
+      } catch {
+        return false
+      }
+      if (!stat.isDirectory()) return false
+      assertContainedExtensionRoot(realBase, candidate, fs.realpathSync(candidate))
+      return true
+    })
+}
+
+function discoverExtensionsInRoot({ core, role, skillsDir, seenNames }) {
   const extensions = []
   const skipped = []
   let entries = []
@@ -190,6 +238,8 @@ export function discoverExtensions({ core, root, role }) {
   const prefix = `${core}-`
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue
+    if (seenNames.has(entry.name)) continue
+    seenNames.add(entry.name)
     const skillPath = path.join(skillsDir, entry.name, 'SKILL.md')
     if (!fs.existsSync(skillPath)) {
       skipped.push(skipEntry(entry.name, 'no-skill-md', 'no SKILL.md'))
@@ -300,6 +350,21 @@ export function discoverExtensions({ core, root, role }) {
     if (marker.lens !== undefined) descriptor.lens = marker.lens
     if (marker.capability !== undefined) descriptor.capability = marker.capability
     extensions.push(descriptor)
+  }
+  return { extensions, skipped }
+}
+
+export function discoverExtensions({ core, root, role, roots }) {
+  const scanRoots = Array.isArray(roots)
+    ? roots.map((candidate) => path.resolve(candidate))
+    : resolveExtensionRoots(root)
+  const extensions = []
+  const skipped = []
+  const seenNames = new Set()
+  for (const skillsDir of scanRoots) {
+    const discovered = discoverExtensionsInRoot({ core, role, skillsDir, seenNames })
+    extensions.push(...discovered.extensions)
+    skipped.push(...discovered.skipped)
   }
   extensions.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
   return { extensions, skipped }

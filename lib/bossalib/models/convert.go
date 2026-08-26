@@ -71,9 +71,13 @@ func SessionToProto(s *Session) *pb.Session {
 		State:                       stateToProto(s.State),
 		AgentSessionId:              s.AgentSessionID,
 		AgentName:                   s.AgentName,
+		EffectiveModel:              s.EffectiveModel,
+		EffectiveEffort:             s.EffectiveEffort,
 		PrNumber:                    intPtrToInt32Ptr(s.PRNumber),
 		PrUrl:                       s.PRURL,
 		LastCheckState:              checkStateToProto(s.LastCheckState),
+		LastCheckStateObserved:      checkStateToProto(s.LastCheckState),
+		LastCheckStateHeadSha:       s.LastCheckStateHeadSHA,
 		IsAutomationEnabled:         s.IsAutomationEnabled,
 		AttemptCount:                intToInt32(s.AttemptCount),
 		BlockedReason:               s.BlockedReason,
@@ -87,6 +91,12 @@ func SessionToProto(s *Session) *pb.Session {
 	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
+	}
+	if s.LastCheckStateAt != nil {
+		p.LastCheckStateAt = timestamppb.New(*s.LastCheckStateAt)
+	}
+	if s.StateEnteredAt != nil {
+		p.StateEnteredAt = timestamppb.New(*s.StateEnteredAt)
 	}
 	if s.LastRepairBlockedAt != nil {
 		p.LastRepairBlockedAt = timestamppb.New(*s.LastRepairBlockedAt)
@@ -107,9 +117,12 @@ func SessionFromProto(p *pb.Session) *Session {
 		State:                       stateFromProto(p.State),
 		AgentSessionID:              p.AgentSessionId,
 		AgentName:                   p.AgentName,
+		EffectiveModel:              p.EffectiveModel,
+		EffectiveEffort:             p.EffectiveEffort,
 		PRNumber:                    int32PtrToIntPtr(p.PrNumber),
 		PRURL:                       p.PrUrl,
 		LastCheckState:              checkStateFromProto(p.LastCheckState),
+		LastCheckStateHeadSHA:       p.LastCheckStateHeadSha,
 		IsAutomationEnabled:         p.IsAutomationEnabled,
 		AttemptCount:                int(p.AttemptCount),
 		BlockedReason:               p.BlockedReason,
@@ -124,6 +137,14 @@ func SessionFromProto(p *pb.Session) *Session {
 	if p.ArchivedAt != nil {
 		t := p.ArchivedAt.AsTime()
 		s.ArchivedAt = &t
+	}
+	if p.LastCheckStateAt != nil {
+		t := p.LastCheckStateAt.AsTime()
+		s.LastCheckStateAt = &t
+	}
+	if p.StateEnteredAt != nil {
+		t := p.StateEnteredAt.AsTime()
+		s.StateEnteredAt = &t
 	}
 	if p.LastRepairBlockedAt != nil {
 		t := p.LastRepairBlockedAt.AsTime()

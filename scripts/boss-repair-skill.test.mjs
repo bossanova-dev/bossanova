@@ -42,3 +42,22 @@ test('BOS-771: Strategy A runs post-rebase checks after the whole rebase', () =>
     assert.match(strategy, /run\s+the\s+affected\s+module's\s+tests/)
   }
 })
+
+test('BOS-1002: installed-skill gate derives the current tree and degrades for an old boss CLI', () => {
+  for (const dir of REPAIR_MIRRORS) {
+    const skill = skillText(dir)
+    assert.match(skill, /BOSS_SKILLS_HOME/, dir)
+    assert.match(skill, /boss-repair\/toolbox/, dir)
+    assert.match(skill, /skills\s+check\s+--gate/, dir)
+    assert.match(
+      skill,
+      /case "\$O" in[\s\S]{0,120}\*--gate\*\) node "\$BOSS_REPAIR_TOOLBOX\/toolbox-drift\.mjs"/,
+      dir,
+    )
+    assert.match(
+      skill,
+      /BLOCKED:\s+installed\s+boss\s+skills\s+differ\s+from\s+checkout\s+source/,
+      dir,
+    )
+  }
+})

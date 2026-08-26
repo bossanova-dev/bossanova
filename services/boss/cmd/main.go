@@ -302,6 +302,17 @@ func sessionCmd() *cobra.Command {
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
 	checks.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
+	reviewLedger := &cobra.Command{
+		Use:   "review-ledger <session-id>",
+		Short: "Show a finished boss-review run's durable dispatch ledger",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionReviewLedger(cmd, args[0])
+		},
+	}
+	reviewLedger.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
+	reviewLedger.Flags().String("run", "", "Run id to read (default newest ledger by mtime)")
+	cmd.AddCommand(reviewLedger)
 	mcp := &cobra.Command{
 		Use:   "mcp <chat-id>",
 		Short: "Show which MCP servers this chat's agent actually resolved, with tools and source",
@@ -435,6 +446,7 @@ func newCmd() *cobra.Command {
 	cmd.Flags().String("prompt", "", "Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)")
 	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
 	cmd.Flags().String("model", "", "Agent model id to run this session under (e.g. an Opus id); empty = agent default")
+	cmd.Flags().String("effort", "", "Agent reasoning effort to run this session under; empty = agent default")
 	cmd.Flags().String("account", "", "Account id or label to run this session under (empty = system default)")
 	cmd.Flags().Bool("detach", false,
 		"A no-op on the non-interactive --repo + --prompt path, which always runs "+

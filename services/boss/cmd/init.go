@@ -307,8 +307,10 @@ var skippedBlocks = []struct{ name, reason string }{
 	{"lensMap", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"adapters", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planStorage", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
+	{"reviewLedger", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planContract", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"reviewDefaults", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
+	{"extensionRoots", "not detectable from a repo's files; the built-in defaults scan the supported agent skill roots"},
 	{"env", "describes the harness a skill runs under, not the repository; the built-in headless-detection signals apply unchanged"},
 	{"publishConfig", "empty by default and validated only per existing entry, so writing an empty block would add nothing the defaults do not already supply"},
 }

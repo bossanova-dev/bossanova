@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -212,6 +213,10 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	m.updates = append(m.updates, mockSessionUpdate{id: id, params: params})
 	if params.State != nil {
+		if s.State != machine.State(*params.State) {
+			now := time.Now()
+			s.StateEnteredAt = &now
+		}
 		s.State = machine.State(*params.State)
 	}
 	if params.Title != nil {
@@ -234,6 +239,12 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.LastCheckState != nil {
 		s.LastCheckState = machine.CheckState(*params.LastCheckState)
+	}
+	if params.LastCheckStateHeadSHA != nil {
+		s.LastCheckStateHeadSHA = *params.LastCheckStateHeadSHA
+	}
+	if params.LastCheckStateAt != nil {
+		s.LastCheckStateAt = sqlutil.ParseOptionalTime(*params.LastCheckStateAt)
 	}
 	if params.LastObservedReviewState != nil {
 		s.LastObservedReviewState = *params.LastObservedReviewState
@@ -1300,6 +1311,7 @@ type mockPreflightCall struct {
 	agentName string
 	workDir   string
 	model     string
+	effort    string
 	env       map[string]string
 	profile   pb.HeadlessCapabilityProfile
 }
@@ -1309,6 +1321,7 @@ type mockStartCall struct {
 	plan    string
 	resume  *string
 	model   string
+	effort  string
 	env     map[string]string
 	profile pb.HeadlessCapabilityProfile
 }
@@ -1320,8 +1333,8 @@ func newMockAgentRunner() *mockAgentRunner {
 	}
 }
 
-func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, model string, env map[string]string) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env})
+func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, model, effort string, env map[string]string) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, effort: effort, env: env})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -1363,12 +1376,12 @@ func (m *mockAgentRunner) History(_ string) []agent.OutputLine {
 // StartByAgent forwards to Start so existing test assertions still fire.
 // The test fakes don't need to inspect the agent name — by-agent routing
 // is exercised by the dispatcher tests in services/bossd/internal/agent.
-func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string) (string, error) {
-	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
-func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: extraEnv, profile: profile})
+func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, effort: effort, env: extraEnv, profile: profile})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -1379,8 +1392,8 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 	return id, nil
 }
 
-func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
-	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, env: env, profile: options.HeadlessCapabilityProfile})
+func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model, effort string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
+	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume, model: model, effort: effort, env: env, profile: options.HeadlessCapabilityProfile})
 	if m.startErr != nil {
 		return "", m.startErr
 	}
@@ -1391,12 +1404,13 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Contex
 	return id, nil
 }
 
-func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, workDir, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, workDir, model, effort string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) error {
 	m.preflightCalls++
 	m.preflights = append(m.preflights, mockPreflightCall{
 		agentName: agentName,
 		workDir:   workDir,
 		model:     model,
+		effort:    effort,
 		env:       extraEnv,
 		profile:   profile,
 	})
@@ -8859,7 +8873,7 @@ func newLabeledRunner(name string) *labeledRunner {
 	return &labeledRunner{name: name}
 }
 
-func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID, _ string, _ map[string]string) (string, error) {
+func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID, _, _ string, _ map[string]string) (string, error) {
 	tag := r.name + ":" + agentSessionID
 	r.startSeen.Store(&tag)
 	if agentSessionID == "" {
@@ -8868,9 +8882,9 @@ func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSe
 	return agentSessionID, nil
 }
 
-func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
+func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
 	r.profileSeen.Store(int32(options.HeadlessCapabilityProfile))
-	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 
 // PreflightHeadlessCapabilityProfile / StartWithHeadlessCapabilityProfile make
@@ -8878,14 +8892,14 @@ func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, work
 // policy now requires TRACKER_PLAN_ATTACHMENT_V1 for — still exercises real
 // dispatcher routing instead of failing closed on a runner that predates the
 // profile seam. Both record what they saw so routing assertions still hold.
-func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _, _, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
 	r.profileSeen.Store(int32(profile))
 	return nil
 }
 
-func (r *labeledRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
+func (r *labeledRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) (string, error) {
 	r.profileSeen.Store(int32(profile))
-	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, extraEnv)
+	return r.Start(ctx, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 func (r *labeledRunner) Stop(_ string) error      { return nil }
 func (r *labeledRunner) IsRunning(_ string) bool  { return false }

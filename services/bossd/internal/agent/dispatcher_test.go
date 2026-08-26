@@ -29,15 +29,17 @@ type preflightRecordingRunner struct {
 	calls   int
 	workDir string
 	model   string
+	effort  string
 	env     map[string]string
 	profile bossanovav1.HeadlessCapabilityProfile
 	err     error
 }
 
-func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, workDir, model string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
 	r.calls++
 	r.workDir = workDir
 	r.model = model
+	r.effort = effort
 	r.env = extraEnv
 	r.profile = profile
 	return r.err
@@ -47,7 +49,7 @@ func newLabeledAgentRunner(name string) *labeledAgentRunner {
 	return &labeledAgentRunner{name: name}
 }
 
-func (r *labeledAgentRunner) Start(_ context.Context, _, _ string, _ *string, sessionID, _ string, _ map[string]string) (string, error) {
+func (r *labeledAgentRunner) Start(_ context.Context, _, _ string, _ *string, sessionID, _, _ string, _ map[string]string) (string, error) {
 	tag := r.name + ":" + sessionID
 	r.startSeen.Store(&tag)
 	return sessionID, nil
@@ -72,7 +74,7 @@ func TestDispatcher_Start_RoutesToLookupResult(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "claude", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-1", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-1", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -95,7 +97,7 @@ func TestDispatcher_Start_RoutesToOpenCode(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "opencode", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-2", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-2", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -118,7 +120,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnEmptyLookup(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-3", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-3", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -141,7 +143,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnLookupError(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", errors.New("db down") }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-4", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-4", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -159,7 +161,7 @@ func TestDispatcher_Start_UnknownAgentReturnsError(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "ghost", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	_, err := d.Start(context.Background(), "/w", "p", nil, "sid-5", "", nil)
+	_, err := d.Start(context.Background(), "/w", "p", nil, "sid-5", "", "", nil)
 	if err == nil {
 		t.Fatal("expected Start to error for unknown agent")
 	}
@@ -195,7 +197,7 @@ func TestResolveSingleLoadedAgentOverridesEmptyName(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-solo", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-solo", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:sid-solo" {
@@ -215,7 +217,7 @@ func TestResolveMultipleLoadedFallsBackToDefault(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-multi", "", nil); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-multi", "", "", nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if seen := claudeRunner.startSeen.Load(); seen == nil || *seen != "claude:sid-multi" {
@@ -238,7 +240,7 @@ func TestDispatcher_StartByAgent_RoutesToNamedAgent(t *testing.T) {
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "codex", "/w", "p", nil, "agent-sid-1", "", nil); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "codex", "/w", "p", nil, "agent-sid-1", "", "", nil); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:agent-sid-1" {
@@ -257,7 +259,7 @@ func TestDispatcher_StartByAgent_EmptyNameWithSingleRunnerWins(t *testing.T) {
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", "", nil); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", "", "", nil); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:sid" {
@@ -277,7 +279,7 @@ func TestDispatcher_StartByAgent_EmptyNameMultipleRunnersFallsBackToDefault(t *t
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", "", nil); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", "", "", nil); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := claudeRunner.startSeen.Load(); seen == nil || *seen != "claude:sid" {
@@ -289,7 +291,7 @@ func TestDispatcher_StartByAgent_UnknownAgentReturnsError(t *testing.T) {
 	registry := map[string]AgentRunner{"claude": newLabeledAgentRunner("claude")}
 	d := NewDispatcher(registry, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
-	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid", "", nil)
+	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid", "", "", nil)
 	if err == nil || !errors.Is(err, ErrAgentNotLoaded) {
 		t.Fatalf("expected ErrAgentNotLoaded, got %v", err)
 	}
@@ -308,7 +310,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	env := map[string]string{"CODEX_HOME": "/managed/codex-home"}
 
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
-		context.Background(), "codex", "/worktrees/codex-session", "gpt-5-codex", env,
+		context.Background(), "codex", "/worktrees/codex-session", "gpt-5-codex", "medium", env,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if err != nil {
@@ -317,8 +319,8 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	if codexRunner.calls != 1 {
 		t.Fatalf("codex preflight calls = %d, want 1", codexRunner.calls)
 	}
-	if codexRunner.model != "gpt-5-codex" || codexRunner.env["CODEX_HOME"] != "/managed/codex-home" {
-		t.Fatalf("codex preflight target = model=%q env=%v", codexRunner.model, codexRunner.env)
+	if codexRunner.model != "gpt-5-codex" || codexRunner.effort != "medium" || codexRunner.env["CODEX_HOME"] != "/managed/codex-home" {
+		t.Fatalf("codex preflight target = model=%q effort=%q env=%v", codexRunner.model, codexRunner.effort, codexRunner.env)
 	}
 	// The work dir must survive routing: it is what lets the plugin profile the
 	// repo-level agent config the gated run will load.
@@ -336,7 +338,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsuppor
 	}, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
-		context.Background(), "claude", t.TempDir(), "model", nil,
+		context.Background(), "claude", t.TempDir(), "model", "", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	)
 	if !errors.Is(err, ErrHeadlessCapabilityProfileUnsupported) {
@@ -429,7 +431,7 @@ func (r *blockingContextualRunner) sawContext() bool {
 	return r.contextual
 }
 
-func (r *blockingContextualRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+func (r *blockingContextualRunner) Start(_ context.Context, _, _ string, _ *string, sid, _, _ string, _ map[string]string) (string, error) {
 	return sid, nil
 }
 
@@ -450,7 +452,7 @@ type stopRecordingRunner struct {
 	onStop func(sessionID string)
 }
 
-func (r *stopRecordingRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+func (r *stopRecordingRunner) Start(_ context.Context, _, _ string, _ *string, sid, _, _ string, _ map[string]string) (string, error) {
 	return sid, nil
 }
 func (r *stopRecordingRunner) Stop(sid string) error    { r.onStop(sid); return nil }
@@ -481,7 +483,7 @@ func TestDispatcher_IsRunningByAgent_RoutesAndReturnsTrue(t *testing.T) {
 
 type alwaysRunningRunner struct{ running bool }
 
-func (r *alwaysRunningRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+func (r *alwaysRunningRunner) Start(_ context.Context, _, _ string, _ *string, sid, _, _ string, _ map[string]string) (string, error) {
 	return sid, nil
 }
 func (r *alwaysRunningRunner) Stop(_ string) error      { return nil }
@@ -515,7 +517,7 @@ func TestNewDispatcher_PanicsOnNilLookup(t *testing.T) {
 // unbounded fallback. Registering one must be observable at construction.
 type unboundedStopRunner struct{}
 
-func (r *unboundedStopRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string, _ map[string]string) (string, error) {
+func (r *unboundedStopRunner) Start(_ context.Context, _, _ string, _ *string, sid, _, _ string, _ map[string]string) (string, error) {
 	return sid, nil
 }
 func (r *unboundedStopRunner) Stop(_ string) error      { return nil }

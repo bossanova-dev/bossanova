@@ -1,9 +1,32 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { auditRows, checkDispatchAwaitCitations } from './check-dispatch-await-citations.mjs'
+
+function tableBodyRowCount(markdown) {
+  let inTable = false
+  let count = 0
+  for (const line of markdown.split(/\r?\n/)) {
+    if (!line.startsWith('|')) {
+      if (inTable) break
+      continue
+    }
+    const cells = line
+      .trim()
+      .slice(1, -1)
+      .split('|')
+      .map((cell) => cell.trim())
+    if (cells.includes('id')) {
+      inTable = true
+      continue
+    }
+    if (!inTable || cells.every((cell) => /^-+$/.test(cell))) continue
+    count += 1
+  }
+  return count
+}
 
 test('auditRows parses required citation rows from the checked-in table', () => {
   const rows =
@@ -11,7 +34,36 @@ test('auditRows parses required citation rows from the checked-in table', () => 
 | --- | --- | --- | --- | --- | --- | --- |
 | X | \`skill/SKILL.md\` | p | d | ordered | required | cites |
 `)
-  assert.deepEqual(rows, [{ id: 'X', file: 'skill/SKILL.md', citation: 'required' }])
+  assert.deepEqual(rows, [
+    {
+      id: 'X',
+      file: 'skill/SKILL.md',
+      verdict: 'ordered',
+      citation: 'required',
+      parallelOutPath: '',
+    },
+  ])
+})
+
+test('auditRows pins the checked-in audit table row count', () => {
+  const markdown = readFileSync(
+    new URL('../docs/skills/dispatch-graph-audit.md', import.meta.url),
+    'utf8',
+  )
+  assert.equal(auditRows(markdown).length, tableBodyRowCount(markdown))
+})
+
+test('auditRows ignores rows whose cell count differs from the header', () => {
+  const rows =
+    auditRows(`| id | file | phase | dispatch shape | verdict | await citation | evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| X | \`skill/SKILL.md\` | p | d | ordered | required | cites |
+| BROKEN | \`skill/SKILL.md\` | p | d | ordered | required | cites | extra |
+`)
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ['X'],
+  )
 })
 
 test('checkDispatchAwaitCitations fails a required row with no helper citation', () => {

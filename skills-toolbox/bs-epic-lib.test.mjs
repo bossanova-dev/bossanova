@@ -14,6 +14,9 @@ import {
   parseEpicArgs,
   parseTicketRef,
   mergeBlockedExternalBlockers,
+  classifyChildLiveness,
+  CHILD_LIVENESS_VERDICTS,
+  CHILD_LIVENESS_ACTIONS,
   classifyRepairLease,
   resolveStateRole,
   resolvePlannedState,
@@ -528,6 +531,180 @@ test('mergeBlockedExternalBlockers: in-epic blockers are never treated as extern
     blockerStateTypes: new Map([['BOS-1', 'started']]),
   })
   assert.deepEqual(open, [])
+})
+
+// --- classifyChildLiveness (BOS-997: child liveness routing) ---------------
+//
+// Synthetic driver payloads. The driver reads the tracked chat status and
+// classifies the last message; this pure helper only routes plain facts.
+// Unmoved head SHA, stale transcript/activity, and agent-stalled attention are
+// corroborating reasons only. Missing evidence fails to unknown/investigate.
+
+const childParked = {
+  headShaMoved: false,
+  activityStale: true,
+  attentionReasons: ['ATTENTION_REASON_AGENT_STALLED'],
+}
+
+const childLivenessCases = [
+  {
+    name: 'WAITING parked child is alive even with unmoved head and stale activity',
+    input: { ...childParked, chatStatus: 'WAITING' },
+    verdict: 'alive',
+    action: 'hold',
+    reasons: ['head-sha-unmoved', 'activity-stale', 'attention-agent-stalled'],
+  },
+  {
+    name: 'proto CHAT_STATUS_WAITING parked child is alive',
+    input: { ...childParked, chatStatus: 'CHAT_STATUS_WAITING' },
+    verdict: 'alive',
+    action: 'hold',
+  },
+  {
+    name: 'numeric CHAT_STATUS_WAITING parked child is alive',
+    input: { ...childParked, chatStatus: 6 },
+    verdict: 'alive',
+    action: 'hold',
+  },
+  {
+    name: 'WORKING parked child is alive even with unmoved head and stale activity',
+    input: { ...childParked, chatStatus: 'WORKING' },
+    verdict: 'alive',
+    action: 'hold',
+  },
+  {
+    name: 'unmoved head plus stale activity alone is unknown',
+    input: { headShaMoved: false, activityStale: true },
+    verdict: 'unknown',
+    action: 'investigate',
+  },
+  {
+    name: 'LIMITED chat status is a usage-limit resume lane',
+    input: { chatStatus: 'LIMITED' },
+    verdict: 'environmental-death',
+    action: 'resume',
+  },
+  {
+    name: 'proto CHAT_STATUS_LIMITED is a usage-limit resume lane',
+    input: { chatStatus: 'CHAT_STATUS_LIMITED' },
+    verdict: 'environmental-death',
+    action: 'resume',
+  },
+  {
+    name: 'numeric CHAT_STATUS_LIMITED is a usage-limit resume lane',
+    input: { chatStatus: 5 },
+    verdict: 'environmental-death',
+    action: 'resume',
+  },
+  {
+    name: 'usage-cap last message is a usage-limit resume lane',
+    input: { lastMessageKind: 'usage-limit' },
+    verdict: 'environmental-death',
+    action: 'resume',
+  },
+  {
+    name: 'transient API last message resumes instead of repairing',
+    input: { lastMessageKind: 'transient-api-error' },
+    verdict: 'environmental-death',
+    action: 'resume',
+  },
+  {
+    name: 'BLOCKED with agent conclusion repairs',
+    input: { sessionState: 'BLOCKED', lastMessageKind: 'agent-conclusion' },
+    verdict: 'agent-blocked',
+    action: 'repair',
+  },
+  {
+    name: 'proto SESSION_STATE_BLOCKED with agent conclusion repairs',
+    input: { sessionState: 'SESSION_STATE_BLOCKED', lastMessageKind: 'agent-conclusion' },
+    verdict: 'agent-blocked',
+    action: 'repair',
+  },
+  {
+    name: 'numeric SESSION_STATE_BLOCKED with agent conclusion repairs',
+    input: { sessionState: 10, lastMessageKind: 'agent-conclusion' },
+    verdict: 'agent-blocked',
+    action: 'repair',
+  },
+  {
+    name: 'BLOCKED without agent conclusion is unknown',
+    input: { sessionState: 'BLOCKED' },
+    verdict: 'unknown',
+    action: 'investigate',
+  },
+  {
+    name: 'agent-stalled attention alone is unknown and never repair',
+    input: { attentionReasons: ['agent-stalled'] },
+    verdict: 'unknown',
+    action: 'investigate',
+    reasons: ['attention-agent-stalled'],
+  },
+  {
+    name: 'unreadable chat status is unknown',
+    input: { chatStatusReadable: false },
+    verdict: 'unknown',
+    action: 'investigate',
+    reasons: ['chat-status-unreadable'],
+  },
+  {
+    name: 'UNSPECIFIED chat status is unknown',
+    input: { chatStatus: 'UNSPECIFIED' },
+    verdict: 'unknown',
+    action: 'investigate',
+  },
+  {
+    name: 'proto CHAT_STATUS_UNSPECIFIED is unknown',
+    input: { chatStatus: 'CHAT_STATUS_UNSPECIFIED' },
+    verdict: 'unknown',
+    action: 'investigate',
+  },
+  {
+    name: 'numeric CHAT_STATUS_UNSPECIFIED is unknown',
+    input: { chatStatus: 0 },
+    verdict: 'unknown',
+    action: 'investigate',
+  },
+  {
+    name: 'wall-clock expiry fail-isolates and never repairs',
+    input: { wallClockExceeded: true, chatStatus: 'IDLE' },
+    verdict: 'wall-clock-expired',
+    action: 'fail-isolate',
+  },
+]
+
+for (const { name, input, verdict, action, reasons = [] } of childLivenessCases) {
+  test(`classifyChildLiveness: ${name}`, () => {
+    const result = classifyChildLiveness(input)
+    assert.equal(result.verdict, verdict)
+    assert.equal(result.action, action)
+    assert.ok(CHILD_LIVENESS_VERDICTS.has(result.verdict), `unknown verdict: ${result.verdict}`)
+    assert.ok(CHILD_LIVENESS_ACTIONS.has(result.action), `unknown action: ${result.action}`)
+    for (const reason of reasons) {
+      assert.ok(result.reasons.includes(reason), `missing reason: ${reason}`)
+    }
+  })
+}
+
+test('classifyChildLiveness: unknown verdict never pairs with repair action', () => {
+  for (const { name, input } of childLivenessCases) {
+    const result = classifyChildLiveness(input)
+    if (result.verdict === 'unknown') {
+      assert.notEqual(result.action, 'repair', name)
+    }
+  }
+  assert.notEqual(classifyChildLiveness().action, 'repair', 'missing evidence')
+})
+
+test('classifyChildLiveness: is pure and does not mutate the payload', () => {
+  const payload = {
+    chatStatus: 'WAITING',
+    headShaMoved: false,
+    activityStale: true,
+    attentionReasons: ['agent-stalled'],
+  }
+  const snapshot = JSON.stringify(payload)
+  assert.deepEqual(classifyChildLiveness(payload), classifyChildLiveness(payload))
+  assert.equal(JSON.stringify(payload), snapshot, 'must not mutate its argument')
 })
 
 // --- classifyRepairLease (BOS-520: frozen-repair-lease escape) -------------

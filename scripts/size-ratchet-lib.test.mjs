@@ -148,6 +148,27 @@ test('a satisfied below bound does not throw', () => {
   )
 })
 
+test('assertExactSize derives the recorded re-baseline delta from previous', () => {
+  assert.doesNotThrow(() =>
+    assertExactSize(base({ expected: 96, measured: 96, previous: { value: 100, delta: -4 } })),
+  )
+})
+
+test('assertExactSize reds when the recorded re-baseline delta lies', () => {
+  const message = messageOf(() =>
+    assertExactSize(
+      base({
+        expected: 96,
+        measured: 96,
+        previous: { value: 100, delta: -3, label: 'BOS-123 banks' },
+      }),
+    ),
+  )
+  assert.match(message, /recorded BOS-123 banks delta is -3/)
+  assert.match(message, /96 - 100 derives -4/)
+  assert.match(message, /lying re-baseline comment/)
+})
+
 test('a violated below bound names both readings rather than prescribing one cause', () => {
   const message = messageOf(() =>
     assertExactSize(base({ below: { name: 'PRE_EXTRACTION_BASELINE', value: 90 } })),

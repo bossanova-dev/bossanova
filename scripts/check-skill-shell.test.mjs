@@ -18,6 +18,7 @@ import {
   findUnsafeGhFileBodyWrites,
   findUnsafeGhBody,
   findInertGuards,
+  findMaskedPipelineStatus,
   findMultiGlobRemovals,
   findUnquotedOptionGlobs,
   findSkillMarkdownFiles,
@@ -4273,6 +4274,253 @@ test('the rendered fix hint is pasteable for both option forms', async () => {
     // line carries no unquoted glob, so it would then pass this very gate.
     assert.match(findings[0].message, /-name '<PATTERN>'/)
     assert.doesNotMatch(findings[0].message, /-name='<PATTERN>'/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 15. Pipeline-status rule — build/verify command heads need pipefail.
+// ---------------------------------------------------------------------------
+
+test('findMaskedPipelineStatus flags build pipelines without pipefail', () => {
+  const findings = findMaskedPipelineStatus('make test | tee log.txt')
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 0)
+  assert.equal(findings[0].head, 'make')
+  assert.equal(findings[0].option, 'pipefail')
+
+  assert.equal(findMaskedPipelineStatus('go test ./... | tee log.txt').length, 1)
+})
+
+test('findMaskedPipelineStatus evaluates pipefail in execution order', () => {
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\nset -o pipefail').length,
+    1,
+    'pipefail below the pipeline does not protect it',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -eo pipefail\nset +o pipefail\nmake test | tee log.txt').length,
+    1,
+    'cleared pipefail does not protect later pipelines',
+  )
+  assert.deepEqual(findMaskedPipelineStatus('set -eo pipefail\nmake test | tee log.txt'), [])
+  assert.deepEqual(findMaskedPipelineStatus('set -o pipefail; make test | tee log.txt'), [])
+  assert.equal(
+    findMaskedPipelineStatus('f() { set -o pipefail; }\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside an uninvoked function does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('if false; then set -o pipefail; fi\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside a conditional branch does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('f() {\n  set -o pipefail\n}\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside a multiline uninvoked function does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('if false; then\n  set -o pipefail\nfi\nmake test | tee log.txt')
+      .length,
+    1,
+    'pipefail inside a multiline unselected branch does not protect later top-level pipelines',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if true; then\n  set -o pipefail\nfi\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a statically selected multiline branch protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail; (set +o pipefail; make test | tee log.txt)').length,
+    1,
+    'pipefail cleared in a subshell does not leave the inner pipeline protected',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('(\n  set -o pipefail\n  make test | tee log.txt\n)'),
+    [],
+    'pipefail set inside a multiline subshell protects later commands in that subshell',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail; { set +o pipefail; make test | tee log.txt; }')
+      .length,
+    1,
+    'pipefail cleared in a brace group affects later commands in that group',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail\n{\n  set +o pipefail\n}\nmake test | tee log.txt')
+      .length,
+    1,
+    'pipefail cleared in a multiline brace group affects later outer commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('{\n  set -o pipefail\n}\nmake test | tee log.txt'),
+    [],
+    'pipefail set in a multiline brace group protects later outer commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if set -o pipefail; then make test | tee log.txt; fi'),
+    [],
+    'pipefail set by a conditional predicate protects the selected body',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if true; then set -o pipefail; fi\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a statically selected inline branch protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\nif true; then set +o pipefail; fi\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a statically selected inline branch affects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail; f() { set +o pipefail; }; f; make test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a direct function invocation affects later commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('f() { make test | tee log.txt; }\nset -o pipefail\nf'),
+    [],
+    'pipelines in function bodies are analyzed with invocation-time pipefail enabled',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\nf() { make test | tee log.txt; }\nset +o pipefail\nf',
+    ).length,
+    1,
+    'pipelines in function bodies are analyzed with invocation-time pipefail disabled',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('case "$x" in x) make test | tee log.txt ;; esac').length,
+    1,
+    'case-arm patterns are stripped before resolving the pipeline head command',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('case a in a) set -o pipefail ;; esac\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a selected inline case arm protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\ncase a in a) set +o pipefail ;; esac\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a selected inline case arm affects later commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('case a in\n  a) set -o pipefail ;;\nesac\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a selected multiline case arm protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\ncase a in\n  a) set +o pipefail ;;\nesac\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a selected multiline case arm affects later commands',
+  )
+})
+
+test('findMaskedPipelineStatus exempts conditional predicate pipelines', () => {
+  assert.deepEqual(findMaskedPipelineStatus('if make test | tee log.txt; then echo ok; fi'), [])
+  assert.deepEqual(findMaskedPipelineStatus('while make test | tee log.txt; do break; done'), [])
+  assert.deepEqual(findMaskedPipelineStatus('until make test | tee log.txt; do break; done'), [])
+})
+
+test('findMaskedPipelineStatus still flags AND/OR-tested pipeline tails and inline bodies', () => {
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt || exit 1').length, 1)
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt && echo ok').length, 1)
+  assert.equal(findMaskedPipelineStatus('true && make test | tee log.txt').length, 1)
+  assert.equal(findMaskedPipelineStatus('if false; then make test | tee log.txt; fi').length, 1)
+})
+
+test('findMaskedPipelineStatus exempts substitution value plumbing and explicit status guards', () => {
+  assert.deepEqual(findMaskedPipelineStatus('V="$(node x.mjs | jq -r .k)"'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V="$(make test | tee log.txt)"'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V=$(go test ./... | tee log.txt)'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V=`make test | tee log.txt`'), [])
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif test $pipestatus[1] -ne 0; then exit 1; fi',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1'),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt\ntest $pipestatus[1] -eq 0; or return 1'),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt; [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1'),
+    [],
+    'a same-list PIPESTATUS guard protects the immediately preceding pipeline',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make first | tee first.log; go test ./... | tee second.log\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1',
+    ).length,
+    1,
+    'a next-line PIPESTATUS guard only protects the immediately preceding pipeline',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\necho "${PIPESTATUS[0]}"').length,
+    1,
+    'a status read that does not guard control flow does not protect the pipeline head',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\necho x; [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1',
+    ).length,
+    1,
+    'a status guard after another command no longer observes the pipeline head',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then echo fail; fi; exit 0',
+    ).length,
+    1,
+    'a later exit outside the failing branch does not guard the pipeline head',
+  )
+})
+
+test('findMaskedPipelineStatus ignores non-pipelines and unallowlisted heads', () => {
+  assert.deepEqual(findMaskedPipelineStatus('make test # not a | pipeline'), [])
+  assert.deepEqual(findMaskedPipelineStatus('node -e \'console.log("make | tee")\''), [])
+  assert.deepEqual(findMaskedPipelineStatus('printf %s "$X" | jq -r .k'), [])
+})
+
+test('checkSkillShellInRepo reports a pipeline-status finding at the offending line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('pipeline')]: md(
+      'prose',
+      '```bash',
+      'echo before',
+      'make test | tee log.txt',
+      '```',
+    ),
+    [claudeSkill('protected')]: md('```bash', 'set -eo pipefail', 'make test | tee log.txt', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'pipeline-status')
+    assert.match(findings[0].file, /pipeline[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 4, 'points at the pipeline line, not the fence')
+    assert.match(findings[0].message, /set\s+-o\s+pipefail/)
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true })
   }

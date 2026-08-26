@@ -203,14 +203,18 @@ details in `references/headless-drafting-brief.md` **Step 5** and **Step 7** (pl
 and the description summary template). Write to `.linear-plans/<ISSUE-ID>-<slug>.md` and stop after
 saving the plan file. Do not continue into subagent-driven-development or executing-plans.
 
-**Preserve every image reference VERBATIM** (all interactive tiers). When composing `## Original
-notes`, copy every image reference the ticket carried — inline markdown `![alt](…)`, HTML `<img …>`
-tags, and bare `uploads.linear.app`/attachment URLs — byte-for-byte, URLs intact. **Never** replace
-an image with a `[screenshot: …]` text placeholder or any paraphrase: Linear does not expose
-description history, so the rewritten description is the only surviving copy of those URLs (a prior
-screenshot-dropping data-loss incident). You MAY additionally list them under a `## Screenshots` bullet list in the plan
-body, but the URLs must stay intact in `## Original notes`. The orchestrator's mechanical guard
-(`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is dropped.
+**Preserve `## Original notes` VERBATIM** (all interactive tiers). When composing
+`## Original notes`, copy the ticket's prior description byte-for-byte from
+`DESCRIPTION_SNAPSHOT_PATH`; do not retype, summarize, or reconstruct it. Every image reference the
+ticket carried — inline markdown `![alt](…)`, HTML `<img …>` tags, and bare
+`uploads.linear.app`/attachment URLs — must survive byte-for-byte, URLs intact except for required
+upload-signature stripping. **Never** replace an image with a `[screenshot: …]` text placeholder or
+any paraphrase: Linear does not expose description history, so the rewritten description is the only
+surviving copy of those URLs (a prior screenshot-dropping data-loss incident). You MAY additionally
+list them under a `## Screenshots` bullet list in the plan body, but the URLs must stay intact in
+`## Original notes`. The orchestrator's mechanical guard
+(`$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs`, Phase 4) aborts the Linear write if any source image is
+dropped or the block is not verbatim.
 
 ## Interactive cleanup
 

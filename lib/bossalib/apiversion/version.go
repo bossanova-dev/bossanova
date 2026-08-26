@@ -212,6 +212,14 @@ const V20260820 Version = "2026-08-20"
 // would regress that correct, pre-existing answer for old clients.
 const V20260821 Version = "2026-08-21"
 
+// V20260825 ships StaleCheckStateChange: Session.last_check_state now serves
+// only a verdict demonstrated at the current PR head SHA. Stale, missing, or
+// non-demonstrated observations serve CHECKS_OVERALL_UNSPECIFIED, while the raw
+// persisted latch moves to last_check_state_observed with observed-at
+// provenance. Clients pinned to an older version are down-converted so
+// last_check_state again equals last_check_state_observed.
+const V20260825 Version = "2026-08-25"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -314,10 +322,10 @@ func (r *Registry) Newer(a, b Version) bool {
 // DefaultRegistry returns a Registry seeded with the known production API
 // versions, ordered oldest→newest: Baseline, V20260704, V20260705, V20260706,
 // V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816,
-// V20260820 and V20260821. Current is V20260821 (the newest released behavior) while
+// V20260820, V20260821, and V20260825. Current is V20260825 (the newest released behavior) while
 // Default stays Baseline (the oldest supported version), so a header-less caller
 // is pinned to Baseline and is down-converted by ProductionChanges, and a client
-// that negotiates V20260821 runs zero transforms.
+// that negotiates V20260825 runs zero transforms.
 //
 // V20260701 is intentionally NOT a member of the production registry — it
 // exists as an exported const for example and test use only (it is exercised
@@ -328,8 +336,8 @@ func (r *Registry) Newer(a, b Version) bool {
 // the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
-		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821},
-		V20260821,
+		[]Version{Baseline, V20260704, V20260705, V20260706, V20260711, V20260718, V20260723, V20260803, V20260804, V20260812, V20260816, V20260820, V20260821, V20260825},
+		V20260825,
 		Baseline,
 	)
 	if err != nil {

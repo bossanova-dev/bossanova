@@ -9,8 +9,10 @@ export function main(argv) {
 }
 
 export {
+  DEFAULT_EXTENSION_ROOTS,
   ROLE_SCHEMAS,
   discoverExtensions,
+  resolveExtensionRoots,
   validateResult,
 } from '../skills-toolbox/skill-extensions.mjs'
 

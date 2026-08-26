@@ -24,6 +24,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import { sectionRegion } from './gate-region-lib.mjs'
 import { assertArtifactSet, assertExactSize, measureFile } from './size-ratchet-lib.mjs'
 
 const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
@@ -133,34 +134,32 @@ test('the generated region routes to per-group references instead of inlining th
   }
 })
 
-// zeroChangeSection returns the bytes of the resident "sessions that change
-// nothing" section — from its heading to the next top-level heading, or EOF.
+// ZERO_CHANGE_HEADING names the resident "sessions that change nothing"
+// section. The slice is level-aware via sectionRegion().
 // The slice is the point: asserting the option names anywhere in SKILL.md would
 // pass with them scattered across unrelated sections, which is the shape this
 // gate exists to reject. Moving any one row out of the section reds the test.
 const ZERO_CHANGE_HEADING = '## Sessions that change nothing'
 
-const zeroChangeSection = (skill, label) => {
-  const start = skill.indexOf(ZERO_CHANGE_HEADING)
-  assert.ok(start !== -1, `${label} must carry the ${ZERO_CHANGE_HEADING} heading`)
-
+const assertZeroChangePlacement = (skill, label) => {
   // Position, not just presence: `make gen-skill` rewrites everything between
   // the markers wholesale, so hand-written prose placed above END GENERATED is
   // destroyed on the next regeneration.
+  const start = skill.indexOf(ZERO_CHANGE_HEADING)
+  assert.ok(start !== -1, `${label} must carry the ${ZERO_CHANGE_HEADING} heading`)
   const endGenerated = skill.indexOf('<!-- END GENERATED -->')
   assert.ok(endGenerated !== -1, `${label} must carry the END GENERATED marker`)
   assert.ok(
     start > endGenerated,
     `${label}: the ${ZERO_CHANGE_HEADING} section must sit AFTER <!-- END GENERATED --> (${start} vs ${endGenerated}) or gen-skill will discard it`,
   )
-
-  const next = skill.indexOf('\n## ', start + ZERO_CHANGE_HEADING.length)
-  return next === -1 ? skill.slice(start) : skill.slice(start, next)
 }
 
 test('the resident body tells an agent how to run a session that changes nothing', () => {
   for (const dir of BOSS_MIRRORS) {
-    const section = zeroChangeSection(read(`${dir}/SKILL.md`), `${dir}/SKILL.md`)
+    const skill = read(`${dir}/SKILL.md`)
+    assertZeroChangePlacement(skill, `${dir}/SKILL.md`)
+    const section = sectionRegion(skill, ZERO_CHANGE_HEADING, `${dir}/SKILL.md`)
 
     for (const option of ['quick_chat', 'defer_pr', '--zero-output']) {
       assert.ok(

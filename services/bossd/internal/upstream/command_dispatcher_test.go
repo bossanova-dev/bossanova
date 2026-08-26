@@ -111,6 +111,7 @@ type fakeCommandHandler struct {
 	listGithubCallbacksResult  *pb.ListGithubCallbacksResponse
 	listGithubCallbacksCmd     *pb.ListGithubCallbacksCommand // last command passed to ListGithubCallbacks
 	deleteGithubCallbackID     string                         // last id passed to DeleteGithubCallback
+	deleteGithubCallbackChatID string                         // last expectTargetChatID passed to DeleteGithubCallback
 	// Notes knobs (BOS-552).
 	createNoteResult *pb.CreateNoteResponse
 	createNoteCmd    *pb.CreateNoteCommand // last command passed to CreateNote
@@ -315,8 +316,9 @@ func (f *fakeCommandHandler) ListGithubCallbacks(_ context.Context, cmd *pb.List
 	f.listGithubCallbacksCmd = cmd
 	return f.listGithubCallbacksResult, f.returnErr
 }
-func (f *fakeCommandHandler) DeleteGithubCallback(_ context.Context, id string) error {
+func (f *fakeCommandHandler) DeleteGithubCallback(_ context.Context, id, expectTargetChatID string) error {
 	f.deleteGithubCallbackID = id
+	f.deleteGithubCallbackChatID = expectTargetChatID
 	return f.returnErr
 }
 func (f *fakeCommandHandler) CreateNote(_ context.Context, cmd *pb.CreateNoteCommand) (*pb.CreateNoteResponse, error) {

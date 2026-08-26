@@ -64,6 +64,30 @@ func setupCheckoutSkillSource(t *testing.T) string {
 	return srcRoot
 }
 
+func gateSkillFS() fstest.MapFS {
+	return fstest.MapFS{
+		"skills/boss/SKILL.md":       {Data: []byte("boss skill\n")},
+		"skills/boss-build/SKILL.md": {Data: []byte("boss build skill\n")},
+	}
+}
+
+func commitCheckoutAsOriginHead(t *testing.T, root string) {
+	t.Helper()
+	runGit(t, root, "add", ".")
+	runGit(t, root, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "initial")
+	runGit(t, root, "branch", "-M", "main")
+	runGit(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
 func markTrustedCheckout(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("BOSS_TRUST_CHECKOUT_SKILLS", "1")
@@ -1065,6 +1089,23 @@ func TestRunSkillCheck(t *testing.T) {
 		assertNamesFullSkillRebuildRemedy(t, out.String(), repoRootFromSourceRoot(srcRoot))
 	})
 
+	t.Run("checkout payload selected with trust env unset", func(t *testing.T) {
+		setupSkillStartupTest(t)
+		srcRoot := setupCheckoutSkillSource(t)
+		t.Setenv(trustCheckoutSkillSourcesEnv, "")
+
+		payload, err := skillCheckPayload()
+		if err != nil {
+			t.Fatalf("skillCheckPayload: %v", err)
+		}
+		if !payload.fromSource {
+			t.Fatalf("skillCheckPayload().fromSource = false, want true")
+		}
+		if payload.srcRoot != srcRoot {
+			t.Fatalf("skillCheckPayload().srcRoot = %q, want %q", payload.srcRoot, srcRoot)
+		}
+	})
+
 	t.Run("no sources exits cleanly", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
@@ -1196,6 +1237,206 @@ func TestRunSkillCheck(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "boss skills: claude") || !strings.Contains(out.String(), "payload: unable to check") || !strings.Contains(out.String(), "boss skills: codex") || !strings.Contains(out.String(), "payload: stale") {
 			t.Fatalf("output = %q", out.String())
+		}
+	})
+}
+
+func TestRunSkillGate(t *testing.T) {
+	t.Run("unexplained installed drift fails closed with remedy", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, gateSkillFS()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md"), []byte("stale install\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		err := runSkillGate(&out, "claude")
+		if err == nil || !strings.Contains(err.Error(), "skill drift detected") {
+			t.Fatalf("runSkillGate error = %v, want skill drift detected", err)
+		}
+		for _, want := range []string{"skill drift detected", "boss/SKILL.md", "skills install", repoRootFromSourceRoot(srcRoot)} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("output = %q, want %q", out.String(), want)
+			}
+		}
+	})
+
+	t.Run("unqualified gate scopes to current skills home", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		codexDir := filepath.Join(home, ".codex", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		if err := libskillinstall.Extract(codexDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md"), []byte("stale install\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BOSS_SKILLS_HOME", claudeDir)
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, ""); err != nil {
+			t.Fatalf("runSkillGate: %v\n%s", err, out.String())
+		}
+		if strings.Contains(out.String(), "codex") || strings.Contains(out.String(), "skill drift detected") {
+			t.Fatalf("output = %q, want current skills home only", out.String())
+		}
+	})
+
+	t.Run("self edited checkout drift exits cleanly", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		edited := filepath.Join(srcRoot, "skills", "boss-build", "SKILL.md")
+		if err := os.WriteFile(edited, []byte("edited on this branch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, "claude"); err != nil {
+			t.Fatalf("runSkillGate: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "self-edited") || !strings.Contains(out.String(), "boss-build/SKILL.md") {
+			t.Fatalf("output = %q, want self-edited drift path", out.String())
+		}
+	})
+
+	t.Run("branch behind origin is not self edited drift", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		edited := filepath.Join(srcRoot, "skills", "boss-build", "SKILL.md")
+		if err := os.WriteFile(edited, []byte("changed on origin\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, root, "add", ".")
+		runGit(t, root, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "origin update")
+		runGit(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+		runGit(t, root, "reset", "--hard", "HEAD~1")
+		if err := os.WriteFile(filepath.Join(claudeDir, libskillinstall.Namespace, "boss-build", "SKILL.md"), []byte("stale install\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		err := runSkillGate(&out, "claude")
+		if err == nil || !strings.Contains(err.Error(), "skill drift detected") {
+			t.Fatalf("runSkillGate error = %v, want skill drift detected", err)
+		}
+		if strings.Contains(out.String(), "self-edited") {
+			t.Fatalf("output = %q, branch-behind source must not be self-edited", out.String())
+		}
+		if !strings.Contains(out.String(), "  - boss-build/SKILL.md") {
+			t.Fatalf("output = %q, want unexplained branch-behind drift path", out.String())
+		}
+	})
+
+	t.Run("stale binary does not fail gate when installed matches checkout", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		srcRoot := setupCheckoutSkillSource(t)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		setAvailableSkillAgents(map[string]bool{"claude": true})
+
+		var gateOut bytes.Buffer
+		if err := runSkillGate(&gateOut, "claude"); err != nil {
+			t.Fatalf("runSkillGate: %v\n%s", err, gateOut.String())
+		}
+
+		var checkOut bytes.Buffer
+		if err := runSkillCheck(&checkOut, "claude"); err == nil || err.Error() != "skill drift detected" {
+			t.Fatalf("runSkillCheck error = %v, want skill drift detected for stale binary", err)
+		}
+	})
+
+	t.Run("outside checkout exits cleanly without verdict", func(t *testing.T) {
+		setupSkillStartupTest(t)
+		t.Chdir(t.TempDir())
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, ""); err != nil {
+			t.Fatalf("runSkillGate: %v", err)
+		}
+		if out.String() != "" {
+			t.Fatalf("output = %q, want no verdict outside checkout", out.String())
+		}
+	})
+
+	t.Run("origin head fallback is named for self edited drift", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		writeSkillSources(t, root, gateSkillFS())
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, gateSkillFS()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md"), []byte("stale install\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		if err := runSkillGate(&out, "claude"); err != nil {
+			t.Fatalf("runSkillGate: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "origin/HEAD unavailable; used git status fallback") {
+			t.Fatalf("output = %q, want fallback disclosure", out.String())
+		}
+	})
+
+	t.Run("mixed drift fails only unexplained paths", func(t *testing.T) {
+		home := setupSkillStartupTest(t)
+		root := t.TempDir()
+		srcRoot := writeSkillSources(t, root, gateSkillFS())
+		commitCheckoutAsOriginHead(t, root)
+		claudeDir := filepath.Join(home, ".claude", "skills")
+		if err := libskillinstall.Extract(claudeDir, os.DirFS(srcRoot)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss-build", "SKILL.md"), []byte("edited source\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md"), []byte("stale install\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(root)
+
+		var out bytes.Buffer
+		err := runSkillGate(&out, "claude")
+		if err == nil || !strings.Contains(err.Error(), "skill drift detected") {
+			t.Fatalf("runSkillGate error = %v, want skill drift detected", err)
+		}
+		if !strings.Contains(out.String(), "self-edited drift: boss-build/SKILL.md") {
+			t.Fatalf("output = %q, want self-edited path", out.String())
+		}
+		if !strings.Contains(out.String(), "  - boss/SKILL.md") {
+			t.Fatalf("output = %q, want unexplained path", out.String())
 		}
 	})
 }

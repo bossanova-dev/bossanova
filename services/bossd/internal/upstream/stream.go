@@ -516,7 +516,7 @@ type SessionCommandHandler interface {
 	// optional fields the command sets. Store-bound — dispatched async.
 	ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error)
 	// DeleteGithubCallback removes a pending GitHub-callback by ID. Async.
-	DeleteGithubCallback(ctx context.Context, id string) error
+	DeleteGithubCallback(ctx context.Context, id, expectTargetChatID string) error
 	// CreateNote records a note against a repository (BOS-552). Validation and
 	// tag normalisation live in the daemon's note store; its connect-coded
 	// error surfaces via CommandResult.error. Store-bound — dispatched async.

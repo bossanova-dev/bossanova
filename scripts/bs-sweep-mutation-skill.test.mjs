@@ -462,7 +462,7 @@ test('the resident body is pinned at its exact post-extraction size', () => {
   // The remedy is NOT "move situational content into a reference": bs-sweep-mutation has no
   // references/ directory, only agents/, gate/ and toolbox/, so that advice named a
   // destination that does not exist and left the reader with no next step.
-  const SOURCE_BYTES = 28632 // exact measured .claude body, re-measured 2026-08-22 after BOS-763 removed obsolete manifest-count guidance
+  const SOURCE_BYTES = 28651 // exact measured .claude body; BOS-986 adds set -eo pipefail to the mutation capture fence (+19 B)
   assertExactSize({
     below: { name: 'PRE_EXTRACTION_BASELINE', value: 29845 },
     constFile: 'scripts/bs-sweep-mutation-skill.test.mjs',

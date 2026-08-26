@@ -85,6 +85,7 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'excluded',
   // Rung 2 — the candidate is not a valid blocker.
   'epic-parent',
+  'same-epic-member',
   'candidate-not-schedulable',
   // Rung 3 — no basis was established.
   'no-areas',
@@ -109,6 +110,7 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'declared-related-unresolved',
   'no-candidates-compared',
   'no-subject-areas',
+  'all-pairs-downgraded-unknown-state',
 ])
 
 /**
@@ -261,13 +263,20 @@ function carriesLabel(issue, label) {
 }
 
 function stateType(issue) {
-  return text(issue?.stateType ?? issue?.state?.type)
+  return text(issue?.stateType ?? issue?.state?.type ?? issue?.statusType ?? issue?.status?.type)
     .trim()
     .toLowerCase()
 }
 
 function stateName(issue) {
-  return text(issue?.stateName ?? issue?.state?.name).trim()
+  const state = issue?.state
+  const status = issue?.status
+  return text(
+    issue?.stateName ??
+      (typeof state === 'string' ? state : state?.name) ??
+      issue?.statusName ??
+      (typeof status === 'string' ? status : status?.name),
+  ).trim()
 }
 
 /**
@@ -382,6 +391,46 @@ function entryTokens(entry) {
   return [entry.replace(LIST_MARKER_RE, '').split(AREA_DESCRIPTION_SPLIT_RE)[0]]
 }
 
+const BRACE_EXPANSION_LIMIT = 64
+
+function braceAreaTokens(token, limit = BRACE_EXPANSION_LIMIT) {
+  const raw = text(token)
+  if (!raw.includes('{') && !raw.includes('}')) return [raw]
+  const closeOnly = raw.includes('}') && !raw.includes('{')
+  if (closeOnly) return []
+
+  let expanded = ['']
+  for (let index = 0; index < raw.length;) {
+    const open = raw.indexOf('{', index)
+    const close = raw.indexOf('}', index)
+    if (close !== -1 && (open === -1 || close < open)) return []
+    if (open === -1) {
+      expanded = expanded.map((prefix) => prefix + raw.slice(index))
+      break
+    }
+    const closeForOpen = raw.indexOf('}', open + 1)
+    if (closeForOpen === -1) return []
+    const body = raw.slice(open + 1, closeForOpen)
+    if (body.includes('{') || body.includes('}')) return []
+    const choices = body
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part !== '')
+    if (choices.length === 0) return []
+    const prefix = raw.slice(index, open)
+    const next = []
+    for (const current of expanded) {
+      for (const choice of choices) {
+        next.push(current + prefix + choice)
+        if (next.length > limit) return []
+      }
+    }
+    expanded = next
+    index = closeForOpen + 1
+  }
+  return expanded
+}
+
 /**
  * A token normalized to an area, or `null` when it is not path-shaped. Drops
  * commands (anything with whitespace), URLs, flags, and bare symbol names that
@@ -411,10 +460,12 @@ function areasFromLines(lines, moduleRoots) {
   const areas = []
   for (const entry of joinWrappedLines(lines)) {
     for (const token of entryTokens(entry)) {
-      const area = normalizeArea(token, moduleRoots)
-      if (area === null || seen.has(area)) continue
-      seen.add(area)
-      areas.push(area)
+      for (const expanded of braceAreaTokens(token)) {
+        const area = normalizeArea(expanded, moduleRoots)
+        if (area === null || seen.has(area)) continue
+        seen.add(area)
+        areas.push(area)
+      }
     }
   }
   return areas
@@ -919,6 +970,19 @@ function compareByKey(a, b) {
   return 0
 }
 
+function epicParentKey(issue) {
+  return text(issue?.epicParentId ?? issue?.parentId)
+    .trim()
+    .toLowerCase()
+}
+
+function sameEpicMember(subject, candidate) {
+  const parent = epicParentKey(subject)
+  if (parent === '') return false
+  if (issueAliases(candidate).includes(parent)) return true
+  return epicParentKey(candidate) === parent
+}
+
 /**
  * Classify a whole candidate set against one subject.
  *
@@ -1016,6 +1080,7 @@ export function planDependencyEdges(input = {}) {
 
   const edges = []
   let compared = 0
+  const comparedReasons = []
   for (let index = 0; index < queue.length; index += 1) {
     const { issue, depth } = queue[index]
     const aliases = issueAliases(issue)
@@ -1025,6 +1090,31 @@ export function planDependencyEdges(input = {}) {
       aliases.includes(key.trim().toLowerCase()),
     )
     const logicalDependency = verdictKey === undefined ? null : verdicts[verdictKey]
+    if (sameEpicMember(subject, issue)) {
+      compared += 1
+      comparedReasons.push('same-epic-member')
+      const candidateName = issueLabel(issue)
+      skipped.push({
+        id: text(issue?.id).trim() || null,
+        identifier: text(issue?.identifier).trim() || null,
+        key: sortKey(issue),
+        edge: 'none',
+        basis: null,
+        source: aliases.some((alias) => declared.has(alias)) ? 'declared-related' : 'backlog-scan',
+        reason: 'same-epic-member',
+        note: note(
+          'info',
+          'planning',
+          candidateName,
+          'same-epic-member',
+          `${candidateName} shares ${issueLabel(subject)}'s epic parent or is that parent, so the external dependency linker records a planning note instead of adding an edge inside the epic. Intra-epic ordering belongs to the epic DAG.`,
+        ),
+        question: null,
+        write: null,
+        expandChildren: false,
+      })
+      continue
+    }
     const classified = classifyDependencyEdge({
       ...input,
       subject,
@@ -1040,7 +1130,10 @@ export function planDependencyEdges(input = {}) {
     // indistinguishable from a clean evaluation that genuinely found nothing, and
     // the `no-candidates-compared` warning that exists for exactly that case never
     // fires.
-    if (classified.reason !== 'self' && classified.reason !== 'excluded') compared += 1
+    if (classified.reason !== 'self' && classified.reason !== 'excluded') {
+      compared += 1
+      comparedReasons.push(classified.reason)
+    }
     const record = {
       id: text(issue?.id).trim() || null,
       identifier: text(issue?.identifier).trim() || null,
@@ -1107,6 +1200,19 @@ export function planDependencyEdges(input = {}) {
         issueLabel(subject),
         'no-candidates-compared',
         `No candidates were evaluated for ${issueLabel(subject)}, so this run found no dependencies because it compared nothing — not because none exist. Re-run the candidate fetch before treating the dependency line as complete.`,
+      ),
+    )
+  } else if (
+    comparedReasons.length === compared &&
+    comparedReasons.every((reason) => reason === 'downgraded-unknown-state')
+  ) {
+    notes.push(
+      note(
+        'warning',
+        'risks',
+        issueLabel(subject),
+        'all-pairs-downgraded-unknown-state',
+        `Every candidate compared for ${issueLabel(subject)} downgraded because this run could not classify at least one workflow state. Dependency ordering was recorded only as non-blocking relations; verify the tracker payload includes configured state names before treating the dependency line as complete.`,
       ),
     )
   } else if (

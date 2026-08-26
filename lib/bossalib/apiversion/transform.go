@@ -350,8 +350,11 @@ type RefMsg struct {
 // SwitchCanceledCodeChange (also introduced at V20260821), which restores the
 // pre-BOS-958 connect.CodeAborted for a relayed ProxySwitchSessionAccount
 // failure whose CommandResult carried ERROR_CODE_CANCELED.
+// StaleCheckStateChange (introduced at V20260825), which restores
+// Session.last_check_state from last_check_state_observed for clients pinned
+// before the field began serving only head-current demonstrated verdicts.
 // Each is applied to clients pinned to a version older than the change; a
-// request resolved to V20260821 (Current) runs zero transforms.
+// request resolved to V20260825 (Current) runs zero transforms.
 //
 // Future API behavior changes should:
 //  1. Append the new Version to DefaultRegistry (see version.go).
@@ -360,11 +363,40 @@ type RefMsg struct {
 //
 // See docs/api-versioning.md for the full procedure.
 func ProductionChanges() *Changes {
-	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{})
+	c, err := NewChanges(DefaultRegistry(), OrphanedStateChange{}, AgentAuthFailedChange{}, UnmanagedLabelChange{}, LimitedChatStatusChange{}, NoEligibleAccountChange{}, ErroredStatusChange{}, RespawnSameAccountOutcomeChange{}, AgentStalledChange{}, WaitingChatStatusChange{}, DraftPRFailureLabelChange{}, GateFailedOutcomeChange{}, SwitchDeadlineCodeChange{}, SwitchResultCeilingMessageChange{}, SwitchCanceledCodeChange{}, StaleCheckStateChange{})
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
 	}
 	return c
+}
+
+// StaleCheckStateChange is the production VersionChange introduced at
+// V20260825. Current responses serve Session.last_check_state as an evaluated,
+// head-current value and keep the persisted latch in last_check_state_observed.
+// Older clients were built against last_check_state carrying that raw latch, so
+// this restores the prior value on every Session-bearing unary response.
+type StaleCheckStateChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260825, so
+// it is applied to any request resolved to a strictly older version.
+func (StaleCheckStateChange) Version() Version { return V20260825 }
+
+func downconvertStaleCheckStateSession(s *pb.Session) *pb.Session {
+	if s == nil || s.GetLastCheckState() == s.GetLastCheckStateObserved() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.LastCheckState = clone.GetLastCheckStateObserved()
+	return clone
+}
+
+// TransformResponse implements VersionChange. It is a no-op for methods and
+// payloads that do not carry Session messages.
+func (StaleCheckStateChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertStaleCheckStateSession)
 }
 
 // OrphanedStateChange is the production VersionChange introduced at V20260704.

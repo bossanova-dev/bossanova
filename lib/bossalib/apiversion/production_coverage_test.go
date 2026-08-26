@@ -44,6 +44,15 @@ func TestProductionChanges_CoverDerivedCarrierProcedures(t *testing.T) {
 
 func productionCoverageProbes(change VersionChange) []responseProbe {
 	switch change.(type) {
+	case StaleCheckStateChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{
+				LastCheckState:         pb.ChecksOverall_CHECKS_OVERALL_UNSPECIFIED,
+				LastCheckStateObserved: pb.ChecksOverall_CHECKS_OVERALL_FAILED,
+			}
+		}, func(s *pb.Session) bool {
+			return s.GetLastCheckState() == pb.ChecksOverall_CHECKS_OVERALL_FAILED
+		})
 	case OrphanedStateChange:
 		sess := func() *pb.Session {
 			return &pb.Session{State: pb.SessionState_SESSION_STATE_ORPHANED}

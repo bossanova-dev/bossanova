@@ -106,6 +106,8 @@ function requireCount(name, value, fn) {
  * @param {string} options.path Repo-relative path of the measured artifact.
  * @param {number} options.measured Freshly measured size (see `measureFile`).
  * @param {number} options.expected The pinned constant's value.
+ * @param {{value: number, delta?: number, label?: string}} [options.previous] Previous pinned
+ *   value plus the recorded delta. When supplied, the delta is derived and checked.
  * @param {string} options.constName Identifier of the pinned constant, so the fix names itself.
  * @param {string} options.constFile Repo-relative file the constant lives in.
  * @param {'bytes'|'lines'} [options.unit] What is being counted. Default `bytes`.
@@ -123,6 +125,7 @@ export function assertExactSize(options) {
     path: artifactPath,
     measured,
     expected,
+    previous,
     constName,
     constFile,
     unit = 'bytes',
@@ -140,6 +143,23 @@ export function assertExactSize(options) {
   requireText('constFile', constFile, 'assertExactSize')
   requireCount('measured', measured, 'assertExactSize')
   requireCount('expected', expected, 'assertExactSize')
+  if (previous !== undefined) {
+    requireCount('previous.value', previous?.value, 'assertExactSize')
+    if (!Number.isInteger(previous?.delta)) {
+      throw new Error(
+        'size-ratchet: assertExactSize `previous.delta` must be an integer when `previous` is supplied. Wiring error.',
+      )
+    }
+    const derivedDelta = expected - previous.value
+    if (previous.delta !== derivedDelta) {
+      throw new Error(
+        `${label}: recorded ${previous.label ?? 'ratchet'} delta is ${previous.delta}, but ` +
+          `${expected} - ${previous.value} derives ${derivedDelta}. Fix the bookkeeping line ` +
+          `beside ${constName} in ${constFile}; a lying re-baseline comment misleads the next repin.` +
+          residualSuffix(residual),
+      )
+    }
+  }
   if (!UNITS.has(unit)) {
     throw new Error(
       `size-ratchet: assertExactSize \`unit\` must be one of ${[...UNITS].join(', ')}, got ` +

@@ -15,7 +15,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DEFAULT_CONFIG } from './skill-config.mjs'
+import { DEFAULT_CONFIG, stateRolesFor } from './skill-config.mjs'
 import { BLOCKER_CLEARED_STATE_TYPES } from './linear-deps-lib.mjs'
 import { buildGraph, readyTickets } from './dag-scheduler.mjs'
 import {
@@ -42,6 +42,22 @@ const STATE_ROLES = {
   'In Progress': 'inProgress',
   'In Review': 'inReview',
   Backlog: 'backlog',
+}
+
+const CONFIG_WITH_STATES = {
+  ...DEFAULT_CONFIG,
+  trackerConfig: {
+    linear: {
+      mcpServer: 'linear',
+      team: 'Example',
+      states: {
+        unplanned: 'Todo',
+        planned: 'Planned',
+        inProgress: 'In Progress',
+        inReview: 'In Review',
+      },
+    },
+  },
 }
 
 function subject(over = {}) {
@@ -312,6 +328,35 @@ test('area tokens are normalized and deduped, and non-path tokens are rejected',
   )
 })
 
+test('brace-collapsed area tokens expand to comparable paths, never brace-bearing tokens', () => {
+  const result = areas(
+    planBody('- `services/{boss,bossd}/internal/skillinstall/install.go` — update both paths\n'),
+  )
+  assert.deepEqual(result.areas, [
+    'services/boss/internal/skillinstall/install.go',
+    'services/bossd/internal/skillinstall/install.go',
+  ])
+  assert.ok(
+    !result.areas.some((area) => area.includes('{') || area.includes('}')),
+    'brace syntax is a compact way to name concrete paths, not an area token itself',
+  )
+  assert.equal(
+    areasOverlap(result.areas, ['services/boss/internal/skillinstall/install.go']).overlap,
+    true,
+    'expanded areas must compare against the concrete path they represent',
+  )
+})
+
+test('pathological brace expansion falls back to no area instead of emitting braces', () => {
+  const tooWide = Array.from({ length: 65 }, (_, index) => `m${index}`).join(',')
+  const result = areas(planBody(`- \`services/{${tooWide}}/x.go\` — too many products\n`))
+  assert.deepEqual(
+    result.areas,
+    [],
+    'bounded expansion must fail closed to no comparable area rather than create an unbounded product',
+  )
+})
+
 test('extractKeyChangeAreas rejects a swapped argument order rather than reading a config as prose', () => {
   assert.throws(
     () => extractKeyChangeAreas('## Key changes\n\n- `app/api/x.ts`\n', CONFIG),
@@ -550,6 +595,78 @@ test('an unrecognized state name degrades rather than betting a blocking edge on
   assert.equal(unknown.edge, 'relatedTo')
   assert.equal(unknown.reason, 'downgraded-unknown-state')
   assert.equal(unknown.write, null)
+})
+
+test('status fields classify the same as stateName and stateType on both sides', () => {
+  const fromStateFields = classify({
+    subject: subject({ priority: 3, stateName: 'Planned', stateType: 'unstarted' }),
+    candidate: candidate({ priority: 1, stateName: 'Planned', stateType: 'unstarted' }),
+  })
+  const fromStatusFields = classify({
+    subject: subject({
+      priority: 3,
+      stateName: undefined,
+      stateType: undefined,
+      status: 'Planned',
+      statusType: 'unstarted',
+    }),
+    candidate: candidate({
+      priority: 1,
+      stateName: undefined,
+      stateType: undefined,
+      status: 'Planned',
+      statusType: 'unstarted',
+    }),
+  })
+  assert.equal(fromStatusFields.edge, fromStateFields.edge)
+  assert.equal(fromStatusFields.reason, fromStateFields.reason)
+  assert.deepEqual(fromStatusFields.write, fromStateFields.write)
+})
+
+test('a bare state string resolves its role identically to a named state object', () => {
+  const fromObject = classify({
+    subject: subject({ priority: 1 }),
+    candidate: candidate({
+      priority: 3,
+      stateName: undefined,
+      stateType: undefined,
+      state: { name: 'In Progress', type: 'started' },
+    }),
+  })
+  const fromString = classify({
+    subject: subject({ priority: 1 }),
+    candidate: candidate({
+      priority: 3,
+      stateName: undefined,
+      stateType: undefined,
+      state: 'In Progress',
+    }),
+  })
+  assert.equal(fromString.edge, fromObject.edge)
+  assert.equal(fromString.reason, fromObject.reason)
+  assert.equal(fromString.note.destination, fromObject.note.destination)
+})
+
+test('an issue carrying no state field at all downgrades on unknown state', () => {
+  const noState = classify({
+    subject: {
+      id: 'uuid-subject',
+      identifier: 'TCK-1',
+      priority: 3,
+      createdAt: '2026-01-02T00:00:00.000Z',
+      labels: [],
+    },
+    candidate: {
+      id: 'uuid-candidate',
+      identifier: 'TCK-2',
+      priority: 1,
+      createdAt: '2026-01-02T00:00:00.000Z',
+      labels: [],
+    },
+  })
+  assert.equal(noState.edge, 'relatedTo')
+  assert.equal(noState.reason, 'downgraded-unknown-state')
+  assert.match(noState.note.text, /no state name/)
 })
 
 // ---------------------------------------------------------------------------
@@ -806,6 +923,41 @@ test('epic children re-enter at rung 1, and the depth cap stops a parent/child c
   assert.equal(capped.skipped.filter((entry) => entry.identifier === 'TCK-P').length, 1)
 })
 
+test('same-epic siblings and the epic parent are planning notes, not external edges', () => {
+  const result = planDependencyEdges({
+    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
+    candidates: [
+      {
+        ...candidate({ id: 'uuid-sibling', identifier: 'TCK-S', priority: 1 }),
+        epicParentId: 'uuid-epic',
+        areas: ['app/api'],
+      },
+      {
+        ...candidate({ id: 'uuid-epic', identifier: 'TCK-P', priority: 1 }),
+        areas: ['app/api'],
+      },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(result.edges.length, 0)
+  assert.equal(result.skipped.length, 2)
+  assert.deepEqual(
+    result.skipped.map((entry) => entry.reason),
+    ['same-epic-member', 'same-epic-member'],
+  )
+  assert.equal(result.notes.length, 2)
+  assert.ok(
+    result.notes.every(
+      (entry) =>
+        entry.destination === 'planning' &&
+        entry.reason === 'same-epic-member' &&
+        entry.text.includes('epic'),
+    ),
+    'internal epic coordination must surface as planning context rather than a dependency write',
+  )
+})
+
 test('an unrecognized state on the BLOCKER downgrades too, not only on the blocked side', () => {
   // The subject outranks the candidate, so the subject is the BLOCKER and the
   // candidate is the blocked side. Only the blocker's state is unmappable.
@@ -1057,6 +1209,57 @@ test('an arealess SUBJECT warns, rather than reporting a clean no-dependencies r
   assert.ok(!withAreas.notes.some((entry) => entry.reason === 'no-subject-areas'))
 })
 
+test('a run where every compared pair downgrades on unknown state gets an aggregate warning', () => {
+  const allUnknown = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [
+      {
+        ...candidate({ id: 'a', identifier: 'TCK-A', priority: 1, stateName: 'Mystery' }),
+        areas: ['app/api'],
+      },
+      {
+        ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1, stateName: 'Pending-ish' }),
+        areas: ['app/api'],
+      },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.equal(allUnknown.compared, 2)
+  assert.equal(allUnknown.edges.length, 2)
+  assert.ok(
+    allUnknown.notes.some(
+      (entry) =>
+        entry.reason === 'all-pairs-downgraded-unknown-state' && entry.severity === 'warning',
+    ),
+    'all-unknown downgraded runs must not read like ordinary non-blocking overlap notes',
+  )
+
+  const withWrite = planDependencyEdges({
+    subject: { ...subject(), areas: ['app/api'] },
+    candidates: [
+      { ...candidate({ id: 'a', identifier: 'TCK-A', stateName: 'Mystery' }), areas: ['app/api'] },
+      { ...candidate({ id: 'b', identifier: 'TCK-B', priority: 1 }), areas: ['app/api'] },
+    ],
+    stateRoles: STATE_ROLES,
+    epicLabel: 'Epic',
+  })
+  assert.ok(withWrite.edges.some((entry) => entry.write))
+  assert.ok(
+    !withWrite.notes.some((entry) => entry.reason === 'all-pairs-downgraded-unknown-state'),
+    'one surviving blocking write proves the run did not downgrade every compared pair',
+  )
+})
+
+test('stateRolesFor inverts all configured workflow state roles', () => {
+  assert.deepEqual(stateRolesFor(CONFIG_WITH_STATES), {
+    Todo: 'unplanned',
+    Planned: 'planned',
+    'In Progress': 'inProgress',
+    'In Review': 'inReview',
+  })
+})
+
 test('every reason produced across the whole table is a member of DEPENDENCY_REASONS', () => {
   const started = { stateName: 'In Progress', stateType: 'started' }
   const produced = new Set(
@@ -1137,6 +1340,8 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
     'declared-related-unresolved',
     'no-candidates-compared',
     'no-subject-areas',
+    'all-pairs-downgraded-unknown-state',
+    'same-epic-member',
   ]
   const expected = DEPENDENCY_REASONS.filter((reason) => !SET_LEVEL_REASONS.includes(reason))
   assert.deepEqual(

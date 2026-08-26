@@ -25,6 +25,7 @@ import {
   cleanupRunContext,
   reapStaleRunDirs,
   STALE_RUN_DIR_TTL_MS,
+  BOSS_PLAN_RUN_SCRATCH_PREFIXES,
 } from './bs-run-sentinel.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-run-sentinel.mjs', import.meta.url))
@@ -202,6 +203,27 @@ test('makeRunContext reaps stale sentinel and boss-plan run dirs but keeps fresh
   assert.equal(existsSync(freshSentinel), true)
   assert.equal(existsSync(freshRunScratch), true)
   assert.equal(existsSync(join(sentinelBase, 'boss-plan-NEW')), true)
+})
+
+test('makeRunContext reaps stale boss-plan notes dirs but keeps fresh and current notes dirs', () => {
+  assert.ok(BOSS_PLAN_RUN_SCRATCH_PREFIXES.includes('boss-plan-notes.'))
+  const base = mkdtempSync(join(tmpdir(), 'brs-notes-reap-'))
+  const staleNotes = join(base, 'boss-plan-notes.STALE')
+  const freshNotes = join(base, 'boss-plan-notes.FRESH')
+  const currentNotes = join(base, 'boss-plan-notes.CURRENT')
+  for (const dir of [staleNotes, freshNotes, currentNotes]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'x'), 'x')
+  }
+  const old = new Date(Date.now() - STALE_RUN_DIR_TTL_MS - 1000)
+  utimesSync(staleNotes, old, old)
+  utimesSync(currentNotes, old, old)
+
+  reapStaleRunDirs({ tmpdir: base, excludeDirs: [currentNotes] })
+
+  assert.equal(existsSync(staleNotes), false)
+  assert.equal(existsSync(freshNotes), true)
+  assert.equal(existsSync(currentNotes), true)
 })
 
 test('reapStaleRunDirs never touches the excluded directory', () => {

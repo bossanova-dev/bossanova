@@ -132,10 +132,10 @@ func (s *server) classifyPR(ctx context.Context, repoURL, repo string, pr *bossa
 		return nil, nil
 	}
 
-	checksStatus := aggregateCheckResults(checks)
+	checksVerdict := evaluateProtoChecks(checks)
 
 	// Checks still pending — skip for now.
-	if checksStatus == checksOverallPending {
+	if checksVerdict.State == vcs.CheckVerdictPending || checksVerdict.State == vcs.CheckVerdictUnknown {
 		s.logger.Debug().Str("repo", repo).Int32("pr", prNumber).Msg("checks still pending, skipping")
 		return nil, nil
 	}
@@ -154,7 +154,7 @@ func (s *server) classifyPR(ctx context.Context, repoURL, repo string, pr *bossa
 	}
 
 	// Checks failed → CREATE_SESSION to fix the issue.
-	if checksStatus == checksOverallFailed {
+	if checksVerdict.State == vcs.CheckVerdictFailing {
 		s.logger.Info().Str("repo", repo).Int32("pr", prNumber).Str("title", pr.GetTitle()).Msg("checks failed, creating fix session")
 		base.Action = bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION
 		base.Plan = fmt.Sprintf(
@@ -192,40 +192,61 @@ func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTask
 	return &bossanovav1.UpdateTaskStatusResponse{}, nil
 }
 
-// --- Check aggregation (plugin-local, mirrors daemon logic) ---
+func evaluateProtoChecks(checks []*bossanovav1.CheckResult) vcs.CheckVerdict {
+	return vcs.EvaluateChecks("", protoCheckResultsToVCS(checks), nil)
+}
 
-type checksOverall int
-
-const (
-	checksOverallPending checksOverall = iota
-	checksOverallPassed
-	checksOverallFailed
-)
-
-// aggregateCheckResults determines the overall status of a set of checks.
-// Any failure/cancellation/timeout → failed. All completed with success/neutral/skipped → passed.
-// Otherwise → pending.
-func aggregateCheckResults(checks []*bossanovav1.CheckResult) checksOverall {
-	allCompleted := true
+func protoCheckResultsToVCS(checks []*bossanovav1.CheckResult) []vcs.CheckResult {
+	out := make([]vcs.CheckResult, 0, len(checks))
 	for _, c := range checks {
-		if c.GetStatus() != bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED {
-			allCompleted = false
+		if c == nil {
+			out = append(out, vcs.CheckResult{Status: vcs.CheckStatusCompleted, Unclassified: true})
 			continue
 		}
-		if c.Conclusion == nil {
-			return checksOverallFailed
-		}
-		switch *c.Conclusion {
-		case bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE,
-			bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED,
-			bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT:
-			return checksOverallFailed
-		default:
-			// SUCCESS, NEUTRAL, SKIPPED, UNSPECIFIED — not failures.
-		}
+		out = append(out, vcs.CheckResult{
+			ID:           c.GetId(),
+			Name:         c.GetName(),
+			Status:       protoCheckStatusToVCS(c.GetStatus()),
+			Unclassified: c.GetStatus() == bossanovav1.CheckStatus_CHECK_STATUS_UNSPECIFIED || c.Conclusion == nil && c.GetStatus() == bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED,
+			Conclusion:   protoCheckConclusionToVCS(c.Conclusion),
+		})
 	}
-	if allCompleted {
-		return checksOverallPassed
+	return out
+}
+
+func protoCheckStatusToVCS(status bossanovav1.CheckStatus) vcs.CheckStatus {
+	switch status {
+	case bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED:
+		return vcs.CheckStatusCompleted
+	case bossanovav1.CheckStatus_CHECK_STATUS_IN_PROGRESS:
+		return vcs.CheckStatusInProgress
+	case bossanovav1.CheckStatus_CHECK_STATUS_QUEUED:
+		return vcs.CheckStatusQueued
+	default:
+		return vcs.CheckStatusCompleted
 	}
-	return checksOverallPending
+}
+
+func protoCheckConclusionToVCS(conclusion *bossanovav1.CheckConclusion) *vcs.CheckConclusion {
+	if conclusion == nil {
+		return nil
+	}
+	var out vcs.CheckConclusion
+	switch *conclusion {
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS:
+		out = vcs.CheckConclusionSuccess
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE:
+		out = vcs.CheckConclusionFailure
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_NEUTRAL:
+		out = vcs.CheckConclusionNeutral
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED:
+		out = vcs.CheckConclusionCancelled
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_SKIPPED:
+		out = vcs.CheckConclusionSkipped
+	case bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT:
+		out = vcs.CheckConclusionTimedOut
+	default:
+		return nil
+	}
+	return &out
 }

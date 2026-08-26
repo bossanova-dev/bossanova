@@ -1455,6 +1455,7 @@ func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 		name        string
 		gateCommand string
 		wantOutput  string
+		timeout     time.Duration
 	}{
 		{
 			// `sh -c` launches fine; the inner command is missing, so Go sees a
@@ -1463,10 +1464,12 @@ func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 			name:        "command not found",
 			gateCommand: "bos881-definitely-not-a-real-binary --check",
 			wantOutput:  "not found",
+			timeout:     time.Second,
 		},
 		{
 			name:        "timeout",
 			gateCommand: "sleep 30",
+			timeout:     50 * time.Millisecond,
 		},
 	}
 	for _, tt := range tests {
@@ -1483,7 +1486,7 @@ func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
 			var logBuf bytes.Buffer
 			s.logger = zerolog.New(&logBuf)
-			s.gateTimeout = 50 * time.Millisecond
+			s.gateTimeout = tt.timeout
 			if err := s.AddJob(job); err != nil {
 				t.Fatalf("AddJob: %v", err)
 			}

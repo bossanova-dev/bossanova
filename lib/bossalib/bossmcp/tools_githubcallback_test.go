@@ -36,11 +36,12 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "register_github_callback",
 		Arguments: map[string]any{
-			"pr":             "123",
-			"repo":           "Owner/Repo",
-			"trigger":        "merged",
-			"target_chat_id": "chat-1",
-			"message":        secretMessage,
+			"pr":                        "123",
+			"repo":                      "Owner/Repo",
+			"trigger":                   "merged",
+			"target_chat_id":            "chat-1",
+			"message":                   secretMessage,
+			"should_require_transition": true,
 		},
 	})
 	if err != nil {
@@ -61,6 +62,9 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 	}
 	if got.GetMessage() != secretMessage {
 		t.Errorf("message must be forwarded verbatim to the backend; got %q", got.GetMessage())
+	}
+	if !got.GetShouldRequireTransition() {
+		t.Error("should_require_transition was not forwarded")
 	}
 	if got.GetExpiresAt() == nil {
 		t.Error("expires_at must be defaulted (24h) when expires_in is omitted")

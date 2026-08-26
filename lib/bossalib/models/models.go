@@ -96,12 +96,17 @@ type Session struct {
 	AgentSessionID          *string
 	AgentName               string
 	Model                   string // opaque agent model id; "" = plugin default.
+	EffectiveModel          string
+	EffectiveEffort         string
 	PRNumber                *int
 	PRURL                   *string
 	TrackerID               *string
 	TrackerURL              *string
 	TmuxSessionName         *string
 	LastCheckState          machine.CheckState
+	LastCheckStateHeadSHA   *string
+	LastCheckStateAt        *time.Time
+	StateEnteredAt          *time.Time
 	LastObservedReviewState int
 	IsAutomationEnabled     bool
 	AttemptCount            int

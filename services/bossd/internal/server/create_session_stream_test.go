@@ -283,6 +283,129 @@ func TestCreateSessionPersistsModelFromRequest(t *testing.T) {
 	if sessions[0].Model != model {
 		t.Fatalf("persisted session model = %q, want %q", sessions[0].Model, model)
 	}
+	if sessions[0].EffectiveModel != model {
+		t.Fatalf("persisted effective model = %q, want %q", sessions[0].EffectiveModel, model)
+	}
+}
+
+func TestCreateSessionRecordsEffectiveRuntimeFromRequestOverConfig(t *testing.T) {
+	seedSettings(t, config.Settings{Plugins: []config.PluginConfig{{
+		Name:    "claude",
+		Enabled: true,
+		Config:  map[string]string{"model": "configured-model", "effort": "high"},
+	}}})
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	prNumber := int32(322)
+	agentName := "claude"
+	model := "requested-model"
+	effort := "medium"
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "runtime request",
+		Plan:      "do work",
+		PrNumber:  &prNumber,
+		AgentName: &agentName,
+		Detach:    true,
+		Model:     &model,
+		Effort:    &effort,
+	}))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for stream.Receive() {
+		_ = stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSession stream error: %v", err)
+	}
+
+	sessions, err := h.sessions.List(context.Background(), h.repo.ID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].Model != model || sessions[0].EffectiveModel != model || sessions[0].EffectiveEffort != effort {
+		t.Fatalf("runtime fields = model=%q effective_model=%q effective_effort=%q", sessions[0].Model, sessions[0].EffectiveModel, sessions[0].EffectiveEffort)
+	}
+}
+
+func TestCreateSessionRecordsEffectiveRuntimeFromAgentConfigFallback(t *testing.T) {
+	seedSettings(t, config.Settings{Plugins: []config.PluginConfig{{
+		Name:    "claude",
+		Enabled: true,
+		Config:  map[string]string{"model": "configured-model", "effort": "high"},
+	}}})
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	prNumber := int32(323)
+	agentName := "claude"
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "runtime config",
+		Plan:      "do work",
+		PrNumber:  &prNumber,
+		AgentName: &agentName,
+		Detach:    true,
+	}))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for stream.Receive() {
+		_ = stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSession stream error: %v", err)
+	}
+
+	sessions, err := h.sessions.List(context.Background(), h.repo.ID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].Model != "" || sessions[0].EffectiveModel != "configured-model" || sessions[0].EffectiveEffort != "high" {
+		t.Fatalf("runtime fields = model=%q effective_model=%q effective_effort=%q", sessions[0].Model, sessions[0].EffectiveModel, sessions[0].EffectiveEffort)
+	}
+}
+
+func TestCreateSessionRecordsDefaultEffectiveEffortWithoutConfig(t *testing.T) {
+	seedSettings(t, config.Settings{})
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	prNumber := int32(324)
+	agentName := "claude"
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "runtime default effort",
+		Plan:      "do work",
+		PrNumber:  &prNumber,
+		AgentName: &agentName,
+		Detach:    true,
+	}))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for stream.Receive() {
+		_ = stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSession stream error: %v", err)
+	}
+
+	sessions, err := h.sessions.List(context.Background(), h.repo.ID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].Model != "" || sessions[0].EffectiveModel != "" || sessions[0].EffectiveEffort != "high" {
+		t.Fatalf("runtime fields = model=%q effective_model=%q effective_effort=%q", sessions[0].Model, sessions[0].EffectiveModel, sessions[0].EffectiveEffort)
+	}
 }
 
 func TestCreateSessionDuplicateActivePRReturnsAlreadyExists(t *testing.T) {
@@ -1349,7 +1472,7 @@ type setupStreamAgent struct {
 	startFn  func(context.Context, string, string, *string, string) (string, error)
 }
 
-func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _ string, _ map[string]string) (string, error) {
+func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _, _ string, _ map[string]string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}
@@ -1364,14 +1487,14 @@ func (a *setupStreamAgent) Subscribe(context.Context, string) (<-chan agent.Outp
 	close(ch)
 	return ch, nil
 }
-func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _ string, _ map[string]string) (string, error) {
+func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _, _ string, _ map[string]string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}
 	return "agent-session", a.startErr
 }
-func (a *setupStreamAgent) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
-	return a.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, extraEnv)
+func (a *setupStreamAgent) StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, _ agent.HeadlessLaunchOptions) (string, error) {
+	return a.StartByAgent(ctx, agentName, workDir, plan, resume, agentSessionID, model, effort, extraEnv)
 }
 func (a *setupStreamAgent) StopByAgent(context.Context, string, string) error { return nil }
 func (a *setupStreamAgent) IsRunningByAgent(string, string) bool              { return false }

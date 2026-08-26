@@ -18,6 +18,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { LOCK_CONTENTION_SIGNATURE } from './env-failure-lib.mjs'
 import { moduleLintKey, hashTree } from './lint-stamp-lib.mjs'
 
 const STAMP_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
@@ -184,8 +185,6 @@ export function gcStamps(stampDir) {
 // The literal golangci-lint prints on stderr when a concurrent invocation (e.g.
 // a sibling worktree's cron run) holds its lock file. This is NOT a lint
 // finding — it means golangci-lint never actually analyzed the module.
-const LOCK_CONTENTION_SIGNATURE = 'parallel golangci-lint is running'
-
 // Distinct, greppable message emitted after retries are exhausted and the
 // module still can't get the lock. Deliberately does not share any prefix
 // with a real golangci-lint finding line, so an agent (or a human) reading

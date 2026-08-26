@@ -8,6 +8,13 @@ that releases the worktree lock and picks the terminal state (Step 12). On a pre
 run Step 12 only. The body (`SKILL.md`) carries the resident skeleton and each step's trigger; the
 instructions themselves are here.
 
+Initialize the terminal-route receipt before the first route obligation can stamp it:
+
+```bash
+BOSS_BUILD_ROUTE_RECEIPT="${BOSS_BUILD_ROUTE_RECEIPT:-$(mktemp -t boss-build-route.XXXXXX.json)}"
+export BOSS_BUILD_ROUTE_RECEIPT
+```
+
 ## Step 8: Tag commits, then repair to green (boss-repair, capped)
 
 ### Test gate cache contract
@@ -74,6 +81,10 @@ conflicts, and review comments — the green gate now runs on the already-tagged
 `policy.repairCap` (**5**) passes. If still red after the cap (or the wall-clock breaker trips): keep
 the work as a **draft** PR, leave the ticket **In Progress**, post a blocker comment (failing check
 name, `file:line`, what was attempted), then go to **Stop cleanly** with BLOCKED.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token blocked-pr-left-draft --run-id "$BLI_RUNID"
+```
 
 Before blocking on this green gate, arm the one-shot callback watches for the tagged head so the run
 wakes the moment CI resolves or the PR merges/closes — `resolveCallbackAdapter(env)` `registerWatch`
@@ -194,16 +205,27 @@ command reads as **no command at all** and the gate blocks naming the criterion.
 
 Before readying, run `validateVerifyOnlyEvidence(config, body)` from `toolbox/skill-config.mjs` over
 the **PR body** — an executed check, not prose faith, the same shape as the `validatePlanDescription`
-call at Step 4. It returns `{ ok, verifyOnly, missingEvidence }`, and `ok` is true only when every
-criterion that is both marked and ticked carries a **non-empty** command **and** a **non-empty**
-result. An `ok:false` result makes each criterion it names a **deferred required item**: finalize
-BLOCKED (Step 12) naming each one, and do not ready. An **unticked** marked criterion is not a
-failure of this gate — it is already an open in-scope criterion under the rule above, and this gate
-does not double-report what that rule owns.
+call at Step 4. It returns `{ ok, verifyOnly, missingEvidence, malformedMarker, advisory }`, and
+`ok` is true only when every criterion that is both marked and ticked carries a **non-empty** command,
+a **non-empty** result, and a statically resolvable command head. Every `missingEvidence` item carries
+a closed-set `reason` plus a one-line `remedy`: `no-clause`, `undelimited-command`,
+`planned-tense-on-ticked`, `empty-command`, `empty-result`, or `command-unresolvable`. An `ok:false`
+result makes each criterion it names a **deferred required item**: finalize BLOCKED (Step 12) naming
+each reason/remedy, and do not ready. An **unticked** marked criterion is not a failure of this gate
+— it is already an open in-scope criterion under the rule above, and this gate does not double-report
+what that rule owns.
 
-The gate checks **structure and non-emptiness, never truth**. It cannot tell whether the recorded
-command was really run. What it buys is that the check becomes named and re-runnable by a human
-reviewer, so a verify-only criterion can no longer be discharged in silence.
+`malformedMarker` reports a criterion whose text contains `(verify-only)` but does not begin with it
+after markdown emphasis is stripped. It is a warning bucket, not reclassification: the literal marker
+is prefix-only by contract. `advisory` reports static proof-quality risks that do **not** set
+`ok:false` and do **not** block readying: working-tree-scoped git evidence with no committed anchor,
+zero-selection filters with no count assertion, unquoted option globs, pipelines with no pipefail,
+`git grep -E` word-boundary usage, and cached Bazel tests without `--nocache_test_results`.
+
+The gate checks **structure, non-emptiness and decidable command resolvability, never truth**. It
+does not execute the recorded command, because the PR body is attacker-supplied text. What it buys is
+that the check becomes named and re-runnable by a human reviewer, so a verify-only criterion can no
+longer be discharged in silence.
 
 It is also **not** a completeness check, and must not be read as one: it inspects only the criteria
 the body actually carries, so a criterion **omitted** from the body entirely is invisible to it and
@@ -211,6 +233,10 @@ would pass. That case is owned by the rule above — every in-scope criterion mu
 ticked — and the two compose: the completeness rule establishes that each criterion is _there_, and
 this gate establishes that each marked-and-ticked one is _evidenced_. Run both; neither substitutes
 for the other.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token verify-only-evidence-validated --run-id "$BLI_RUNID"
+```
 
 ### The premise discharge gate
 
@@ -221,6 +247,13 @@ checklist is not enough when the ticket's stated reason for the change is false.
 inverted the premise and the run took the documented-departure route, the PR body and tracker
 comment must name the criterion verbatim and the merged change that inverted it before the PR is
 readied.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token premise-discharged --run-id "$BLI_RUNID"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token required-deferred-asserted --run-id "$BLI_RUNID"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token pr-ready --run-id "$BLI_RUNID"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token please-review-added --run-id "$BLI_RUNID"
+```
 
 **Reclassification — the route out of an automatic BLOCK.** A plan written before this contract, or
 one whose drafter missed a verify-only criterion, still lands an in-scope criterion the diff cannot
@@ -262,6 +295,11 @@ and no `please-review` label. Comment the
 PR URL on the ticket alongside the partial enumeration (the adapter's `writeComment` capability). The
 PR-body and ticket-comment authoring belongs to
 [`review-stack.md`](review-stack.md) §PARTIAL-route publication; do not improvise either here.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token partial-gate-satisfied --run-id "$BLI_RUNID"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token do-not-merge-marked --run-id "$BLI_RUNID"
+```
 
 ## Step 10: Settle loop (capped)
 
@@ -313,6 +351,10 @@ Decide `OUTCOME` before the following optional post-terminal extension phase; it
 outcome, the exit code, any tracker or PR write, or the final
 `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE` line. Keep the worktree lock until the phase completes.
 
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token claim-deleted --run-id "$BLI_RUNID"
+```
+
 When a ticket has been resolved, the run must carry the tracker state captured at session entry into
 Step 12. In bossd-managed runs, that value comes from the bootstrap/session payload captured before
 bossd's session-start sync moves the ticket; Step 12 must never recapture the current post-sync state
@@ -325,6 +367,10 @@ claim with the winning claim comment still present), because a third-party owner
 authoritative and must not be clobbered.
 A failed restore is reported as a warning and does not change the terminal outcome.
 
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token entry-state-restored --run-id "$BLI_RUNID"
+```
+
 Every `NO_CHANGE` exit for a resolved ticket also leaves exactly one durable breadcrumb tracker
 comment naming the `NO_CHANGE` branch that fired and the single fact that made it fire. This
 breadcrumb is not deleted with the claim comment; deleting the transient claim and preserving the
@@ -334,6 +380,10 @@ on the same ticket visible as repeats. Keep the breadcrumb secret-hygienic: a sh
 file, skill, or command pointer only — never a transcript, command output, user-provided content,
 credentials, or tokens. Write the breadcrumb and perform the guarded state restore here in Step 12,
 before the optional post-terminal notes extensions phase, whose contract forbids tracker writes.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token no-change-breadcrumb-written --run-id "$BLI_RUNID"
+```
 
 ### Post-terminal notes extensions (repo opt-in)
 
@@ -395,18 +445,25 @@ Validate each result with `node "$BOSS_BUILD_TOOLBOX/skill-extensions.mjs" valid
 discovery skip, timeout, missing output, malformed envelope, validation failure, or subagent failure,
 append `extension <name>: skipped (<reason>)` and continue. Remove `NOTES_RUN_TMP` on every
 post-opt-in terminal path. This phase is non-fatal in every case.
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token notes-before-lock-release --run-id "$BLI_RUNID"
+```
+
 Then remove bossd Stop-hook entries so bossd does not double-finalize:
 
 ```bash
 BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
 if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token stop-hooks-removed --run-id "$BLI_RUNID"
 ```
 
 (A no-op under `BOSSD_MANAGED=0` — bossd installed no Stop-hooks.) Finally, release the worktree lock:
 
 ```bash
 "$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"
+node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token lock-released --run-id "$BLI_RUNID"
 ```
 
 (The startup `HELD_BY_PEER` yield is the one exit that does **not** reach Step 12 — it never owned the
@@ -419,6 +476,16 @@ criterion, the branch green, at least one criterion certified. On a run that rea
 the review loop's `capped` arm, Step 9 never executed, so read the same three conjuncts from
 [`review-stack.md`](review-stack.md) §PARTIAL-route publication, which re-checks them on that route:
 unevaluated is not held, and a conjunct you cannot establish is BLOCKED. Any other deferred required
-class is BLOCKED. Output the terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`) with the
-ticket id, PR URL, (for BLOCKED) the blocker summary naming the item, and (for `PARTIAL`) the
-`<satisfied>/<total>` acceptance-criteria count plus every open criterion by name.
+class is BLOCKED.
+
+Assert the route contract immediately before printing. A non-`BLOCKED` outcome may downgrade to
+`BLOCKED` only when the `BLOCKED` route's own obligations are stamped; otherwise the helper returns
+the non-terminal `ROUTE_UNSATISFIED`, and the run must stop without printing a terminal state:
+
+```bash
+OUTCOME="$(node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" assert --outcome "$OUTCOME" --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --run-id "$BLI_RUNID")" || OUTCOME=ROUTE_UNSATISFIED
+[ "$OUTCOME" != ROUTE_UNSATISFIED ] || { echo "route-contract unsatisfied; no terminal state"; exit 1; }
+```
+
+Output the terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`) with the ticket id,
+PR URL, blocker or partial summary.

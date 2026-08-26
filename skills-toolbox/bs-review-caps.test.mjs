@@ -1,22 +1,41 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_REVIEW_MAX_ROUNDS,
+  DEFAULT_REVIEW_MAX_DISPATCHED_ROUNDS,
   resolveMaxRounds,
+  resolveMaxDispatchedRounds,
   reviewMaxRounds,
+  reviewMaxDispatchedRounds,
   CLEAN_PREFIX,
   CAPPED_PREFIX,
   cleanSentinel,
   cappedSentinel,
+  coverageCappedSentinel,
   matchSentinel,
+  reviewVerdict,
+  reviewAgreement,
+  reviewConfidence,
+  vanishedFindings,
+  classifyOscillation,
+  classifySentinels,
   DEFAULT_FIX_ROUND_SECONDS,
+  FUNDING_STARVED,
+  stepAllowanceSeconds,
+  fundedFixRounds,
   MUSTFIX_OVERRUN_ROUNDS,
   MUSTFIX_OVERRUN_SECONDS,
   ADMIT_FIX_ROUND_REASONS,
   admitFixRound,
+  ADMIT_DISPATCHED_ROUND_REASONS,
+  admitDispatchedRound,
+  ADMIT_CONFIRMING_ROUND_REASONS,
+  admitConfirmingRound,
 } from './bs-review-caps.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-caps.mjs', import.meta.url))
@@ -28,6 +47,14 @@ function runCli(args = [], env = {}) {
     env: { ...process.env, ...env },
   })
   return { stdout: res.stdout.trim(), stderr: res.stderr.trim(), status: res.status }
+}
+
+const cleanLedger = {
+  discovered: 2,
+  completed: 2,
+  skipped: 0,
+  timedOut: 0,
+  notReached: 0,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +118,390 @@ test('reviewMaxRounds reads BS_REVIEW_MAX_ROUNDS from the env (lower-only)', () 
   assert.equal(reviewMaxRounds({}), 3)
 })
 
+test('resolveMaxDispatchedRounds honors lower values and clamps invalid or higher values', () => {
+  assert.equal(DEFAULT_REVIEW_MAX_DISPATCHED_ROUNDS, 6)
+  assert.equal(resolveMaxDispatchedRounds('1'), 1)
+  assert.equal(resolveMaxDispatchedRounds('4'), 4)
+  assert.equal(resolveMaxDispatchedRounds('6'), 6)
+  assert.equal(resolveMaxDispatchedRounds('7'), 6)
+  assert.equal(resolveMaxDispatchedRounds(undefined), 6)
+  assert.equal(resolveMaxDispatchedRounds(null), 6)
+  assert.equal(resolveMaxDispatchedRounds('-1'), 6)
+  assert.equal(resolveMaxDispatchedRounds('3.5'), 6)
+  assert.equal(resolveMaxDispatchedRounds('3'), 3)
+  assert.equal(resolveMaxDispatchedRounds(3), 3)
+})
+
+test('reviewMaxDispatchedRounds reads BS_REVIEW_MAX_DISPATCHED_ROUNDS from the env', () => {
+  assert.equal(reviewMaxDispatchedRounds({ BS_REVIEW_MAX_DISPATCHED_ROUNDS: '3' }), 3)
+  assert.equal(reviewMaxDispatchedRounds({ BS_REVIEW_MAX_DISPATCHED_ROUNDS: '9' }), 6)
+  assert.equal(reviewMaxDispatchedRounds({ BS_REVIEW_MAX_DISPATCHED_ROUNDS: 'nope' }), 6)
+  assert.equal(reviewMaxDispatchedRounds({}), 6)
+})
+
+// ---------------------------------------------------------------------------
+// Agreement and confidence — derived from collected panel evidence.
+// ---------------------------------------------------------------------------
+
+test('reviewAgreement reports panel size, shrink, uncorroborated must-fix, and vanished findings', () => {
+  const evidence = {
+    panel: {
+      initial: ['claude', 'codex', 'golang'],
+      reviewers: ['claude', 'codex'],
+    },
+    mustfix: {
+      unresolved: 0,
+      items: [
+        { title: 'one voice', reviewerCount: 1 },
+        { title: 'two voices', reviewerCount: 2 },
+      ],
+    },
+    history: {
+      rounds: [
+        { round: 1, mustFix: [{ file: 'a.go', line: 1, title: 'vanishes' }] },
+        { round: 2, mustFix: [] },
+      ],
+      fixed: [],
+      leaveAsIs: [],
+    },
+  }
+  assert.deepEqual(reviewAgreement(evidence), {
+    ok: true,
+    panelSize: 2,
+    initialPanelSize: 3,
+    terminalPanel: ['claude', 'codex'],
+    initialPanel: ['claude', 'codex', 'golang'],
+    panelShrank: true,
+    uncorroboratedMustFixCount: 1,
+    vanishedFindings: [{ file: 'a.go', line: 1, title: 'vanishes' }],
+  })
+})
+
+test('reviewConfidence returns Low with distinct reasons for weak or unreadable evidence', () => {
+  const base = {
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    mustfix: { unresolved: 0, items: [] },
+    invalid: [],
+    ledger: cleanLedger,
+    capped: false,
+    history: { rounds: [], fixed: [], leaveAsIs: [] },
+  }
+  assert.deepEqual(reviewConfidence({ ...base, panel: { reviewers: ['a'] } }), {
+    grade: 'Low',
+    reasons: ['single-sample-panel'],
+  })
+  assert.deepEqual(reviewConfidence({ ...base, capped: true }), {
+    grade: 'Low',
+    reasons: ['round-cap-hit'],
+  })
+  assert.deepEqual(reviewConfidence({ ...base, mustfix: { unresolved: 1, items: [] } }), {
+    grade: 'Low',
+    reasons: ['unresolved-mustfix'],
+  })
+  assert.deepEqual(
+    reviewConfidence({
+      ...base,
+      history: {
+        rounds: [
+          { round: 1, mustFix: [{ file: 'a.go', line: 1, title: 'vanishes' }] },
+          { round: 2, mustFix: [] },
+        ],
+        fixed: [],
+        leaveAsIs: [],
+      },
+    }),
+    { grade: 'Low', reasons: ['vanished-finding'] },
+  )
+  assert.deepEqual(reviewConfidence({ ...base, panel: null }), {
+    grade: 'Low',
+    reasons: ['unreadable-panel-evidence'],
+  })
+})
+
+test('reviewConfidence honors supplied agreement evidence', () => {
+  assert.deepEqual(
+    reviewConfidence({
+      panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+      agreement: {
+        panelSize: 2,
+        initialPanelSize: 2,
+        terminalPanel: ['a', 'b'],
+        initialPanel: ['a', 'b'],
+        panelShrank: false,
+        uncorroboratedMustFixCount: 0,
+        vanishedFindings: [{ file: 'a.go', line: 1, title: 'vanished' }],
+      },
+      mustfix: { unresolved: 0, items: [] },
+      invalid: [],
+      ledger: cleanLedger,
+    }),
+    { grade: 'Low', reasons: ['vanished-finding'] },
+  )
+})
+
+test('reviewConfidence returns High only when every confidence input is strong', () => {
+  const strong = {
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    mustfix: { unresolved: 0, items: [] },
+    invalid: [],
+    ledger: cleanLedger,
+    capped: false,
+    history: { rounds: [], fixed: [], leaveAsIs: [] },
+  }
+  assert.deepEqual(reviewConfidence(strong), { grade: 'High', reasons: [] })
+  assert.equal(
+    reviewConfidence({ ...strong, panel: { initial: ['a', 'b', 'c'], reviewers: ['a', 'b'] } })
+      .grade,
+    'Medium',
+  )
+  assert.equal(reviewConfidence({ ...strong, capped: true }).grade, 'Low')
+  assert.equal(reviewConfidence({ ...strong, mustfix: { unresolved: 1, items: [] } }).grade, 'Low')
+  assert.equal(reviewConfidence({ ...strong, panel: { reviewers: ['a'] } }).grade, 'Low')
+})
+
+test('reviewConfidence grades not-reached and timed-out reviewers Low without treating skipped as a shortfall', () => {
+  const strong = {
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    mustfix: { unresolved: 0, items: [] },
+    invalid: [],
+    capped: false,
+    history: { rounds: [], fixed: [], leaveAsIs: [] },
+  }
+  assert.deepEqual(
+    reviewConfidence({
+      ...strong,
+      ledger: { discovered: 3, completed: 2, skipped: 1, timedOut: 0, notReached: 0 },
+    }),
+    { grade: 'High', reasons: [] },
+  )
+  assert.deepEqual(
+    reviewConfidence({
+      ...strong,
+      ledger: { discovered: 3, completed: 2, skipped: 0, timedOut: 0, notReached: 1 },
+    }),
+    { grade: 'Low', reasons: ['not-reached-reviewer'] },
+  )
+  assert.deepEqual(
+    reviewConfidence({
+      ...strong,
+      ledger: { discovered: 3, completed: 2, skipped: 0, timedOut: 1, notReached: 0 },
+    }),
+    { grade: 'Low', reasons: ['timed-out-reviewer'] },
+  )
+})
+
+test('vanishedFindings distinguishes disappeared, fixed, left-as-is, and repeated findings', () => {
+  const disappeared = { file: 'a.go', line: 1, title: 'gone' }
+  const fixed = { file: 'b.go', line: 2, title: 'fixed' }
+  const left = { file: 'c.go', line: 3, title: 'left' }
+  const repeated = { file: 'd.go', line: 4, title: 'still there' }
+  assert.deepEqual(
+    vanishedFindings({
+      rounds: [
+        { round: 1, mustFix: [disappeared, fixed, left, repeated] },
+        { round: 2, mustFix: [repeated] },
+      ],
+      fixed: [fixed],
+      leaveAsIs: [left],
+    }),
+    { ok: true, findings: [disappeared] },
+  )
+})
+
+test('malformed vanished-finding history makes confidence Low instead of silently High', () => {
+  assert.deepEqual(vanishedFindings({ rounds: 'not an array' }), {
+    ok: false,
+    reason: 'history rounds must be an array',
+    findings: [],
+  })
+  assert.deepEqual(
+    reviewConfidence({
+      panel: { reviewers: ['a', 'b'] },
+      mustfix: { unresolved: 0, items: [] },
+      invalid: [],
+      ledger: cleanLedger,
+      history: { rounds: 'not an array' },
+    }),
+    { grade: 'Low', reasons: ['unreadable-vanished-history'] },
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Oscillation — deterministic guard over consecutive must-fix batches.
+// ---------------------------------------------------------------------------
+
+const finding = (file, line, title) => ({ severity: 'Warning', file, line, title })
+
+test('classifyOscillation names a repeated must-fix with no fixed or verified disposition', () => {
+  const repeated = finding('a.go', 12, 'check the branch')
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [repeated, finding('b.go', 3, 'gone')] },
+      currentRound: { mustFix: [repeated, finding('c.go', 4, 'new')] },
+      dispositions: {},
+    }),
+    { oscillating: ['["a.go",12,"check the branch"]'], reasons: [] },
+  )
+})
+
+test('classifyOscillation reports fixed or verified findings that repeat as oscillating', () => {
+  const fixed = finding('a.go', 1, 'fixed finding')
+  const verified = finding('b.go', 2, 'verified finding')
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [fixed, verified] },
+      currentRound: { mustFix: [fixed, verified] },
+      dispositions: { fixed: [fixed], verified: [verified] },
+    }),
+    {
+      oscillating: ['["a.go",1,"fixed finding"]', '["b.go",2,"verified finding"]'],
+      reasons: [],
+    },
+  )
+})
+
+test('classifyOscillation detects one flip-flopping pair inside a batch of at least ten must-fix items', () => {
+  const flip = finding('review.md', 42, 'pooled pass lost')
+  const previous = [
+    flip,
+    ...Array.from({ length: 9 }, (_, index) => finding(`old-${index}.go`, index + 1, 'fixed once')),
+  ]
+  const current = [
+    flip,
+    ...Array.from({ length: 9 }, (_, index) => finding(`new-${index}.go`, index + 1, 'fresh item')),
+  ]
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: previous },
+      currentRound: { mustFix: current },
+      dispositions: { fixed: previous.slice(1) },
+    }),
+    { oscillating: ['["review.md",42,"pooled pass lost"]'], reasons: [] },
+  )
+})
+
+test('classifyOscillation returns the same pair verdict when twenty unrelated members are added', () => {
+  const flip = finding('review.md', 42, 'pooled pass lost')
+  const unrelated = Array.from({ length: 20 }, (_, index) =>
+    finding(`unrelated-${index}.go`, index + 1, 'noise'),
+  )
+  const baseInput = {
+    previousRound: { mustFix: [flip] },
+    currentRound: { mustFix: [flip] },
+    dispositions: {},
+  }
+  const expandedInput = {
+    previousRound: { mustFix: [flip, ...unrelated] },
+    currentRound: {
+      mustFix: [flip, ...unrelated.map((item) => ({ ...item, title: 'new noise' }))],
+    },
+    dispositions: {},
+  }
+  assert.deepEqual(classifyOscillation(expandedInput), classifyOscillation(baseInput))
+})
+
+test('classifyOscillation preserves exact file and title identity', () => {
+  const previous = finding('a.go', 1, 'same title')
+  const whitespaceChanged = finding(' a.go', 1, 'same title')
+  const caseChanged = finding('a.go', 1, 'Same title')
+
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [previous] },
+      currentRound: { mustFix: [whitespaceChanged, caseChanged] },
+      dispositions: {},
+    }),
+    { oscillating: [], reasons: [] },
+  )
+})
+
+test('classifyOscillation compares and reports encoded tuple identity without delimiter collisions', () => {
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [finding('a', 1, 'b:2 - c'), finding('a:1 - b', 2, 'c')] },
+      currentRound: { mustFix: [finding('a', 1, 'b:2 - c'), finding('a:1 - b', 2, 'c')] },
+      dispositions: {},
+    }),
+    {
+      oscillating: ['["a",1,"b:2 - c"]', '["a:1 - b",2,"c"]'],
+      reasons: [],
+    },
+  )
+})
+
+test('classifyOscillation returns a well-formed result for degenerate inputs', () => {
+  assert.deepEqual(classifyOscillation(), { oscillating: [], reasons: ['rounds must be objects'] })
+  assert.deepEqual(classifyOscillation({ previousRound: {}, currentRound: { mustFix: [] } }), {
+    oscillating: [],
+    reasons: ['rounds must be objects'],
+  })
+  assert.deepEqual(
+    classifyOscillation({ previousRound: { mustFix: [] }, currentRound: { mustFix: [] } }),
+    { oscillating: [], reasons: [] },
+  )
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [{ title: 'missing file' }] },
+      currentRound: { mustFix: [{ title: 'missing file' }] },
+      dispositions: { fixed: [finding('unknown.go', 1, 'unknown')] },
+    }),
+    { oscillating: [], reasons: ['malformed finding'] },
+  )
+})
+
+test('classifyOscillation reports malformed disposition evidence', () => {
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: { fixed: { file: 'a.go', line: 1, title: 'stuck' } },
+    }),
+    {
+      oscillating: ['["a.go",1,"stuck"]'],
+      reasons: ['fixed dispositions must be an array'],
+    },
+  )
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: { verified: [{ title: 'missing file' }] },
+    }),
+    {
+      oscillating: ['["a.go",1,"stuck"]'],
+      reasons: ['malformed verified disposition'],
+    },
+  )
+})
+
+test('classifyOscillation reports invalid top-level disposition evidence', () => {
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: 'not-an-object',
+    }),
+    {
+      oscillating: ['["a.go",1,"stuck"]'],
+      reasons: ['dispositions must be an object or array'],
+    },
+  )
+})
+
+test('classifyOscillation validates every array disposition row before filtering', () => {
+  assert.deepEqual(
+    classifyOscillation({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: [{ status: 7 }, { status: 'fixed', ...finding('a.go', 1, 'stuck') }],
+    }),
+    {
+      oscillating: ['["a.go",1,"stuck"]'],
+      reasons: ['malformed disposition'],
+    },
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Sentinel prefixes — byte-identical pins (the downstream-matcher contract).
 // ---------------------------------------------------------------------------
@@ -119,6 +530,38 @@ test('cappedSentinel keeps a fixed prefix with only the round-count tail dynamic
   assert.equal(
     cappedSentinel(2).replace('2 rounds', 'N rounds'),
     cappedSentinel(3).replace('3 rounds', 'N rounds'),
+  )
+})
+
+test('funding helpers price initial legs and funded fix rounds at the boundary', () => {
+  assert.equal(FUNDING_STARVED, 'funding-starved')
+  assert.equal(stepAllowanceSeconds({ legSeconds: 300, legs: 3 }), 900)
+  assert.equal(
+    fundedFixRounds({
+      allowanceSeconds: 900,
+      legSeconds: 300,
+      initialLegs: 3,
+      fixRoundSeconds: 1200,
+    }),
+    0,
+  )
+  assert.equal(
+    fundedFixRounds({
+      allowanceSeconds: 2099,
+      legSeconds: 300,
+      initialLegs: 3,
+      fixRoundSeconds: 1200,
+    }),
+    0,
+  )
+  assert.equal(
+    fundedFixRounds({
+      allowanceSeconds: 2100,
+      legSeconds: 300,
+      initialLegs: 3,
+      fixRoundSeconds: 1200,
+    }),
+    1,
   )
 })
 
@@ -179,6 +622,119 @@ test('matchSentinel returns null for a non-sentinel line', () => {
 test('matchSentinel round-trips the builders', () => {
   assert.deepEqual(matchSentinel(cleanSentinel()), { status: 'clean' })
   assert.deepEqual(matchSentinel(cappedSentinel(2)), { status: 'capped', rounds: 2 })
+  assert.deepEqual(matchSentinel(coverageCappedSentinel(2)), { status: 'capped', rounds: 2 })
+})
+
+// ---------------------------------------------------------------------------
+// Derived verdict — clean only when evidence proves no unresolved blockers.
+// ---------------------------------------------------------------------------
+
+test('reviewVerdict returns clean only when unresolved must-fix, invalid and ledger evidence are clean', () => {
+  assert.deepEqual(
+    reviewVerdict({ mustfix: { unresolved: 0 }, invalid: [], ledger: cleanLedger }),
+    {
+      status: 'clean',
+      reasons: [],
+    },
+  )
+  assert.deepEqual(
+    reviewVerdict({ mustfix: { unresolved: 1 }, invalid: [], ledger: cleanLedger }),
+    {
+      status: 'capped',
+      reasons: ['unresolved-mustfix'],
+    },
+  )
+  assert.deepEqual(
+    reviewVerdict({
+      mustfix: { unresolved: 0 },
+      invalid: [{ reason: 'bad' }],
+      ledger: cleanLedger,
+    }),
+    {
+      status: 'capped',
+      reasons: ['invalid-evidence'],
+    },
+  )
+})
+
+test('reviewVerdict reports every blocker reason that prevents a clean verdict', () => {
+  assert.deepEqual(
+    reviewVerdict({
+      mustfix: { unresolved: 2 },
+      invalid: [{ reason: 'bad' }],
+      ledger: cleanLedger,
+    }),
+    {
+      status: 'capped',
+      reasons: ['unresolved-mustfix', 'invalid-evidence'],
+    },
+  )
+})
+
+test('reviewVerdict caps for unreadable or zero-completed ledger coverage', () => {
+  assert.deepEqual(reviewVerdict({ mustfix: { unresolved: 0 }, invalid: [] }), {
+    status: 'capped',
+    reasons: ['unreadable-ledger'],
+  })
+  assert.deepEqual(
+    reviewVerdict({
+      mustfix: { unresolved: 0 },
+      invalid: [],
+      ledger: { discovered: 2, completed: 0, skipped: 0, timedOut: 0, notReached: 2 },
+    }),
+    { status: 'capped', reasons: ['no-coverage'] },
+  )
+  assert.deepEqual(
+    reviewVerdict({
+      mustfix: { unresolved: 0 },
+      invalid: [],
+      ledger: { discovered: 2, completed: 2, skipped: 1, timedOut: 0, notReached: 0 },
+    }),
+    { status: 'capped', reasons: ['unreadable-ledger'] },
+  )
+})
+
+test('reviewVerdict fails closed on unreadable evidence', () => {
+  for (const evidence of [
+    undefined,
+    null,
+    [],
+    {},
+    { mustfix: { unresolved: '0' }, invalid: [], ledger: cleanLedger },
+    { mustfix: { unresolved: 0 }, invalid: {}, ledger: cleanLedger },
+  ]) {
+    assert.deepEqual(
+      reviewVerdict(evidence),
+      { status: 'capped', reasons: ['unreadable-evidence'] },
+      `evidence ${JSON.stringify(evidence)} must not be clean`,
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Whole-text sentinel classification — absence and ambiguity are non-clean.
+// ---------------------------------------------------------------------------
+
+test('classifySentinels returns missing for empty text or text with no sentinel', () => {
+  assert.deepEqual(classifySentinels(''), { status: 'missing' })
+  assert.deepEqual(classifySentinels('report body\nno terminal verdict\n'), { status: 'missing' })
+})
+
+test('classifySentinels round-trips exactly one clean or capped sentinel', () => {
+  assert.deepEqual(classifySentinels(`body\n${cleanSentinel()}\n`), { status: 'clean' })
+  assert.deepEqual(classifySentinels(`body\n${cappedSentinel(2)}\n`), {
+    status: 'capped',
+    rounds: 2,
+  })
+})
+
+test('classifySentinels returns ambiguous for disagreeing or combined sentinel lines', () => {
+  assert.deepEqual(classifySentinels(`${cleanSentinel()}\n${cappedSentinel(3)}\n`), {
+    status: 'ambiguous',
+  })
+  assert.deepEqual(classifySentinels(`${CLEAN_PREFIX} ${CAPPED_PREFIX} both on one line\n`), {
+    status: 'ambiguous',
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -189,6 +745,12 @@ test('CLI `rounds` reads the env and clamps lower-only', () => {
   assert.equal(runCli(['rounds'], { BS_REVIEW_MAX_ROUNDS: '2' }).stdout, '2')
   assert.equal(runCli(['rounds'], { BS_REVIEW_MAX_ROUNDS: '9' }).stdout, '3')
   assert.equal(runCli(['rounds'], { BS_REVIEW_MAX_ROUNDS: '' }).stdout, '3')
+})
+
+test('CLI `dispatched-rounds` reads the env and clamps lower-only', () => {
+  assert.equal(runCli(['dispatched-rounds'], { BS_REVIEW_MAX_DISPATCHED_ROUNDS: '4' }).stdout, '4')
+  assert.equal(runCli(['dispatched-rounds'], { BS_REVIEW_MAX_DISPATCHED_ROUNDS: '9' }).stdout, '6')
+  assert.equal(runCli(['dispatched-rounds'], { BS_REVIEW_MAX_DISPATCHED_ROUNDS: '' }).stdout, '6')
 })
 
 test('CLI `sentinel clean|capped` prints byte-identical lines', () => {
@@ -221,8 +783,274 @@ test('CLI `match` classifies a sentinel line as JSON', () => {
   assert.deepEqual(JSON.parse(r.stdout), { status: 'capped', rounds: 2 })
 })
 
+test('CLI `verdict --in` prints the sentinel implied by report evidence', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const cleanPath = join(scratch, 'clean.json')
+    const contradictedPath = join(scratch, 'contradicted.json')
+    writeFileSync(
+      cleanPath,
+      JSON.stringify({ rounds: 2, mustfix: { unresolved: 0 }, invalid: [], ledger: cleanLedger }),
+    )
+    writeFileSync(
+      contradictedPath,
+      JSON.stringify({
+        status: 'clean',
+        rounds: 3,
+        mustfix: { unresolved: 0 },
+        invalid: [{}],
+        ledger: cleanLedger,
+      }),
+    )
+    assert.equal(runCli(['verdict', '--in', cleanPath]).stdout, cleanSentinel())
+    assert.equal(runCli(['verdict', '--in', contradictedPath]).stdout, cappedSentinel(3))
+    const noCoveragePath = join(scratch, 'no-coverage.json')
+    writeFileSync(
+      noCoveragePath,
+      JSON.stringify({
+        rounds: 2,
+        mustfix: { unresolved: 0 },
+        invalid: [],
+        ledger: { discovered: 2, completed: 0, skipped: 0, timedOut: 0, notReached: 2 },
+      }),
+    )
+    assert.equal(runCli(['verdict', '--in', noCoveragePath]).stdout, coverageCappedSentinel(2))
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('CLI `confidence --in` prints the derived confidence grade and reasons', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const reportPath = join(scratch, 'report.json')
+    writeFileSync(
+      reportPath,
+      JSON.stringify({
+        panel: { initial: ['one'], reviewers: ['one'] },
+        mustfix: { unresolved: 0, items: [] },
+        invalid: [],
+        ledger: cleanLedger,
+      }),
+    )
+    const result = runCli(['confidence', '--in', reportPath])
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      grade: 'Low',
+      reasons: ['single-sample-panel'],
+    })
+
+    const unreadable = runCli(['confidence', '--in', join(scratch, 'missing.json')])
+    assert.notEqual(unreadable.status, 0)
+    assert.match(unreadable.stderr, /unable to read/i)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('CLI `classify --in` prints whole-text sentinel classification and rejects unreadable files', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'bs-review-caps-'))
+  try {
+    const reportPath = join(scratch, 'report.txt')
+    writeFileSync(reportPath, `body\n${cappedSentinel(1)}\n`)
+    const classified = runCli(['classify', '--in', reportPath])
+    assert.equal(classified.status, 0)
+    assert.deepEqual(JSON.parse(classified.stdout), { status: 'capped', rounds: 1 })
+
+    const missing = runCli(['classify', '--in', join(scratch, 'missing.txt')])
+    assert.notEqual(missing.status, 0)
+    assert.match(missing.stderr, /unable to read/i)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('CLI `oscillation` round-trips the deterministic guard and rejects malformed input', () => {
+  const repeated = finding('a.go', 12, 'check the branch')
+  const input = {
+    previousRound: { mustFix: [repeated] },
+    currentRound: { mustFix: [repeated] },
+    dispositions: {},
+  }
+  const r = runCli(['oscillation', JSON.stringify(input)])
+  assert.equal(r.status, 0)
+  assert.deepEqual(JSON.parse(r.stdout), classifyOscillation(input))
+
+  const malformed = runCli(['oscillation', 'not-json'])
+  assert.notEqual(malformed.status, 0)
+  assert.match(malformed.stderr, /oscillation requires one JSON object argument/)
+  assert.equal(malformed.stdout, '')
+})
+
+test('CLI `oscillation --in` reads the guard payload from a file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-review-oscillation-'))
+  try {
+    const file = join(dir, 'oscillation.json')
+    const repeated = finding('a.go', 1, 'stuck')
+    const input = {
+      previousRound: { mustFix: [repeated] },
+      currentRound: { mustFix: [repeated] },
+      dispositions: {},
+    }
+    writeFileSync(file, JSON.stringify(input))
+    const r = runCli(['oscillation', '--in', file])
+    assert.equal(r.status, 0)
+    assert.deepEqual(JSON.parse(r.stdout), classifyOscillation(input))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI `oscillation` rejects parsed malformed payloads', () => {
+  const missingRoundList = runCli([
+    'oscillation',
+    JSON.stringify({ previousRound: {}, currentRound: { mustFix: [] }, dispositions: {} }),
+  ])
+  assert.equal(missingRoundList.status, 2)
+  assert.match(missingRoundList.stderr, /oscillation payload is malformed/)
+
+  const malformedFinding = runCli([
+    'oscillation',
+    JSON.stringify({
+      previousRound: { mustFix: [{ title: 'missing file' }] },
+      currentRound: { mustFix: [{ title: 'missing file' }] },
+      dispositions: {},
+    }),
+  ])
+  assert.equal(malformedFinding.status, 2)
+  assert.match(malformedFinding.stderr, /malformed finding/)
+
+  const malformedDisposition = runCli([
+    'oscillation',
+    JSON.stringify({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: { fixed: { file: 'a.go', line: 1, title: 'stuck' } },
+    }),
+  ])
+  assert.equal(malformedDisposition.status, 2)
+  assert.match(malformedDisposition.stderr, /fixed dispositions must be an array/)
+
+  const invalidDispositionContainer = runCli([
+    'oscillation',
+    JSON.stringify({
+      previousRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      currentRound: { mustFix: [finding('a.go', 1, 'stuck')] },
+      dispositions: 7,
+    }),
+  ])
+  assert.equal(invalidDispositionContainer.status, 2)
+  assert.match(invalidDispositionContainer.stderr, /dispositions must be an object or array/)
+})
+
 test('CLI exits non-zero on an unknown subcommand', () => {
   assert.notEqual(runCli(['bogus']).status, 0)
+})
+
+test('admitDispatchedRound admits guaranteed and below-cap rounds, then refuses at the cap', () => {
+  assert.deepEqual(
+    admitDispatchedRound({ guaranteed: true, dispatchedRoundsUsed: 999, maxDispatchedRounds: 1 }),
+    { admit: true, reason: 'guaranteed' },
+  )
+  assert.deepEqual(admitDispatchedRound({ dispatchedRoundsUsed: 5, maxDispatchedRounds: 6 }), {
+    admit: true,
+    reason: 'below-cap',
+  })
+  assert.deepEqual(admitDispatchedRound({ dispatchedRoundsUsed: 6, maxDispatchedRounds: 6 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+  assert.deepEqual(admitDispatchedRound({ dispatchedRoundsUsed: '5', maxDispatchedRounds: 6 }), {
+    admit: false,
+    reason: 'round-cap',
+  })
+})
+
+test('admitDispatchedRound reason set is closed and reachable', () => {
+  const seen = new Set([
+    admitDispatchedRound({ guaranteed: true }).reason,
+    admitDispatchedRound({ dispatchedRoundsUsed: 0, maxDispatchedRounds: 1 }).reason,
+    admitDispatchedRound({ dispatchedRoundsUsed: 1, maxDispatchedRounds: 1 }).reason,
+  ])
+  assert.deepEqual([...seen].sort(), [...ADMIT_DISPATCHED_ROUND_REASONS].sort())
+})
+
+test('admitConfirmingRound refuses exactly the unchanged no-op case', () => {
+  const seen = new Set()
+  let refused = 0
+  for (const tipUnchanged of [false, true]) {
+    for (const fixedCount of [0, 1]) {
+      for (const verifiedCount of [0, 1]) {
+        for (const carriedClaimCount of [0, 1]) {
+          for (const invalidCount of [0, 1]) {
+            const result = admitConfirmingRound({
+              tipUnchanged,
+              fixedCount,
+              verifiedCount,
+              carriedClaimCount,
+              invalidCount,
+            })
+            seen.add(result.reason)
+            if (!result.admit) {
+              refused += 1
+              assert.deepEqual(
+                { tipUnchanged, fixedCount, verifiedCount, carriedClaimCount, invalidCount },
+                {
+                  tipUnchanged: true,
+                  fixedCount: 0,
+                  verifiedCount: 0,
+                  carriedClaimCount: 0,
+                  invalidCount: 0,
+                },
+              )
+              assert.equal(result.reason, 'unchanged-tip')
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.equal(refused, 1)
+  assert.deepEqual([...seen].sort(), [...ADMIT_CONFIRMING_ROUND_REASONS].sort())
+})
+
+test('admitConfirmingRound names the single changed conjunct reason', () => {
+  assert.deepEqual(admitConfirmingRound({ tipUnchanged: false }), {
+    admit: true,
+    reason: 'tip-changed',
+  })
+  assert.deepEqual(admitConfirmingRound({ tipUnchanged: true, fixedCount: 1 }), {
+    admit: true,
+    reason: 'fixed',
+  })
+  assert.deepEqual(admitConfirmingRound({ tipUnchanged: true, verifiedCount: 1 }), {
+    admit: true,
+    reason: 'verified',
+  })
+  assert.deepEqual(admitConfirmingRound({ tipUnchanged: true, carriedClaimCount: 1 }), {
+    admit: true,
+    reason: 'carried-claim',
+  })
+  assert.deepEqual(admitConfirmingRound({ tipUnchanged: true, invalidCount: 1 }), {
+    admit: true,
+    reason: 'invalid-open',
+  })
+})
+
+test('CLI admission verbs return decision-table JSON and reject malformed input', () => {
+  assert.deepEqual(
+    JSON.parse(runCli(['admit-dispatched-round', '{"dispatchedRoundsUsed":6}']).stdout),
+    { admit: false, reason: 'round-cap' },
+  )
+  assert.deepEqual(JSON.parse(runCli(['admit-confirming-round', '{"tipUnchanged":true}']).stdout), {
+    admit: false,
+    reason: 'unchanged-tip',
+  })
+  for (const verb of ['admit-dispatched-round', 'admit-confirming-round']) {
+    const r = runCli([verb, 'not-json'])
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, new RegExp(`${verb} requires one JSON object argument`))
+  }
 })
 
 // ---------------------------------------------------------------------------

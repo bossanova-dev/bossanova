@@ -11,6 +11,7 @@
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { readFileSync } from 'node:fs'
+import { reviewAgreement, reviewConfidence, reviewVerdict } from './bs-review-caps.mjs'
 import { loadSkillConfig, trackerConfigFor } from './skill-config.mjs'
 
 // The idempotency marker: bs-implement upserts the single PR comment that
@@ -79,7 +80,8 @@ function renderHeader({ rounds = 1, status = 'clean', mustfix = {}, invalid = []
     // malformed or missing reviewer evidence is the actual blocker -- an
     // invalid-only cap has `unresolved: 0`, so the header would have read
     // "0 must-fix findings remain" while the real cause sat in its own section.
-    const open = mustfix.unresolved ?? 0
+    const open =
+      Number.isInteger(mustfix.unresolved) && mustfix.unresolved > 0 ? mustfix.unresolved : 0
     const bad = Array.isArray(invalid) ? invalid.length : 0
     const parts = []
     if (open) parts.push(`${open} must-fix ${open === 1 ? 'finding' : 'findings'}`)
@@ -132,6 +134,95 @@ function renderVerdictBlock({ verdict = {}, issuesHeadline = '', security = [] }
   if (verdict.recommendation)
     badges.push(verdictLine('recommendation', 'Recommendation', verdict.recommendation))
   return { lead, badges }
+}
+
+function evidenceForReport(data = {}) {
+  return {
+    mustfix: data.mustfix,
+    invalid: data.invalid,
+    ledger: data.ledger,
+    panel: data.panel,
+    agreement: data.agreement,
+    history: data.history,
+    capped: data.status === 'capped',
+    status: data.status,
+  }
+}
+
+function renderLedgerCoverage(ledger = undefined) {
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return ''
+  const fields = ['discovered', 'completed', 'skipped', 'timedOut', 'notReached']
+  if (!fields.every((field) => Number.isInteger(ledger[field]) && ledger[field] >= 0)) return ''
+  return (
+    `Review coverage: discovered ${ledger.discovered}; completed ${ledger.completed}; ` +
+    `skipped ${ledger.skipped}; timed-out ${ledger.timedOut}; not-reached ${ledger.notReached}.`
+  )
+}
+
+function verdictForDisplay(verdict = {}, derivedStatus = 'clean', confidence = null) {
+  const next = { ...verdict }
+  if (confidence) next.confidence = confidence.grade
+  if (derivedStatus === 'capped') {
+    next.assessment = 'Unsound'
+    next.recommendation = 'Fix'
+  }
+  return next
+}
+
+function renderContradictionNotice(callerStatus, derivedStatus) {
+  if (!callerStatus || callerStatus === derivedStatus) return ''
+  return `**Contradiction notice:** caller supplied \`${callerStatus}\` but report evidence derives \`${derivedStatus}\`.`
+}
+
+function renderConfidenceContradiction(callerConfidence, derivedConfidence) {
+  if (
+    typeof callerConfidence !== 'string' ||
+    !derivedConfidence ||
+    callerConfidence === derivedConfidence.grade
+  ) {
+    return ''
+  }
+  return `**Confidence contradiction:** caller supplied \`${esc(callerConfidence)}\` but report evidence derives \`${derivedConfidence.grade}\`.`
+}
+
+const DISAGREEMENT_REASONS = new Set(['single-sample-panel', 'vanished-finding'])
+
+function renderEscalationLine(confidence) {
+  const reasons = Array.isArray(confidence?.reasons)
+    ? confidence.reasons.filter((reason) => DISAGREEMENT_REASONS.has(reason))
+    : []
+  if (!reasons.length) return ''
+  return `Escalation: human adjudication needed for ${reasons.map(esc).join(', ')}.`
+}
+
+function renderAgreement(agreement = {}) {
+  if (!agreement || typeof agreement !== 'object' || Array.isArray(agreement)) return ''
+  if (!Array.isArray(agreement.terminalPanel) || !Number.isInteger(agreement.panelSize)) return ''
+  const parts = [
+    `Panel: ${agreement.panelSize} reviewer(s) terminal; ${agreement.initialPanelSize ?? 0} initial.`,
+  ]
+  if (agreement.terminalPanel.length) {
+    parts.push(
+      `Terminal panel: ${agreement.terminalPanel.map((name) => `\`${esc(name)}\``).join(', ')}.`,
+    )
+  }
+  if (Array.isArray(agreement.initialPanel) && agreement.initialPanel.length) {
+    parts.push(
+      `Initial panel: ${agreement.initialPanel.map((name) => `\`${esc(name)}\``).join(', ')}.`,
+    )
+  }
+  parts.push(`Panel shrank: ${agreement.panelShrank ? 'yes' : 'no'}.`)
+  parts.push(`Uncorroborated must-fix findings: ${agreement.uncorroboratedMustFixCount ?? 0}.`)
+  const vanished = Array.isArray(agreement.vanishedFindings) ? agreement.vanishedFindings : []
+  if (vanished.length) {
+    parts.push('Vanished findings:')
+    parts.push(
+      vanished.map((finding) => `- ${esc(finding.title ?? 'Untitled')}${loc(finding)}`).join('\n'),
+    )
+  } else {
+    parts.push('Vanished findings: 0.')
+  }
+  return parts.join('\n')
 }
 
 // "N Reviewers": the per-lens / per-round reviewer roster as bullets
@@ -616,22 +707,55 @@ export function renderReport(data = {}) {
     issueUrl = '',
   } = data
 
+  const verdictEvidence = evidenceForReport(data)
+  const derived = reviewVerdict(verdictEvidence)
+  const hasPanelEvidence =
+    data.panel && typeof data.panel === 'object' && !Array.isArray(data.panel)
+  const agreement = hasPanelEvidence
+    ? data.agreement && typeof data.agreement === 'object' && !Array.isArray(data.agreement)
+      ? data.agreement
+      : reviewAgreement(verdictEvidence)
+    : null
+  const confidence = hasPanelEvidence ? reviewConfidence({ ...verdictEvidence, agreement }) : null
+  const callerStatus = data.status === 'clean' || data.status === 'capped' ? data.status : null
+  const displayVerdict = verdictForDisplay(verdict, derived.status, confidence)
   const tracker = data.tracker !== undefined ? data.tracker : trackerConfigFor(loadSkillConfig())
 
   const blocks = []
-  blocks.push(`${MARKER}\n${renderHeader(data)}`)
+  blocks.push(
+    `${MARKER}\n${renderHeader({
+      ...data,
+      status: derived.status,
+      mustfix: verdictEvidence.mustfix,
+      invalid: verdictEvidence.invalid,
+    })}`,
+  )
   blocks.push('---')
   blocks.push('#### Code Review')
   if (summary) blocks.push(esc(summary))
-  const { lead, badges } = renderVerdictBlock({ verdict, issuesHeadline, security })
+  const contradiction = renderContradictionNotice(callerStatus, derived.status)
+  if (contradiction) blocks.push(contradiction)
+  const confidenceContradiction = renderConfidenceContradiction(verdict.confidence, confidence)
+  if (confidenceContradiction) blocks.push(confidenceContradiction)
+  const escalation = renderEscalationLine(confidence)
+  if (escalation) blocks.push(escalation)
+  const { lead, badges } = renderVerdictBlock({
+    verdict: displayVerdict,
+    issuesHeadline,
+    security,
+  })
   blocks.push(...lead)
+  const ledgerCoverage = renderLedgerCoverage(verdictEvidence.ledger)
+  if (ledgerCoverage) blocks.push(ledgerCoverage)
   blocks.push(badges.join('\n'))
 
-  blocks.push(detailsSection('Test Coverage', renderTestCoverage(verdict)))
+  blocks.push(detailsSection('Test Coverage', renderTestCoverage(displayVerdict)))
 
   const reviewerList = Array.isArray(reviewers) ? reviewers : []
   const nr = reviewerList.length
   blocks.push(detailsSection(`${nr} Reviewer${nr === 1 ? '' : 's'}`, renderReviewers(reviewerList)))
+
+  if (agreement) blocks.push(detailsSection('Agreement', renderAgreement(agreement)))
 
   const evidence = renderEvidence({ evidenceRows, gates })
   if (evidence) blocks.push(detailsSection('Evidence — rounds & gates', evidence))

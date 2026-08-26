@@ -153,8 +153,9 @@ service DaemonService {
   // ordered by creation time then id for a deterministic listing.
   rpc ListGithubCallbacks(ListGithubCallbacksRequest) returns (ListGithubCallbacksResponse);
 
-  // DeleteGithubCallback removes a callback by id. Idempotent: deleting an
-  // absent id succeeds.
+  // DeleteGithubCallback removes a callback by id. Deleting an absent id
+  // returns NotFound. When expect_target_chat_id is set and does not match the
+  // row owner, it returns PermissionDenied and leaves the row present.
   rpc DeleteGithubCallback(DeleteGithubCallbackRequest) returns (DeleteGithubCallbackResponse);
 
   // --- Broadcasts (BOS-556) ---
@@ -482,6 +483,9 @@ message CreateSessionRequest {
   // Empty → the agent plugin's default model. Mirrors `boss cron add --model`;
   // set by `boss new --model` and the MCP create_session tool.
   optional string model = 15;
+  // Opaque agent reasoning-effort level to run this session under.
+  // Empty → the agent plugin's default effort.
+  optional string effort = 20;
   bool is_tmux_unattended = 16;
   // If true, bypass the tracker-issue dedup guard and create a second session
   // for a tracker/PR/branch that already has an active one (BOS-236 escape hatch).
@@ -1234,6 +1238,9 @@ message CreateGithubCallbackRequest {
   // Optional explicit expiry. Unset = server default (24h). Must be in the
   // future and within 30 days, else InvalidArgument.
   optional google.protobuf.Timestamp expires_at = 8;
+  // When true, the first evaluation records the current trigger state as a
+  // baseline and only a later satisfying observation fires the callback.
+  optional bool should_require_transition = 9;
 }
 
 message CreateGithubCallbackResponse {
@@ -1256,9 +1263,14 @@ message ListGithubCallbacksResponse {
 
 message DeleteGithubCallbackRequest {
   string id = 1;
+  // Optional ownership guard. When set, the daemon deletes the row only if its
+  // target_chat_id matches this value.
+  optional string expect_target_chat_id = 2;
 }
 
-message DeleteGithubCallbackResponse {}
+message DeleteGithubCallbackResponse {
+  string outcome = 1; // deleted | not_found | not_owned
+}
 
 // --- Broadcasts (BOS-551) ---
 //

@@ -97,6 +97,7 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 - `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
 - `--defer-pr` — Open no draft PR up front; a PR is opened at finalize only if the run produced commits. For runs not expected to change the repository. Pair with --tmux-unattended so a restart cannot strand commits before finalize. Non-interactive --repo + --prompt path only
 - `--detach` — A no-op on the non-interactive --repo + --prompt path, which always runs headlessly, prints session-id as soon as the session exists, prints chat-id later if the daemon provides one, and streams setup progress on stderr; --tmux-unattended is the distinct durable-pane option
+- `--effort` — Agent reasoning effort to run this session under; empty = agent default
 - `--json` — Emit the created session as a stable JSON schema instead of the two-line output
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach

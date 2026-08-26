@@ -41,6 +41,7 @@ go_test(
     embed = [":bossd-plugin-dependabot_lib"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/vcs",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

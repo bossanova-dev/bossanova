@@ -390,6 +390,8 @@ export function bossEpicToolPreflight(availableTools) {
   return { ok: missingTools.length === 0, missing: missingTools }
 }
 
+export const BOSS_CLI_INVENTORY_COMMAND = 'boss env --json'
+
 /**
  * The distinct `boss` CLI commands an epic run needs, derived from the same map
  * requiredBossToolsForEpic() walks. A "command" is the invocation's leading
@@ -411,6 +413,38 @@ export function requiredBossCliCommandsForEpic() {
     commands.add(words.join(' '))
   }
   return [...commands].sort()
+}
+
+/**
+ * Normalize the boss CLI command inventory into the same spelling used by
+ * requiredBossCliCommandsForEpic(). `boss env --json` already emits that shape;
+ * this adapter also credits bare top-level command names such as `ls` as
+ * `boss ls`. It deliberately does not infer subcommands from a bare parent.
+ * @param {Iterable<string>} commands
+ * @returns {string[]} sorted, de-duplicated `boss <subcommand>` strings
+ */
+export function normalizeBossCliCommands(commands) {
+  const normalized = new Set()
+  for (const command of commands ?? []) {
+    const trimmed = String(command).trim()
+    if (!trimmed) continue
+    normalized.add(/^boss(?:\s|$)/.test(trimmed) ? trimmed : `boss ${trimmed}`)
+  }
+  return [...normalized].sort()
+}
+
+function bossCliInventoryHint(rawCliCommands, normalizedCliCommands, missingCliCommands) {
+  if (missingCliCommands.length === 0) return null
+  const raw = rawCliCommands.map((command) => String(command).trim()).filter(Boolean)
+  const hadBareEntries = raw.some((command) => !/^boss(?:\s|$)/.test(command))
+  const hasQualifiedSubcommands = raw.some((command) => command.split(/\s+/).length > 2)
+  if (raw.length === 0 || hadBareEntries || !hasQualifiedSubcommands) {
+    return `Boss CLI inventory appears incomplete or parsed from help output; use ${BOSS_CLI_INVENTORY_COMMAND} and pass .capabilities.cli.`
+  }
+  if (normalizedCliCommands.length === 0) {
+    return `Boss CLI inventory is empty; use ${BOSS_CLI_INVENTORY_COMMAND} and pass .capabilities.cli.`
+  }
+  return null
 }
 
 /**
@@ -492,16 +526,23 @@ export function bossCliPartialCapabilities() {
  * @param {{ availableTools?: Iterable<string>, availableCliCommands?: Iterable<string> }} runtime
  * @returns {{ ok: boolean, transport: 'mcp'|'cli'|null, missing: string[], degraded: string[],
  *             partial: { capability: string, missingResponse: string[] }[],
- *             missingTools: string[], missingCliCommands: string[] }}
+ *             missingTools: string[], missingCliCommands: string[], inventoryHint: string|null }}
  */
 export function bossEpicTransportPreflight({
   availableTools = [],
   availableCliCommands = [],
 } = {}) {
   const tools = new Set(availableTools)
-  const commands = new Set(availableCliCommands)
+  const rawCliCommands = [...availableCliCommands]
+  const normalizedCliCommands = normalizeBossCliCommands(rawCliCommands)
+  const commands = new Set(normalizedCliCommands)
   const missingTools = requiredBossToolsForEpic().filter((tool) => !tools.has(tool))
   const missingCliCommands = requiredBossCliCommandsForEpic().filter((cmd) => !commands.has(cmd))
+  const inventoryHint = bossCliInventoryHint(
+    rawCliCommands,
+    normalizedCliCommands,
+    missingCliCommands,
+  )
 
   // CLI first: a complete CLI set wins even when MCP is also complete.
   if (missingCliCommands.length === 0) {
@@ -513,6 +554,7 @@ export function bossEpicTransportPreflight({
       partial: bossCliPartialCapabilities(),
       missingTools,
       missingCliCommands,
+      inventoryHint: null,
     }
   }
   if (missingTools.length === 0) {
@@ -525,6 +567,7 @@ export function bossEpicTransportPreflight({
       partial: [],
       missingTools,
       missingCliCommands,
+      inventoryHint: null,
     }
   }
   return {
@@ -536,6 +579,7 @@ export function bossEpicTransportPreflight({
     partial: [],
     missingTools,
     missingCliCommands,
+    inventoryHint,
   }
 }
 

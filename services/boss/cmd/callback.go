@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/table"
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -25,44 +26,48 @@ import (
 // message body is a secret and is deliberately NOT part of this schema — it is
 // never echoed back on any surface.
 type githubCallbackJSON struct {
-	ID           string `json:"id"`
-	GroupID      string `json:"group_id"`
-	TargetChatID string `json:"target_chat_id"`
-	RepoOwner    string `json:"repo_owner"`
-	RepoName     string `json:"repo_name"`
-	PRNumber     int32  `json:"pr_number"`
-	Trigger      string `json:"trigger"`
-	State        string `json:"state"`
-	AttemptCount int32  `json:"attempt_count"`
-	LastEvent    string `json:"last_event"`
-	LastError    string `json:"last_error"`
-	TriggeredAt  string `json:"triggered_at"`
-	DeliveredAt  string `json:"delivered_at"`
-	ExpiresAt    string `json:"expires_at"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID                      string `json:"id"`
+	GroupID                 string `json:"group_id"`
+	TargetChatID            string `json:"target_chat_id"`
+	RepoOwner               string `json:"repo_owner"`
+	RepoName                string `json:"repo_name"`
+	PRNumber                int32  `json:"pr_number"`
+	Trigger                 string `json:"trigger"`
+	State                   string `json:"state"`
+	AttemptCount            int32  `json:"attempt_count"`
+	LastEvent               string `json:"last_event"`
+	LastError               string `json:"last_error"`
+	TriggeredAt             string `json:"triggered_at"`
+	DeliveredAt             string `json:"delivered_at"`
+	ExpiresAt               string `json:"expires_at"`
+	CreatedAt               string `json:"created_at"`
+	UpdatedAt               string `json:"updated_at"`
+	ShouldRequireTransition bool   `json:"should_require_transition"`
+	HasObservedBaseline     bool   `json:"has_observed_baseline"`
 }
 
 // githubCallbackToJSON maps a proto GithubCallback to the stable JSON schema.
 // It never copies the message body (a secret) into the output.
 func githubCallbackToJSON(cb *pb.GithubCallback) githubCallbackJSON {
 	return githubCallbackJSON{
-		ID:           cb.GetId(),
-		GroupID:      cb.GetGroupId(),
-		TargetChatID: cb.GetTargetChatId(),
-		RepoOwner:    cb.GetRepoOwner(),
-		RepoName:     cb.GetRepoName(),
-		PRNumber:     cb.GetPrNumber(),
-		Trigger:      cb.GetTrigger(),
-		State:        cb.GetState(),
-		AttemptCount: cb.GetAttemptCount(),
-		LastEvent:    cb.GetLastEvent(),
-		LastError:    cb.GetLastError(),
-		TriggeredAt:  rfc3339OrEmpty(cb.GetTriggeredAt()),
-		DeliveredAt:  rfc3339OrEmpty(cb.GetDeliveredAt()),
-		ExpiresAt:    rfc3339OrEmpty(cb.GetExpiresAt()),
-		CreatedAt:    rfc3339OrEmpty(cb.GetCreatedAt()),
-		UpdatedAt:    rfc3339OrEmpty(cb.GetUpdatedAt()),
+		ID:                      cb.GetId(),
+		GroupID:                 cb.GetGroupId(),
+		TargetChatID:            cb.GetTargetChatId(),
+		RepoOwner:               cb.GetRepoOwner(),
+		RepoName:                cb.GetRepoName(),
+		PRNumber:                cb.GetPrNumber(),
+		Trigger:                 cb.GetTrigger(),
+		State:                   cb.GetState(),
+		AttemptCount:            cb.GetAttemptCount(),
+		LastEvent:               cb.GetLastEvent(),
+		LastError:               cb.GetLastError(),
+		TriggeredAt:             rfc3339OrEmpty(cb.GetTriggeredAt()),
+		DeliveredAt:             rfc3339OrEmpty(cb.GetDeliveredAt()),
+		ExpiresAt:               rfc3339OrEmpty(cb.GetExpiresAt()),
+		CreatedAt:               rfc3339OrEmpty(cb.GetCreatedAt()),
+		UpdatedAt:               rfc3339OrEmpty(cb.GetUpdatedAt()),
+		ShouldRequireTransition: cb.GetShouldRequireTransition(),
+		HasObservedBaseline:     cb.GetHasObservedBaseline(),
 	}
 }
 
@@ -166,6 +171,9 @@ func runCallbackAdd(cmd *cobra.Command, prRef, triggerArg string) error {
 		g := strings.TrimSpace(group)
 		req.GroupId = &g
 	}
+	if onTransition, _ := cmd.Flags().GetBool("on-transition"); onTransition {
+		req.ShouldRequireTransition = &onTransition
+	}
 
 	cb, err := c.CreateGithubCallback(cmd.Context(), req)
 	if err != nil {
@@ -187,7 +195,10 @@ func runCallbackList(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	return runCallbackListWithClient(cmd, c)
+}
 
+func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 	req := &pb.ListGithubCallbacksRequest{}
 	// --chat filters by target chat; unset means "all chats" for a remote fan-out
 	// or every callback on the local daemon.
@@ -222,6 +233,21 @@ func runCallbackList(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("list github callbacks: %w", err)
 	}
+	if cmd.Flags().Changed("id") {
+		id, _ := cmd.Flags().GetString("id")
+		id = strings.TrimSpace(id)
+		filtered := callbacks[:0]
+		for _, cb := range callbacks {
+			if cb.GetId() == id {
+				filtered = append(filtered, cb)
+			}
+		}
+		callbacks = filtered
+		if len(callbacks) == 0 {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Callback %s not found.\n", id)
+			return fmt.Errorf("github callback %s not found", id)
+		}
+	}
 
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
 		out := make([]githubCallbackJSON, len(callbacks))
@@ -233,6 +259,7 @@ func runCallbackList(cmd *cobra.Command) error {
 
 	if len(callbacks) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No GitHub callbacks.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "0 callbacks (complete listing)")
 		return nil
 	}
 
@@ -265,6 +292,7 @@ func runCallbackList(cmd *cobra.Command) error {
 		table.WithFocused(false),
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%d callbacks (complete listing)\n", len(callbacks))
 	return nil
 }
 
@@ -304,17 +332,51 @@ func runCallbackRemove(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	// The remote proxy routes a delete to the owning daemon by target chat id;
-	// --chat supplies it when talking to bosso. Local deletes ignore it.
-	chat, _ := cmd.Flags().GetString("chat")
-	if strings.TrimSpace(chat) == "" {
-		chat = strings.TrimSpace(osGetenv("BOSS_AGENT_SESSION_ID"))
+	return runCallbackRemoveWithClient(cmd, c, id)
+}
+
+func runCallbackRemoveWithClient(cmd *cobra.Command, c client.BossClient, id string) error {
+	if ids := splitCallbackIDBlob(id); len(ids) > 1 {
+		return fmt.Errorf("callback id must be one id, got %d ids: %s", len(ids), strings.Join(ids, ", "))
 	}
-	if err := c.DeleteGithubCallback(cmd.Context(), chat, id); err != nil {
+	chat, err := resolveCallbackChat(cmd)
+	if err != nil {
+		return err
+	}
+	resp, err := c.DeleteGithubCallback(cmd.Context(), chat, strings.TrimSpace(id))
+	if err != nil {
+		switch connect.CodeOf(err) {
+		case connect.CodeNotFound:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Callback %s not found.\n", strings.TrimSpace(id))
+		case connect.CodePermissionDenied:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Callback %s not owned by %s.\n", strings.TrimSpace(id), chat)
+		default:
+		}
 		return fmt.Errorf("remove github callback: %w", err)
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed callback %s\n", id)
+	outcome := resp.GetOutcome()
+	if outcome == "" {
+		outcome = "deleted"
+	}
+	switch outcome {
+	case "deleted":
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed callback %s.\n", strings.TrimSpace(id))
+	case "not_found":
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Callback %s not found.\n", strings.TrimSpace(id))
+		return fmt.Errorf("github callback %s not found", strings.TrimSpace(id))
+	case "not_owned":
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Callback %s not owned by %s.\n", strings.TrimSpace(id), chat)
+		return fmt.Errorf("github callback %s not owned by %s", strings.TrimSpace(id), chat)
+	default:
+		return fmt.Errorf("remove github callback: unknown outcome %q", outcome)
+	}
 	return nil
+}
+
+func splitCallbackIDBlob(id string) []string {
+	return strings.FieldsFunc(strings.TrimSpace(id), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
 }
 
 // triggerLabels maps each known trigger constant to its short natural-language
@@ -371,6 +433,7 @@ func callbackCmd() *cobra.Command {
 	add.Flags().String("message", "", "Prompt delivered to the chat when the callback fires (required)")
 	add.Flags().String("expires-in", "", "Expiry as a duration (e.g. 30m, 24h, 7d, 2w); default 24h, max 30d")
 	add.Flags().String("group", "", "Optional group id; siblings in a group cancel each other on first fire")
+	add.Flags().Bool("on-transition", false, "Fire only after the trigger transitions from unsatisfied to satisfied")
 	add.Flags().Bool("json", false, "Emit the created callback as a stable JSON schema")
 
 	list := &cobra.Command{
@@ -385,6 +448,7 @@ func callbackCmd() *cobra.Command {
 	list.Flags().String("repo", "", "Filter by repository as owner/repo")
 	list.Flags().String("trigger", "", "Filter by trigger ("+strings.Join(githubcallback.ValidTriggerStrings(), ", ")+")")
 	list.Flags().String("state", "", "Filter by state (active, leased, triggered, delivered, canceled, expired)")
+	list.Flags().String("id", "", "Filter by callback id")
 	list.Flags().Bool("json", false, "Emit a stable JSON schema instead of a table")
 
 	remove := &cobra.Command{

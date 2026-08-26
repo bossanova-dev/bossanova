@@ -400,11 +400,25 @@ export function checkDocMakeTargets(repoRoot = process.cwd()) {
   ]
 
   const documented = []
+  const seenDocRealpaths = new Set()
   for (const docPath of docPaths) {
-    if (!fs.existsSync(docPath)) continue
+    if (!fs.existsSync(docPath)) {
+      console.error(
+        `${path.relative(repoRoot, docPath).split(path.sep).join('/')} is listed for make-target validation but does not exist; a documented surface that moved must fail closed instead of being skipped.`,
+      )
+      return false
+    }
+    // This gate validates the make commands documented in prose. For a tracked doc symlink such as
+    // AGENTS.md -> CLAUDE.md, the subject is the target document's prose rather than the link blob
+    // text Git stores; realpath dedupes that shared prose so it is scanned deliberately once.
+    const realDocPath = fs.realpathSync(docPath)
+    if (seenDocRealpaths.has(realDocPath)) continue
+    seenDocRealpaths.add(realDocPath)
     // Always POSIX-separated, so the printed location is stable across hosts.
     const doc = path.relative(repoRoot, docPath).split(path.sep).join('/')
-    for (const invocation of extractDocumentedMakeInvocations(fs.readFileSync(docPath, 'utf8'))) {
+    for (const invocation of extractDocumentedMakeInvocations(
+      fs.readFileSync(realDocPath, 'utf8'),
+    )) {
       documented.push({ ...invocation, doc })
     }
   }

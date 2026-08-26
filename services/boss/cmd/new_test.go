@@ -10,21 +10,25 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// TestNewDetachRequestSetsModel pins the BOS-179 `boss new --model` wiring: a
-// non-empty model flows into CreateSessionRequest.model, an empty one leaves it
-// unset (agent default), and the scripting path always requests a headless run.
+// TestNewDetachRequestSetsRuntimeOverrides pins the `boss new` request override
+// wiring: non-empty model/effort flow into the CreateSessionRequest, empty ones
+// stay unset (agent default), and the scripting path always requests a headless
+// run.
 func strptr(s string) *string { return &s }
 
-func TestNewDetachRequestSetsModel(t *testing.T) {
+func TestNewDetachRequestSetsRuntimeOverrides(t *testing.T) {
 	req := newDetachRequest(newSessionOpts{
 		RepoID: "repo-1", Prompt: "do work", Title: "T",
-		AgentName: "claude", Model: "claude-opus-4-8", Account: strptr("acct-1"),
+		AgentName: "claude", Model: "claude-opus-4-8", Effort: "high", Account: strptr("acct-1"),
 	})
 	if !req.GetDetach() {
 		t.Fatalf("detach = false, want true for the scripting path")
 	}
 	if req.GetModel() != "claude-opus-4-8" {
 		t.Fatalf("model = %q, want claude-opus-4-8", req.GetModel())
+	}
+	if req.GetEffort() != "high" {
+		t.Fatalf("effort = %q, want high", req.GetEffort())
 	}
 	if req.GetAgentName() != "claude" {
 		t.Fatalf("agent = %q, want claude", req.GetAgentName())
@@ -36,6 +40,9 @@ func TestNewDetachRequestSetsModel(t *testing.T) {
 	empty := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T"})
 	if empty.Model != nil {
 		t.Fatalf("model = %v, want nil (unset) when the flag is empty", empty.Model)
+	}
+	if empty.Effort != nil {
+		t.Fatalf("effort = %v, want nil (unset) when the flag is empty", empty.Effort)
 	}
 	if empty.AgentName != nil {
 		t.Fatalf("agent = %v, want nil (unset) when the flag is empty", empty.AgentName)
@@ -124,6 +131,33 @@ func TestPrintSessionShowHeaderRendersAccountLine(t *testing.T) {
 	}
 }
 
+func TestPrintSessionShowHeaderRendersRecordedRuntime(t *testing.T) {
+	out := captureStdout(t, func() {
+		printSessionShowHeader(&pb.Session{
+			Id:              "sess-1234abcd",
+			AgentName:       "codex",
+			EffectiveModel:  "gpt-5-codex",
+			EffectiveEffort: "medium",
+		})
+	})
+	for _, want := range []string{
+		"Agent:    codex",
+		"Model:    gpt-5-codex",
+		"Effort:   medium",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show header missing %q; got:\n%s", want, out)
+		}
+	}
+
+	empty := captureStdout(t, func() {
+		printSessionShowHeader(&pb.Session{Id: "sess-1234abcd"})
+	})
+	if !strings.Contains(empty, "Model:    not recorded") || !strings.Contains(empty, "Effort:   not recorded") {
+		t.Fatalf("show header should label absent runtime fields; got:\n%s", empty)
+	}
+}
+
 // TestNewCmdRegistersModelFlag guards the flag surface so `boss new --model`
 // stays wired.
 func TestNewCmdRegistersModelFlag(t *testing.T) {
@@ -134,6 +168,17 @@ func TestNewCmdRegistersModelFlag(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Fatalf("--model default = %q, want empty", f.DefValue)
+	}
+}
+
+func TestNewCmdRegistersEffortFlag(t *testing.T) {
+	cmd := newCmd()
+	f := cmd.Flags().Lookup("effort")
+	if f == nil {
+		t.Fatal("`boss new` is missing the --effort flag")
+	}
+	if f.DefValue != "" {
+		t.Fatalf("--effort default = %q, want empty", f.DefValue)
 	}
 }
 

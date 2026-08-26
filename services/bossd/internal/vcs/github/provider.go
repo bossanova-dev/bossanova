@@ -451,20 +451,20 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 		status, conclusion, recognized := parseCheckState(r.State)
 		if !recognized {
 			// An unrecognized state means GitHub introduced (or we missed)
-			// a value we don't enumerate. parseCheckState fails safe by
-			// treating it as a Failure so the repair plugin can still see
-			// the PR; surface the gap so we can add it to the switch.
+			// a value we don't enumerate. Surface the gap so we can add it
+			// to the switch; the aggregate verdict treats it as unknown.
 			p.logger.Warn().
 				Str("state", r.State).
 				Str("name", r.Name).
 				Str("workflow", r.Workflow).
-				Msg("unknown gh pr checks state; treating as failure")
+				Msg("unknown gh pr checks state; treating check as unclassified")
 		}
 		results[i] = vcs.CheckResult{
-			ID:         r.Workflow + "/" + r.Name,
-			Name:       r.Name,
-			Status:     status,
-			Conclusion: conclusion,
+			ID:           r.Workflow + "/" + r.Name,
+			Name:         r.Name,
+			Status:       status,
+			Unclassified: !recognized,
+			Conclusion:   conclusion,
 		}
 	}
 
@@ -1163,11 +1163,9 @@ func parsePRState(s string) vcs.PRState {
 // and conclusion into a single field: SUCCESS, FAILURE, PENDING,
 // STARTUP_FAILURE, CANCELLED, SKIPPED, ACTION_REQUIRED, ERROR, TIMED_OUT, etc.
 //
-// Unrecognized values are deliberately treated as Failure rather than Queued
-// so the repair plugin (which only fires on FAILING/CONFLICT/REJECTED) can
-// react. The recognized return lets the caller surface the unknown value
-// for follow-up. Treating an unknown as "queued" silently masks real
-// failures from auto-repair, which is the bug this case was added to fix.
+// Unrecognized values are deliberately surfaced as completed but unclassified:
+// they are neither green nor red, and the recognized return lets the caller
+// preserve that distinction for the aggregate verdict.
 func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion, bool) {
 	switch strings.ToUpper(s) {
 	case "SUCCESS":
@@ -1193,7 +1191,6 @@ func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion, bool) {
 	case "QUEUED", "PENDING", "WAITING":
 		return vcs.CheckStatusQueued, nil, true
 	default:
-		c := vcs.CheckConclusionFailure
-		return vcs.CheckStatusCompleted, &c, false
+		return vcs.CheckStatusCompleted, nil, false
 	}
 }

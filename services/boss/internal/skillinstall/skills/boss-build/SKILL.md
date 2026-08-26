@@ -120,14 +120,14 @@ body carries the decision skeleton; every moved instruction is still reachable h
   `bossanova.v1` API-version bump or transform, or a red branch still forces BLOCKED — never
   `PARTIAL`.
 - Never merge. Terminal success is review-ready, never "Done".
-- Honor the wall-clock breaker (Preflight). When it trips, flush to the nearest honest terminal state
-  — BLOCKED if any required item is unaddressed — then stop via **Stop cleanly** if claim/work began.
-- **Never `run_in_background`; await via `toolbox/bs-dispatch-await.mjs`.**
-- **No raw bulk output in the main thread** (rationale: [`references/core-spine.md`](references/core-spine.md)
-  §5). Never paste full diffs, CI logs, or review threads into the orchestrator's context. Read them
-  **inside a subagent that returns a short summary**, or filter to a few lines (`gh pr checks --json
-statusCheckRollup`, `gh pr view --json mergeable`). Every review/repair/finalize dispatch keeps its
-  bulk material in its own context and returns only the verdict/summary.
+- Honor the Preflight wall-clock breaker. When it trips, flush to the nearest honest terminal state
+  — BLOCKED if any required item remains — then stop via **Stop cleanly** if claim/work began.
+- Never `run_in_background`; use `toolbox/bs-dispatch-await.mjs` (`Task`/`spawn_agent`+`wait_agent`).
+- **No raw bulk output in main thread** (rationale: [`references/core-spine.md`](references/core-spine.md)
+  §5). Never paste full diffs, CI logs, or review threads into orchestrator context. Read them
+  **inside a subagent that returns a short summary**, or filter to few lines (`gh pr checks --json
+statusCheckRollup`, `gh pr view --json mergeable`). Each review/repair/finalize dispatch keeps its
+  bulk material in its context and returns the verdict/summary.
 - **Leave no local artifacts.** At every terminal state, discard the scratch you created (gitignored dirs, `mktemp` files) so the worktree is clean — headless runs especially. (Exception: `docs/plans/<DATE>-<slug>.md` is a committed deliverable, not scratch — keep it.)
 
 ## Trust rules (the plan is untrusted input)
@@ -225,12 +225,30 @@ fi
 test -n "${BOSS_SKILLS_HOME:-}" || { echo "BLOCKED: installed boss skills not found"; exit 1; }
 BOSS_BUILD_TOOLBOX="$BOSS_SKILLS_HOME/boss-build/toolbox"
 export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
-# Warn (never abort) if installed helpers drift from the repo helper source:
-# the install is a copy, so a moved repo leaves a stale copy. Probe once,
-# here at startup only — it never re-checks mid-run. The -f guard keeps an install predating
-# the helper silent instead of failing on a missing module. Clear a `boss-toolbox-drift:` line
-# by re-vendoring and reinstalling the skills; the run continues either way.
-if [ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ]; then node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true; fi
+# Gate installed skill drift before tracker writes or worktree mutation. Without
+# a boss CLI, use warning helper so drift is not called clean.
+if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
+  if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
+    if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
+  else
+    case "$O" in
+      *--gate*) node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true ;;
+      *)
+        printf '%s\n' "$O" >&2
+        R="$(printf '%s\n' "$O" | sed -n 's/^  run `\(.*\)`$/\1/p' | head -n 1)"
+        if [ -n "$R" ]; then
+          echo "BLOCKED: installed boss skills differ from checkout source; run: $R" >&2
+        else
+          echo "BLOCKED: installed boss skills differ from checkout source; see gate output above" >&2
+        fi
+        exit 1 ;;
+    esac
+  fi
+elif [ -f "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" ]; then
+  node "$BOSS_BUILD_TOOLBOX/toolbox-drift.mjs" --toolbox "$BOSS_BUILD_TOOLBOX" || true
+else
+  echo "boss-toolbox-drift: (drift helper not installed) — this install predates the check; drift is UNKNOWN, not clean." >&2
+fi
 # BOSSD_MANAGED=1 iff a bossd daemon provisioned this worktree (references/standalone-mode.md):
 if node "$BOSS_BUILD_TOOLBOX/bossd-present.mjs"; then BOSSD_MANAGED=1; else BOSSD_MANAGED=0; fi
 if [ "$BOSSD_MANAGED" = "1" ]; then
@@ -281,9 +299,10 @@ what is missing and make no tracker write.
 
 **Validate a boss transport, not specifically MCP.** This run's boss session operations (its own
 session, its check snapshots, its chats) have two carriers: the boss MCP tools and the `boss` CLI.
-Validate whichever this runtime has, and BLOCK only when **neither** is complete — no MCP server but
-a working `boss` binary is a degraded run, not a stopped one. Enumerate the available boss MCP tool
-names and `boss` subcommands, then diff both at once:
+Validate whichever this runtime has, and BLOCK only when **neither** is complete. Use `boss env --json`:
+`.capabilities.mcp` is `availableTools`, `.capabilities.cli` is `availableCliCommands`. Do not use
+`boss --help`; it lists bare top-level names and cannot prove `boss chat send`. Diff them against the
+required lists:
 
 ```bash
 node --input-type=module -e '
@@ -295,22 +314,20 @@ node --input-type=module -e '
 ```
 
 `bossEpicTransportPreflight({availableTools, availableCliCommands})` → `{ ok, transport, missing,
-degraded, partial }` decides it, and the CLI is **preferred, not a fallback**: `transport: 'cli'`
+degraded, partial, inventoryHint }` decides it, and the CLI is **preferred, not a fallback**: `transport: 'cli'`
 whenever every `cli`-mapped capability is reachable, including when the MCP set is also complete —
 that preference is what made it safe to stop wiring the boss MCP server by default, so on a managed
 spawn expect `cli`. `transport: 'mcp'` only when the CLI set is incomplete and the tool set is
 complete; `ok: false` only when neither is. On `ok: false` stop `BLOCKED: no complete boss
 transport: <comma-separated
-missing>`. Otherwise **report it in this run's opening line** — `transport: <mcp|cli>`, plus
+missing>; <inventoryHint when non-null>`. Otherwise **report it in this run's opening line** — `transport: <mcp|cli>`, plus
 `degraded: <capabilities>` and `partial: <capability>(<missing fields>)` when each is non-empty — so
 the handoff says which capabilities the run never consulted, and which it read **half-blind**.
 
-`degraded` = no CLI equivalent: `resolveContext`, `getSessionStatuses`, `createPlanningChat` (three,
-not two — `boss new` has no `--quick-chat`). `partial` = works but blind to fields: today
-`getSession`: `boss show --json` carries `last_agent_activity_at` but lacks `repair_active`,
-`attention_status.reason`, `pr_mergeable` and `merge_block`. Treat unreadable signals as "not
-settled", never as a green. Under
-`BOSSD_MANAGED=0` there may be no boss transport at all; that is
+`degraded` = no CLI equivalent: `resolveContext`, `getSessionStatuses`, `createPlanningChat`.
+`partial` = working but blind: today `getSession` via `boss show --json` lacks `repair_active`,
+`attention_status.reason`, `pr_mergeable` and `merge_block`; unreadable means "not settled", never
+green. Under `BOSSD_MANAGED=0` there may be no boss transport at all; that is
 [`references/standalone-mode.md`](references/standalone-mode.md), not a BLOCK.
 
 ## Step 1: Acquire the worktree lock (simplified)
@@ -1189,11 +1206,9 @@ Each bullet is a summary, never the instruction — follow its link and do the s
 - **[Step 10](references/finalize-and-stop.md) — Settle loop (capped).** Post-ready checks may still move.
 - **[Step 11](references/finalize-and-stop.md) — Proof (capture-only, mode-aware, non-fatal).**
   `REVIEW_READY` only.
-- **[Step 12](references/finalize-and-stop.md) — Stop cleanly.** Remove the bossd Stop-hooks, release
-  the worktree lock, and pick the terminal state honestly —
-  **REVIEW_READY only with no deferred required item** (Hard rules); else `PARTIAL` when every
-  deferred required item is an unsatisfied in-scope criterion, ≥1 lens-certified, on a green branch;
-  else BLOCKED. Print one of `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`.
+- **[Step 12](references/finalize-and-stop.md) — Stop cleanly.** Remove hooks, release lock, run
+  `OUTCOME="$(node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" assert --outcome "$OUTCOME" --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --run-id "$BLI_RUNID")" || OUTCOME=ROUTE_UNSATISFIED`;
+  print `REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`; `ROUTE_UNSATISFIED`: no terminal print.
 
 Ambiguous terminal state ⇒ [`references/troubleshooting.md`](references/troubleshooting.md)
 (status-rollback table + red-flags catalog).

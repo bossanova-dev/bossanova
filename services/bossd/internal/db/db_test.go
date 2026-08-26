@@ -404,6 +404,9 @@ func TestSessionStore_CRUD(t *testing.T) {
 	if !sess.IsAutomationEnabled {
 		t.Error("automation_enabled should default to true")
 	}
+	if sess.EffectiveModel != "" || sess.EffectiveEffort != "" {
+		t.Errorf("default effective runtime = model %q effort %q, want empty strings", sess.EffectiveModel, sess.EffectiveEffort)
+	}
 
 	// Get
 	got, err := store.Get(ctx, sess.ID)
@@ -412,6 +415,9 @@ func TestSessionStore_CRUD(t *testing.T) {
 	}
 	if got.Title != "Add login page" {
 		t.Errorf("title = %q, want %q", got.Title, "Add login page")
+	}
+	if got.EffectiveModel != "" || got.EffectiveEffort != "" {
+		t.Errorf("stored default effective runtime = model %q effort %q, want empty strings", got.EffectiveModel, got.EffectiveEffort)
 	}
 
 	// Update
@@ -442,6 +448,48 @@ func TestSessionStore_CRUD(t *testing.T) {
 	_, err = store.Get(ctx, sess.ID)
 	if err != sql.ErrNoRows {
 		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestSessionStore_EffectiveRuntimeRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:          repo.ID,
+		Title:           "runtime settings",
+		WorktreePath:    "/tmp/worktrees/runtime-settings",
+		BranchName:      "feat/runtime-settings",
+		BaseBranch:      "main",
+		Model:           "requested-model",
+		EffectiveModel:  "configured-model",
+		EffectiveEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.Model != "requested-model" || sess.EffectiveModel != "configured-model" || sess.EffectiveEffort != "high" {
+		t.Fatalf("created runtime fields = model=%q effective_model=%q effective_effort=%q", sess.Model, sess.EffectiveModel, sess.EffectiveEffort)
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Model != "requested-model" || got.EffectiveModel != "configured-model" || got.EffectiveEffort != "high" {
+		t.Fatalf("stored runtime fields = model=%q effective_model=%q effective_effort=%q", got.Model, got.EffectiveModel, got.EffectiveEffort)
+	}
+
+	listed, err := store.List(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 || listed[0].EffectiveModel != "configured-model" || listed[0].EffectiveEffort != "high" {
+		t.Fatalf("listed runtime fields = %+v", listed)
 	}
 }
 

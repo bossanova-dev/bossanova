@@ -107,10 +107,10 @@ func TestParseCheckState(t *testing.T) {
 		{"QUEUED", vcs.CheckStatusQueued, nil, true},
 		{"PENDING", vcs.CheckStatusQueued, nil, true},
 		{"WAITING", vcs.CheckStatusQueued, nil, true},
-		// Unknown values fail safe to Failure (recognized=false) so a new
-		// gh state we forgot to enumerate doesn't silently mask repairs.
-		{"unknown", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), false},
-		{"", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), false},
+		// Unknown values are completed but unclassified so the aggregate
+		// verdict treats them as unknown, never as green or phantom-red.
+		{"unknown", vcs.CheckStatusCompleted, nil, false},
+		{"", vcs.CheckStatusCompleted, nil, false},
 	}
 
 	for _, tt := range tests {
@@ -1870,6 +1870,35 @@ func TestListOpenPRs_EmptyPayloadYieldsNoPRs(t *testing.T) {
 	}
 	if len(prs) != 0 {
 		t.Errorf("got %d PRs, want 0", len(prs))
+	}
+}
+
+func TestGetCheckResults_UnrecognizedStateIsUnclassified(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return `[{"name":"build","state":"BOUNCED","workflow":"ci"}]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetCheckResults: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d check results, want 1", len(results))
+	}
+	got := results[0]
+	if !got.Unclassified {
+		t.Fatal("Unclassified = false, want true")
+	}
+	if got.Status != vcs.CheckStatusCompleted {
+		t.Errorf("Status = %v, want completed", got.Status)
+	}
+	if got.Conclusion != nil {
+		t.Errorf("Conclusion = %v, want nil", *got.Conclusion)
+	}
+	if verdict := vcs.EvaluateChecks("sha", results, nil); verdict.State != vcs.CheckVerdictUnknown || verdict.Reason != vcs.CheckVerdictReasonUnclassified {
+		t.Fatalf("verdict = %s/%s, want Unknown/unclassified", verdict.State, verdict.Reason)
 	}
 }
 

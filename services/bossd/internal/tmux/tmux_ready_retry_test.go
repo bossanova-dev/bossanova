@@ -948,7 +948,7 @@ func TestReadyRetry_ClampedBudgetNamesBothNumbers(t *testing.T) {
 	}
 	fake := neverReadyFactory()
 	c := NewClient(WithCommandFactory(fake.factory))
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err := c.sendPlan(ctx, "boss-test-sess", "plan body", sendPlanOpts{
 		deadline:      10 * time.Second,

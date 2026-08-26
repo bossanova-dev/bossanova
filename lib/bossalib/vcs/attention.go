@@ -45,6 +45,10 @@ type AttentionStatus struct {
 // ComputeAttentionStatus determines whether a session needs human attention
 // based on session state and repo automation flags.
 func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionStatus {
+	stateSince := sess.UpdatedAt
+	if sess.StateEnteredAt != nil {
+		stateSince = *sess.StateEnteredAt
+	}
 	switch sess.State {
 	case machine.Blocked:
 		summary := "blocked — needs human intervention"
@@ -55,7 +59,7 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 			NeedsAttention: true,
 			Reason:         AttentionReasonBlockedMaxAttempts,
 			Summary:        summary,
-			Since:          sess.UpdatedAt,
+			Since:          stateSince,
 		}
 
 	case machine.Orphaned:
@@ -70,7 +74,7 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 			NeedsAttention: true,
 			Reason:         AttentionReasonAwaitingHumanInput,
 			Summary:        summary,
-			Since:          sess.UpdatedAt,
+			Since:          stateSince,
 		}
 
 	case machine.GreenDraft, machine.ReadyForReview:
@@ -82,7 +86,7 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 				NeedsAttention: true,
 				Reason:         AttentionReasonMergeConflictUnresolvable,
 				Summary:        "automatic repair disabled, needs human",
-				Since:          sess.UpdatedAt,
+				Since:          stateSince,
 			}
 		}
 

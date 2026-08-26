@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   writeFileSync,
+  chmodSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -26,6 +27,9 @@ import {
   skillForLens,
   reviewDefaultRounds,
   reviewDeltaDefaults,
+  reviewMaxDispatchedRoundDefault,
+  REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS,
+  reviewLedgerConfig,
   command,
   moduleTestCommand,
   manifestPath,
@@ -49,6 +53,8 @@ import {
   parseAcceptanceCriteria,
   parsePremises,
   validateVerifyOnlyEvidence,
+  classifyCheckCommand,
+  tokenizeSimpleShell,
   VERIFY_ONLY_MARKER,
   VERIFY_ONLY_CHECK,
   VERIFY_ONLY_CHECKED,
@@ -222,6 +228,42 @@ test('validateConfig rejects an unknown plan storage kind', () => {
   )
 })
 
+test('reviewLedgerConfig reads the durable review ledger directory', () => {
+  assert.deepEqual(reviewLedgerConfig(DEFAULT_CONFIG), { dir: '.git/boss-review-ledgers' })
+  assert.deepEqual(reviewLedgerConfig({ reviewLedger: { dir: 'custom/ledgers' } }), {
+    dir: 'custom/ledgers',
+  })
+  validateConfig(DEFAULT_CONFIG, 'test')
+})
+
+test('validateConfig rejects malformed reviewLedger configuration', () => {
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: [] }, 'test'),
+    /skill-config:.*reviewLedger must be an object/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '' } }, 'test'),
+    /skill-config:.*reviewLedger\.dir must be a non-empty string/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '/tmp/ledgers' } }, 'test'),
+    /skill-config:.*reviewLedger\.dir must be repo-relative/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '..\\shared' } }, 'test'),
+    /skill-config:.*reviewLedger\.dir must use POSIX separators/,
+  )
+  assert.throws(
+    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '../shared' } }, 'test'),
+    /skill-config:.*reviewLedger\.dir must stay within the repository/,
+  )
+  assert.throws(
+    () =>
+      validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: 'custom/../../shared' } }, 'test'),
+    /skill-config:.*reviewLedger\.dir must stay within the repository/,
+  )
+})
+
 test('mergeConfig replaces arrays and shallow-merges objects', () => {
   const merged = mergeConfig(
     { lensMap: [{ id: 'go' }], adapters: { tracker: 'linear', publish: 'proof' } },
@@ -338,6 +380,8 @@ test('DEFAULT_CONFIG documents review delta defaults and reviewDeltaDefaults rea
     deltaFileThreshold: 20,
     forceFull: false,
   })
+  assert.equal(REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS, 6)
+  assert.equal(reviewMaxDispatchedRoundDefault(DEFAULT_CONFIG), 6)
   validateConfig(DEFAULT_CONFIG, 'test')
 })
 
@@ -359,6 +403,8 @@ test('reviewDeltaDefaults returns documented fallbacks for a config carrying no 
     deltaFileThreshold: 20,
     forceFull: false,
   })
+  assert.equal(reviewMaxDispatchedRoundDefault({}), 6)
+  assert.equal(reviewMaxDispatchedRoundDefault(undefined), 6)
 })
 
 test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
@@ -375,6 +421,7 @@ test('mergeConfig preserves reviewDefaults delta keys beside a rounds override',
     reviewDefaults: {
       rounds: [{ capability: 'second-voice', kind: 'cross-agent' }],
       deltaFileThreshold: 7,
+      maxDispatchedRounds: 4,
       forceFull: true,
     },
   })
@@ -382,6 +429,7 @@ test('mergeConfig preserves reviewDefaults delta keys beside a rounds override',
     deltaFileThreshold: 7,
     forceFull: true,
   })
+  assert.equal(reviewMaxDispatchedRoundDefault(merged), 4)
 })
 
 test('validateConfig rejects a non-array reviewDefaults.rounds', () => {
@@ -406,6 +454,30 @@ test('validateConfig warns and coerces malformed reviewDefaults delta settings',
     assert.equal(cfg.reviewDefaults.forceFull, false)
     assert.match(warnings.join('\n'), /reviewDefaults\.deltaFileThreshold/)
   }
+})
+
+test('validateConfig warns and coerces malformed reviewDefaults maxDispatchedRounds settings', () => {
+  for (const maxDispatchedRounds of [undefined, null, '4', 1.5, -1, 0, 7]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { maxDispatchedRounds } })
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig(cfg, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.equal(cfg.reviewDefaults.maxDispatchedRounds, 6)
+    assert.equal(reviewMaxDispatchedRoundDefault(cfg), 6)
+    assert.match(warnings.join('\n'), /reviewDefaults\.maxDispatchedRounds/)
+    assert.match(warnings.join('\n'), /using 6/)
+  }
+})
+
+test('validateConfig accepts a lower reviewDefaults maxDispatchedRounds value', () => {
+  const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { maxDispatchedRounds: 3 } })
+  validateConfig(cfg, 'test')
+  assert.equal(reviewMaxDispatchedRoundDefault(cfg), 3)
 })
 
 test('validateConfig accepts only boolean true for reviewDefaults.forceFull', () => {
@@ -1993,6 +2065,14 @@ const planBody = (criteria) =>
     })
     .join('\n\n')
 
+const publicCriterion = ({ text, checked, verifyOnly, check, result }) => ({
+  text,
+  checked,
+  verifyOnly,
+  check,
+  result,
+})
+
 test('the marker/clause literals are the exact bytes the plan and PR forms are written in', () => {
   // Producer prose, consumer prose and this parser must read ONE definition — a hand-typed copy in
   // three places is how the contract drifts. `plan-contract.test.mjs` asserts the prose carries
@@ -2014,7 +2094,7 @@ test('parseAcceptanceCriteria reads box state, marker, clause and wrapped lines'
       // A criterion whose clause lands on a CONTINUATION line — the common plan shape, and the one
       // a line-at-a-time parser silently drops.
       `- [x] ${VERIFY_ONLY_MARKER} no other call site needs the new argument`,
-      `      ${VERIFY_ONLY_CHECKED.trimStart()}\`rg -n oldName\`${VERIFY_ONLY_RESULT}no matches outside tests`,
+      `      ${VERIFY_ONLY_CHECKED.trimStart()}\`node --test skills-toolbox/skill-config.test.mjs\`${VERIFY_ONLY_RESULT}no matches outside tests`,
       // The marker classifies only as a PREFIX. A criterion that merely mentions the token in
       // prose is an ordinary diff-demonstrated criterion, and classifying it verify-only would
       // hand it the evidence route instead of requiring the change it actually asks for.
@@ -2025,7 +2105,7 @@ test('parseAcceptanceCriteria reads box state, marker, clause and wrapped lines'
   assert.equal(criteria.length, 4)
   assert.equal(criteria[3].verifyOnly, false, 'the marker classifies as a prefix, not a substring')
 
-  assert.deepEqual(criteria[0], {
+  assert.deepEqual(publicCriterion(criteria[0]), {
     text: 'plain criterion the diff satisfies',
     checked: true,
     verifyOnly: false,
@@ -2040,7 +2120,7 @@ test('parseAcceptanceCriteria reads box state, marker, clause and wrapped lines'
 
   assert.equal(criteria[2].verifyOnly, true)
   assert.equal(criteria[2].checked, true)
-  assert.equal(criteria[2].check, 'rg -n oldName')
+  assert.equal(criteria[2].check, 'node --test skills-toolbox/skill-config.test.mjs')
   assert.equal(criteria[2].result, 'no matches outside tests')
 })
 
@@ -2076,6 +2156,8 @@ test('falsification 1: a ticked verify-only criterion with NO evidence clause fa
     [`${VERIFY_ONLY_MARKER} the mirror still agrees`],
   )
   assert.equal(result.verifyOnly.length, 1)
+  assert.equal(result.missingEvidence[0].reason, 'no-clause')
+  assert.match(result.missingEvidence[0].remedy, /checked/)
 })
 
 test('falsification 2a: a present-but-EMPTY command fails (present is not non-empty)', () => {
@@ -2089,6 +2171,7 @@ test('falsification 2a: a present-but-EMPTY command fails (present is not non-em
   assert.equal(result.missingEvidence.length, 1)
   assert.equal(result.missingEvidence[0].check, '')
   assert.equal(result.missingEvidence[0].result, 'identical')
+  assert.equal(result.missingEvidence[0].reason, 'empty-command')
 })
 
 test('falsification 2b: a present-but-EMPTY result fails', () => {
@@ -2102,6 +2185,7 @@ test('falsification 2b: a present-but-EMPTY result fails', () => {
   assert.equal(result.missingEvidence.length, 1)
   assert.equal(result.missingEvidence[0].check, 'make vendor-toolbox-check')
   assert.equal(result.missingEvidence[0].result, '')
+  assert.equal(result.missingEvidence[0].reason, 'empty-result')
 })
 
 test('falsification 3: an UNTICKED verify-only criterion is reported, never a failure', () => {
@@ -2132,12 +2216,12 @@ test('falsification 4: a pre-existing v1 description with no marker is unaffecte
 
 test('a fully discharged verify-only criterion passes, and a missing section is not a failure', () => {
   const body = planBody(
-    `- [x] ${VERIFY_ONLY_MARKER} no other call site needs the new argument${VERIFY_ONLY_CHECKED}\`rg -n oldName\`${VERIFY_ONLY_RESULT}0 hits outside tests`,
+    `- [x] ${VERIFY_ONLY_MARKER} no other call site needs the new argument${VERIFY_ONLY_CHECKED}\`node --test skills-toolbox/skill-config.test.mjs\`${VERIFY_ONLY_RESULT}0 hits outside tests`,
   )
   const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
   assert.equal(result.ok, true)
   assert.deepEqual(result.missingEvidence, [])
-  assert.equal(result.verifyOnly[0].check, 'rg -n oldName')
+  assert.equal(result.verifyOnly[0].check, 'node --test skills-toolbox/skill-config.test.mjs')
   assert.equal(result.verifyOnly[0].result, '0 hits outside tests')
   // A body with no `## Acceptance criteria` section at all returns data, never throws — the
   // "reject rather than degrade" habit applies to the CONFIG, not to a caller's arbitrary body.
@@ -2161,15 +2245,16 @@ test('falsification 5: an arrow INSIDE the command is not the result separator',
     assert.equal(result.ok, false, `${label}: a missing result clause must fail`)
     assert.equal(result.missingEvidence.length, 1, label)
     assert.equal(result.missingEvidence[0].result, null, `${label}: no result clause was written`)
+    assert.equal(result.missingEvidence[0].reason, 'empty-result', label)
   }
   // The command itself survives intact — the gate's whole product is a command a human can paste.
   assert.equal(parseAcceptanceCriteria(DEFAULT_CONFIG, bypass)[0].check, 'echo a→b')
   // And a genuine result after an arrow-bearing command still parses on both sides.
   const discharged = planBody(
-    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`rg "a→b" src/\`${VERIFY_ONLY_RESULT}0 hits`,
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`node -e "console.log('a→b')"\`${VERIFY_ONLY_RESULT}0 hits`,
   )
   const parsed = parseAcceptanceCriteria(DEFAULT_CONFIG, discharged)[0]
-  assert.equal(parsed.check, 'rg "a→b" src/')
+  assert.equal(parsed.check, `node -e "console.log('a→b')"`)
   assert.equal(parsed.result, '0 hits')
   assert.equal(validateVerifyOnlyEvidence(DEFAULT_CONFIG, discharged).ok, true)
 })
@@ -2189,6 +2274,7 @@ test('falsification 5b: an UNDELIMITED discharge command is refused, not guessed
     null,
     'an undecidable command is reported absent, never guessed at',
   )
+  assert.equal(result.missingEvidence[0].reason, 'undelimited-command')
   // Even with a real result written, the undelimited form is refused rather than half-parsed.
   const undelimited = planBody(
     `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}make check${VERIFY_ONLY_RESULT}identical`,
@@ -2255,6 +2341,173 @@ test('falsification 7: an emphasised marker is still a verify-only marker', () =
     )[0].verifyOnly,
     false,
   )
+})
+
+test('a mis-tensed discharged verify-only criterion reports a named reason and no garbled check', () => {
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECK}\`git diff -- a.md\`${VERIFY_ONLY_RESULT}empty`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, false)
+  assert.equal(result.missingEvidence.length, 1)
+  assert.equal(result.missingEvidence[0].reason, 'planned-tense-on-ticked')
+  assert.equal(result.missingEvidence[0].check, null)
+  assert.match(result.missingEvidence[0].remedy, /checked/)
+})
+
+test('a mid-line verify-only marker is surfaced without reclassifying the criterion', () => {
+  const body = planBody(
+    `- [x] document why ${VERIFY_ONLY_MARKER} exists${VERIFY_ONLY_CHECKED}\`true\`${VERIFY_ONLY_RESULT}ok`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.verifyOnly, [])
+  assert.equal(result.malformedMarker.length, 1)
+  assert.equal(result.malformedMarker[0].verifyOnly, false)
+})
+
+test('an unresolvable verify-only command blocks with command-unresolvable', () => {
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`this-command-does-not-exist-bos1015 --nope\`${VERIFY_ONLY_RESULT}exit 0`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, false)
+  assert.equal(result.missingEvidence.length, 1)
+  assert.equal(result.missingEvidence[0].reason, 'command-unresolvable')
+})
+
+test('classifyCheckCommand reports blocking and advisory shapes without executing commands', () => {
+  assert.deepEqual(classifyCheckCommand('this-command-does-not-exist-bos1015').blocking, [
+    {
+      code: 'command-unresolvable',
+      message:
+        'the command head resolves to no executable PATH binary or executable repo-relative script',
+    },
+  ])
+  assert.deepEqual(classifyCheckCommand('make test-scripts').blocking, [])
+  assert.equal(
+    classifyCheckCommand('make test', { env: { PATH: '' } }).blocking[0].code,
+    'command-unresolvable',
+  )
+  assert.equal(
+    classifyCheckCommand('test-scripts', { env: { PATH: '' } }).blocking[0].code,
+    'command-unresolvable',
+  )
+  assert.deepEqual(
+    classifyCheckCommand('node --test skills-toolbox/skill-config.test.mjs').blocking,
+    [],
+  )
+  assert.deepEqual(
+    classifyCheckCommand('NODE_OPTIONS=--test-reporter=tap make test-scripts').blocking,
+    [],
+  )
+  assert.deepEqual(classifyCheckCommand('env -u BOSS_NO_BAZEL make test').blocking, [])
+  assert.deepEqual(classifyCheckCommand('set -o pipefail; make test | tee out.log').blocking, [])
+  assert.equal(
+    classifyCheckCommand('true; this-command-does-not-exist-bos1015').blocking[0].code,
+    'command-unresolvable',
+  )
+  assert.equal(
+    classifyCheckCommand('make test | this-command-does-not-exist-bos1015').blocking[0].code,
+    'command-unresolvable',
+  )
+  assert.equal(
+    classifyCheckCommand('true && this-command-does-not-exist-bos1015').blocking[0].code,
+    'command-unresolvable',
+  )
+
+  const cases = [
+    ['git diff -- skills-toolbox/skill-config.mjs', 'working-tree-scoped-git-check'],
+    ['go test ./... -run TestNoMatch', 'zero-selection-filter'],
+    ['node --include=*.md', 'unquoted-option-glob'],
+    ['node --include *.md # pass 2', 'unquoted-option-glob'],
+    ['make test | tee out.log', 'pipe-without-pipefail'],
+    ['make test|tee out.log', 'pipe-without-pipefail'],
+    ['git grep -E "\\bneedle\\b"', 'git-grep-word-boundary'],
+    ['bazel test //services/boss/...', 'cached-bazel-test'],
+  ]
+  for (const [command, code] of cases) {
+    const result = classifyCheckCommand(command)
+    assert.equal(result.blocking.length, 0, command)
+    assert.ok(
+      result.advisory.some((finding) => finding.code === code),
+      `${command} should report ${code}`,
+    )
+  }
+  assert.deepEqual(
+    classifyCheckCommand('git diff HEAD -- skills-toolbox/skill-config.mjs').advisory,
+    [],
+  )
+  assert.deepEqual(classifyCheckCommand("node --include='*.md' # pass 2").advisory, [])
+  assert.deepEqual(classifyCheckCommand('node --include "*.md" # pass 2').advisory, [])
+})
+
+test('classifyCheckCommand requires executable files for PATH and repo-relative commands', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'boss-skill-config-command-'))
+  try {
+    const binDir = join(tmp, 'bin')
+    mkdirSync(binDir)
+    const nonExecutable = join(binDir, 'not-executable')
+    writeFileSync(nonExecutable, '#!/bin/sh\n')
+    assert.deepEqual(
+      classifyCheckCommand('not-executable --version', {
+        cwd: tmp,
+        env: { PATH: binDir },
+      }).blocking,
+      [
+        {
+          code: 'command-unresolvable',
+          message:
+            'the command head resolves to no executable PATH binary or executable repo-relative script',
+        },
+      ],
+    )
+
+    chmodSync(nonExecutable, 0o755)
+    assert.deepEqual(
+      classifyCheckCommand('not-executable --version', {
+        cwd: tmp,
+        env: { PATH: binDir },
+      }).blocking,
+      [],
+    )
+
+    const script = join(tmp, 'script.sh')
+    writeFileSync(script, '#!/bin/sh\n')
+    assert.equal(
+      classifyCheckCommand('./script.sh', { cwd: tmp, env: { PATH: '' } }).blocking[0].code,
+      'command-unresolvable',
+    )
+    chmodSync(script, 0o755)
+    assert.deepEqual(
+      classifyCheckCommand('./script.sh', { cwd: tmp, env: { PATH: '' } }).blocking,
+      [],
+    )
+    assert.deepEqual(
+      classifyCheckCommand('/bin/echo ok', { cwd: tmp, env: { PATH: '' } }).blocking,
+      [],
+    )
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('advisory verify-only command findings do not make evidence fail', () => {
+  const body = planBody(
+    `- [x] ${VERIFY_ONLY_MARKER} inv${VERIFY_ONLY_CHECKED}\`git diff -- skills-toolbox/skill-config.mjs\`${VERIFY_ONLY_RESULT}empty`,
+  )
+  const result = validateVerifyOnlyEvidence(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.missingEvidence, [])
+  assert.equal(result.advisory.length, 1)
+  assert.equal(result.advisory[0].code, 'working-tree-scoped-git-check')
+})
+
+test('classifyCheckCommand is a static classifier, not a process runner', async () => {
+  const source = await import('node:fs').then((fs) =>
+    fs.readFileSync(new URL('./skill-config.mjs', import.meta.url), 'utf8'),
+  )
+  assert.doesNotMatch(source, /node:child_process|execSync|spawn\(/)
 })
 
 test('both new exports reject a swapped (description, config) call by name', () => {

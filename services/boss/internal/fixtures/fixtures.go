@@ -1037,6 +1037,29 @@ func DemoWorld() World {
 		Chats:    Chats(),
 		CronJobs: CronJobs(),
 		Accounts: Accounts(),
+		Agents: []*pb.AgentInfo{
+			{
+				Name:    "claude",
+				Version: "1.0.0",
+				UserSettings: []*pb.UserSetting{
+					{
+						Key:          "model",
+						Label:        "Model",
+						Description:  "Fallback claude --model for runs without their own. Empty uses the claude CLI default.",
+						Type:         pb.UserSettingType_USER_SETTING_TYPE_STRING,
+						DefaultValue: "",
+					},
+					{
+						Key:           "effort",
+						Label:         "Reasoning effort",
+						Description:   "Fallback claude --effort for runs without their own. Defaults to high.",
+						Type:          pb.UserSettingType_USER_SETTING_TYPE_ENUM,
+						AllowedValues: []string{"", "low", "medium", "high", "xhigh", "max"},
+						DefaultValue:  "high",
+					},
+				},
+			},
+		},
 	}
 }
 

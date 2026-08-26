@@ -134,6 +134,105 @@ export function regionUntilNext(source, startMarker, endMarker, label = 'region'
 }
 
 /**
+ * Extract the Markdown section that starts at `heading`, fail-closed.
+ *
+ * The end bound is derived from the heading marker itself: a `###` section ends
+ * at the next `#`, `##`, or `###` heading, while deeper child headings stay in
+ * the returned region. End-of-source is a normal terminator. This bounds by
+ * heading level only; it does not prove that a clause inside the section says
+ * the right thing.
+ *
+ * @param {string} source Text to extract from.
+ * @param {string} heading Markdown heading line the section starts at.
+ * @param {string} [label] Name used to prefix thrown messages.
+ * @returns {string} The extracted section, including the heading line.
+ */
+export function sectionRegion(source, heading, label = 'section') {
+  const text = String(source)
+  const marker = String(heading)
+  const headingMatch = marker.match(/^(#{1,6})\s/)
+  if (!headingMatch) {
+    throw new Error(`${label}: section marker is not a Markdown heading: ${JSON.stringify(marker)}`)
+  }
+
+  let startIndex = -1
+  let scanLineStart = 0
+  let scanningFence = false
+  while (scanLineStart <= text.length) {
+    const nextLine = text.indexOf('\n', scanLineStart)
+    const lineEnd = nextLine === -1 ? text.length : nextLine
+    const line = text.slice(scanLineStart, lineEnd)
+    if (/^\s*(```|~~~)/.test(line)) {
+      scanningFence = !scanningFence
+    } else if (!scanningFence && isHeadingLineMatch(line, marker)) {
+      startIndex = scanLineStart
+      break
+    }
+    if (nextLine === -1) break
+    scanLineStart = nextLine + 1
+  }
+  if (startIndex === -1) {
+    throw new Error(`${label}: section heading not found: ${JSON.stringify(marker)}`)
+  }
+
+  const level = headingMatch[1].length
+  let endIndex = text.length
+  let lineStart = text.indexOf('\n', startIndex)
+  if (lineStart === -1) lineStart = text.length
+  else lineStart += 1
+
+  let inFence = false
+  while (lineStart < text.length) {
+    const nextLine = text.indexOf('\n', lineStart)
+    const lineEnd = nextLine === -1 ? text.length : nextLine
+    const line = text.slice(lineStart, lineEnd)
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence
+    } else if (!inFence) {
+      const lineHeading = line.match(/^(#{1,6})\s/)
+      if (lineHeading && lineHeading[1].length <= level) {
+        endIndex = lineStart
+        break
+      }
+    }
+    if (nextLine === -1) break
+    lineStart = nextLine + 1
+  }
+  const extracted = text.slice(startIndex, endIndex)
+  const body = extracted.slice(marker.length)
+  if (body.trim() === '') {
+    throw new Error(`${label}: section ${JSON.stringify(marker)} is empty or whitespace-only`)
+  }
+  return extracted
+}
+
+function isHeadingLineMatch(line, marker) {
+  if (!line.startsWith(marker)) return false
+  if (line.length === marker.length) return true
+  return /[\s'"`()[\]{}:.,;!?—-]/u.test(line[marker.length])
+}
+
+/**
+ * Return an in-memory mutation of `source`, fail-closed when the probe changes
+ * no bytes. This is for falsifying gates over exact-ratcheted artifacts without
+ * editing those artifacts on disk.
+ *
+ * @param {string} source Text to mutate.
+ * @param {string|RegExp} find String or regular expression to replace.
+ * @param {string} [replacement] Replacement text.
+ * @param {string} [label] Name used to prefix thrown messages.
+ * @returns {string} Mutated text.
+ */
+export function mutate(source, find, replacement = '', label = 'mutate') {
+  const text = String(source)
+  const mutated = text.replace(find, replacement)
+  if (mutated === text) {
+    throw new Error(`${label}: mutation did not match: ${String(find)}`)
+  }
+  return mutated
+}
+
+/**
  * True when `earlierMarker` occurs before `laterMarker` in `source`, fail-closed on absence.
  *
  * The shape this replaces is `source.indexOf(a) < source.indexOf(b)`. When `a` is absent

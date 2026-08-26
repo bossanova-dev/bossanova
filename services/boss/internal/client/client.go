@@ -148,7 +148,7 @@ type BossClient interface {
 	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
 	// DeleteGithubCallback removes a callback by id. Idempotent. targetChatID is
 	// the remote routing key (owning daemon); LocalClient ignores it.
-	DeleteGithubCallback(ctx context.Context, targetChatID, id string) error
+	DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error)
 
 	// Notes (BOS-553): repo-scoped free-text notes with optional session/chat
 	// provenance and tags. CreateNote and ListNotes carry repo_id inside their

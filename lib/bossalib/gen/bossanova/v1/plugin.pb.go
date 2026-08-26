@@ -3052,7 +3052,9 @@ type PreflightHeadlessRunRequest struct {
 	// repo's own MCP declaration while the run it gates does. Mirrors
 	// StartAgentRunRequest.work_dir; empty preserves the historical
 	// inherit-the-daemon-cwd behaviour for callers that do not set it.
-	WorkDir       string `protobuf:"bytes,4,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	WorkDir string `protobuf:"bytes,4,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	// Opaque agent reasoning-effort level; "" = plugin default.
+	Effort        string `protobuf:"bytes,5,opt,name=effort,proto3" json:"effort,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3111,6 +3113,13 @@ func (x *PreflightHeadlessRunRequest) GetHeadlessCapabilityProfile() HeadlessCap
 func (x *PreflightHeadlessRunRequest) GetWorkDir() string {
 	if x != nil {
 		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *PreflightHeadlessRunRequest) GetEffort() string {
+	if x != nil {
+		return x.Effort
 	}
 	return ""
 }
@@ -3184,8 +3193,10 @@ type StartAgentRunRequest struct {
 	// Explicit required runtime operation surface for a headless launch. The
 	// zero/default profile is legacy-compatible and performs no preflight.
 	HeadlessCapabilityProfile HeadlessCapabilityProfile `protobuf:"varint,8,opt,name=headless_capability_profile,json=headlessCapabilityProfile,proto3,enum=bossanova.v1.HeadlessCapabilityProfile" json:"headless_capability_profile,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// Opaque agent reasoning-effort level; "" = plugin default.
+	Effort        string `protobuf:"bytes,11,opt,name=effort,proto3" json:"effort,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartAgentRunRequest) Reset() {
@@ -3272,6 +3283,13 @@ func (x *StartAgentRunRequest) GetHeadlessCapabilityProfile() HeadlessCapability
 		return x.HeadlessCapabilityProfile
 	}
 	return HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
+}
+
+func (x *StartAgentRunRequest) GetEffort() string {
+	if x != nil {
+		return x.Effort
+	}
+	return ""
 }
 
 type StartAgentRunResponse struct {
@@ -3844,6 +3862,8 @@ type BuildInteractiveCommandRequest struct {
 	// use it when they must prepare configuration before the child process starts;
 	// it intentionally does not carry the session's secret-bearing environment.
 	ConfigHomeEnv map[string]string `protobuf:"bytes,13,rep,name=config_home_env,json=configHomeEnv,proto3" json:"config_home_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Opaque agent reasoning-effort level; "" = plugin default.
+	Effort        string `protobuf:"bytes,14,opt,name=effort,proto3" json:"effort,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3939,6 +3959,13 @@ func (x *BuildInteractiveCommandRequest) GetConfigHomeEnv() map[string]string {
 		return x.ConfigHomeEnv
 	}
 	return nil
+}
+
+func (x *BuildInteractiveCommandRequest) GetEffort() string {
+	if x != nil {
+		return x.Effort
+	}
+	return ""
 }
 
 type BuildInteractiveCommandResponse struct {
@@ -6239,18 +6266,19 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x1aNotifyStatusChangeResponse\"\"\n" +
 	" AgentRunnerServiceGetInfoRequest\"Q\n" +
 	"!AgentRunnerServiceGetInfoResponse\x12,\n" +
-	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\xca\x02\n" +
+	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\xe2\x02\n" +
 	"\x1bPreflightHeadlessRunRequest\x12\x14\n" +
 	"\x05model\x18\x01 \x01(\tR\x05model\x12T\n" +
 	"\textra_env\x18\x02 \x03(\v27.bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntryR\bextraEnv\x12g\n" +
 	"\x1bheadless_capability_profile\x18\x03 \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x12\x19\n" +
-	"\bwork_dir\x18\x04 \x01(\tR\aworkDir\x1a;\n" +
+	"\bwork_dir\x18\x04 \x01(\tR\aworkDir\x12\x16\n" +
+	"\x06effort\x18\x05 \x01(\tR\x06effort\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
 	"\x1cPreflightHeadlessRunResponse\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
-	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xfd\x03\n" +
+	"\bprovided\x18\x02 \x03(\tR\bprovided\"\x95\x04\n" +
 	"\x14StartAgentRunRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x12\n" +
 	"\x04plan\x18\x02 \x01(\tR\x04plan\x12 \n" +
@@ -6260,7 +6288,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\blog_path\x18\x05 \x01(\tR\alogPath\x12\x14\n" +
 	"\x05model\x18\x06 \x01(\tR\x05model\x12M\n" +
 	"\textra_env\x18\a \x03(\v20.bossanova.v1.StartAgentRunRequest.ExtraEnvEntryR\bextraEnv\x12g\n" +
-	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x1a;\n" +
+	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x12\x16\n" +
+	"\x06effort\x18\v \x01(\tR\x06effort\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n" +
@@ -6306,7 +6335,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xca\x04\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xe2\x04\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -6317,7 +6346,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\rworktree_path\x18\x06 \x01(\tR\fworktreePath\x120\n" +
 	"\x14append_system_prompt\x18\a \x01(\tR\x12appendSystemPrompt\x12\x14\n" +
 	"\x05model\x18\b \x01(\tR\x05model\x12g\n" +
-	"\x0fconfig_home_env\x18\r \x03(\v2?.bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntryR\rconfigHomeEnv\x1a@\n" +
+	"\x0fconfig_home_env\x18\r \x03(\v2?.bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntryR\rconfigHomeEnv\x12\x16\n" +
+	"\x06effort\x18\x0e \x01(\tR\x06effort\x1a@\n" +
 	"\x12ConfigHomeEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +

@@ -123,6 +123,13 @@ func SourceDrift(dir, srcRoot string) (bool, error) {
 	return NeedsUpdate(dir, os.DirFS(srcRoot))
 }
 
+// SourceDriftPaths reports the installed paths that differ from the canonical
+// skill sources at srcRoot, as slash-separated paths relative to the payload
+// root. It returns an empty slice when no skills are installed.
+func SourceDriftPaths(dir, srcRoot string) ([]string, error) {
+	return driftPaths(dir, os.DirFS(srcRoot))
+}
+
 // SourceManifest returns the canonical skill-source manifest at srcRoot.
 func SourceManifest(srcRoot string) (string, error) {
 	return Manifest(os.DirFS(srcRoot))
@@ -192,6 +199,48 @@ func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
 	return needsUpdate, err
 }
 
+func driftPaths(dir string, fsys fs.FS) ([]string, error) {
+	if _, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, statErr
+	}
+	for {
+		lock, locked, lockErr := acquireExistingUpdateLock(dir)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		if locked {
+			if !IsInstalled(dir) {
+				if unlockErr := lock.Unlock(); unlockErr != nil {
+					return nil, fmt.Errorf("release skill update lock: %w", unlockErr)
+				}
+				return nil, nil
+			}
+			paths, err := driftPathsLocked(dir, fsys)
+			if unlockErr := lock.Unlock(); err == nil && unlockErr != nil {
+				return nil, fmt.Errorf("release skill update lock: %w", unlockErr)
+			}
+			return paths, err
+		}
+
+		if !IsInstalled(dir) {
+			return nil, nil
+		}
+		paths, err := driftPathsLocked(dir, fsys)
+		if err != nil {
+			return nil, err
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, updateLockFile)); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("stat skill update lock: %w", statErr)
+		}
+		return paths, nil
+	}
+}
+
 func needsUpdateLocked(dir string, fsys fs.FS) (bool, error) {
 	files, err := embeddedFiles(fsys)
 	if err != nil {
@@ -216,6 +265,13 @@ func needsUpdateLocked(dir string, fsys fs.FS) (bool, error) {
 			return false, err
 		}
 		if !bytes.Equal(data, file.data) {
+			return true, nil
+		}
+		modeDrift, err := executableModeDrift(installedPath, file)
+		if err != nil {
+			return false, err
+		}
+		if modeDrift {
 			return true, nil
 		}
 	}
@@ -277,6 +333,116 @@ func needsUpdateLocked(dir string, fsys fs.FS) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func driftPathsLocked(dir string, fsys fs.FS) ([]string, error) {
+	files, err := embeddedFiles(fsys)
+	if err != nil {
+		return nil, err
+	}
+
+	drift := map[string]bool{}
+	expectedFiles := make(map[string][]byte, len(files))
+	expectedSkills := map[string]bool{}
+	for _, file := range files {
+		expectedFiles[file.rel] = file.data
+		skill := strings.Split(file.rel, "/")[0]
+		if isBossSkill(skill) {
+			expectedSkills[skill] = true
+		}
+
+		installedPath := filepath.Clean(filepath.Join(dir, Namespace, filepath.FromSlash(file.rel)))
+		data, err := os.ReadFile(installedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				drift[file.rel] = true
+				continue
+			}
+			return nil, err
+		}
+		if !bytes.Equal(data, file.data) {
+			drift[file.rel] = true
+			continue
+		}
+		modeDrift, err := executableModeDrift(installedPath, file)
+		if err != nil {
+			return nil, err
+		}
+		if modeDrift {
+			drift[file.rel] = true
+		}
+	}
+
+	nsDir := filepath.Join(dir, Namespace)
+	if err := filepath.WalkDir(nsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path == nsDir {
+				return nil
+			}
+			rel, err := filepath.Rel(nsDir, path)
+			if err != nil {
+				return err
+			}
+			if filepath.Dir(rel) == "." && isBossSkill(filepath.Base(rel)) && !expectedSkills[filepath.Base(rel)] {
+				drift[filepath.ToSlash(rel)+"/"] = true
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(nsDir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if _, ok := expectedFiles[rel]; !ok {
+			drift[rel] = true
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	for skill := range expectedSkills {
+		link := filepath.Join(dir, skill)
+		target, err := os.Readlink(link)
+		if err != nil || target != filepath.Join(Namespace, skill) {
+			drift[skill] = true
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			drift[Namespace+"/"] = true
+		} else {
+			return nil, err
+		}
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if isBossSkill(name) && !expectedSkills[name] {
+			drift[name] = true
+		}
+	}
+
+	paths := make([]string, 0, len(drift))
+	for path := range drift {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func executableModeDrift(path string, file embeddedFile) (bool, error) {
+	if !executableSkillFile("skills/"+file.rel) && !hasShebang(file.data) {
+		return false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().Perm()&0o111 == 0, nil
 }
 
 // EnsureUpdated refreshes installed boss skills only when the installed tree

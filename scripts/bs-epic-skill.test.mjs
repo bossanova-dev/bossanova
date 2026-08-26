@@ -208,9 +208,16 @@ test('size ratchet', () => {
   // teardown exception. Re-measured 2026-08-22.
   // BOS-752 banks 57368 → 57353 by replacing the stale per-child callback group contract with the
   // per-trigger watch contract; detailed mechanics remain in callback-watches.md.
-  const RATCHET = 57353
+  // BOS-1013 banks 57353 → 57204 while naming `boss env --json` as the transport inventory
+  // source; adjacent outcome prose was tightened so the resident body still shrinks.
+  // BOS-997 re-baselines 57204 → 59107 for the resident Phase 3b/3c liveness-routing
+  // rail: the body now calls `classifyChildLiveness`, enumerates WAITING/UNSPECIFIED,
+  // names the usage-limit resume lane, and forbids unknown/wall-clock repair. The
+  // expanded diagnosis stays in merge-recovery.md.
+  // BOS-1030 banks 59107 → 59038 while naming Codex's fresh awaited notes-extension dispatch pair.
+  const RATCHET = 59038
 
-  // Seven separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
+  // Eight separate gates in this file iterate EPIC_MIRRORS. A list that silently shortened
   // would leave every one of them asserting against a single mirror with nothing going red
   // to say the other stopped being checked — the vacuity assertArtifactSet exists for.
   assertArtifactSet(EPIC_MIRRORS, 2, 'EPIC_MIRRORS')
@@ -797,12 +804,12 @@ test('passing greens require settled child chat before merge eligibility', () =>
   )
   assert.match(
     CLAUDE,
-    /Passing\s+but\s+chat\s+still\s+WORKING\/QUESTION\/LIMITED[^\n]*hold/i,
+    /Passing\s+but\s+chat\s+still\s+WORKING\/QUESTION\/WAITING[^\n]*hold/i,
     'unsettled passing children must be held, not merged or repaired',
   )
   assert.match(
     CLAUDE,
-    /treat\s+the\s+child\s+as \*\*not\s+settled\*\* and\s+re-poll; never\s+assume\s+settled\s+on\s+an\s+unreadable\s+status/,
+    /`UNSPECIFIED`\s+or\s+an\s+unreadable\s+status\s+is\s+\*\*unknown\*\*,\s+not\s+settled\s+and\s+not\s+dead;\s+investigate\/re-poll/,
     'unreadable chat status must block merge eligibility',
   )
   assert.match(
@@ -815,6 +822,111 @@ test('passing greens require settled child chat before merge eligibility', () =>
     /GREEN_DRAFT\s+or\s+READY_FOR_REVIEW \+ DisplayStatus\s+Passing\*\*?[^+\n]*→ add\s+to\s+the\s+\*\*greens\*\*/,
     'the old Passing-only green transition must not return',
   )
+})
+
+test('BOS-997: child liveness classifier routes ambiguous states conservatively (both mirrors)', () => {
+  for (const dir of EPIC_MIRRORS) {
+    const skill = readFileSync(new URL(`${dir}/SKILL.md`, import.meta.url), 'utf8')
+    const recovery = readFileSync(
+      new URL(`${dir}/references/merge-recovery.md`, import.meta.url),
+      'utf8',
+    )
+    const prose = skill.replace(/\s+/g, ' ')
+    const recoveryProse = recovery.replace(/\s+/g, ' ')
+
+    assert.match(
+      prose,
+      /Feed\s+only\s+these\s+already-read\s+facts\s+to\s+`classifyChildLiveness`/,
+      `${dir}/SKILL.md must route child liveness through the pure classifier`,
+    )
+    for (const token of [
+      '`agent-conclusion`',
+      '`usage-limit`',
+      '`transient-api-error`',
+      '`headShaMoved`',
+      '`attention_status` reasons',
+      '{verdict, action, reasons}',
+    ]) {
+      assert.ok(skill.includes(token), `${dir}/SKILL.md classifier input missing ${token}`)
+    }
+    assert.match(
+      prose,
+      /An\s+unmoving\s+remote\s+head\s+is\s+never\s+admissible\s+as\s+evidence\s+of\s+child\s+death/,
+      `${dir}/SKILL.md must forbid remote-head liveness reads`,
+    )
+    assert.match(
+      prose,
+      /`WORKING`\/`QUESTION`\/`WAITING`\s+=\s+still\s+alive/,
+      `${dir}/SKILL.md must enumerate WAITING as alive`,
+    )
+    assert.match(
+      prose,
+      /`UNSPECIFIED`\s+or\s+an\s+unreadable\s+status\s+is\s+\*\*unknown\*\*,\s+not\s+settled\s+and\s+not\s+dead/,
+      `${dir}/SKILL.md must route UNSPECIFIED/unreadable status to unknown`,
+    )
+    assert.match(
+      prose,
+      /Do\s+not\s+add\s+a\s+ticket\s+to\s+`greens`\s+while\s+that\s+chat\s+is\s+WORKING,\s+QUESTION,\s+WAITING,\s+LIMITED,\s+UNSPECIFIED,\s+or\s+unreadable/,
+      `${dir}/SKILL.md must prohibit WAITING and unknown statuses from greens`,
+    )
+    for (const route of [
+      '`alive/hold` → re-poll',
+      '`environmental-death/resume` → one wake-to-resume',
+      '`agent-blocked/repair` → repair round below',
+    ]) {
+      assert.ok(skill.includes(route), `${dir}/SKILL.md missing classifier route ${route}`)
+    }
+    assert.match(
+      prose,
+      /`unknown\/investigate`\s+→\s+read\s+the\s+tracked\s+chat's\s+last\s+message\s+and\s+`waiting_reason`/,
+      `${dir}/SKILL.md must investigate unknown liveness before re-polling`,
+    )
+    assert.match(
+      prose,
+      /`wall-clock-expired\/fail-isolate`\s+→\s+fail-isolate\s+and\s+\*\*never\*\*\s+repair/,
+      `${dir}/SKILL.md must fail-isolate wall-clock expiry without repair`,
+    )
+    assert.match(
+      prose,
+      /An\s+`unknown`\s+verdict\s+never\s+dispatches\s+repair/,
+      `${dir}/SKILL.md must bar repair from unknown liveness`,
+    )
+    assert.match(
+      prose,
+      /A\s+`BLOCKED`\s+state\s+without\s+that\s+conclusion\s+is\s+`unknown\/investigate`,\s+not\s+repair/,
+      `${dir}/SKILL.md must require agent conclusion before repairing BLOCKED`,
+    )
+    assert.match(
+      prose,
+      /the\s+tracked\s+chat\s+is\s+`LIMITED`,\s+the\s+chat's\s+last\s+message\s+is\s+a\s+\*\*usage-limit\*\*\s+banner/,
+      `${dir}/SKILL.md must include the usage-limit resume lane`,
+    )
+    assert.match(
+      prose,
+      /a\s+429\/rate\s+cap\s+is\s+not\s+the\s+transient-API\s+detector's\s+5xx\s+lane/,
+      `${dir}/SKILL.md must distinguish 429 from transient 5xx`,
+    )
+    assert.match(
+      prose,
+      /Wall-clock\s+expiry\s+is\s+a\s+budget\s+fact,\s+not\s+death\s+evidence,\s+and\s+can\s+never\s+route\s+to\s+repair/,
+      `${dir}/SKILL.md must keep wall-clock expiry out of repair`,
+    )
+    assert.match(
+      recoveryProse,
+      /Usage\s+cap\s+\/\s+429:[\s\S]*resume\s+lane/i,
+      `${dir}/merge-recovery.md must diagnose usage caps as resume`,
+    )
+    assert.match(
+      recoveryProse,
+      /Parked\s+on\s+a\s+background\s+agent:[\s\S]*alive\/hold/i,
+      `${dir}/merge-recovery.md must diagnose parked children as alive`,
+    )
+    assert.match(
+      recoveryProse,
+      /Autocompact\s+or\s+dead-turn\s+chrome:[\s\S]*unknown\/investigate/i,
+      `${dir}/merge-recovery.md must keep autocompact unclassifiable`,
+    )
+  }
 })
 
 test('planning-only work is routed away from PR-backed sessions', () => {
@@ -1144,12 +1256,12 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
       `${dir}/SKILL.md must state the idempotent re-read-then-retry-once move`,
     )
 
-    // (d) Infra-death is a distinct state with a single wake — and is explicitly
+    // (d) Environmental-death is a distinct state with a single wake — and is explicitly
     // carved out of the BLOCKED-nudge ban, which stays in force for BLOCKED.
     assert.match(
       prose,
-      /\*\*Infra-death\*\* — a\s+state\s+distinct\s+from\s+BLOCKED/,
-      `${dir}/SKILL.md Phase 3c must name infra-death as distinct from BLOCKED`,
+      /\*\*Environmental-death \/ resume\*\* — a\s+state\s+distinct\s+from\s+BLOCKED/,
+      `${dir}/SKILL.md Phase 3c must name environmental death as distinct from BLOCKED`,
     )
     assert.match(
       prose,
@@ -1174,7 +1286,7 @@ test('BOS-522: full merge-eligibility gate + merge-recovery + infra-death (both 
     // The ban itself must survive this carve-out.
     assert.match(
       prose,
-      /A\s+BLOCKED\s+run\s+gets\s+a\s+capped\s+repair\s+round\s+or\s+is\s+fail-isolated — never\s+a\s+nudge\s+into\s+the\s+original\s+chat/,
+      /A\s+BLOCKED\s+run\s+gets\s+a\s+capped\s+repair\s+round\s+only\s+after\s+the\s+classifier\s+returns `agent-blocked\/repair`, or\s+it\s+is\s+fail-isolated — never\s+a\s+nudge\s+into\s+the\s+original\s+chat/,
       `${dir}/SKILL.md must keep the BLOCKED-nudge ban intact`,
     )
 

@@ -229,7 +229,9 @@ func (s *chatPickerStub) CreateGithubCallback(context.Context, *pb.CreateGithubC
 func (s *chatPickerStub) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) DeleteGithubCallback(context.Context, string, string) error { panic("unused") }
+func (s *chatPickerStub) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
 	panic("unused")
 }

@@ -379,8 +379,9 @@ type DaemonServiceClient interface {
 	// ListGithubCallbacks returns callbacks matching the optional filters,
 	// ordered by creation time then id for a deterministic listing.
 	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
-	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
-	// absent id succeeds.
+	// DeleteGithubCallback removes a callback by id. Deleting an absent id
+	// returns NotFound. When expect_target_chat_id is set and does not match the
+	// row owner, it returns PermissionDenied and leaves the row present.
 	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
 	// SendBroadcast resolves a selector to an audience and records one delivery
 	// per target; the worker then delivers them asynchronously with retry.
@@ -1558,8 +1559,9 @@ type DaemonServiceHandler interface {
 	// ListGithubCallbacks returns callbacks matching the optional filters,
 	// ordered by creation time then id for a deterministic listing.
 	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
-	// DeleteGithubCallback removes a callback by id. Idempotent: deleting an
-	// absent id succeeds.
+	// DeleteGithubCallback removes a callback by id. Deleting an absent id
+	// returns NotFound. When expect_target_chat_id is set and does not match the
+	// row owner, it returns PermissionDenied and leaves the row present.
 	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
 	// SendBroadcast resolves a selector to an audience and records one delivery
 	// per target; the worker then delivers them asynchronously with retry.

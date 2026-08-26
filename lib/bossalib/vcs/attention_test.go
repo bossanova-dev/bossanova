@@ -42,6 +42,7 @@ func TestAttentionReasonMirrorsProto(t *testing.T) {
 
 func TestComputeAttentionStatus(t *testing.T) {
 	now := time.Now()
+	stateEnteredAt := now.Add(-2 * time.Hour)
 	blockedReason := "max attempts reached (5)"
 
 	tests := []struct {
@@ -51,18 +52,21 @@ func TestComputeAttentionStatus(t *testing.T) {
 		wantAttention bool
 		wantReason    AttentionReason
 		wantSummary   string
+		wantSince     time.Time
 	}{
 		{
 			name: "blocked session needs attention",
 			session: &models.Session{
-				State:         machine.Blocked,
-				BlockedReason: &blockedReason,
-				UpdatedAt:     now,
+				State:          machine.Blocked,
+				BlockedReason:  &blockedReason,
+				StateEnteredAt: &stateEnteredAt,
+				UpdatedAt:      now,
 			},
 			repo:          &models.Repo{},
 			wantAttention: true,
 			wantReason:    AttentionReasonBlockedMaxAttempts,
 			wantSummary:   blockedReason,
+			wantSince:     stateEnteredAt,
 		},
 		{
 			name: "blocked session without reason uses default summary",
@@ -199,6 +203,9 @@ func TestComputeAttentionStatus(t *testing.T) {
 				}
 				if got.Since.IsZero() {
 					t.Error("Since should not be zero when needs attention")
+				}
+				if !tt.wantSince.IsZero() && !got.Since.Equal(tt.wantSince) {
+					t.Errorf("Since = %v, want state_entered_at %v", got.Since, tt.wantSince)
 				}
 			}
 		})

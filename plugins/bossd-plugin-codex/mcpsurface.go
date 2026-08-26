@@ -36,7 +36,7 @@ func (s *Server) DescribeMCPSurface(
 	// probe_env is secret-bearing: it is forwarded into the probed process's
 	// environment and is deliberately never logged here and never copied into
 	// the response.
-	target := s.runtimeTarget(req.GetModel(), req.GetWorkDir(), req.GetProbeEnv())
+	target := s.runtimeTarget(req.GetModel(), "", req.GetWorkDir(), req.GetProbeEnv())
 
 	registry := s.operationRegistry
 	if registry == nil {

@@ -120,7 +120,7 @@ type recordingRunner struct {
 	startSeen string
 }
 
-func (r *recordingRunner) Start(_ context.Context, _, _ string, _ *string, sessionID, _ string, _ map[string]string) (string, error) {
+func (r *recordingRunner) Start(_ context.Context, _, _ string, _ *string, sessionID, _, _ string, _ map[string]string) (string, error) {
 	r.startSeen = sessionID
 	return sessionID, nil
 }
@@ -162,7 +162,7 @@ func TestE2E_Opencode_DispatcherRoutesByName(t *testing.T) {
 			return "", nil
 		}, "claude", zerolog.Nop())
 
-		if _, err := byName.StartByAgent(ctx, "opencode", "/w", "p", nil, "sid-oc", "", nil); err != nil {
+		if _, err := byName.StartByAgent(ctx, "opencode", "/w", "p", nil, "sid-oc", "", "", nil); err != nil {
 			t.Fatalf("StartByAgent: %v", err)
 		}
 		if ocStub.startSeen != "sid-oc" {
@@ -183,7 +183,7 @@ func TestE2E_Opencode_DispatcherRoutesByName(t *testing.T) {
 			return "opencode", nil
 		}, "claude", zerolog.Nop())
 
-		if _, err := byLookup.Start(ctx, "/w", "p", nil, "sid-lookup", "", nil); err != nil {
+		if _, err := byLookup.Start(ctx, "/w", "p", nil, "sid-lookup", "", "", nil); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
 		if ocLookupStub.startSeen != "sid-lookup" {
